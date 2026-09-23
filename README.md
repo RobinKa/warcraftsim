@@ -107,7 +107,10 @@ The game runs headless, so there are two ways to see what happened:
 
 * **Trajectories (any game).** `warcraftsim.record.TrajectoryRecorder` saves the observation stream to a `.jsonl` file. `python -m warcraftsim view ep.jsonl` renders it as a self-contained HTML animation: units over the map's walkable area, with HP bars, player stats, play/pause and a time slider.
   `play` and `scenario` take `--record DIR`.
-* **Replays (built-in AI only).** `GameInstance.save_replay(path)` ends the game normally and copies the `.w3g` replay the engine writes; it opens in the 1.29 client. Agent orders come from the map script rather than the recorded command stream, so replays of agent games do not show what the agent did.
+* **Replays and videos.** `GameInstance.save_replay(path)` ends the game normally and saves two files: the `.w3g` replay the engine writes, and `path.commands.json`, the agent orders per step.
+  * Agent orders are issued by the map script, not through the engine's recorded command stream. So the stock 1.29 client shows the built-in AI's play correctly but not the agents'.
+  * `GameInstance.play_replay(path)` plays the replay back through the harness and feeds the logged orders in at the same steps, reproducing the game exactly (verified step by step).
+  * `warcraftsim.video.render_replay(setup, path, "ep.mp4")` records that playback as real game footage (MP4, one frame per step, optionally following a player's units).
 * **Screenshots.** `instance.screenshot(path)` saves the virtual display. In scenarios the camera is centered on the action.
 
 ### Scenarios (fast RL iteration)

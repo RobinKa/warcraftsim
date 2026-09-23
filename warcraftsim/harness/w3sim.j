@@ -543,6 +543,11 @@ function W3S_ApplyOne takes integer at returns integer
         set n = 5
         set u = CreateUnit(Player(w3s_cmd[at + 1]), w3s_cmd[at + 2], I2R(w3s_cmd[at + 3] - 65536), I2R(w3s_cmd[at + 4] - 65536), 270.0)
         set ok = u != null
+    elseif op == 96 then
+        set n = 3
+        // local camera only: watching / screenshots, no effect on the simulation
+        call SetCameraPosition(I2R(w3s_cmd[at + 1] - 65536), I2R(w3s_cmd[at + 2] - 65536))
+        set ok = true
     elseif op == 97 then
         set n = 1
         set w3s_end = true

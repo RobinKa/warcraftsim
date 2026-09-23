@@ -436,6 +436,7 @@ class Op(IntEnum):
     ITEM = 7
     SET_RESOURCES = 90
     SPAWN = 91
+    CAMERA = 96
     END_GAME = 97
     SNAPSHOT = 98
     RESTART = 99
@@ -555,6 +556,16 @@ class Spawn(Command):
 
 
 @dataclass(frozen=True)
+class Camera(Command):
+    """Move the local camera (watching / screenshots only; no effect on the game state)."""
+    x: float
+    y: float
+
+    def encode(self) -> list[int]:
+        return [Op.CAMERA, _coord(self.x), _coord(self.y)]
+
+
+@dataclass(frozen=True)
 class EndGame(Command):
     """End the game normally (the engine then writes Replay/LastReplay.w3g); the harness stops."""
 
@@ -597,8 +608,10 @@ def action_file_text(ints: Sequence[int]) -> str:
     return "\r\n".join(lines)
 
 
-def write_action_file(path: str | os.PathLike, commands: Iterable[Command] = ()) -> None:
+def write_action_file(path: str | os.PathLike, commands: Iterable[Command] = (),
+                      ints: Sequence[int] | None = None) -> None:
+    """Write the action file for `commands` (or for already encoded `ints`)."""
     tmp = f"{path}.tmp"
     with open(tmp, "w", encoding="latin-1", newline="") as f:
-        f.write(action_file_text(encode_commands(commands)))
+        f.write(action_file_text(list(ints) if ints is not None else encode_commands(commands)))
     os.replace(tmp, path)

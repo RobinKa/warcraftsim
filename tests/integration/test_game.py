@@ -103,3 +103,33 @@ def test_selfplay_env(game_dir):
         assert abs(total[0] + total[1]) < 1e-6 and total[0] > 1
     finally:
         env.close()
+
+
+def test_replay_reproduces_agent_game(game_dir, tmp_path):
+    sc = Scenario.skirmish(["hfoo"] * 3, ["ogru"] * 2, max_game_seconds=60)
+    setup = GameSetup(slots=[Agent("human"), Scripted("orc")], scenario=sc)
+    from warcraftsim import Wc3Game
+
+    live = {}
+    with Wc3Game(setup, name="it_replay") as g:
+        obs = g.reset()
+        n = 0
+        while not obs.game_over:
+            live[obs.seq] = {u.id: (u.x, u.y, u.hp) for u in obs.units if u.alive}
+            enemies = g.enemies()
+            if n % 4 == 0 and enemies:
+                for u in g.my_units():
+                    g.attack(u, min(enemies, key=lambda e: e.hp))
+            obs = g.step()
+            n += 1
+        replay = g.instance.save_replay(tmp_path / "ep.w3g")
+        assert (tmp_path / "ep.commands.json").exists()
+        inst = g.instance
+        obs = inst.play_replay(replay)
+        played = {}
+        while True:
+            played[obs.seq] = {u.id: (u.x, u.y, u.hp) for u in obs.units if u.alive}
+            if obs.game_over:
+                break
+            obs = inst.step()
+    assert len(live) > 50 and live == {s: played[s] for s in live}

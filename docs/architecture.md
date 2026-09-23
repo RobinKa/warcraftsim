@@ -36,6 +36,7 @@
 * **JASS strings are never freed.** Observation tokens are short integers, so the set of distinct strings stays bounded.
 * **Delta observations.** A unit is written only when a rolling hash of its fields changed. Removed units get `R` records, and `Snapshot()` forces a full observation. The Python side keeps the table (`merge_observation`).
 * **Hidden units.** Area enumerations skip hidden units, such as workers inside a gold mine. The harness therefore tracks units that enter the map (plus an initial enumeration) itself.
+* **Replays.** A replay stores the map as `..\w3sim\map.w3x` and resolves it from `Documents\Warcraft III`, so each instance links `Documents\Warcraft III\w3sim` to `C:\w3sim`. Playback runs the harness again (it writes observations and syncs), which is how `play_replay` feeds back the command log.
 * **Resets.** `RestartGame`, `ChangeLevel` and `LoadGame` all drop a `.wgc` game back to the main menu. `RestartGame` does work when the map is launched with `-loadfile map.w3x`, but then slots and AI difficulty cannot be set.
   * Melee resets therefore use a **warm spare**: a second process with its own prefix, display and IPC directory. It loads in the background and waits frozen at game time 0 (the harness is blocked in its first sync, so it uses no CPU).
   * On `restart()` the instance swaps process fields with the spare (`_PROCESS_ATTRS`). The retired process is then shut down in the background, and the next spare loads under its name.
@@ -71,4 +72,6 @@ The layout of these was documented by the MIT-licensed `pwang724/wc3env` project
   * move serialization into the shim by hooking natives;
   * skip rendering entirely;
   * profile the JASS VM cost.
-* **Complete melee replays.** Games end by process shutdown, so only `TempReplay.w3g` exists.
+* **Replays in the stock client.** Agent orders are not in the `.w3g`; they are in the command log next to it.
+  * Recording agent orders as engine actions would need the command-packet path (wc3env's approach): selection plus order packets sent as the local player's network actions.
+  * Game-cache syncs (`SyncStoredInteger`) are not recorded in single-player replays; tested and ruled out.

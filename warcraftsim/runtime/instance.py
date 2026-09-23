@@ -30,8 +30,8 @@ from typing import Iterable, Sequence
 from .. import paths
 from ..data.mapbuild import HarnessConfig, build_map
 from ..data.wgc import Difficulty, Race, Wgc, WgcSlot
-from ..protocol import (Command, EndGame, Observation, ProtocolError, Restart, Snapshot, Unit, merge_observation,
-                        parse_observation, write_action_file)
+from ..protocol import (Command, EndGame, Observation, ProtocolError, Restart, Snapshot, Unit, encode_commands,
+                        merge_observation, parse_observation, write_action_file)
 from . import wine
 from .display import Xvfb
 
@@ -178,13 +178,19 @@ def _shim_files() -> tuple[Path, Path]:
     return dll, launcher
 
 
+def commands_path(replay: Path) -> Path:
+    """The agent-order log saved next to a replay."""
+    return replay.with_name(replay.stem + ".commands.json")
+
+
 def _winpath(p: Path) -> str:
     return "Z:" + str(p.resolve()).replace("/", "\\")
 
 
 # Attributes that belong to one game process; a warm spare's are swapped in on restart.
 _PROCESS_ATTRS = ("name", "_own_display", "_display", "proc", "_server", "_conn", "_rfile", "prefix", "ipc_dir",
-                  "inst_dir", "_last_seq", "_units", "last_obs", "_sent_at", "_need_snapshot")
+                  "inst_dir", "_last_seq", "_units", "last_obs", "_sent_at", "_need_snapshot", "_cmd_log",
+                  "_proc_episode")
 
 
 class GameInstance:
@@ -221,6 +227,11 @@ class GameInstance:
         self._spare_thread: threading.Thread | None = None
         self._spare_error: BaseException | None = None
         self._ended = False  # the game was ended (save_replay); the next restart relaunches
+        # Commands sent in the current game process, keyed "<episode in process>:<obs seq>", so a
+        # .w3g replay can be played back with the agents' orders (see play_replay).
+        self._cmd_log: dict[str, list[int]] = {}
+        self._proc_episode = -1
+        self._playback: dict[str, list[int]] | None = None
 
     # ---- launch ---------------------------------------------------------------------------
 
@@ -241,6 +252,10 @@ class GameInstance:
         write_action_file(self.ipc_dir / "act.txt")
         # map + game config
         work = self.prefix / "drive_c" / wine.WORK_DIR
+        # replays store the map as "..\\w3sim\\map.w3x" and resolve it from the Documents folder
+        doc_link = wine.documents_dir(self.prefix) / wine.WORK_DIR
+        if not doc_link.is_symlink():
+            doc_link.symlink_to(work, target_is_directory=True)
         maps_cache = paths.CACHE_DIR / "maps"
         cached = maps_cache / f"{self.setup.map_key()}.w3x"
         with _map_lock:
@@ -285,6 +300,31 @@ class GameInstance:
                         raise
         raise AssertionError("unreachable")
 
+    def play_replay(self, replay: str | os.PathLike) -> Observation:
+        """Play a replay saved by save_replay() of a game with this setup, stepping it like a live
+        game: the harness runs again, receives the recorded agent orders at the same steps and
+        writes observations. Commands passed to step() are ignored (except Camera and Snapshot)."""
+        log_file = commands_path(Path(replay))
+        self._playback = json.loads(log_file.read_text())["commands"] if log_file.exists() else {}
+        self._stop_process()
+        if self.prefix is None:
+            self._prepare()
+        if not self._display:
+            self._own_display = Xvfb()
+            self._display = self._own_display.display
+        shutil.copyfile(replay, self.prefix / "drive_c" / wine.WORK_DIR / "replay.w3g")
+        for f in self.ipc_dir.iterdir():
+            f.unlink()
+        write_action_file(self.ipc_dir / "act.txt")
+        self._ended = False
+        self._loadfile = f"C:\\{wine.WORK_DIR}\\replay.w3g"
+        try:
+            return self._launch(attempts=1)
+        finally:
+            self._loadfile = None
+
+    _loadfile: str | None = None
+
     def _launch_once(self) -> Observation:
         dll, launcher = _shim_files()
         self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -299,7 +339,7 @@ class GameInstance:
         out = open(self.inst_dir / "wine.log", "wb") if self.keep_logs else subprocess.DEVNULL
         self.proc = subprocess.Popen(
             ["wine", _winpath(launcher), _winpath(dll), f"C:\\{wine.GAME_LINK}\\Warcraft III.exe", "-window",
-             "-loadfile", f"C:\\{wine.WORK_DIR}\\game.wgc"],
+             "-loadfile", self._loadfile or f"C:\\{wine.WORK_DIR}\\game.wgc"],
             env=env, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True,
         )
         self._server.settimeout(self.timeout)
@@ -314,6 +354,8 @@ class GameInstance:
         self._last_seq = None
         self.last_obs = None
         self._sent_at = None
+        self._cmd_log = {}
+        self._proc_episode = -1
         self.episode += 1
         return self._await_observation(new_episode=True)
 
@@ -350,6 +392,8 @@ class GameInstance:
                 self._reply()  # the same observation reported twice: nothing new to act on
                 continue
             self._last_seq = obs.seq
+            if new_episode:
+                self._proc_episode += 1
             if obs.damaged_records:
                 # a unit delta may be lost: ask for a full snapshot with the next commands
                 self.damaged_records += obs.damaged_records
@@ -380,7 +424,15 @@ class GameInstance:
         if self._need_snapshot:
             commands.append(Snapshot())
             self._need_snapshot = False
-        write_action_file(self.ipc_dir / "act.txt", commands)
+        key = f"{self._proc_episode}:{self._last_seq}"
+        ints = encode_commands(commands)
+        if self._playback is not None:
+            # replay playback: the recorded orders; only observation/camera commands are added
+            extra = [c for c in commands if type(c).__name__ in ("Snapshot", "Camera")]
+            ints = self._playback.get(key, []) + encode_commands(extra)
+        elif ints:
+            self._cmd_log[key] = ints
+        write_action_file(self.ipc_dir / "act.txt", ints=ints)
         self._sent_at = time.perf_counter()
         self._reply()
 
@@ -417,7 +469,9 @@ class GameInstance:
         games are relaunched: RestartGame/ChangeLevel/LoadGame all return a .wgc game to the
         main menu, and the .wgc is what sets exact slots and AI difficulty.
         """
-        if self.setup.scenario is not None and not self._ended:
+        if self.setup.scenario is not None and not self._ended and self._playback is None:
+            key = f"{self._proc_episode}:{self._last_seq}"
+            self._cmd_log[key] = self._cmd_log.get(key, []) + Restart().encode()
             write_action_file(self.ipc_dir / "act.txt", [Restart()])
             self._reply()
             self._last_seq = None
@@ -426,6 +480,7 @@ class GameInstance:
             self.episode += 1
             return obs
         self._ended = False
+        self._playback = None
         spare = self._take_spare()
         if spare is not None:
             return self._swap_in(spare)
@@ -514,13 +569,14 @@ class GameInstance:
     def save_replay(self, dest: str | os.PathLike, timeout: float = 10.0) -> Path:
         """End the current game normally and copy the replay the engine writes to `dest`.
 
-        Only faithful for games between built-in AIs: agent orders are issued by the map script from
-        the action file, not through the recorded command stream, so a replay of an agent game does
-        not reproduce the agent's play (use warcraftsim.record for those). The game is over
-        afterwards; the next restart() relaunches.
+        Agent orders are issued by the map script, not through the engine's recorded command stream,
+        so they are not in the .w3g itself; they are saved next to it (``<name>.commands.json``) and
+        play_replay() feeds them back at the same steps. The stock game client shows such a replay
+        without the agents' orders. The game is over afterwards; the next restart() relaunches.
         """
         replay = self.replay_dir() / "LastReplay.w3g"
         before = replay.stat().st_mtime if replay.exists() else 0.0
+        log = dict(self._cmd_log)
         write_action_file(self.ipc_dir / "act.txt", [EndGame()])
         self._reply()
         deadline = time.time() + timeout
@@ -530,6 +586,8 @@ class GameInstance:
                 dest = Path(dest)
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(replay, dest)
+                commands_path(dest).write_text(json.dumps({"format": "warcraftsim-commands", "version": 1,
+                                                           "commands": log}))
                 self._ended = True
                 return dest
             time.sleep(0.05)
