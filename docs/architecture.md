@@ -8,7 +8,8 @@
 | `warcraftsim/data/mapbuild.py` | Injects the harness into a stock map script, then validates it with pjass. |
 | `warcraftsim/data/wgc.py` | Writes `.wgc` game configs (format: Luashine/wc3-file-formats). |
 | `warcraftsim/data/terrain.py` | Parses `war3map.w3e` and `war3map.wpm`, and finds open areas. |
-| `warcraftsim/data/flatmap.py` | Flat, empty version of a stock map (the default scenario map). |
+| `warcraftsim/data/flatmap.py` | Flat, empty maps: a stock map flattened, or resized to N×N tiles (the default scenario map). |
+| `warcraftsim/data/w3i.py` | Map-info (`war3map.w3i`) reader/writer: camera bounds, border tiles, playable size, start locations. |
 | `warcraftsim/data/objects.py` | SLK unit table and the unit-type vocabulary. |
 | `warcraftsim/harness/w3sim.j` | In-map controller (JASS, 1.29 has no Lua). |
 | `warcraftsim/protocol.py` | Observation parsing (checksummed token records, deltas) and command encoding. |
@@ -70,5 +71,4 @@ The layout of these was documented by the MIT-licensed `pwang724/wc3env` project
   * move serialization into the shim by hooking natives;
   * skip rendering entirely;
   * profile the JASS VM cost.
-* **A smaller flat map.** Today the flat map keeps Echo Isles' 16384x12288 size.
 * **Complete melee replays.** Games end by process shutdown, so only `TempReplay.w3g` exists.

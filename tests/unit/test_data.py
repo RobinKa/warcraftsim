@@ -37,14 +37,27 @@ def test_flat_map(game_dir, tmp_path):
 
     from warcraftsim.data.flatmap import make_flat_map
     from warcraftsim.data.mpq import MpqArchive
+    from warcraftsim.data.w3i import parse_w3i
 
     src = game_dir / "Maps" / "FrozenThrone" / "(2)EchoIsles.w3x"
+    # full size: same outline, flat, no obstacles inside the border
     out = make_flat_map(src, tmp_path / "flat.w3x")
     t = load_terrain(out)
     assert (t.width, t.height) == (129, 97)
     assert np.all(t.corner_height == 0) and not t.corner_water.any()
-    border = (t.pathing & 0x80) != 0
-    assert np.all(t.pathing[~border] == 0x40) and border.any()
+    inner = t.pathing[16:-32, 24:-24]  # border: 4 bottom, 8 top, 6 left/right tiles
+    assert np.all(inner == 0x40) and np.all(t.pathing[:16] == 0xCE)
     with MpqArchive(out) as m:
         assert m.read("war3map.doo")[12:16] == b"\0\0\0\0"  # no doodads
-        assert m.read("war3map.j") == MpqArchive(src).read("war3map.j")
+    # resized: 32 x 32 playable tiles around (0, 0)
+    small = make_flat_map(src, tmp_path / "flat32.w3x", size=32)
+    t = load_terrain(small)
+    assert (t.width, t.height) == (45, 45) and (t.offset_x, t.offset_y) == (-2816.0, -2560.0)
+    r, c = t.cell(0, 0)
+    assert t.pathing[r, c] == 0x40 and t.pathing[r, t.cell(2100, 0)[1]] == 0xCE
+    with MpqArchive(small) as m:
+        info = parse_w3i(m.read("war3map.w3i"))
+        script = m.read("war3map.j").decode("latin-1")
+    assert info.playable_width == 32 and [(p.start_x, p.start_y) for p in info.players] == [(-1024, 0), (1024, 0)]
+    assert "call DefineStartLocation( 1, 1024.0, 0.0 )" in script and "call CreateAllUnits" not in script.split(
+        "function main")[1]

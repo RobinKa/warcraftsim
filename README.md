@@ -124,7 +124,10 @@ A scenario:
 * clears trees around its center;
 * spawns its units.
 
-The default scenario map is `"flat"`: Echo Isles' outline as one level plane with no water, cliffs or trees, generated from the stock map. The scenario is centered at (0, 0) and the camera is pointed there. Any stock map name also works; its most open walkable spot becomes the center.
+The default scenario map is `"flat"`: a generated 32×32-tile (4096×4096) level plane with no water, cliffs or trees, centered at (0, 0), with the camera on the action.
+* `"flatN"` gives an N×N-tile plane.
+* `"flat:(2)EchoIsles"` gives a full-size flat version of a stock map.
+* Any stock map name also works; its most open walkable spot becomes the center.
 
 `reset()` re-spawns them inside the running game in about 10 ms, so there's no reload.
 
