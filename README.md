@@ -53,8 +53,7 @@ GameInstance ── TCP 127.0.0.1 ───────────────�
    To use another location, set `WC3_GAME_DIR`.
 2. **Install system packages** (WineHQ, Xvfb, mingw, ...):
    ```bash
-   sudo bash scripts/setup_system.sh
-   sudo apt-get install -y winehq-staging   # optional; the tests ran on 11.18 staging
+   sudo bash scripts/setup_system.sh        # WineHQ stable (11.0); staging measured slower here
    ```
 3. **Build the native helpers and create the Python venv:**
    ```bash
@@ -76,7 +75,7 @@ GameInstance ── TCP 127.0.0.1 ───────────────�
 
 ### Python API
 
-* **`GameSetup`:** map, slots, `step_seconds`, `speed` (clock multiplier), `max_game_seconds`, `fog`, `scenario`.
+* **`GameSetup`:** map, slots, `step_seconds`, `speed` (clock multiplier; adaptive by default), `max_game_seconds`, `fog`, `scenario`, `warm_spare` (melee: keep a loaded spare game so `restart()` takes about 1 s).
 * **Slots:**
   * `Agent(race)`: controlled from Python.
   * `BuiltinAI(race, "easy"|"normal"|"insane")`: Blizzard's melee AI.
@@ -85,6 +84,7 @@ GameInstance ── TCP 127.0.0.1 ───────────────�
 * **`Wc3Game`:**
   * `reset()` and `step(commands)`.
   * Queued order helpers: `move`, `attack`, `attack_move`, `smart`, `stop`, `hold`, `harvest`, `harvest_tree`, `train` / `research` / `upgrade`, `build`, `learn`, `cast`, `use_item`.
+  * `cast()` accepts an order string (`"thunderbolt"`) or an ability code (`"AHtb"`). All 246 ability order strings in the game data are resolved in the first observation.
   * Debug commands: `spawn`, `set_resources`.
   * Queries: `my_units`, `idle_workers`, `mines`, `enemies`.
 * **`Observation`:**
@@ -97,7 +97,18 @@ GameInstance ── TCP 127.0.0.1 ───────────────�
   * `Wc3Env`: feature arrays; actions are lists of commands.
   * `MicroEnv`: scenario fights, with a MultiDiscrete action per unit.
   * `NavigateEnv`: move a unit to a target.
+  * `MicroSelfPlayEnv`: two policies fight each other (PettingZoo-style dicts per player, zero-sum reward).
 * **`warcraftsim.vec.Wc3VecEnv`:** N games in parallel with auto-reset.
+* **Self-play in full games:** use two `Agent` slots. `game.as_player(1)` returns a handle whose helpers and queries act as player 1; orders from all handles go out with the next `step()`.
+
+### Watching games
+
+The game runs headless, so there are two ways to see what happened:
+
+* **Trajectories (any game).** `warcraftsim.record.TrajectoryRecorder` saves the observation stream to a `.jsonl` file. `python -m warcraftsim view ep.jsonl` renders it as a self-contained HTML animation: units over the map's walkable area, with HP bars, player stats, play/pause and a time slider.
+  `play` and `scenario` take `--record DIR`.
+* **Replays (built-in AI only).** `GameInstance.save_replay(path)` ends the game normally and copies the `.w3g` replay the engine writes; it opens in the 1.29 client. Agent orders come from the map script rather than the recorded command stream, so replays of agent games do not show what the agent did.
+* **Screenshots.** `instance.screenshot(path)` saves the virtual display. In scenarios the camera is centered on the action.
 
 ### Scenarios (fast RL iteration)
 
@@ -110,8 +121,10 @@ Scenario(units=(SpawnSpec(0, "hfoo", -300, 0), ...), victory="elimination", max_
 
 A scenario:
 * removes every pre-placed unit;
-* clears trees around its center (by default the most open walkable spot of the map);
+* clears trees around its center;
 * spawns its units.
+
+The default scenario map is `"flat"`: Echo Isles' outline as one level plane with no water, cliffs or trees, generated from the stock map. The scenario is centered at (0, 0) and the camera is pointed there. Any stock map name also works; its most open walkable spot becomes the center.
 
 `reset()` re-spawns them inside the running game in about 10 ms, so there's no reload.
 
@@ -120,11 +133,13 @@ A scenario:
 | workload | throughput |
 |---|---|
 | **Melee, AI vs AI, 2 s steps** | 39x real time (25-minute game in 39 s) |
-| **Melee, agent vs AI, 0.25 s steps, full observations** | ≈18x per game |
+| **Melee, agent vs AI, 0.25 s steps, full observations** | ≈17x per game |
 | **Scenario skirmish, 0.25 s steps** | ≈25x per game; reset in 11 ms |
-| **16 melee games in parallel, 0.25 s steps** | ≈100x real time combined (≈400 steps/s) |
-| **Game start** | ≈8 s (map load) |
-| **Melee reset** | Relaunches the process, about 8 s; see docs/architecture.md |
+| **8 / 16 melee games in parallel, 0.25 s steps** | ≈80x / ≈105x real time combined (≈420 steps/s at 16) |
+| **Game start** | ≈8 s (map load); 16 games ≈2 min (4 load at a time) |
+| **Melee reset** | ≈1 s with the warm spare (≈8 s relaunch without one, or if the episode was shorter than a load) |
+
+These numbers are for WineHQ **stable** 11.0, which is picked automatically from `/opt/wine-stable` (override with `WARCRAFTSIM_WINE`). Staging 11.18 was about 25% slower in parallel runs.
 
 ## Tests
 

@@ -6,6 +6,7 @@
   play           the scripted Human bot against the built-in AI
   scenario       run a skirmish scenario with a scripted opponent
   bench          measure throughput of N parallel games
+  view           render a recorded trajectory (.jsonl) as an HTML animation
 """
 
 from __future__ import annotations
@@ -72,13 +73,19 @@ def _play(args) -> int:
 
     setup = GameSetup(map=args.map, slots=[Agent("human"), BuiltinAI(args.race, args.difficulty)],
                       speed=args.speed, step_seconds=args.step, max_game_seconds=args.max_minutes * 60)
+    from .record import TrajectoryRecorder, render_html
+
     with Wc3Game(setup, name="play") as game:
         bot = HumanRushBot(game)
         for ep in range(args.episodes):
             t0 = time.time()
             obs = game.reset()
+            rec = TrajectoryRecorder(f"{args.record}/episode{ep + 1}.jsonl", map_name=args.map,
+                                     every=4) if args.record else None
             bot.on_reset(obs)
             while not obs.game_over:
+                if rec:
+                    rec.add(obs)
                 bot.act(obs)
                 obs = game.step()
                 if game.instance.steps % 240 == 0:
@@ -91,6 +98,10 @@ def _play(args) -> int:
             wall = time.time() - t0
             print(f"episode {ep + 1}: {obs.players[game.player].result.name} at {obs.game_time / 60:.1f} min "
                   f"({wall:.0f}s wall, {obs.game_time / wall:.1f}x)", flush=True)
+            if rec:
+                rec.add(obs)
+                rec.close()
+                print(f"  recorded: {render_html(rec.path)}")
     return 0
 
 
@@ -99,13 +110,18 @@ def _scenario(args) -> int:
     from .runtime.instance import Agent, GameSetup, Scripted
     from .scenario import Scenario
 
+    from .record import TrajectoryRecorder, render_html
+
     sc = Scenario.skirmish(args.mine.split(","), args.theirs.split(","))
     with Wc3Game(GameSetup(slots=[Agent("human"), Scripted("orc")], scenario=sc, speed=args.speed),
                  name="scenario") as game:
         for ep in range(args.episodes):
             t0 = time.time()
             obs = game.reset()
+            rec = TrajectoryRecorder(f"{args.record}/episode{ep + 1}.jsonl") if args.record else None
             while not obs.game_over:
+                if rec:
+                    rec.add(obs)
                 enemies = game.enemies()
                 for u in game.my_units():
                     if u.idle and enemies:
@@ -113,6 +129,10 @@ def _scenario(args) -> int:
                 obs = game.step()
             print(f"episode {ep + 1}: {obs.players[0].result.name} at t={obs.game_time:.1f}s "
                   f"({time.time() - t0:.2f}s wall)", flush=True)
+            if rec:
+                rec.add(obs)
+                rec.close()
+                print(f"  recorded: {render_html(rec.path)}")
     return 0
 
 
@@ -136,22 +156,33 @@ def _bench(args) -> int:
     def run(g):
         n = 0
         t = time.time()
+        worst = 0.0
         while time.time() - t < args.seconds:
+            s0 = time.time()
             obs = g.step()
+            worst = max(worst, time.time() - s0)
             n += 1
             if obs.game_over:
                 obs = g.restart()
-        return n, g.last_obs.game_time
+        return n, g.last_obs.game_time, worst, g.speed, time.time() - t
 
-    t0 = time.time()
     results = list(pool.map(run, games))
-    wall = time.time() - t0
     steps = sum(r[0] for r in results)
-    game_s = steps * args.step
-    print(f"{steps} steps in {wall:.1f}s: {steps / wall:.0f} steps/s total, "
-          f"{steps / wall / args.n:.0f} per game; {game_s / wall:.0f}x realtime total "
-          f"({game_s / wall / args.n:.1f}x per game)")
+    rate = sum(r[0] / r[4] for r in results)  # steps per second, each game over its own run time
+    print(f"{steps} steps: {rate:.0f} steps/s total, {rate / args.n:.0f} per game; "
+          f"{rate * args.step:.0f}x realtime total ({rate * args.step / args.n:.1f}x per game)")
+    per = sorted(r[0] for r in results)
+    print(f"steps per game: min {per[0]} median {per[len(per) // 2]} max {per[-1]}; "
+          f"slowest single step {max(r[2] for r in results):.2f}s; clock speeds "
+          f"{sorted(round(r[3]) for r in results)}")
     list(pool.map(lambda g: g.close(), games))
+    return 0
+
+
+def _view(args) -> int:
+    from .record import render_html
+
+    print(render_html(args.trajectory, args.out))
     return 0
 
 
@@ -173,31 +204,37 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--race0", default="human")
     p.add_argument("--race1", default="orc")
     p.add_argument("--difficulty", default="insane")
-    p.add_argument("--speed", type=float, default=64)
+    p.add_argument("--speed", type=float, default=None, help="clock multiplier (default: adaptive)")
     p.add_argument("--max-minutes", type=float, default=60)
     p.set_defaults(fn=_ai_vs_ai)
     p = sub.add_parser("play")
     p.add_argument("--map", default="(2)EchoIsles")
     p.add_argument("--race", default="orc")
     p.add_argument("--difficulty", default="easy")
-    p.add_argument("--speed", type=float, default=64)
+    p.add_argument("--speed", type=float, default=None, help="clock multiplier (default: adaptive)")
     p.add_argument("--step", type=float, default=0.5)
     p.add_argument("--episodes", type=int, default=1)
     p.add_argument("--max-minutes", type=float, default=40)
+    p.add_argument("--record", help="directory for trajectories + HTML viewers")
     p.set_defaults(fn=_play)
     p = sub.add_parser("scenario")
     p.add_argument("--mine", default="hfoo,hfoo,hfoo,hfoo")
     p.add_argument("--theirs", default="ogru,ogru,ogru")
+    p.add_argument("--record", help="directory for trajectories + HTML viewers")
     p.add_argument("--episodes", type=int, default=3)
-    p.add_argument("--speed", type=float, default=64)
+    p.add_argument("--speed", type=float, default=None, help="clock multiplier (default: adaptive)")
     p.set_defaults(fn=_scenario)
     p = sub.add_parser("bench")
     p.add_argument("-n", type=int, default=4)
     p.add_argument("--seconds", type=float, default=30)
-    p.add_argument("--speed", type=float, default=64)
+    p.add_argument("--speed", type=float, default=None, help="clock multiplier (default: adaptive)")
     p.add_argument("--step", type=float, default=0.25)
     p.add_argument("--scenario", action="store_true")
     p.set_defaults(fn=_bench)
+    p = sub.add_parser("view")
+    p.add_argument("trajectory")
+    p.add_argument("-o", "--out")
+    p.set_defaults(fn=_view)
     args = ap.parse_args(argv)
     return args.fn(args)
 

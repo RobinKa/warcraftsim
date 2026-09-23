@@ -30,7 +30,7 @@ from typing import Iterable, Sequence
 from .. import paths
 from ..data.mapbuild import HarnessConfig, build_map
 from ..data.wgc import Difficulty, Race, Wgc, WgcSlot
-from ..protocol import (Command, Observation, ProtocolError, Restart, Snapshot, Unit, merge_observation,
+from ..protocol import (Command, EndGame, Observation, ProtocolError, Restart, Snapshot, Unit, merge_observation,
                         parse_observation, write_action_file)
 from . import wine
 from .display import Xvfb
@@ -97,7 +97,10 @@ class GameSetup:
     map: str = "(2)EchoIsles"
     slots: Sequence[Slot] = (Slot("agent", "human"), Slot("ai", "orc", "normal"))
     step_seconds: float = 0.25
-    speed: float = 64.0  # virtual clock multiplier (game time per wall time, before engine limits)
+    # Virtual clock multiplier. None = adaptive: about 2.5x the rate the simulation actually reaches.
+    # Much higher than needed only makes the game's background threads wake up (and hit the
+    # wineserver) more often; lower than the reachable rate throttles the game.
+    speed: float | None = None
     turbo_ms: int = 0  # >0: simulate up to this much game time per frame, bypassing turn pacing
     max_game_seconds: float = 0.0  # 0 = unlimited; otherwise a tie when reached
     fog: bool | None = None  # None: on for melee, off for scenarios
@@ -107,6 +110,9 @@ class GameSetup:
     # True: the first agent is the local (user) player instead of a computer slot watched by an
     # observer. Only one slot can be a user in a local game.
     agent_is_user: bool = False
+    # Melee only: keep a second game loaded and waiting at game time 0, so restart() is instant
+    # instead of a ~8 s relaunch. Costs one more idle process (~400 MB) and its load time.
+    warm_spare: bool = True
 
     def __post_init__(self):
         self.slots = tuple(self.slots)
@@ -176,10 +182,16 @@ def _winpath(p: Path) -> str:
     return "Z:" + str(p.resolve()).replace("/", "\\")
 
 
+# Attributes that belong to one game process; a warm spare's are swapped in on restart.
+_PROCESS_ATTRS = ("name", "_own_display", "_display", "proc", "_server", "_conn", "_rfile", "prefix", "ipc_dir",
+                  "inst_dir", "_last_seq", "_units", "last_obs", "_sent_at", "_need_snapshot")
+
+
 class GameInstance:
     def __init__(self, setup: GameSetup, name: str = "g0", display: str | None = None,
                  timeout: float = 120.0, keep_logs: bool = True):
         self.setup = setup
+        self.base_name = name
         self.name = name
         self.timeout = timeout
         self.keep_logs = keep_logs
@@ -200,6 +212,15 @@ class GameInstance:
         self.damaged_records = 0
         self._units: dict[int, Unit] = {}
         self._need_snapshot = False
+        self.order_names = setup.harness_config().resolved_order_names()
+        self._speed = setup.speed or 32.0
+        self._game_wall = 0.0  # wall seconds spent inside the game (not waiting for Python)
+        self._game_ms0 = 0
+        self._sent_at: float | None = None
+        self._spare: GameInstance | None = None
+        self._spare_thread: threading.Thread | None = None
+        self._spare_error: BaseException | None = None
+        self._ended = False  # the game was ended (save_replay); the next restart relaunches
 
     # ---- launch ---------------------------------------------------------------------------
 
@@ -238,6 +259,8 @@ class GameInstance:
             text = text.replace(f'"{key}"=dword:{wine.VIDEO_SETTINGS[key]:08x}', f'"{key}"=dword:{val:08x}')
         user_reg.write_text(text, encoding="latin-1")
 
+    warm_spare_child = False  # a spare never starts its own spare
+
     def start(self) -> Observation:
         """Launch the game and return the first observation (game time 0)."""
         if self.proc:
@@ -247,7 +270,9 @@ class GameInstance:
             self._own_display = Xvfb()
             self._display = self._own_display.display
         self.episode = 0
-        return self._launch()
+        obs = self._launch()
+        self._start_spare()
+        return obs
 
     def _launch(self, attempts: int = 2) -> Observation:
         for attempt in range(attempts):
@@ -269,7 +294,7 @@ class GameInstance:
         self.inst_dir.mkdir(parents=True, exist_ok=True)
         log_path = self.inst_dir / "shim.log"
         env = wine.wine_env(self.prefix, DISPLAY=self._display, W3SIM_PORT=str(port),
-                            W3SIM_SPEED=str(self.setup.speed), W3SIM_TURBO_MS=str(self.setup.turbo_ms),
+                            W3SIM_SPEED=str(self._speed), W3SIM_TURBO_MS=str(self.setup.turbo_ms),
                             W3SIM_LOG=_winpath(log_path))
         out = open(self.inst_dir / "wine.log", "wb") if self.keep_logs else subprocess.DEVNULL
         self.proc = subprocess.Popen(
@@ -287,6 +312,8 @@ class GameInstance:
         self._conn.settimeout(self.timeout)
         self._rfile = self._conn.makefile("rb")
         self._last_seq = None
+        self.last_obs = None
+        self._sent_at = None
         self.episode += 1
         return self._await_observation(new_episode=True)
 
@@ -296,7 +323,7 @@ class GameInstance:
         path = self.ipc_dir / "obs.txt"
         for attempt in range(50):
             try:
-                return parse_observation(path.read_text(encoding="latin-1"))
+                return parse_observation(path.read_text(encoding="latin-1"), self.order_names)
             except (ProtocolError, FileNotFoundError):
                 if attempt == 49:
                     raise
@@ -354,14 +381,34 @@ class GameInstance:
             commands.append(Snapshot())
             self._need_snapshot = False
         write_action_file(self.ipc_dir / "act.txt", commands)
+        self._sent_at = time.perf_counter()
         self._reply()
 
     def receive(self) -> Observation:
         """Second half of step(): wait for the next observation."""
+        prev_ms = self.last_obs.game_ms if self.last_obs else 0
         obs = self._await_observation()
         write_action_file(self.ipc_dir / "act.txt")  # a stray re-read must not repeat commands
         self.steps += 1
+        if self._sent_at is not None and obs.game_ms > prev_ms:
+            self._game_wall += time.perf_counter() - self._sent_at
+            self._game_ms0 += obs.game_ms - prev_ms
+            if self.setup.speed is None and self._game_wall > 0.25:
+                self._adapt_speed()
         return obs
+
+    def _adapt_speed(self) -> None:
+        rate = self._game_ms0 / 1000.0 / self._game_wall
+        target = min(max(2.5 * rate, 16.0), 512.0)
+        self._game_wall, self._game_ms0 = 0.0, 0
+        if abs(target - self._speed) / self._speed > 0.15:
+            self._speed = target
+            self._pending_speed = round(target, 1)
+
+    @property
+    def speed(self) -> float:
+        """Current virtual clock multiplier."""
+        return self._speed
 
     def restart(self) -> Observation:
         """End the current episode and start a new one.
@@ -370,7 +417,7 @@ class GameInstance:
         games are relaunched: RestartGame/ChangeLevel/LoadGame all return a .wgc game to the
         main menu, and the .wgc is what sets exact slots and AI difficulty.
         """
-        if getattr(self.setup, "scenario", None) is not None:
+        if self.setup.scenario is not None and not self._ended:
             write_action_file(self.ipc_dir / "act.txt", [Restart()])
             self._reply()
             self._last_seq = None
@@ -378,15 +425,79 @@ class GameInstance:
             write_action_file(self.ipc_dir / "act.txt")
             self.episode += 1
             return obs
+        self._ended = False
+        spare = self._take_spare()
+        if spare is not None:
+            return self._swap_in(spare)
         self._stop_process()
         for f in self.ipc_dir.iterdir():
             f.unlink()
         write_action_file(self.ipc_dir / "act.txt")
         return self._launch()
 
-    def set_speed(self, speed: float) -> None:
-        """Change the virtual clock speed from the next step on."""
-        self._pending_speed = speed
+    # ---- warm spare (melee) ---------------------------------------------------------------
+
+    def _wants_spare(self) -> bool:
+        return (self.setup.warm_spare and self.setup.scenario is None and not self.warm_spare_child
+                and not self._display_shared())
+
+    def _display_shared(self) -> bool:
+        return self._own_display is None and self._display is not None
+
+    def _start_spare(self, recycled: "GameInstance | None" = None) -> None:
+        """Load the next spare in the background. `recycled` holds the retired process: it is shut
+        down first and its name (prefix, display slot) is reused."""
+        if not self._wants_spare() or self._spare is not None:
+            if recycled is not None:
+                recycled.close()
+            return
+        if recycled is None:
+            other = f"{self.base_name}.b" if self.name == self.base_name else self.base_name
+            recycled = GameInstance(self.setup, name=other, timeout=self.timeout, keep_logs=self.keep_logs)
+            recycled.warm_spare_child = True
+        spare = recycled
+        spare._speed = self._speed
+        self._spare, self._spare_error = spare, None
+
+        def run():
+            try:
+                spare.close()  # the retired process, if any
+                spare.start()
+            except BaseException as e:  # reported when the spare is needed
+                self._spare_error = e
+
+        self._spare_thread = threading.Thread(target=run, name=f"spare-{spare.name}", daemon=True)
+        self._spare_thread.start()
+
+    def _take_spare(self) -> "GameInstance | None":
+        spare, thread = self._spare, self._spare_thread
+        self._spare = self._spare_thread = None
+        if spare is None:
+            return None
+        thread.join()
+        if self._spare_error is not None or spare.last_obs is None:
+            spare.close()
+            return None
+        return spare
+
+    def _swap_in(self, spare: "GameInstance") -> Observation:
+        """Continue with the spare's process (waiting at game time 0); the retired process is shut
+        down in the background, which then loads the next spare under its name."""
+        for attr in _PROCESS_ATTRS:
+            mine, theirs = getattr(self, attr), getattr(spare, attr)
+            setattr(self, attr, theirs)
+            setattr(spare, attr, mine)
+        self._pending_speed = self._speed
+        self.episode += 1
+        self._start_spare(recycled=spare)
+        return self.last_obs
+
+    def set_speed(self, speed: float | None) -> None:
+        """Change the virtual clock speed from the next step on (None: adaptive)."""
+        self.setup.speed = speed
+        if speed is not None:
+            self._speed = speed
+            self._pending_speed = speed
 
     @property
     def pid(self) -> int | None:
@@ -399,6 +510,30 @@ class GameInstance:
 
     def replay_dir(self) -> Path:
         return wine.documents_dir(self.prefix) / "Replay"
+
+    def save_replay(self, dest: str | os.PathLike, timeout: float = 10.0) -> Path:
+        """End the current game normally and copy the replay the engine writes to `dest`.
+
+        Only faithful for games between built-in AIs: agent orders are issued by the map script from
+        the action file, not through the recorded command stream, so a replay of an agent game does
+        not reproduce the agent's play (use warcraftsim.record for those). The game is over
+        afterwards; the next restart() relaunches.
+        """
+        replay = self.replay_dir() / "LastReplay.w3g"
+        before = replay.stat().st_mtime if replay.exists() else 0.0
+        write_action_file(self.ipc_dir / "act.txt", [EndGame()])
+        self._reply()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if replay.exists() and replay.stat().st_mtime > before and replay.stat().st_size > 0:
+                time.sleep(0.2)  # let the writer finish
+                dest = Path(dest)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(replay, dest)
+                self._ended = True
+                return dest
+            time.sleep(0.05)
+        raise GameError("the game did not write a replay")
 
     # ---- teardown -------------------------------------------------------------------------
 
@@ -427,6 +562,9 @@ class GameInstance:
         self.proc = None
 
     def close(self) -> None:
+        spare = self._take_spare()
+        if spare is not None:
+            spare.close()
         self._stop_process()
         if self._own_display:
             self._own_display.close()

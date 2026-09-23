@@ -59,3 +59,47 @@ def test_navigate_env(game_dir):
         assert terminated and info["distance"] <= 100
     finally:
         env.close()
+
+
+def test_melee_restart_uses_warm_spare(game_dir):
+    import time
+
+    setup = GameSetup(slots=[Agent("human"), BuiltinAI("orc", "easy")], step_seconds=0.5)
+    with GameInstance(setup, name="it_spare") as g:
+        g.start()
+        first = g.name
+        deadline = time.time() + 120
+        while g._spare_thread is not None and g._spare_thread.is_alive() and time.time() < deadline:
+            g.step()  # the spare loads in the background meanwhile
+        t = time.time()
+        obs = g.restart()
+        assert time.time() - t < 3.0, "a loaded spare makes restart nearly instant"
+        assert g.name != first and obs.seq == 0 and obs.game_time < 0.5
+        assert len(obs.units_of(0)) == 6
+        obs = g.step()
+        assert obs.game_ms > 0
+
+
+def test_selfplay_env(game_dir):
+    import numpy as np
+
+    from warcraftsim.env import MicroSelfPlayEnv
+
+    env = MicroSelfPlayEnv(Scenario.skirmish(["hfoo"] * 3, ["hfoo"] * 3, max_game_seconds=120), name="it_selfplay")
+    try:
+        obs, _ = env.reset()
+        assert obs[0]["own_mask"].sum() == 3 and obs[1]["enemy_mask"].sum() == 3
+        attack = np.zeros((env.max_units, 3), np.int64)
+        attack[:, 0] = 3  # player 0 focus-fires; player 1 only auto-acquires
+        total = {0: 0.0, 1: 0.0}
+        for n in range(600):
+            obs, rewards, terminated, truncated, infos = env.step({0: attack if n % 8 == 0 else attack * 0,
+                                                                  1: attack * 0})
+            total = {p: total[p] + rewards[p] for p in total}
+            if any(terminated.values()) or any(truncated.values()):
+                break
+        assert terminated[0] and terminated[1]
+        assert infos[0]["obs"].players[0].result == Result.VICTORY
+        assert abs(total[0] + total[1]) < 1e-6 and total[0] > 1
+    finally:
+        env.close()

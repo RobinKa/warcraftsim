@@ -30,8 +30,24 @@ GAME_SETTINGS = {"Allow Local Files": 1}
 SOUND_SETTINGS = {"sfx": 0, "music": 0, "ambient": 0, "movement": 0, "positional": 0}
 
 
+def wine_bin_dir() -> str | None:
+    """Wine to use: $WARCRAFTSIM_WINE, else WineHQ stable if installed, else `wine` on PATH.
+
+    WineHQ stable 11.0 measured ~35% more parallel throughput than staging 11.18 here (less
+    wineserver CPU per game).
+    """
+    configured = os.environ.get("WARCRAFTSIM_WINE")
+    if configured:
+        return configured
+    stable = Path("/opt/wine-stable/bin")
+    return str(stable) if (stable / "wine").exists() else None
+
+
 def wine_env(prefix: Path, **extra: str) -> dict[str, str]:
     env = dict(os.environ)
+    wine_bin = wine_bin_dir()
+    if wine_bin:
+        env["PATH"] = f"{wine_bin}{os.pathsep}{env.get('PATH', '')}"
     env.update(
         WINEPREFIX=str(prefix),
         WINEDEBUG="-all",

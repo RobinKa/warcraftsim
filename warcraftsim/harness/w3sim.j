@@ -58,6 +58,7 @@ globals
     integer w3s_ncmd = 0
     integer w3s_nplayers = 0
     boolean w3s_restart = false
+    boolean w3s_end = false
     boolean array w3s_scripted
     integer array w3s_alive
     boolean array w3s_participant
@@ -542,6 +543,10 @@ function W3S_ApplyOne takes integer at returns integer
         set n = 5
         set u = CreateUnit(Player(w3s_cmd[at + 1]), w3s_cmd[at + 2], I2R(w3s_cmd[at + 3] - 65536), I2R(w3s_cmd[at + 4] - 65536), 270.0)
         set ok = u != null
+    elseif op == 97 then
+        set n = 1
+        set w3s_end = true
+        set ok = true
     elseif op == 98 then
         set n = 1
         set w3s_full = true
@@ -800,6 +805,13 @@ function W3S_Step takes nothing returns nothing
     set w3s_first = false
     set w3s_seq = w3s_seq + 1
     call W3S_ReadCommands()
+    if w3s_end then
+        // end the game normally so the engine finalises the replay (LastReplay.w3g)
+        set w3s_end = false
+        call PauseTimer(w3s_timer)
+        call EndGame(false)
+        return
+    endif
     if w3s_restart then
         set w3s_restart = false
         if W3S_CFG_SCENARIO then
@@ -1041,6 +1053,7 @@ function W3S_Init takes nothing returns nothing
             call EnumDestructablesInRect(bj_mapInitialPlayableArea, null, function W3S_ClearTree)
         endif
         call W3S_ScenarioSetup()
+        call SetCameraPosition(W3S_CFG_CLEAR_X, W3S_CFG_CLEAR_Y) // local camera: for watching only
     endif
     call EnumDestructablesInRect(bj_mapInitialPlayableArea, null, function W3S_RegTree)
     set t = null

@@ -59,6 +59,17 @@ class HarnessConfig:
     spawn: tuple[SpawnSpec, ...] = ()
     resources: tuple[tuple[int, int, int], ...] = ()  # (player, gold, lumber)
     clear_area: tuple[float, float, float] | None = None  # (x, y, radius): remove trees there
+    order_names: tuple[str, ...] | None = None  # order strings resolved in the first observation
+
+    def resolved_order_names(self) -> tuple[str, ...]:
+        from ..protocol import ORDER_NAMES, all_order_names
+
+        if self.order_names is not None:
+            return self.order_names
+        try:
+            return all_order_names()
+        except (FileNotFoundError, OSError):
+            return ORDER_NAMES
 
     @staticmethod
     def _mask(players) -> int:
@@ -113,8 +124,7 @@ def _split_harness(src: str, cfg: HarnessConfig) -> tuple[str, str]:
         if n != 1:
             raise MapBuildError(f"harness config {name} not found")
     body = src[m.end():]
-    from ..protocol import ORDER_NAMES
-    orders = "\n".join(f'    call W3S_Order("{name}")' for name in ORDER_NAMES)
+    orders = "\n".join(f'    call W3S_Order("{name}")' for name in cfg.resolved_order_names())
     body, n = re.subn(r"^\s*// @ORDERS@\s*$", lambda _m: orders, body, flags=re.M)
     if n != 1:
         raise MapBuildError("harness order table marker not found")
@@ -184,7 +194,12 @@ def pjass_check(script: str) -> None:
 
 
 def stock_map_path(name: str) -> Path:
-    """Resolve a stock map name like "(2)EchoIsles" or "EchoIsles" to a file in the install."""
+    """Resolve a map name to a file: a path, a stock map ("(2)EchoIsles" or "EchoIsles"), or
+    "flat" / "flat:<stock map>" for a flat, empty version of a stock map (default Echo Isles)."""
+    if name == "flat" or name.startswith("flat:"):
+        from .flatmap import flat_map_path
+
+        return flat_map_path(name[5:] or "(2)EchoIsles")
     candidates = []
     for sub in ("Maps/FrozenThrone", "Maps"):
         d = paths.GAME_DIR / sub

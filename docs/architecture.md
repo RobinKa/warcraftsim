@@ -8,6 +8,7 @@
 | `warcraftsim/data/mapbuild.py` | Injects the harness into a stock map script, then validates it with pjass. |
 | `warcraftsim/data/wgc.py` | Writes `.wgc` game configs (format: Luashine/wc3-file-formats). |
 | `warcraftsim/data/terrain.py` | Parses `war3map.w3e` and `war3map.wpm`, and finds open areas. |
+| `warcraftsim/data/flatmap.py` | Flat, empty version of a stock map (the default scenario map). |
 | `warcraftsim/data/objects.py` | SLK unit table and the unit-type vocabulary. |
 | `warcraftsim/harness/w3sim.j` | In-map controller (JASS, 1.29 has no Lua). |
 | `warcraftsim/protocol.py` | Observation parsing (checksummed token records, deltas) and command encoding. |
@@ -35,10 +36,14 @@
 * **Delta observations.** A unit is written only when a rolling hash of its fields changed. Removed units get `R` records, and `Snapshot()` forces a full observation. The Python side keeps the table (`merge_observation`).
 * **Hidden units.** Area enumerations skip hidden units, such as workers inside a gold mine. The harness therefore tracks units that enter the map (plus an initial enumeration) itself.
 * **Resets.** `RestartGame`, `ChangeLevel` and `LoadGame` all drop a `.wgc` game back to the main menu. `RestartGame` does work when the map is launched with `-loadfile map.w3x`, but then slots and AI difficulty cannot be set.
-  * Melee resets therefore relaunch the process (about 8 s).
+  * Melee resets therefore use a **warm spare**: a second process with its own prefix, display and IPC directory. It loads in the background and waits frozen at game time 0 (the harness is blocked in its first sync, so it uses no CPU).
+  * On `restart()` the instance swaps process fields with the spare (`_PROCESS_ATTRS`). The retired process is then shut down in the background, and the next spare loads under its name.
   * Scenarios reset inside the game.
 * **Melee AI start.** In 1.29 the melee start sends the starting workers to the mine automatically for every player. The AI is started by the map's `MeleeStartingAI`, which the harness replaces with one that skips agent slots. The AI reads its level through the native `MeleeDifficulty()`, which comes from the lobby or `.wgc`.
 * **Old-format maps** use players 12-15 as the neutral players, so the harness loops over `bj_MAX_PLAYERS` (12).
+* **Clock speed and Wine overhead.** Scaled waits make the game's background threads wake `speed` times as often, and under Wine every wake-up is a wineserver round trip. At 64x the wineserver cost about 0.35 cores per game; at 128x it was worse overall.
+  * The default adaptive clock keeps `speed` at about 2.5x the rate the game actually reaches.
+  * WineHQ stable 11.0 needed less wineserver CPU than staging 11.18. Esync made no difference.
 * **Speed.** The simulation itself costs about 0.6 ms of wall time per 25 ms turn (a 25-minute AI-vs-AI game in 39 s). Per 0.25 s step:
   * the harness plus the sync cost roughly 3-6 ms;
   * serializing about 120 units costs about 3 ms (with deltas);
@@ -61,10 +66,9 @@ The layout of these was documented by the MIT-licensed `pwang724/wc3env` project
 
 ## Not done yet / next steps
 
-* **Melee resets without relaunching.** Options: keep a warm spare process per slot, or use `-loadfile map` plus a difficulty override.
 * **Faster steps:**
   * move serialization into the shim by hooking natives;
   * skip rendering entirely;
   * profile the JASS VM cost.
-* **Ability order strings** (`stormbolt`, ...) in the order table, so `cast()` accepts any ability.
-* **A generated flat scenario map**, instead of a cleared patch of a stock map.
+* **A smaller flat map.** Today the flat map keeps Echo Isles' 16384x12288 size.
+* **Complete melee replays.** Games end by process shutdown, so only `TempReplay.w3g` exists.

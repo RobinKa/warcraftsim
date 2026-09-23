@@ -3,7 +3,8 @@
 A scenario removes every pre-placed unit (bases, creeps, mines), clears trees
 around its center, spawns the configured units and resets in-game in
 milliseconds. Unit positions are relative to the scenario center, which by
-default is the most open walkable area of the map.
+default is the most open walkable area of the map. The default map is "flat": Echo
+Isles' outline as one level plane without water, cliffs or trees.
 
     Scenario.skirmish(["hfoo"] * 4, ["ogru"] * 3)      # micro: kill the other side
     Scenario.move_to_target("hfoo", distance=1200)       # navigation: reach a point fast
@@ -23,7 +24,7 @@ from .data.terrain import load_terrain, open_area_center
 @dataclass(frozen=True)
 class Scenario:
     units: tuple[SpawnSpec, ...]  # positions relative to the center
-    map: str = "(2)EchoIsles"
+    map: str = "flat"  # a flat, empty Echo Isles; any stock map name also works (its trees are cleared)
     center: tuple[float, float] | None = None  # None: the map's most open walkable spot
     clear_radius: float = 1400.0
     victory: str = "elimination"  # elimination | none
@@ -77,6 +78,8 @@ class Scenario:
 
 @lru_cache(maxsize=None)
 def _auto_center(map_name: str) -> tuple[float, float]:
+    if map_name == "flat" or map_name.startswith("flat:"):
+        return 0.0, 0.0
     terrain = load_terrain(stock_map_path(map_name))
     margin = 1024.0
     min_x, min_y = terrain.offset_x + margin, terrain.offset_y + margin

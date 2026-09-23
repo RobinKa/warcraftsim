@@ -50,6 +50,13 @@ ORDER_NAMES: tuple[str, ...] = (
     "unloadall", "load", "autoharvestgold", "autoharvestlumber",
 )
 
+def all_order_names() -> tuple[str, ...]:
+    """ORDER_NAMES followed by every ability order string in the game data (needs the game files)."""
+    from .data.objects import order_strings
+
+    return ORDER_NAMES + tuple(o for o in order_strings() if o not in ORDER_NAMES)
+
+
 _TOKEN_RE = re.compile(r'call Preload\( "(.*?)" \)')
 _KEEP_RE = re.compile(r"-?\d+|[A-Z]")
 
@@ -314,7 +321,7 @@ def _take_record(tag: str, toks: list[str], i: int) -> tuple[list[int] | None, i
     return None, i
 
 
-def parse_observation(text: str) -> Observation:
+def parse_observation(text: str, order_names: Sequence[str] = ORDER_NAMES) -> Observation:
     toks = tokens_from_text(text)
     n = len(toks)
     i = 0
@@ -388,7 +395,7 @@ def parse_observation(text: str) -> Observation:
         raise ProtocolError(f"harness protocol {version}, expected {PROTOCOL_VERSION}")
     order_map = None
     if orders is not None:
-        order_map = dict(zip(ORDER_NAMES, orders))
+        order_map = {name: oid for name, oid in zip(order_names, orders) if oid}
     obs = Observation(seq, game_ms, over, players, units, events, results, dests, order_map, version)
     obs.damaged_records = damaged
     obs.full = full
@@ -412,9 +419,9 @@ def merge_observation(table: dict[int, Unit], obs: Observation) -> Observation:
     return obs
 
 
-def read_observation(path: str | os.PathLike) -> Observation:
+def read_observation(path: str | os.PathLike, order_names: Sequence[str] = ORDER_NAMES) -> Observation:
     with open(path, encoding="latin-1") as f:
-        return parse_observation(f.read())
+        return parse_observation(f.read(), order_names)
 
 
 # ---- commands ---------------------------------------------------------------------------
@@ -429,6 +436,7 @@ class Op(IntEnum):
     ITEM = 7
     SET_RESOURCES = 90
     SPAWN = 91
+    END_GAME = 97
     SNAPSHOT = 98
     RESTART = 99
 
@@ -544,6 +552,14 @@ class Spawn(Command):
 
     def encode(self) -> list[int]:
         return [Op.SPAWN, self.player, fourcc(self.unit_type), _coord(self.x), _coord(self.y)]
+
+
+@dataclass(frozen=True)
+class EndGame(Command):
+    """End the game normally (the engine then writes Replay/LastReplay.w3g); the harness stops."""
+
+    def encode(self) -> list[int]:
+        return [Op.END_GAME]
 
 
 @dataclass(frozen=True)

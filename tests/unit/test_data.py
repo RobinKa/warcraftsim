@@ -30,3 +30,21 @@ def test_terrain(game_dir):
     x, y, clearance = open_area_center(t)
     r, c = t.cell(x, y)
     assert not t.pathing[r, c] & PATH_NO_WALK and clearance > 500
+
+
+def test_flat_map(game_dir, tmp_path):
+    import numpy as np
+
+    from warcraftsim.data.flatmap import make_flat_map
+    from warcraftsim.data.mpq import MpqArchive
+
+    src = game_dir / "Maps" / "FrozenThrone" / "(2)EchoIsles.w3x"
+    out = make_flat_map(src, tmp_path / "flat.w3x")
+    t = load_terrain(out)
+    assert (t.width, t.height) == (129, 97)
+    assert np.all(t.corner_height == 0) and not t.corner_water.any()
+    border = (t.pathing & 0x80) != 0
+    assert np.all(t.pathing[~border] == 0x40) and border.any()
+    with MpqArchive(out) as m:
+        assert m.read("war3map.doo")[12:16] == b"\0\0\0\0"  # no doodads
+        assert m.read("war3map.j") == MpqArchive(src).read("war3map.j")

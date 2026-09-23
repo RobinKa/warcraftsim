@@ -95,3 +95,35 @@ def unit_table() -> dict[str, UnitInfo]:
 def unit_vocabulary() -> dict[str, int]:
     """Unit type code -> index 1..N (0 is reserved for unknown/padding). Stable: sorted by code."""
     return {code: i + 1 for i, code in enumerate(sorted(unit_table()))}
+
+
+_ORDER_FIELDS = ("Order", "Orderon", "Orderoff", "Unorder")
+
+
+@lru_cache(maxsize=1)
+def ability_orders() -> dict[str, dict[str, str]]:
+    """Ability code -> {"Order": ..., "Orderon": ..., ...} from the *AbilityFunc.txt files."""
+    cache = paths.CACHE_DIR / "ability_orders.json"
+    if cache.exists():
+        return json.loads(cache.read_text())
+    table: dict[str, dict[str, str]] = {}
+    with GameArchives() as g:
+        for name in sorted({n for n in g.names("Units\\*AbilityFunc.txt")}, key=str.lower):
+            current = None
+            for line in g.read(name).decode("latin-1").splitlines():
+                line = line.strip()
+                if line.startswith("[") and line.endswith("]"):
+                    current = line[1:-1]
+                elif current and "=" in line:
+                    key, value = line.split("=", 1)
+                    if key in _ORDER_FIELDS and value.strip():
+                        table.setdefault(current, {})[key] = value.strip().lower()
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps(table, sort_keys=True))
+    return table
+
+
+@lru_cache(maxsize=1)
+def order_strings() -> tuple[str, ...]:
+    """Every order string used by an ability, sorted."""
+    return tuple(sorted({o for fields in ability_orders().values() for o in fields.values()}))

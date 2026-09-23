@@ -8,6 +8,7 @@
   (noop / stop / move in one of 8 directions / attack an enemy slot), reward =
   damage balance + outcome.
 * ``NavigateEnv``: move one unit to a target point as fast as possible.
+* ``MicroSelfPlayEnv``: two policies control the two sides of a scenario (dict API).
 
 Every env exposes the raw ``Observation`` as ``info["obs"]``.
 """
@@ -327,3 +328,117 @@ class NavigateEnv(Wc3Env):
             reward += 1.0
         truncated = not terminated and obs.game_over  # time limit (the harness reports a tie)
         return self._encode(obs), float(reward), terminated, truncated, {"obs": obs, "distance": d}
+
+
+class MicroSelfPlayEnv:
+    """Two policies fight each other in a scenario (a PettingZoo-style parallel API).
+
+        env = MicroSelfPlayEnv(Scenario.skirmish(["hfoo"] * 4, ["hfoo"] * 4))
+        obs, infos = env.reset()                          # {0: obs0, 1: obs1}
+        obs, rewards, terminated, truncated, infos = env.step({0: action0, 1: action1})
+
+    Observations, actions and rewards per player are those of ``MicroEnv`` from that player's
+    perspective (own units first, the other side as enemies). Rewards are zero-sum.
+    """
+
+    possible_agents = (0, 1)
+
+    def __init__(self, scenario: Scenario | None = None, max_units: int = 12, move_distance: float = 250.0,
+                 name: str = "selfplay0", **instance_kw):
+        from .runtime.instance import Agent
+
+        self.scenario = scenario or Scenario.skirmish(["hfoo"] * 4, ["hfoo"] * 4)
+        setup = GameSetup(slots=[Agent("human"), Agent("orc")], scenario=self.scenario)
+        self.game = Wc3Game(setup, player=0, name=name, **instance_kw)
+        self.views = {p: None for p in self.possible_agents}
+        self.max_units = max_units
+        self.move_distance = move_distance
+        self.encoders: dict[int, UnitEncoder] = {}
+        self.single_observation_space = spaces.Dict({
+            "own": spaces.Box(-np.inf, np.inf, (max_units, UNIT_FEATURES), np.float32),
+            "own_types": spaces.Box(0, 10_000, (max_units,), np.int64),
+            "own_mask": spaces.MultiBinary(max_units),
+            "enemy": spaces.Box(-np.inf, np.inf, (max_units, UNIT_FEATURES), np.float32),
+            "enemy_types": spaces.Box(0, 10_000, (max_units,), np.int64),
+            "enemy_mask": spaces.MultiBinary(max_units),
+            "time": spaces.Box(0, np.inf, (1,), np.float32),
+        })
+        self.single_action_space = spaces.MultiDiscrete(np.tile([4, 8, max_units], (max_units, 1)))
+        self._units: dict[int, tuple[list[Unit], list[Unit]]] = {}
+        self._hp0: dict[int, float] = {}
+        self._hp_prev: dict[int, float] = {}
+
+    def observation_space(self, agent: int) -> spaces.Space:
+        return self.single_observation_space
+
+    def action_space(self, agent: int) -> spaces.Space:
+        return self.single_action_space
+
+    def _side(self, obs: Observation, player: int) -> tuple[list[Unit], list[Unit]]:
+        own = sorted((u for u in obs.units if u.alive and u.owner == player), key=lambda u: u.id)
+        enemy = sorted((u for u in obs.units if u.alive and u.owner != player and u.owner in obs.players),
+                       key=lambda u: u.id)
+        return own[:self.max_units], enemy[:self.max_units]
+
+    def _hp(self, obs: Observation, player: int) -> float:
+        return float(sum(u.hp for u in obs.units if u.alive and u.owner == player))
+
+    def _encode(self, obs: Observation) -> dict[int, dict[str, np.ndarray]]:
+        out = {}
+        for p in self.possible_agents:
+            own, enemy = self._units[p] = self._side(obs, p)
+            enc = self.encoders[p]
+            of, ot, _, om = enc.encode(own, obs, self.game._orders, self.max_units)
+            ef, et, _, em = enc.encode(enemy, obs, self.game._orders, self.max_units)
+            out[p] = {"own": of, "own_types": ot, "own_mask": om, "enemy": ef, "enemy_types": et,
+                      "enemy_mask": em,
+                      "time": np.array([obs.game_time / max(self.scenario.max_game_seconds, 1)], np.float32)}
+        return out
+
+    def reset(self, *, seed: int | None = None, options: dict | None = None):
+        obs = self.game.reset()
+        cx, cy = self.scenario.resolved_center()
+        self.encoders = {p: UnitEncoder(p, (cx, cy), 1500.0) for p in self.possible_agents}
+        for p in self.possible_agents:
+            self.views[p] = self.game.as_player(p)
+            self._hp0[p] = max(sum(u.max_hp for u in obs.units if u.owner == p), 1)
+            self._hp_prev[p] = self._hp(obs, p)
+        return self._encode(obs), {p: {"obs": obs} for p in self.possible_agents}
+
+    def step(self, actions: dict[int, np.ndarray]):
+        for p, action in actions.items():
+            view = self.views[p]
+            own, enemy = self._units[p]
+            action = np.asarray(action).reshape(self.max_units, 3)
+            for i, unit in enumerate(own):
+                kind, direction, target = (int(v) for v in action[i])
+                if kind == 1:
+                    view.stop(unit)
+                elif kind == 2:
+                    a = direction * math.pi / 4
+                    view.move(unit, unit.x + self.move_distance * math.cos(a),
+                              unit.y + self.move_distance * math.sin(a))
+                elif kind == 3 and target < len(enemy):
+                    view.attack(unit, enemy[target])
+        obs = self.game.step()
+        hp = {p: self._hp(obs, p) for p in self.possible_agents}
+        loss = {p: (self._hp_prev[p] - hp[p]) / self._hp0[p] for p in self.possible_agents}
+        self._hp_prev = hp
+        rewards = {0: loss[1] - loss[0], 1: loss[0] - loss[1]}
+        terminated = {p: False for p in self.possible_agents}
+        truncated = {p: False for p in self.possible_agents}
+        if obs.game_over:
+            for p in self.possible_agents:
+                result = obs.players[p].result
+                if result == Result.VICTORY:
+                    rewards[p] += 1.0
+                    terminated[p] = True
+                elif result == Result.DEFEAT:
+                    rewards[p] -= 1.0
+                    terminated[p] = True
+                else:
+                    truncated[p] = True
+        return self._encode(obs), rewards, terminated, truncated, {p: {"obs": obs} for p in self.possible_agents}
+
+    def close(self) -> None:
+        self.game.close()

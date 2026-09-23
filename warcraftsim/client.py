@@ -15,6 +15,7 @@ and sent with the next step. Unit, player and order arguments accept objects or 
 
 from __future__ import annotations
 
+import copy
 from typing import Iterable
 
 from .protocol import (Build, Command, ImmediateOrder, LearnSkill, Observation, PointOrder, SetResources, Spawn,
@@ -33,8 +34,7 @@ class Wc3Game:
         agents = self.setup.agent_players
         self.player = player if player is not None else (agents[0] if agents else 0)
         self.instance = GameInstance(self.setup, name=name, **instance_kw)
-        self.obs: Observation | None = None
-        self.first_obs: Observation | None = None
+        self._shared: dict = {"obs": None, "first": None}
         self._queue: list[Command] = []
         self._orders: dict[str, int] = {}
 
@@ -47,18 +47,41 @@ class Wc3Game:
             obs = self.instance.start()
         else:
             obs = self.instance.restart()
-        self.first_obs = obs
+        self._shared["first"] = obs
         if obs.orders:
-            self._orders = obs.orders
+            self._orders.clear()
+            self._orders.update(obs.orders)
         self.obs = obs
         return obs
+
+    @property
+    def obs(self) -> Observation | None:
+        return self._shared["obs"]
+
+    @obs.setter
+    def obs(self, value: Observation | None) -> None:
+        self._shared["obs"] = value
+
+    @property
+    def first_obs(self) -> Observation | None:
+        return self._shared["first"]
 
     def step(self, commands: Iterable[Command] = ()) -> Observation:
         """Send queued orders plus `commands`, advance one step, return the new observation."""
         batch = self._queue + list(commands)
-        self._queue = []
+        self._queue.clear()
         self.obs = self.instance.step(batch)
+        self._shared["obs"] = self.obs
         return self.obs
+
+    def as_player(self, player: int) -> "Wc3Game":
+        """A handle acting as another agent player (self-play): helpers and queries use `player`,
+        orders go into the same queue and are sent by the next step() on any handle."""
+        if player not in self.setup.agent_players:
+            raise ValueError(f"player {player} is not an agent slot {self.setup.agent_players}")
+        view = copy.copy(self)  # shares instance, queue, orders and the shared observation holder
+        view.player = player
+        return view
 
     def close(self) -> None:
         self.instance.close()
@@ -79,12 +102,18 @@ class Wc3Game:
     # ---- queries --------------------------------------------------------------------------
 
     def order_id(self, name: str | int) -> int:
+        """Order id for an order string ("move", "stormbolt") or an ability code ("AHtb")."""
         if isinstance(name, int):
             return name
-        try:
+        if name in self._orders:
             return self._orders[name]
-        except KeyError:
-            raise KeyError(f"unknown order {name!r}; known: {sorted(self._orders)}") from None
+        if len(name) == 4:
+            from .data.objects import ability_orders
+
+            order = ability_orders().get(name, {}).get("Order")
+            if order in self._orders:
+                return self._orders[order]
+        raise KeyError(f"unknown order {name!r} ({len(self._orders)} known)")
 
     def my_units(self, unit_type: str | None = None) -> list[Unit]:
         units = self.obs.units_of(self.player)
@@ -159,7 +188,7 @@ class Wc3Game:
 
     def cast(self, unit: Unit | int, order: str | int, target: Unit | int | None = None,
              x: float | None = None, y: float | None = None) -> None:
-        """Cast an ability by its order string (e.g. "stormbolt", "thunderclap", "holybolt")."""
+        """Cast an ability by order string ("stormbolt", "thunderclap") or ability code ("AHtb")."""
         if target is not None:
             self.order_target(unit, order, target)
         elif x is not None and y is not None:
