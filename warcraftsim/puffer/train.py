@@ -97,7 +97,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--gamma", type=float, default=0.99)
     ap.add_argument("--hidden", type=int, default=128)
     ap.add_argument("--layers", type=int, default=2)
-    ap.add_argument("--checkpoint-interval", type=int, default=50)
+    ap.add_argument("--checkpoint-interval", type=int, default=20,
+                    help="epochs; videos show the policy of the latest checkpoint before their episode")
     ap.add_argument("--record-every", type=int, default=20, help="trajectory render every N episodes of game 0")
     ap.add_argument("--video-every", type=int, default=60, help="replay video every N episodes of game 0 (0: off)")
     ap.add_argument("extra", nargs="*", help="extra PufferLib arguments, e.g. --train.clip_coef=0.1")

@@ -21,7 +21,20 @@ from pathlib import Path
 
 TRAIN_KEYS = ("agent_steps", "SPS", "epoch", "uptime", "env/win_rate", "env/loss_rate", "env/episode_return",
               "env/episode_length", "env/n", "loss/policy", "loss/value", "loss/entropy", "loss/kl",
-              "loss/clipfrac", "util/gpu_percent", "util/vram_used_gb", "time")
+              "loss/old_kl", "loss/clipfrac", "importance", "perf/rollout", "perf/eval_env", "perf/eval_model",
+              "perf/eval_copy", "perf/train", "util/gpu_percent", "util/vram_used_gb", "util/cpu_mem_gb", "time")
+# per-episode series (rolling means): name -> value of an episode row (None: not recorded)
+EPISODE_SERIES = {
+    "win_rate": lambda e: 1.0 if e.get("outcome", 0) > 0 else 0.0,
+    "loss_rate": lambda e: 1.0 if e.get("outcome", 0) < 0 else 0.0,
+    "draw_rate": lambda e: 1.0 if e.get("outcome", 0) == 0 else 0.0,
+    "return": lambda e: float(e.get("return", 0)),
+    "length": lambda e: float(e.get("length", 0)),
+    "game_time": lambda e: e.get("game_time"),
+    **{f"act_{k}": (lambda k: lambda e: e.get("act", {}).get(k))(k)
+       for k in ("noop", "stop", "move", "attack", "attack_invalid", "attack_weakest", "focus_fire")},
+    **{f"combat_{k}": (lambda k: lambda e: e.get("combat", {}).get(k))(k) for k in ("dealt", "taken", "kills", "losses")},
+}
 MAX_POINTS = 600
 
 
@@ -140,12 +153,12 @@ class Dashboard:
         train = [{k: r[k] for k in TRAIN_KEYS if k in r} for r in train_rows]
         episodes = self._merged(d, "episodes")
         window = max(10, min(100, len(episodes) // 20 or 10))
-        wins = _rolling([1.0 if e.get("outcome", 0) > 0 else 0.0 for e in episodes], window)
-        rets = _rolling([float(e.get("return", 0)) for e in episodes], window)
-        lens = _rolling([float(e.get("length", 0)) for e in episodes], window)
         steps = _interp_steps([e["time"] for e in episodes], train_rows)
-        ep_series = [{"episode": i + 1, "steps": steps[i], "time": e["time"], "win_rate": wins[i],
-                      "return": rets[i], "length": lens[i]} for i, e in enumerate(episodes)]
+        ep_series = [{"episode": i + 1, "steps": steps[i], "time": e["time"]} for i, e in enumerate(episodes)]
+        for name, get in EPISODE_SERIES.items():
+            idx = [i for i, e in enumerate(episodes) if get(e) is not None]
+            for i, v in zip(idx, _rolling([float(get(episodes[i])) for i in idx], window)):
+                ep_series[i][name] = v
         # throughput: sum the bridge workers' latest rates in 5 s buckets
         buckets: dict[int, dict[int, float]] = {}
         for r in self._merged(d, "bridge"):
@@ -155,7 +168,12 @@ class Dashboard:
         bridge = [{"time": t * 5.0, "steps": bridge_steps[i], "game_x_realtime": sum(buckets[t].values())}
                   for i, t in enumerate(bridge_times)]
         media = self._merged(d, "media")
+        calib = [m for m in media if m.get("value0") is not None]
+        calib_steps = _interp_steps([m["time"] for m in calib], train_rows)
+        calibration = [{"steps": st, "episode": m["episode"], "value0": m["value0"], "return0": m["return0"]}
+                       for st, m in zip(calib_steps, calib)]
         return {
+            "calibration": calibration,
             "info": info,
             "train": _downsample(train),
             "episodes": _downsample(ep_series),

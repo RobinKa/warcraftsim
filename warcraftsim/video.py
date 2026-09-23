@@ -17,7 +17,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from .protocol import Camera, Observation
+from .protocol import Camera, Observation, decode_commands
 from .runtime.display import Xvfb
 from .runtime.instance import GameError, GameInstance, GameSetup
 
@@ -108,10 +108,11 @@ def _follow_target(obs: Observation, player: int | None) -> tuple[float, float] 
 
 def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.PathLike, fps: int = 40,
                   speed: float = 1.0, width: int | None = None, follow_player: int | None = None,
-                  max_steps: int = 20000, name: str = "render", crf: int = 23) -> Path:
+                  max_steps: int = 20000, name: str = "render", crf: int = 23, overlay=None) -> Path:
     """Play `replay` (saved by GameInstance.save_replay with the same setup) and write an MP4 at
     `fps`, `speed` times real time. Each frame advances the game by exactly 1000*speed/fps ms,
-    ideally a multiple of the engine's 25 ms turn (40 fps at 1x, 40 fps at 2x, 60 fps at 1.5x)."""
+    ideally a multiple of the engine's 25 ms turn (40 fps at 1x, 40 fps at 2x, 60 fps at 1.5x).
+    `overlay` (overlay.EpisodeOverlay) draws the agent's orders and what the policy thought."""
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
     # a real-time clock while the map loads: a fast one leaves a backlog that the engine simulates
@@ -129,28 +130,45 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
         if geo is None:
             raise GameError("game window not found")
         grabber = XGrabber(inst._display, *geo)
+        size, pix = (geo[2], geo[3]), "bgr0"
+        if overlay is not None:
+            overlay.begin(setup, inst.order_names, geo[2], geo[3])
+            size, pix = overlay.size, "rgb24"
         scale = f"scale={width}:-2" if width else "scale=trunc(iw/2)*2:trunc(ih/2)*2"
         ffmpeg = subprocess.Popen(
-            ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "bgr0", "-s", f"{geo[2]}x{geo[3]}",
+            ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", pix, "-s", f"{size[0]}x{size[1]}",
              "-framerate", str(fps), "-i", "-", "-vf", scale, "-c:v", "libx264", "-preset", "veryfast",
              "-crf", str(crf), "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out)],
             stdin=subprocess.PIPE)
+        pending: list[bytes] = []
 
-        def on_frame(n: int) -> None:
+        def write(batch: list[bytes]) -> None:
             nonlocal frames
-            ffmpeg.stdin.write(grabber.grab())
-            frames += 1
+            for f in batch:
+                ffmpeg.stdin.write(f)
+            frames += len(batch)
 
-        inst.set_frame_capture(1000.0 * speed / fps, on_frame)
+        inst.set_frame_capture(1000.0 * speed / fps, lambda n: pending.append(grabber.grab()))
         follow = follow_player is not None or setup.scenario is None
-        for _ in range(max_steps):
+        last = None
+        for t in range(max_steps):
             if obs.game_over:
                 break
+            commands = decode_commands((inst._playback or {}).get(f"{inst._proc_episode}:{obs.seq}", []))
             target = _follow_target(obs, follow_player) if follow else None
+            before = obs
             try:
                 obs = inst.step([Camera(*target)] if target else [])
             except GameError:
-                break  # the replay ended
+                obs = None  # the replay ended
+            batch, pending[:] = list(pending), []
+            if batch:
+                last = batch[-1]
+                write(overlay.render_step(batch, t, before, obs, commands) if overlay is not None else batch)
+            if obs is None:
+                break
+        if overlay is not None and last is not None:
+            write(overlay.render_end(last, fps))
     finally:
         if ffmpeg:
             ffmpeg.stdin.close()

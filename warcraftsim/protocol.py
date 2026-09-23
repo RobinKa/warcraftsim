@@ -598,6 +598,34 @@ def encode_commands(commands: Iterable[Command]) -> list[int]:
     return out
 
 
+_OP_LENGTHS = {Op.POINT: 5, Op.TARGET: 4, Op.IMMEDIATE: 3, Op.BUILD: 5, Op.LEARN: 3, Op.TARGET_DESTRUCTABLE: 4,
+               Op.ITEM: 7, Op.SET_RESOURCES: 4, Op.SPAWN: 5, Op.CAMERA: 3, Op.END_GAME: 1, Op.SNAPSHOT: 1,
+               Op.RESTART: 1}
+
+
+def decode_commands(ints: Sequence[int]) -> list[Command]:
+    """Unit orders (PointOrder, TargetOrder, ImmediateOrder) and cameras in encoded commands, e.g.
+    a step of a replay's command log; other commands are skipped."""
+    out: list[Command] = []
+    i = 0
+    while i < len(ints):
+        op = int(ints[i])
+        n = _OP_LENGTHS.get(op)
+        if n is None:
+            raise ProtocolError(f"unknown command op {op} at {i}")
+        a = [int(v) for v in ints[i + 1:i + n]]
+        if op == Op.POINT:
+            out.append(PointOrder(a[0], a[1], a[2] - COORD_BIAS, a[3] - COORD_BIAS))
+        elif op == Op.TARGET:
+            out.append(TargetOrder(a[0], a[1], a[2]))
+        elif op == Op.IMMEDIATE:
+            out.append(ImmediateOrder(a[0], a[1]))
+        elif op == Op.CAMERA:
+            out.append(Camera(a[0] - COORD_BIAS, a[1] - COORD_BIAS))
+        i += n
+    return out
+
+
 def action_file_text(ints: Sequence[int]) -> str:
     """The Preloader script that stores the command integers in the harness mailbox."""
     lines = ["function PreloadFiles takes nothing returns nothing", ""]

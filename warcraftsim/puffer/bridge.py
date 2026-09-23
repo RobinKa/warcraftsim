@@ -8,8 +8,11 @@ media for the dashboard:
     <run>/episodes-<w>.jsonl   one line per finished episode (w = bridge worker process)
     <run>/bridge-<w>.jsonl     throughput every few seconds
     <run>/renders/*.html    trajectory animations (every `record_every` episodes of game 0)
-    <run>/replays/*.w3g     single-episode replays (+ .commands.json) every `video_every` episodes
-    <run>/videos/*.mp4      real game footage rendered from those replays in the background
+    <run>/replays/*.w3g     single-episode replays every `video_every` episodes, with the agent
+                            orders (.commands.json) and the policy's inputs/outputs (.steps.npz)
+    <run>/videos/*.mp4      real game footage rendered from those replays in the background, with
+                            the agent's orders drawn on it and a panel of what the policy thinks
+                            (value, action probabilities; from the checkpoint of that time)
 """
 
 from __future__ import annotations
@@ -25,14 +28,35 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from collections import Counter
+
 import numpy as np
 
 from ..record import TrajectoryRecorder, render_html
 from ..runtime.instance import GameError
-from .tasks import Task
+from .tasks import Task, action_summary
 
 MAGIC = 0x46503357
 VERSION = 1
+
+
+def combat_stats(first, last, player: int = 0) -> dict | None:
+    """Damage and unit losses of `player` against everyone else over an episode (harness obs)."""
+    if first is None or last is None:
+        return None
+
+    def side(o, mine: bool) -> list:
+        return [u for u in o.units if u.alive and not u.is_structure
+                and (u.owner == player if mine else u.owner != player and u.owner in o.players)]
+
+    own0, enemy0, own1, enemy1 = side(first, True), side(first, False), side(last, True), side(last, False)
+    if not own0 or not enemy0:
+        return None
+    hp = lambda us: sum(u.hp for u in us)  # noqa: E731
+    max_hp = lambda us: max(sum(u.max_hp for u in us), 1)  # noqa: E731
+    return {"dealt": round((hp(enemy0) - hp(enemy1)) / max_hp(enemy0), 4),
+            "taken": round((hp(own0) - hp(own1)) / max_hp(own0), 4),
+            "kills": len(enemy0) - len(enemy1), "losses": len(own0) - len(own1)}
 
 
 def _recv(conn: socket.socket, n: int) -> bytes:
@@ -57,6 +81,9 @@ class _Slot:
         self.episodes = 0
         self.recorder: TrajectoryRecorder | None = None
         self.replay_path: Path | None = None
+        self.trace: dict[str, list] | None = None  # policy inputs/outputs of a video episode
+        self.actions: Counter = Counter()
+        self.first_obs = None  # the episode's first harness observation
 
 
 class BridgeServer:
@@ -162,6 +189,9 @@ class BridgeServer:
 
     def _begin_episode(self, slot: _Slot, obs: list, info) -> list:
         slot.ep_return, slot.ep_length = [0.0] * self.task.num_agents, 0
+        slot.actions = Counter()
+        slot.first_obs = info.get("obs")
+        slot.trace = {"obs": [np.stack(obs)], "actions": [], "rewards": []} if slot.replay_path else None
         if slot.recorder is not None:
             slot.recorder.close()
             slot.recorder = None
@@ -214,7 +244,14 @@ class BridgeServer:
             return self._recover(slot, e)
 
     def _step_game(self, slot: _Slot, actions: list[np.ndarray]):
+        if self.task.action_stats is not None:
+            slot.actions.update(self.task.action_stats(slot.env, actions))
         obs, rewards, done, info, outcomes = self.task.step(slot.env, actions)
+        if slot.trace is not None:
+            slot.trace["actions"].append(np.stack(actions))
+            slot.trace["rewards"].append(np.asarray(rewards, np.float32))
+            if not done:
+                slot.trace["obs"].append(np.stack(obs))
         slot.ep_return = [r + dr for r, dr in zip(slot.ep_return, rewards)]
         slot.ep_length += 1
         with self._lock:
@@ -224,7 +261,7 @@ class BridgeServer:
         if not done:
             return obs, rewards, False, [(0.0, 0.0, 0.0, 0.0)] * self.task.num_agents
         outcome = outcomes[0]
-        self._finish_episode(slot, info, outcome)
+        self._finish_episode(slot, info, outcome, outcomes)
         # next episode: normally in-game; the episode chosen for a video starts in a fresh process
         # so that its replay holds exactly that episode
         slot.episodes += 1
@@ -235,16 +272,21 @@ class BridgeServer:
         stats = [(1.0, r, float(slot.ep_length), o) for r, o in zip(slot.ep_return, outcomes)]
         return self._begin_episode(slot, next_obs, next_info), rewards, True, stats
 
-    def _finish_episode(self, slot: _Slot, info: dict, outcome: float) -> None:
+    def _finish_episode(self, slot: _Slot, info: dict, outcome: float, outcomes: list[float]) -> None:
         o = info.get("obs")
         with self._lock:
             self._episodes += 1
             episode = self._episodes
-            self._episode_log.write(json.dumps({
-                "time": time.time(), "episode": episode, "worker": self.worker, "env": slot.index,
-                "return": round(slot.ep_return[0], 4),
-                "length": slot.ep_length, "outcome": outcome, "game_time": o.game_time if o else None,
-                "total_steps": self._steps}) + "\n")
+            row = {"time": time.time(), "episode": episode, "worker": self.worker, "env": slot.index,
+                   "return": round(slot.ep_return[0], 4),
+                   "length": slot.ep_length, "outcome": outcome, "game_time": o.game_time if o else None,
+                   "total_steps": self._steps}
+            if slot.actions:
+                row["act"] = action_summary(slot.actions)
+            combat = combat_stats(slot.first_obs, o)
+            if combat:
+                row["combat"] = combat
+            self._episode_log.write(json.dumps(row) + "\n")
             self._episode_log.flush()
         if slot.recorder is not None:
             slot.recorder.close()
@@ -255,15 +297,20 @@ class BridgeServer:
             try:
                 inst = slot.env.game.instance
                 replay = inst.save_replay(slot.replay_path)
+                if slot.trace is not None:
+                    t = slot.trace
+                    np.savez_compressed(replay.with_suffix(".steps.npz"), obs=np.stack(t["obs"]),
+                                        actions=np.stack(t["actions"]), rewards=np.stack(t["rewards"]),
+                                        outcomes=np.asarray(outcomes, np.float32), time=time.time())
                 self._render_queue.put((replay, episode, outcome, slot.ep_return[0]))
             except Exception as e:  # a missing video must not stop training
                 print(f"bridge: replay not saved: {e}")
             slot.replay_path = None
 
-    def _media_event(self, kind: str, path: Path, episode: int, outcome: float, ret: float) -> None:
+    def _media_event(self, kind: str, path: Path, episode: int, outcome: float, ret: float, **extra) -> None:
         with self._lock, open(self.run_dir / f"media-{self.worker}.jsonl", "a") as f:
             f.write(json.dumps({"time": time.time(), "kind": kind, "file": str(path.relative_to(self.run_dir)),
-                                "episode": episode, "outcome": outcome, "return": round(ret, 4)}) + "\n")
+                                "episode": episode, "outcome": outcome, "return": round(ret, 4), **extra}) + "\n")
 
     # ---- background work ----------------------------------------------------------------------
 
@@ -278,10 +325,41 @@ class BridgeServer:
             try:
                 setup = self.slots[0].env.setup
                 out = self.run_dir / "videos" / (replay.stem + ".mp4")
-                render_replay(setup, replay, out, name=f"{self.name}render{self.worker}")
-                self._media_event("video", out, episode, outcome, ret)
+                overlay = self._overlay(replay, episode)
+                render_replay(setup, replay, out, name=f"{self.name}render{self.worker}", overlay=overlay)
+                extra = {}
+                if overlay is not None and overlay.values is not None:  # value calibration
+                    extra = {"value0": round(float(overlay.values[0, 0]), 4),
+                             "return0": round(float(overlay.returns[0, 0]), 4),
+                             "policy_step": overlay.policy_step}
+                self._media_event("video", out, episode, outcome, ret, **extra)
             except Exception as e:
                 print(f"bridge: video not rendered: {e}")
+
+    def _overlay(self, replay: Path, episode: int):
+        """What the policy thought during a video episode, from the checkpoint of that time."""
+        from ..overlay import EpisodeOverlay
+        from .policy import PufferPolicy, checkpoint_at, checkpoint_step
+
+        steps_file = replay.with_suffix(".steps.npz")
+        if not steps_file.exists():
+            return None
+        trace = dict(np.load(steps_file))
+        info = json.loads((self.run_dir / "run.json").read_text()) if (self.run_dir / "run.json").exists() else {}
+        args = info.get("args", {})
+        outputs, step = None, None
+        ckpt = checkpoint_at(self.run_dir / "checkpoints", float(trace["time"]))
+        if ckpt is not None:
+            try:
+                pol = PufferPolicy(ckpt, self.task.obs_size, self.task.act_sizes, hidden=args.get("hidden", 128),
+                                   layers=args.get("layers", 2))
+                outputs = [pol.run(trace["obs"][:, a]) for a in range(trace["obs"].shape[1])]
+                step = checkpoint_step(ckpt)
+            except (OSError, ValueError) as e:
+                print(f"bridge: policy not evaluated for the video: {e}")
+        return EpisodeOverlay(self.task, trace, outputs, gamma=args.get("gamma", 0.99),
+                              title=f"{info.get('name', self.run_dir.name)} · episode {episode}",
+                              policy_step=step)
 
     def _stats_loop(self) -> None:
         last_steps, last_t = 0, time.time()

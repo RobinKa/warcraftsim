@@ -170,15 +170,33 @@ Each run writes `runs/<name>/`, which the dashboard shows live:
 * `train.jsonl`: one line per trainer epoch (SPS, losses, win rate), from a small patch applied to the build copy.
 * `episodes.jsonl`: every finished episode.
 * `renders/`: trajectory animations.
-* `replays/` and `videos/`: single-episode replays rendered to real game footage in the background.
+* `replays/` and `videos/`: single-episode replays rendered to real game footage in the background (40 fps).
+  * The footage shows which units are the agent's (rings and slot labels A0, A1, ...; enemies E0, ...) and each step's orders: move arrows, attack lines with a crosshair on the target, stop markers.
+  * A side panel shows what the policy thought. It evaluates the latest checkpoint before the episode (`puffer/policy.py`, numpy) on the observations the agent saw, and plots:
+    * the value V(s) against the discounted return that actually followed;
+    * reward and TD error per step;
+    * team hit points;
+    * per unit, the action probabilities and the sampled action;
+    * the policy entropy;
+    * an outcome card at the end.
+  * In self-play both sides are shown.
+  * `scripts/calibrate_camera.py` measures the camera projection the drawing uses.
 * `checkpoints/`.
 
 The dashboard shows:
 * the run list, with comparison;
 * progress cards;
-* win-rate, return, length, loss, entropy and throughput charts;
+* **Outcomes**: win rate, win/draw/loss, return, episode length;
+* **Behaviour** (from the actions the policy sent):
+  * the action mix (noop/stop/move/attack);
+  * targeting: focus fire, attacks on the weakest enemy, invalid targets;
+  * damage dealt and taken, kills and losses;
+* **Learning**:
+  * value calibration: predicted V(s₀) against the actual return of video episodes;
+  * PPO losses, entropy and clip fraction;
+* **System**: throughput, and the trainer's time per epoch split into rollout (waiting for games, model) and training;
 * a gallery of replay videos and trajectory renders;
-* the recent episodes.
+* the recent episodes with their combat and action statistics.
 
 Example: `nav` with 16 games went from a 3% to a 62% success rate within 100k steps (about 3 minutes, at about 550 env steps/s).
 

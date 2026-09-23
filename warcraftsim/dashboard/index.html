@@ -49,6 +49,10 @@ section > h3 { font-size:13px; margin:0 0 8px; color:var(--muted); text-transfor
 .media { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:12px; }
 .item { background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
 .item video, .item iframe { width:100%; aspect-ratio:16/10; border:0; display:block; background:#000; }
+.item.wide { grid-column:span 2; }
+.item.wide video { aspect-ratio:auto; }
+@media (max-width: 900px) { .item.wide { grid-column:span 1; } }
+.grid h4 { grid-column:1/-1; margin:8px 0 -4px; font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.8px; }
 .item .cap { padding:6px 10px; display:flex; justify-content:space-between; color:var(--muted); font-size:12px; }
 .item .cap a { color:var(--blue); text-decoration:none; }
 .win { color:var(--good); } .loss { color:var(--bad); }
@@ -107,7 +111,7 @@ function lineChart(canvas, series, opts = {}) {
   const g = canvas.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, W, H);
   const pad = { l: 46, r: 10, t: 8, b: 22 };
   const pts = series.flatMap(s => s.points);
-  if (!pts.length) { g.fillStyle = "#8795a3"; g.fillText("no data yet", W / 2 - 25, H / 2); canvas._chart = null; return; }
+  if (!pts.length) { g.fillStyle = "#8795a3"; g.fillText(opts.empty || "no data yet", 12, H / 2); canvas._chart = null; return; }
   let x0 = Math.min(...pts.map(p => p[0])), x1 = Math.max(...pts.map(p => p[0]));
   let y0 = opts.ymin ?? Math.min(...pts.map(p => p[1])), y1 = opts.ymax ?? Math.max(...pts.map(p => p[1]));
   if (x1 === x0) x1 = x0 + 1;
@@ -127,9 +131,11 @@ function lineChart(canvas, series, opts = {}) {
   }
   series.forEach((s, i) => {
     if (!s.points.length) return;
-    g.strokeStyle = s.color || COLORS[i % COLORS.length]; g.lineWidth = s.width || 1.6; g.globalAlpha = s.alpha || 1;
-    g.beginPath(); s.points.forEach((p, j) => j ? g.lineTo(X(p[0]), Y(p[1])) : g.moveTo(X(p[0]), Y(p[1]))); g.stroke();
-    g.globalAlpha = 1;
+    g.strokeStyle = g.fillStyle = s.color || COLORS[i % COLORS.length]; g.lineWidth = s.width || 1.6; g.globalAlpha = s.alpha || 1;
+    if (s.dash) g.setLineDash(s.dash);
+    if (s.dots) s.points.forEach(p => { g.beginPath(); g.arc(X(p[0]), Y(p[1]), 3, 0, 7); g.fill(); });
+    else { g.beginPath(); s.points.forEach((p, j) => j ? g.lineTo(X(p[0]), Y(p[1])) : g.moveTo(X(p[0]), Y(p[1]))); g.stroke(); }
+    g.setLineDash([]); g.globalAlpha = 1;
   });
   canvas._chart = { series, X, Y, x0, x1, pad, W, H, opts };
 }
@@ -202,17 +208,28 @@ function renderMain() {
       <div class="title"><h2>${info.name}</h2>${badge(info.status)}<span class="desc">${info.description || ""}</span></div>
       <div class="cards" id="cards"></div>
       <div class="grid">
+        <h4>Outcomes</h4>
         ${chartBox("c-win", "Win rate", `rolling ${d.episode_window} episodes · vs env steps`)}
+        ${chartBox("c-out", "Outcomes", "win · draw (time limit) · loss")}
         ${chartBox("c-ret", "Episode return", "rolling mean")}
-        ${chartBox("c-len", "Episode length (steps)", "rolling mean")}
+        ${chartBox("c-len", "Episode length", "game seconds")}
+        <h4>Behaviour</h4>
+        ${chartBox("c-act", "Action mix", "share of unit-steps")}
+        ${chartBox("c-tgt", "Targeting", "of attack orders")}
+        ${chartBox("c-cmb", "Combat", "per episode, agent side")}
+        ${chartBox("c-kill", "Kills · losses", "units per episode")}
+        <h4>Learning</h4>
+        ${chartBox("c-val", "Value calibration", "video episodes: V(s₀) vs discounted return")}
         ${chartBox("c-loss", "PPO losses", "policy · value · kl")}
         ${chartBox("c-ent", "Entropy · clip fraction", "")}
+        <h4>System</h4>
         ${chartBox("c-sps", "Throughput", "trainer SPS · game time vs real time")}
+        ${chartBox("c-perf", "Trainer time per epoch", "seconds: rollout (env + model) · train")}
       </div>
       <section><h3>Replays &amp; renders</h3><div class="media" id="media"></div></section>
       <section><h3>Recent episodes</h3><div id="episodes"></div></section>
       <section><h3>Run</h3><pre class="cmd" id="cmd"></pre></section>`;
-    ["c-win", "c-ret", "c-len", "c-loss", "c-ent", "c-sps"].forEach(id => attachTip(document.getElementById(id), document.getElementById(id + "-tip")));
+    ["c-win", "c-out", "c-ret", "c-len", "c-act", "c-tgt", "c-cmb", "c-kill", "c-val", "c-loss", "c-ent", "c-sps", "c-perf"].forEach(id => attachTip(document.getElementById(id), document.getElementById(id + "-tip")));
   }
   document.getElementById("cards").innerHTML = [
     ["Status", `${info.status}`, `<div class="progress"><div style="width:${(100 * progress).toFixed(1)}%"></div></div>`],
@@ -235,7 +252,24 @@ function renderMain() {
   ];
   lineChart(document.getElementById("c-win"), epSeries("win_rate"), { ymin: 0, ymax: 1, ...xs });
   lineChart(document.getElementById("c-ret"), epSeries("return"), xs);
-  lineChart(document.getElementById("c-len"), epSeries("length"), xs);
+  lineChart(document.getElementById("c-len"), epSeries("game_time"), xs);
+  const E = (key, name, color, extra = {}) => ({ name, color, points: ep.filter(e => e[key] !== undefined).map(e => [e.steps, e[key]]), ...extra });
+  lineChart(document.getElementById("c-out"), [E("win_rate", "win", "#4cc38a"), E("draw_rate", "draw", "#e0a33a"),
+    E("loss_rate", "loss", "#e5534b")], { ymin: 0, ymax: 1, ...xs });
+  lineChart(document.getElementById("c-act"), [E("act_noop", "noop", "#8795a3"), E("act_stop", "stop", "#e0c33a"),
+    E("act_move", "move", "#539bf5"), E("act_attack", "attack", "#e5534b")],
+    { ymin: 0, ymax: 1, empty: "no action statistics for this task/run", ...xs });
+  lineChart(document.getElementById("c-tgt"), [E("act_focus_fire", "focus fire (same target as the others)", "#e0a33a"),
+    E("act_attack_weakest", "on the weakest enemy", "#4cc38a"), E("act_attack_invalid", "invalid target (ignored)", "#e5534b")],
+    { ymin: 0, ymax: 1, empty: "no attack statistics yet", ...xs });
+  lineChart(document.getElementById("c-cmb"), [E("combat_dealt", "damage dealt (share of enemy HP)", "#4cc38a"),
+    E("combat_taken", "damage taken (share of own HP)", "#e5534b")], { ymin: 0, ymax: 1, empty: "no combat statistics yet", ...xs });
+  lineChart(document.getElementById("c-kill"), [E("combat_kills", "kills", "#4cc38a"), E("combat_losses", "losses", "#e5534b")],
+    { ymin: 0, empty: "no combat statistics yet", ...xs });
+  lineChart(document.getElementById("c-val"), [
+    { name: "predicted V(s₀)", points: d.calibration.map(c => [c.steps, c.value0]), color: "#e0a33a", dots: true },
+    { name: "actual discounted return", points: d.calibration.map(c => [c.steps, c.return0]), color: "#539bf5", dots: true }],
+    { empty: "appears with the first replay video rendered after a checkpoint", ...xs });
   const T = key => tr.filter(r => r[key] !== undefined).map(r => [r.agent_steps, r[key]]);
   lineChart(document.getElementById("c-loss"), [
     { name: "policy", points: T("loss/policy"), color: COLORS[0] },
@@ -247,6 +281,11 @@ function renderMain() {
   lineChart(document.getElementById("c-sps"), [
     { name: "trainer SPS", points: T("SPS"), color: COLORS[0] },
     { name: "game × realtime", points: d.bridge.map(b => [b.steps, b.game_x_realtime]), color: COLORS[2] }], xs);
+  lineChart(document.getElementById("c-perf"), [
+    { name: "rollout", points: T("perf/rollout"), color: COLORS[0] },
+    { name: "  env (waiting for games)", points: T("perf/eval_env"), color: COLORS[3] },
+    { name: "  model forward", points: T("perf/eval_model"), color: COLORS[1] },
+    { name: "train (PPO update)", points: T("perf/train"), color: COLORS[2] }], { ymin: 0, ...xs });
 
   const key = d.media.map(m => m.file).join("|");
   if (key !== state.mediaKey) {  // only rebuild the gallery when it changed (keeps videos playing)
@@ -255,12 +294,15 @@ function renderMain() {
     const renders = d.media.filter(m => m.kind === "render").slice(0, 6);
     const cap = m => `<div class="cap"><span>episode ${m.episode} · <span class="${m.outcome > 0 ? "win" : m.outcome < 0 ? "loss" : ""}">${m.outcome > 0 ? "win" : m.outcome < 0 ? "loss" : "tie"}</span> · return ${fmt(m.return, 2)}</span><a href="/files/${state.selected}/${m.file}" target="_blank">open ↗</a></div>`;
     document.getElementById("media").innerHTML =
-      videos.map(m => `<div class="item"><video src="/files/${state.selected}/${m.file}" controls muted loop preload="metadata"></video>${cap(m)}</div>`).join("") +
+      videos.map(m => `<div class="item wide"><video src="/files/${state.selected}/${m.file}" controls muted loop preload="metadata"></video>${cap(m)}</div>`).join("") +
       renders.map(m => `<div class="item"><iframe src="/files/${state.selected}/${m.file}" loading="lazy"></iframe>${cap(m)}</div>`).join("") ||
       `<div class="empty">No replays yet: trajectory renders appear every few episodes, game videos every ${info.args?.video_every || "N"} episodes of game 0.</div>`;
   }
-  document.getElementById("episodes").innerHTML = d.recent_episodes.length ? `<table><tr><th>#</th><th>game</th><th>outcome</th><th>return</th><th>length</th><th>game time</th><th>when</th></tr>` +
-    d.recent_episodes.map(e => `<tr><td>${e.episode}</td><td>${e.env}</td><td class="${e.outcome > 0 ? "win" : e.outcome < 0 ? "loss" : ""}">${e.outcome > 0 ? "win" : e.outcome < 0 ? "loss" : "tie"}</td><td>${fmt(e.return, 3)}</td><td>${e.length}</td><td>${e.game_time ? e.game_time.toFixed(1) + "s" : "–"}</td><td>${ago(e.time)}</td></tr>`).join("") + `</table>` : `<div class="empty">no episodes yet</div>`;
+  const pct = v => v === undefined ? "–" : (100 * v).toFixed(0) + "%";
+  const mix = a => a ? ["noop", "stop", "move", "attack"].filter(k => a[k] !== undefined).map(k => `${k} ${pct(a[k])}`).join(" · ") : "–";
+  document.getElementById("episodes").innerHTML = d.recent_episodes.length ? `<table><tr><th>#</th><th>game</th><th>outcome</th><th>return</th><th>length</th><th>game time</th><th>dealt / taken</th><th>kills / losses</th><th>actions</th><th>focus</th><th>when</th></tr>` +
+    d.recent_episodes.map(e => { const c = e.combat || {}, a = e.act || {};
+      return `<tr><td>${e.episode}</td><td>${e.env}</td><td class="${e.outcome > 0 ? "win" : e.outcome < 0 ? "loss" : ""}">${e.outcome > 0 ? "win" : e.outcome < 0 ? "loss" : "draw"}</td><td>${fmt(e.return, 3)}</td><td>${e.length}</td><td>${e.game_time ? e.game_time.toFixed(1) + "s" : "–"}</td><td>${pct(c.dealt)} / ${pct(c.taken)}</td><td>${c.kills ?? "–"} / ${c.losses ?? "–"}</td><td>${mix(e.act)}</td><td>${pct(a.focus_fire)}</td><td>${ago(e.time)}</td></tr>`; }).join("") + `</table>` : `<div class="empty">no episodes yet</div>`;
   document.getElementById("cmd").textContent = (info.command || []).join(" ");
 }
 

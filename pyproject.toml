@@ -11,6 +11,7 @@ dependencies = ["numpy"]
 
 [project.optional-dependencies]
 rl = ["gymnasium>=1.0"]
+video = ["pillow"]  # replay video overlays
 fuse = ["pyfuse3", "trio"]
 dev = ["pytest"]
 

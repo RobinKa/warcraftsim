@@ -11,7 +11,8 @@ by historical checkpoints when PufferLib's self-play pool is enabled).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import numpy as np
@@ -35,6 +36,13 @@ class Task:
     # PufferLib 5 uses raw advantages: small dense rewards are scaled up so they are not drowned
     # out by the entropy bonus (episode returns in the logs are scaled too)
     reward_scale: float = 1.0
+    # for the replay overlay: value names per action head, heads per controlled unit (one row
+    # each), and which head details a choice of the unit's first head (e.g. move -> direction)
+    head_labels: tuple[tuple[str, ...], ...] = ()
+    group_size: int = 1
+    detail_heads: dict[int, int] = field(default_factory=dict)
+    # counts per step (env before the step, actions of all agents), summed over an episode
+    action_stats: Callable[[Any, list[np.ndarray]], Counter] | None = None
 
     @property
     def num_atns(self) -> int:
@@ -75,6 +83,9 @@ class Task:
 
 # ---- navigate: one footman must reach a point --------------------------------------------------
 
+_DIRS = ("E", "NE", "N", "NW", "W", "SW", "S", "SE")
+
+
 def _nav_task(distance: float = 1200.0) -> Task:
     sc = Scenario.move_to_target("hfoo", distance=distance, max_game_seconds=30)
 
@@ -86,7 +97,7 @@ def _nav_task(distance: float = 1200.0) -> Task:
         make_env=lambda name: NavigateEnv(sc, name=name),
         flatten=lambda obs: np.asarray(obs, dtype=np.float32),
         to_action=lambda a: int(a[0]),
-        outcome=outcome, scenario=sc,
+        outcome=outcome, scenario=sc, head_labels=(("stop", *_DIRS),),
         description="Move a footman 1200 units to a target (stop or 8 directions); reward = progress.",
     )
 
@@ -106,6 +117,55 @@ def _micro_flatten(obs: dict) -> np.ndarray:
                            obs["enemy_mask"].astype(np.float32), obs["time"]]).astype(np.float32)
 
 
+_KINDS = ("noop", "stop", "move", "attack")
+
+
+def _micro_labels(max_units: int) -> dict:
+    return dict(head_labels=(_KINDS, _DIRS, tuple(f"E{i}" for i in range(max_units))) * max_units,
+                group_size=3, detail_heads={2: 1, 3: 2}, action_stats=_micro_action_stats)
+
+
+def _micro_action_stats(env, actions: list[np.ndarray]) -> Counter:
+    """Per live unit and step: the order kind; for attacks, the target choice."""
+    c: Counter = Counter()
+    for agent, action in enumerate(actions):
+        own, enemy = env._units[agent] if hasattr(env, "_units") else (env._own, env._enemy)
+        a = np.asarray(action, int).reshape(-1, 3)
+        targets = []
+        for i in range(min(len(own), len(a))):
+            kind, _, target = a[i]
+            c["unit_steps"] += 1
+            c[_KINDS[kind]] += 1
+            if kind == 3:
+                if target < len(enemy):
+                    targets.append(int(target))
+                else:
+                    c["attack_invalid"] += 1
+        if targets:
+            weakest = min(range(len(enemy)), key=lambda j: enemy[j].hp)
+            c["attack_valid"] += len(targets)
+            c["attack_weakest"] += sum(t == weakest for t in targets)
+            if len(targets) >= 2:
+                c["attack_grouped"] += len(targets)
+                c["attack_focus"] += Counter(targets).most_common(1)[0][1]
+    return c
+
+
+def action_summary(c: Counter) -> dict[str, float]:
+    """Episode action statistics as fractions (for the episode log and dashboard)."""
+    out: dict[str, float] = {}
+    if c.get("unit_steps"):
+        for k in _KINDS:
+            out[k] = c.get(k, 0) / c["unit_steps"]
+    if c.get("attack"):
+        out["attack_invalid"] = c.get("attack_invalid", 0) / c["attack"]
+    if c.get("attack_valid"):
+        out["attack_weakest"] = c.get("attack_weakest", 0) / c["attack_valid"]
+    if c.get("attack_grouped"):
+        out["focus_fire"] = c.get("attack_focus", 0) / c["attack_grouped"]
+    return {k: round(v, 4) for k, v in out.items()}
+
+
 def _micro_outcome(env, info) -> float:
     o = info.get("obs")
     if o is None or not o.game_over:
@@ -122,7 +182,7 @@ def _micro_task(own: tuple[str, ...] = ("hfoo",) * 4, enemy: tuple[str, ...] = (
         name=name, obs_size=obs_size, act_sizes=act_sizes,
         make_env=lambda inst: MicroEnv(sc, max_own=max_units, max_enemy=max_units, name=inst),
         flatten=_micro_flatten, to_action=lambda a: np.asarray(a, dtype=np.int64).reshape(max_units, 3),
-        outcome=_micro_outcome, scenario=sc, reward_scale=10.0,
+        outcome=_micro_outcome, scenario=sc, reward_scale=10.0, **_micro_labels(max_units),
         description=f"{len(own)} {own[0]} vs {len(enemy)} {enemy[0]} (scripted); per unit: noop/stop/move/attack.",
     )
 
@@ -135,7 +195,7 @@ def _selfplay_task(units: tuple[str, ...] = ("hfoo",) * 4, max_units: int = 6,
         name=name, obs_size=obs_size, act_sizes=act_sizes, num_agents=2,
         make_env=lambda inst: MicroSelfPlayEnv(sc, max_units=max_units, name=inst),
         flatten=_micro_flatten, to_action=lambda a: np.asarray(a, dtype=np.int64).reshape(max_units, 3),
-        scenario=sc, reward_scale=10.0,
+        scenario=sc, reward_scale=10.0, **_micro_labels(max_units),
         description=f"Self-play: {len(units)} {units[0]} vs {len(units)} {units[0]}, both sides are agents.",
     )
 

@@ -108,3 +108,12 @@ def test_delta_merge():
     assert not delta.full and delta.removed == [1]
     merged = merge_observation(table, delta)
     assert [(u.id, u.x) for u in merged.units] == [(2, 250), (3, 300)]
+
+
+def test_decode_commands_roundtrip():
+    from warcraftsim.protocol import (Camera, ImmediateOrder, PointOrder, Restart, SetResources, TargetOrder,
+                                      decode_commands, encode_commands)
+
+    cmds = [PointOrder(12, 3, -250.0, 400.0), Restart(), TargetOrder(12, 2, 40), SetResources(0, 5, 6),
+            ImmediateOrder(7, 1), Camera(10.0, -20.0)]
+    assert decode_commands(encode_commands(cmds)) == [c for c in cmds if not isinstance(c, (Restart, SetResources))]
