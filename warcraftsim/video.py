@@ -108,22 +108,30 @@ def _follow_target(obs: Observation, player: int | None) -> tuple[float, float] 
 
 def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.PathLike, fps: int = 40,
                   speed: float = 1.0, width: int | None = None, follow_player: int | None = None,
-                  max_steps: int = 20000, name: str = "render", crf: int = 23, overlay=None) -> Path:
+                  max_steps: int = 20000, name: str = "render", crf: int = 23, overlay=None, audio: bool = True,
+                  music_volume: int = 40) -> Path:
     """Play `replay` (saved by GameInstance.save_replay with the same setup) and write an MP4 at
     `fps`, `speed` times real time. Each frame advances the game by exactly 1000*speed/fps ms,
     ideally a multiple of the engine's 25 ms turn (40 fps at 1x, 40 fps at 2x, 60 fps at 1.5x).
-    `overlay` (overlay.EpisodeOverlay) draws the agent's orders and what the policy thought."""
+    `overlay` (overlay.EpisodeOverlay) draws the agent's orders and what the policy thought.
+    With `audio`, the game's sound comes from the w3shim virtual sound card, one frame's worth per
+    frame; the render then runs at no more than real time (the game's mixer needs that)."""
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
     # a real-time clock while the map loads: a fast one leaves a backlog that the engine simulates
     # in one frame at the start (the first ~4 s of game time would never be rendered)
-    setup = GameSetup(**{**setup.__dict__, "warm_spare": False, "speed": 1.0, "window": (1024, 768)})
+    setup = GameSetup(**{**setup.__dict__, "warm_spare": False, "speed": 1.0, "window": (1024, 768),
+                         "audio": audio, "music_volume": music_volume})
     # the pointer must be off the game window from the start: replays show a label on the unit under it
     xvfb = Xvfb(*setup.window)
     _park_pointer(xvfb.display)
     inst = GameInstance(setup, name=name, timeout=60, display=xvfb.display)
     ffmpeg = grabber = None
     frames = 0
+    silent = out.with_name(out.stem + ".video.mp4") if audio else out
+    pcm_path = out.with_name(out.stem + ".pcm")
+    pcm_file = open(pcm_path, "wb") if audio else None
+    audio_fmt: list = []  # rate, channels, bits, and Miles's latency per frame (bytes)
     try:
         obs = inst.play_replay(replay)
         geo = _window_geometry(inst._display)
@@ -138,7 +146,7 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
         ffmpeg = subprocess.Popen(
             ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", pix, "-s", f"{size[0]}x{size[1]}",
              "-framerate", str(fps), "-i", "-", "-vf", scale, "-c:v", "libx264", "-preset", "veryfast",
-             "-crf", str(crf), "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out)],
+             "-crf", str(crf), "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(silent)],
             stdin=subprocess.PIPE)
         pending: list[bytes] = []
 
@@ -148,7 +156,12 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
                 ffmpeg.stdin.write(f)
             frames += len(batch)
 
-        inst.set_frame_capture(1000.0 * speed / fps, lambda n: pending.append(grabber.grab()))
+        def on_audio(pcm: bytes, rate: int, channels: int, bits: int, latency: int) -> None:
+            pcm_file.write(pcm)
+            audio_fmt.append((rate, channels, bits, latency))
+
+        inst.set_frame_capture(1000.0 * speed / fps, lambda n: pending.append(grabber.grab()),
+                               on_audio if audio else None)
         follow = follow_player is not None or setup.scenario is None
         last = None
         for t in range(max_steps):
@@ -175,8 +188,37 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
             ffmpeg.wait()
         if grabber:
             grabber.close()
+        if pcm_file:
+            pcm_file.close()
         inst.close()
         xvfb.close()
-    if frames == 0 or not out.exists():
+    if frames == 0 or not silent.exists():
         raise GameError(f"no frames rendered from {replay}")
+    if audio:
+        _mux_audio(silent, pcm_path, audio_fmt, out, speed, frames / fps)
     return out
+
+
+def _mux_audio(video: Path, pcm: Path, fmt: list, out: Path, speed: float, duration: float) -> None:
+    """Add the captured game audio to `video`. The game's mixer queues its output ahead, so a sound
+    starting at a frame is `latency` bytes later in the stream: shift the stream earlier by that."""
+    try:
+        if not fmt or pcm.stat().st_size == 0:
+            video.replace(out)  # no audio device in the game: keep the silent video
+            return
+        rate, channels, bits, _ = fmt[-1]
+        block = channels * bits // 8
+        latencies = sorted(f[3] for f in fmt[len(fmt) // 4:] or fmt)  # after the start-up
+        skip = latencies[len(latencies) // 2] // block * block
+        codec = {8: "u8", 16: "s16le"}[bits]
+        af = f"atrim=start_sample={skip // block},asetpts=N/SR/TB"
+        if speed != 1.0:
+            af += f",atempo={speed}"
+        af += f",apad=whole_dur={duration:.3f}"  # silence under the end card
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(video), "-f", codec, "-ar", str(rate),
+                        "-ac", str(channels), "-i", str(pcm), "-af", af, "-map", "0:v", "-map", "1:a",
+                        "-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-t", f"{duration:.3f}",
+                        "-movflags", "+faststart", str(out)], check=True, timeout=600)
+        video.unlink()
+    finally:
+        pcm.unlink(missing_ok=True)

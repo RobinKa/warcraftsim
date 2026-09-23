@@ -131,6 +131,10 @@ class GameSetup:
     # 100-1000 ms timeouts would otherwise spin (timeouts / clock speed round to 0), each wait a
     # wineserver round trip: 1 ms made 16 parallel games 60% faster.
     wait_floor_ms: int = 1
+    # A virtual sound card (w3shim) instead of none: the game's audio, in step with the virtual
+    # clock, delivered with captured video frames (set_frame_capture). Off for training.
+    audio: bool = False
+    music_volume: int = 50  # with audio: 0-100 (0: no music); sound effects play at full volume
     max_game_seconds: float = 0.0  # 0 = unlimited; otherwise a tie when reached
     fog: bool | None = None  # None: on for melee, off for scenarios
     wgc_speed: int = 1
@@ -214,6 +218,16 @@ def _shim_files() -> tuple[Path, Path]:
     return dll, launcher
 
 
+def _set_reg_values(text: str, key: str, values: dict[str, int]) -> str:
+    """Set DWORD values of one key in a Wine .reg file's text (the key must exist)."""
+    lines = text.split("\n")
+    start = next(i for i, line in enumerate(lines) if line.startswith(f"[{key}]"))
+    end = next((i for i in range(start + 1, len(lines)) if not lines[i].strip()), len(lines))
+    body = [line for line in lines[start + 1:end] if not any(line.startswith(f'"{k}"=') for k in values)]
+    body += [f'"{k}"=dword:{v:08x}' for k, v in values.items()]
+    return "\n".join(lines[:start + 1] + body + lines[end:])
+
+
 def commands_path(replay: Path) -> Path:
     """The agent-order log saved next to a replay."""
     return replay.with_name(replay.stem + ".commands.json")
@@ -273,6 +287,7 @@ class GameInstance:
         self._name_lock = None  # machine-wide lock on `name` (its prefix, IPC dir) while in use
         self._pending_go: list[str] = []  # options for the next "GO" (see shim/sync.c)
         self._on_frame: Callable[[int], None] | None = None
+        self._on_audio: Callable[[bytes, int, int, int, int], None] | None = None
 
     # ---- launch ---------------------------------------------------------------------------
 
@@ -329,6 +344,11 @@ class GameInstance:
         text = user_reg.read_text(encoding="latin-1")
         for key, val in (("reswidth", w), ("resheight", h)):
             text = text.replace(f'"{key}"=dword:{wine.VIDEO_SETTINGS[key]:08x}', f'"{key}"=dword:{val:08x}')
+        if self.setup.audio:
+            music = self.setup.music_volume > 0
+            text = _set_reg_values(text, r"Software\\Blizzard Entertainment\\Warcraft III\\Sound", {
+                "sfx": 1, "sfxvolume": 100, "ambient": 1, "movement": 1, "unit": 1, "positional": 0,
+                "music": int(music), "musicvolume": max(self.setup.music_volume, 0)})
         user_reg.write_text(text, encoding="latin-1")
 
     warm_spare_child = False  # a spare never starts its own spare
@@ -392,6 +412,7 @@ class GameInstance:
         env = wine.wine_env(self.prefix, DISPLAY=self._display, W3SIM_PORT=str(port),
                             W3SIM_SPEED=str(self._speed), W3SIM_TURBO_MS=str(self.setup.turbo_ms),
                             W3SIM_WAIT_FLOOR=str(self.setup.wait_floor_ms),
+                            W3SIM_AUDIO="1" if self.setup.audio else "0",
                             W3SIM_LOG=_winpath(log_path))
         out = open(self.inst_dir / "wine.log", "wb") if self.keep_logs else subprocess.DEVNULL
         self.proc = subprocess.Popen(
@@ -448,8 +469,13 @@ class GameInstance:
                 code = self.proc.poll() if self.proc else None
                 raise GameCrashed(f"game connection closed (exit code {code}; see {self.inst_dir})")
             if line.startswith(b"FRAME"):  # frame capture: the game waits until we answer
+                parts = line.split()  # FRAME n [pcm_bytes rate channels bits latency_bytes]
+                if len(parts) >= 7:
+                    pcm = self._rfile.read(int(parts[2]))
+                    if self._on_audio is not None:
+                        self._on_audio(pcm, *(int(v) for v in parts[3:7]))
                 if self._on_frame is not None:
-                    self._on_frame(int(line.split()[1]))
+                    self._on_frame(int(parts[1]))
                 self._conn.sendall(b"OK\n")
                 continue
             if not line.startswith(b"OBS"):
@@ -493,12 +519,17 @@ class GameInstance:
             msg += f" A {len(ints)} " + " ".join(str(int(v)) for v in ints)
         self._conn.sendall(msg.encode() + b"\n")
 
-    def set_frame_capture(self, frame_ms: float | None, on_frame: Callable[[int], None] | None = None) -> None:
+    def set_frame_capture(self, frame_ms: float | None, on_frame: Callable[[int], None] | None = None,
+                          on_audio: Callable[[bytes, int, int, int, int], None] | None = None) -> None:
         """Video recording, from the next step on. The virtual clock advances exactly `frame_ms`
         per rendered frame instead of with wall time (None: wall time again), so each frame covers
         the same game time however loaded the machine is. `on_frame(n)` is called after every
-        presented frame while the game waits, so the window shows exactly that frame."""
+        presented frame while the game waits, so the window shows exactly that frame. With
+        setup.audio, `on_audio(pcm, rate, channels, bits, latency)` first receives the audio played
+        during that frame (exactly frame_ms of it). Miles mixes ahead: a sound starting in this
+        frame is `latency` bytes later in the audio stream (shift the stream by it to align)."""
         self._on_frame = on_frame
+        self._on_audio = on_audio
         self._pending_go.append(f"frame={frame_ms or 0:g} capture={1 if on_frame else 0}")
 
     def step(self, commands: Iterable[Command] = ()) -> Observation:

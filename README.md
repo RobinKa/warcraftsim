@@ -110,10 +110,16 @@ The game runs headless, so there are two ways to see what happened:
 * **Replays and videos.** `GameInstance.save_replay(path)` ends the game normally and saves two files: the `.w3g` replay the engine writes, and `path.commands.json`, the agent orders per step.
   * Agent orders are issued by the map script, not through the engine's recorded command stream. So the stock 1.29 client shows the built-in AI's play correctly but not the agents'.
   * `GameInstance.play_replay(path)` plays the replay back through the harness and feeds the logged orders in at the same steps, reproducing the game exactly (verified step by step).
-  * `warcraftsim.video.render_replay(setup, path, "ep.mp4")` records that playback as real game footage: MP4 at 40 fps in real time by default, optionally following a player's units.
+  * `warcraftsim.video.render_replay(setup, path, "ep.mp4")` records that playback as real game footage with the game's sound: MP4 at 40 fps in real time by default, optionally following a player's units.
     * The shim switches the game clock to frame-stepped mode, so every rendered frame advances the game by exactly 25 ms, one engine turn.
     * Each frame is grabbed from the virtual display before the game continues.
     * The result is smooth and independent of machine load. A 60 s episode renders in about 60–75 s next to a training run.
+    * **Audio** comes from a virtual sound card in the shim (`shim/audio.c`, `GameSetup.audio`):
+      * The game mixes its sound with Miles, which outputs through `waveOut`; the shim implements those functions.
+      * Each captured frame takes exactly one frame's worth (25 ms) of mixed audio from Miles's queue, so sound follows the picture however fast the render runs.
+      * Miles mixes ahead of playback. The shim lowers its buffering (preferences 11 and 45: about 55 ms instead of about 180 ms) and reports the remaining queue; the soundtrack is shifted earlier by that amount.
+      * Audio renders run at no more than real time, because Miles's mixer runs on real time. If it falls behind, the gap is padded with silence and the late audio is dropped, so the soundtrack stays in sync.
+      * `music_volume` sets the music level (default 40, 0 for none). Training games have no sound device.
 * **Screenshots.** `instance.screenshot(path)` saves the virtual display. In scenarios the camera is centered on the action.
 
 ### Scenarios (fast RL iteration)

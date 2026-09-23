@@ -104,6 +104,14 @@ int64_t real_qpc_freq(void) {
     return g_freq;
 }
 
+int64_t clock_virtual_ticks(void) {
+    return virt_qpc();
+}
+
+double clock_frame_seconds(void) {
+    return g_anchor.frame_ticks > 0 ? (double)g_anchor.frame_ticks / (double)g_freq : 0.0;
+}
+
 void Sleep_real(DWORD ms) {
     (Sleep_orig ? Sleep_orig : Sleep)(ms);
 }

@@ -41,6 +41,8 @@ void clock_set_speed(double speed);
 void clock_freeze(int frozen);
 void clock_set_frame_step(double seconds); /* > 0: advance only per rendered frame; 0: real time */
 void clock_frame(void);                    /* a frame was presented */
+int64_t clock_virtual_ticks(void);         /* virtual time (QPC ticks) */
+double clock_frame_seconds(void);          /* frame-stepped: game time per frame, else 0 */
 void clock_report_waits(double secs);      /* W3SIM_PROFILE=3: per-thread wait statistics */
 extern int g_wait_stats;
 double clock_speed(void);
@@ -52,6 +54,7 @@ void Sleep_real(DWORD ms);
 void sync_install(void);
 LONGLONG sync_wait_ticks(void);
 long sync_count(void); /* step syncs so far */
+long sync_frame_count(void); /* frames reported so far (frame capture) */
 void sync_phases(double secs, char *out, int cap); /* per-second phase totals since the last call */
 void sync_reset_wait_ticks(void);
 void sync_frame(void); /* frame capture: report the presented frame, wait for the controller */
@@ -62,6 +65,12 @@ int frame_capture_get(void);
 void obs_install(void);
 int obs_take(const char **data); /* the captured observation's length, or -1 if none */
 void obs_reset(void);
+
+/* audio.c (W3SIM_AUDIO=1) */
+void audio_install(void);
+/* the audio played during a captured frame of `seconds`; 0 if there is no audio device */
+int audio_frame(double seconds, char **data, int *len, char *fmt, int fmt_cap);
+LONGLONG audio_underflow_bytes(void);
 
 /* registry.c */
 void registry_install(void);

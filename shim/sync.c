@@ -61,6 +61,10 @@ int frame_capture_get(void) {
     return (int)g_capture;
 }
 
+long sync_frame_count(void) {
+    return g_frames;
+}
+
 long sync_count(void) {
     return g_counter;
 }
@@ -236,9 +240,21 @@ void sync_frame(void) {
     if (!g_capture || g_sock == INVALID_SOCKET)
         return;
     EnterCriticalSection(&g_sync_lock);
-    char msg[64], reply[64];
-    int n = _snprintf(msg, sizeof msg, "FRAME %ld\n", ++g_frames);
-    if (!send_all(msg, n) || !recv_line(reply, sizeof reply)) {
+    /* the frame covers one frame step of game time (or the virtual time since the last frame) */
+    static int64_t last_virt;
+    int64_t now = clock_virtual_ticks();
+    double secs = clock_frame_seconds();
+    if (secs <= 0)
+        secs = last_virt ? (double)(now - last_virt) / (double)real_qpc_freq() : 0.0;
+    last_virt = now;
+    char msg[96], reply[64], fmt[48];
+    char *pcm;
+    int pcm_len, n;
+    if (audio_frame(secs, &pcm, &pcm_len, fmt, sizeof fmt))
+        n = _snprintf(msg, sizeof msg, "FRAME %ld %d %s\n", ++g_frames, pcm_len, fmt);
+    else
+        n = _snprintf(msg, sizeof msg, "FRAME %ld\n", ++g_frames), pcm_len = 0;
+    if (!send_all(msg, n) || (pcm_len > 0 && !send_all(pcm, pcm_len)) || !recv_line(reply, sizeof reply)) {
         shim_log("controller connection lost; exiting");
         ExitProcess(3);
     }

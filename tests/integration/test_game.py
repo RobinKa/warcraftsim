@@ -133,3 +133,39 @@ def test_replay_reproduces_agent_game(game_dir, tmp_path):
                 break
             obs = inst.step()
     assert len(live) > 50 and live == {s: played[s] for s in live}
+
+
+def test_replay_video_with_audio(game_dir, tmp_path):
+    """A replay rendered to MP4: 40 fps video, the game's audio, the overlay's panel."""
+    import json
+    import subprocess
+
+    import numpy as np
+
+    from warcraftsim import Wc3Game
+    from warcraftsim.overlay import EpisodeOverlay
+    from warcraftsim.puffer.tasks import get_task
+    from warcraftsim.video import render_replay
+
+    task = get_task("micro_mirror")
+    setup = GameSetup(slots=[Agent("human"), Scripted("orc")], scenario=Scenario.skirmish(
+        ["hfoo"] * 2, ["hfoo"] * 2, max_game_seconds=12))
+    with Wc3Game(setup, name="it_video") as g:
+        obs, steps = g.reset(), 0
+        while not obs.game_over:
+            obs = g.step()
+            steps += 1
+        replay = g.instance.save_replay(tmp_path / "ep.w3g")
+    trace = {"obs": np.zeros((steps, 1, task.obs_size), np.float32),
+             "actions": np.zeros((steps, 1, task.num_atns), np.float32), "rewards": np.zeros((steps, 1), np.float32)}
+    out = render_replay(setup, replay, tmp_path / "ep.mp4", name="it_video_render",
+                        overlay=EpisodeOverlay(task, trace, None, title="test"))
+    probe = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(out)],
+                                      capture_output=True, text=True, check=True).stdout)["streams"]
+    video = next(s for s in probe if s["codec_type"] == "video")
+    audio = next(s for s in probe if s["codec_type"] == "audio")
+    assert video["r_frame_rate"] == "40/1" and int(video["width"]) == 960 + EpisodeOverlay.PANEL_W
+    assert abs(float(video["duration"]) - float(audio["duration"])) < 0.1
+    level = subprocess.run(["ffmpeg", "-i", str(out), "-vn", "-af", "volumedetect", "-f", "null", "-"],
+                           capture_output=True, text=True).stderr
+    assert float(level.split("max_volume:")[1].split("dB")[0]) > -40  # not silent

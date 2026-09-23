@@ -49,7 +49,8 @@ static int __cdecl GxPresent_hook(int flags) {
         g_t_present += now_qpc() - t0;
         g_n_present++;
     }
-    sync_frame();
+    if (frame_capture_get())
+        sync_frame();
     clock_frame();
     return r;
 }
