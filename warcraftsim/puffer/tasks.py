@@ -32,6 +32,9 @@ class Task:
     description: str = ""
     scenario: Scenario | None = None
     num_agents: int = 1
+    # PufferLib 5 uses raw advantages: small dense rewards are scaled up so they are not drowned
+    # out by the entropy bonus (episode returns in the logs are scaled too)
+    reward_scale: float = 1.0
 
     @property
     def num_atns(self) -> int:
@@ -50,7 +53,7 @@ class Task:
             obs, reward, terminated, truncated, info = env.step(self.to_action(actions[0]))
             done = terminated or truncated
             outcomes = [self.outcome(env, info) if done else 0.0]
-            return [self.flatten(obs)], [float(reward)], done, info, outcomes
+            return [self.flatten(obs)], [float(reward) * self.reward_scale], done, info, outcomes
         obs, rewards, terminated, truncated, infos = env.step({a: self.to_action(actions[a])
                                                                for a in range(self.num_agents)})
         done = any(terminated.values()) or any(truncated.values())
@@ -61,7 +64,8 @@ class Task:
             for a in range(self.num_agents):
                 r = o.players[a].result.name
                 outcomes[a] = 1.0 if r == "VICTORY" else -1.0 if r == "DEFEAT" else 0.0
-        return self._obs_list(obs), [float(rewards[a]) for a in range(self.num_agents)], done, info, outcomes
+        return (self._obs_list(obs), [float(rewards[a]) * self.reward_scale for a in range(self.num_agents)], done,
+                info, outcomes)
 
     def _obs_list(self, obs) -> list[np.ndarray]:
         if self.num_agents == 1:
@@ -118,7 +122,7 @@ def _micro_task(own: tuple[str, ...] = ("hfoo",) * 4, enemy: tuple[str, ...] = (
         name=name, obs_size=obs_size, act_sizes=act_sizes,
         make_env=lambda inst: MicroEnv(sc, max_own=max_units, max_enemy=max_units, name=inst),
         flatten=_micro_flatten, to_action=lambda a: np.asarray(a, dtype=np.int64).reshape(max_units, 3),
-        outcome=_micro_outcome, scenario=sc,
+        outcome=_micro_outcome, scenario=sc, reward_scale=10.0,
         description=f"{len(own)} {own[0]} vs {len(enemy)} {enemy[0]} (scripted); per unit: noop/stop/move/attack.",
     )
 
@@ -131,7 +135,7 @@ def _selfplay_task(units: tuple[str, ...] = ("hfoo",) * 4, max_units: int = 6,
         name=name, obs_size=obs_size, act_sizes=act_sizes, num_agents=2,
         make_env=lambda inst: MicroSelfPlayEnv(sc, max_units=max_units, name=inst),
         flatten=_micro_flatten, to_action=lambda a: np.asarray(a, dtype=np.int64).reshape(max_units, 3),
-        scenario=sc,
+        scenario=sc, reward_scale=10.0,
         description=f"Self-play: {len(units)} {units[0]} vs {len(units)} {units[0]}, both sides are agents.",
     )
 

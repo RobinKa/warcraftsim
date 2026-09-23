@@ -157,7 +157,9 @@ Tasks (add more in `tasks.py`):
 * `selfplay_micro`: 4 vs 4 footmen with both sides served to the trainer as agents of the same policy. `--envs` counts games, so each game gives two agents. The dashboard's win rate is side 0's.
 
 Notes:
-* PufferLib 5.0 does not normalize advantages, and the micro rewards per step are small. `--ent-coef` defaults to 0.001: at 0.01, the entropy bonus of the 18 action heads outweighs the reward and the policy drifts to uniform.
+* PufferLib 5.0 does not normalize advantages, and the micro rewards per step are small. Two settings keep the entropy bonus of the 18 action heads from outweighing the reward and pushing the policy to uniform:
+  * `--ent-coef` defaults to 0.001;
+  * micro tasks scale rewards by 10 (`Task.reward_scale`; logged returns are scaled too).
 * Runs can train concurrently. Each run claims a machine-wide training slot, and its games are named after that slot, so consecutive runs reuse their Wine prefixes.
 
 Each run writes `runs/<name>/`, which the dashboard shows live:
