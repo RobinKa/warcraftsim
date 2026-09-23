@@ -2,8 +2,9 @@
 
     python -m warcraftsim dashboard --port 8765        # then open http://localhost:8765
 
-Reads what the training runs write (run.json, train.jsonl, episodes.jsonl, bridge.jsonl,
-media.jsonl, renders/, videos/) and serves it as JSON plus one self-contained page.
+Reads what the training runs write (run.json, train.jsonl, episodes[-w].jsonl, bridge[-w].jsonl,
+media[-w].jsonl from each bridge worker w, renders/, videos/) and serves it as JSON plus one
+self-contained page. Episodes are placed on the trainer's step axis by their timestamps.
 """
 
 from __future__ import annotations
@@ -72,10 +73,37 @@ def _rolling(values: list[float], window: int) -> list[float]:
     return out
 
 
+def _interp_steps(times: list[float], train: list[dict]) -> list[float]:
+    """Trainer agent_steps at the given wall times (linear interpolation on train.jsonl)."""
+    pts = [(r["time"], r.get("agent_steps", 0)) for r in train if "time" in r]
+    if not pts:
+        return [0.0] * len(times)
+    out, j = [], 0
+    for t in times:  # times are sorted
+        while j + 1 < len(pts) and pts[j + 1][0] <= t:
+            j += 1
+        if t < pts[0][0]:
+            out.append(0.0)  # before the trainer's first log line
+        elif j + 1 < len(pts):
+            (t0, s0), (t1, s1) = pts[j], pts[j + 1]
+            out.append(s0 + (s1 - s0) * (t - t0) / max(t1 - t0, 1e-9))
+        else:
+            out.append(pts[-1][1])
+    return out
+
+
 class Dashboard:
     def __init__(self, runs_dir: Path):
         self.runs_dir = Path(runs_dir)
         self.cache = _JsonlCache()
+
+    def _merged(self, d: Path, stem: str) -> list[dict]:
+        """<stem>.jsonl plus <stem>-<worker>.jsonl files, ordered by time."""
+        rows: list[dict] = []
+        for f in sorted(d.glob(f"{stem}*.jsonl")):
+            if f.stem == stem or f.stem.startswith(stem + "-"):
+                rows.extend(r for r in self.cache.read(f) if "event" not in r)
+        return sorted(rows, key=lambda r: r.get("time", 0))
 
     def runs(self) -> list[dict]:
         out = []
@@ -89,7 +117,7 @@ class Dashboard:
                 info = json.loads(info_file.read_text())
             except json.JSONDecodeError:
                 continue
-            episodes = self.cache.read(d / "episodes.jsonl")
+            episodes = self._merged(d, "episodes")
             train = self.cache.read(d / "train.jsonl")
             recent = episodes[-100:]
             info["summary"] = {
@@ -98,8 +126,7 @@ class Dashboard:
                 "return_100": (sum(e.get("return", 0) for e in recent) / len(recent)) if recent else None,
                 "agent_steps": train[-1].get("agent_steps") if train else 0,
                 "sps": train[-1].get("SPS") if train else None,
-                "updated": max((d / f).stat().st_mtime for f in ("run.json", "episodes.jsonl", "train.jsonl")
-                               if (d / f).exists()),
+                "updated": max(f.stat().st_mtime for f in [d / "run.json", *d.glob("*.jsonl")]),
             }
             out.append(info)
         return sorted(out, key=lambda r: r.get("created", 0), reverse=True)
@@ -109,22 +136,32 @@ class Dashboard:
         if not (d / "run.json").exists() or d.parent != self.runs_dir:
             return None
         info = json.loads((d / "run.json").read_text())
-        train = [{k: r[k] for k in TRAIN_KEYS if k in r} for r in self.cache.read(d / "train.jsonl")]
-        episodes = self.cache.read(d / "episodes.jsonl")
+        train_rows = self.cache.read(d / "train.jsonl")
+        train = [{k: r[k] for k in TRAIN_KEYS if k in r} for r in train_rows]
+        episodes = self._merged(d, "episodes")
         window = max(10, min(100, len(episodes) // 20 or 10))
         wins = _rolling([1.0 if e.get("outcome", 0) > 0 else 0.0 for e in episodes], window)
         rets = _rolling([float(e.get("return", 0)) for e in episodes], window)
         lens = _rolling([float(e.get("length", 0)) for e in episodes], window)
-        ep_series = [{"episode": e["episode"], "steps": e.get("total_steps", 0), "time": e["time"],
-                      "win_rate": wins[i], "return": rets[i], "length": lens[i]} for i, e in enumerate(episodes)]
-        media = self.cache.read(d / "media.jsonl")
+        steps = _interp_steps([e["time"] for e in episodes], train_rows)
+        ep_series = [{"episode": i + 1, "steps": steps[i], "time": e["time"], "win_rate": wins[i],
+                      "return": rets[i], "length": lens[i]} for i, e in enumerate(episodes)]
+        # throughput: sum the bridge workers' latest rates in 5 s buckets
+        buckets: dict[int, dict[int, float]] = {}
+        for r in self._merged(d, "bridge"):
+            buckets.setdefault(int(r["time"] // 5), {})[r.get("worker", 0)] = r.get("game_x_realtime", 0)
+        bridge_times = sorted(buckets)
+        bridge_steps = _interp_steps([t * 5.0 for t in bridge_times], train_rows)
+        bridge = [{"time": t * 5.0, "steps": bridge_steps[i], "game_x_realtime": sum(buckets[t].values())}
+                  for i, t in enumerate(bridge_times)]
+        media = self._merged(d, "media")
         return {
             "info": info,
             "train": _downsample(train),
             "episodes": _downsample(ep_series),
             "episode_window": window,
-            "recent_episodes": episodes[-15:][::-1],
-            "bridge": _downsample(self.cache.read(d / "bridge.jsonl")),
+            "recent_episodes": [dict(e, episode=len(episodes) - k) for k, e in enumerate(episodes[-15:][::-1])],
+            "bridge": _downsample(bridge),
             "media": [m for m in media if (d / m["file"]).exists()][-40:][::-1],
         }
 

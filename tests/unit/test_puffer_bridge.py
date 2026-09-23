@@ -69,7 +69,7 @@ def test_bridge_protocol(tmp_path):
         assert terminal == 1.0 and obs == [0.0, 1.0]  # auto-reset: first obs of the next episode
         assert stats == (1.0, 3.0, 3.0, 1.0)  # ended, return, length, win
         c.close()
-        episodes = [json.loads(l) for l in (tmp_path / "run" / "episodes.jsonl").read_text().splitlines()]
+        episodes = [json.loads(l) for l in (tmp_path / "run" / "episodes-0.jsonl").read_text().splitlines()]
         assert episodes[0]["return"] == 3.0 and episodes[0]["outcome"] == 1.0
         # a second environment is refused: there is only one game
         c2 = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -118,3 +118,42 @@ def test_dashboard_api(tmp_path):
             assert e.code == 404
     finally:
         server.shutdown()
+
+
+def test_bridge_recovers_from_a_failed_game(tmp_path):
+    from warcraftsim.runtime.instance import GameCrashed
+
+    class _Inst:
+        def close(self):
+            pass
+
+    class _Game:
+        instance = _Inst()
+
+    class FlakyEnv(FakeEnv):
+        failures = 1
+
+        def __init__(self, name):
+            super().__init__(name)
+            self.game = _Game()
+
+        def step(self, action):
+            if FlakyEnv.failures:
+                FlakyEnv.failures -= 1
+                raise GameCrashed("game connection closed")
+            return super().step(action)
+
+    task = _task()
+    task.make_env = FlakyEnv
+    bridge = BridgeServer(task, 1, tmp_path / "run", str(tmp_path / "b.sock"), record_every=0, video_every=0)
+    bridge.launch_games(log=lambda m: None)
+    slot = bridge.slots[0]
+    bridge._reset(slot)
+    obs, reward, done, stats = bridge._step(slot, np.array([1.0], np.float32))
+    assert done and stats[0] == 1.0 and stats[3] == 0.0  # truncated, outcome "other"
+    assert obs.tolist() == [0.0, 1.0]  # the relaunched game's first observation
+    obs, reward, done, stats = bridge._step(slot, np.array([1.0], np.float32))
+    assert not done and reward == 1.0  # and play continues
+    log = (tmp_path / "run" / "episodes-0.jsonl").read_text()
+    assert "game_restart" in log
+    bridge.close()

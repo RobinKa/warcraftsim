@@ -5,8 +5,8 @@ socket; every connection gets its own game and thread, so all games step in para
 reset automatically. Besides serving the trainer the bridge writes the run's episode log and
 media for the dashboard:
 
-    <run>/episodes.jsonl    one line per finished episode
-    <run>/bridge.jsonl      throughput every few seconds
+    <run>/episodes-<w>.jsonl   one line per finished episode (w = bridge worker process)
+    <run>/bridge-<w>.jsonl     throughput every few seconds
     <run>/renders/*.html    trajectory animations (every `record_every` episodes of game 0)
     <run>/replays/*.w3g     single-episode replays (+ .commands.json) every `video_every` episodes
     <run>/videos/*.mp4      real game footage rendered from those replays in the background
@@ -28,6 +28,7 @@ from pathlib import Path
 import numpy as np
 
 from ..record import TrajectoryRecorder, render_html
+from ..runtime.instance import GameError
 from .tasks import Task
 
 MAGIC = 0x46503357
@@ -60,7 +61,7 @@ class _Slot:
 
 class BridgeServer:
     def __init__(self, task: Task, num_envs: int, run_dir: str | os.PathLike, socket_path: str,
-                 record_every: int = 25, video_every: int = 100, name: str = "wc3"):
+                 record_every: int = 25, video_every: int = 100, name: str = "wc3", worker: int = 0):
         self.task = task
         self.num_envs = num_envs
         self.run_dir = Path(run_dir)
@@ -68,6 +69,7 @@ class BridgeServer:
         self.record_every = record_every
         self.video_every = video_every
         self.name = name
+        self.worker = worker
         self.slots: list[_Slot] = []
         self._next_slot = 0
         self._lock = threading.Lock()
@@ -79,8 +81,8 @@ class BridgeServer:
         self._render_queue: queue.Queue = queue.Queue()
         for sub in ("renders", "replays", "videos"):
             (self.run_dir / sub).mkdir(parents=True, exist_ok=True)
-        self._episode_log = open(self.run_dir / "episodes.jsonl", "a")
-        self._bridge_log = open(self.run_dir / "bridge.jsonl", "a")
+        self._episode_log = open(self.run_dir / f"episodes-{worker}.jsonl", "a")
+        self._bridge_log = open(self.run_dir / f"bridge-{worker}.jsonl", "a")
 
     # ---- setup --------------------------------------------------------------------------------
 
@@ -161,7 +163,7 @@ class BridgeServer:
             slot.recorder.close()
             slot.recorder = None
         if slot.index == 0 and self.record_every and slot.episodes % self.record_every == 0:
-            path = self.run_dir / "renders" / f"episode{self._episodes:06d}.jsonl"
+            path = self.run_dir / "renders" / f"w{self.worker}-episode{self._episodes:06d}.jsonl"
             slot.recorder = TrajectoryRecorder(path, map_name=self.task.scenario.map if self.task.scenario else None)
             slot.recorder.add(info["obs"])
         return self.task.flatten(obs)
@@ -170,11 +172,45 @@ class BridgeServer:
         if slot.pending is not None:
             obs, info = slot.pending
             slot.pending = None
-        else:
+            return self._begin_episode(slot, obs, info)
+        try:
             obs, info = slot.env.reset()
-        return self._begin_episode(slot, obs, info)
+            return self._begin_episode(slot, obs, info)
+        except GameError as e:
+            return self._recover(slot, e)[0]
+
+    def _recover(self, slot: _Slot, error: Exception):
+        """A game crashed or hung: relaunch it and end the episode as truncated (outcome 0)."""
+        print(f"bridge: game {self.worker}/{slot.index} failed ({error}); relaunching", flush=True)
+        with self._lock:
+            self._episode_log.write(json.dumps({"time": time.time(), "worker": self.worker, "env": slot.index,
+                                                "event": "game_restart", "error": str(error)[:200]}) + "\n")
+            self._episode_log.flush()
+        if slot.recorder is not None:
+            slot.recorder.close()
+            slot.recorder = None
+        slot.replay_path = None
+        for attempt in range(5):
+            try:
+                slot.env.game.instance.close()
+                obs, info = slot.env.reset()
+                break
+            except Exception as e:  # keep trying: one bad launch must not end the training run
+                print(f"bridge: relaunch {attempt + 1} of game {self.worker}/{slot.index} failed: {e}", flush=True)
+                time.sleep(5 * (attempt + 1))
+        else:
+            raise RuntimeError(f"game {self.worker}/{slot.index} could not be relaunched")
+        stats = (1.0, slot.ep_return, float(slot.ep_length), 0.0)
+        slot.episodes += 1
+        return self._begin_episode(slot, obs, info), 0.0, True, stats
 
     def _step(self, slot: _Slot, action: np.ndarray):
+        try:
+            return self._step_game(slot, action)
+        except GameError as e:
+            return self._recover(slot, e)
+
+    def _step_game(self, slot: _Slot, action: np.ndarray):
         obs, reward, terminated, truncated, info = slot.env.step(self.task.to_action(action))
         slot.ep_return += float(reward)
         slot.ep_length += 1
@@ -191,7 +227,8 @@ class BridgeServer:
         slot.episodes += 1
         want_video = (slot.index == 0 and self.video_every and slot.episodes % self.video_every == 0)
         next_obs, next_info = slot.env.reset(options={"relaunch": True} if want_video else None)
-        slot.replay_path = (self.run_dir / "replays" / f"episode{self._episodes:06d}.w3g") if want_video else None
+        slot.replay_path = ((self.run_dir / "replays" / f"w{self.worker}-episode{self._episodes:06d}.w3g")
+                            if want_video else None)
         stats = (1.0, slot.ep_return, float(slot.ep_length), outcome)
         return self._begin_episode(slot, next_obs, next_info), float(reward), True, stats
 
@@ -201,7 +238,8 @@ class BridgeServer:
             self._episodes += 1
             episode = self._episodes
             self._episode_log.write(json.dumps({
-                "time": time.time(), "episode": episode, "env": slot.index, "return": round(slot.ep_return, 4),
+                "time": time.time(), "episode": episode, "worker": self.worker, "env": slot.index,
+                "return": round(slot.ep_return, 4),
                 "length": slot.ep_length, "outcome": outcome, "game_time": o.game_time if o else None,
                 "total_steps": self._steps}) + "\n")
             self._episode_log.flush()
@@ -220,7 +258,7 @@ class BridgeServer:
             slot.replay_path = None
 
     def _media_event(self, kind: str, path: Path, episode: int, outcome: float, ret: float) -> None:
-        with self._lock, open(self.run_dir / "media.jsonl", "a") as f:
+        with self._lock, open(self.run_dir / f"media-{self.worker}.jsonl", "a") as f:
             f.write(json.dumps({"time": time.time(), "kind": kind, "file": str(path.relative_to(self.run_dir)),
                                 "episode": episode, "outcome": outcome, "return": round(ret, 4)}) + "\n")
 
@@ -237,7 +275,7 @@ class BridgeServer:
             try:
                 setup = self.slots[0].env.setup
                 out = self.run_dir / "videos" / (replay.stem + ".mp4")
-                render_replay(setup, replay, out, name=f"{self.name}render")
+                render_replay(setup, replay, out, name=f"{self.name}render{self.worker}")
                 self._media_event("video", out, episode, outcome, ret)
             except Exception as e:
                 print(f"bridge: video not rendered: {e}")
@@ -251,7 +289,8 @@ class BridgeServer:
             sps = (steps - last_steps) / (now - last_t)
             last_steps, last_t = steps, now
             step_s = self.slots[0].env.setup.step_seconds if self.slots else 0.25
-            self._bridge_log.write(json.dumps({"time": now, "steps": steps, "episodes": episodes,
+            self._bridge_log.write(json.dumps({"time": now, "worker": self.worker, "steps": steps,
+                                               "episodes": episodes,
                                                "env_sps": round(sps, 1),
                                                "game_x_realtime": round(sps * step_s, 1)}) + "\n")
             self._bridge_log.flush()
@@ -269,3 +308,19 @@ class BridgeServer:
         self._bridge_log.close()
         if os.path.exists(self.socket_path):
             os.unlink(self.socket_path)
+
+
+def run_worker(task_name: str, num_envs: int, run_dir: str, socket_path: str, record_every: int, video_every: int,
+               name: str, worker: int, ready, stop) -> None:
+    """Bridge worker process: its own games and GIL (multiprocessing target)."""
+    from .tasks import get_task
+
+    bridge = BridgeServer(get_task(task_name), num_envs, run_dir, socket_path, record_every, video_every, name,
+                          worker)
+    try:
+        bridge.launch_games(log=lambda m: print(f"[worker {worker}] {m}", flush=True))
+        bridge.serve()
+        ready.set()
+        stop.wait()
+    finally:
+        bridge.close()

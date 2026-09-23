@@ -41,8 +41,33 @@ if False:  # typing only
 SHIM_DIR = paths.REPO_ROOT / "build" / "shim"
 _map_lock = threading.Lock()
 # Map loading renders the loading screen in software as fast as it can; many simultaneous loads
-# starve each other. Limit concurrent launches per Python process.
-LAUNCH_SLOTS = threading.BoundedSemaphore(int(os.environ.get("WARCRAFTSIM_PARALLEL_LAUNCHES", "4")))
+# starve each other. Concurrent launches are limited machine-wide (file locks in /dev/shm, so the
+# limit also holds across processes, e.g. several bridge workers).
+PARALLEL_LAUNCHES = int(os.environ.get("WARCRAFTSIM_PARALLEL_LAUNCHES", "4"))
+
+
+class _LaunchSlot:
+    def __enter__(self):
+        import fcntl
+
+        lock_dir = Path("/dev/shm/warcraftsim/launch-slots")
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        while True:
+            for i in range(PARALLEL_LAUNCHES):
+                f = open(lock_dir / f"{i}.lock", "w")
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    self._f = f
+                    return self
+                except BlockingIOError:
+                    f.close()
+            time.sleep(0.1)
+
+    def __exit__(self, *exc):
+        self._f.close()  # releases the lock
+
+
+LAUNCH_SLOTS = _LaunchSlot()
 
 
 class GameError(RuntimeError):
@@ -110,6 +135,10 @@ class GameSetup:
     # True: the first agent is the local (user) player instead of a computer slot watched by an
     # observer. Only one slot can be a user in a local game.
     agent_is_user: bool = False
+    # Relaunch the game process at the next episode boundary after this many steps: the engine
+    # leaks JASS compiler memory on every Preloader call (~20 KB/step) and fails with "Not enough
+    # memory" after ~20k steps. 0 = never.
+    recycle_steps: int = 8000
     # Melee only: keep a second game loaded and waiting at game time 0, so restart() is instant
     # instead of a ~8 s relaunch. Costs one more idle process (~400 MB) and its load time.
     warm_spare: bool = True
@@ -190,7 +219,7 @@ def _winpath(p: Path) -> str:
 # Attributes that belong to one game process; a warm spare's are swapped in on restart.
 _PROCESS_ATTRS = ("name", "_own_display", "_display", "proc", "_server", "_conn", "_rfile", "prefix", "ipc_dir",
                   "inst_dir", "_last_seq", "_units", "last_obs", "_sent_at", "_need_snapshot", "_cmd_log",
-                  "_proc_episode")
+                  "_proc_episode", "_proc_steps")
 
 
 class GameInstance:
@@ -231,6 +260,7 @@ class GameInstance:
         # .w3g replay can be played back with the agents' orders (see play_replay).
         self._cmd_log: dict[str, list[int]] = {}
         self._proc_episode = -1
+        self._proc_steps = 0  # steps taken by the current game process
         self._playback: dict[str, list[int]] | None = None
 
     # ---- launch ---------------------------------------------------------------------------
@@ -291,7 +321,7 @@ class GameInstance:
 
     def _launch(self, attempts: int = 2) -> Observation:
         for attempt in range(attempts):
-            with LAUNCH_SLOTS:
+            with _LaunchSlot():
                 try:
                     return self._launch_once()
                 except GameError:
@@ -361,6 +391,7 @@ class GameInstance:
         self._sent_at = None
         self._cmd_log = {}
         self._proc_episode = -1
+        self._proc_steps = 0
         self.episode += 1
         return self._await_observation(new_episode=True)
 
@@ -447,6 +478,7 @@ class GameInstance:
         obs = self._await_observation()
         write_action_file(self.ipc_dir / "act.txt")  # a stray re-read must not repeat commands
         self.steps += 1
+        self._proc_steps += 1
         if self._sent_at is not None and obs.game_ms > prev_ms:
             self._game_wall += time.perf_counter() - self._sent_at
             self._game_ms0 += obs.game_ms - prev_ms
@@ -475,6 +507,8 @@ class GameInstance:
         main menu, and the .wgc is what sets exact slots and AI difficulty. relaunch=True always
         starts a fresh process (e.g. so a saved replay holds exactly one episode).
         """
+        if self.setup.recycle_steps and self._proc_steps >= self.setup.recycle_steps:
+            relaunch = True
         if self.setup.scenario is not None and not self._ended and self._playback is None and not relaunch:
             key = f"{self._proc_episode}:{self._last_seq}"
             self._cmd_log[key] = self._cmd_log.get(key, []) + Restart().encode()
