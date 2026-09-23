@@ -40,13 +40,13 @@ class Wc3Game:
 
     # ---- episode control ------------------------------------------------------------------
 
-    def reset(self) -> Observation:
-        """Start the game, or begin a new episode."""
+    def reset(self, relaunch: bool = False) -> Observation:
+        """Start the game, or begin a new episode (relaunch=True: in a fresh game process)."""
         self._queue.clear()
         if self.instance.proc is None:
             obs = self.instance.start()
         else:
-            obs = self.instance.restart()
+            obs = self.instance.restart(relaunch=relaunch)
         self._shared["first"] = obs
         if obs.orders:
             self._orders.clear()

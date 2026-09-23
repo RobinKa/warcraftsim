@@ -31,7 +31,8 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
   flex bison build-essential cmake \
   mingw-w64 \
   python3-dev python3-venv \
-  lua5.3
+  lua5.3 \
+  ccache clang libomp-14-dev libomp5-14 libgl-dev libx11-dev  # PufferLib 5.0 build (plus nvcc and NCCL)
 
 # Let non-root users mount FUSE filesystems with allow_other (IPC mounts inside Wine prefixes).
 if ! grep -q '^user_allow_other' /etc/fuse.conf; then

@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>warcraftsim training</title>
+<style>
+:root { --bg:#0f1318; --panel:#171d24; --panel2:#1d252e; --line:#2a3440; --text:#d7dee6; --muted:#8795a3;
+        --accent:#e0a33a; --good:#4cc38a; --bad:#e5534b; --blue:#539bf5; }
+* { box-sizing:border-box; }
+body { margin:0; font:13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
+header { display:flex; align-items:center; gap:14px; padding:10px 18px; border-bottom:1px solid var(--line); background:#12171d; }
+header h1 { font-size:16px; margin:0; letter-spacing:.3px; }
+header h1 span { color:var(--accent); }
+header .sub { color:var(--muted); }
+header .right { margin-left:auto; color:var(--muted); display:flex; gap:10px; align-items:center; }
+.layout { display:grid; grid-template-columns:270px 1fr; min-height:calc(100vh - 45px); }
+aside { border-right:1px solid var(--line); padding:10px; background:#12171d; overflow:auto; }
+aside h2 { font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--muted); margin:6px 4px 8px; }
+.run { padding:8px 9px; border-radius:6px; cursor:pointer; margin-bottom:4px; border:1px solid transparent; }
+.run:hover { background:var(--panel); }
+.run.sel { background:var(--panel2); border-color:var(--line); }
+.run .n { font-weight:600; display:flex; justify-content:space-between; gap:6px; align-items:center; }
+.run .m { color:var(--muted); font-size:12px; display:flex; justify-content:space-between; margin-top:2px; }
+.run input { margin:0 6px 0 0; accent-color:var(--accent); }
+.badge { font-size:10px; padding:1px 6px; border-radius:9px; background:#2d3743; color:var(--muted); white-space:nowrap; }
+.badge.training { background:#1e3a2c; color:var(--good); }
+.badge.failed { background:#3d1f1f; color:var(--bad); }
+.badge.finished { background:#1f2e44; color:var(--blue); }
+main { padding:14px 18px 40px; overflow:auto; }
+.title { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:10px; }
+.title h2 { margin:0; font-size:18px; }
+.title .desc { color:var(--muted); }
+.cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:10px; margin-bottom:14px; }
+.card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+.card .k { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.6px; }
+.card .v { font-size:20px; font-weight:600; margin-top:3px; font-variant-numeric:tabular-nums; }
+.card .v small { font-size:12px; color:var(--muted); font-weight:400; }
+.progress { height:4px; background:#26303b; border-radius:2px; margin-top:6px; overflow:hidden; }
+.progress div { height:100%; background:var(--accent); }
+.grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(420px,1fr)); gap:12px; }
+.chart { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px 6px; position:relative; }
+.chart h3 { margin:0 0 6px; font-size:12px; font-weight:600; color:var(--muted); display:flex; justify-content:space-between; }
+.chart canvas { width:100%; height:210px; display:block; }
+.tip { position:absolute; pointer-events:none; background:#0b0f13ee; border:1px solid var(--line); border-radius:6px; padding:5px 8px;
+       font-size:11px; white-space:nowrap; display:none; z-index:5; }
+section { margin-top:18px; }
+section > h3 { font-size:13px; margin:0 0 8px; color:var(--muted); text-transform:uppercase; letter-spacing:.8px; }
+.media { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:12px; }
+.item { background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+.item video, .item iframe { width:100%; aspect-ratio:16/10; border:0; display:block; background:#000; }
+.item .cap { padding:6px 10px; display:flex; justify-content:space-between; color:var(--muted); font-size:12px; }
+.item .cap a { color:var(--blue); text-decoration:none; }
+.win { color:var(--good); } .loss { color:var(--bad); }
+table { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+th, td { text-align:left; padding:5px 10px; border-bottom:1px solid var(--line); font-variant-numeric:tabular-nums; }
+th { color:var(--muted); font-weight:500; font-size:11px; text-transform:uppercase; letter-spacing:.5px; }
+.empty { color:var(--muted); padding:30px; text-align:center; }
+pre.cmd { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px; color:var(--muted); white-space:pre-wrap; font-size:11px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>warcraft<span>sim</span></h1><span class="sub">Warcraft III 1.29 · PufferLib 5.0 training dashboard</span>
+  <div class="right"><span id="clock"></span><label><input type="checkbox" id="auto" checked> auto-refresh</label></div>
+</header>
+<div class="layout">
+  <aside><h2>Runs <span style="float:right;text-transform:none;letter-spacing:0">☑ compare</span></h2><div id="runs"></div></aside>
+  <main id="main"><div class="empty">No runs yet. Start one with <code>python -m warcraftsim.puffer.train --task micro</code>.</div></main>
+</div>
+<script>
+const COLORS = ["#e0a33a", "#539bf5", "#4cc38a", "#e5534b", "#b083f0", "#39c5cf", "#f47067", "#c69026"];
+let state = { runs: [], selected: null, compare: new Set(), data: {}, mediaKey: "" };
+
+function fmt(v, d = 2) {
+  if (v === null || v === undefined || Number.isNaN(v)) return "–";
+  const a = Math.abs(v);
+  if (a >= 1e9) return (v / 1e9).toFixed(1) + "B";
+  if (a >= 1e6) return (v / 1e6).toFixed(2) + "M";
+  if (a >= 1e4) return (v / 1e3).toFixed(1) + "K";
+  if (a >= 100) return v.toFixed(0);
+  return v.toFixed(d);
+}
+function ago(t) {
+  if (!t) return "–";
+  const s = Date.now() / 1000 - t;
+  if (s < 60) return Math.round(s) + "s ago";
+  if (s < 3600) return Math.round(s / 60) + "m ago";
+  if (s < 86400) return (s / 3600).toFixed(1) + "h ago";
+  return Math.round(s / 86400) + "d ago";
+}
+function dur(s) {
+  if (!s || s < 0) return "–";
+  if (s < 60) return Math.round(s) + "s";
+  if (s < 3600) return Math.floor(s / 60) + "m " + Math.round(s % 60) + "s";
+  return Math.floor(s / 3600) + "h " + Math.round((s % 3600) / 60) + "m";
+}
+function badge(status) {
+  const cls = status === "training" ? "training" : status.startsWith("failed") ? "failed" : status === "finished" ? "finished" : "";
+  return `<span class="badge ${cls}">${status}</span>`;
+}
+
+// ---- tiny canvas line chart ----------------------------------------------------------------
+function lineChart(canvas, series, opts = {}) {
+  const dpr = window.devicePixelRatio || 1, W = canvas.clientWidth, H = canvas.clientHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  const g = canvas.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, W, H);
+  const pad = { l: 46, r: 10, t: 8, b: 22 };
+  const pts = series.flatMap(s => s.points);
+  if (!pts.length) { g.fillStyle = "#8795a3"; g.fillText("no data yet", W / 2 - 25, H / 2); canvas._chart = null; return; }
+  let x0 = Math.min(...pts.map(p => p[0])), x1 = Math.max(...pts.map(p => p[0]));
+  let y0 = opts.ymin ?? Math.min(...pts.map(p => p[1])), y1 = opts.ymax ?? Math.max(...pts.map(p => p[1]));
+  if (x1 === x0) x1 = x0 + 1;
+  if (y1 === y0) { y1 += 1; y0 -= opts.ymin !== undefined ? 0 : 1; }
+  const yr = y1 - y0; if (opts.ymin === undefined) y0 -= yr * 0.05; if (opts.ymax === undefined) y1 += yr * 0.05;
+  const X = x => pad.l + (x - x0) / (x1 - x0) * (W - pad.l - pad.r);
+  const Y = y => H - pad.b - (y - y0) / (y1 - y0) * (H - pad.t - pad.b);
+  g.font = "10px system-ui"; g.strokeStyle = "#2a3440"; g.fillStyle = "#8795a3"; g.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = y0 + (y1 - y0) * i / 4, py = Math.round(Y(y)) + .5;
+    g.beginPath(); g.moveTo(pad.l, py); g.lineTo(W - pad.r, py); g.stroke();
+    g.fillText(fmt(y), 4, py + 3);
+  }
+  for (let i = 0; i <= 4; i++) {
+    const x = x0 + (x1 - x0) * i / 4;
+    g.fillText(opts.xfmt ? opts.xfmt(x) : fmt(x, 0), Math.min(X(x) - 12, W - 40), H - 6);
+  }
+  series.forEach((s, i) => {
+    if (!s.points.length) return;
+    g.strokeStyle = s.color || COLORS[i % COLORS.length]; g.lineWidth = s.width || 1.6; g.globalAlpha = s.alpha || 1;
+    g.beginPath(); s.points.forEach((p, j) => j ? g.lineTo(X(p[0]), Y(p[1])) : g.moveTo(X(p[0]), Y(p[1]))); g.stroke();
+    g.globalAlpha = 1;
+  });
+  canvas._chart = { series, X, Y, x0, x1, pad, W, H, opts };
+}
+function attachTip(canvas, tip) {
+  canvas.addEventListener("mousemove", ev => {
+    const c = canvas._chart; if (!c) return;
+    const r = canvas.getBoundingClientRect(), mx = ev.clientX - r.left;
+    const x = c.x0 + (mx - c.pad.l) / (c.W - c.pad.l - c.pad.r) * (c.x1 - c.x0);
+    const rows = c.series.map((s, i) => {
+      if (!s.points.length) return "";
+      let best = s.points[0];
+      for (const p of s.points) if (Math.abs(p[0] - x) < Math.abs(best[0] - x)) best = p;
+      return `<div><span style="color:${s.color || COLORS[i % COLORS.length]}">■</span> ${s.name}: <b>${fmt(best[1], 3)}</b></div>`;
+    }).join("");
+    tip.innerHTML = `<div style="color:#8795a3">${c.opts.xname || "x"} ${c.opts.xfmt ? c.opts.xfmt(x) : fmt(x, 0)}</div>` + rows;
+    tip.style.display = "block"; tip.style.left = Math.min(mx + 14, c.W - 150) + "px"; tip.style.top = (ev.clientY - r.top + 20) + "px";
+  });
+  canvas.addEventListener("mouseleave", () => tip.style.display = "none");
+}
+
+// ---- data --------------------------------------------------------------------------------------
+async function getJSON(url) { const r = await fetch(url); if (!r.ok) throw new Error(r.status); return r.json(); }
+
+async function refresh() {
+  try {
+    state.runs = await getJSON("/api/runs");
+    if (!state.selected && state.runs.length) state.selected = state.runs[0].name;
+    renderRuns();
+    const names = new Set([state.selected, ...state.compare].filter(Boolean));
+    for (const n of names) state.data[n] = await getJSON("/api/runs/" + encodeURIComponent(n));
+    if (state.selected) renderMain();
+  } catch (e) { console.error(e); }
+  document.getElementById("clock").textContent = "updated " + new Date().toLocaleTimeString();
+}
+
+function renderRuns() {
+  document.getElementById("runs").innerHTML = state.runs.map(r => {
+    const s = r.summary || {};
+    const wr = s.win_rate_100 === null || s.win_rate_100 === undefined ? "–" : (100 * s.win_rate_100).toFixed(0) + "%";
+    return `<div class="run ${r.name === state.selected ? "sel" : ""}" data-run="${r.name}">
+      <div class="n"><span><input type="checkbox" data-cmp="${r.name}" ${state.compare.has(r.name) ? "checked" : ""}>${r.name}</span>${badge(r.status)}</div>
+      <div class="m"><span>${r.task} · ${r.envs} games</span><span>win ${wr}</span></div>
+      <div class="m"><span>${fmt(s.agent_steps || 0, 0)} steps</span><span>${ago(s.updated)}</span></div></div>`;
+  }).join("") || `<div class="empty">no runs</div>`;
+  document.querySelectorAll(".run").forEach(el => el.onclick = ev => {
+    if (ev.target.dataset.cmp) return;
+    state.selected = el.dataset.run; state.mediaKey = ""; refresh();
+  });
+  document.querySelectorAll("[data-cmp]").forEach(el => el.onchange = () => {
+    el.checked ? state.compare.add(el.dataset.cmp) : state.compare.delete(el.dataset.cmp); refresh();
+  });
+}
+
+function chartBox(id, title, extra = "") {
+  return `<div class="chart"><h3>${title}<span>${extra}</span></h3><canvas id="${id}"></canvas><div class="tip" id="${id}-tip"></div></div>`;
+}
+
+function renderMain() {
+  const d = state.data[state.selected]; if (!d) return;
+  const info = d.info, tr = d.train, ep = d.episodes, last = tr[tr.length - 1] || {};
+  const run = state.runs.find(r => r.name === state.selected) || {}, s = run.summary || {};
+  const bridge = d.bridge[d.bridge.length - 1] || {};
+  const elapsed = (info.finished || Date.now() / 1000) - (info.started || info.created);
+  const progress = Math.min(1, (last.agent_steps || 0) / info.timesteps);
+  const main = document.getElementById("main");
+  const firstRender = main.dataset.run !== state.selected;
+  if (firstRender) {
+    main.dataset.run = state.selected;
+    main.innerHTML = `
+      <div class="title"><h2>${info.name}</h2>${badge(info.status)}<span class="desc">${info.description || ""}</span></div>
+      <div class="cards" id="cards"></div>
+      <div class="grid">
+        ${chartBox("c-win", "Win rate", `rolling ${d.episode_window} episodes · vs env steps`)}
+        ${chartBox("c-ret", "Episode return", "rolling mean")}
+        ${chartBox("c-len", "Episode length (steps)", "rolling mean")}
+        ${chartBox("c-loss", "PPO losses", "policy · value · kl")}
+        ${chartBox("c-ent", "Entropy · clip fraction", "")}
+        ${chartBox("c-sps", "Throughput", "trainer SPS · game time vs real time")}
+      </div>
+      <section><h3>Replays &amp; renders</h3><div class="media" id="media"></div></section>
+      <section><h3>Recent episodes</h3><div id="episodes"></div></section>
+      <section><h3>Run</h3><pre class="cmd" id="cmd"></pre></section>`;
+    ["c-win", "c-ret", "c-len", "c-loss", "c-ent", "c-sps"].forEach(id => attachTip(document.getElementById(id), document.getElementById(id + "-tip")));
+  }
+  document.getElementById("cards").innerHTML = [
+    ["Status", `${info.status}`, `<div class="progress"><div style="width:${(100 * progress).toFixed(1)}%"></div></div>`],
+    ["Env steps", `${fmt(last.agent_steps || 0, 0)} <small>/ ${fmt(info.timesteps, 0)}</small>`],
+    ["Win rate", s.win_rate_100 === null || s.win_rate_100 === undefined ? "–" : `${(100 * s.win_rate_100).toFixed(1)}% <small>last 100</small>`],
+    ["Return", `${fmt(s.return_100, 3)} <small>last 100</small>`],
+    ["Episodes", fmt(s.episodes || 0, 0)],
+    ["Trainer SPS", fmt(last.SPS || 0, 0)],
+    ["Game speed", bridge.game_x_realtime ? `${fmt(bridge.game_x_realtime, 0)}× <small>realtime, all games</small>` : "–"],
+    ["Games", `${info.envs}`],
+    ["Elapsed", dur(elapsed)],
+    ["GPU", last["util/gpu_percent"] !== undefined ? `${fmt(last["util/gpu_percent"], 0)}% <small>${fmt(last["util/vram_used_gb"], 1)} GB</small>` : "–"],
+  ].map(([k, v, x = ""]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div>${x}</div>`).join("");
+
+  const xs = { xname: "steps" };
+  const cmpNames = [...state.compare].filter(n => n !== state.selected && state.data[n]);
+  const epSeries = (key, name, color) => [
+    { name: name || state.selected, points: ep.map(e => [e.steps, e[key]]), color: color || COLORS[0], width: 2 },
+    ...cmpNames.map((n, i) => ({ name: n, points: state.data[n].episodes.map(e => [e.steps, e[key]]), color: COLORS[(i + 1) % COLORS.length] })),
+  ];
+  lineChart(document.getElementById("c-win"), epSeries("win_rate"), { ymin: 0, ymax: 1, ...xs });
+  lineChart(document.getElementById("c-ret"), epSeries("return"), xs);
+  lineChart(document.getElementById("c-len"), epSeries("length"), xs);
+  const T = key => tr.filter(r => r[key] !== undefined).map(r => [r.agent_steps, r[key]]);
+  lineChart(document.getElementById("c-loss"), [
+    { name: "policy", points: T("loss/policy"), color: COLORS[0] },
+    { name: "value", points: T("loss/value"), color: COLORS[1] },
+    { name: "kl ×100", points: T("loss/kl").map(p => [p[0], p[1] * 100]), color: COLORS[2] }], xs);
+  lineChart(document.getElementById("c-ent"), [
+    { name: "entropy", points: T("loss/entropy"), color: COLORS[4] },
+    { name: "clipfrac", points: T("loss/clipfrac"), color: COLORS[5] }], xs);
+  lineChart(document.getElementById("c-sps"), [
+    { name: "trainer SPS", points: T("SPS"), color: COLORS[0] },
+    { name: "game × realtime", points: d.bridge.map(b => [b.steps, b.game_x_realtime]), color: COLORS[2] }], xs);
+
+  const key = d.media.map(m => m.file).join("|");
+  if (key !== state.mediaKey) {  // only rebuild the gallery when it changed (keeps videos playing)
+    state.mediaKey = key;
+    const videos = d.media.filter(m => m.kind === "video").slice(0, 6);
+    const renders = d.media.filter(m => m.kind === "render").slice(0, 6);
+    const cap = m => `<div class="cap"><span>episode ${m.episode} · <span class="${m.outcome > 0 ? "win" : m.outcome < 0 ? "loss" : ""}">${m.outcome > 0 ? "win" : m.outcome < 0 ? "loss" : "tie"}</span> · return ${fmt(m.return, 2)}</span><a href="/files/${state.selected}/${m.file}" target="_blank">open ↗</a></div>`;
+    document.getElementById("media").innerHTML =
+      videos.map(m => `<div class="item"><video src="/files/${state.selected}/${m.file}" controls muted loop preload="metadata"></video>${cap(m)}</div>`).join("") +
+      renders.map(m => `<div class="item"><iframe src="/files/${state.selected}/${m.file}" loading="lazy"></iframe>${cap(m)}</div>`).join("") ||
+      `<div class="empty">No replays yet: trajectory renders appear every few episodes, game videos every ${info.args?.video_every || "N"} episodes of game 0.</div>`;
+  }
+  document.getElementById("episodes").innerHTML = d.recent_episodes.length ? `<table><tr><th>#</th><th>game</th><th>outcome</th><th>return</th><th>length</th><th>game time</th><th>when</th></tr>` +
+    d.recent_episodes.map(e => `<tr><td>${e.episode}</td><td>${e.env}</td><td class="${e.outcome > 0 ? "win" : e.outcome < 0 ? "loss" : ""}">${e.outcome > 0 ? "win" : e.outcome < 0 ? "loss" : "tie"}</td><td>${fmt(e.return, 3)}</td><td>${e.length}</td><td>${e.game_time ? e.game_time.toFixed(1) + "s" : "–"}</td><td>${ago(e.time)}</td></tr>`).join("") + `</table>` : `<div class="empty">no episodes yet</div>`;
+  document.getElementById("cmd").textContent = (info.command || []).join(" ");
+}
+
+refresh();
+setInterval(() => { if (document.getElementById("auto").checked) refresh(); }, 5000);
+window.addEventListener("resize", () => state.selected && renderMain());
+</script>
+</body>
+</html>

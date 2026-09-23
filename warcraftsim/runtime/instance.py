@@ -346,6 +346,11 @@ class GameInstance:
         try:
             self._conn, _ = self._server.accept()
         except socket.timeout:
+            if self._own_display:  # keep a picture of what the game was showing
+                try:
+                    self._own_display.screenshot(self.inst_dir / "launch-timeout.png")
+                except Exception:
+                    pass
             self._stop_process()
             raise GameError(f"game did not reach the harness within {self.timeout:.0f}s (see {self.inst_dir})")
         self._conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -462,14 +467,15 @@ class GameInstance:
         """Current virtual clock multiplier."""
         return self._speed
 
-    def restart(self) -> Observation:
+    def restart(self, relaunch: bool = False) -> Observation:
         """End the current episode and start a new one.
 
         Scenario maps reset inside the running game (units are removed and respawned). Melee
         games are relaunched: RestartGame/ChangeLevel/LoadGame all return a .wgc game to the
-        main menu, and the .wgc is what sets exact slots and AI difficulty.
+        main menu, and the .wgc is what sets exact slots and AI difficulty. relaunch=True always
+        starts a fresh process (e.g. so a saved replay holds exactly one episode).
         """
-        if self.setup.scenario is not None and not self._ended and self._playback is None:
+        if self.setup.scenario is not None and not self._ended and self._playback is None and not relaunch:
             key = f"{self._proc_episode}:{self._last_seq}"
             self._cmd_log[key] = self._cmd_log.get(key, []) + Restart().encode()
             write_action_file(self.ipc_dir / "act.txt", [Restart()])

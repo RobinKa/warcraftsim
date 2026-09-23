@@ -162,8 +162,9 @@ class Wc3Env(gym.Env):
     # ---- gym API ----------------------------------------------------------------------------
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
+        """options: {"relaunch": True} starts the episode in a fresh game process."""
         super().reset(seed=seed)
-        obs = self.game.reset()
+        obs = self.game.reset(relaunch=bool((options or {}).get("relaunch")))
         self._on_reset(obs)
         return self._encode(obs), {"obs": obs}
 

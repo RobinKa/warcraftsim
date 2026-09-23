@@ -1,0 +1,271 @@
+"""Bridge server: runs Warcraft III games for the PufferLib 5.0 trainer.
+
+The trainer's C environment (puffer/wc3_bridge.h) connects once per environment over a Unix
+socket; every connection gets its own game and thread, so all games step in parallel. Episodes
+reset automatically. Besides serving the trainer the bridge writes the run's episode log and
+media for the dashboard:
+
+    <run>/episodes.jsonl    one line per finished episode
+    <run>/bridge.jsonl      throughput every few seconds
+    <run>/renders/*.html    trajectory animations (every `record_every` episodes of game 0)
+    <run>/replays/*.w3g     single-episode replays (+ .commands.json) every `video_every` episodes
+    <run>/videos/*.mp4      real game footage rendered from those replays in the background
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import queue
+import socket
+import struct
+import threading
+import time
+import traceback
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+import numpy as np
+
+from ..record import TrajectoryRecorder, render_html
+from .tasks import Task
+
+MAGIC = 0x46503357
+VERSION = 1
+
+
+def _recv(conn: socket.socket, n: int) -> bytes:
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = conn.recv(n - len(buf))
+        if not chunk:
+            raise ConnectionError("trainer disconnected")
+        buf += chunk
+    return bytes(buf)
+
+
+class _Slot:
+    """One game served to one trainer environment."""
+
+    def __init__(self, index: int, env, first_obs, first_info):
+        self.index = index
+        self.env = env
+        self.pending = (first_obs, first_info)  # the observation to hand out on the first reset
+        self.ep_return = 0.0
+        self.ep_length = 0
+        self.episodes = 0
+        self.recorder: TrajectoryRecorder | None = None
+        self.replay_path: Path | None = None
+
+
+class BridgeServer:
+    def __init__(self, task: Task, num_envs: int, run_dir: str | os.PathLike, socket_path: str,
+                 record_every: int = 25, video_every: int = 100, name: str = "wc3"):
+        self.task = task
+        self.num_envs = num_envs
+        self.run_dir = Path(run_dir)
+        self.socket_path = socket_path
+        self.record_every = record_every
+        self.video_every = video_every
+        self.name = name
+        self.slots: list[_Slot] = []
+        self._next_slot = 0
+        self._lock = threading.Lock()
+        self._episodes = 0
+        self._steps = 0
+        self._server: socket.socket | None = None
+        self._threads: list[threading.Thread] = []
+        self._stop = threading.Event()
+        self._render_queue: queue.Queue = queue.Queue()
+        for sub in ("renders", "replays", "videos"):
+            (self.run_dir / sub).mkdir(parents=True, exist_ok=True)
+        self._episode_log = open(self.run_dir / "episodes.jsonl", "a")
+        self._bridge_log = open(self.run_dir / "bridge.jsonl", "a")
+
+    # ---- setup --------------------------------------------------------------------------------
+
+    def launch_games(self, log=print) -> None:
+        def launch(i: int) -> _Slot:
+            env = self.task.make_env(f"{self.name}{i}")
+            obs, info = env.reset()
+            return _Slot(i, env, obs, info)
+
+        t0 = time.time()
+        with ThreadPoolExecutor(self.num_envs) as pool:
+            self.slots = list(pool.map(launch, range(self.num_envs)))
+        log(f"bridge: {self.num_envs} games ready in {time.time() - t0:.0f}s")
+
+    def serve(self) -> None:
+        """Listen for trainer environments (in background threads)."""
+        if os.path.exists(self.socket_path):
+            os.unlink(self.socket_path)
+        self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._server.bind(self.socket_path)
+        self._server.listen(self.num_envs + 8)
+        for target in (self._accept_loop, self._stats_loop, self._render_loop):
+            t = threading.Thread(target=target, daemon=True, name=f"bridge-{target.__name__}")
+            t.start()
+            self._threads.append(t)
+
+    def _accept_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                conn, _ = self._server.accept()
+            except OSError:
+                return
+            t = threading.Thread(target=self._serve_conn, args=(conn,), daemon=True)
+            t.start()
+            self._threads.append(t)
+
+    # ---- per-environment protocol ---------------------------------------------------------------
+
+    def _serve_conn(self, conn: socket.socket) -> None:
+        slot = None
+        try:
+            magic, version, obs_size, num_atns = struct.unpack("<4I", _recv(conn, 16))
+            task_name = _recv(conn, 32).split(b"\0")[0].decode()
+            ok = (magic == MAGIC and version == VERSION and obs_size == self.task.obs_size
+                  and num_atns == self.task.num_atns and task_name == self.task.name)
+            with self._lock:
+                if ok and self._next_slot < len(self.slots):
+                    slot = self.slots[self._next_slot]
+                    self._next_slot += 1
+            if slot is None:
+                print(f"bridge: refused environment (task {task_name!r}, obs {obs_size}, atns {num_atns})")
+                conn.sendall(struct.pack("<I", 0))
+                return
+            conn.sendall(struct.pack("<I", 1))
+            act_bytes = 4 * self.task.num_atns
+            while True:
+                (cmd,) = struct.unpack("<I", _recv(conn, 4))
+                if cmd == 1:
+                    obs = self._reset(slot)
+                    conn.sendall(obs.tobytes())
+                elif cmd == 2:
+                    action = np.frombuffer(_recv(conn, act_bytes), dtype=np.float32)
+                    obs, reward, done, stats = self._step(slot, action)
+                    conn.sendall(obs.tobytes() + struct.pack("<ff", reward, 1.0 if done else 0.0)
+                                 + struct.pack("<4f", *stats))
+                else:
+                    raise ValueError(f"unknown command {cmd}")
+        except ConnectionError:
+            pass
+        except Exception:
+            traceback.print_exc()
+        finally:
+            conn.close()
+
+    def _begin_episode(self, slot: _Slot, obs, info) -> np.ndarray:
+        slot.ep_return, slot.ep_length = 0.0, 0
+        if slot.recorder is not None:
+            slot.recorder.close()
+            slot.recorder = None
+        if slot.index == 0 and self.record_every and slot.episodes % self.record_every == 0:
+            path = self.run_dir / "renders" / f"episode{self._episodes:06d}.jsonl"
+            slot.recorder = TrajectoryRecorder(path, map_name=self.task.scenario.map if self.task.scenario else None)
+            slot.recorder.add(info["obs"])
+        return self.task.flatten(obs)
+
+    def _reset(self, slot: _Slot) -> np.ndarray:
+        if slot.pending is not None:
+            obs, info = slot.pending
+            slot.pending = None
+        else:
+            obs, info = slot.env.reset()
+        return self._begin_episode(slot, obs, info)
+
+    def _step(self, slot: _Slot, action: np.ndarray):
+        obs, reward, terminated, truncated, info = slot.env.step(self.task.to_action(action))
+        slot.ep_return += float(reward)
+        slot.ep_length += 1
+        with self._lock:
+            self._steps += 1
+        if slot.recorder is not None:
+            slot.recorder.add(info["obs"])
+        if not (terminated or truncated):
+            return self.task.flatten(obs), float(reward), False, (0.0, 0.0, 0.0, 0.0)
+        outcome = self.task.outcome(slot.env, info)
+        self._finish_episode(slot, info, outcome)
+        # next episode: normally in-game; the episode chosen for a video starts in a fresh process
+        # so that its replay holds exactly that episode
+        slot.episodes += 1
+        want_video = (slot.index == 0 and self.video_every and slot.episodes % self.video_every == 0)
+        next_obs, next_info = slot.env.reset(options={"relaunch": True} if want_video else None)
+        slot.replay_path = (self.run_dir / "replays" / f"episode{self._episodes:06d}.w3g") if want_video else None
+        stats = (1.0, slot.ep_return, float(slot.ep_length), outcome)
+        return self._begin_episode(slot, next_obs, next_info), float(reward), True, stats
+
+    def _finish_episode(self, slot: _Slot, info: dict, outcome: float) -> None:
+        o = info.get("obs")
+        with self._lock:
+            self._episodes += 1
+            episode = self._episodes
+            self._episode_log.write(json.dumps({
+                "time": time.time(), "episode": episode, "env": slot.index, "return": round(slot.ep_return, 4),
+                "length": slot.ep_length, "outcome": outcome, "game_time": o.game_time if o else None,
+                "total_steps": self._steps}) + "\n")
+            self._episode_log.flush()
+        if slot.recorder is not None:
+            slot.recorder.close()
+            html = render_html(slot.recorder.path)
+            slot.recorder = None
+            self._media_event("render", html, episode, outcome, slot.ep_return)
+        if slot.replay_path is not None:
+            try:
+                inst = slot.env.game.instance
+                replay = inst.save_replay(slot.replay_path)
+                self._render_queue.put((replay, episode, outcome, slot.ep_return))
+            except Exception as e:  # a missing video must not stop training
+                print(f"bridge: replay not saved: {e}")
+            slot.replay_path = None
+
+    def _media_event(self, kind: str, path: Path, episode: int, outcome: float, ret: float) -> None:
+        with self._lock, open(self.run_dir / "media.jsonl", "a") as f:
+            f.write(json.dumps({"time": time.time(), "kind": kind, "file": str(path.relative_to(self.run_dir)),
+                                "episode": episode, "outcome": outcome, "return": round(ret, 4)}) + "\n")
+
+    # ---- background work ----------------------------------------------------------------------
+
+    def _render_loop(self) -> None:
+        from ..video import render_replay
+
+        while not self._stop.is_set():
+            try:
+                replay, episode, outcome, ret = self._render_queue.get(timeout=1)
+            except queue.Empty:
+                continue
+            try:
+                setup = self.slots[0].env.setup
+                out = self.run_dir / "videos" / (replay.stem + ".mp4")
+                render_replay(setup, replay, out, name=f"{self.name}render")
+                self._media_event("video", out, episode, outcome, ret)
+            except Exception as e:
+                print(f"bridge: video not rendered: {e}")
+
+    def _stats_loop(self) -> None:
+        last_steps, last_t = 0, time.time()
+        while not self._stop.wait(5):
+            now = time.time()
+            with self._lock:
+                steps, episodes = self._steps, self._episodes
+            sps = (steps - last_steps) / (now - last_t)
+            last_steps, last_t = steps, now
+            step_s = self.slots[0].env.setup.step_seconds if self.slots else 0.25
+            self._bridge_log.write(json.dumps({"time": now, "steps": steps, "episodes": episodes,
+                                               "env_sps": round(sps, 1),
+                                               "game_x_realtime": round(sps * step_s, 1)}) + "\n")
+            self._bridge_log.flush()
+
+    def close(self) -> None:
+        self._stop.set()
+        if self._server:
+            self._server.close()
+        for slot in self.slots:
+            try:
+                slot.env.close()
+            except Exception:
+                pass
+        self._episode_log.close()
+        self._bridge_log.close()
+        if os.path.exists(self.socket_path):
+            os.unlink(self.socket_path)

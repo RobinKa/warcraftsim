@@ -21,7 +21,7 @@ warcraftsim = "warcraftsim.cli:main"
 include = ["warcraftsim*"]
 
 [tool.setuptools.package-data]
-warcraftsim = ["harness/*.j"]
+warcraftsim = ["harness/*.j", "dashboard/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

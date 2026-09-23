@@ -7,3 +7,7 @@
 [submodule "third_party/minhook"]
 	path = third_party/minhook
 	url = https://github.com/TsudaKageyu/minhook.git
+[submodule "third_party/PufferLib"]
+	path = third_party/PufferLib
+	url = https://github.com/PufferAI/PufferLib.git
+	branch = 5.0

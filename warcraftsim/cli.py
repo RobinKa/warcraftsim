@@ -7,6 +7,7 @@
   scenario       run a skirmish scenario with a scripted opponent
   bench          measure throughput of N parallel games
   view           render a recorded trajectory (.jsonl) as an HTML animation
+  dashboard      serve the training dashboard (runs/) on http://localhost:8765
 """
 
 from __future__ import annotations
@@ -186,6 +187,19 @@ def _view(args) -> int:
     return 0
 
 
+def _dashboard(args) -> int:
+    from .dashboard.server import serve
+    from .puffer.train import RUNS_DIR
+
+    server = serve(args.runs or RUNS_DIR, args.host, args.port)
+    print(f"dashboard: http://localhost:{args.port}  (runs: {args.runs or RUNS_DIR})", flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="warcraftsim", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -231,6 +245,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--step", type=float, default=0.25)
     p.add_argument("--scenario", action="store_true")
     p.set_defaults(fn=_bench)
+    p = sub.add_parser("dashboard")
+    p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--host", default="0.0.0.0")
+    p.add_argument("--runs", help="runs directory (default: <repo>/runs)")
+    p.set_defaults(fn=_dashboard)
     p = sub.add_parser("view")
     p.add_argument("trajectory")
     p.add_argument("-o", "--out")

@@ -134,6 +134,40 @@ The default scenario map is `"flat"`: a generated 32×32-tile (4096×4096) level
 
 `reset()` re-spawns them inside the running game in about 10 ms, so there's no reload.
 
+## Training with PufferLib 5.0 and the dashboard
+
+PufferLib 5.0 (`third_party/PufferLib`, the current `5.0` branch) is a native CUDA trainer, and its environments are C code compiled into the `puffer` binary. The pieces:
+* **C environment** (`puffer/wc3_bridge.h`): each environment is one Warcraft III game, reached through a bridge.
+* **Bridge** (`warcraftsim/puffer/bridge.py`): a Python server that runs the games and serves them to the trainer over a Unix socket. Every trainer environment gets its own game thread.
+* **Tasks** (`warcraftsim/puffer/tasks.py`): fixed-size observations and actions for PufferLib. The C header is generated from them.
+
+```bash
+# needs the CUDA toolkit (nvcc), clang, ccache, NCCL, libomp:
+#   sudo apt-get install ccache libnccl2 libnccl-dev libomp-14-dev libomp5-14 libgl-dev libx11-dev
+python -m warcraftsim.puffer.train --task nav --envs 16 --timesteps 400000        # navigation
+python -m warcraftsim.puffer.train --task micro --envs 16 --timesteps 3000000     # 4 footmen vs 3 grunts
+python -m warcraftsim dashboard                                                    # http://localhost:8765
+```
+
+Tasks: `nav` (reach a point), `micro` (4 footmen vs 3 scripted grunts), `micro_mirror` (4 vs 4 footmen). Add more in `tasks.py`.
+
+Each run writes `runs/<name>/`, which the dashboard shows live:
+* `run.json`: configuration and status.
+* `train.jsonl`: one line per trainer epoch (SPS, losses, win rate), from a small patch applied to the build copy.
+* `episodes.jsonl`: every finished episode.
+* `renders/`: trajectory animations.
+* `replays/` and `videos/`: single-episode replays rendered to real game footage in the background.
+* `checkpoints/`.
+
+The dashboard shows:
+* the run list, with comparison;
+* progress cards;
+* win-rate, return, length, loss, entropy and throughput charts;
+* a gallery of replay videos and trajectory renders;
+* the recent episodes.
+
+Example: `nav` with 16 games went from a 3% to a 62% success rate within 100k steps (about 3 minutes, at about 550 env steps/s).
+
 ## Performance (Ryzen 5950X, WSL2, 800x600 llvmpipe)
 
 | workload | throughput |
