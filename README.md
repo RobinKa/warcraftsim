@@ -200,16 +200,32 @@ The dashboard shows:
 
 Example: `nav` with 16 games went from a 3% to a 62% success rate within 100k steps (about 3 minutes, at about 550 env steps/s).
 
-## Performance (Ryzen 5950X, WSL2, 800x600 llvmpipe)
+## Performance (Ryzen 5950X, 32 threads, WSL2, llvmpipe)
 
 | workload | throughput |
 |---|---|
 | **Melee, AI vs AI, 2 s steps** | 39x real time (25-minute game in 39 s) |
-| **Melee, agent vs AI, 0.25 s steps, full observations** | ≈17x per game |
-| **Scenario skirmish, 0.25 s steps** | ≈25x per game; reset in 11 ms |
-| **8 / 16 melee games in parallel, 0.25 s steps** | ≈80x / ≈105x real time combined (≈420 steps/s at 16) |
+| **Melee, agent vs AI, 0.25 s steps, full observations** | ≈35x per game (≈140 steps/s) |
+| **16 melee games in parallel, 0.25 s steps** | ≈250x real time combined (1000 steps/s) |
+| **Scenario skirmish (4 v 4), 0.25 s steps** | ≈160x per game (1.5 ms per step); reset in 11 ms |
+| **16 / 24 skirmish games in parallel (training setup: 320x240 screens)** | 3550 / 3860 env steps/s (≈890x / ≈960x real time) |
 | **Game start** | ≈8 s (map load); 16 games ≈2 min (4 load at a time) |
 | **Melee reset** | ≈1 s with the warm spare (≈8 s relaunch without one, or if the episode was shorter than a load) |
+
+Where the time went, and what fixed it (`scripts/bench_env.py` measures env steps/s and the CPU per process
+and thread kind; `W3SIM_PROFILE=1..3` adds the shim's per-second profile to each game's `shim.log`):
+* **Actions** used to go through a file that the harness loaded with `Preloader`. The engine compiled
+  that file as JASS on every step, which cost ~7 ms per step and leaked memory. They now travel in the
+  shim's `GO` message; the harness reads them through a hooked native (`GetPlayerTechMaxAllowed` on
+  mailbox keys).
+* **Observations** used to be written by `PreloadGenEnd` to a file, with file-system calls for every
+  token (each a wineserver round trip under Wine, plus a registry lookup of the Documents folder). The
+  shim now hooks `Preload`/`PreloadGenEnd` and sends the tokens with the step sync.
+* **Polling threads**: the virtual clock divides wait timeouts by its speed, so game threads that poll
+  with 100–1000 ms timeouts spun at 5,000–11,000 wakeups per second, each a wineserver call.
+  `GameSetup.wait_floor_ms` (1 ms) stops that.
+* **Rendering**: training games run on a 320x240 virtual screen (llvmpipe CPU 5.3 → 1.7 cores for 16
+  games); replay videos are still rendered at 960x540.
 
 These numbers are for WineHQ **stable** 11.0, which is picked automatically from `/opt/wine-stable` (override with `WARCRAFTSIM_WINE`). Staging 11.18 was about 25% slower in parallel runs.
 

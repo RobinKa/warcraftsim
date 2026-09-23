@@ -88,7 +88,8 @@ class _Slot:
 
 class BridgeServer:
     def __init__(self, task: Task, num_envs: int, run_dir: str | os.PathLike, socket_path: str,
-                 record_every: int = 25, video_every: int = 100, name: str = "wc3", worker: int = 0):
+                 record_every: int = 25, video_every: int = 100, name: str = "wc3", worker: int = 0,
+                 window: tuple[int, int] | None = (320, 240)):
         self.task = task
         self.num_envs = num_envs
         self.run_dir = Path(run_dir)
@@ -97,6 +98,7 @@ class BridgeServer:
         self.video_every = video_every
         self.name = name
         self.worker = worker
+        self.window = window  # the games' screen: small, training does not look at pixels
         self.slots: list[_Slot] = []
         self._next_slot = 0
         self._lock = threading.Lock()
@@ -116,6 +118,8 @@ class BridgeServer:
     def launch_games(self, log=print) -> None:
         def launch(i: int) -> _Slot:
             env = self.task.make_env(f"{self.name}{i}")
+            if self.window and getattr(env, "setup", None) is not None:
+                env.setup.window = self.window  # videos are rendered at full size regardless
             obs, info = self.task.reset(env)
             return _Slot(i, env, obs, info)
 

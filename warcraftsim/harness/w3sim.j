@@ -5,10 +5,12 @@
 //   1. writes an observation as a token stream: one Preload() call per token, flushed with
 //      PreloadGenEnd("w3sim\\obs.txt"). Tokens are short integers/tags only, because every
 //      distinct JASS string is interned for the rest of the game.
-//   2. reads the controller's commands with Preloader("w3sim\\act.txt"). The w3shim DLL blocks
-//      that file open until the controller has answered, so the game is in lockstep with Python.
-//      The action file sets integers in a mailbox (SetPlayerTechMaxAllowed on the neutral
-//      passive player, key W3S_MBOX + i); slot 0 holds the number of integers that follow.
+//   2. reads the controller's commands from a mailbox: GetPlayerTechMaxAllowed on the neutral
+//      passive player with key W3S_MBOX - 1 is answered by the w3shim DLL, which blocks until the
+//      controller has read the observation and sent the commands (so the game is in lockstep
+//      with Python), and returns their count; keys W3S_MBOX + 1 + i then return the integers.
+//      (No file and no Preloader: Preloader compiled its file as JASS on every step, which cost
+//      ~7 ms per step under Wine and leaked memory.)
 //   3. applies the commands with the normal order natives.
 //
 // @CONFIG@ lines are substituted at map build time.
@@ -586,9 +588,7 @@ endfunction
 
 function W3S_ReadCommands takes nothing returns nothing
     local integer i = 0
-    call SetPlayerTechMaxAllowed(Player(PLAYER_NEUTRAL_PASSIVE), W3S_MBOX, 0)
-    call Preloader("w3sim\\act.txt")
-    set w3s_ncmd = W3S_Mbox(0)
+    set w3s_ncmd = W3S_Mbox(-1)  // the step sync (w3shim)
     if w3s_ncmd > 8000 then
         set w3s_ncmd = 8000
     endif

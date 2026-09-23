@@ -101,17 +101,27 @@ def main(argv: list[str] | None = None) -> int:
                     help="epochs; videos show the policy of the latest checkpoint before their episode")
     ap.add_argument("--record-every", type=int, default=20, help="trajectory render every N episodes of game 0")
     ap.add_argument("--video-every", type=int, default=60, help="replay video every N episodes of game 0 (0: off)")
+    ap.add_argument("--init-from", help="start from a checkpoint: a .bin file, or a run name (its latest)")
     ap.add_argument("extra", nargs="*", help="extra PufferLib arguments, e.g. --train.clip_coef=0.1")
     args = ap.parse_args(argv)
 
     task = get_task(args.task)
+    init = None
+    if args.init_from:
+        init = Path(args.init_from)
+        if not init.is_file():
+            found = sorted((RUNS_DIR / args.init_from / "checkpoints").rglob("*.bin"), key=lambda p: p.stat().st_mtime)
+            if not found:
+                raise SystemExit(f"--init-from: no checkpoint file or run with checkpoints named {args.init_from!r}")
+            init = found[-1]
+        args.extra = [*args.extra, f"--base.load_model_path={init.resolve()}"]
     name = args.name or f"{task.name}-{datetime.now():%Y%m%d-%H%M%S}"
     run = Run(RUNS_DIR / name, {
         "name": name, "task": task.name, "description": task.description, "envs": args.envs,
         "timesteps": int(args.timesteps), "agents_per_env": task.num_agents, "obs_size": task.obs_size,
         "act_sizes": list(task.act_sizes),
         "args": {k: v for k, v in vars(args).items() if k != "extra"}, "extra": args.extra,
-        "created": time.time(), "status": "building",
+        "created": time.time(), "status": "building", "init_from": str(init) if init else None,
     })
     print(f"run {name}: {run.dir}", flush=True)
     binary = build_trainer(task)

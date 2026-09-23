@@ -3,7 +3,8 @@
 PufferLib 5.0 compiles its environments into a native CUDA trainer. For a task we generate
 ``ocean/wc3_<task>/wc3_<task>.h`` (sizes + the shared bridge implementation), copy the pinned
 PufferLib checkout (third_party/PufferLib) to build/pufferlib, patch the trainer to append each
-epoch's log line to $PUFFER_JSONL (read by the dashboard) and run its build script.
+epoch's log line to $PUFFER_JSONL (read by the dashboard) and to start from --base.load_model_path
+if given, and run its build script.
 """
 
 from __future__ import annotations
@@ -38,6 +39,20 @@ _JSONL_PATCH = _JSONL_ANCHOR + """            const char* wc3_jsonl = getenv("PU
 """
 
 
+# Training never reads base.load_model_path (only evaluation does): start from that checkpoint.
+_RESUME_ANCHOR = "    PuffeRL* pufferl = create_pufferl(ini, ctx);\n    Selfplay selfplay = {0};\n"
+_RESUME_PATCH = _RESUME_ANCHOR + """    {
+        char wc3_buf[4096];
+        const char* wc3_init = puf_checkpoint_path_key(ini, "load_model_path", wc3_buf, sizeof(wc3_buf));
+        if (wc3_init) {
+            pufferl_load_policy(pufferl, 0, wc3_init);
+            printf("warcraftsim: initialized the policy from %s\\n", wc3_init);
+        }
+    }
+"""
+_PATCHES = ((_JSONL_ANCHOR, _JSONL_PATCH, "PUFFER_JSONL"), (_RESUME_ANCHOR, _RESUME_PATCH, "wc3_init"))
+
+
 def env_name(task: Task) -> str:
     return f"wc3_{task.name}"
 
@@ -61,18 +76,20 @@ def _sync_sources() -> None:
                    check=True)
     trainer = PUFFER_BUILD / "src" / "pufferl.cu"
     text = trainer.read_text()
-    if "PUFFER_JSONL" not in text:
-        if _JSONL_ANCHOR not in text:
-            raise RuntimeError("pufferl.cu changed: cannot apply the JSON log patch")
-        trainer.write_text(text.replace(_JSONL_ANCHOR, _JSONL_PATCH, 1))
+    for anchor, patch, marker in _PATCHES:
+        if marker not in text:
+            if anchor not in text:
+                raise RuntimeError(f"pufferl.cu changed: cannot apply the {marker} patch")
+            text = text.replace(anchor, patch, 1)
+    trainer.write_text(text)
 
 
 def build_trainer(task: Task, force: bool = False) -> Path:
     """Build (if needed) and return the trainer binary for `task`."""
     name = env_name(task)
     header = header_text(task)
-    digest = hashlib.sha1((header + BRIDGE_HEADER.read_text()
-                           + (PUFFER_SRC / "src" / "pufferl.cu").read_text()).encode()).hexdigest()[:12]
+    digest = hashlib.sha1((header + BRIDGE_HEADER.read_text() + (PUFFER_SRC / "src" / "pufferl.cu").read_text()
+                           + "".join(p for _, p, _ in _PATCHES)).encode()).hexdigest()[:12]
     binary = PUFFER_BUILD / f"puffer_{name}_{digest}"
     if binary.exists() and not force:
         return binary

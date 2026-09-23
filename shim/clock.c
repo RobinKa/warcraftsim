@@ -11,6 +11,7 @@
  */
 #include "w3shim.h"
 
+#include <string.h>
 #include <x86intrin.h>
 
 typedef struct {
@@ -97,6 +98,10 @@ static int64_t to_units(int64_t ticks, int64_t units_per_sec) {
 
 int64_t real_qpc_ticks(void) {
     return real_qpc();
+}
+
+int64_t real_qpc_freq(void) {
+    return g_freq;
 }
 
 void Sleep_real(DWORD ms) {
@@ -228,23 +233,93 @@ static DWORD scale_timeout(DWORD ms) {
     return s < g_wait_floor ? g_wait_floor : s;
 }
 
+/* W3SIM_PROFILE=3: per-thread wait statistics (which threads poll, with which timeouts) */
+#define WAIT_SLOTS 64
+static struct {
+    volatile DWORD tid;
+    volatile LONG calls, zero;
+    volatile LONGLONG req_ms;
+} g_waits[WAIT_SLOTS];
+int g_wait_stats;
+
+static void wait_stat(DWORD ms, DWORD scaled) {
+    if (!g_wait_stats)
+        return;
+    DWORD tid = GetCurrentThreadId();
+    for (int i = 0; i < WAIT_SLOTS; i++) {
+        int k = (tid + i) % WAIT_SLOTS;
+        if (g_waits[k].tid == tid ||
+            (g_waits[k].tid == 0 && InterlockedCompareExchange((volatile LONG *)&g_waits[k].tid, tid, 0) == 0)) {
+            InterlockedIncrement(&g_waits[k].calls);
+            if (scaled == 0)
+                InterlockedIncrement(&g_waits[k].zero);
+            if (ms != INFINITE)
+                g_waits[k].req_ms += ms;
+            return;
+        }
+    }
+}
+
+typedef LONG(NTAPI *NtQueryInformationThreadFn)(HANDLE, int, PVOID, ULONG, PULONG);
+
+void clock_report_waits(double secs) {
+    static NtQueryInformationThreadFn query;
+    if (!query)
+        query = (NtQueryInformationThreadFn)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryInformationThread");
+    for (int k = 0; k < WAIT_SLOTS; k++) {
+        DWORD tid = g_waits[k].tid;
+        LONG calls = InterlockedExchange(&g_waits[k].calls, 0), zero = InterlockedExchange(&g_waits[k].zero, 0);
+        LONGLONG req = g_waits[k].req_ms;
+        g_waits[k].req_ms = 0;
+        if (!tid || calls / secs < 50)
+            continue;
+        void *start = NULL;
+        HANDLE th = OpenThread(THREAD_QUERY_INFORMATION, FALSE, tid);
+        if (th) {
+            query(th, 9 /* ThreadQuerySetWin32StartAddress */, &start, sizeof start, NULL);
+            CloseHandle(th);
+        }
+        HMODULE m = NULL;
+        char mn[MAX_PATH] = "?";
+        if (start && GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)start, &m))
+            GetModuleFileNameA(m, mn, sizeof mn);
+        char *b = strrchr(mn, '\\');
+        shim_log("waits: tid %lu start %s+%#lx: %.0f/s, %.0f%% scaled to 0 ms, mean request %.1f ms", tid,
+                 b ? b + 1 : mn, (unsigned long)((BYTE *)start - (BYTE *)m), calls / secs, 100.0 * zero / calls,
+                 (double)req / calls);
+    }
+}
+
 static VOID WINAPI Sleep_hook(DWORD ms) {
-    Sleep_orig(scale_timeout(ms));
+    DWORD s = scale_timeout(ms);
+    wait_stat(ms, s);
+    Sleep_orig(s);
 }
 static DWORD WINAPI SleepEx_hook(DWORD ms, BOOL alertable) {
-    return SleepEx_orig(scale_timeout(ms), alertable);
+    DWORD s = scale_timeout(ms);
+    wait_stat(ms, s);
+    return SleepEx_orig(s, alertable);
 }
 static DWORD WINAPI Wfso_hook(HANDLE h, DWORD ms) {
-    return Wfso_orig(h, scale_timeout(ms));
+    DWORD s = scale_timeout(ms);
+    wait_stat(ms, s);
+    return Wfso_orig(h, s);
 }
 static DWORD WINAPI WfsoEx_hook(HANDLE h, DWORD ms, BOOL alertable) {
-    return WfsoEx_orig(h, scale_timeout(ms), alertable);
+    DWORD s = scale_timeout(ms);
+    wait_stat(ms, s);
+    return WfsoEx_orig(h, s, alertable);
 }
 static DWORD WINAPI Wfmo_hook(DWORD n, const HANDLE *h, BOOL all, DWORD ms) {
-    return Wfmo_orig(n, h, all, scale_timeout(ms));
+    DWORD s = scale_timeout(ms);
+    wait_stat(ms, s);
+    return Wfmo_orig(n, h, all, s);
 }
 static DWORD WINAPI MsgWait_hook(DWORD n, const HANDLE *h, BOOL all, DWORD ms, DWORD mask) {
-    return MsgWait_orig(n, h, all, scale_timeout(ms), mask);
+    DWORD s = scale_timeout(ms);
+    wait_stat(ms, s);
+    return MsgWait_orig(n, h, all, s, mask);
 }
 
 void clock_install(double speed, DWORD wait_floor) {

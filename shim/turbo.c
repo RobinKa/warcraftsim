@@ -235,22 +235,39 @@ static void report_samples(void) {
 }
 
 static DWORD WINAPI profile_thread(LPVOID arg) {
+    /* W3SIM_PROFILE=1: time totals; 2: also sample the main thread's EIP every ~1 ms (costly:
+     * every sample suspends the thread, a wineserver round trip). Rates are per real second. */
+    int sampling = (int)(INT_PTR)arg == 2;
+    g_wait_stats = (int)(INT_PTR)arg >= 3;
     HANDLE th = NULL;
+    LONGLONG t_last = now_qpc();
     for (int tick = 0;; tick++) {
-        for (int k = 0; k < 1000; k++) {
-            Sleep_real(1);
-            if (!th && g_game_tid)
-                th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, g_game_tid);
-            if (th)
-                sample_main(th);
+        if (sampling) {
+            for (int k = 0; k < 1000; k++) {
+                Sleep_real(1);
+                if (!th && g_game_tid)
+                    th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, g_game_tid);
+                if (th)
+                    sample_main(th);
+            }
+            if (tick % 2 == 1)
+                report_samples();
+        } else {
+            Sleep_real(1000);
         }
-        if (tick % 2 == 1)
-            report_samples();
+        LONGLONG now = now_qpc();
+        double secs = (double)(now - t_last) / (double)g_freq;
+        t_last = now;
         LONGLONG u = g_t_update, p = g_t_present, nu = g_n_update, np = g_n_present, w = sync_wait_ticks();
         g_t_update = g_t_present = g_n_update = g_n_present = 0;
         sync_reset_wait_ticks();
-        shim_log("profile/s: updates=%lld (%.1f ms) presents=%lld (%.1f ms) sync_wait=%.1f ms", nu,
-                 u * 1000.0 / g_freq, np, p * 1000.0 / g_freq, w * 1000.0 / g_freq);
+        shim_log("profile/s: updates=%.1f (%.1f ms) presents=%.1f (%.1f ms) sync_wait=%.1f ms", nu / secs,
+                 u * 1000.0 / g_freq / secs, np / secs, p * 1000.0 / g_freq / secs, w * 1000.0 / g_freq / secs);
+        char phases[256];
+        sync_phases(secs, phases, sizeof phases);
+        shim_log("phases/s: %s", phases);
+        if (g_wait_stats)
+            clock_report_waits(secs);
     }
     return 0;
 }
@@ -330,12 +347,12 @@ void turbo_install(int ms) {
         return;
     }
     char buf[8];
-    if (GetEnvironmentVariableA("W3SIM_PROFILE", buf, sizeof buf) && buf[0] == '1') {
+    if (GetEnvironmentVariableA("W3SIM_PROFILE", buf, sizeof buf) && buf[0] >= '1' && buf[0] <= '9') {
         LARGE_INTEGER f;
         QueryPerformanceFrequency(&f);
         g_freq = f.QuadPart;
         g_profile = 1;
-        CreateThread(NULL, 0, profile_thread, NULL, 0, NULL);
+        CreateThread(NULL, 0, profile_thread, (LPVOID)(INT_PTR)(buf[0] - '0'), 0, NULL);
         shim_log("profiling on");
     }
 }

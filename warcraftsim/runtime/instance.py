@@ -8,9 +8,9 @@ Lifecycle::
     obs = inst.restart()                # new episode (scenarios: in-game; melee: relaunch)
     inst.close()
 
-Step protocol: the harness writes obs.txt and opens act.txt; the w3shim DLL
-reports "OBS n" over TCP and blocks the game until we answer "GO". Before
-answering we write act.txt, which the harness then executes.
+Step protocol: the harness writes obs.txt and calls its mailbox native; the w3shim
+DLL reports "OBS n" over TCP and blocks the game until we answer "GO ... A <n>
+<ints>", whose command integers the harness then reads from the mailbox and executes.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from .. import paths
 from ..data.mapbuild import HarnessConfig, build_map
 from ..data.wgc import Difficulty, Race, Wgc, WgcSlot
 from ..protocol import (Command, EndGame, Observation, ProtocolError, Restart, Snapshot, Unit, encode_commands,
-                        merge_observation, parse_observation, write_action_file)
+                        merge_observation, parse_observation, parse_token_lines)
 from . import wine
 from .display import Xvfb
 
@@ -127,10 +127,17 @@ class GameSetup:
     # wineserver) more often; lower than the reachable rate throttles the game.
     speed: float | None = None
     turbo_ms: int = 0  # >0: simulate up to this much game time per frame, bypassing turn pacing
+    # Shortest real wait (ms) the virtual clock turns a timed wait into. Game threads that poll with
+    # 100-1000 ms timeouts would otherwise spin (timeouts / clock speed round to 0), each wait a
+    # wineserver round trip: 1 ms made 16 parallel games 60% faster.
+    wait_floor_ms: int = 1
     max_game_seconds: float = 0.0  # 0 = unlimited; otherwise a tie when reached
     fog: bool | None = None  # None: on for melee, off for scenarios
     wgc_speed: int = 1
-    window: tuple[int, int] = (800, 600)
+    # The virtual screen the game runs on. In windowed mode the game fills a small screen and
+    # uses a 960x540 window on 1024x768 (the size replay videos and their overlay assume).
+    # Training does not look at the pixels: a small screen saves most of the rendering CPU.
+    window: tuple[int, int] = (1024, 768)
     scenario: "Scenario | None" = None
     # True: the first agent is the local (user) player instead of a computer slot watched by an
     # observer. Only one slot can be a user in a local game.
@@ -250,6 +257,7 @@ class GameInstance:
         self.order_names = setup.harness_config().resolved_order_names()
         self._speed = setup.speed or 32.0
         self._game_wall = 0.0  # wall seconds spent inside the game (not waiting for Python)
+        self.game_wall_total = 0.0  # the same, never reset (profiling)
         self._game_ms0 = 0
         self._sent_at: float | None = None
         self._spare: GameInstance | None = None
@@ -299,7 +307,6 @@ class GameInstance:
         if link.is_symlink() or link.exists():
             link.unlink() if link.is_symlink() else shutil.rmtree(link)
         link.symlink_to(self.ipc_dir, target_is_directory=True)
-        write_action_file(self.ipc_dir / "act.txt")
         # map + game config
         work = self.prefix / "drive_c" / wine.WORK_DIR
         # replays store the map as "..\\w3sim\\map.w3x" and resolve it from the Documents folder
@@ -332,7 +339,7 @@ class GameInstance:
             raise GameError("already started")
         self._prepare()
         if not self._display:
-            self._own_display = Xvfb()
+            self._own_display = Xvfb(*self.setup.window)
             self._display = self._own_display.display
         self.episode = 0
         obs = self._launch()
@@ -360,12 +367,11 @@ class GameInstance:
         if self.prefix is None:
             self._prepare()
         if not self._display:
-            self._own_display = Xvfb()
+            self._own_display = Xvfb(*self.setup.window)
             self._display = self._own_display.display
         shutil.copyfile(replay, self.prefix / "drive_c" / wine.WORK_DIR / "replay.w3g")
         for f in self.ipc_dir.iterdir():
             f.unlink()
-        write_action_file(self.ipc_dir / "act.txt")
         self._ended = False
         self._loadfile = f"C:\\{wine.WORK_DIR}\\replay.w3g"
         try:
@@ -385,6 +391,7 @@ class GameInstance:
         log_path = self.inst_dir / "shim.log"
         env = wine.wine_env(self.prefix, DISPLAY=self._display, W3SIM_PORT=str(port),
                             W3SIM_SPEED=str(self._speed), W3SIM_TURBO_MS=str(self.setup.turbo_ms),
+                            W3SIM_WAIT_FLOOR=str(self.setup.wait_floor_ms),
                             W3SIM_LOG=_winpath(log_path))
         out = open(self.inst_dir / "wine.log", "wb") if self.keep_logs else subprocess.DEVNULL
         self.proc = subprocess.Popen(
@@ -447,7 +454,12 @@ class GameInstance:
                 continue
             if not line.startswith(b"OBS"):
                 continue
-            obs = self._read_obs_file()
+            parts = line.split()
+            if len(parts) >= 3:  # the observation follows in memory (w3shim obs capture)
+                payload = self._rfile.read(int(parts[2]))
+                obs = parse_token_lines(payload, self.order_names)
+            else:
+                obs = self._read_obs_file()
             if new_episode:
                 if obs.seq != 0:
                     self._reply()  # still finishing the previous episode
@@ -466,7 +478,8 @@ class GameInstance:
             self.last_obs = obs
             return obs
 
-    def _reply(self, extra: str = "") -> None:
+    def _reply(self, extra: str = "", ints: Sequence[int] = ()) -> None:
+        """Let the game continue; `ints`: encoded commands for the harness to execute."""
         msg = "GO"
         if self._pending_speed is not None:
             msg += f" speed={self._pending_speed}"
@@ -476,6 +489,8 @@ class GameInstance:
             self._pending_go.clear()
         if extra:
             msg += " " + extra
+        if ints:
+            msg += f" A {len(ints)} " + " ".join(str(int(v)) for v in ints)
         self._conn.sendall(msg.encode() + b"\n")
 
     def set_frame_capture(self, frame_ms: float | None, on_frame: Callable[[int], None] | None = None) -> None:
@@ -507,19 +522,19 @@ class GameInstance:
             ints = self._playback.get(key, []) + encode_commands(extra)
         elif ints:
             self._cmd_log[key] = ints
-        write_action_file(self.ipc_dir / "act.txt", ints=ints)
         self._sent_at = time.perf_counter()
-        self._reply()
+        self._reply(ints=ints)
 
     def receive(self) -> Observation:
         """Second half of step(): wait for the next observation."""
         prev_ms = self.last_obs.game_ms if self.last_obs else 0
         obs = self._await_observation()
-        write_action_file(self.ipc_dir / "act.txt")  # a stray re-read must not repeat commands
         self.steps += 1
         self._proc_steps += 1
         if self._sent_at is not None and obs.game_ms > prev_ms:
-            self._game_wall += time.perf_counter() - self._sent_at
+            dt = time.perf_counter() - self._sent_at
+            self._game_wall += dt
+            self.game_wall_total += dt
             self._game_ms0 += obs.game_ms - prev_ms
             if self.setup.speed is None and self._game_wall > 0.25:
                 self._adapt_speed()
@@ -551,11 +566,9 @@ class GameInstance:
         if self.setup.scenario is not None and not self._ended and self._playback is None and not relaunch:
             key = f"{self._proc_episode}:{self._last_seq}"
             self._cmd_log[key] = self._cmd_log.get(key, []) + Restart().encode()
-            write_action_file(self.ipc_dir / "act.txt", [Restart()])
-            self._reply()
+            self._reply(ints=Restart().encode())
             self._last_seq = None
             obs = self._await_observation(new_episode=True)
-            write_action_file(self.ipc_dir / "act.txt")
             self.episode += 1
             return obs
         self._ended = False
@@ -566,7 +579,6 @@ class GameInstance:
         self._stop_process()
         for f in self.ipc_dir.iterdir():
             f.unlink()
-        write_action_file(self.ipc_dir / "act.txt")
         return self._launch()
 
     # ---- warm spare (melee) ---------------------------------------------------------------
@@ -656,8 +668,7 @@ class GameInstance:
         replay = self.replay_dir() / "LastReplay.w3g"
         before = replay.stat().st_mtime if replay.exists() else 0.0
         log = dict(self._cmd_log)
-        write_action_file(self.ipc_dir / "act.txt", [EndGame()])
-        self._reply()
+        self._reply(ints=EndGame().encode())
         deadline = time.time() + timeout
         while time.time() < deadline:
             if replay.exists() and replay.stat().st_mtime > before and replay.stat().st_size > 0:

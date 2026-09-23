@@ -322,7 +322,16 @@ def _take_record(tag: str, toks: list[str], i: int) -> tuple[list[int] | None, i
 
 
 def parse_observation(text: str, order_names: Sequence[str] = ORDER_NAMES) -> Observation:
-    toks = tokens_from_text(text)
+    """Parse an observation file (the script PreloadGenEnd writes)."""
+    return parse_tokens(tokens_from_text(text), order_names)
+
+
+def parse_token_lines(data: bytes, order_names: Sequence[str] = ORDER_NAMES) -> Observation:
+    """Parse an observation sent by the w3shim DLL: the Preload tokens, one per line."""
+    return parse_tokens([t for t in data.decode("latin-1").split("\n") if _KEEP_RE.fullmatch(t)], order_names)
+
+
+def parse_tokens(toks: list[str], order_names: Sequence[str] = ORDER_NAMES) -> Observation:
     n = len(toks)
     i = 0
     seq = game_ms = 0

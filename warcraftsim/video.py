@@ -117,9 +117,9 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
     out.parent.mkdir(parents=True, exist_ok=True)
     # a real-time clock while the map loads: a fast one leaves a backlog that the engine simulates
     # in one frame at the start (the first ~4 s of game time would never be rendered)
-    setup = GameSetup(**{**setup.__dict__, "warm_spare": False, "speed": 1.0})
+    setup = GameSetup(**{**setup.__dict__, "warm_spare": False, "speed": 1.0, "window": (1024, 768)})
     # the pointer must be off the game window from the start: replays show a label on the unit under it
-    xvfb = Xvfb()
+    xvfb = Xvfb(*setup.window)
     _park_pointer(xvfb.display)
     inst = GameInstance(setup, name=name, timeout=60, display=xvfb.display)
     ffmpeg = grabber = None
