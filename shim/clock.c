@@ -1,6 +1,9 @@
 /* Virtual clock.
  *
- * virtual = virt0 + (real - real0) * speed, or a constant while frozen. The anchor is published
+ * virtual = virt0 + (real - real0) * speed, or a constant while frozen. In frame-stepped mode
+ * (clock_set_frame_step) it ignores real time entirely and advances a fixed amount per rendered
+ * frame (clock_frame), so every frame covers the same game time regardless of machine load.
+ * The anchor is published
  * through a seqlock so timer calls from any thread never block. Real time is the CPU's time-stamp
  * counter: under Wine on WSL2 QueryPerformanceCounter is a system call, and the game reads its
  * clock (an rdtsc helper) thousands of times per game turn. QPC, GetTickCount and FILETIME are
@@ -14,6 +17,7 @@ typedef struct {
     int64_t real0, virt0, frozen_at;
     double speed;
     LONG frozen;
+    int64_t frame_ticks; /* > 0: frame-stepped (virtual time = virt0) */
 } Anchor;
 
 static Anchor g_anchor;
@@ -73,6 +77,8 @@ static void anchor_write(const Anchor *a) {
 }
 
 static int64_t virt_at(const Anchor *a, int64_t now) {
+    if (a->frame_ticks > 0)
+        return a->virt0;
     if (a->frozen)
         now = a->frozen_at;
     return a->virt0 + (int64_t)((double)(now - a->real0) * a->speed);
@@ -127,6 +133,28 @@ void clock_freeze(int frozen) {
         a.frozen = 0;
         anchor_write(&a);
     }
+    LeaveCriticalSection(&g_write_lock);
+}
+
+void clock_set_frame_step(double seconds) {
+    EnterCriticalSection(&g_write_lock);
+    Anchor a = g_anchor;
+    int64_t now = a.frozen ? a.frozen_at : real_qpc();
+    a.virt0 = virt_at(&a, now);
+    a.real0 = now; /* leaving frame-stepped mode: real time runs on from here */
+    a.frame_ticks = seconds > 0 ? (int64_t)(seconds * (double)g_freq + 0.5) : 0;
+    anchor_write(&a);
+    LeaveCriticalSection(&g_write_lock);
+    shim_log("frame step: %.3f ms", seconds * 1000.0);
+}
+
+void clock_frame(void) {
+    if (g_anchor.frame_ticks <= 0)
+        return;
+    EnterCriticalSection(&g_write_lock);
+    Anchor a = g_anchor;
+    a.virt0 += a.frame_ticks;
+    anchor_write(&a);
     LeaveCriticalSection(&g_write_lock);
 }
 

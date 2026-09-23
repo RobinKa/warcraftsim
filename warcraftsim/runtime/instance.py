@@ -25,7 +25,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Callable, Iterable, Sequence
 
 from .. import paths
 from ..data.mapbuild import HarnessConfig, build_map
@@ -263,6 +263,8 @@ class GameInstance:
         self._proc_steps = 0  # steps taken by the current game process
         self._playback: dict[str, list[int]] | None = None
         self._name_lock = None  # machine-wide lock on `name` (its prefix, IPC dir) while in use
+        self._pending_go: list[str] = []  # options for the next "GO" (see shim/sync.c)
+        self._on_frame: Callable[[int], None] | None = None
 
     # ---- launch ---------------------------------------------------------------------------
 
@@ -438,6 +440,11 @@ class GameInstance:
             if not line:
                 code = self.proc.poll() if self.proc else None
                 raise GameCrashed(f"game connection closed (exit code {code}; see {self.inst_dir})")
+            if line.startswith(b"FRAME"):  # frame capture: the game waits until we answer
+                if self._on_frame is not None:
+                    self._on_frame(int(line.split()[1]))
+                self._conn.sendall(b"OK\n")
+                continue
             if not line.startswith(b"OBS"):
                 continue
             obs = self._read_obs_file()
@@ -464,9 +471,20 @@ class GameInstance:
         if self._pending_speed is not None:
             msg += f" speed={self._pending_speed}"
             self._pending_speed = None
+        if self._pending_go:
+            msg += " " + " ".join(self._pending_go)
+            self._pending_go.clear()
         if extra:
             msg += " " + extra
         self._conn.sendall(msg.encode() + b"\n")
+
+    def set_frame_capture(self, frame_ms: float | None, on_frame: Callable[[int], None] | None = None) -> None:
+        """Video recording, from the next step on. The virtual clock advances exactly `frame_ms`
+        per rendered frame instead of with wall time (None: wall time again), so each frame covers
+        the same game time however loaded the machine is. `on_frame(n)` is called after every
+        presented frame while the game waits, so the window shows exactly that frame."""
+        self._on_frame = on_frame
+        self._pending_go.append(f"frame={frame_ms or 0:g} capture={1 if on_frame else 0}")
 
     def step(self, commands: Iterable[Command] = ()) -> Observation:
         """Apply commands and advance one step (setup.step_seconds of game time)."""

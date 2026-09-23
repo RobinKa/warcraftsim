@@ -41,12 +41,16 @@ static LONGLONG now_qpc(void) {
     return real_qpc_ticks();
 }
 
+/* End of every frame: frame capture and the frame-stepped clock (see sync.c, clock.c). */
 static int __cdecl GxPresent_hook(int flags) {
-    LONGLONG t0 = now_qpc();
+    LONGLONG t0 = g_profile ? now_qpc() : 0;
     int r = GxPresent_orig(flags);
-    LONGLONG t1 = now_qpc();
-    g_t_present += t1 - t0;
-    g_n_present++;
+    if (g_profile) {
+        g_t_present += now_qpc() - t0;
+        g_n_present++;
+    }
+    sync_frame();
+    clock_frame();
     return r;
 }
 
@@ -319,17 +323,19 @@ void turbo_install(int ms) {
     }
     turbo_set(ms);
     shim_log("turbo installed: %d ms per frame", turbo_get());
+    BYTE *present = g_base + RVA_GXPRESENT;
+    if (!prologue_ok(present) || MH_CreateHook(present, (void *)GxPresent_hook, (void **)&GxPresent_orig) != MH_OK ||
+        MH_EnableHook(present) != MH_OK) {
+        shim_log("GxPresent hook failed: no frame capture");
+        return;
+    }
     char buf[8];
     if (GetEnvironmentVariableA("W3SIM_PROFILE", buf, sizeof buf) && buf[0] == '1') {
         LARGE_INTEGER f;
         QueryPerformanceFrequency(&f);
         g_freq = f.QuadPart;
-        BYTE *present = g_base + RVA_GXPRESENT;
-        if (prologue_ok(present) && MH_CreateHook(present, (void *)GxPresent_hook, (void **)&GxPresent_orig) == MH_OK &&
-            MH_EnableHook(present) == MH_OK) {
-            g_profile = 1;
-            CreateThread(NULL, 0, profile_thread, NULL, 0, NULL);
-            shim_log("profiling on");
-        }
+        g_profile = 1;
+        CreateThread(NULL, 0, profile_thread, NULL, 0, NULL);
+        shim_log("profiling on");
     }
 }

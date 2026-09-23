@@ -5,6 +5,8 @@
  *   controller; timed waits/sleeps are scaled down accordingly.
  * - step sync: when the map harness opens its action file (Preloader), the call blocks until
  *   the Python controller has read the observation and written the actions.
+ * - frame capture (video): the clock advances a fixed game time per rendered frame and every
+ *   presented frame is reported to the controller, which grabs the window before it continues.
  *
  * Configuration comes from environment variables (Wine passes the Linux environment through):
  *   W3SIM_SPEED       initial clock speed (default 1)
@@ -37,6 +39,8 @@ int iat_hook(HMODULE module, const char *dll, const char *func, void *replacemen
 void clock_install(double speed, DWORD wait_floor);
 void clock_set_speed(double speed);
 void clock_freeze(int frozen);
+void clock_set_frame_step(double seconds); /* > 0: advance only per rendered frame; 0: real time */
+void clock_frame(void);                    /* a frame was presented */
 double clock_speed(void);
 int64_t real_qpc_ticks(void);
 void Sleep_real(DWORD ms);
@@ -45,6 +49,9 @@ void Sleep_real(DWORD ms);
 void sync_install(void);
 LONGLONG sync_wait_ticks(void);
 void sync_reset_wait_ticks(void);
+void sync_frame(void); /* frame capture: report the presented frame, wait for the controller */
+void frame_capture_set(int on);
+int frame_capture_get(void);
 
 /* turbo.c */
 void turbo_install(int ms);

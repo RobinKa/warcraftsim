@@ -110,7 +110,10 @@ The game runs headless, so there are two ways to see what happened:
 * **Replays and videos.** `GameInstance.save_replay(path)` ends the game normally and saves two files: the `.w3g` replay the engine writes, and `path.commands.json`, the agent orders per step.
   * Agent orders are issued by the map script, not through the engine's recorded command stream. So the stock 1.29 client shows the built-in AI's play correctly but not the agents'.
   * `GameInstance.play_replay(path)` plays the replay back through the harness and feeds the logged orders in at the same steps, reproducing the game exactly (verified step by step).
-  * `warcraftsim.video.render_replay(setup, path, "ep.mp4")` records that playback as real game footage (MP4, one frame per step, optionally following a player's units).
+  * `warcraftsim.video.render_replay(setup, path, "ep.mp4")` records that playback as real game footage: MP4 at 40 fps in real time by default, optionally following a player's units.
+    * The shim switches the game clock to frame-stepped mode, so every rendered frame advances the game by exactly 25 ms, one engine turn.
+    * Each frame is grabbed from the virtual display before the game continues.
+    * The result is smooth and independent of machine load. A 60 s episode renders in about 60–75 s next to a training run.
 * **Screenshots.** `instance.screenshot(path)` saves the virtual display. In scenarios the camera is centered on the action.
 
 ### Scenarios (fast RL iteration)

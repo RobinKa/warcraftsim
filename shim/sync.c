@@ -6,7 +6,11 @@
  * has been written. Protocol (one line each way, over TCP 127.0.0.1:W3SIM_PORT):
  *
  *   shim -> controller:  "OBS <n>\n"          n = sync counter
- *   controller -> shim:  "GO [speed=<x>] [turbo=<ms>] [nosync]\n"
+ *   controller -> shim:  "GO [speed=<x>] [turbo=<ms>] [frame=<ms>] [capture=<0|1>] [nosync]\n"
+ *
+ * frame=<ms> switches the clock to frame-stepped mode (0: back to real time); with capture=1
+ * every presented frame is reported ("FRAME <n>\n", answered by any line once the controller has
+ * grabbed the window), so a video gets exactly one image per frame.
  */
 #include "w3shim.h"
 
@@ -24,6 +28,16 @@ static volatile LONG g_enabled;
 static LONG g_counter;
 static CRITICAL_SECTION g_sync_lock;
 static volatile LONGLONG g_wait_ticks;
+static volatile LONG g_capture;
+static LONG g_frames;
+
+void frame_capture_set(int on) {
+    InterlockedExchange(&g_capture, on ? 1 : 0);
+}
+
+int frame_capture_get(void) {
+    return (int)g_capture;
+}
 
 LONGLONG sync_wait_ticks(void) {
     return g_wait_ticks;
@@ -104,6 +118,14 @@ static void handle_go(const char *line) {
     p = strstr(line, "turbo=");
     if (p)
         turbo_set(atoi(p + 6));
+    p = strstr(line, "frame=");
+    if (p)
+        clock_set_frame_step(atof(p + 6) / 1000.0);
+    p = strstr(line, "capture=");
+    if (p) {
+        frame_capture_set(atoi(p + 8));
+        shim_log("frame capture %s", g_capture ? "on" : "off");
+    }
     if (strstr(line, "nosync")) {
         InterlockedExchange(&g_enabled, 0);
         shim_log("controller disabled step sync");
@@ -132,6 +154,19 @@ static void sync_point(void) {
     handle_go(reply);
     g_wait_ticks += real_qpc_ticks() - t0;
     clock_freeze(0);
+    LeaveCriticalSection(&g_sync_lock);
+}
+
+void sync_frame(void) {
+    if (!g_capture || g_sock == INVALID_SOCKET)
+        return;
+    EnterCriticalSection(&g_sync_lock);
+    char msg[64], reply[64];
+    int n = _snprintf(msg, sizeof msg, "FRAME %ld\n", ++g_frames);
+    if (!send_all(msg, n) || !recv_line(reply, sizeof reply)) {
+        shim_log("controller connection lost; exiting");
+        ExitProcess(3);
+    }
     LeaveCriticalSection(&g_sync_lock);
 }
 

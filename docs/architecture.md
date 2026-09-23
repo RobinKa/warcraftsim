@@ -18,7 +18,7 @@
 | `warcraftsim/runtime/instance.py` | Process lifecycle, the TCP step protocol and IPC files in `/dev/shm`. |
 | `warcraftsim/client.py`, `env.py`, `vec.py`, `scenario.py` | User-facing API. |
 | `shim/` | `w3shim.dll` (clock, sync, turbo, profiler) and the `w3launch.exe` injector. |
-| `warcraftsim/video.py` | Replay playback to MP4 (xwd frames into ffmpeg). |
+| `warcraftsim/video.py` | Replay playback to MP4: frame-stepped clock, every frame grabbed from Xvfb (XGetImage) into ffmpeg. |
 | `puffer/wc3_bridge.h`, `warcraftsim/puffer/` | PufferLib 5.0: C bridge environment, tasks, bridge server, trainer build, `train` orchestrator. |
 | `warcraftsim/dashboard/` | Training dashboard: a standard-library HTTP server plus one self-contained page. |
 

@@ -545,8 +545,9 @@ function W3S_ApplyOne takes integer at returns integer
         set ok = u != null
     elseif op == 96 then
         set n = 3
-        // local camera only: watching / screenshots, no effect on the simulation
-        call SetCameraPosition(I2R(w3s_cmd[at + 1] - 65536), I2R(w3s_cmd[at + 2] - 65536))
+        // local camera only: watching / videos, no effect on the simulation; a pan over one step
+        // keeps frame-by-frame video smooth
+        call PanCameraToTimed(I2R(w3s_cmd[at + 1] - 65536), I2R(w3s_cmd[at + 2] - 65536), W3S_CFG_STEP_S)
         set ok = true
     elseif op == 97 then
         set n = 1
