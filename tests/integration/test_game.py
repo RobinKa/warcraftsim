@@ -85,10 +85,10 @@ def test_selfplay_env(game_dir):
 
     from warcraftsim.env import MicroSelfPlayEnv
 
-    env = MicroSelfPlayEnv(Scenario.skirmish(["hfoo"] * 3, ["hfoo"] * 3, max_game_seconds=120), name="it_selfplay")
+    env = MicroSelfPlayEnv(Scenario.skirmish(["hfoo"] * 4, ["hfoo"] * 2, max_game_seconds=120), name="it_selfplay")
     try:
         obs, _ = env.reset()
-        assert obs[0]["own_mask"].sum() == 3 and obs[1]["enemy_mask"].sum() == 3
+        assert obs[0]["own_mask"].sum() == 4 and obs[1]["enemy_mask"].sum() == 4 and obs[1]["own_mask"].sum() == 2
         attack = np.zeros((env.max_units, 3), np.int64)
         attack[:, 0] = 3  # player 0 focus-fires; player 1 only auto-acquires
         total = {0: 0.0, 1: 0.0}
