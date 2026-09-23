@@ -1,0 +1,12 @@
+.venv/
+build/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+runs/
+# Blizzard game data must never be committed
+*.mpq
+*.w3x
+*.w3m
+*.w3g
+*.wgc

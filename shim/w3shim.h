@@ -1,0 +1,52 @@
+/* w3shim: in-process helper for Warcraft III 1.29.2 (x86) under Wine.
+ *
+ * - virtual clock: the game's timers (QPC, GetTickCount, FILETIME and its rdtsc helper) run
+ *   `speed` times faster than wall time and stand still while the game waits for the
+ *   controller; timed waits/sleeps are scaled down accordingly.
+ * - step sync: when the map harness opens its action file (Preloader), the call blocks until
+ *   the Python controller has read the observation and written the actions.
+ *
+ * Configuration comes from environment variables (Wine passes the Linux environment through):
+ *   W3SIM_SPEED       initial clock speed (default 1)
+ *   W3SIM_PORT        TCP port of the controller on 127.0.0.1 (unset: no step sync)
+ *   W3SIM_SYNC_FILE   file-name suffix that triggers step sync (default "w3sim\act.txt")
+ *   W3SIM_WAIT_FLOOR  minimum scaled wait in ms (default 0)
+ *   W3SIM_TURBO_MS    game time simulated per frame, bypassing turn pacing (default 0 = off)
+ *   W3SIM_LOG         log file path (Windows path; default: none)
+ */
+#pragma once
+
+#define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
+#include <windows.h>
+#include <stdint.h>
+
+#define W3SHIM_VERSION "0.1"
+
+/* Addresses in the 1.29.2.9231 executable (sha256 3f2ed012...0eed), as RVAs. */
+#define RVA_RDTSC_HELPER 0x396c80 /* rdtsc; ret */
+
+extern BYTE *g_base;
+
+void shim_log(const char *fmt, ...);
+
+/* iat.c */
+int iat_hook(HMODULE module, const char *dll, const char *func, void *replacement, void **original);
+
+/* clock.c */
+void clock_install(double speed, DWORD wait_floor);
+void clock_set_speed(double speed);
+void clock_freeze(int frozen);
+double clock_speed(void);
+int64_t real_qpc_ticks(void);
+void Sleep_real(DWORD ms);
+
+/* sync.c */
+void sync_install(void);
+LONGLONG sync_wait_ticks(void);
+void sync_reset_wait_ticks(void);
+
+/* turbo.c */
+void turbo_install(int ms);
+void turbo_set(int ms);
+int turbo_get(void);

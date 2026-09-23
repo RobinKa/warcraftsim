@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "warcraftsim"
+version = "0.1.0"
+description = "Headless Warcraft III (Legacy TFT 1.29) under Wine, controlled from Python"
+requires-python = ">=3.10"
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+rl = ["gymnasium>=1.0"]
+fuse = ["pyfuse3", "trio"]
+dev = ["pytest"]
+
+[project.scripts]
+warcraftsim = "warcraftsim.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["warcraftsim*"]
+
+[tool.setuptools.package-data]
+warcraftsim = ["harness/*.j"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["wine: needs Wine and the Warcraft III 1.29 install"]
+addopts = "-m 'not wine'"

@@ -1,0 +1,9 @@
+[submodule "third_party/StormLib"]
+	path = third_party/StormLib
+	url = https://github.com/ladislav-zezula/StormLib.git
+[submodule "third_party/pjass"]
+	path = third_party/pjass
+	url = https://github.com/lep/pjass.git
+[submodule "third_party/minhook"]
+	path = third_party/minhook
+	url = https://github.com/TsudaKageyu/minhook.git
