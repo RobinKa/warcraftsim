@@ -46,13 +46,13 @@ def _recv(conn: socket.socket, n: int) -> bytes:
 
 
 class _Slot:
-    """One game served to one trainer environment."""
+    """One game served to one trainer environment (with task.num_agents agents)."""
 
-    def __init__(self, index: int, env, first_obs, first_info):
+    def __init__(self, index: int, env, first_obs: list, first_info: dict):
         self.index = index
         self.env = env
-        self.pending = (first_obs, first_info)  # the observation to hand out on the first reset
-        self.ep_return = 0.0
+        self.pending = (first_obs, first_info)  # the observations to hand out on the first reset
+        self.ep_return: list[float] = []
         self.ep_length = 0
         self.episodes = 0
         self.recorder: TrajectoryRecorder | None = None
@@ -89,7 +89,7 @@ class BridgeServer:
     def launch_games(self, log=print) -> None:
         def launch(i: int) -> _Slot:
             env = self.task.make_env(f"{self.name}{i}")
-            obs, info = env.reset()
+            obs, info = self.task.reset(env)
             return _Slot(i, env, obs, info)
 
         t0 = time.time()
@@ -136,18 +136,21 @@ class BridgeServer:
                 print(f"bridge: refused environment (task {task_name!r}, obs {obs_size}, atns {num_atns})")
                 conn.sendall(struct.pack("<I", 0))
                 return
-            conn.sendall(struct.pack("<I", 1))
+            n = self.task.num_agents
+            conn.sendall(struct.pack("<I", n))
             act_bytes = 4 * self.task.num_atns
             while True:
                 (cmd,) = struct.unpack("<I", _recv(conn, 4))
                 if cmd == 1:
                     obs = self._reset(slot)
-                    conn.sendall(obs.tobytes())
+                    conn.sendall(b"".join(o.tobytes() for o in obs))
                 elif cmd == 2:
-                    action = np.frombuffer(_recv(conn, act_bytes), dtype=np.float32)
-                    obs, reward, done, stats = self._step(slot, action)
-                    conn.sendall(obs.tobytes() + struct.pack("<ff", reward, 1.0 if done else 0.0)
-                                 + struct.pack("<4f", *stats))
+                    actions = [np.frombuffer(_recv(conn, act_bytes), dtype=np.float32) for _ in range(n)]
+                    obs, rewards, done, stats = self._step(slot, actions)
+                    conn.sendall(b"".join(o.tobytes() for o in obs)
+                                 + struct.pack(f"<{n}f", *rewards)
+                                 + struct.pack(f"<{n}f", *([1.0 if done else 0.0] * n))
+                                 + b"".join(struct.pack("<4f", *st) for st in stats))
                 else:
                     raise ValueError(f"unknown command {cmd}")
         except ConnectionError:
@@ -157,8 +160,8 @@ class BridgeServer:
         finally:
             conn.close()
 
-    def _begin_episode(self, slot: _Slot, obs, info) -> np.ndarray:
-        slot.ep_return, slot.ep_length = 0.0, 0
+    def _begin_episode(self, slot: _Slot, obs: list, info) -> list:
+        slot.ep_return, slot.ep_length = [0.0] * self.task.num_agents, 0
         if slot.recorder is not None:
             slot.recorder.close()
             slot.recorder = None
@@ -166,7 +169,7 @@ class BridgeServer:
             path = self.run_dir / "renders" / f"w{self.worker}-episode{self._episodes:06d}.jsonl"
             slot.recorder = TrajectoryRecorder(path, map_name=self.task.scenario.map if self.task.scenario else None)
             slot.recorder.add(info["obs"])
-        return self.task.flatten(obs)
+        return obs
 
     def _reset(self, slot: _Slot) -> np.ndarray:
         if slot.pending is not None:
@@ -174,7 +177,7 @@ class BridgeServer:
             slot.pending = None
             return self._begin_episode(slot, obs, info)
         try:
-            obs, info = slot.env.reset()
+            obs, info = self.task.reset(slot.env)
             return self._begin_episode(slot, obs, info)
         except GameError as e:
             return self._recover(slot, e)[0]
@@ -193,44 +196,44 @@ class BridgeServer:
         for attempt in range(5):
             try:
                 slot.env.game.instance.close()
-                obs, info = slot.env.reset()
+                obs, info = self.task.reset(slot.env)
                 break
             except Exception as e:  # keep trying: one bad launch must not end the training run
                 print(f"bridge: relaunch {attempt + 1} of game {self.worker}/{slot.index} failed: {e}", flush=True)
                 time.sleep(5 * (attempt + 1))
         else:
             raise RuntimeError(f"game {self.worker}/{slot.index} could not be relaunched")
-        stats = (1.0, slot.ep_return, float(slot.ep_length), 0.0)
+        stats = [(1.0, r, float(slot.ep_length), 0.0) for r in slot.ep_return]
         slot.episodes += 1
-        return self._begin_episode(slot, obs, info), 0.0, True, stats
+        return self._begin_episode(slot, obs, info), [0.0] * self.task.num_agents, True, stats
 
-    def _step(self, slot: _Slot, action: np.ndarray):
+    def _step(self, slot: _Slot, actions: list[np.ndarray]):
         try:
-            return self._step_game(slot, action)
+            return self._step_game(slot, actions)
         except GameError as e:
             return self._recover(slot, e)
 
-    def _step_game(self, slot: _Slot, action: np.ndarray):
-        obs, reward, terminated, truncated, info = slot.env.step(self.task.to_action(action))
-        slot.ep_return += float(reward)
+    def _step_game(self, slot: _Slot, actions: list[np.ndarray]):
+        obs, rewards, done, info, outcomes = self.task.step(slot.env, actions)
+        slot.ep_return = [r + dr for r, dr in zip(slot.ep_return, rewards)]
         slot.ep_length += 1
         with self._lock:
             self._steps += 1
         if slot.recorder is not None:
             slot.recorder.add(info["obs"])
-        if not (terminated or truncated):
-            return self.task.flatten(obs), float(reward), False, (0.0, 0.0, 0.0, 0.0)
-        outcome = self.task.outcome(slot.env, info)
+        if not done:
+            return obs, rewards, False, [(0.0, 0.0, 0.0, 0.0)] * self.task.num_agents
+        outcome = outcomes[0]
         self._finish_episode(slot, info, outcome)
         # next episode: normally in-game; the episode chosen for a video starts in a fresh process
         # so that its replay holds exactly that episode
         slot.episodes += 1
         want_video = (slot.index == 0 and self.video_every and slot.episodes % self.video_every == 0)
-        next_obs, next_info = slot.env.reset(options={"relaunch": True} if want_video else None)
+        next_obs, next_info = self.task.reset(slot.env, options={"relaunch": True} if want_video else None)
         slot.replay_path = ((self.run_dir / "replays" / f"w{self.worker}-episode{self._episodes:06d}.w3g")
                             if want_video else None)
-        stats = (1.0, slot.ep_return, float(slot.ep_length), outcome)
-        return self._begin_episode(slot, next_obs, next_info), float(reward), True, stats
+        stats = [(1.0, r, float(slot.ep_length), o) for r, o in zip(slot.ep_return, outcomes)]
+        return self._begin_episode(slot, next_obs, next_info), rewards, True, stats
 
     def _finish_episode(self, slot: _Slot, info: dict, outcome: float) -> None:
         o = info.get("obs")
@@ -239,7 +242,7 @@ class BridgeServer:
             episode = self._episodes
             self._episode_log.write(json.dumps({
                 "time": time.time(), "episode": episode, "worker": self.worker, "env": slot.index,
-                "return": round(slot.ep_return, 4),
+                "return": round(slot.ep_return[0], 4),
                 "length": slot.ep_length, "outcome": outcome, "game_time": o.game_time if o else None,
                 "total_steps": self._steps}) + "\n")
             self._episode_log.flush()
@@ -247,12 +250,12 @@ class BridgeServer:
             slot.recorder.close()
             html = render_html(slot.recorder.path)
             slot.recorder = None
-            self._media_event("render", html, episode, outcome, slot.ep_return)
+            self._media_event("render", html, episode, outcome, slot.ep_return[0])
         if slot.replay_path is not None:
             try:
                 inst = slot.env.game.instance
                 replay = inst.save_replay(slot.replay_path)
-                self._render_queue.put((replay, episode, outcome, slot.ep_return))
+                self._render_queue.put((replay, episode, outcome, slot.ep_return[0]))
             except Exception as e:  # a missing video must not stop training
                 print(f"bridge: replay not saved: {e}")
             slot.replay_path = None

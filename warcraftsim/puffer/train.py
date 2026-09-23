@@ -32,6 +32,23 @@ from .tasks import get_task
 RUNS_DIR = Path(os.environ.get("WARCRAFTSIM_RUNS", paths.REPO_ROOT / "runs"))
 
 
+def claim_slot():
+    """A machine-wide training slot (held until exit): its game names (and Wine prefixes) are
+    reused by later runs, while concurrent runs get their own."""
+    import fcntl
+
+    lock_dir = Path("/dev/shm/warcraftsim/train-slots")
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    for k in range(64):
+        f = open(lock_dir / f"{k}.lock", "w")
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return k, f
+        except BlockingIOError:
+            f.close()
+    raise RuntimeError("no free training slot")
+
+
 class Run:
     def __init__(self, run_dir: Path, info: dict):
         self.dir = run_dir
@@ -46,13 +63,14 @@ class Run:
         tmp.replace(self.dir / "run.json")
 
 
-def trainer_args(args, envs: int) -> list[str]:
+def trainer_args(args, envs: int, agents_per_env: int = 1) -> list[str]:
     horizon = args.horizon
-    batch = envs * horizon
+    agents = envs * agents_per_env  # PufferLib creates environments until it has this many agents
+    batch = agents * horizon
     minibatch = min(args.minibatch or batch, batch)
     return [
         "train",
-        f"--vec.total_agents={envs}", f"--vec.num_buffers={args.buffers}",
+        f"--vec.total_agents={agents}", f"--vec.num_buffers={args.buffers}",
         f"--vec.num_threads={max(envs, args.buffers)}",
         f"--train.total_timesteps={int(args.timesteps)}", f"--train.horizon={horizon}",
         f"--train.minibatch_size={minibatch}", f"--train.learning_rate={args.lr}",
@@ -74,7 +92,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--minibatch", type=int, default=0, help="default: the whole batch (envs * horizon)")
     ap.add_argument("--buffers", type=int, default=2)
     ap.add_argument("--lr", type=float, default=0.003)
-    ap.add_argument("--ent-coef", type=float, default=0.01)
+    ap.add_argument("--ent-coef", type=float, default=0.001,
+                    help="PufferLib 5 does not normalize advantages: keep this small for small rewards")
     ap.add_argument("--gamma", type=float, default=0.99)
     ap.add_argument("--hidden", type=int, default=128)
     ap.add_argument("--layers", type=int, default=2)
@@ -88,7 +107,8 @@ def main(argv: list[str] | None = None) -> int:
     name = args.name or f"{task.name}-{datetime.now():%Y%m%d-%H%M%S}"
     run = Run(RUNS_DIR / name, {
         "name": name, "task": task.name, "description": task.description, "envs": args.envs,
-        "timesteps": int(args.timesteps), "obs_size": task.obs_size, "act_sizes": list(task.act_sizes),
+        "timesteps": int(args.timesteps), "agents_per_env": task.num_agents, "obs_size": task.obs_size,
+        "act_sizes": list(task.act_sizes),
         "args": {k: v for k, v in vars(args).items() if k != "extra"}, "extra": args.extra,
         "created": time.time(), "status": "building",
     })
@@ -102,10 +122,11 @@ def main(argv: list[str] | None = None) -> int:
     ctx = mp.get_context("spawn")
     stop_event = ctx.Event()
     readies = [ctx.Event() for _ in range(workers)]
-    # stable game instance names: their Wine prefixes are reused across runs (one run at a time)
+    slot, _slot_lock = claim_slot()
+    games = "train" if slot == 0 else f"train{slot}_"
     procs = [ctx.Process(target=run_worker, daemon=True, args=(
         task.name, counts[w], str(run.dir), sockets[w], args.record_every if w == 0 else 0,
-        args.video_every if w == 0 else 0, f"train{w}-", w, readies[w], stop_event)) for w in range(workers)]
+        args.video_every if w == 0 else 0, f"{games}{w}-", w, readies[w], stop_event)) for w in range(workers)]
     trainer = None
     stopping = False
 
@@ -127,7 +148,7 @@ def main(argv: list[str] | None = None) -> int:
                     raise RuntimeError(f"bridge worker {procs.index(p)} failed to start its games")
         print(f"bridge: {args.envs} games in {workers} workers ready in {time.time() - t0:.0f}s", flush=True)
         env = dict(os.environ, WC3_BRIDGE=";".join(sockets), PUFFER_JSONL=str(run.dir / "train.jsonl"))
-        cmd = [str(binary), *trainer_args(args, args.envs), f"--base.checkpoint_dir={run.dir / 'checkpoints'}",
+        cmd = [str(binary), *trainer_args(args, args.envs, task.num_agents), f"--base.checkpoint_dir={run.dir / 'checkpoints'}",
                f"--base.log_dir={run.dir / 'logs'}"]
         run.save(status="training", started=time.time(), command=cmd)
         with open(run.dir / "trainer.log", "wb") as log:

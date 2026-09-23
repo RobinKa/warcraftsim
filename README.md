@@ -145,11 +145,20 @@ PufferLib 5.0 (`third_party/PufferLib`, the current `5.0` branch) is a native CU
 # needs the CUDA toolkit (nvcc), clang, ccache, NCCL, libomp:
 #   sudo apt-get install ccache libnccl2 libnccl-dev libomp-14-dev libomp5-14 libgl-dev libx11-dev
 python -m warcraftsim.puffer.train --task nav --envs 16 --timesteps 400000        # navigation
-python -m warcraftsim.puffer.train --task micro --envs 16 --timesteps 3000000     # 4 footmen vs 3 grunts
+python -m warcraftsim.puffer.train --task micro_mirror --envs 16 --timesteps 3000000  # 4 v 4 footmen
+python -m warcraftsim.puffer.train --task selfplay_micro --envs 8 --timesteps 3000000 # both sides learn
 python -m warcraftsim dashboard                                                    # http://localhost:8765
 ```
 
-Tasks: `nav` (reach a point), `micro` (4 footmen vs 3 scripted grunts), `micro_mirror` (4 vs 4 footmen). Add more in `tasks.py`.
+Tasks (add more in `tasks.py`):
+* `nav`: reach a point.
+* `micro`: 4 footmen vs 3 scripted grunts. This is hard: scripted baselines win about 1 game in 3.
+* `micro_mirror`: 4 vs 4 footmen against the scripted opponent.
+* `selfplay_micro`: 4 vs 4 footmen with both sides served to the trainer as agents of the same policy. `--envs` counts games, so each game gives two agents. The dashboard's win rate is side 0's.
+
+Notes:
+* PufferLib 5.0 does not normalize advantages, and the micro rewards per step are small. `--ent-coef` defaults to 0.001: at 0.01, the entropy bonus of the 18 action heads outweighs the reward and the policy drifts to uniform.
+* Runs can train concurrently. Each run claims a machine-wide training slot, and its games are named after that slot, so consecutive runs reuse their Wine prefixes.
 
 Each run writes `runs/<name>/`, which the dashboard shows live:
 * `run.json`: configuration and status.

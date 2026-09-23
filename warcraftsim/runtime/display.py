@@ -12,6 +12,23 @@ from pathlib import Path
 _pick_lock = threading.Lock()
 
 
+class _MachineLock:
+    """Threads and processes (e.g. several bridge workers) pick display numbers one at a time."""
+
+    def __enter__(self):
+        import fcntl
+
+        _pick_lock.acquire()
+        Path("/dev/shm/warcraftsim").mkdir(parents=True, exist_ok=True)
+        self._f = open("/dev/shm/warcraftsim/display-pick.lock", "w")
+        fcntl.flock(self._f, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        self._f.close()
+        _pick_lock.release()
+
+
 def _listening(num: int) -> bool:
     """True once an X server listens on the abstract socket for display `num`."""
     needle = f"@/tmp/.X11-unix/X{num}\n"
@@ -33,7 +50,7 @@ class Xvfb:
         self.width, self.height = width, height
         self.proc: subprocess.Popen | None = None
         self.display = ""
-        with _pick_lock:
+        with _MachineLock():
             for num in range(first, first + 500):
                 lock = Path(f"/tmp/.X{num}-lock")
                 if lock.exists():
@@ -48,8 +65,10 @@ class Xvfb:
                 deadline = time.time() + timeout
                 while time.time() < deadline and proc.poll() is None:
                     if _listening(num):
-                        self.proc, self.display = proc, f":{num}"
-                        return
+                        time.sleep(0.1)
+                        if proc.poll() is None:  # it is our server that listens, not another one
+                            self.proc, self.display = proc, f":{num}"
+                            return
                     time.sleep(0.05)
                 proc.kill()
                 proc.wait()

@@ -219,7 +219,7 @@ def _winpath(p: Path) -> str:
 # Attributes that belong to one game process; a warm spare's are swapped in on restart.
 _PROCESS_ATTRS = ("name", "_own_display", "_display", "proc", "_server", "_conn", "_rfile", "prefix", "ipc_dir",
                   "inst_dir", "_last_seq", "_units", "last_obs", "_sent_at", "_need_snapshot", "_cmd_log",
-                  "_proc_episode", "_proc_steps")
+                  "_proc_episode", "_proc_steps", "_name_lock")
 
 
 class GameInstance:
@@ -262,10 +262,28 @@ class GameInstance:
         self._proc_episode = -1
         self._proc_steps = 0  # steps taken by the current game process
         self._playback: dict[str, list[int]] | None = None
+        self._name_lock = None  # machine-wide lock on `name` (its prefix, IPC dir) while in use
 
     # ---- launch ---------------------------------------------------------------------------
 
+    def _lock_name(self) -> None:
+        """Two games must never share an instance name: they would share a Wine prefix."""
+        if self._name_lock is not None:
+            return
+        import fcntl
+
+        lock_dir = Path("/dev/shm/warcraftsim/instances")
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        f = open(lock_dir / f"{self.name}.lock", "w")
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            f.close()
+            raise GameError(f"game instance name {self.name!r} is in use by another game") from None
+        self._name_lock = f
+
     def _prepare(self) -> None:
+        self._lock_name()
         wine.ensure_template()
         self.prefix = wine.clone_prefix(self.name)
         wine.kill_prefix(self.prefix)
@@ -382,6 +400,9 @@ class GameInstance:
                 except Exception:
                     pass
             self._stop_process()
+            for log in ("shim.log", "wine.log"):  # the retry would overwrite them
+                if (self.inst_dir / log).exists():
+                    shutil.copyfile(self.inst_dir / log, self.inst_dir / f"launch-timeout-{log}")
             raise GameError(f"game did not reach the harness within {self.timeout:.0f}s (see {self.inst_dir})")
         self._conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self._conn.settimeout(self.timeout)
@@ -668,6 +689,9 @@ class GameInstance:
             self._own_display.close()
             self._own_display = None
             self._display = None
+        if self._name_lock is not None:
+            self._name_lock.close()
+            self._name_lock = None
 
     def __enter__(self) -> "GameInstance":
         return self

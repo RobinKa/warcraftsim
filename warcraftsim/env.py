@@ -350,6 +350,7 @@ class MicroSelfPlayEnv:
 
         self.scenario = scenario or Scenario.skirmish(["hfoo"] * 4, ["hfoo"] * 4)
         setup = GameSetup(slots=[Agent("human"), Agent("orc")], scenario=self.scenario)
+        self.setup = setup
         self.game = Wc3Game(setup, player=0, name=name, **instance_kw)
         self.views = {p: None for p in self.possible_agents}
         self.max_units = max_units
@@ -397,7 +398,7 @@ class MicroSelfPlayEnv:
         return out
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
-        obs = self.game.reset()
+        obs = self.game.reset(relaunch=bool((options or {}).get("relaunch")))
         cx, cy = self.scenario.resolved_center()
         self.encoders = {p: UnitEncoder(p, (cx, cy), 1500.0) for p in self.possible_agents}
         for p in self.possible_agents:

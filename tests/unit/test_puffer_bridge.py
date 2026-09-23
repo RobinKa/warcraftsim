@@ -41,7 +41,9 @@ def _task() -> Task:
 def _recv(conn, n):
     buf = b""
     while len(buf) < n:
-        buf += conn.recv(n - len(buf))
+        chunk = conn.recv(n - len(buf))
+        assert chunk, "bridge closed the connection"
+        buf += chunk
     return buf
 
 
@@ -149,11 +151,66 @@ def test_bridge_recovers_from_a_failed_game(tmp_path):
     bridge.launch_games(log=lambda m: None)
     slot = bridge.slots[0]
     bridge._reset(slot)
-    obs, reward, done, stats = bridge._step(slot, np.array([1.0], np.float32))
-    assert done and stats[0] == 1.0 and stats[3] == 0.0  # truncated, outcome "other"
-    assert obs.tolist() == [0.0, 1.0]  # the relaunched game's first observation
-    obs, reward, done, stats = bridge._step(slot, np.array([1.0], np.float32))
-    assert not done and reward == 1.0  # and play continues
+    obs, rewards, done, stats = bridge._step(slot, [np.array([1.0], np.float32)])
+    assert done and stats[0][0] == 1.0 and stats[0][3] == 0.0  # truncated, outcome "other"
+    assert obs[0].tolist() == [0.0, 1.0]  # the relaunched game's first observation
+    obs, rewards, done, stats = bridge._step(slot, [np.array([1.0], np.float32)])
+    assert not done and rewards == [1.0]  # and play continues
     log = (tmp_path / "run" / "episodes-0.jsonl").read_text()
     assert "game_restart" in log
     bridge.close()
+
+
+class FakeSelfPlayEnv:
+    """Two agents; 2 steps; agent 0 wins. Mirrors MicroSelfPlayEnv's dict-per-agent API."""
+
+    class _Player:
+        def __init__(self, result):
+            self.result = type("R", (), {"name": result})()
+
+    def __init__(self, name):
+        self.t = 0
+
+    def reset(self, options=None):
+        self.t = 0
+        return {0: np.array([0.0], np.float32), 1: np.array([10.0], np.float32)}, {0: {"obs": None}, 1: {}}
+
+    def step(self, actions):
+        self.t += 1
+        done = self.t >= 2
+        obs = type("O", (), {"players": [self._Player("VICTORY"), self._Player("DEFEAT")], "game_time": 0.5 * self.t,
+                             "game_over": done})()
+        return ({0: np.array([self.t], np.float32), 1: np.array([10.0 + self.t], np.float32)},
+                {0: float(actions[0]), 1: float(actions[1])}, {0: done, 1: done}, {0: False, 1: False},
+                {0: {"obs": obs}, 1: {}})
+
+    def close(self):
+        pass
+
+
+def test_bridge_two_agents(tmp_path):
+    task = Task(name="fake2", obs_size=1, act_sizes=(3,), make_env=FakeSelfPlayEnv,
+                flatten=lambda o: np.asarray(o, np.float32), to_action=lambda a: int(a[0]), num_agents=2)
+    sock_path = str(tmp_path / "b.sock")
+    bridge = BridgeServer(task, 1, tmp_path / "run", sock_path, record_every=0, video_every=0)
+    bridge.launch_games(log=lambda m: None)
+    bridge.serve()
+    try:
+        c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        c.connect(sock_path)
+        c.sendall(struct.pack("<4I", MAGIC, VERSION, 1, 1) + b"fake2".ljust(32, b"\0"))
+        assert struct.unpack("<I", _recv(c, 4)) == (2,)
+        c.sendall(struct.pack("<I", 1))
+        assert np.frombuffer(_recv(c, 8), np.float32).tolist() == [0.0, 10.0]
+        for t in (1, 2):
+            c.sendall(struct.pack("<Iff", 2, 1.0, 2.0))
+            obs = np.frombuffer(_recv(c, 8), np.float32).tolist()
+            rewards = struct.unpack("<2f", _recv(c, 8))
+            terminals = struct.unpack("<2f", _recv(c, 8))
+            stats = [struct.unpack("<4f", _recv(c, 16)) for _ in range(2)]
+            assert rewards == (1.0, 2.0)
+        assert terminals == (1.0, 1.0) and obs == [0.0, 10.0]  # auto-reset
+        assert stats == [(1.0, 2.0, 2.0, 1.0), (1.0, 4.0, 2.0, -1.0)]
+        c.close()
+    finally:
+        bridge.close()
