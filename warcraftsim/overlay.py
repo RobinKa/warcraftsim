@@ -38,7 +38,8 @@ GROUND_TO_SCREEN = np.array([
 PLAYER_COLORS = [(255, 3, 3), (0, 66, 255), (28, 230, 185), (84, 0, 129), (255, 252, 0), (254, 138, 14)]
 PLAYER_COLOR_NAMES = ["red", "blue", "teal", "purple", "yellow", "orange"]
 AGENT_COLORS = [(70, 255, 120), (255, 170, 40)]  # rings/labels of agent A, B
-KIND_COLORS = {"noop": (125, 125, 135), "stop": (235, 205, 60), "move": (80, 190, 245), "attack": (245, 80, 60)}
+KIND_COLORS = {"noop": (125, 125, 135), "stop": (235, 205, 60), "retreat": (176, 131, 240), "move": (80, 190, 245),
+               "attack": (245, 80, 60)}
 PALETTE = [(80, 190, 245), (120, 220, 140), (235, 205, 60), (245, 140, 60), (245, 80, 60), (200, 110, 230),
            (110, 130, 240), (60, 200, 200), (180, 180, 180)]
 BG, FG, DIM = (18, 20, 26), (235, 235, 240), (140, 145, 155)
@@ -395,9 +396,10 @@ class EpisodeOverlay:
                 hd = h0 + detail
                 dv = int(self.actions[t, a, hd])
                 dname = labels[hd][dv] if dv < len(labels[hd]) else str(dv)
-                if dname.startswith("E") and self.A > 1:
+                slot = dname[:1] == "E" and dname[1:].isdigit()  # else a rule (semantic targets)
+                if slot and self.A > 1:
                     dname = f"{'BA'[a]}{dname[1:]}"
-                if names[chosen] == "attack" and (dv >= len(enemy) or enemy[dv] is None):
+                if slot and names[chosen] == "attack" and (dv >= len(enemy) or enemy[dv] is None):
                     dname += " (none: ignored)"
                 text += f" → {dname}"
                 if self.outputs:
