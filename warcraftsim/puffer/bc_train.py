@@ -68,6 +68,7 @@ def load(data: Path, gamma: float):
         with np.load(f) as d:
             obs, act, rew, ends = d["obs"], d["act"].astype(np.int64), d["rew"], d["ends"]
             lives = d["live"] if "live" in d else None
+            masks = d["masks"] if "masks" in d else None
         start = 0
         for end in ends:
             r = rew[start:end]
@@ -77,7 +78,8 @@ def load(data: Path, gamma: float):
                 acc = r[t] + gamma * acc
                 ret[t] = acc
             live = lives[start:end] if lives is not None else np.ones((end - start, 1), bool)
-            episodes.append((obs[start:end], act[start:end], ret, live))
+            mask = masks[start:end] if masks is not None else np.ones((end - start, 1), np.uint8)
+            episodes.append((obs[start:end], act[start:end], ret, live, mask))
             start = end
     return meta, episodes
 
@@ -91,12 +93,14 @@ def batches(episodes, idx, size, device):
         ret = np.zeros((len(chunk), T), np.float32)
         mask = np.zeros((len(chunk), T), np.float32)
         live = np.zeros((len(chunk), T, chunk[0][3].shape[1]), np.float32)  # per unit group
-        for b, (o, a, r, lv) in enumerate(chunk):
-            obs[b, :len(o)], act[b, :len(o)], ret[b, :len(o)], mask[b, :len(o)], live[b, :len(o)] = o, a, r, 1, lv
-        yield tuple(torch.from_numpy(x).to(device) for x in (obs, act, ret, mask, live))
+        legal = np.ones((len(chunk), T, chunk[0][4].shape[1]), np.float32)  # action masks (1 column: none)
+        for b, (o, a, r, lv, m) in enumerate(chunk):
+            n = len(o)
+            obs[b, :n], act[b, :n], ret[b, :n], mask[b, :n], live[b, :n], legal[b, :n] = o, a, r, 1, lv, m
+        yield tuple(torch.from_numpy(x).to(device) for x in (obs, act, ret, mask, live, legal))
 
 
-def losses(net, meta, obs, act, ret, mask, live, vf_coef: float = 0.005, smoothing: float = 0.0):
+def losses(net, meta, obs, act, ret, mask, live, legal=None, vf_coef: float = 0.005, smoothing: float = 0.0):
     """Mean cross-entropy over the counted head-steps + vf_coef * value MSE (returns are scaled:
     ~±20, so a small weight keeps the value from dominating the shared layers). A head counts on
     steps where its unit is alive; a detail head only when the unit's first head chose what it
@@ -122,8 +126,17 @@ def losses(net, meta, obs, act, ret, mask, live, vf_coef: float = 0.005, smoothi
                 if offset in offs:
                     chose |= first == v
             w = w * chose.float()
-        ce = F.cross_entropy(logits.reshape(-1, n), target.reshape(-1), reduction="none",
-                             label_smoothing=smoothing).reshape(target.shape)
+        if legal is not None and legal.shape[-1] > 1:  # action masks: only the legal options count,
+            ok = legal[..., at - n:at] > 0              # smoothing spreads over them alone
+            ok = ok | ~ok.any(dim=-1, keepdim=True)
+            logits = logits.masked_fill(~ok, -1e9)
+            logp = torch.log_softmax(logits, dim=-1)
+            nll = -logp.gather(-1, target.unsqueeze(-1)).squeeze(-1)
+            spread = -(logp * ok).sum(-1) / ok.sum(-1)
+            ce = (1 - smoothing) * nll + smoothing * spread
+        else:
+            ce = F.cross_entropy(logits.reshape(-1, n), target.reshape(-1), reduction="none",
+                                 label_smoothing=smoothing).reshape(target.shape)
         ce_sum = ce_sum + (ce * w).sum()
         n_sum += float(w.sum())
         pred = logits.argmax(-1)
@@ -177,8 +190,8 @@ def main() -> None:
     for epoch in range(args.epochs):
         net.train()
         rng.shuffle(train)
-        for obs, act, ret, mask, live in batches(episodes, train, args.batch, device):
-            loss, _, _ = losses(net, meta, obs, act, ret, mask, live, args.vf_coef, args.smoothing)
+        for obs, act, ret, mask, live, legal in batches(episodes, train, args.batch, device):
+            loss, _, _ = losses(net, meta, obs, act, ret, mask, live, legal, args.vf_coef, args.smoothing)
             opt.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(net.parameters(), 1.0)
@@ -188,8 +201,8 @@ def main() -> None:
             net.eval()
             tot, vl, nb, acc = 0.0, 0.0, 0, {}
             with torch.no_grad():
-                for obs, act, ret, mask, live in batches(episodes, val, args.batch, device):
-                    loss, v, st = losses(net, meta, obs, act, ret, mask, live, args.vf_coef, args.smoothing)
+                for obs, act, ret, mask, live, legal in batches(episodes, val, args.batch, device):
+                    loss, v, st = losses(net, meta, obs, act, ret, mask, live, legal, args.vf_coef, args.smoothing)
                     tot, vl, nb = tot + loss.item(), vl + v, nb + 1
                     for k, s in st.items():
                         a = acc.setdefault(k, {kk: 0 * vv if isinstance(vv, np.ndarray) else 0.0 for kk, vv in s.items()})

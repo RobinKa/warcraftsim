@@ -7,7 +7,8 @@ it, and start PPO from the result instead of from a random policy.
     python -m warcraftsim.puffer.train --task mirror_mix_sem_hp400 --init-from runs/bc/.../policy.bin ...
 
 `collect` plays the scripted policy (warcraftsim.agents.micro) in games like the trainer's and saves
-what the policy saw and did: observations as the trainer gets them, actions, scaled rewards.
+what the policy saw and did: observations as the trainer gets them, actions, scaled rewards, and
+the task's action masks (fit trains on the masked choices, as the trainer samples them).
 `fit` trains PufferLib's default network on that (bc_train.py; it needs torch, and runs with
 WC3_TORCH_PYTHON, default the first Python that has it). `eval` plays a checkpoint (sampled
 actions, as in training) and reports its win rate.
@@ -46,8 +47,10 @@ def _play(task: Task, env, choose):
     actions, rewards, which own unit slots were alive (their actions count), and the outcome."""
     obs, _ = task.reset(env)
     o = obs[0]
-    obs_l, act_l, rew_l, live_l = [], [], [], []
+    obs_l, act_l, rew_l, live_l, mask_l = [], [], [], [], []
     while True:
+        if task.action_mask is not None:  # before choose: the state the action is chosen in
+            mask_l.append(task.action_mask(env)[0])
         a = np.asarray(choose(o, env), np.int64).ravel()
         obs_l.append(o)
         act_l.append(a)
@@ -57,7 +60,7 @@ def _play(task: Task, env, choose):
         rew_l.append(rewards[0])
         o = obs[0]
         if done:
-            return obs_l, act_l, rew_l, live_l, outcomes[0]
+            return obs_l, act_l, rew_l, live_l, mask_l, outcomes[0]
 
 
 def collect(task_name: str, policy: str, episodes: int, games: int, step_seconds: float, out: Path) -> Path:
@@ -72,21 +75,23 @@ def collect(task_name: str, policy: str, episodes: int, games: int, step_seconds
     def run(i: int) -> Counter:
         env = _make_env(task, f"bc{i}", step_seconds)
         results: Counter = Counter()
-        obs, act, rew, live, ends = [], [], [], [], []
+        obs, act, rew, live, masks, ends = [], [], [], [], [], []
         try:
             for ep in range(per_game[i]):
                 state: dict = {}
-                o, a, r, lv, outcome = _play(task, env, lambda _o, e: micro_action(policy, e, state, max_units))
+                o, a, r, lv, m, outcome = _play(task, env, lambda _o, e: micro_action(policy, e, state, max_units))
                 obs += o
                 act += a
                 rew += r
                 live += lv
+                masks += m
                 ends.append(len(obs))
                 results[outcome] += 1
                 if (ep + 1) % 25 == 0 or ep + 1 == per_game[i]:  # keep what we have if a game dies later
+                    extra = {"masks": np.asarray(masks, np.uint8)} if masks else {}
                     np.savez_compressed(out / f"game{i}.npz", obs=np.asarray(obs, np.float32),
                                         act=np.asarray(act, np.int16), rew=np.asarray(rew, np.float32),
-                                        live=np.asarray(live, bool), ends=np.asarray(ends, np.int32))
+                                        live=np.asarray(live, bool), ends=np.asarray(ends, np.int32), **extra)
         finally:
             env.close()
         return results

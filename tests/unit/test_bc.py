@@ -20,9 +20,12 @@ def test_fit_exports_the_trainer_network(tmp_path):
     rng = np.random.default_rng(0)
     ends = np.cumsum(rng.integers(5, 12, 6))
     n = int(ends[-1])
+    masks = np.ones((n, 34), np.uint8)
+    masks[:, 4 + 5:4 + 8] = 0  # direction options 5-7 (never among the recorded actions 0-3)
     np.savez(tmp_path / "game0.npz", obs=rng.normal(size=(n, 20)).astype(np.float32),
              act=rng.integers(0, 4, (n, 6)).astype(np.int16), rew=rng.normal(size=n).astype(np.float32),
-             live=np.ones((n, 2), bool), ends=ends.astype(np.int32))
+             live=np.ones((n, 2), bool), ends=ends.astype(np.int32),
+             masks=masks)  # action masks: one byte per option of the 6 heads
     (tmp_path / "meta.json").write_text(json.dumps({
         "task": "t", "policy": "p", "win_rate": 0.5, "obs_size": 20, "act_sizes": [4, 8, 5, 4, 8, 5],
         "group_size": 3, "detail_heads": {"2": 1, "3": 2}}))
