@@ -203,7 +203,17 @@ python -m warcraftsim.puffer.train --task mirror_mix_sem_hp400 --lr 0.001 \
   * Direction and target heads count only on steps where the unit moved or attacked.
   * Label smoothing (0.1) keeps every choice possible, so PPO can still try what the script never does.
   * A small value weight (0.005) matters. The returns are noisy, and at 0.05 the value took over the shared layers: retreat recall was 0.11 instead of 0.82.
-* On `mirror_mix_sem_hp400` (noop 54%, the `pull35` script 68% at 0.5 s steps), PPO from scratch reached 44% after 3M steps and never learned to retreat. PPO from the fitted script started at ~70% (without label smoothing) and stayed there. With smoothing it started at ~33% (the random choices cost a lot) and was back at 67-69% after 1M steps.
+* Results on `mirror_mix_sem_hp400` (noop 54%, the `pull35` script 67-68% at 0.5 s steps; runs `mix40-*` in the dashboard):
+
+    | start | lr, entropy | win rate |
+    |---|---|---|
+    | random (PPO from scratch) | 0.003, 0.001 | 44% after 3M steps; never learned to retreat |
+    | `pull35` fitted exactly (62% sampled, 64% greedy) | 0.001, 0.001 | ~70% throughout (stopped at 0.8M) |
+    | `pull35` label-smoothed (33% sampled) | 0.001, 0.001 | 67-69% after 1M, 70% (best 73%) after 2M |
+    | `pull35` label-smoothed | 0.001, 0.003 | 62% after 2M (more randomness, no new behavior) |
+    | noop label-smoothed (~18% sampled) | 0.003, 0.001 | 42-47% at 1-1.5M (stopped): no better than from scratch, still 25% harmful attacks |
+
+  PPO converges onto the script's behavior (99% of attacks on "weakest", 3-4% retreats) rather than beyond it. Random actions are very costly here: 7.5% of them turn noop's 54% into ~18%, since a random retreat or retarget takes a unit out of the fight for a second or two. Exploration is therefore punished hard.
 
 Notes:
 * Updates per epoch are `replay_ratio × batch / minibatch`. With the minibatch equal to the batch (the old default), there was one update per epoch and learning was slow: `footmen2` reached 61% wins in 1M steps, against 97% with 16 updates.

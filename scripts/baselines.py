@@ -19,9 +19,9 @@ from warcraftsim.puffer.tasks import get_task
 
 
 def run(job):
-    task_name, policy, idx, episodes, step_seconds = job
+    task_name, policy, idx, episodes, step_seconds, prefix = job
     task = get_task(task_name)
-    env = task.make_env(f"base-{idx}")
+    env = task.make_env(f"{prefix}-{idx}")
     env.setup.window = (320, 240)
     if step_seconds:
         env.setup.step_seconds = step_seconds
@@ -51,12 +51,13 @@ def main() -> None:
     ap.add_argument("--episodes", type=int, default=20, help="per game")
     ap.add_argument("--games", type=int, default=2, help="per task and policy")
     ap.add_argument("--step-seconds", type=float, default=0, help="default: the task's (0.25 s)")
+    ap.add_argument("--name", default="base", help="game name prefix (concurrent runs need different ones)")
     args = ap.parse_args()
     jobs, k = [], 0
     for t in args.tasks:
         for p in args.policies.split(","):
             for _ in range(args.games):
-                jobs.append((t, p, k, args.episodes, args.step_seconds))
+                jobs.append((t, p, k, args.episodes, args.step_seconds, args.name))
                 k += 1
     res: dict = {}
     with ThreadPoolExecutor(len(jobs)) as ex:
