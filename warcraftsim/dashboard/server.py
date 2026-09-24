@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+from collections import OrderedDict
 import os
 import threading
 import urllib.parse
@@ -40,15 +41,19 @@ MAX_POINTS = 600
 
 
 class _JsonlCache:
-    """Incrementally read JSON-lines files (they only grow)."""
+    """Incrementally read JSON-lines files (they only grow). Keeps the `max_files` most recently
+    read files: the runs being looked at, not every run ever."""
 
-    def __init__(self):
-        self._files: dict[Path, tuple[int, list[dict]]] = {}
+    def __init__(self, max_files: int = 64):
+        self._files: "OrderedDict[Path, tuple[int, list[dict]]]" = OrderedDict()
         self._lock = threading.Lock()
+        self.max_files = max_files
 
     def read(self, path: Path) -> list[dict]:
         with self._lock:
             offset, rows = self._files.get(path, (0, []))
+            if path in self._files:
+                self._files.move_to_end(path)
             try:
                 size = path.stat().st_size
             except FileNotFoundError:
@@ -67,7 +72,27 @@ class _JsonlCache:
                         pass
                 offset += end
                 self._files[path] = (offset, rows)
+                while len(self._files) > self.max_files:
+                    self._files.popitem(last=False)
             return rows
+
+
+def _tail_rows(path: Path, n: int, max_bytes: int = 48 * 1024) -> list[dict]:
+    """The last n parseable rows of a JSON-lines file, reading only its end."""
+    try:
+        size = path.stat().st_size
+        with open(path, "rb") as f:
+            f.seek(max(0, size - max_bytes))
+            data = f.read()
+    except OSError:
+        return []
+    rows = []
+    for line in data.splitlines()[-(n + 1):]:
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            pass
+    return rows[-n:]
 
 
 def _downsample(rows: list, n: int = MAX_POINTS) -> list:
@@ -128,6 +153,7 @@ class Dashboard:
     def __init__(self, runs_dir: Path):
         self.runs_dir = Path(runs_dir)
         self.cache = _JsonlCache()
+        self._summaries: dict[Path, tuple[tuple, dict]] = {}  # run dir -> (file mtimes, summary)
 
     def _merged(self, d: Path, stem: str) -> list[dict]:
         """<stem>.jsonl plus <stem>-<worker>.jsonl files, ordered by time."""
@@ -149,17 +175,27 @@ class Dashboard:
                 info = json.loads(info_file.read_text())
             except json.JSONDecodeError:
                 continue
-            episodes = self._merged(d, "episodes")
-            train = self.cache.read(d / "train.jsonl")
-            recent = episodes[-100:]
+            files = [d / "run.json", *sorted(d.glob("*.jsonl"))]
+            stamp = tuple((f.name, f.stat().st_mtime) for f in files if f.exists())
+            cached = self._summaries.get(d)
+            if cached and cached[0] == stamp:  # nothing changed since (a finished run): reuse
+                info["summary"] = cached[1]
+                out.append(info)
+                continue
+            # the run list only needs the latest numbers: read the ends of the files, keep nothing
+            tails = [[r for r in _tail_rows(f, 100) if "event" not in r] for f in d.glob("episodes*.jsonl")]
+            recent = sorted((r for t in tails for r in t), key=lambda r: r.get("time", 0))[-100:]
+            train = _tail_rows(d / "train.jsonl", 1)
             info["summary"] = {
-                "episodes": len(episodes),
+                # episode numbers count per bridge worker: the total is the sum of each file's latest
+                "episodes": sum(max((r.get("episode", 0) for r in t), default=0) for t in tails),
                 "win_rate_100": (sum(1 for e in recent if e.get("outcome", 0) > 0) / len(recent)) if recent else None,
                 "return_100": (sum(e.get("return", 0) for e in recent) / len(recent)) if recent else None,
                 "agent_steps": train[-1].get("agent_steps") if train else 0,
                 "sps": train[-1].get("SPS") if train else None,
                 "updated": max(f.stat().st_mtime for f in [d / "run.json", *d.glob("*.jsonl")]),
             }
+            self._summaries[d] = (stamp, info["summary"])
             out.append(info)
         return sorted(out, key=lambda r: r.get("created", 0), reverse=True)
 
