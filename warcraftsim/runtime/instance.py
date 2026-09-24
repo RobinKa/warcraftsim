@@ -615,8 +615,9 @@ class GameInstance:
         """Current virtual clock multiplier."""
         return self._speed
 
-    def restart(self, relaunch: bool = False) -> Observation:
-        """End the current episode and start a new one.
+    def restart(self, relaunch: bool = False, spawns: Sequence[Command] = ()) -> Observation:
+        """End the current episode and start a new one; scenarios: with `spawns` (QueueSpawn) on
+        top of the scenario's units, in the same in-game restart when there is one.
 
         Scenario maps reset inside the running game (units are removed and respawned). Melee
         games are relaunched: RestartGame/ChangeLevel/LoadGame all return a .wgc game to the
@@ -629,13 +630,19 @@ class GameInstance:
         parked = self._spare is not None and self._spare._parked
         if (self.setup.scenario is not None and not self._ended and self._playback is None and not relaunch
                 and not recycle and not parked):
+            ints = encode_commands([*spawns, Restart()])
             key = f"{self._proc_episode}:{self._last_seq}"
-            self._cmd_log[key] = self._cmd_log.get(key, []) + Restart().encode()
-            self._reply(ints=Restart().encode())
+            self._cmd_log[key] = self._cmd_log.get(key, []) + ints
+            self._reply(ints=ints)
             self._last_seq = None
             obs = self._await_observation(new_episode=True)
             self.episode += 1
             return obs
+        obs = self._restart_process(relaunch, recycle, parked)
+        return self.respawn(spawns) if spawns else obs
+
+    def _restart_process(self, relaunch: bool, recycle: bool, parked: bool) -> Observation:
+        """restart() in another process: the parked game, the warm spare, or a fresh launch."""
         was_ended = self._ended
         self._ended = False
         self._playback = None

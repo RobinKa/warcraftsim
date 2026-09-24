@@ -47,10 +47,10 @@ class Wc3Game:
         self._queue.clear()
         if self.instance.proc is None:
             obs = self.instance.start()
+            if spawns:
+                obs = self.instance.respawn(spawns)
         else:
-            obs = self.instance.restart(relaunch=relaunch)
-        if spawns:
-            obs = self.instance.respawn(spawns)
+            obs = self.instance.restart(relaunch=relaunch, spawns=spawns)
         self._shared["first"] = obs
         if obs.orders:
             self._orders.clear()
