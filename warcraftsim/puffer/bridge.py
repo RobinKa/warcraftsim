@@ -91,7 +91,7 @@ class _Slot:
 class BridgeServer:
     def __init__(self, task: Task, num_envs: int, run_dir: str | os.PathLike, socket_path: str,
                  record_every: int = 25, video_every: int = 100, name: str = "wc3", worker: int = 0,
-                 window: tuple[int, int] | None = (320, 240)):
+                 window: tuple[int, int] | None = (320, 240), step_seconds: float | None = None):
         self.task = task
         self.num_envs = num_envs
         self.run_dir = Path(run_dir)
@@ -101,6 +101,7 @@ class BridgeServer:
         self.name = name
         self.worker = worker
         self.window = window  # the games' screen: small, training does not look at pixels
+        self.step_seconds = step_seconds  # None: the task's
         self.slots: list[_Slot] = []
         self._free: list[_Slot] = []  # games not serving a trainer environment
         self._lock = threading.Lock()
@@ -142,6 +143,8 @@ class BridgeServer:
             env = self.task.make_env(f"{self.name}{i}")
             if self.window and getattr(env, "setup", None) is not None:
                 env.setup.window = self.window  # videos are rendered at full size regardless
+            if self.step_seconds and getattr(env, "setup", None) is not None:
+                env.setup.step_seconds = self.step_seconds
             if i == 0 and self.video_every and getattr(env, "setup", None) is not None:
                 env.setup.scenario_spare = True  # video episodes start and end without a game load
             obs, info = self.task.reset(env)
@@ -451,13 +454,13 @@ class BridgeServer:
 
 
 def run_worker(task_name: str, num_envs: int, run_dir: str, socket_path: str, record_every: int, video_every: int,
-               name: str, worker: int, ready, stop, control=None, acks=None) -> None:
+               name: str, worker: int, ready, stop, control=None, acks=None, step_seconds: float | None = None) -> None:
     """Bridge worker process: its own games and GIL (multiprocessing target). `control` (a queue)
     takes ("run", run_dir, record_every, video_every) to switch runs; each is acknowledged on `acks`."""
     from .tasks import get_task
 
     bridge = BridgeServer(get_task(task_name), num_envs, run_dir, socket_path, record_every, video_every, name,
-                          worker)
+                          worker, step_seconds=step_seconds)
     try:
         bridge.launch_games(log=lambda m: print(f"[worker {worker}] {m}", flush=True))
         bridge.serve()

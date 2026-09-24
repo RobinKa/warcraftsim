@@ -118,6 +118,7 @@ def make_parser() -> argparse.ArgumentParser:
                     help="epochs; videos show the policy of the latest checkpoint before their episode")
     ap.add_argument("--record-every", type=int, default=20, help="trajectory render every N episodes of game 0")
     ap.add_argument("--video-every", type=int, default=60, help="replay video every N episodes of game 0 (0: off)")
+    ap.add_argument("--step-seconds", type=float, default=0, help="game time per step (default: the task's, 0.25)")
     ap.add_argument("--init-from", help="start from a checkpoint: a .bin file, or a run name (its latest)")
     ap.add_argument("--sweep", action="append", default=[], metavar="OPTIONS",
                     help="a sweep: one run per --sweep, each with these options on top of the others "
@@ -128,7 +129,15 @@ def make_parser() -> argparse.ArgumentParser:
 
 def parse(ap: argparse.ArgumentParser, argv: list[str]) -> argparse.Namespace:
     """Our options, plus any --section.key=value PufferLib options (kept in args.extra)."""
-    args, unknown = ap.parse_known_args(argv)
+    joined, i = [], 0
+    while i < len(argv):  # --sweep "--x.y=1": argparse would take the value for an option
+        if argv[i] == "--sweep" and i + 1 < len(argv):
+            joined.append(f"--sweep={argv[i + 1]}")
+            i += 2
+        else:
+            joined.append(argv[i])
+            i += 1
+    args, unknown = ap.parse_known_args(joined)
     bad = [u for u in unknown if not (u.startswith("--") and "." in u.split("=")[0] and "=" in u)]
     if bad:
         ap.error(f"unrecognized arguments: {' '.join(bad)}")
@@ -159,8 +168,9 @@ def main(argv: list[str] | None = None) -> int:
     plans = []  # (args, run name, sweep info)
     for i, cfg in enumerate(configs):
         args = parse(ap, [*argv, *shlex.split(cfg)])
-        if (args.task, args.envs, args.workers) != (base.task, base.envs, base.workers):
-            ap.error("--sweep options cannot change --task, --envs or --workers (the runs share the games)")
+        if (args.task, args.envs, args.workers, args.step_seconds) != (base.task, base.envs, base.workers,
+                                                                       base.step_seconds):
+            ap.error("--sweep options cannot change --task, --envs, --workers or --step-seconds (the runs share the games)")
         name = f"{group}-{i + 1}" if base.sweep else group
         plans.append((args, name, {"group": group, "index": i + 1, "of": len(configs), "options": cfg}
                       if base.sweep else None))
@@ -194,7 +204,8 @@ def main(argv: list[str] | None = None) -> int:
     a0 = plans[0][0]
     procs = [ctx.Process(target=run_worker, daemon=True, args=(
         task.name, counts[w], str(first.dir), sockets[w], a0.record_every if w == 0 else 0,
-        a0.video_every if w == 0 else 0, f"{games}{w}-", w, readies[w], stop_event, controls[w], acks))
+        a0.video_every if w == 0 else 0, f"{games}{w}-", w, readies[w], stop_event, controls[w], acks,
+        base.step_seconds or None))
         for w in range(workers)]
     trainer = None
     stopping = False
