@@ -134,16 +134,19 @@ def _micro_action_stats(env, actions: list[np.ndarray]) -> Counter:
         a = np.asarray(action, int).reshape(-1, 3)
         targets = []
         for i in range(min(len(own), len(a))):
+            if own[i] is None:
+                continue
             kind, _, target = a[i]
             c["unit_steps"] += 1
             c[_KINDS[kind]] += 1
             if kind == 3:
-                if target < len(enemy):
+                if target < len(enemy) and enemy[target] is not None:
                     targets.append(int(target))
                 else:
                     c["attack_invalid"] += 1
-        if targets:
-            weakest = min(range(len(enemy)), key=lambda j: enemy[j].hp)
+        live = [j for j in range(len(enemy)) if enemy[j] is not None]
+        if targets and live:
+            weakest = min(live, key=lambda j: enemy[j].hp)
             c["attack_valid"] += len(targets)
             c["attack_weakest"] += sum(t == weakest for t in targets)
             if len(targets) >= 2:

@@ -65,6 +65,8 @@ class UnitEncoder:
         mask = np.zeros(max_units, dtype=bool)
         ox, oy = self.origin
         for i, u in enumerate(units[:max_units]):
+            if u is None:  # an empty slot (the unit died): masked, all zero
+                continue
             if u.owner == self.player:
                 rel = 0
             elif u.owner in allies:
@@ -96,6 +98,8 @@ class UnitEncoder:
             ids[i] = u.id
             mask[i] = True
         for u in units[:max_units]:
+            if u is None:
+                continue
             hist = self._hp.setdefault(u.id, [u.hp] * self.HP_HISTORY)
             hist.append(u.hp)
             del hist[0]
@@ -203,6 +207,21 @@ class Wc3Env(gym.Env):
         self.game.close()
 
 
+def _slot_units(obs: Observation, player: int, slots: tuple[list[int], list[int]], max_own: int,
+                max_enemy: int) -> tuple[list[Unit | None], list[Unit | None]]:
+    """Own and enemy units by slot. A unit keeps the slot it got when it first appeared (by id at
+    the start of the episode) for the whole episode; a dead unit leaves its slot empty (None).
+    Compacting the living units instead would shift everyone behind a dead unit into another
+    slot, so "attack enemy 1" would suddenly mean a different unit. `slots` is updated."""
+    own_ids, enemy_ids = slots
+    alive = {u.id: u for u in obs.units if u.alive}
+    for ids, cap, mine in ((own_ids, max_own, True), (enemy_ids, max_enemy, False)):
+        new = sorted(u.id for u in alive.values() if (u.owner == player) == mine
+                     and (mine or u.owner in obs.players) and u.id not in ids)
+        ids.extend(new[:max(0, cap - len(ids))])
+    return [alive.get(i) for i in own_ids], [alive.get(i) for i in enemy_ids]
+
+
 def _issue(view, attacking: dict[int, int], unit: Unit, kind: int, direction: int, target: Unit | None,
            move_distance: float) -> None:
     """One unit's micro action: 0 noop, 1 stop, 2 move `move_distance` in 8-way `direction`,
@@ -256,18 +275,18 @@ class MicroEnv(Wc3Env):
         self._hp0 = (1.0, 1.0)
         self._hp_prev = (0.0, 0.0)
         self._attacking: dict[int, int] = {}  # unit -> enemy it was last ordered to attack
+        self._slots: tuple[list[int], list[int]] = ([], [])  # unit ids by slot (see _slot_units)
 
-    def _split(self, obs: Observation) -> tuple[list[Unit], list[Unit]]:
-        own = sorted((u for u in obs.units if u.alive and u.owner == self.player), key=lambda u: u.id)
-        enemy = sorted((u for u in obs.units if u.alive and u.owner != self.player and u.owner in obs.players),
-                       key=lambda u: u.id)
-        return own[:self.max_own], enemy[:self.max_enemy]
+    def _split(self, obs: Observation) -> tuple[list[Unit | None], list[Unit | None]]:
+        return _slot_units(obs, self.player, self._slots, self.max_own, self.max_enemy)
 
     def _on_reset(self, obs: Observation) -> None:
         cx, cy = self.scenario.resolved_center()
         self.encoder = UnitEncoder(self.player, (cx, cy), 1500.0)
         self._attacking = {}
+        self._slots = ([], [])
         own, enemy = self._split(obs)
+        own, enemy = [u for u in own if u], [u for u in enemy if u]
         self._hp0 = (max(sum(u.max_hp for u in own), 1), max(sum(u.max_hp for u in enemy), 1))
         self._hp_prev = (sum(u.hp for u in own), sum(u.hp for u in enemy))
 
@@ -282,6 +301,8 @@ class MicroEnv(Wc3Env):
     def _commands(self, action: np.ndarray) -> list[Command]:
         action = np.asarray(action).reshape(self.max_own, 3)
         for i, unit in enumerate(self._own):
+            if unit is None:
+                continue
             kind, direction, target = (int(v) for v in action[i])
             _issue(self.game, self._attacking, unit, kind, direction,
                    self._enemy[target] if kind == 3 and target < len(self._enemy) else None, self.move_distance)
@@ -401,6 +422,7 @@ class MicroSelfPlayEnv:
         self._hp0: dict[int, float] = {}
         self._hp_prev: dict[int, float] = {}
         self._attacking: dict[int, int] = {}  # unit -> enemy it was last ordered to attack
+        self._slots: dict[int, tuple[list[int], list[int]]] = {}  # per player: unit ids by slot
 
     def observation_space(self, agent: int) -> spaces.Space:
         return self.single_observation_space
@@ -408,11 +430,8 @@ class MicroSelfPlayEnv:
     def action_space(self, agent: int) -> spaces.Space:
         return self.single_action_space
 
-    def _side(self, obs: Observation, player: int) -> tuple[list[Unit], list[Unit]]:
-        own = sorted((u for u in obs.units if u.alive and u.owner == player), key=lambda u: u.id)
-        enemy = sorted((u for u in obs.units if u.alive and u.owner != player and u.owner in obs.players),
-                       key=lambda u: u.id)
-        return own[:self.max_units], enemy[:self.max_units]
+    def _side(self, obs: Observation, player: int) -> tuple[list[Unit | None], list[Unit | None]]:
+        return _slot_units(obs, player, self._slots.setdefault(player, ([], [])), self.max_units, self.max_units)
 
     def _hp(self, obs: Observation, player: int) -> float:
         return float(sum(u.hp for u in obs.units if u.alive and u.owner == player))
@@ -434,6 +453,7 @@ class MicroSelfPlayEnv:
         cx, cy = self.scenario.resolved_center()
         self.encoders = {p: UnitEncoder(p, (cx, cy), 1500.0) for p in self.possible_agents}
         self._attacking = {}
+        self._slots = {}
         for p in self.possible_agents:
             self.views[p] = self.game.as_player(p)
             self._hp0[p] = max(sum(u.max_hp for u in obs.units if u.owner == p), 1)
@@ -446,6 +466,8 @@ class MicroSelfPlayEnv:
             own, enemy = self._units[p]
             action = np.asarray(action).reshape(self.max_units, 3)
             for i, unit in enumerate(own):
+                if unit is None:
+                    continue
                 kind, direction, target = (int(v) for v in action[i])
                 _issue(view, self._attacking, unit, kind, direction,
                        enemy[target] if kind == 3 and target < len(enemy) else None, self.move_distance)

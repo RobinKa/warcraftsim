@@ -58,12 +58,12 @@ def _steps(n: int) -> str:
     return f"{n / 1e6:.2f}M" if n >= 1e6 else f"{n / 1e3:.0f}k"
 
 
-def _slots(obs: Observation, player: int) -> tuple[list[Unit], list[Unit]]:
-    """The agent's own and enemy unit slots, ordered like the environments order them (by id)."""
-    own = sorted((u for u in obs.units if u.alive and u.owner == player), key=lambda u: u.id)
-    enemy = sorted((u for u in obs.units if u.alive and u.owner != player and u.owner in obs.players),
-                   key=lambda u: u.id)
-    return own, enemy
+def _slots(obs: Observation, player: int, slots: dict) -> tuple[list[Unit | None], list[Unit | None]]:
+    """The agent's own and enemy units by slot, assigned like the environments assign them (a unit
+    keeps its slot for the episode; None: dead)."""
+    from .env import _slot_units
+
+    return _slot_units(obs, player, slots.setdefault(player, ([], [])), 64, 64)
 
 
 class EpisodeOverlay:
@@ -97,6 +97,7 @@ class EpisodeOverlay:
         self.w = self.h = 0
         self.world = False
         self._max_hp: dict[str, float] = {}  # per side, from the first observation
+        self._slot_ids: dict = {}  # per agent player: unit ids by slot
 
     # ---- setup ----------------------------------------------------------------------------------
 
@@ -142,12 +143,14 @@ class EpisodeOverlay:
         self._last_panel = panel
         labels: dict[int, tuple[str, tuple, bool]] = {}
         for a, p in enumerate(self.agent_players):
-            own, enemy = _slots(obs_a, p)
+            own, enemy = _slots(obs_a, p, self._slot_ids)
             for i, u in enumerate(own):
-                labels[u.id] = (f"{'AB'[a]}{i}", AGENT_COLORS[a], True)
+                if u is not None:
+                    labels[u.id] = (f"{'AB'[a]}{i}", AGENT_COLORS[a], True)
             if self.A == 1:
                 for i, u in enumerate(enemy):
-                    labels.setdefault(u.id, (f"E{i}", (215, 215, 220), False))
+                    if u is not None:
+                        labels.setdefault(u.id, (f"E{i}", (215, 215, 220), False))
         owners = {u.id: u.owner for u in obs_a.units}
         orders = [c for c in commands if isinstance(c, (PointOrder, TargetOrder, ImmediateOrder))
                   and owners.get(c.unit) in self.agent_players]
@@ -353,7 +356,7 @@ class EpisodeOverlay:
         bottom = self.h - (50 if self.entropy is not None else 8)
         rows = []
         for a, p in enumerate(self.agent_players):
-            own, enemy = _slots(obs, p)
+            own, enemy = _slots(obs, p, self._slot_ids)
             for i in range(groups):
                 rows.append((a, i, own[i] if i < len(own) else None, enemy))
         head = "per unit: policy probabilities (bar) and the sampled action"
@@ -394,7 +397,7 @@ class EpisodeOverlay:
                 dname = labels[hd][dv] if dv < len(labels[hd]) else str(dv)
                 if dname.startswith("E") and self.A > 1:
                     dname = f"{'BA'[a]}{dname[1:]}"
-                if names[chosen] == "attack" and dv >= len(enemy):
+                if names[chosen] == "attack" and (dv >= len(enemy) or enemy[dv] is None):
                     dname += " (none: ignored)"
                 text += f" → {dname}"
                 if self.outputs:

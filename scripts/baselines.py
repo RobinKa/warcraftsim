@@ -23,15 +23,18 @@ from warcraftsim.puffer.tasks import get_task
 
 
 def act(policy: str, env, state: dict, max_units: int) -> np.ndarray:
-    own, enemy = env._own, env._enemy
+    own, enemy = env._own, env._enemy  # by slot; None: dead
     a = np.zeros((max_units, 3), np.int64)
-    if not enemy or policy == "noop":
+    live = [i for i, e in enumerate(enemy) if e is not None]
+    if not live or policy == "noop":
         return a
-    weakest = min(range(len(enemy)), key=lambda i: enemy[i].hp)
-    ex = sum(e.x for e in enemy) / len(enemy)
-    ey = sum(e.y for e in enemy) / len(enemy)
-    healthiest = max(u.hp for u in own) if own else 0
+    weakest = min(live, key=lambda i: enemy[i].hp)
+    ex = sum(enemy[i].x for i in live) / len(live)
+    ey = sum(enemy[i].y for i in live) / len(live)
+    healthiest = max((u.hp for u in own if u is not None), default=0)
     for i, u in enumerate(own[:max_units]):
+        if u is None:
+            continue
         a[i] = (3, 0, weakest)
         if not policy.startswith("pull"):
             continue
