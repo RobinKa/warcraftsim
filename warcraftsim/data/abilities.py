@@ -69,6 +69,7 @@ MELEE_HEROES = ("Hpal", "Hamg", "Hmkg", "Hblm", "Obla", "Ofar", "Otch", "Oshd",
 @dataclass(frozen=True)
 class AbilityInfo:
     code: str
+    name: str
     order: str | None
     cast: str  # "unit", "point", "instant", "passive"
     side: str  # "enemy", "ally", "self", "summon", "utility" ("" when passive)
@@ -106,12 +107,21 @@ def _num(v) -> float:
 
 @lru_cache(maxsize=1)
 def _tables() -> dict:
-    cache = paths.CACHE_DIR / "hero_abilities.json"
+    cache = paths.CACHE_DIR / "hero_abilities-2.json"
     if cache.exists():
         return json.loads(cache.read_text())
+    names: dict[str, str] = {}
     with GameArchives() as g:
         units = parse_slk(g.read("Units\\UnitAbilities.slk").decode("latin-1"))
         abils = parse_slk(g.read("Units\\AbilityData.slk").decode("latin-1"))
+        for fname in sorted(g.names("Units\\*AbilityStrings.txt"), key=str.lower):
+            current = None
+            for line in g.read(fname).decode("latin-1").splitlines():
+                line = line.strip()
+                if line.startswith("[") and line.endswith("]"):
+                    current = line[1:-1]
+                elif current and line.startswith("Name=") and current not in names:
+                    names[current] = line[5:].strip().strip('"')
     heroes = {}
     for r in units:
         uid = r.get("unitAbilID") or ""
@@ -126,7 +136,7 @@ def _tables() -> dict:
             continue
         levels = max(int(_num(r.get("levels"))), 1)
         rows[code] = {
-            "levels": levels, "req_level": int(_num(r.get("reqLevel"))) or 1,
+            "name": names.get(code, code), "levels": levels, "req_level": int(_num(r.get("reqLevel"))) or 1,
             "level_skip": int(_num(r.get("levelSkip"))),
             **{f: [_num(r.get(f"{col}{k}")) for k in range(1, levels + 1)]
                for f, col in (("mana", "Cost"), ("cooldown", "Cool"), ("range", "Rng"), ("area", "Area"))},
@@ -151,7 +161,7 @@ def ability_info() -> dict[str, AbilityInfo]:
     for code, r in _tables()["abilities"].items():
         cast, side = _CAST.get(code, ("passive", ""))
         order = _ORDER_OVERRIDES.get(code) or orders.get(code, {}).get("Order")
-        out[code] = AbilityInfo(code, order, cast, side, r["levels"], r["req_level"], r["level_skip"],
+        out[code] = AbilityInfo(code, r["name"], order, cast, side, r["levels"], r["req_level"], r["level_skip"],
                                 tuple(r["mana"]), tuple(r["cooldown"]), tuple(r["range"]), tuple(r["area"]))
     return out
 

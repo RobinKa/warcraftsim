@@ -100,7 +100,8 @@ def losses(net, meta, obs, act, ret, mask, live, vf_coef: float = 0.005, smoothi
     out = net(obs)
     sizes = meta["act_sizes"]
     group = meta.get("group_size", 1)
-    detail = {int(k): v for k, v in meta.get("detail_heads", {}).items()}  # first-head value -> head offset
+    detail = {int(k): (v if isinstance(v, list) else [v]) for k, v in meta.get("detail_heads", {}).items()}
+    # first-head value -> the head offsets that detail it (e.g. cast -> ability slot and target)
     ce_sum, n_sum, stats = 0.0, 0.0, {}
     at = 0
     for h, n in enumerate(sizes):
@@ -113,8 +114,8 @@ def losses(net, meta, obs, act, ret, mask, live, vf_coef: float = 0.005, smoothi
         if offset and detail:
             first = act[..., h - offset]
             chose = torch.zeros_like(mask, dtype=torch.bool)
-            for v, off in detail.items():
-                if off == offset:
+            for v, offs in detail.items():
+                if offset in offs:
                     chose |= first == v
             w = w * chose.float()
         ce = F.cross_entropy(logits.reshape(-1, n), target.reshape(-1), reduction="none",

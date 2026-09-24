@@ -65,7 +65,7 @@ def collect(task_name: str, policy: str, episodes: int, games: int, step_seconds
 
     task = get_task(task_name)
     out.mkdir(parents=True, exist_ok=True)
-    max_units = task.num_atns // 3
+    max_units = task.num_atns // task.group_size
     per_game = [episodes // games + (i < episodes % games) for i in range(games)]
     t0 = time.time()
 

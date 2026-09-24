@@ -142,6 +142,10 @@ class Wc3Game:
 
     # ---- orders (queued until the next step) ----------------------------------------------
 
+    def issue(self, command: Command) -> None:
+        """Queue any command for the next step."""
+        self._queue.append(command)
+
     def order(self, unit: Unit | int, order: str | int) -> None:
         self._queue.append(ImmediateOrder(_uid(unit), self.order_id(order)))
 

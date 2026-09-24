@@ -39,7 +39,24 @@ PLAYER_COLORS = [(255, 3, 3), (0, 66, 255), (28, 230, 185), (84, 0, 129), (255, 
 PLAYER_COLOR_NAMES = ["red", "blue", "teal", "purple", "yellow", "orange"]
 AGENT_COLORS = [(70, 255, 120), (255, 170, 40)]  # rings/labels of agent A, B
 KIND_COLORS = {"noop": (125, 125, 135), "stop": (235, 205, 60), "retreat": (176, 131, 240), "move": (80, 190, 245),
-               "attack": (245, 80, 60)}
+               "attack": (245, 80, 60), "cast": (245, 110, 210)}
+
+
+def _ability_orders() -> dict[str, tuple[str, float]]:
+    """Order string -> (ability name, area) of the hero abilities (empty without the game data)."""
+    try:
+        from .data.abilities import ability_info
+        return {i.order: (i.name, max(i.area, default=0.0)) for i in ability_info().values() if i.order}
+    except Exception:
+        return {}
+
+
+def _ability_name(unit_type: str, slot: int) -> str:
+    try:
+        from .data.abilities import ability_info, hero_abilities
+        return ability_info()[hero_abilities()[unit_type][slot]].name
+    except Exception:
+        return f"ability {slot + 1}"
 PALETTE = [(80, 190, 245), (120, 220, 140), (235, 205, 60), (245, 140, 60), (245, 80, 60), (200, 110, 230),
            (110, 130, 240), (60, 200, 200), (180, 180, 180)]
 BG, FG, DIM = (18, 20, 26), (235, 235, 240), (140, 145, 155)
@@ -102,9 +119,11 @@ class EpisodeOverlay:
 
     # ---- setup ----------------------------------------------------------------------------------
 
-    def begin(self, setup, order_names: Sequence[str], w: int, h: int) -> None:
+    def begin(self, setup, orders: dict[str, int], w: int, h: int) -> None:
+        """`orders`: order name -> id (the first observation's Observation.orders)."""
         self.w, self.h = w, h
-        self.order_names = order_names
+        self.order_names = {oid: name for name, oid in (orders or {}).items()}  # order id -> name
+        self._casts = _ability_orders()
         sc = setup.scenario
         self.world = sc is not None and abs(w / h - 16 / 9) < 0.02  # calibrated camera and aspect
         self.camera = sc.resolved_center() if sc is not None else (0.0, 0.0)
@@ -213,9 +232,27 @@ class EpisodeOverlay:
             src = at(c.unit)
             if src is None:
                 continue
-            name = self.order_names[c.order] if 0 <= c.order < len(self.order_names) else "?"
+            name = self.order_names.get(c.order, "?")
             sx, sy = self._screen(*src)
-            if isinstance(c, PointOrder):
+            cast = self._casts.get(name)
+            if cast is not None:  # a hero ability: its name, and where it goes (its area if any)
+                color = KIND_COLORS["cast"]
+                spell, area = cast
+                if isinstance(c, PointOrder):
+                    dst = (c.x, c.y)
+                elif isinstance(c, TargetOrder):
+                    dst = at(c.target)
+                else:
+                    dst = None
+                if dst is not None:
+                    ex, ey = self._screen(*dst)
+                    d.line([(sx, sy), (ex, ey)], fill=color, width=3)
+                    ring(dst[0], dst[1], max(area, 45.0), color, 2)
+                else:
+                    ring(src[0], src[1], max(area, 60.0), color, 3)
+                d.text((sx, sy - 30), spell, font=self.f_label, fill=color, anchor="mb", stroke_width=2,
+                       stroke_fill=(0, 0, 0))
+            elif isinstance(c, PointOrder):
                 color = KIND_COLORS["attack" if name == "attack" else "move"]
                 ex, ey = self._screen(c.x, c.y)
                 d.line([(sx, sy), (ex, ey)], fill=color, width=2)
@@ -392,8 +429,8 @@ class EpisodeOverlay:
             if probs is not None:
                 text += f" {probs[chosen]:.0%}"
             detail = task.detail_heads.get(chosen)
-            if detail is not None:
-                hd = h0 + detail
+            for off in (detail if isinstance(detail, tuple) else () if detail is None else (detail,)):
+                hd = h0 + off  # e.g. move -> direction; attack -> target; cast -> ability, target
                 dv = int(self.actions[t, a, hd])
                 dname = labels[hd][dv] if dv < len(labels[hd]) else str(dv)
                 slot = dname[:1] == "E" and dname[1:].isdigit()  # else a rule (semantic targets)
@@ -401,6 +438,8 @@ class EpisodeOverlay:
                     dname = f"{'BA'[a]}{dname[1:]}"
                 if slot and names[chosen] == "attack" and (dv >= len(enemy) or enemy[dv] is None):
                     dname += " (none: ignored)"
+                if names[chosen] == "cast" and dname.startswith("ability"):
+                    dname = _ability_name(unit.type, dv)
                 text += f" → {dname}"
                 if self.outputs:
                     text += f" {self.outputs[a].probs[hd][t][dv]:.0%}"

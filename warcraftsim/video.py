@@ -147,7 +147,7 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
         grabber = XGrabber(inst._display, *geo)
         size, pix = (geo[2], geo[3]), "bgr0"
         if overlay is not None:
-            overlay.begin(setup, inst.order_names, geo[2], geo[3])
+            overlay.begin(setup, obs.orders or {}, geo[2], geo[3])
             size, pix = overlay.size, "rgb24"
         scale = f"scale={width}:-2" if width else "scale=trunc(iw/2)*2:trunc(ih/2)*2"
         ffmpeg = subprocess.Popen(

@@ -25,7 +25,7 @@ def run(job):
     env.setup.window = (320, 240)
     if step_seconds:
         env.setup.step_seconds = step_seconds
-    max_units = task.num_atns // 3
+    max_units = task.num_atns // task.group_size
     out = []
     try:
         for _ in range(episodes):

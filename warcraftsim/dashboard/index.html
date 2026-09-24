@@ -286,10 +286,11 @@ const SECTIONS = [
   ]],
   ["Behaviour", [
     ["c-act", "Action mix", "share of unit-steps", [EP("act_noop", "noop", "#8795a3"), EP("act_stop", "stop", "#e0c33a"),
-      EP("act_retreat", "retreat", "#b083f0"), EP("act_move", "move", "#539bf5"), EP("act_attack", "attack", "#e5534b")], { ymin: 0, ymax: 1, empty: "no action statistics for this task/run" }],
+      EP("act_retreat", "retreat", "#b083f0"), EP("act_move", "move", "#539bf5"), EP("act_cast", "cast", "#f56ed2"), EP("act_attack", "attack", "#e5534b")], { ymin: 0, ymax: 1, empty: "no action statistics for this task/run" }],
     ["c-tgt", "Targeting", "damage concentration: share hitting one unit per step",
       [EP("combat_focus_dealt", "damage dealt on one enemy", "#e0a33a"), EP("combat_focus_taken", "damage taken on one unit", "#e5534b"),
-       EP("act_attack_weakest", "attack orders on the weakest", "#4cc38a"), EP("act_attack_invalid", "invalid attack orders", "#8795a3")],
+       EP("act_attack_weakest", "attack orders on the weakest", "#4cc38a"), EP("act_attack_invalid", "invalid attack orders", "#8795a3"),
+       EP("act_cast_invalid", "casts not possible", "#f56ed2")],
       { ymin: 0, ymax: 1, empty: "no combat statistics yet" }],
     ["c-cmb", "Combat", "per episode, agent side", [EP("combat_dealt", "damage dealt (share of enemy HP)", "#4cc38a"),
       EP("combat_taken", "damage taken (share of own HP)", "#e5534b")], { ymin: 0, ymax: 1, empty: "no combat statistics yet" }],
@@ -394,7 +395,7 @@ function renderMain() {
       `<div class="empty">No replays yet: trajectory renders appear every few episodes, game videos every ${info.args?.video_every || "N"} episodes of game 0.</div>`;
   }
   const pct = v => v === undefined ? "–" : (100 * v).toFixed(0) + "%";
-  const mix = a => a ? ["noop", "stop", "retreat", "move", "attack"].filter(k => a[k] !== undefined).map(k => `${k} ${pct(a[k])}`).join(" · ") : "–";
+  const mix = a => a ? ["noop", "stop", "retreat", "move", "attack", "cast"].filter(k => a[k] !== undefined).map(k => `${k} ${pct(a[k])}`).join(" · ") : "–";
   document.getElementById("episodes").innerHTML = d.recent_episodes.length ? `<table><tr><th>#</th><th>game</th><th>outcome</th><th>return</th><th>length</th><th>game time</th><th>dealt / taken</th><th>kills / losses</th><th>actions</th><th>focus dealt / taken</th><th>when</th></tr>` +
     d.recent_episodes.map(e => { const c = e.combat || {};
       return `<tr><td>${e.episode}</td><td>${e.env}</td><td class="${e.outcome > 0 ? "win" : e.outcome < 0 ? "loss" : ""}">${e.outcome > 0 ? "win" : e.outcome < 0 ? "loss" : "draw"}</td><td>${fmt(e.return, 3)}</td><td>${e.length}</td><td>${e.game_time ? e.game_time.toFixed(1) + "s" : "–"}</td><td>${pct(c.dealt)} / ${pct(c.taken)}</td><td>${c.kills ?? "–"} / ${c.losses ?? "–"}</td><td>${mix(e.act)}</td><td>${pct(c.focus_dealt)} / ${pct(c.focus_taken)}</td><td>${ago(e.time)}</td></tr>`; }).join("") + `</table>` : `<div class="empty">no episodes yet</div>`;

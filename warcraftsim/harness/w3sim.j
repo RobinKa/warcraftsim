@@ -501,8 +501,14 @@ function W3S_Mbox takes integer i returns integer
     return GetPlayerTechMaxAllowed(Player(PLAYER_NEUTRAL_PASSIVE), W3S_MBOX + i)
 endfunction
 
+// orders are carried out for agents' units and scripted opponents' (e.g. their casts, chosen in Python)
 function W3S_Owned takes unit u returns boolean
-    return u != null and w3s_agent[GetPlayerId(GetOwningPlayer(u))]
+    local integer p
+    if u == null then
+        return false
+    endif
+    set p = GetPlayerId(GetOwningPlayer(u))
+    return w3s_agent[p] or w3s_scripted[p]
 endfunction
 
 function W3S_CountAliveEnum takes nothing returns nothing

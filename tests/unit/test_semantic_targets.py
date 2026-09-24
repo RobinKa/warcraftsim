@@ -47,3 +47,57 @@ def test_slot_targets_and_retreat(monkeypatch):
     assert moves == [(1, -250, 0)]  # straight away from the nearest enemy
     env.targeting = "slot"
     assert env.target_slot(me, 0) == 0 and env.target_slot(me, 1) is None
+
+
+def _hero(uid, kind, x, hp, mana, abilities, owner=0):
+    u = _unit(uid, kind, x, hp, owner=owner)
+    u.flags = UnitFlags.HERO
+    u.max_mana, u.mana, u.abilities = 300, mana, abilities
+    return u
+
+
+def _abilities(monkeypatch):
+    from warcraftsim.data import abilities as ab
+    from warcraftsim.data.abilities import AbilityInfo
+
+    def info(code, name, order, cast, side, mana, cd, rng, area):
+        return AbilityInfo(code, name, order, cast, side, 3, 1, 0, (mana,) * 3, (cd,) * 3, (rng,) * 3, (area,) * 3)
+
+    table = {"AHtb": info("AHtb", "Storm Bolt", "thunderbolt", "unit", "enemy", 75, 9, 600, 0),
+             "AHtc": info("AHtc", "Thunder Clap", "thunderclap", "instant", "enemy", 90, 6, 0, 300),
+             "AHhb": info("AHhb", "Holy Light", "holybolt", "unit", "ally", 65, 5, 800, 0),
+             "AHbh": info("AHbh", "Bash", "bash", "passive", "", 0, 0, 0, 0)}
+    monkeypatch.setattr(ab, "ability_info", lambda: table)
+    monkeypatch.setattr(ab, "hero_abilities", lambda: {"Hmkg": ("AHtc", "AHtb", "AHbh", "AHav"),
+                                                        "Hpal": ("AHhb", "AHds", "AHre", "AHad")})
+
+
+def test_cast_commands(monkeypatch):
+    from warcraftsim.protocol import ImmediateOrder, TargetOrder
+
+    _abilities(monkeypatch)
+    monkeypatch.setitem(STATS, "Hmkg", STATS["Hpal"])
+    enemy = [_unit(10, "hfoo", 400, 300), None, _unit(12, "hrif", 650, 100), _unit(13, "hfoo", 900, 50)]
+    env, _ = _env(monkeypatch, enemy)
+    env.game.order_id = {"thunderbolt": 1, "thunderclap": 2, "holybolt": 3}.__getitem__
+    weak = SEMANTIC_TARGETS.index("weak_in_range")
+    # Storm Bolt (slot 1): the weakest enemy within its cast range (600 + reach), not the weakest overall
+    mk = _hero(1, "Hmkg", 0, 500, 200, ((1, 0.0), (1, 0.0), (0, 0.0), (0, 0.0)))
+    assert env.cast_command(mk, 1, weak, [mk], enemy) == TargetOrder(1, 1, 12)
+    assert env.cast_command(mk, 0, weak, [mk], enemy) == ImmediateOrder(1, 2)  # Thunder Clap: instant
+    assert env.cast_command(mk, 2, weak, [mk], enemy) is None  # not learned (and passive)
+    cooling = _hero(1, "Hmkg", 0, 500, 200, ((1, 0.0), (1, 4.5), (0, 0.0), (0, 0.0)))
+    assert env.cast_command(cooling, 1, weak, [cooling], enemy) is None
+    drained = _hero(1, "Hmkg", 0, 500, 50, ((1, 0.0), (1, 0.0), (0, 0.0), (0, 0.0)))
+    assert env.cast_command(drained, 1, weak, [drained], enemy) is None
+    far = _hero(1, "Hmkg", -2000, 500, 200, ((1, 0.0), (1, 0.0), (0, 0.0), (0, 0.0)))
+    assert env.cast_command(far, 1, weak, [far], enemy) is None  # nobody in cast range
+    # the scripted caster: Thunder Clap only with an enemy within its area; Storm Bolt in range
+    assert env.scripted_cast(mk, [mk], enemy) == (1, weak)
+    near = [_unit(10, "hfoo", 200, 300)]
+    assert env.scripted_cast(mk, [mk], near) == (0, weak)
+    # Holy Light: the most hurt own unit in range (share of hit points), the hero included
+    pal = _hero(2, "Hpal", 0, 480, 200, ((1, 0.0), (0, 0.0), (0, 0.0), (0, 0.0)))
+    own = [pal, _unit(3, "hfoo", 100, 250, owner=0), _unit(4, "hfoo", 1500, 20, owner=0)]
+    assert env.cast_command(pal, 0, weak, own, enemy) == TargetOrder(2, 3, 3)
+    assert env.scripted_cast(pal, own, enemy) == (0, weak)  # 250/500 < 70%

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from warcraftsim.protocol import ORDER_NAMES, PointOrder, TargetOrder, read_observation
+from warcraftsim.protocol import PointOrder, TargetOrder, read_observation
 from warcraftsim.puffer.policy import PufferPolicy
 from warcraftsim.puffer.tasks import get_task
 from warcraftsim.runtime.instance import Slot
@@ -46,9 +46,10 @@ def test_overlay_frames():
                            probs=[np.full((T, n), 1.0 / n) for n in task.act_sizes])
     ov = EpisodeOverlay(task, trace, [fake], title="test", policy_step=123456)
     setup = SimpleNamespace(scenario=None, slots=[Slot("agent", "human"), Slot("scripted", "orc")])
-    ov.begin(setup, ORDER_NAMES, 480, 540)
+    ov.begin(setup, obs.orders, 480, 540)  # order name -> id, from the first observation
+    assert ov.order_names[obs.orders["attack"]] == "attack"
     unit = next(u for u in obs.units if u.owner == 0)
-    cmds = [PointOrder(unit.id, ORDER_NAMES.index("move"), 0, 0), TargetOrder(unit.id, 2, unit.id)]
+    cmds = [PointOrder(unit.id, obs.orders["move"], 0, 0), TargetOrder(unit.id, obs.orders["attack"], unit.id)]
     frames = ov.render_step([bytes(480 * 540 * 4)] * 3, 1, obs, obs, cmds)
     assert len(frames) == 3 and all(len(f) == (480 + ov.PANEL_W) * 540 * 3 for f in frames)
     assert len(ov.render_end(bytes(480 * 540 * 4), fps=10)) == 20

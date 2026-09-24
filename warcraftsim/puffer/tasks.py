@@ -18,7 +18,8 @@ from typing import Any, Callable
 
 import numpy as np
 
-from ..env import SEMANTIC_TARGETS, UNIT_FEATURES, MicroEnv, MicroSelfPlayEnv, NavigateEnv
+from ..env import ABILITY_FEATURES, SEMANTIC_TARGETS, UNIT_FEATURES, MicroEnv, MicroSelfPlayEnv, NavigateEnv
+from ..protocol import HERO_ABILITY_SLOTS
 from ..scenario import Scenario
 
 
@@ -108,9 +109,11 @@ def _nav_task(distance: float = 1200.0) -> Task:
 _FEAT = UNIT_FEATURES
 
 
-def _micro_sizes(max_units: int, targets: int | None = None) -> tuple[int, tuple[int, ...]]:
+def _micro_sizes(max_units: int, targets: int | None = None, abilities: bool = False) -> tuple[int, tuple[int, ...]]:
     k = max_units
-    return k * _FEAT + k + k * _FEAT + k + 1, (4, 8, targets or k) * k
+    feat = _FEAT + (ABILITY_FEATURES * HERO_ABILITY_SLOTS if abilities else 0)
+    heads = (5, 8, targets or k, HERO_ABILITY_SLOTS) if abilities else (4, 8, targets or k)
+    return k * feat + k + k * feat + k + 1, heads * k
 
 
 def _micro_flatten(obs: dict) -> np.ndarray:
@@ -120,10 +123,14 @@ def _micro_flatten(obs: dict) -> np.ndarray:
 
 _KINDS = ("noop", "stop", "move", "attack")
 _SEMANTIC_KINDS = ("noop", "retreat", "move", "attack")
+_ABILITY_SLOTS = tuple(f"ability {k + 1}" for k in range(HERO_ABILITY_SLOTS))
 
 
-def _micro_labels(max_units: int, semantic: bool = False) -> dict:
+def _micro_labels(max_units: int, semantic: bool = False, abilities: bool = False) -> dict:
     targets = SEMANTIC_TARGETS if semantic else tuple(f"E{i}" for i in range(max_units))
+    if abilities:  # cast (kind 4) is detailed by the ability slot and the target rule
+        return dict(head_labels=(_SEMANTIC_KINDS + ("cast",), _DIRS, targets, _ABILITY_SLOTS) * max_units,
+                    group_size=4, detail_heads={2: 1, 3: 2, 4: (3, 2)}, action_stats=_micro_action_stats)
     return dict(head_labels=(_SEMANTIC_KINDS if semantic else _KINDS, _DIRS, targets) * max_units,
                 group_size=3, detail_heads={2: 1, 3: 2}, action_stats=_micro_action_stats)
 
@@ -136,14 +143,16 @@ def _micro_action_stats(env, actions: list[np.ndarray]) -> Counter:
     for agent, action in enumerate(actions):
         own, enemy = env._units[agent] if hasattr(env, "_units") else (env._own, env._enemy)
         resolve = None if hasattr(env, "_units") else getattr(env, "target_slot", None)
-        a = np.asarray(action, int).reshape(-1, 3)
+        a = np.asarray(action, int).reshape(-1, getattr(env, "group", 3))
         targets = []
         for i in range(min(len(own), len(a))):
             if own[i] is None:
                 continue
-            kind, _, target = a[i]
+            kind, _, target = a[i][:3]
             c["unit_steps"] += 1
             c[kinds[kind]] += 1
+            if kinds[kind] == "cast" and env.cast_command(own[i], int(a[i][3]), int(target), own, enemy) is None:
+                c["cast_invalid"] += 1  # not learned, cooling down, no mana or no target: nothing happens
             if kind == 3:
                 if resolve is not None:
                     slot = resolve(own[i], int(target))
@@ -168,9 +177,11 @@ def action_summary(c: Counter) -> dict[str, float]:
     """Episode action statistics as fractions (for the episode log and dashboard)."""
     out: dict[str, float] = {}
     if c.get("unit_steps"):
-        for k in dict.fromkeys(_KINDS + _SEMANTIC_KINDS):
+        for k in dict.fromkeys(_KINDS + _SEMANTIC_KINDS + ("cast",)):
             if k in _KINDS or k in c:
                 out[k] = c.get(k, 0) / c["unit_steps"]
+    if c.get("cast"):
+        out["cast_invalid"] = c.get("cast_invalid", 0) / c["cast"]
     if c.get("attack"):
         out["attack_invalid"] = c.get("attack_invalid", 0) / c["attack"]
     if c.get("attack_valid"):
@@ -235,11 +246,32 @@ MIRROR_HEROES = ("Hpal", "Hamg", "Hmkg", "Hblm", "Obla", "Ofar", "Otch", "Oshd",
                  "Ekee", "Emoo", "Edem", "Ewar")
 
 
+def skill_build(hero: str, level: int, rng) -> tuple[str, ...]:
+    """A random way to spend a hero's `level` skill points: one ability level per point among its
+    abilities that fight (data.abilities: no summons or utility), within the hero level rules
+    (ability level k needs hero level 1 + 2(k-1); ultimates 6)."""
+    from ..data.abilities import ability_info, hero_abilities
+
+    info = ability_info()
+    learned: Counter = Counter()
+    out = []
+    for _ in range(level):
+        options = [c for c in hero_abilities().get(hero, ()) if (a := info.get(c)) is not None and a.in_builds
+                   and learned[c] < a.levels and a.hero_level_for(learned[c] + 1) <= level]
+        if not options:
+            break
+        code = options[int(rng.integers(len(options)))]
+        learned[code] += 1
+        out.append(code)
+    return tuple(out)
+
+
 def mirror_spawner(units: tuple[int, int] = (2, 4), heroes: int = 1, hero_levels: tuple[int, int] = (1, 3),
-                   hp_permille: int = 250, pool=MIRROR_UNITS, hero_pool=MIRROR_HEROES):
+                   hp_permille: int = 250, pool=MIRROR_UNITS, hero_pool=MIRROR_HEROES, skills: bool = False):
     """rng -> QueueSpawn list: `heroes` random heroes and 2-4 random units per side, the same for both
     sides (mirrored positions); melee in front, ranged behind. Hit points at hp_permille/1000 of
-    normal keep fights short."""
+    normal keep fights short. With `skills` heroes spend their skill points (skill_build, the same
+    build on both sides); otherwise they have no abilities."""
     from ..data.objects import combat_stats
     from ..protocol import QueueSpawn
 
@@ -251,40 +283,47 @@ def mirror_spawner(units: tuple[int, int] = (2, 4), heroes: int = 1, hero_levels
         comp += [(str(rng.choice(pool)), 1) for _ in range(int(rng.integers(units[0], units[1] + 1)))]
         rows: dict[bool, list] = {False: [], True: []}
         for code, level in comp:
-            rows[stats[code].range > 200].append((code, level))
+            build = skill_build(code, level, rng) if skills and code[:1].isupper() else ()
+            rows[stats[code].range > 200].append((code, level, build))
         out = []
         for player, side in ((0, -1), (1, 1)):
             for ranged, row in rows.items():
-                for i, (code, level) in enumerate(row):
+                for i, (code, level, build) in enumerate(row):
                     x = side * (350 + (150 if ranged else 0))
                     y = (i - (len(row) - 1) / 2) * 110
-                    out.append(QueueSpawn(player, code, x, y, 0 if side < 0 else 180, hp_permille, level))
+                    out.append(QueueSpawn(player, code, x, y, 0 if side < 0 else 180, hp_permille, level, build))
         return out
 
     return spawn
 
 
 def _mirror_task(name: str = "mirror_mix", max_units: int = 5, hp_permille: int = 250,
-                 targeting: str = "slot") -> Task:
+                 targeting: str = "slot", abilities: bool = False) -> Task:
     # fights last longer with more hit points: 45 s at 25%, 70 s at 50%
     sc = Scenario(units=(), victory="elimination", max_game_seconds=round(20 + hp_permille / 10), name=name)
     semantic = targeting == "semantic"
-    obs_size, act_sizes = _micro_sizes(max_units, len(SEMANTIC_TARGETS) if semantic else None)
-    spawner = mirror_spawner(units=(2, max_units - 1), hp_permille=hp_permille)
+    obs_size, act_sizes = _micro_sizes(max_units, len(SEMANTIC_TARGETS) if semantic else None, abilities)
+    spawner = mirror_spawner(units=(2, max_units - 1), hp_permille=hp_permille, skills=abilities)
+    group = 4 if abilities else 3
 
     def make_env(inst: str):
-        env = MicroEnv(sc, max_own=max_units, max_enemy=max_units, name=inst, targeting=targeting)
+        env = MicroEnv(sc, max_own=max_units, max_enemy=max_units, name=inst, targeting=targeting,
+                       abilities=abilities)
         env.spawner = spawner
         return env
 
+    extra = ""
+    if abilities:
+        extra = (" Heroes have random skill builds (the same on both sides) and cast: a cast kind with an"
+                 " ability slot head and the target rules; the scripted opponent casts too.")
+    elif semantic:
+        extra = " Attack targets are rules (weakest in range, nearest, weakest, hero, threat); stop is retreat."
     return Task(
         name=name, obs_size=obs_size, act_sizes=act_sizes, make_env=make_env,
-        flatten=_micro_flatten, to_action=lambda a: np.asarray(a, dtype=np.int64).reshape(max_units, 3),
-        outcome=_micro_outcome, scenario=sc, reward_scale=10.0, **_micro_labels(max_units, semantic),
+        flatten=_micro_flatten, to_action=lambda a: np.asarray(a, dtype=np.int64).reshape(max_units, group),
+        outcome=_micro_outcome, scenario=sc, reward_scale=10.0, **_micro_labels(max_units, semantic, abilities),
         description=f"Mirror match, a new composition every episode: a hero (level 1-3) and 2-{max_units - 1} "
-                    f"units from all races, {hp_permille / 10:.0f}% hit points, vs the scripted opponent"
-                    + (". Attack targets are rules (weakest in range, nearest, weakest, hero, threat); "
-                       "stop is retreat." if semantic else "."),
+                    f"units from all races, {hp_permille / 10:.0f}% hit points, vs the scripted opponent." + extra,
     )
 
 
@@ -301,12 +340,14 @@ def _footmen_task(name: str) -> Task | None:
 
 
 def _mirror_variant(name: str) -> Task | None:
-    """mirror_mix[_sem][_hp{P}]: mirror_mix with semantic attack targets (MicroEnv
-    targeting="semantic") and/or P permille of the units' hit points (default 250)."""
-    m = re.fullmatch(r"mirror_mix(_sem)?(?:_hp(\d+))?", name)
-    if not m or not (m[1] or m[2]):
+    """mirror_mix[_sem][_abil][_hp{P}]: mirror_mix with semantic attack targets (MicroEnv
+    targeting="semantic"), hero abilities (skill builds and casting; implies semantic targets),
+    and/or P permille of the units' hit points (default 250)."""
+    m = re.fullmatch(r"mirror_mix(_sem)?(_abil)?(?:_hp(\d+))?", name)
+    if not m or not (m[1] or m[2] or m[3]):
         return None
-    return _mirror_task(name, hp_permille=int(m[2] or 250), targeting="semantic" if m[1] else "slot")
+    return _mirror_task(name, hp_permille=int(m[3] or 250), targeting="semantic" if m[1] or m[2] else "slot",
+                        abilities=bool(m[2]))
 
 
 def get_task(name: str) -> Task:
@@ -315,5 +356,5 @@ def get_task(name: str) -> Task:
     task = _footmen_task(name) or _mirror_variant(name)
     if task is None:
         raise KeyError(f"unknown task {name!r}; available: {sorted(TASKS)}, footmen<N>v<M>[_hp<HP>][_ehp<EHP>] "
-                       f"and mirror_mix[_sem][_hp<permille>]")
+                       f"and mirror_mix[_sem][_abil][_hp<permille>]")
     return task

@@ -7,7 +7,8 @@
 * ``MicroEnv``: scenario fights with a factored discrete action per own unit
   (noop / stop / move in one of 8 directions / attack an enemy slot), reward =
   damage balance + outcome. With ``targeting="semantic"`` the target is a rule (the
-  weakest enemy in range, the nearest, ...) and stop becomes retreat.
+  weakest enemy in range, the nearest, ...) and stop becomes retreat; with ``abilities``
+  heroes also cast (an ability slot head, targets by the same rules).
 * ``NavigateEnv``: move one unit to a target point as fast as possible.
 * ``MicroSelfPlayEnv``: two policies control the two sides of a scenario (dict API).
 
@@ -25,11 +26,13 @@ from gymnasium import spaces
 
 from .client import Wc3Game
 from .data.objects import combat_stats, unit_vocabulary
-from .protocol import Command, Observation, Result, Unit, UnitFlags
+from .protocol import (HERO_ABILITY_SLOTS, Command, ImmediateOrder, Observation, PointOrder, Result, TargetOrder,
+                       Unit, UnitFlags)
 from .runtime.instance import GameSetup
 from .scenario import Scenario
 
 UNIT_FEATURES = 32
+ABILITY_FEATURES = 10  # per hero ability slot, after the UNIT_FEATURES (UnitEncoder ability_slots)
 PLAYER_FEATURES = 8
 _N_FLAGS = 12
 
@@ -51,17 +54,20 @@ class UnitEncoder:
 
     HP_HISTORY = 4  # steps of hit point history per unit (1 s at 0.25 s steps)
 
-    def __init__(self, player: int, origin: tuple[float, float], extent: float):
+    def __init__(self, player: int, origin: tuple[float, float], extent: float, ability_slots: int = 0):
         self.player = player
         self.origin = origin
         self.extent = extent
         self.vocab = unit_vocabulary()
         self.stats = combat_stats()
         self._hp: dict[int, list[int]] = {}  # unit -> hit points of the last HP_HISTORY encodes
+        # heroes' abilities: per slot ABILITY_FEATURES after the unit features
+        self.ability_slots = ability_slots
+        self.features = UNIT_FEATURES + ABILITY_FEATURES * ability_slots
 
     def encode(self, units: Sequence[Unit], obs: Observation, orders: dict[str, int], max_units: int,
                allies: set[int] = frozenset()) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        feats = np.zeros((max_units, UNIT_FEATURES), dtype=np.float32)
+        feats = np.zeros((max_units, self.features), dtype=np.float32)
         types = np.zeros(max_units, dtype=np.int64)
         ids = np.zeros(max_units, dtype=np.int64)
         mask = np.zeros(max_units, dtype=bool)
@@ -104,6 +110,8 @@ class UnitEncoder:
                 f[29] = st.speed / 500.0
                 f[30] = st.cooldown / 3.0
                 f[31] = float(st.hits_air)
+            if self.ability_slots and u.abilities:
+                self._encode_abilities(u, f)
             types[i] = self.vocab.get(u.type, 0)
             ids[i] = u.id
             mask[i] = True
@@ -114,6 +122,38 @@ class UnitEncoder:
             hist.append(u.hp)
             del hist[0]
         return feats, types, ids, mask
+
+    def _encode_abilities(self, u: Unit, f: np.ndarray) -> None:
+        """Per learned ability slot: level, ready to cast, cooldown left, how it is cast (unit /
+        point / instant; passive: none), for enemies or allies, range and area."""
+        from .data.abilities import ability_info, hero_abilities
+
+        info_by_code = ability_info()
+        for k, code in enumerate(hero_abilities().get(u.type, ())[:self.ability_slots]):
+            if k >= len(u.abilities):
+                break
+            level, cooldown = u.abilities[k]
+            info = info_by_code.get(code)
+            if not level or info is None:
+                continue
+            o = UNIT_FEATURES + k * ABILITY_FEATURES
+            f[o] = level / 3.0
+            f[o + 1] = float(ability_ready(u, k, info))
+            f[o + 2] = min(cooldown / 20.0, 1.0)
+            if info.cast in ("unit", "point", "instant"):
+                f[o + 3 + ("unit", "point", "instant").index(info.cast)] = 1.0
+            f[o + 6] = float(info.side == "enemy")
+            f[o + 7] = float(info.side in ("ally", "self"))
+            f[o + 8] = info.at(info.range, level) / 1000.0
+            f[o + 9] = info.at(info.area, level) / 500.0
+
+
+def ability_ready(u: Unit, slot: int, info) -> bool:
+    """Whether hero `u` can cast its ability in `slot` now: learned, castable, off cooldown, mana."""
+    if info is None or not info.castable or slot >= len(u.abilities):
+        return False
+    level, cooldown = u.abilities[slot]
+    return level > 0 and cooldown <= 0 and u.mana >= info.at(info.mana, level)
 
 
 class CommandListSpace(spaces.Space):
@@ -270,12 +310,20 @@ class MicroEnv(Wc3Env):
     nearest enemy) and `target` picks a rule from SEMANTIC_TARGETS: the weakest enemy in range,
     the nearest, the weakest overall, a hero, or the biggest threat in range (the highest DPS
     per hit point left: killing it removes the most damage soonest).
+    With abilities (semantic targeting only): [kind, direction, target, ability]; kind 4 casts
+    the hero's ability in slot `ability` (data.abilities.hero_abilities). An ability for enemies
+    goes to the enemy the target rule picks, "in range" meaning its cast range; one for allies
+    to an own unit by the same rules (weakest = lowest share of hit points; nearest = another
+    unit; threat = the one with the most DPS); instant ones need no target. A cast that is not
+    possible (not learned, cooling down, too little mana, no target) does nothing. Unit features
+    get ABILITY_FEATURES per hero ability slot. With `opponent_casts` the scripted opponent's
+    heroes cast too (scripted_cast).
     Reward: (enemy hp lost - own hp lost) / initial total hp per step, +1/-1 for win/loss.
     """
 
     def __init__(self, scenario: Scenario | None = None, max_own: int = 12, max_enemy: int = 12,
                  move_distance: float = 250.0, opponent: str = "scripted", name: str = "micro0",
-                 targeting: str = "slot", **kw):
+                 targeting: str = "slot", abilities: bool = False, opponent_casts: bool | None = None, **kw):
         from .runtime.instance import Agent, Idle, Scripted
 
         self.scenario = scenario or Scenario.skirmish(["hfoo"] * 4, ["hfoo"] * 4)
@@ -287,32 +335,46 @@ class MicroEnv(Wc3Env):
         if targeting not in ("slot", "semantic"):
             raise ValueError(f"targeting must be 'slot' or 'semantic', not {targeting!r}")
         self.targeting = targeting
+        if abilities and targeting != "semantic":
+            raise ValueError("abilities need targeting='semantic' (cast targets are rules)")
+        self.abilities = abilities
+        self.opponent_casts = abilities if opponent_casts is None else opponent_casts
         self.kind_names = ("noop", "retreat", "move", "attack") if targeting == "semantic" else \
             ("noop", "stop", "move", "attack")
+        if abilities:
+            self.kind_names += ("cast",)
+        self.group = 4 if abilities else 3  # action heads per unit
+        feat = UNIT_FEATURES + (ABILITY_FEATURES * HERO_ABILITY_SLOTS if abilities else 0)
         self.observation_space = spaces.Dict({
-            "own": spaces.Box(-np.inf, np.inf, (max_own, UNIT_FEATURES), np.float32),
+            "own": spaces.Box(-np.inf, np.inf, (max_own, feat), np.float32),
             "own_types": spaces.Box(0, 10_000, (max_own,), np.int64),
             "own_mask": spaces.MultiBinary(max_own),
-            "enemy": spaces.Box(-np.inf, np.inf, (max_enemy, UNIT_FEATURES), np.float32),
+            "enemy": spaces.Box(-np.inf, np.inf, (max_enemy, feat), np.float32),
             "enemy_types": spaces.Box(0, 10_000, (max_enemy,), np.int64),
             "enemy_mask": spaces.MultiBinary(max_enemy),
             "time": spaces.Box(0, np.inf, (1,), np.float32),
         })
         n_targets = len(SEMANTIC_TARGETS) if targeting == "semantic" else max_enemy
-        self.action_space = spaces.MultiDiscrete(np.tile([4, 8, n_targets], (max_own, 1)))
+        heads = [len(self.kind_names), 8, n_targets] + ([HERO_ABILITY_SLOTS] if abilities else [])
+        self.action_space = spaces.MultiDiscrete(np.tile(heads, (max_own, 1)))
         self._own: list[Unit] = []
         self._enemy: list[Unit] = []
         self._hp0 = (1.0, 1.0)
         self._hp_prev = (0.0, 0.0)
         self._attacking: dict[int, int] = {}  # unit -> enemy it was last ordered to attack
         self._slots: tuple[list[int], list[int]] = ([], [])  # unit ids by slot (see _slot_units)
+        self._cast_orders: set[int] = set()  # order ids of hero abilities (a unit casting)
 
     def _split(self, obs: Observation) -> tuple[list[Unit | None], list[Unit | None]]:
         return _slot_units(obs, self.player, self._slots, self.max_own, self.max_enemy)
 
     def _on_reset(self, obs: Observation) -> None:
         cx, cy = self.scenario.resolved_center()
-        self.encoder = UnitEncoder(self.player, (cx, cy), 1500.0)
+        self.encoder = UnitEncoder(self.player, (cx, cy), 1500.0,
+                                   ability_slots=HERO_ABILITY_SLOTS if self.abilities else 0)
+        if self.abilities:
+            from .data.abilities import ability_order_strings
+            self._cast_orders = {self.game._orders[o] for o in ability_order_strings() if o in self.game._orders}
         self._attacking = {}
         self._slots = ([], [])
         own, enemy = self._split(obs)
@@ -330,46 +392,153 @@ class MicroEnv(Wc3Env):
 
     def target_slot(self, unit: Unit, target: int) -> int | None:
         """The enemy slot an attack with head value `target` goes to (None: no such enemy)."""
-        live = [j for j, e in enumerate(self._enemy) if e is not None]
         if self.targeting == "slot":
+            live = [j for j, e in enumerate(self._enemy) if e is not None]
             return target if target in live else None
+        st = combat_stats().get(unit.type)
+        return self._rule_target(unit, target, self._enemy, (st.range if st else 100.0) + REACH)
+
+    @staticmethod
+    def _rule_target(unit: Unit, rule_index: int, pool: Sequence[Unit | None], reach: float) -> int | None:
+        """The index in `pool` (enemies) that target rule SEMANTIC_TARGETS[rule_index] picks for
+        `unit`; "in range" is within `reach`. Rules without a candidate: the nearest enemy."""
+        live = [j for j, e in enumerate(pool) if e is not None]
         if not live:
             return None
         stats = combat_stats()
-        dist = {j: self._enemy[j].dist(unit.x, unit.y) for j in live}
+        dist = {j: pool[j].dist(unit.x, unit.y) for j in live}
         nearest = min(live, key=dist.__getitem__)
-        st = stats.get(unit.type)
-        reach = (st.range if st else 100.0) + REACH
         in_range = [j for j in live if dist[j] <= reach]
-        rule = SEMANTIC_TARGETS[target]
+        rule = SEMANTIC_TARGETS[rule_index]
         if rule == "weak_in_range":
-            return min(in_range, key=lambda j: self._enemy[j].hp) if in_range else nearest
+            return min(in_range, key=lambda j: pool[j].hp) if in_range else nearest
         if rule == "weakest":
-            return min(live, key=lambda j: self._enemy[j].hp)
+            return min(live, key=lambda j: pool[j].hp)
         if rule == "hero":
-            heroes = [j for j in live if (s := stats.get(self._enemy[j].type)) is not None and s.is_hero]
+            heroes = [j for j in live if (s := stats.get(pool[j].type)) is not None and s.is_hero]
             return min(heroes, key=dist.__getitem__) if heroes else nearest
         if rule == "threat":
             def threat(j: int) -> float:
-                e = self._enemy[j]
-                s = stats.get(e.type)
-                return (s.dps if s else 0.0) / max(e.hp, 1)
+                s = stats.get(pool[j].type)
+                return (s.dps if s else 0.0) / max(pool[j].hp, 1)
             return max(in_range, key=threat) if in_range else nearest
         return nearest
 
+    @staticmethod
+    def _ally_target(unit: Unit, rule_index: int, pool: Sequence[Unit | None], reach: float) -> int | None:
+        """The index in `pool` (the caster's side, itself included) an ability for allies goes to."""
+        live = [j for j, a in enumerate(pool) if a is not None and a.dist(unit.x, unit.y) <= reach]
+        if not live:
+            return None
+        me = next((j for j in live if pool[j].id == unit.id), live[0])
+        frac = {j: pool[j].hp / max(pool[j].max_hp, 1) for j in live}
+        rule = SEMANTIC_TARGETS[rule_index]
+        if rule in ("weak_in_range", "weakest"):
+            return min(live, key=frac.__getitem__)
+        if rule == "hero":
+            heroes = [j for j in live if pool[j].is_hero]
+            return min(heroes, key=lambda j: pool[j].dist(unit.x, unit.y)) if heroes else me
+        if rule == "threat":
+            stats = combat_stats()
+            return max(live, key=lambda j: (s.dps if (s := stats.get(pool[j].type)) else 0.0))
+        others = [j for j in live if j != me]
+        return min(others, key=lambda j: pool[j].dist(unit.x, unit.y)) if others else me
+
+    def cast_command(self, unit: Unit, slot: int, rule: int, own: Sequence[Unit | None],
+                     enemy: Sequence[Unit | None]) -> Command | None:
+        """The order for hero `unit` to cast its ability in `slot` with target rule `rule` (`own`
+        and `enemy`: units by slot as seen from the caster's side), None if it cannot."""
+        from .data.abilities import ability_info, hero_abilities
+
+        codes = hero_abilities().get(unit.type, ())
+        info = ability_info().get(codes[slot]) if slot < len(codes) else None
+        if not ability_ready(unit, slot, info):
+            return None
+        try:
+            oid = self.game.order_id(info.order)
+        except KeyError:
+            return None
+        level = unit.abilities[slot][0]
+        if info.cast == "instant":
+            return ImmediateOrder(unit.id, oid)
+        reach = info.at(info.range, level) + REACH
+        if info.side == "enemy":
+            j = self._rule_target(unit, rule, enemy, reach)
+            target = enemy[j] if j is not None and enemy[j].dist(unit.x, unit.y) <= reach else None
+        else:
+            j = self._ally_target(unit, rule, own, reach)
+            target = own[j] if j is not None else None
+        if target is None:
+            return None
+        if info.cast == "unit":
+            return TargetOrder(unit.id, oid, target.id)
+        return PointOrder(unit.id, oid, target.x, target.y)
+
+    def scripted_cast(self, unit: Unit, own: Sequence[Unit | None],
+                      enemy: Sequence[Unit | None]) -> tuple[int, int] | None:
+        """A simple caster: (ability slot, target rule) of the first ready ability in slot order
+        with a use now, else None. For enemies: the weakest enemy in cast range (instant ones:
+        an enemy within their area); for allies: the most hurt own unit in range below 70% hit
+        points; self buffs: an enemy within 500. Used by the scripted opponent and scripts."""
+        from .data.abilities import ability_info, hero_abilities
+
+        info_by_code = ability_info()
+        weak = SEMANTIC_TARGETS.index("weak_in_range")
+        foes = [e for e in enemy if e is not None]
+        for slot, code in enumerate(hero_abilities().get(unit.type, ())):
+            info = info_by_code.get(code)
+            if not ability_ready(unit, slot, info) or not info.in_builds:
+                continue
+            level = unit.abilities[slot][0]
+
+            def near(d: float) -> bool:
+                return any(e.dist(unit.x, unit.y) <= d for e in foes)
+
+            if info.cast == "instant":
+                if near(max(info.at(info.area, level), 250.0) if info.side == "enemy" else 500.0):
+                    return slot, weak
+            elif info.side == "enemy":
+                if near(info.at(info.range, level) + REACH):
+                    return slot, weak
+            elif info.side == "ally":
+                reach = info.at(info.range, level) + REACH
+                if any(a is not None and a.dist(unit.x, unit.y) <= reach and a.hp < 0.7 * a.max_hp for a in own):
+                    return slot, weak
+        return None
+
     def _commands(self, action: np.ndarray) -> list[Command]:
-        action = np.asarray(action).reshape(self.max_own, 3)
+        action = np.asarray(action).reshape(self.max_own, self.group)
         for i, unit in enumerate(self._own):
             if unit is None:
                 continue
-            kind, direction, target = (int(v) for v in action[i])
+            kind, direction, target = (int(v) for v in action[i][:3])
             if kind == 1 and self.targeting == "semantic":
                 self._retreat(unit)
+                continue
+            if kind == 4:
+                cmd = self.cast_command(unit, int(action[i][3]), target, self._own, self._enemy)
+                if cmd is not None:
+                    self.game.issue(cmd)
+                    self._attacking.pop(unit.id, None)
                 continue
             slot = self.target_slot(unit, target) if kind == 3 else None
             _issue(self.game, self._attacking, unit, kind, direction,
                    self._enemy[slot] if slot is not None else None, self.move_distance)
+        if self.opponent_casts:
+            self._opponent_casts()
         return []
+
+    def _opponent_casts(self) -> None:
+        """The scripted opponent's heroes cast what scripted_cast picks (the harness only
+        attack-moves them); a hero already casting is left alone."""
+        for unit in self._enemy:
+            if unit is None or not unit.is_hero or unit.order in self._cast_orders:
+                continue
+            choice = self.scripted_cast(unit, self._enemy, self._own)
+            if choice is not None:
+                cmd = self.cast_command(unit, choice[0], choice[1], self._enemy, self._own)
+                if cmd is not None:
+                    self.game.issue(cmd)
 
     def _retreat(self, unit: Unit) -> None:
         live = [e for e in self._enemy if e is not None]
