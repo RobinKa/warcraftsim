@@ -192,6 +192,19 @@ Tasks (add more in `tasks.py`; `scripts/baselines.py` measures scripted policies
     * a cast that isn't possible (not learned, cooling down, too little mana, no target) does nothing and is counted as `cast_invalid`.
 
     Units get 10 more features per ability slot: level, ready, cooldown, how it is cast, for whom, range, area. The scripted opponent's heroes cast what `MicroEnv.scripted_cast` picks. Scripts: `cast<policy>`, e.g. `castpull35`.
+
+    Results on `mirror_mix_abil_hp400` (0.5 s steps; runs `abil40-*`):
+
+    | policy | win rate |
+    |---|---|
+    | noop (no casting) | 31% |
+    | pull35 (no casting) | 29% |
+    | castnoop | 50% |
+    | castpull35 | 50% |
+    | PPO from scratch, lr 0.001, 2.5M steps | 42% |
+    | PPO from the fitted castpull35, lr 0.001, 2.5M steps | 52% |
+
+    Not casting against a caster loses badly. PPO from scratch found a shortcut: 60-66% of its actions are casts and 94% of those aren't possible. An impossible cast does nothing, so this means "do nothing, and cast each ability the moment it's ready".
   * lr 0.01 (tuned on `footmen2`) is far too high with 15 action heads: the KL per update was 1.0-1.5 (clip fraction 0.9) and the win rate peaked at 29%. The KL at a given lr grows with the number of heads (≈0.15 with 6, 0.3 with 9, 1.0+ with 15); lr 0.003 keeps it at 0.03-0.14.
 * `footmen<N>v<M>[_hp<HP>][_ehp<EHP>]`: N agent footmen against M scripted ones with HP hit points each (default 100), the enemies EHP (a handicap).
 * `micro`: 4 footmen vs 3 scripted grunts. This is hard: scripted baselines win about 1 game in 3.
