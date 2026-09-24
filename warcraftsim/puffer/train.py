@@ -146,6 +146,7 @@ def parse(ap: argparse.ArgumentParser, argv: list[str]) -> argparse.Namespace:
 
 
 def _resolve_init(args) -> Path | None:
+    """--init-from: a checkpoint file, or a run name (its latest checkpoint); adds the trainer flag."""
     if not args.init_from:
         return None
     init = Path(args.init_from)
@@ -177,14 +178,13 @@ def main(argv: list[str] | None = None) -> int:
 
     runs = []
     for args, name, sweep in plans:
-        init = _resolve_init(args)
         runs.append(Run(RUNS_DIR / name, {
             "name": name, "task": task.name, "description": task.description, "envs": args.envs,
             "timesteps": int(args.timesteps), "agents_per_env": task.num_agents, "obs_size": task.obs_size,
             "act_sizes": list(task.act_sizes),
             "args": {k: v for k, v in vars(args).items() if k not in ("extra", "sweep")}, "extra": args.extra,
             "created": time.time(), "status": "queued" if sweep and sweep["index"] > 1 else "building",
-            "init_from": str(init) if init else None, "sweep": sweep,
+            "init_from": args.init_from, "sweep": sweep,
         }))
         print(f"run {name}: {RUNS_DIR / name}" + (f"  [{sweep['options']}]" if sweep else ""), flush=True)
     binary = build_trainer(task)
@@ -234,6 +234,11 @@ def main(argv: list[str] | None = None) -> int:
                 run.save(status="stopped (sweep ended)")
                 continue
             current = run
+            # resolved now: a sweep can continue from an earlier run of the same sweep (phases)
+            init = _resolve_init(args)
+            if init is not None:
+                steps = int(init.stem) if init.stem.isdigit() else 0
+                run.save(init_from=str(init), init_steps=steps)  # the dashboard draws it after its parent
             if run is not first:  # point the bridge workers at this run
                 for w, q in enumerate(controls):
                     q.put(("run", str(run.dir), args.record_every if w == 0 else 0, args.video_every if w == 0 else 0))

@@ -316,10 +316,11 @@ const SECTIONS = [
 ];
 
 function seriesPoints(d, src, key) {
-  if (src === "ep") return d.episodes.filter(e => e[key] !== undefined).map(e => [e.steps, e[key]]);
-  if (src === "tr") return d.train.filter(r => r[key] !== undefined).map(r => [r.agent_steps ?? r.steps, r[key]]);
-  if (src === "br") return d.bridge.map(b => [b.steps, b[key]]);
-  if (src === "cal") return d.calibration.map(c => [c.steps, c[key]]);
+  const o = d.info.init_steps || 0;  // a run continued from a checkpoint starts where its parent was
+  if (src === "ep") return d.episodes.filter(e => e[key] !== undefined).map(e => [o + e.steps, e[key]]);
+  if (src === "tr") return d.train.filter(r => r[key] !== undefined).map(r => [o + (r.agent_steps ?? r.steps), r[key]]);
+  if (src === "br") return d.bridge.map(b => [o + b.steps, b[key]]);
+  if (src === "cal") return d.calibration.map(c => [o + c.steps, c[key]]);
   return [];
 }
 
@@ -360,8 +361,9 @@ function renderMain() {
 
   // runs shown: the selected one (solid) and the compared ones (other line styles)
   const shown = [state.selected, ...[...state.compare].filter(n => n !== state.selected && state.data[n])];
-  const maxStep = Math.max(1, ...shown.map(n => { const t = state.data[n].train; return t.length ? (t[t.length - 1].agent_steps ?? 0) : 0; }),
-                           ...shown.map(n => { const e = state.data[n].episodes; return e.length ? e[e.length - 1].steps : 0; }));
+  const off = n => state.data[n].info.init_steps || 0;
+  const maxStep = Math.max(1, ...shown.map(n => { const t = state.data[n].train; return off(n) + (t.length ? (t[t.length - 1].agent_steps ?? 0) : 0); }),
+                           ...shown.map(n => { const e = state.data[n].episodes; return off(n) + (e.length ? e[e.length - 1].steps : 0); }));
   ui.xrange = [0, maxStep];
   document.getElementById("legend").innerHTML = shown.length > 1
     ? shown.map((n, i) => `<span>${dashSvg(DASHES[i % DASHES.length])}${n}${state.data[n]?.info?.sweep ? ` <span style="color:var(--accent)">${state.data[n].info.sweep.options}</span>` : ""}</span>`).join("")
