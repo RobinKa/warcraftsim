@@ -172,7 +172,19 @@ Tasks (add more in `tasks.py`; `scripts/baselines.py` measures scripted policies
   * Tuned by sweeps (`f2-sweep1`..`5`, `f2-step*` in the dashboard): 0.5 s steps, lr 0.01, minibatch 192, replay ratio 4, the learning rate annealed over 400k steps → 95% wins after ~0.2M steps (~1.5 min), 98-100% soon after; 1.0 s steps: 100% for both seeds.
   * Most of the speed came from more updates per sample (1 → 32 per epoch), then from longer steps and a shorter annealing schedule. Horizon 32 learns fastest at first but ends lower.
   * Early policies learned focus fire plus pulling a hurt footman back. The 100% policy instead holds position until the enemies arrive: the scripted opponent then splits its damage over both footmen, while ours focus one enemy.
-* `mirror_mix`: a mirror match with a new random composition every episode: a hero (level 1-3) and 2-4 units from all races (footman, rifleman, knight, grunt, headhunter, tauren, ghoul, crypt fiend, abomination, archer, huntress), at 25% hit points (~21 s episodes). Scripted baselines are near a coin flip (noop 53%, focus fire 37%). Unit features include the type's range, DPS, armor, speed and cooldown (`data.objects.combat_stats`); episodes are spawned through `QueueSpawn` + `Restart` (`Wc3Game.reset(spawns=...)`).
+* `mirror_mix[_sem][_hp<P>]`: a mirror match with a new random composition every episode: a hero (level 1-3) and 2-4 units from all races (footman, rifleman, knight, grunt, headhunter, tauren, ghoul, crypt fiend, abomination, archer, huntress), at P‰ of their hit points (default 250). Unit features include the type's range, DPS, armor, speed and cooldown (`data.objects.combat_stats`); episodes are spawned through `QueueSpawn` + `Restart` (`Wc3Game.reset(spawns=...)`).
+  * Hit points decide whether micro matters (scripted baselines, 120-150 episodes each; the time limit scales with hit points):
+
+    | hit points | episode | noop | focus + pull back (`pull35`) |
+    |---|---|---|---|
+    | 25% | 21 s | 55% | 44% |
+    | 35% | 28 s | 53% | 64% |
+    | 40% | 31 s | 54% | 80% |
+    | 50% | 36-40 s | 53% | 79% |
+
+    At 25% units die within a few hits and every order costs more than it gains (attacking the weakest enemy in range 48-50%, pulling back without focus 19%); RL at 25% converged to noop (lr 0.003: 52%). `mirror_mix_hp400` is the training setting.
+  * `_sem`: the target head picks a rule instead of an enemy slot (weakest in range, nearest, weakest, hero, threat = DPS per hit point left) and stop becomes retreat (straight away from the nearest enemy), so an order means the same whatever the composition (`MicroEnv(targeting="semantic")`).
+  * lr 0.01 (tuned on `footmen2`) is far too high with 15 action heads: the KL per update was 1.0-1.5 (clip fraction 0.9) and the win rate peaked at 29%. The KL at a given lr grows with the number of heads (≈0.15 with 6, 0.3 with 9, 1.0+ with 15); lr 0.003 keeps it at 0.03-0.14.
 * `footmen<N>v<M>[_hp<HP>][_ehp<EHP>]`: N agent footmen against M scripted ones with HP hit points each (default 100), the enemies EHP (a handicap).
 * `micro`: 4 footmen vs 3 scripted grunts. This is hard: scripted baselines win about 1 game in 3.
 * `micro_mirror`: 4 vs 4 footmen against the scripted opponent.
@@ -208,7 +220,7 @@ The dashboard shows:
 * progress cards;
 * **Outcomes**: win rate, win/draw/loss, return, episode length;
 * **Behaviour** (from the actions the policy sent):
-  * the action mix (noop/stop/move/attack);
+  * the action mix (noop/stop/retreat/move/attack);
   * targeting: focus fire, attacks on the weakest enemy, invalid targets;
   * damage dealt and taken, kills and losses;
 * **Learning**:
