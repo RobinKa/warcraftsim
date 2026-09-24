@@ -135,6 +135,8 @@ def evaluate(task_name: str, checkpoint: Path, episodes: int, games: int, step_s
     pol = PufferPolicy(checkpoint, task.obs_size, task.act_sizes, hidden=hidden, layers=layers)
     per_game = [episodes // games + (i < episodes % games) for i in range(games)]
 
+    by_type: dict[str, Counter] = {}  # unit type in the (mirror) composition -> outcomes
+
     def run(i: int) -> Counter:
         rng = np.random.default_rng(i)
         env = _make_env(task, f"bceval{i}", step_seconds)
@@ -142,8 +144,11 @@ def evaluate(task_name: str, checkpoint: Path, episodes: int, games: int, step_s
         try:
             for _ in range(per_game[i]):
                 state = pol.initial_state()
+                comp: set[str] = set()
 
-                def choose(o, _env):
+                def choose(o, env):
+                    if not comp:
+                        comp.update(u.type for u in getattr(env, "_own", ()) if u is not None)
                     dec = pol.step(o, state)
                     a, at = [], 0
                     for n in task.act_sizes:
@@ -158,6 +163,8 @@ def evaluate(task_name: str, checkpoint: Path, episodes: int, games: int, step_s
 
                 *_, outcome = _play(task, env, choose)
                 results[outcome] += 1
+                for t in comp:
+                    by_type.setdefault(t, Counter())[outcome] += 1
         finally:
             env.close()
         return results
@@ -167,9 +174,14 @@ def evaluate(task_name: str, checkpoint: Path, episodes: int, games: int, step_s
         for c in ex.map(run, range(games)):
             total += c
     n = sum(total.values())
-    res = {"episodes": n, "win_rate": total[1.0] / max(n, 1), "loss_rate": total[-1.0] / max(n, 1)}
+    res = {"episodes": n, "win_rate": total[1.0] / max(n, 1), "loss_rate": total[-1.0] / max(n, 1),
+           "by_type": {t: c[1.0] / sum(c.values()) for t, c in by_type.items()}}
     print(f"{checkpoint} on {task_name} ({'greedy' if greedy else 'sampled'}): win {res['win_rate']:.0%} "
           f"({total[1.0]}/{n}), loss {total[-1.0]}, draw {total[0.0]}", flush=True)
+    if by_type:
+        print("win rate in episodes with the unit type: " + ", ".join(
+            f"{t} {c[1.0] / sum(c.values()):.0%} ({sum(c.values())})"
+            for t, c in sorted(by_type.items(), key=lambda kv: kv[1][1.0] / sum(kv[1].values()))), flush=True)
     return res
 
 
