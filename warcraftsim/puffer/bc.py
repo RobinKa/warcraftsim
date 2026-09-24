@@ -117,11 +117,12 @@ def _torch_python() -> str:
     raise SystemExit("bc fit needs torch: install it or point WC3_TORCH_PYTHON at a Python that has it")
 
 
-def fit(data: Path, out: Path | None, epochs: int, hidden: int, layers: int, gamma: float, lr: float) -> Path:
+def fit(data: Path, out: Path | None, epochs: int, hidden: int, layers: int, gamma: float, lr: float,
+        smoothing: float = 0.1) -> Path:
     out = out or data / "policy.bin"
     script = Path(__file__).with_name("bc_train.py")
     cmd = [_torch_python(), str(script), str(data), str(out), f"--epochs={epochs}", f"--hidden={hidden}",
-           f"--layers={layers}", f"--gamma={gamma}", f"--lr={lr}"]
+           f"--layers={layers}", f"--gamma={gamma}", f"--lr={lr}", f"--smoothing={smoothing}"]
     subprocess.run(cmd, check=True)
     return out
 
@@ -190,6 +191,7 @@ def main(argv: list[str] | None = None) -> None:
     f.add_argument("--layers", type=int, default=2)
     f.add_argument("--gamma", type=float, default=0.99)
     f.add_argument("--lr", type=float, default=0.003)
+    f.add_argument("--smoothing", type=float, default=0.1, help="label smoothing (keeps unused choices possible)")
     e = sub.add_parser("eval", help="play a checkpoint and report its win rate")
     e.add_argument("task")
     e.add_argument("checkpoint", type=Path)
@@ -204,7 +206,7 @@ def main(argv: list[str] | None = None) -> None:
         collect(args.task, args.policy, args.episodes, args.games, args.step_seconds,
                 args.out or BC_DIR / f"{args.task}-{args.policy}")
     elif args.cmd == "fit":
-        fit(args.data, args.out, args.epochs, args.hidden, args.layers, args.gamma, args.lr)
+        fit(args.data, args.out, args.epochs, args.hidden, args.layers, args.gamma, args.lr, args.smoothing)
     else:
         evaluate(args.task, args.checkpoint, args.episodes, args.games, args.step_seconds, args.hidden,
                  args.layers, args.greedy)

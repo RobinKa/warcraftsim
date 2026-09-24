@@ -4,9 +4,10 @@ checkpoint the trainer loads (train.py --init-from).
 The network is the trainer's (puffercpu.c PufferNet): a linear encoder, MinGRU layers with a
 highway gate, a linear decoder whose last output is the value; no biases. Episodes start from a
 zero recurrent state, as in the trainer (zeroed after a terminal). Loss: cross-entropy per action
-head, where a head that only details some choices of the unit's first head (the move direction,
-the attack target) counts only on steps with that choice, so the others keep their initial
-spread for exploration; plus the value fitted to the discounted return (scaled rewards).
+head (label-smoothed, so choices the script never makes stay possible for PPO to try), where a
+head that only details some choices of the unit's first head (the move direction, the attack
+target) counts only on steps with that choice; plus the value fitted to the discounted return
+(scaled rewards).
 
 Standalone (numpy + torch), run by bc.py with a Python that has torch.
 """
@@ -91,7 +92,7 @@ def batches(episodes, idx, size, device):
         yield tuple(torch.from_numpy(x).to(device) for x in (obs, act, ret, mask, live))
 
 
-def losses(net, meta, obs, act, ret, mask, live, vf_coef: float = 0.005):
+def losses(net, meta, obs, act, ret, mask, live, vf_coef: float = 0.005, smoothing: float = 0.0):
     """Mean cross-entropy over the counted head-steps + vf_coef * value MSE (returns are scaled:
     ~±20, so a small weight keeps the value from dominating the shared layers). A head counts on
     steps where its unit is alive; a detail head only when the unit's first head chose what it
@@ -116,7 +117,8 @@ def losses(net, meta, obs, act, ret, mask, live, vf_coef: float = 0.005):
                 if off == offset:
                     chose |= first == v
             w = w * chose.float()
-        ce = F.cross_entropy(logits.reshape(-1, n), target.reshape(-1), reduction="none").reshape(target.shape)
+        ce = F.cross_entropy(logits.reshape(-1, n), target.reshape(-1), reduction="none",
+                             label_smoothing=smoothing).reshape(target.shape)
         ce_sum = ce_sum + (ce * w).sum()
         n_sum += float(w.sum())
         pred = logits.argmax(-1)
@@ -148,6 +150,9 @@ def main() -> None:
     # the returns are noisy (the outcome dominates): a larger weight let the value take over the
     # shared layers and the retreat decisions were not learned (recall 0.11 at 0.05, 0.82 at 0.005)
     ap.add_argument("--vf-coef", type=float, default=0.005)
+    # a script uses few of the choices; fitted exactly, the others get ~0 probability and PPO
+    # never tries them (fine-tuning pull35 stayed at 70% with every attack on "weakest")
+    ap.add_argument("--smoothing", type=float, default=0.1, help="label smoothing: keeps all choices possible")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -168,7 +173,7 @@ def main() -> None:
         net.train()
         rng.shuffle(train)
         for obs, act, ret, mask, live in batches(episodes, train, args.batch, device):
-            loss, _, _ = losses(net, meta, obs, act, ret, mask, live, args.vf_coef)
+            loss, _, _ = losses(net, meta, obs, act, ret, mask, live, args.vf_coef, args.smoothing)
             opt.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(net.parameters(), 1.0)
@@ -179,7 +184,7 @@ def main() -> None:
             tot, vl, nb, acc = 0.0, 0.0, 0, {}
             with torch.no_grad():
                 for obs, act, ret, mask, live in batches(episodes, val, args.batch, device):
-                    loss, v, st = losses(net, meta, obs, act, ret, mask, live, args.vf_coef)
+                    loss, v, st = losses(net, meta, obs, act, ret, mask, live, args.vf_coef, args.smoothing)
                     tot, vl, nb = tot + loss.item(), vl + v, nb + 1
                     for k, s in st.items():
                         a = acc.setdefault(k, {kk: 0 * vv if isinstance(vv, np.ndarray) else 0.0 for kk, vv in s.items()})

@@ -190,6 +190,21 @@ Tasks (add more in `tasks.py`; `scripts/baselines.py` measures scripted policies
 * `micro_mirror`: 4 vs 4 footmen against the scripted opponent.
 * `selfplay_micro`: 4 vs 4 footmen with both sides served to the trainer as agents of the same policy. `--envs` counts games, so each game gives two agents. The dashboard's win rate is side 0's.
 
+Warm start from a script (behavior cloning, `puffer/bc.py`):
+```bash
+python -m warcraftsim.puffer.bc collect mirror_mix_sem_hp400 --policy pull35 --episodes 2000 --games 8  # ~5 min
+python -m warcraftsim.puffer.bc fit runs/bc/mirror_mix_sem_hp400-pull35        # torch; ~2 min on the GPU
+python -m warcraftsim.puffer.bc eval mirror_mix_sem_hp400 runs/bc/mirror_mix_sem_hp400-pull35/policy.bin
+python -m warcraftsim.puffer.train --task mirror_mix_sem_hp400 --lr 0.001 \
+    --init-from runs/bc/mirror_mix_sem_hp400-pull35/policy.bin ...
+```
+* `collect` plays a scripted policy (`agents/micro.py`) in games set up like the trainer's and saves the observations, actions, scaled rewards and which unit slots were alive.
+* `fit` trains PufferLib's network (linear encoder, MinGRU layers, a linear decoder with the value as its last output) in torch and writes its weight file. It needs torch, which is not in the venv: it runs with `WC3_TORCH_PYTHON` or the first Python that has it.
+  * Direction and target heads count only on steps where the unit moved or attacked.
+  * Label smoothing (0.1) keeps every choice possible, so PPO can still try what the script never does.
+  * A small value weight (0.005) matters. The returns are noisy, and at 0.05 the value took over the shared layers: retreat recall was 0.11 instead of 0.82.
+* On `mirror_mix_sem_hp400` (noop 54%, the `pull35` script 68% at 0.5 s steps), PPO from scratch reached 44% after 3M steps and never learned to retreat. PPO from the fitted script started at ~70% (without label smoothing) and stayed there. With smoothing it started at ~33% (the random choices cost a lot) and was back at 67-69% after 1M steps.
+
 Notes:
 * Updates per epoch are `replay_ratio × batch / minibatch`. With the minibatch equal to the batch (the old default), there was one update per epoch and learning was slow: `footmen2` reached 61% wins in 1M steps, against 97% with 16 updates.
 * PufferLib 5.0 does not normalize advantages, and the micro rewards per step are small. Two settings keep the entropy bonus of the 18 action heads from outweighing the reward and pushing the policy to uniform:
