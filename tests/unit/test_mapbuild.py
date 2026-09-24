@@ -45,3 +45,11 @@ def test_bad_inputs():
         HarnessConfig(agent_players=(12,)).agent_mask()
     with pytest.raises(ValueError):
         HarnessConfig(spawn=(SpawnSpec(0, "footman", 0, 0),)).spawn_code()
+
+
+def test_scenario_spawns_keep_their_settings():
+    from warcraftsim.scenario import Scenario
+
+    sc = Scenario.skirmish(["hfoo"], ["hfoo"], max_hp=100, center=(64.0, -32.0))
+    units = sc.absolute_units()
+    assert [u.max_hp for u in units] == [100, 100] and units[0].x == 64.0 - 350.0 and units[0].y == -32.0

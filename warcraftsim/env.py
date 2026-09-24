@@ -28,7 +28,7 @@ from .protocol import Command, Observation, Result, Unit, UnitFlags
 from .runtime.instance import GameSetup
 from .scenario import Scenario
 
-UNIT_FEATURES = 24
+UNIT_FEATURES = 26
 PLAYER_FEATURES = 8
 _N_FLAGS = 12
 
@@ -48,11 +48,14 @@ def _order_class(order: int, orders: dict[str, int]) -> int:
 class UnitEncoder:
     """Units -> float32 feature rows. Coordinates are normalised by `extent` around `origin`."""
 
+    HP_HISTORY = 4  # steps of hit point history per unit (1 s at 0.25 s steps)
+
     def __init__(self, player: int, origin: tuple[float, float], extent: float):
         self.player = player
         self.origin = origin
         self.extent = extent
         self.vocab = unit_vocabulary()
+        self._hp: dict[int, list[int]] = {}  # unit -> hit points of the last HP_HISTORY encodes
 
     def encode(self, units: Sequence[Unit], obs: Observation, orders: dict[str, int], max_units: int,
                allies: set[int] = frozenset()) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -83,9 +86,19 @@ class UnitEncoder:
             for b in range(_N_FLAGS - 1):  # all flags but DEAD (dead units are filtered out)
                 f[12 + b] = float(u.flags >> b & 1)
             f[23] = _order_class(u.order, orders) / 4.0
+            # recent damage (who is being attacked right now): hit point change over the last step
+            # and over the last HP_HISTORY steps, as a fraction of the maximum
+            hist = self._hp.get(u.id)
+            if hist is not None:
+                f[24] = (u.hp - hist[-1]) / max(u.max_hp, 1)
+                f[25] = (u.hp - hist[0]) / max(u.max_hp, 1)
             types[i] = self.vocab.get(u.type, 0)
             ids[i] = u.id
             mask[i] = True
+        for u in units[:max_units]:
+            hist = self._hp.setdefault(u.id, [u.hp] * self.HP_HISTORY)
+            hist.append(u.hp)
+            del hist[0]
         return feats, types, ids, mask
 
 
@@ -190,6 +203,27 @@ class Wc3Env(gym.Env):
         self.game.close()
 
 
+def _issue(view, attacking: dict[int, int], unit: Unit, kind: int, direction: int, target: Unit | None,
+           move_distance: float) -> None:
+    """One unit's micro action: 0 noop, 1 stop, 2 move `move_distance` in 8-way `direction`,
+    3 attack `target`. An attack on the unit the unit is already attacking is not issued again:
+    a new order restarts the approach and the attack wind-up, so a unit re-ordered every step
+    (0.25 s) could stand still or never land a hit."""
+    if kind == 1:
+        view.stop(unit)
+    elif kind == 2:
+        a = direction * math.pi / 4
+        view.move(unit, unit.x + move_distance * math.cos(a), unit.y + move_distance * math.sin(a))
+    elif kind == 3 and target is not None:
+        if attacking.get(unit.id) == target.id and unit.order == view.order_id("attack"):
+            return
+        view.attack(unit, target)
+        attacking[unit.id] = target.id
+        return
+    if kind in (1, 2):
+        attacking.pop(unit.id, None)
+
+
 class MicroEnv(Wc3Env):
     """Scenario fights. Action per own-unit slot: [kind, direction, target].
 
@@ -221,6 +255,7 @@ class MicroEnv(Wc3Env):
         self._enemy: list[Unit] = []
         self._hp0 = (1.0, 1.0)
         self._hp_prev = (0.0, 0.0)
+        self._attacking: dict[int, int] = {}  # unit -> enemy it was last ordered to attack
 
     def _split(self, obs: Observation) -> tuple[list[Unit], list[Unit]]:
         own = sorted((u for u in obs.units if u.alive and u.owner == self.player), key=lambda u: u.id)
@@ -231,6 +266,7 @@ class MicroEnv(Wc3Env):
     def _on_reset(self, obs: Observation) -> None:
         cx, cy = self.scenario.resolved_center()
         self.encoder = UnitEncoder(self.player, (cx, cy), 1500.0)
+        self._attacking = {}
         own, enemy = self._split(obs)
         self._hp0 = (max(sum(u.max_hp for u in own), 1), max(sum(u.max_hp for u in enemy), 1))
         self._hp_prev = (sum(u.hp for u in own), sum(u.hp for u in enemy))
@@ -247,13 +283,8 @@ class MicroEnv(Wc3Env):
         action = np.asarray(action).reshape(self.max_own, 3)
         for i, unit in enumerate(self._own):
             kind, direction, target = (int(v) for v in action[i])
-            if kind == 1:
-                self.game.stop(unit)
-            elif kind == 2:
-                a = direction * math.pi / 4
-                self.game.move(unit, unit.x + self.move_distance * math.cos(a), unit.y + self.move_distance * math.sin(a))
-            elif kind == 3 and target < len(self._enemy):
-                self.game.attack(unit, self._enemy[target])
+            _issue(self.game, self._attacking, unit, kind, direction,
+                   self._enemy[target] if kind == 3 and target < len(self._enemy) else None, self.move_distance)
         return []
 
     def step(self, action):
@@ -369,6 +400,7 @@ class MicroSelfPlayEnv:
         self._units: dict[int, tuple[list[Unit], list[Unit]]] = {}
         self._hp0: dict[int, float] = {}
         self._hp_prev: dict[int, float] = {}
+        self._attacking: dict[int, int] = {}  # unit -> enemy it was last ordered to attack
 
     def observation_space(self, agent: int) -> spaces.Space:
         return self.single_observation_space
@@ -401,6 +433,7 @@ class MicroSelfPlayEnv:
         obs = self.game.reset(relaunch=bool((options or {}).get("relaunch")))
         cx, cy = self.scenario.resolved_center()
         self.encoders = {p: UnitEncoder(p, (cx, cy), 1500.0) for p in self.possible_agents}
+        self._attacking = {}
         for p in self.possible_agents:
             self.views[p] = self.game.as_player(p)
             self._hp0[p] = max(sum(u.max_hp for u in obs.units if u.owner == p), 1)
@@ -414,14 +447,8 @@ class MicroSelfPlayEnv:
             action = np.asarray(action).reshape(self.max_units, 3)
             for i, unit in enumerate(own):
                 kind, direction, target = (int(v) for v in action[i])
-                if kind == 1:
-                    view.stop(unit)
-                elif kind == 2:
-                    a = direction * math.pi / 4
-                    view.move(unit, unit.x + self.move_distance * math.cos(a),
-                              unit.y + self.move_distance * math.sin(a))
-                elif kind == 3 and target < len(enemy):
-                    view.attack(unit, enemy[target])
+                _issue(view, self._attacking, unit, kind, direction,
+                       enemy[target] if kind == 3 and target < len(enemy) else None, self.move_distance)
         obs = self.game.step()
         hp = {p: self._hp(obs, p) for p in self.possible_agents}
         loss = {p: (self._hp_prev[p] - hp[p]) / self._hp0[p] for p in self.possible_agents}

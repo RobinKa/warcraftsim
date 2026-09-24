@@ -17,7 +17,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from ..env import MicroEnv, MicroSelfPlayEnv, NavigateEnv
+from ..env import UNIT_FEATURES, MicroEnv, MicroSelfPlayEnv, NavigateEnv
 from ..scenario import Scenario
 
 
@@ -104,7 +104,7 @@ def _nav_task(distance: float = 1200.0) -> Task:
 
 # ---- micro: small fights ------------------------------------------------------------------------
 
-_FEAT = 24
+_FEAT = UNIT_FEATURES
 
 
 def _micro_sizes(max_units: int) -> tuple[int, tuple[int, ...]]:
@@ -175,8 +175,8 @@ def _micro_outcome(env, info) -> float:
 
 
 def _micro_task(own: tuple[str, ...] = ("hfoo",) * 4, enemy: tuple[str, ...] = ("ogru",) * 3,
-                max_units: int = 6, name: str = "micro") -> Task:
-    sc = Scenario.skirmish(list(own), list(enemy), max_game_seconds=90)
+                max_units: int = 6, name: str = "micro", max_hp: int = 0, max_game_seconds: float = 90) -> Task:
+    sc = Scenario.skirmish(list(own), list(enemy), max_game_seconds=max_game_seconds, max_hp=max_hp)
     obs_size, act_sizes = _micro_sizes(max_units)
     return Task(
         name=name, obs_size=obs_size, act_sizes=act_sizes,
@@ -204,6 +204,9 @@ TASKS: dict[str, Callable[[], Task]] = {
     "nav": _nav_task,
     "micro": _micro_task,
     "micro_mirror": lambda: _micro_task(("hfoo",) * 4, ("hfoo",) * 4, name="micro_mirror"),
+    # the smallest fight worth learning: pull a damaged footman back so the enemies switch targets
+    "footmen2": lambda: _micro_task(("hfoo",) * 2, ("hfoo",) * 2, max_units=2, name="footmen2", max_hp=100,
+                                    max_game_seconds=40),
     "selfplay_micro": _selfplay_task,
 }
 

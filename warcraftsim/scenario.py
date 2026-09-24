@@ -13,6 +13,8 @@ centered at (0, 0); "flatN" gives N x N tiles.
 
 from __future__ import annotations
 
+import dataclasses
+
 import math
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -41,7 +43,7 @@ class Scenario:
 
     def absolute_units(self) -> tuple[SpawnSpec, ...]:
         cx, cy = self.resolved_center()
-        return tuple(SpawnSpec(u.player, u.unit, cx + u.x, cy + u.y, u.facing) for u in self.units)
+        return tuple(dataclasses.replace(u, x=cx + u.x, y=cy + u.y) for u in self.units)
 
     def absolute_target(self) -> tuple[float, float, float] | None:
         if self.target is None:
