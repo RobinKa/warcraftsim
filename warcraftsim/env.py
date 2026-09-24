@@ -479,7 +479,8 @@ class MicroEnv(Wc3Env):
         """A simple caster: (ability slot, target rule) of the first ready ability in slot order
         with a use now, else None. For enemies: the weakest enemy in cast range (instant ones:
         an enemy within their area); for allies: the most hurt own unit in range below 70% hit
-        points; self buffs: an enemy within 500. Used by the scripted opponent and scripts."""
+        points; self buffs: below half hit points with an enemy within 500. Used by the scripted
+        opponent and scripts."""
         from .data.abilities import ability_info, hero_abilities
 
         info_by_code = ability_info()
@@ -495,7 +496,10 @@ class MicroEnv(Wc3Env):
                 return any(e.dist(unit.x, unit.y) <= d for e in foes)
 
             if info.cast == "instant":
-                if near(max(info.at(info.area, level), 250.0) if info.side == "enemy" else 500.0):
+                if info.side == "enemy" and near(max(info.at(info.area, level), 250.0)):
+                    return slot, weak
+                # self buffs (Divine Shield) when hurt in a fight
+                if info.side != "enemy" and near(500.0) and unit.hp < 0.5 * unit.max_hp:
                     return slot, weak
             elif info.side == "enemy":
                 if near(info.at(info.range, level) + REACH):

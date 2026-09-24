@@ -86,7 +86,8 @@ GameInstance ── TCP 127.0.0.1 ───────────────�
 * **`Wc3Game`:**
   * `reset()` and `step(commands)`.
   * Queued order helpers: `move`, `attack`, `attack_move`, `smart`, `stop`, `hold`, `harvest`, `harvest_tree`, `train` / `research` / `upgrade`, `build`, `learn`, `cast`, `use_item`.
-  * `cast()` accepts an order string (`"thunderbolt"`) or an ability code (`"AHtb"`). All 246 ability order strings in the game data are resolved in the first observation.
+  * `cast()` accepts an order string (`"thunderbolt"`) or an ability code (`"AHtb"`). All ability order strings in the game data are resolved in the first observation.
+  * Heroes report each ability slot's level and cooldown left (`Unit.abilities`, in the order of `data.abilities.hero_abilities()`). `data.abilities.ability_info()` has each hero ability's name, order, how it is cast (unit / point / instant / passive), whom it is for, and its mana, cooldown, range and area per level. Queued heroes learn skills with `QueueSpawn(..., skills=("AHtb", "AHtb", "AHtc"))`.
   * Debug commands: `spawn`, `set_resources`.
   * Queries: `my_units`, `idle_workers`, `mines`, `enemies`.
 * **`Observation`:**
@@ -172,7 +173,7 @@ Tasks (add more in `tasks.py`; `scripts/baselines.py` measures scripted policies
   * Tuned by sweeps (`f2-sweep1`..`5`, `f2-step*` in the dashboard): 0.5 s steps, lr 0.01, minibatch 192, replay ratio 4, the learning rate annealed over 400k steps → 95% wins after ~0.2M steps (~1.5 min), 98-100% soon after; 1.0 s steps: 100% for both seeds.
   * Most of the speed came from more updates per sample (1 → 32 per epoch), then from longer steps and a shorter annealing schedule. Horizon 32 learns fastest at first but ends lower.
   * Early policies learned focus fire plus pulling a hurt footman back. The 100% policy instead holds position until the enemies arrive: the scripted opponent then splits its damage over both footmen, while ours focus one enemy.
-* `mirror_mix[_sem][_hp<P>]`: a mirror match with a new random composition every episode: a hero (level 1-3) and 2-4 units from all races (footman, rifleman, knight, grunt, headhunter, tauren, ghoul, crypt fiend, abomination, archer, huntress), at P‰ of their hit points (default 250). Unit features include the type's range, DPS, armor, speed and cooldown (`data.objects.combat_stats`); episodes are spawned through `QueueSpawn` + `Restart` (`Wc3Game.reset(spawns=...)`).
+* `mirror_mix[_sem][_abil][_hp<P>]`: a mirror match with a new random composition every episode: a hero (level 1-3) and 2-4 units from all races (footman, rifleman, knight, grunt, headhunter, tauren, ghoul, crypt fiend, abomination, archer, huntress), at P‰ of their hit points (default 250). Unit features include the type's range, DPS, armor, speed and cooldown (`data.objects.combat_stats`); episodes are spawned through `QueueSpawn` + `Restart` (`Wc3Game.reset(spawns=...)`).
   * Hit points decide whether micro matters (scripted baselines, 120-150 episodes each; the time limit scales with hit points):
 
     | hit points | episode | noop | focus + pull back (`pull35`) |
@@ -184,6 +185,13 @@ Tasks (add more in `tasks.py`; `scripts/baselines.py` measures scripted policies
 
     At 25% units die within a few hits and every order costs more than it gains (attacking the weakest enemy in range 48-50%, pulling back without focus 19%); RL at 25% converged to noop (lr 0.003: 52%). `mirror_mix_hp400` is the training setting.
   * `_sem`: the target head picks a rule instead of an enemy slot (weakest in range, nearest, weakest, hero, threat = DPS per hit point left) and stop becomes retreat (straight away from the nearest enemy), so an order means the same whatever the composition (`MicroEnv(targeting="semantic")`).
+  * `_abil` (implies `_sem`): heroes fight with their abilities. Each hero gets a random skill build for its level (fighting abilities only: no summons, far sight, blink or sacrifices), the same on both sides. Heroes can also cast:
+    * each unit has a fourth action head, the ability slot, and a fifth kind, cast;
+    * the target rules pick an enemy within the ability's cast range, or an own unit for heals and buffs (the most hurt, the nearest, a hero, the strongest);
+    * instant abilities need no target;
+    * a cast that isn't possible (not learned, cooling down, too little mana, no target) does nothing and is counted as `cast_invalid`.
+
+    Units get 10 more features per ability slot: level, ready, cooldown, how it is cast, for whom, range, area. The scripted opponent's heroes cast what `MicroEnv.scripted_cast` picks. Scripts: `cast<policy>`, e.g. `castpull35`.
   * lr 0.01 (tuned on `footmen2`) is far too high with 15 action heads: the KL per update was 1.0-1.5 (clip fraction 0.9) and the win rate peaked at 29%. The KL at a given lr grows with the number of heads (≈0.15 with 6, 0.3 with 9, 1.0+ with 15); lr 0.003 keeps it at 0.03-0.14.
 * `footmen<N>v<M>[_hp<HP>][_ehp<EHP>]`: N agent footmen against M scripted ones with HP hit points each (default 100), the enemies EHP (a handicap).
 * `micro`: 4 footmen vs 3 scripted grunts. This is hard: scripted baselines win about 1 game in 3.

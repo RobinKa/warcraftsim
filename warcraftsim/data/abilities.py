@@ -34,8 +34,9 @@ _CAST: dict[str, tuple[str, str]] = {
     "AHtc": ("instant", "enemy"), "AHtb": ("unit", "enemy"), "AHbh": ("passive", ""), "AHav": ("instant", "self"),
     # Blood Mage
     "AHfs": ("point", "enemy"), "AHbn": ("unit", "enemy"), "AHdr": ("unit", "enemy"), "AHpx": ("instant", "summon"),
-    # Blademaster
-    "AOwk": ("instant", "self"), "AOcr": ("passive", ""), "AOmi": ("instant", "summon"), "AOww": ("instant", "enemy"),
+    # Blademaster: Wind Walk leaves an idle hero invisible, and invisible units do not auto-attack:
+    # unless its side orders an attack, nobody can reach it and the episode runs to its time limit
+    "AOwk": ("instant", "utility"), "AOcr": ("passive", ""), "AOmi": ("instant", "summon"), "AOww": ("instant", "enemy"),
     # Far Seer
     "AOfs": ("point", "utility"), "AOsf": ("instant", "summon"), "AOcl": ("unit", "enemy"), "AOeq": ("point", "enemy"),
     # Tauren Chieftain
