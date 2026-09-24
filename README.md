@@ -155,19 +155,28 @@ PufferLib 5.0 (`third_party/PufferLib`, the current `5.0` branch) is a native CU
 ```bash
 # needs the CUDA toolkit (nvcc), clang, ccache, NCCL, libomp:
 #   sudo apt-get install ccache libnccl2 libnccl-dev libomp-14-dev libomp5-14 libgl-dev libx11-dev
-python -m warcraftsim.puffer.train --task nav --envs 16 --timesteps 400000        # navigation
-python -m warcraftsim.puffer.train --task micro_mirror --envs 16 --timesteps 3000000  # 4 v 4 footmen
+python -m warcraftsim.puffer.train --task nav --timesteps 400000                  # navigation
+python -m warcraftsim.puffer.train --task footmen2 --timesteps 1000000 \
+    --lr 0.01 --minibatch 384 --replay-ratio 4                                     # 2 v 2 footmen, ~95% wins in ~3 min
+python -m warcraftsim.puffer.train --task micro_mirror --timesteps 3000000        # 4 v 4 footmen
 python -m warcraftsim.puffer.train --task selfplay_micro --envs 8 --timesteps 3000000 # both sides learn
+# a sweep: the games launch once, then one run per --sweep (runs NAME-1, NAME-2, ... in the dashboard)
+python -m warcraftsim.puffer.train --task footmen2 --name f2 --timesteps 1e6 --sweep "--lr 0.01" --sweep "--lr 0.02"
 python -m warcraftsim dashboard                                                    # http://localhost:8765
 ```
 
-Tasks (add more in `tasks.py`):
+Tasks (add more in `tasks.py`; `scripts/baselines.py` measures scripted policies on any of them):
 * `nav`: reach a point.
+* `footmen2`: 2 vs 2 footmen with 100 hit points against the scripted opponent (episodes ~17 s).
+  * Scripted baselines win 0% (random), 30% (noop), 65–70% (focus fire), 90% (focus fire, and pulling a footman back while it is low and being hit).
+  * PPO learns focus fire and the pull-back: 95% wins after ~650k steps (lr 0.01, minibatch 384, replay ratio 4).
+* `footmen<N>v<M>[_hp<HP>]`: N agent footmen against M scripted ones with HP hit points each (default 100).
 * `micro`: 4 footmen vs 3 scripted grunts. This is hard: scripted baselines win about 1 game in 3.
 * `micro_mirror`: 4 vs 4 footmen against the scripted opponent.
 * `selfplay_micro`: 4 vs 4 footmen with both sides served to the trainer as agents of the same policy. `--envs` counts games, so each game gives two agents. The dashboard's win rate is side 0's.
 
 Notes:
+* Updates per epoch are `replay_ratio × batch / minibatch`. With the minibatch equal to the batch (the old default), there was one update per epoch and learning was slow: `footmen2` reached 61% wins in 1M steps, against 97% with 16 updates.
 * PufferLib 5.0 does not normalize advantages, and the micro rewards per step are small. Two settings keep the entropy bonus of the 18 action heads from outweighing the reward and pushing the policy to uniform:
   * `--ent-coef` defaults to 0.001;
   * micro tasks scale rewards by 10 (`Task.reward_scale`; logged returns are scaled too).

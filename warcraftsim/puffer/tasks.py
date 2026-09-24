@@ -11,6 +11,7 @@ by historical checkpoints when PufferLib's self-play pool is enabled).
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -211,8 +212,20 @@ TASKS: dict[str, Callable[[], Task]] = {
 }
 
 
+def _footmen_task(name: str) -> Task | None:
+    """footmen{N}v{M}[_hp{HP}]: N agent footmen against M scripted ones, HP each (default 100)."""
+    m = re.fullmatch(r"footmen(\d+)v(\d+)(?:_hp(\d+))?", name)
+    if not m:
+        return None
+    n, e, hp = int(m[1]), int(m[2]), int(m[3] or 100)
+    return _micro_task(("hfoo",) * n, ("hfoo",) * e, max_units=max(n, e), name=name, max_hp=hp,
+                       max_game_seconds=40 + 5 * max(n, e))
+
+
 def get_task(name: str) -> Task:
-    try:
+    if name in TASKS:
         return TASKS[name]()
-    except KeyError:
-        raise KeyError(f"unknown task {name!r}; available: {sorted(TASKS)}") from None
+    task = _footmen_task(name)
+    if task is None:
+        raise KeyError(f"unknown task {name!r}; available: {sorted(TASKS)} and footmen<N>v<M>[_hp<HP>]")
+    return task
