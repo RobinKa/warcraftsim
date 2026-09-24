@@ -63,17 +63,21 @@ def load(data: Path, gamma: float):
     meta = json.loads((data / "meta.json").read_text())
     episodes = []
     for f in sorted(data.glob("game*.npz")):
-        d = np.load(f)
+        # each d[key] decompresses the whole array again: read every array once per file (per
+        # episode, each slice kept its own copy of the file's array alive: 41 GB for 2000 episodes)
+        with np.load(f) as d:
+            obs, act, rew, ends = d["obs"], d["act"].astype(np.int64), d["rew"], d["ends"]
+            lives = d["live"] if "live" in d else None
         start = 0
-        for end in d["ends"]:
-            rew = d["rew"][start:end]
-            ret = np.zeros_like(rew)
+        for end in ends:
+            r = rew[start:end]
+            ret = np.zeros_like(r)
             acc = 0.0
-            for t in range(len(rew) - 1, -1, -1):
-                acc = rew[t] + gamma * acc
+            for t in range(len(r) - 1, -1, -1):
+                acc = r[t] + gamma * acc
                 ret[t] = acc
-            live = d["live"][start:end] if "live" in d else np.ones((end - start, 1), bool)
-            episodes.append((d["obs"][start:end], d["act"][start:end].astype(np.int64), ret, live))
+            live = lives[start:end] if lives is not None else np.ones((end - start, 1), bool)
+            episodes.append((obs[start:end], act[start:end], ret, live))
             start = end
     return meta, episodes
 
