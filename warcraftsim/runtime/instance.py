@@ -30,7 +30,8 @@ from typing import Callable, Iterable, Sequence
 from .. import paths
 from ..data.mapbuild import HarnessConfig, build_map
 from ..data.wgc import Difficulty, Race, Wgc, WgcSlot
-from ..protocol import (Command, EndGame, Observation, ProtocolError, Restart, Snapshot, Unit, encode_commands,
+from ..protocol import (Command, EndGame, Observation, Op, ProtocolError, Restart, Snapshot, Unit, command_ops,
+                        encode_commands,
                         merge_observation, parse_observation, parse_token_lines)
 from . import wine
 from .display import Xvfb
@@ -566,12 +567,23 @@ class GameInstance:
             ints = self._playback.get(key, []) + encode_commands(extra)
         elif ints:
             self._cmd_log[key] = ints
+        # a scenario Restart among them (e.g. replayed from the command log): the next observation
+        # starts a new episode (sequence 0 again, and the key of the recorded commands changes)
+        self._restart_sent = Op.RESTART in command_ops(ints)
         self._sent_at = time.perf_counter()
         self._reply(ints=ints)
+
+    _restart_sent = False
 
     def receive(self) -> Observation:
         """Second half of step(): wait for the next observation."""
         prev_ms = self.last_obs.game_ms if self.last_obs else 0
+        if self._restart_sent:
+            self._restart_sent = False
+            self._last_seq = None
+            obs = self._await_observation(new_episode=True)
+            self.episode += 1
+            return obs
         obs = self._await_observation()
         self.steps += 1
         self._proc_steps += 1

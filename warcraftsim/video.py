@@ -106,6 +106,10 @@ def _follow_target(obs: Observation, player: int | None) -> tuple[float, float] 
     return sum(u.x for u in units) / len(units), sum(u.y for u in units) / len(units)
 
 
+class _ReplayStalled(Exception):
+    """The game presents frames but no longer steps (the replay's recorded game has ended)."""
+
+
 def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.PathLike, fps: int = 40,
                   speed: float = 1.0, width: int | None = None, follow_player: int | None = None,
                   max_steps: int = 20000, name: str = "render", crf: int = 23, overlay=None, audio: bool = True,
@@ -159,12 +163,22 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
                 ffmpeg.stdin.write(f)
             frames += len(batch)
 
-        def on_audio(pcm: bytes, rate: int, channels: int, bits: int, latency: int) -> None:
-            pcm_file.write(pcm)
-            audio_fmt.append((rate, channels, bits, latency))
+        # A step should bring step_seconds * fps / speed frames. Far more means the game draws on without
+        # stepping (the replay ran out before the episode's end): stop, or the frames would pile up
+        # in memory until the machine runs out (it once reached 41 GB and took a training run down).
+        frame_cap = max(40, int(20 * setup.step_seconds * fps / speed))
 
-        inst.set_frame_capture(1000.0 * speed / fps, lambda n: pending.append(grabber.grab()),
-                               on_audio if audio else None)
+        def on_frame(n: int) -> None:
+            if len(pending) >= frame_cap:
+                raise _ReplayStalled(f"{len(pending)} frames without a step")
+            pending.append(grabber.grab())
+
+        def on_audio(pcm: bytes, rate: int, channels: int, bits: int, latency: int) -> None:
+            if len(pending) < frame_cap:
+                pcm_file.write(pcm)
+                audio_fmt.append((rate, channels, bits, latency))
+
+        inst.set_frame_capture(1000.0 * speed / fps, on_frame, on_audio if audio else None)
         follow = follow_player is not None or setup.scenario is None
         last = None
         for t in range(max_steps):
@@ -177,6 +191,8 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
                 obs = inst.step([Camera(*target)] if target else [])
             except GameError:
                 obs = None  # the replay ended
+            except _ReplayStalled:
+                obs, pending[:] = None, pending[:int(setup.step_seconds * fps / speed)]
             batch, pending[:] = list(pending), []
             if batch:
                 last = batch[-1]

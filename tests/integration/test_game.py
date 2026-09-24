@@ -209,3 +209,40 @@ def test_scenario_spare_parks_the_running_game(game_dir, tmp_path):
                 break
             obs = inst.step()
     assert len(live) > 10 and live == {k: played[k] for k in live}
+
+
+def test_replay_of_a_respawned_episode(game_dir, tmp_path):
+    """Episodes that start with queued spawns (random compositions) replay exactly."""
+    import numpy as np
+
+    from warcraftsim import Wc3Game
+    from warcraftsim.puffer.tasks import mirror_spawner
+
+    sc = Scenario(units=(), victory="elimination", max_game_seconds=40, name="respawn_replay")
+    setup = GameSetup(slots=[Agent("human"), Scripted("orc")], scenario=sc, step_seconds=0.5)
+    spawns = mirror_spawner(units=(2, 3))(np.random.default_rng(3))
+    live = {}
+    with Wc3Game(setup, name="it_respawn") as g:
+        g.reset()
+        obs = g.reset(spawns=spawns)
+        n = 0
+        while not obs.game_over:
+            live[obs.seq] = sorted((u.id, u.x, u.y, u.hp) for u in obs.units if u.alive)
+            enemies = g.enemies()
+            if n % 3 == 0 and enemies:
+                for u in g.my_units():
+                    g.attack(u, min(enemies, key=lambda e: e.hp))
+            obs = g.step()
+            n += 1
+        live[obs.seq] = sorted((u.id, u.x, u.y, u.hp) for u in obs.units if u.alive)
+        replay = g.instance.save_replay(tmp_path / "ep.w3g")
+    with GameInstance(setup, name="it_respawn_play") as inst:
+        obs = inst.play_replay(replay)
+        played = {}
+        for _ in range(500):
+            if obs.game_over:
+                break
+            obs = inst.step()
+            played[obs.seq] = sorted((u.id, u.x, u.y, u.hp) for u in obs.units if u.alive)
+    assert len(live) > 10 and all(played.get(k) == v for k, v in live.items() if k > 0)
+    assert obs.game_over

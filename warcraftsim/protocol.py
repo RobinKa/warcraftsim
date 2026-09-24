@@ -630,6 +630,19 @@ _OP_LENGTHS = {Op.POINT: 5, Op.TARGET: 4, Op.IMMEDIATE: 3, Op.BUILD: 5, Op.LEARN
                Op.SNAPSHOT: 1, Op.RESTART: 1}
 
 
+def command_ops(ints: Sequence[int]) -> list[int]:
+    """The ops of encoded commands, in order."""
+    ops, i = [], 0
+    while i < len(ints):
+        op = int(ints[i])
+        n = _OP_LENGTHS.get(op)
+        if n is None:
+            raise ProtocolError(f"unknown command op {op} at {i}")
+        ops.append(op)
+        i += n
+    return ops
+
+
 def decode_commands(ints: Sequence[int]) -> list[Command]:
     """Unit orders (PointOrder, TargetOrder, ImmediateOrder) and cameras in encoded commands, e.g.
     a step of a replay's command log; other commands are skipped."""
