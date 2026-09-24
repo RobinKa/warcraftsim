@@ -92,6 +92,57 @@ def unit_table() -> dict[str, UnitInfo]:
 
 
 @lru_cache(maxsize=1)
+@dataclass(frozen=True)
+class CombatStats:
+    """A unit type's fighting numbers (first weapon; heroes at level 1)."""
+    range: float  # attack range
+    cooldown: float  # seconds between attacks
+    damage: float  # average damage per attack (heroes: including the primary attribute)
+    armor: float
+    speed: float  # move speed
+    hits_air: bool
+    is_hero: bool
+
+    @property
+    def dps(self) -> float:
+        return self.damage / self.cooldown if self.cooldown > 0 else 0.0
+
+
+@lru_cache(maxsize=None)
+def combat_stats() -> dict[str, CombatStats]:
+    """Combat numbers per unit type from UnitWeapons/UnitBalance (cached in the cache dir)."""
+    cache = paths.CACHE_DIR / "combat.json"
+    if not cache.exists():
+        with GameArchives() as g:
+            rows = parse_slk(g.read("Units\\UnitWeapons.slk").decode("latin-1"))
+            key = next(iter(rows[0]))  # the id column (its header cell is not reliable: "serpent")
+            weapons = {r.get(key): r for r in rows}
+            balance = {r.get("unitBalanceID"): r for r in parse_slk(g.read("Units\\UnitBalance.slk").decode("latin-1"))}
+
+        def num(row: dict, key: str, default: float = 0.0) -> float:
+            try:
+                return float(str(row.get(key, "")).strip())
+            except ValueError:
+                return default
+
+        out = {}
+        for uid, w in weapons.items():
+            b = balance.get(uid, {})
+            if not uid:
+                continue
+            hero = uid[:1].isupper()
+            primary = str(b.get("Primary", "")).strip()
+            damage = num(w, "dmgplus1") + num(w, "dice1") * (num(w, "sides1") + 1) / 2
+            if hero and primary in ("STR", "AGI", "INT"):
+                damage += num(b, primary)
+            out[uid] = {"range": num(w, "rangeN1"), "cooldown": num(w, "cool1"), "damage": round(damage, 2),
+                        "armor": num(b, "def"), "speed": num(b, "spd"),
+                        "hits_air": "air" in str(w.get("targs1", "")), "is_hero": hero}
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps(out, indent=0))
+    return {k: CombatStats(**v) for k, v in json.loads(cache.read_text()).items()}
+
+
 def unit_vocabulary() -> dict[str, int]:
     """Unit type code -> index 1..N (0 is reserved for unknown/padding). Stable: sorted by code."""
     return {code: i + 1 for i, code in enumerate(sorted(unit_table()))}

@@ -16,7 +16,7 @@ and sent with the next step. Unit, player and order arguments accept objects or 
 from __future__ import annotations
 
 import copy
-from typing import Iterable
+from typing import Sequence, Iterable
 
 from .protocol import (Build, Command, ImmediateOrder, LearnSkill, Observation, PointOrder, SetResources, Spawn,
                        TargetDestructable, TargetOrder, Unit, UnitFlags, UseItem, fourcc)
@@ -40,13 +40,17 @@ class Wc3Game:
 
     # ---- episode control ------------------------------------------------------------------
 
-    def reset(self, relaunch: bool = False) -> Observation:
-        """Start the game, or begin a new episode (relaunch=True: in a fresh game process)."""
+    def reset(self, relaunch: bool = False, spawns: Sequence[Command] = ()) -> Observation:
+        """Start the game, or begin a new episode (relaunch=True: in a fresh game process).
+        Scenarios: `spawns` (protocol.QueueSpawn) are the new episode's units, on top of the
+        scenario's own (e.g. a random composition per episode)."""
         self._queue.clear()
         if self.instance.proc is None:
             obs = self.instance.start()
         else:
             obs = self.instance.restart(relaunch=relaunch)
+        if spawns:
+            obs = self.instance.respawn(spawns)
         self._shared["first"] = obs
         if obs.orders:
             self._orders.clear()

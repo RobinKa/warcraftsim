@@ -630,6 +630,20 @@ class GameInstance:
             f.unlink()
         return self._launch()
 
+    def respawn(self, commands: Sequence[Command]) -> Observation:
+        """Scenarios: a new episode in the running game with extra units (protocol.QueueSpawn
+        commands, spawned after the old units are removed)."""
+        if self.setup.scenario is None:
+            raise GameError("respawn needs a scenario")
+        ints = encode_commands([*commands, Restart()])
+        key = f"{self._proc_episode}:{self._last_seq}"
+        self._cmd_log[key] = self._cmd_log.get(key, []) + ints
+        self._reply(ints=ints)
+        self._last_seq = None
+        obs = self._await_observation(new_episode=True)
+        self.episode += 1
+        return obs
+
     # ---- warm spare (melee) ---------------------------------------------------------------
 
     def _wants_spare(self) -> bool:

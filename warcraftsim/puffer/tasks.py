@@ -214,7 +214,63 @@ TASKS: dict[str, Callable[[], Task]] = {
     "footmen2": lambda: _micro_task(("hfoo",) * 2, ("hfoo",) * 2, max_units=2, name="footmen2", max_hp=100,
                                     max_game_seconds=40),
     "selfplay_micro": _selfplay_task,
+    "mirror_mix": lambda: _mirror_task(),  # defined below
 }
+
+
+# ---- random mirror matches: a hero and some units, the same for both sides, new every episode --
+
+MIRROR_UNITS = ("hfoo", "hrif", "hkni", "ogru", "ohun", "otau", "ugho", "ucry", "uabo", "earc", "esen")
+MIRROR_HEROES = ("Hpal", "Hamg", "Hmkg", "Hblm", "Obla", "Ofar", "Otch", "Oshd", "Udea", "Ulic", "Udre", "Ucrl",
+                 "Ekee", "Emoo", "Edem", "Ewar")
+
+
+def mirror_spawner(units: tuple[int, int] = (2, 4), heroes: int = 1, hero_levels: tuple[int, int] = (1, 3),
+                   hp_permille: int = 250, pool=MIRROR_UNITS, hero_pool=MIRROR_HEROES):
+    """rng -> QueueSpawn list: `heroes` random heroes and 2-4 random units per side, the same for both
+    sides (mirrored positions); melee in front, ranged behind. Hit points at hp_permille/1000 of
+    normal keep fights short."""
+    from ..data.objects import combat_stats
+    from ..protocol import QueueSpawn
+
+    stats = combat_stats()
+
+    def spawn(rng) -> list:
+        comp = [(str(rng.choice(hero_pool)), int(rng.integers(hero_levels[0], hero_levels[1] + 1)))
+                for _ in range(heroes)]
+        comp += [(str(rng.choice(pool)), 1) for _ in range(int(rng.integers(units[0], units[1] + 1)))]
+        rows: dict[bool, list] = {False: [], True: []}
+        for code, level in comp:
+            rows[stats[code].range > 200].append((code, level))
+        out = []
+        for player, side in ((0, -1), (1, 1)):
+            for ranged, row in rows.items():
+                for i, (code, level) in enumerate(row):
+                    x = side * (350 + (150 if ranged else 0))
+                    y = (i - (len(row) - 1) / 2) * 110
+                    out.append(QueueSpawn(player, code, x, y, 0 if side < 0 else 180, hp_permille, level))
+        return out
+
+    return spawn
+
+
+def _mirror_task(name: str = "mirror_mix", max_units: int = 5, hp_permille: int = 250) -> Task:
+    sc = Scenario(units=(), victory="elimination", max_game_seconds=45, name=name)
+    obs_size, act_sizes = _micro_sizes(max_units)
+    spawner = mirror_spawner(units=(2, max_units - 1), hp_permille=hp_permille)
+
+    def make_env(inst: str):
+        env = MicroEnv(sc, max_own=max_units, max_enemy=max_units, name=inst)
+        env.spawner = spawner
+        return env
+
+    return Task(
+        name=name, obs_size=obs_size, act_sizes=act_sizes, make_env=make_env,
+        flatten=_micro_flatten, to_action=lambda a: np.asarray(a, dtype=np.int64).reshape(max_units, 3),
+        outcome=_micro_outcome, scenario=sc, reward_scale=10.0, **_micro_labels(max_units),
+        description=f"Mirror match, a new composition every episode: a hero (level 1-3) and 2-{max_units - 1} "
+                    f"units from all races, {hp_permille / 10:.0f}% hit points, vs the scripted opponent.",
+    )
 
 
 def _footmen_task(name: str) -> Task | None:

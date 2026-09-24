@@ -60,6 +60,15 @@ globals
     integer w3s_ncmd = 0
     integer w3s_nplayers = 0
     boolean w3s_restart = false
+    // spawns queued for the next scenario restart (op 92): random compositions chosen by Python
+    integer w3s_nqs = 0
+    integer array w3s_qs_player
+    integer array w3s_qs_type
+    real array w3s_qs_x
+    real array w3s_qs_y
+    real array w3s_qs_facing
+    integer array w3s_qs_hp
+    integer array w3s_qs_level
     boolean w3s_end = false
     boolean array w3s_scripted
     integer array w3s_alive
@@ -541,6 +550,20 @@ function W3S_ApplyOne takes integer at returns integer
         call SetPlayerState(Player(w3s_cmd[at + 1]), PLAYER_STATE_RESOURCE_GOLD, w3s_cmd[at + 2])
         call SetPlayerState(Player(w3s_cmd[at + 1]), PLAYER_STATE_RESOURCE_LUMBER, w3s_cmd[at + 3])
         set ok = true
+    elseif op == 92 then
+        // queue a spawn for the next restart: player, type, x, y, facing, hp per mille, hero level
+        set n = 8
+        if w3s_nqs < 64 then
+            set w3s_qs_player[w3s_nqs] = w3s_cmd[at + 1]
+            set w3s_qs_type[w3s_nqs] = w3s_cmd[at + 2]
+            set w3s_qs_x[w3s_nqs] = I2R(w3s_cmd[at + 3] - 65536)
+            set w3s_qs_y[w3s_nqs] = I2R(w3s_cmd[at + 4] - 65536)
+            set w3s_qs_facing[w3s_nqs] = I2R(w3s_cmd[at + 5])
+            set w3s_qs_hp[w3s_nqs] = w3s_cmd[at + 6]
+            set w3s_qs_level[w3s_nqs] = w3s_cmd[at + 7]
+            set w3s_nqs = w3s_nqs + 1
+            set ok = true
+        endif
     elseif op == 91 then
         set n = 5
         set u = CreateUnit(Player(w3s_cmd[at + 1]), w3s_cmd[at + 2], I2R(w3s_cmd[at + 3] - 65536), I2R(w3s_cmd[at + 4] - 65536), 270.0)
@@ -694,8 +717,41 @@ function W3S_SpawnUnit takes integer p, integer unitType, real x, real y, real f
     set u = null
 endfunction
 
+// A queued spawn (op 92): hit points scaled to `permille` of the unit's own maximum (heroes
+// included), heroes raised to `level`.
+function W3S_SpawnQueued takes integer i returns nothing
+    local unit u = CreateUnit(Player(w3s_qs_player[i]), w3s_qs_type[i], w3s_qs_x[i], w3s_qs_y[i], w3s_qs_facing[i])
+    local integer hp
+    if u == null then
+        return
+    endif
+    if w3s_qs_level[i] > 1 and IsUnitType(u, UNIT_TYPE_HERO) then
+        call SetHeroLevel(u, w3s_qs_level[i], false)
+    endif
+    if w3s_qs_hp[i] > 0 then
+        set hp = R2I(GetUnitState(u, UNIT_STATE_MAX_LIFE) * I2R(w3s_qs_hp[i]) / 1000.0 + 0.5)
+        if hp < 1 then
+            set hp = 1
+        endif
+        call BlzSetUnitMaxHP(u, hp)
+        call SetUnitState(u, UNIT_STATE_LIFE, I2R(hp))
+    endif
+    call RemoveGuardPosition(u)
+    call GroupAddUnit(w3s_all, u)
+    call W3S_Track(u)
+    set w3s_participant[w3s_qs_player[i]] = true
+    set u = null
+endfunction
+
 function W3S_ScenarioSpawn takes nothing returns nothing
+    local integer i = 0
     // @SCENARIO_SPAWN@
+    loop
+        exitwhen i >= w3s_nqs
+        call W3S_SpawnQueued(i)
+        set i = i + 1
+    endloop
+    set w3s_nqs = 0
 endfunction
 
 function W3S_RemoveEnum takes nothing returns nothing

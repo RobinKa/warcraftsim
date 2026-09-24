@@ -23,12 +23,12 @@ import numpy as np
 from gymnasium import spaces
 
 from .client import Wc3Game
-from .data.objects import unit_vocabulary
+from .data.objects import combat_stats, unit_vocabulary
 from .protocol import Command, Observation, Result, Unit, UnitFlags
 from .runtime.instance import GameSetup
 from .scenario import Scenario
 
-UNIT_FEATURES = 26
+UNIT_FEATURES = 32
 PLAYER_FEATURES = 8
 _N_FLAGS = 12
 
@@ -55,6 +55,7 @@ class UnitEncoder:
         self.origin = origin
         self.extent = extent
         self.vocab = unit_vocabulary()
+        self.stats = combat_stats()
         self._hp: dict[int, list[int]] = {}  # unit -> hit points of the last HP_HISTORY encodes
 
     def encode(self, units: Sequence[Unit], obs: Observation, orders: dict[str, int], max_units: int,
@@ -94,6 +95,14 @@ class UnitEncoder:
             if hist is not None:
                 f[24] = (u.hp - hist[-1]) / max(u.max_hp, 1)
                 f[25] = (u.hp - hist[0]) / max(u.max_hp, 1)
+            st = self.stats.get(u.type)  # what the unit type fights like
+            if st is not None:
+                f[26] = st.range / 1000.0
+                f[27] = st.dps / 40.0
+                f[28] = st.armor / 10.0
+                f[29] = st.speed / 500.0
+                f[30] = st.cooldown / 3.0
+                f[31] = float(st.hits_air)
             types[i] = self.vocab.get(u.type, 0)
             ids[i] = u.id
             mask[i] = True
@@ -178,10 +187,13 @@ class Wc3Env(gym.Env):
 
     # ---- gym API ----------------------------------------------------------------------------
 
+    spawner = None  # scenarios: rng -> protocol.QueueSpawn list, the units of each new episode
+
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         """options: {"relaunch": True} starts the episode in a fresh game process."""
         super().reset(seed=seed)
-        obs = self.game.reset(relaunch=bool((options or {}).get("relaunch")))
+        spawns = self.spawner(self.np_random) if self.spawner is not None else ()
+        obs = self.game.reset(relaunch=bool((options or {}).get("relaunch")), spawns=spawns)
         self._on_reset(obs)
         return self._encode(obs), {"obs": obs}
 

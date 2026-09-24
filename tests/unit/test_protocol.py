@@ -117,3 +117,11 @@ def test_decode_commands_roundtrip():
     cmds = [PointOrder(12, 3, -250.0, 400.0), Restart(), TargetOrder(12, 2, 40), SetResources(0, 5, 6),
             ImmediateOrder(7, 1), Camera(10.0, -20.0)]
     assert decode_commands(encode_commands(cmds)) == [c for c in cmds if not isinstance(c, (Restart, SetResources))]
+
+
+def test_queue_spawn_encoding():
+    from warcraftsim.protocol import QueueSpawn, decode_commands, encode_commands
+
+    ints = encode_commands([QueueSpawn(1, "Hmkg", -300, 90, 180, 250, 3)])
+    assert ints[0] == 92 and len(ints) == 8 and ints[6:] == [250, 3]
+    assert decode_commands(ints) == []  # not a unit order

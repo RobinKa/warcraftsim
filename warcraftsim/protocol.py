@@ -445,6 +445,7 @@ class Op(IntEnum):
     ITEM = 7
     SET_RESOURCES = 90
     SPAWN = 91
+    QUEUE_SPAWN = 92
     CAMERA = 96
     END_GAME = 97
     SNAPSHOT = 98
@@ -565,6 +566,23 @@ class Spawn(Command):
 
 
 @dataclass(frozen=True)
+class QueueSpawn(Command):
+    """Scenarios: a unit for the next Restart (spawned after the old units are removed). `hp_permille`
+    > 0 scales its hit points to that share of its own maximum; heroes start at `hero_level`."""
+    player: int
+    unit_type: str
+    x: float
+    y: float
+    facing: float = 0.0
+    hp_permille: int = 0
+    hero_level: int = 1
+
+    def encode(self) -> list[int]:
+        return [Op.QUEUE_SPAWN, self.player, fourcc(self.unit_type), _coord(self.x), _coord(self.y),
+                int(self.facing) % 360, int(self.hp_permille), int(self.hero_level)]
+
+
+@dataclass(frozen=True)
 class Camera(Command):
     """Move the local camera (watching / screenshots only; no effect on the game state)."""
     x: float
@@ -608,8 +626,8 @@ def encode_commands(commands: Iterable[Command]) -> list[int]:
 
 
 _OP_LENGTHS = {Op.POINT: 5, Op.TARGET: 4, Op.IMMEDIATE: 3, Op.BUILD: 5, Op.LEARN: 3, Op.TARGET_DESTRUCTABLE: 4,
-               Op.ITEM: 7, Op.SET_RESOURCES: 4, Op.SPAWN: 5, Op.CAMERA: 3, Op.END_GAME: 1, Op.SNAPSHOT: 1,
-               Op.RESTART: 1}
+               Op.ITEM: 7, Op.SET_RESOURCES: 4, Op.SPAWN: 5, Op.QUEUE_SPAWN: 8, Op.CAMERA: 3, Op.END_GAME: 1,
+               Op.SNAPSHOT: 1, Op.RESTART: 1}
 
 
 def decode_commands(ints: Sequence[int]) -> list[Command]:
