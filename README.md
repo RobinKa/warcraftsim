@@ -170,7 +170,7 @@ Tasks (add more in `tasks.py`; `scripts/baselines.py` measures scripted policies
 * `footmen2`: 2 vs 2 footmen with 100 hit points against the scripted opponent (episodes ~17 s).
   * Scripted baselines win 0% (random), 30% (noop), 65–70% (focus fire), 90% (focus fire, and pulling a footman back while it is low and being hit).
   * PPO learns focus fire and the pull-back: 95% wins after ~650k steps (lr 0.01, minibatch 384, replay ratio 4).
-* `footmen<N>v<M>[_hp<HP>]`: N agent footmen against M scripted ones with HP hit points each (default 100).
+* `footmen<N>v<M>[_hp<HP>][_ehp<EHP>]`: N agent footmen against M scripted ones with HP hit points each (default 100), the enemies EHP (a handicap).
 * `micro`: 4 footmen vs 3 scripted grunts. This is hard: scripted baselines win about 1 game in 3.
 * `micro_mirror`: 4 vs 4 footmen against the scripted opponent.
 * `selfplay_micro`: 4 vs 4 footmen with both sides served to the trainer as agents of the same policy. `--envs` counts games, so each game gives two agents. The dashboard's win rate is side 0's.

@@ -176,8 +176,10 @@ def _micro_outcome(env, info) -> float:
 
 
 def _micro_task(own: tuple[str, ...] = ("hfoo",) * 4, enemy: tuple[str, ...] = ("ogru",) * 3,
-                max_units: int = 6, name: str = "micro", max_hp: int = 0, max_game_seconds: float = 90) -> Task:
-    sc = Scenario.skirmish(list(own), list(enemy), max_game_seconds=max_game_seconds, max_hp=max_hp)
+                max_units: int = 6, name: str = "micro", max_hp: int = 0, max_game_seconds: float = 90,
+                enemy_max_hp: int | None = None) -> Task:
+    sc = Scenario.skirmish(list(own), list(enemy), max_game_seconds=max_game_seconds, max_hp=max_hp,
+                           enemy_max_hp=enemy_max_hp)
     obs_size, act_sizes = _micro_sizes(max_units)
     return Task(
         name=name, obs_size=obs_size, act_sizes=act_sizes,
@@ -213,13 +215,15 @@ TASKS: dict[str, Callable[[], Task]] = {
 
 
 def _footmen_task(name: str) -> Task | None:
-    """footmen{N}v{M}[_hp{HP}]: N agent footmen against M scripted ones, HP each (default 100)."""
-    m = re.fullmatch(r"footmen(\d+)v(\d+)(?:_hp(\d+))?", name)
+    """footmen{N}v{M}[_hp{HP}][_ehp{EHP}]: N agent footmen against M scripted ones, HP hit points
+    each (default 100), the enemies EHP (default: HP; a handicap)."""
+    m = re.fullmatch(r"footmen(\d+)v(\d+)(?:_hp(\d+))?(?:_ehp(\d+))?", name)
     if not m:
         return None
     n, e, hp = int(m[1]), int(m[2]), int(m[3] or 100)
+    ehp = int(m[4]) if m[4] else None
     return _micro_task(("hfoo",) * n, ("hfoo",) * e, max_units=max(n, e), name=name, max_hp=hp,
-                       max_game_seconds=40 + 5 * max(n, e))
+                       max_game_seconds=40 + 5 * max(n, e), enemy_max_hp=ehp)
 
 
 def get_task(name: str) -> Task:
