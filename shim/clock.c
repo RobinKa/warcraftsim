@@ -11,6 +11,7 @@
  */
 #include "w3shim.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <x86intrin.h>
 
@@ -243,12 +244,31 @@ static DWORD scale_timeout(DWORD ms) {
 
 /* W3SIM_PROFILE=3: per-thread wait statistics (which threads poll, with which timeouts) */
 #define WAIT_SLOTS 64
+enum { W_SLEEP, W_SLEEPEX, W_WFSO, W_WFSOEX, W_WFMO, W_MSGWAIT, W_APIS };
+static const char *g_api_names[W_APIS] = {"Sleep", "SleepEx", "WaitForSingleObject", "WaitForSingleObjectEx",
+                                          "WaitForMultipleObjects", "MsgWaitForMultipleObjects"};
 static struct {
     volatile DWORD tid;
     volatile LONG calls, zero;
     volatile LONGLONG req_ms;
+    volatile LONG api[W_APIS], api_zero[W_APIS];
 } g_waits[WAIT_SLOTS];
 int g_wait_stats;
+
+static void wait_stat_api(int api, DWORD ms) {
+    if (!g_wait_stats)
+        return;
+    DWORD tid = GetCurrentThreadId();
+    for (int i = 0; i < WAIT_SLOTS; i++) {
+        int k = (tid + i) % WAIT_SLOTS;
+        if (g_waits[k].tid == tid) {
+            InterlockedIncrement(&g_waits[k].api[api]);
+            if (ms == 0)
+                InterlockedIncrement(&g_waits[k].api_zero[api]);
+            return;
+        }
+    }
+}
 
 static void wait_stat(DWORD ms, DWORD scaled) {
     if (!g_wait_stats)
@@ -293,40 +313,55 @@ void clock_report_waits(double secs) {
                                         GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)start, &m))
             GetModuleFileNameA(m, mn, sizeof mn);
         char *b = strrchr(mn, '\\');
-        shim_log("waits: tid %lu start %s+%#lx: %.0f/s, %.0f%% scaled to 0 ms, mean request %.1f ms", tid,
+        char apis[256];
+        int len = 0;
+        apis[0] = 0;
+        for (int a = 0; a < W_APIS; a++) {
+            LONG n = InterlockedExchange(&g_waits[k].api[a], 0), nz = InterlockedExchange(&g_waits[k].api_zero[a], 0);
+            if (n)
+                len += _snprintf(apis + len, sizeof apis - len, " %s %.0f/s (%.0f/s with 0 ms)", g_api_names[a],
+                                 n / secs, nz / secs);
+        }
+        shim_log("waits: tid %lu start %s+%#lx: %.0f/s, %.0f%% scaled to 0 ms, mean request %.1f ms;%s", tid,
                  b ? b + 1 : mn, (unsigned long)((BYTE *)start - (BYTE *)m), calls / secs, 100.0 * zero / calls,
-                 (double)req / calls);
+                 (double)req / calls, apis);
     }
 }
 
 static VOID WINAPI Sleep_hook(DWORD ms) {
     DWORD s = scale_timeout(ms);
     wait_stat(ms, s);
+    wait_stat_api(W_SLEEP, ms);
     Sleep_orig(s);
 }
 static DWORD WINAPI SleepEx_hook(DWORD ms, BOOL alertable) {
     DWORD s = scale_timeout(ms);
     wait_stat(ms, s);
+    wait_stat_api(W_SLEEPEX, ms);
     return SleepEx_orig(s, alertable);
 }
 static DWORD WINAPI Wfso_hook(HANDLE h, DWORD ms) {
     DWORD s = scale_timeout(ms);
     wait_stat(ms, s);
+    wait_stat_api(W_WFSO, ms);
     return Wfso_orig(h, s);
 }
 static DWORD WINAPI WfsoEx_hook(HANDLE h, DWORD ms, BOOL alertable) {
     DWORD s = scale_timeout(ms);
     wait_stat(ms, s);
+    wait_stat_api(W_WFSOEX, ms);
     return WfsoEx_orig(h, s, alertable);
 }
 static DWORD WINAPI Wfmo_hook(DWORD n, const HANDLE *h, BOOL all, DWORD ms) {
     DWORD s = scale_timeout(ms);
     wait_stat(ms, s);
+    wait_stat_api(W_WFMO, ms);
     return Wfmo_orig(n, h, all, s);
 }
 static DWORD WINAPI MsgWait_hook(DWORD n, const HANDLE *h, BOOL all, DWORD ms, DWORD mask) {
     DWORD s = scale_timeout(ms);
     wait_stat(ms, s);
+    wait_stat_api(W_MSGWAIT, ms);
     return MsgWait_orig(n, h, all, s, mask);
 }
 

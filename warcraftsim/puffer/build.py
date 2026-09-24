@@ -50,7 +50,18 @@ _RESUME_PATCH = _RESUME_ANCHOR + """    {
         }
     }
 """
-_PATCHES = ((_JSONL_ANCHOR, _JSONL_PATCH, "PUFFER_JSONL"), (_RESUME_ANCHOR, _RESUME_PATCH, "wc3_init"))
+# CUDA synchronization spins a CPU core per waiting thread by default (every buffer thread waits
+# for its model forward); with WC3_CUDA_BLOCKING_SYNC=1 the threads sleep, leaving the cores to
+# the games.
+_SYNC_ANCHOR = "    cudaSetDevice(hypers.gpu_id);\n    cublas_init_handle();\n"
+_SYNC_PATCH = """    cudaSetDevice(hypers.gpu_id);
+    if (getenv("WC3_CUDA_BLOCKING_SYNC") && atoi(getenv("WC3_CUDA_BLOCKING_SYNC"))) {
+        cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync);
+    }
+    cublas_init_handle();
+"""
+_PATCHES = ((_JSONL_ANCHOR, _JSONL_PATCH, "PUFFER_JSONL"), (_RESUME_ANCHOR, _RESUME_PATCH, "wc3_init"),
+            (_SYNC_ANCHOR, _SYNC_PATCH, "WC3_CUDA_BLOCKING_SYNC"))
 
 
 def env_name(task: Task) -> str:

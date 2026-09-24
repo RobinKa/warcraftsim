@@ -6,7 +6,8 @@
 The bridge workers launch the games once; each configuration then runs the trainer for
 `--steps` agent steps (the bridge hands the games to the next trainer). Reports the median SPS
 after a warm-up and the trainer's time split. Configuration keys: buffers, threads (default:
-envs), horizon, omp (OMP_WAIT_POLICY), and any --section.key=value trainer argument.
+envs), horizon, omp (OMP_WAIT_POLICY), env.NAME (an environment variable), and any
+--section.key=value trainer argument.
 """
 
 from __future__ import annotations
@@ -25,6 +26,33 @@ from warcraftsim.puffer.bridge import run_worker
 from warcraftsim.puffer.build import PUFFER_BUILD, build_trainer
 from warcraftsim.puffer.tasks import get_task
 from warcraftsim.puffer.train import claim_slot
+
+
+def _cpu_by_kind() -> dict[str, float]:
+    """CPU seconds used so far per process kind, summed over live processes {pid: (kind, secs)}."""
+    tick = os.sysconf("SC_CLK_TCK")
+    out = {}
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            stat = open(f"/proc/{pid}/stat").read()
+        except OSError:
+            continue
+        comm = stat[stat.index("(") + 1:stat.rindex(")")]
+        f = stat[stat.rindex(")") + 2:].split()
+        kind = ("trainer" if comm.startswith("puffer_wc3") else "game" if comm.startswith("Warcraft")
+                else "wineserver" if comm.startswith("wineserver") else "bridge" if comm.startswith("python")
+                else "other")
+        out[pid] = (kind, (int(f[11]) + int(f[12])) / tick)
+    return out
+
+
+def _cores(a: dict, b: dict, secs: float) -> str:
+    tot: dict[str, float] = {}
+    for pid, (kind, cpu) in b.items():
+        tot[kind] = tot.get(kind, 0.0) + (cpu - a[pid][1] if pid in a else cpu) / secs
+    return " ".join(f"{k} {v:.1f}" for k, v in sorted(tot.items(), key=lambda kv: -kv[1]) if v >= 0.1)
 
 
 def main() -> None:
@@ -71,9 +99,16 @@ def main() -> None:
             env = dict(os.environ, WC3_BRIDGE=";".join(sockets), PUFFER_JSONL=str(log))
             if "omp" in kv:
                 env["OMP_WAIT_POLICY"] = kv["omp"]
+            env.update({k[4:]: v for k, v in kv.items() if k.startswith("env.")})
             t = time.time()
-            res = subprocess.run(cmd, cwd=PUFFER_BUILD, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                                 text=True)
+            proc = subprocess.Popen(cmd, cwd=PUFFER_BUILD, env=env, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.PIPE, text=True)
+            time.sleep(20)  # CPU use over the middle of the run
+            c0, tc = _cpu_by_kind(), time.time()
+            time.sleep(20)
+            cpu = _cores(c0, _cpu_by_kind(), time.time() - tc)
+            _, err = proc.communicate()
+            res = subprocess.CompletedProcess(cmd, proc.returncode, "", err)
             rows = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
             rows = rows[max(3, len(rows) // 5):]  # skip the warm-up
             if res.returncode != 0 or not rows:
@@ -82,7 +117,7 @@ def main() -> None:
             med = lambda k: statistics.median(r.get(k, 0.0) for r in rows)  # noqa: E731
             print(f"{cfg:40s} SPS {med('SPS'):6.0f}  per epoch: rollout {med('perf/rollout'):.3f}s "
                   f"env {med('perf/eval_env'):.3f}s model {med('perf/eval_model'):.3f}s "
-                  f"train {med('perf/train'):.3f}s  ({time.time() - t:.0f}s)", flush=True)
+                  f"train {med('perf/train'):.3f}s  ({time.time() - t:.0f}s)\n{'':40s} cores: {cpu}", flush=True)
     finally:
         stop.set()
         for p in procs:

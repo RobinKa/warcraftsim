@@ -681,8 +681,12 @@ endfunction
 //===========================================================================
 // scenarios: remove everything, spawn the configured units; reset = do it again
 
-function W3S_SpawnUnit takes integer p, integer unitType, real x, real y, real facing returns nothing
+function W3S_SpawnUnit takes integer p, integer unitType, real x, real y, real facing, integer hp returns nothing
     local unit u = CreateUnit(Player(p), unitType, x, y, facing)
+    if hp > 0 then
+        call BlzSetUnitMaxHP(u, hp)
+        call SetUnitState(u, UNIT_STATE_LIFE, I2R(hp))
+    endif
     call RemoveGuardPosition(u)
     call GroupAddUnit(w3s_all, u)
     call W3S_Track(u)

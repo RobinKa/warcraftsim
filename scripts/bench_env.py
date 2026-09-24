@@ -136,12 +136,15 @@ def main() -> None:
     ap.add_argument("--profile", action="store_true", help="shim profiler in every game (W3SIM_PROFILE=1)")
     ap.add_argument("--speed", type=float, help="fixed clock speed (default: adaptive)")
     ap.add_argument("--window", help="game window WxH (default: the setup's)")
+    ap.add_argument("--wait-floor", type=int, help="GameSetup.wait_floor_ms")
     args = ap.parse_args()
     if args.profile:
         os.environ["W3SIM_PROFILE"] = "1"
     setup_kw = {"speed": args.speed} if args.speed else {}
     if args.window:
         setup_kw["window"] = tuple(int(v) for v in args.window.split("x"))
+    if args.wait_floor is not None:
+        setup_kw["wait_floor_ms"] = args.wait_floor
     counts = [args.n // args.w + (1 if i < args.n % args.w else 0) for i in range(args.w)]
     ctx = mp.get_context("spawn")
     readies, go, out = [ctx.Event() for _ in counts], ctx.Event(), ctx.Queue()

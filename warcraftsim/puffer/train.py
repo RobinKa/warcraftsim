@@ -63,15 +63,23 @@ class Run:
         tmp.replace(self.dir / "run.json")
 
 
+def default_buffers(envs: int) -> int:
+    """Two games per buffer. Each buffer's thread steps its games together and waits for the
+    slowest before its next model call, so small buffers keep games busy (24 games: 2 buffers
+    2150 SPS, 12 buffers 2920, 24 buffers 2790; scripts/bench_train.py)."""
+    return max(1, envs // 2) if envs % 2 == 0 else envs
+
+
 def trainer_args(args, envs: int, agents_per_env: int = 1) -> list[str]:
     horizon = args.horizon
     agents = envs * agents_per_env  # PufferLib creates environments until it has this many agents
     batch = agents * horizon
     minibatch = min(args.minibatch or batch, batch)
+    buffers = args.buffers or default_buffers(envs)
     return [
         "train",
-        f"--vec.total_agents={agents}", f"--vec.num_buffers={args.buffers}",
-        f"--vec.num_threads={max(envs, args.buffers)}",
+        f"--vec.total_agents={agents}", f"--vec.num_buffers={buffers}",
+        f"--vec.num_threads={max(envs, buffers)}",
         f"--train.total_timesteps={int(args.timesteps)}", f"--train.horizon={horizon}",
         f"--train.minibatch_size={minibatch}", f"--train.learning_rate={args.lr}",
         f"--train.ent_coef={args.ent_coef}", f"--train.gamma={args.gamma}",
@@ -90,7 +98,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--name", help="run name (default: task + timestamp)")
     ap.add_argument("--horizon", type=int, default=64)
     ap.add_argument("--minibatch", type=int, default=0, help="default: the whole batch (envs * horizon)")
-    ap.add_argument("--buffers", type=int, default=2)
+    ap.add_argument("--buffers", type=int, default=0, help="trainer buffers (default: one per two games)")
     ap.add_argument("--lr", type=float, default=0.003)
     ap.add_argument("--ent-coef", type=float, default=0.001,
                     help="PufferLib 5 does not normalize advantages: keep this small for small rewards")
@@ -159,6 +167,9 @@ def main(argv: list[str] | None = None) -> int:
                     raise RuntimeError(f"bridge worker {procs.index(p)} failed to start its games")
         print(f"bridge: {args.envs} games in {workers} workers ready in {time.time() - t0:.0f}s", flush=True)
         env = dict(os.environ, WC3_BRIDGE=";".join(sockets), PUFFER_JSONL=str(run.dir / "train.jsonl"))
+        # OpenMP threads that finished their game spin at the barrier by default: with 2 buffers
+        # the trainer burned 10.7 cores (more than 24 games); passive, 2.5
+        env.setdefault("OMP_WAIT_POLICY", "passive")
         cmd = [str(binary), *trainer_args(args, args.envs, task.num_agents), f"--base.checkpoint_dir={run.dir / 'checkpoints'}",
                f"--base.log_dir={run.dir / 'logs'}"]
         run.save(status="training", started=time.time(), command=cmd)

@@ -45,6 +45,7 @@ class SpawnSpec:
     x: float
     y: float
     facing: float = 270.0
+    max_hp: int = 0  # > 0: override the unit type's hit points (the unit starts at full health)
 
 
 @dataclass
@@ -88,7 +89,8 @@ class HarnessConfig:
         for sp in self.spawn:
             if len(sp.unit) != 4:
                 raise ValueError(f"unit code must have four characters: {sp.unit!r}")
-            lines.append(f"    call W3S_SpawnUnit({sp.player}, '{sp.unit}', {sp.x:.1f}, {sp.y:.1f}, {sp.facing:.1f})")
+            lines.append(f"    call W3S_SpawnUnit({sp.player}, '{sp.unit}', {sp.x:.1f}, {sp.y:.1f}, {sp.facing:.1f}, "
+                         f"{int(sp.max_hp)})")
         for player, gold, lumber in self.resources:
             lines.append(f"    call SetPlayerState(Player({player}), PLAYER_STATE_RESOURCE_GOLD, {int(gold)})")
             lines.append(f"    call SetPlayerState(Player({player}), PLAYER_STATE_RESOURCE_LUMBER, {int(lumber)})")

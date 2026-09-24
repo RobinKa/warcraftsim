@@ -53,8 +53,9 @@ class Scenario:
 
     @classmethod
     def skirmish(cls, player0: Sequence[str], player1: Sequence[str], separation: float = 700.0,
-                 spacing: float = 90.0, max_game_seconds: float = 90.0, **kw) -> "Scenario":
-        """Two groups facing each other `separation` apart; last side standing wins."""
+                 spacing: float = 90.0, max_game_seconds: float = 90.0, max_hp: int = 0, **kw) -> "Scenario":
+        """Two groups facing each other `separation` apart; last side standing wins. `max_hp` > 0 gives
+        every unit that many hit points (shorter fights)."""
         units = []
         for player, codes, side in ((0, player0, -1), (1, player1, 1)):
             cols = max(1, math.ceil(math.sqrt(len(codes))))
@@ -62,7 +63,7 @@ class Scenario:
                 row, col = divmod(i, cols)
                 x = side * (separation / 2 + row * spacing)
                 y = (col - (cols - 1) / 2) * spacing
-                units.append(SpawnSpec(player, code, x, y, 180.0 if side > 0 else 0.0))
+                units.append(SpawnSpec(player, code, x, y, 180.0 if side > 0 else 0.0, max_hp))
         return cls(tuple(units), victory="elimination", max_game_seconds=max_game_seconds,
                    name=f"skirmish_{len(player0)}v{len(player1)}", **kw)
 

@@ -29,10 +29,11 @@ def test_melee_injection_validates(echo_script):
 def test_scenario_injection_validates(echo_script):
     _pjass_available()
     cfg = HarnessConfig(scenario=True, victory="elimination", scripted_players=(1,),
-                        spawn=(SpawnSpec(0, "hfoo", -100, 0), SpawnSpec(1, "ogru", 100, 0, 180)),
+                        spawn=(SpawnSpec(0, "hfoo", -100, 0), SpawnSpec(1, "ogru", 100, 0, 180, max_hp=100)),
                         resources=((0, 100, 50),), clear_area=(0, 0, 500))
     out = inject_harness(echo_script, cfg)
-    assert "call W3S_SpawnUnit(1, 'ogru', 100.0, 0.0, 180.0)" in out
+    assert "call W3S_SpawnUnit(0, 'hfoo', -100.0, 0.0, 270.0, 0)" in out
+    assert "call W3S_SpawnUnit(1, 'ogru', 100.0, 0.0, 180.0, 100)" in out
     assert "constant integer W3S_CFG_SCRIPTED_MASK = 2" in out
     pjass_check(out)
 

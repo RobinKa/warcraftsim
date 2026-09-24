@@ -129,8 +129,9 @@ class GameSetup:
     turbo_ms: int = 0  # >0: simulate up to this much game time per frame, bypassing turn pacing
     # Shortest real wait (ms) the virtual clock turns a timed wait into. Game threads that poll with
     # 100-1000 ms timeouts would otherwise spin (timeouts / clock speed round to 0), each wait a
-    # wineserver round trip: 1 ms made 16 parallel games 60% faster.
-    wait_floor_ms: int = 1
+    # wineserver round trip. 24 skirmish games: 0 ms ~2600, 1 ms 4180, 3 ms 4450, 5 ms 4640,
+    # 10 ms 3260 env steps/s (longer floors start delaying waits the game's progress depends on).
+    wait_floor_ms: int = 5
     # A virtual sound card (w3shim) instead of none: the game's audio, in step with the virtual
     # clock, delivered with captured video frames (set_frame_capture). Off for training.
     audio: bool = False

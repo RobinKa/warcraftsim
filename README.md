@@ -216,7 +216,8 @@ Example: `nav` with 16 games went from a 3% to a 62% success rate within 100k st
 | **Melee, agent vs AI, 0.25 s steps, full observations** | ≈35x per game (≈140 steps/s) |
 | **16 melee games in parallel, 0.25 s steps** | ≈250x real time combined (1000 steps/s) |
 | **Scenario skirmish (4 v 4), 0.25 s steps** | ≈160x per game (1.5 ms per step); reset in 11 ms |
-| **16 / 24 skirmish games in parallel (training setup: 320x240 screens)** | 3550 / 3860 env steps/s (≈890x / ≈960x real time) |
+| **24 skirmish games in parallel (training setup: 320x240 screens)** | ≈4600 env steps/s (≈1160x real time) |
+| **PufferLib training, 24 games (micro_mirror)** | ≈3000 agent steps/s (was ≈620 before this round of work) |
 | **Game start** | ≈8 s (map load); 16 games ≈2 min (4 load at a time) |
 | **Melee reset** | ≈1 s with the warm spare (≈8 s relaunch without one, or if the episode was shorter than a load) |
 
@@ -234,6 +235,12 @@ and thread kind; `W3SIM_PROFILE=1..3` adds the shim's per-second profile to each
   `GameSetup.wait_floor_ms` (1 ms) stops that.
 * **Rendering**: training games run on a 320x240 virtual screen (llvmpipe CPU 5.3 → 1.7 cores for 16
   games); replay videos are still rendered at 960x540.
+* **Trainer** (`scripts/bench_train.py` runs the trainer in several configurations on the same games):
+  * With 2 buffers, the trainer itself burned 10.7 cores, more than 24 games together. OpenMP threads
+    spin at the barrier while the slowest game of their buffer finishes; `OMP_WAIT_POLICY=passive` fixes that.
+  * Each buffer waits for its slowest game before its next model call, so train.py now uses one buffer
+    per two games.
+  * Together: 2150 → 2970 agent steps/s at 24 games.
 
 These numbers are for WineHQ **stable** 11.0, which is picked automatically from `/opt/wine-stable` (override with `WARCRAFTSIM_WINE`). Staging 11.18 was about 25% slower in parallel runs.
 
