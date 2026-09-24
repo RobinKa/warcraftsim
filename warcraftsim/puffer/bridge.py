@@ -100,7 +100,7 @@ class BridgeServer:
         self.worker = worker
         self.window = window  # the games' screen: small, training does not look at pixels
         self.slots: list[_Slot] = []
-        self._next_slot = 0
+        self._free: list[_Slot] = []  # games not serving a trainer environment
         self._lock = threading.Lock()
         self._episodes = 0
         self._steps = 0
@@ -126,6 +126,7 @@ class BridgeServer:
         t0 = time.time()
         with ThreadPoolExecutor(self.num_envs) as pool:
             self.slots = list(pool.map(launch, range(self.num_envs)))
+        self._free = list(self.slots)
         log(f"bridge: {self.num_envs} games ready in {time.time() - t0:.0f}s")
 
     def serve(self) -> None:
@@ -160,9 +161,8 @@ class BridgeServer:
             ok = (magic == MAGIC and version == VERSION and obs_size == self.task.obs_size
                   and num_atns == self.task.num_atns and task_name == self.task.name)
             with self._lock:
-                if ok and self._next_slot < len(self.slots):
-                    slot = self.slots[self._next_slot]
-                    self._next_slot += 1
+                if ok and self._free:
+                    slot = self._free.pop(0)
             if slot is None:
                 print(f"bridge: refused environment (task {task_name!r}, obs {obs_size}, atns {num_atns})")
                 conn.sendall(struct.pack("<I", 0))
@@ -190,6 +190,10 @@ class BridgeServer:
             traceback.print_exc()
         finally:
             conn.close()
+            if slot is not None:  # the game can serve the next trainer (its episode starts over)
+                with self._lock:
+                    self._free.append(slot)
+                    self._free.sort(key=lambda s: s.index)
 
     def _begin_episode(self, slot: _Slot, obs: list, info) -> list:
         slot.ep_return, slot.ep_length = [0.0] * self.task.num_agents, 0

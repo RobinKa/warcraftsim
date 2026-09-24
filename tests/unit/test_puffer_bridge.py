@@ -4,6 +4,7 @@ import json
 import socket
 import struct
 import threading
+import time
 
 import numpy as np
 
@@ -70,15 +71,29 @@ def test_bridge_protocol(tmp_path):
         obs, reward, terminal, stats = results[2]
         assert terminal == 1.0 and obs == [0.0, 1.0]  # auto-reset: first obs of the next episode
         assert stats == (1.0, 3.0, 3.0, 1.0)  # ended, return, length, win
-        c.close()
         episodes = [json.loads(l) for l in (tmp_path / "run" / "episodes-0.jsonl").read_text().splitlines()]
         assert episodes[0]["return"] == 3.0 and episodes[0]["outcome"] == 1.0
-        # a second environment is refused: there is only one game
+        hello = struct.pack("<4I", MAGIC, VERSION, 2, 1) + b"fake".ljust(32, b"\0")
+        # a second environment is refused while the only game is in use ...
         c2 = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         c2.connect(sock_path)
-        c2.sendall(struct.pack("<4I", MAGIC, VERSION, 2, 1) + b"fake".ljust(32, b"\0"))
+        c2.sendall(hello)
         assert struct.unpack("<I", _recv(c2, 4)) == (0,)
         c2.close()
+        # ... and served once the first trainer is gone (a restarted trainer reuses the games)
+        c.close()
+        for _ in range(100):
+            with bridge._lock:
+                if bridge._free:
+                    break
+            time.sleep(0.01)
+        c3 = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        c3.connect(sock_path)
+        c3.sendall(hello)
+        assert struct.unpack("<I", _recv(c3, 4)) == (1,)
+        c3.sendall(struct.pack("<I", 1))
+        assert np.frombuffer(_recv(c3, 8), np.float32).tolist() == [0.0, 1.0]
+        c3.close()
     finally:
         bridge.close()
 
