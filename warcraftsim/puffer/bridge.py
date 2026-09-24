@@ -33,6 +33,7 @@ from collections import Counter
 import numpy as np
 
 from ..record import TrajectoryRecorder, render_html
+from ..runtime import reaper
 from ..runtime.instance import GameError
 from .tasks import Task, action_summary
 
@@ -477,3 +478,5 @@ def run_worker(task_name: str, num_envs: int, run_dir: str, socket_path: str, re
                 acks.put(worker)
     finally:
         bridge.close()
+        # a video render still running (its thread dies with the process) leaves its game and Xvfb
+        reaper.reap()

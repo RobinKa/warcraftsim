@@ -33,7 +33,7 @@ from ..data.wgc import Difficulty, Race, Wgc, WgcSlot
 from ..protocol import (Command, EndGame, Observation, Op, ProtocolError, Restart, Snapshot, Unit, command_ops,
                         encode_commands,
                         merge_observation, parse_observation, parse_token_lines)
-from . import wine
+from . import reaper, wine
 from .display import Xvfb
 
 if False:  # typing only
@@ -433,6 +433,8 @@ class GameInstance:
              "-loadfile", self._loadfile or f"C:\\{wine.WORK_DIR}\\game.wgc"],
             env=env, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True,
         )
+        proc, prefix = self.proc, self.prefix
+        reaper.track(proc, lambda: (prefix and wine.kill_prefix(prefix), proc.kill()))
         self._server.settimeout(self.timeout)
         try:
             self._conn, _ = self._server.accept()
@@ -801,6 +803,7 @@ class GameInstance:
             except OSError:
                 pass
         self._rfile = self._conn = self._server = None
+        reaper.untrack(self.proc)
         if self.proc:
             try:
                 self.proc.wait(3)

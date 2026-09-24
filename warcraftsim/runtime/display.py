@@ -9,6 +9,8 @@ import threading
 import time
 from pathlib import Path
 
+from . import reaper
+
 _pick_lock = threading.Lock()
 
 
@@ -68,6 +70,7 @@ class Xvfb:
                         time.sleep(0.1)
                         if proc.poll() is None:  # it is our server that listens, not another one
                             self.proc, self.display = proc, f":{num}"
+                            reaper.track(proc)
                             return
                     time.sleep(0.05)
                 proc.kill()
@@ -92,6 +95,7 @@ class Xvfb:
 
     def close(self) -> None:
         proc = self.proc
+        reaper.untrack(proc)
         if proc and proc.poll() is None:
             proc.terminate()
             try:

@@ -21,7 +21,7 @@ import numpy as np
 
 
 def _sigmoid(x: np.ndarray) -> np.ndarray:
-    return 1.0 / (1.0 + np.exp(-x))
+    return 0.5 * (1.0 + np.tanh(0.5 * x))  # = 1 / (1 + exp(-x)), without overflow for large -x
 
 
 @dataclass
