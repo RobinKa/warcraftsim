@@ -38,7 +38,7 @@ from ..runtime.instance import GameError
 from .tasks import Task, action_summary
 
 MAGIC = 0x46503357
-VERSION = 1
+VERSION = 2  # 2: action masks after the observations
 
 
 def combat_stats(first, last, player: int = 0) -> dict | None:
@@ -193,20 +193,21 @@ class BridgeServer:
                     slot = self._free.pop(0)
             if slot is None:
                 print(f"bridge: refused environment (task {task_name!r}, obs {obs_size}, atns {num_atns})")
-                conn.sendall(struct.pack("<I", 0))
+                conn.sendall(struct.pack("<II", 0, 0))
                 return
             n = self.task.num_agents
-            conn.sendall(struct.pack("<I", n))
+            mask_size = sum(self.task.act_sizes) if self.task.action_mask is not None else 0
+            conn.sendall(struct.pack("<II", n, mask_size))
             act_bytes = 4 * self.task.num_atns
             while True:
                 (cmd,) = struct.unpack("<I", _recv(conn, 4))
                 if cmd == 1:
                     obs = self._reset(slot)
-                    conn.sendall(b"".join(o.tobytes() for o in obs))
+                    conn.sendall(b"".join(o.tobytes() for o in obs) + self._masks(slot))
                 elif cmd == 2:
                     actions = [np.frombuffer(_recv(conn, act_bytes), dtype=np.float32) for _ in range(n)]
                     obs, rewards, done, stats = self._step(slot, actions)
-                    conn.sendall(b"".join(o.tobytes() for o in obs)
+                    conn.sendall(b"".join(o.tobytes() for o in obs) + self._masks(slot)
                                  + struct.pack(f"<{n}f", *rewards)
                                  + struct.pack(f"<{n}f", *([1.0 if done else 0.0] * n))
                                  + b"".join(struct.pack("<4f", *st) for st in stats))
@@ -223,6 +224,12 @@ class BridgeServer:
                     self._free.append(slot)
                     self._free.sort(key=lambda s: s.index)
 
+    def _masks(self, slot: _Slot) -> bytes:
+        """The action masks for the observation just sent (the env's current state)."""
+        if self.task.action_mask is None:
+            return b""
+        return b"".join(np.asarray(m, np.uint8).tobytes() for m in self.task.action_mask(slot.env))
+
     def _begin_episode(self, slot: _Slot, obs: list, info) -> list:
         slot.ep_return, slot.ep_length = [0.0] * self.task.num_agents, 0
         slot.actions = Counter()
@@ -230,6 +237,8 @@ class BridgeServer:
         slot.hp = {u.id: u.hp for u in slot.first_obs.units if u.alive} if slot.first_obs else {}
         slot.focus = [0.0, 0.0, 0.0, 0.0]
         slot.trace = {"obs": [np.stack(obs)], "actions": [], "rewards": []} if slot.replay_path else None
+        if slot.trace is not None and self.task.action_mask is not None:
+            slot.trace["masks"] = [np.stack(self.task.action_mask(slot.env))]
         if slot.recorder is not None:
             slot.recorder.close()
             slot.recorder = None
@@ -308,6 +317,8 @@ class BridgeServer:
             slot.trace["rewards"].append(np.asarray(rewards, np.float32))
             if not done:
                 slot.trace["obs"].append(np.stack(obs))
+                if "masks" in slot.trace:
+                    slot.trace["masks"].append(np.stack(self.task.action_mask(slot.env)))
         slot.ep_return = [r + dr for r, dr in zip(slot.ep_return, rewards)]
         slot.ep_length += 1
         with self._lock:
@@ -364,9 +375,10 @@ class BridgeServer:
                 replay = inst.save_replay(slot.replay_path)
                 if slot.trace is not None:
                     t = slot.trace
+                    extra = {"masks": np.stack(t["masks"])} if "masks" in t else {}
                     np.savez_compressed(replay.with_suffix(".steps.npz"), obs=np.stack(t["obs"]),
                                         actions=np.stack(t["actions"]), rewards=np.stack(t["rewards"]),
-                                        outcomes=np.asarray(outcomes, np.float32), time=time.time())
+                                        outcomes=np.asarray(outcomes, np.float32), time=time.time(), **extra)
                 self._render_queue.put((replay, episode, outcome, slot.ep_return[0], self.run_dir))
             except Exception as e:  # a missing video must not stop training
                 print(f"bridge: replay not saved: {e}", flush=True)
@@ -420,7 +432,9 @@ class BridgeServer:
             try:
                 pol = PufferPolicy(ckpt, self.task.obs_size, self.task.act_sizes, hidden=args.get("hidden", 128),
                                    layers=args.get("layers", 2))
-                outputs = [pol.run(trace["obs"][:, a]) for a in range(trace["obs"].shape[1])]
+                masks = trace.get("masks")  # what the trainer sampled from
+                outputs = [pol.run(trace["obs"][:, a], masks[:, a] if masks is not None else None)
+                           for a in range(trace["obs"].shape[1])]
                 step = checkpoint_step(ckpt)
             except (OSError, ValueError) as e:
                 print(f"bridge: policy not evaluated for the video: {e}")

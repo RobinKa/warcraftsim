@@ -101,3 +101,26 @@ def test_cast_commands(monkeypatch):
     own = [pal, _unit(3, "hfoo", 100, 250, owner=0), _unit(4, "hfoo", 1500, 20, owner=0)]
     assert env.cast_command(pal, 0, weak, own, enemy) == TargetOrder(2, 3, 3)
     assert env.scripted_cast(pal, own, enemy) == (0, weak)  # 250/500 < 70%
+
+
+def test_micro_action_mask(monkeypatch):
+    import numpy as np
+    from gymnasium import spaces
+
+    from warcraftsim.puffer.tasks import _micro_mask
+
+    _abilities(monkeypatch)
+    monkeypatch.setitem(STATS, "Hmkg", STATS["Hpal"])
+    enemy = [_unit(10, "hfoo", 400, 300), None]
+    env, _ = _env(monkeypatch, enemy)
+    env.game.order_id = {"thunderbolt": 1, "thunderclap": 2, "holybolt": 3}.__getitem__
+    env.abilities, env.max_own, env.max_enemy = True, 3, 2
+    env.action_space = spaces.MultiDiscrete(np.tile([5, 8, 5, 4], (3, 1)))
+    # Storm Bolt (slot 1) ready and in range; Thunder Clap (slot 0) cooling down
+    mk = _hero(1, "Hmkg", 0, 500, 200, ((1, 3.0), (1, 0.0), (0, 0.0), (0, 0.0)))
+    env._own = [mk, _unit(2, "hfoo", -100, 400, owner=0), None]
+    (m,) = _micro_mask(env)
+    hero, foot, empty = m[:22], m[22:44], m[44:]
+    assert hero[:5].tolist() == [1, 1, 1, 1, 1] and hero[18:].tolist() == [0, 1, 0, 0]
+    assert foot[:5].tolist() == [1, 1, 1, 1, 0] and foot[18:].all()  # no abilities: no cast
+    assert empty.all() and hero[5:18].all()

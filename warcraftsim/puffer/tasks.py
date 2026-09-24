@@ -45,6 +45,9 @@ class Task:
     detail_heads: dict[int, int] = field(default_factory=dict)
     # counts per step (env before the step, actions of all agents), summed over an episode
     action_stats: Callable[[Any, list[np.ndarray]], Counter] | None = None
+    # env -> per agent, one byte per option of every action head (0: not possible now); PufferLib
+    # samples and trains with them (None: everything allowed)
+    action_mask: Callable[[Any], list[np.ndarray]] | None = None
 
     @property
     def num_atns(self) -> int:
@@ -130,9 +133,36 @@ def _micro_labels(max_units: int, semantic: bool = False, abilities: bool = Fals
     targets = SEMANTIC_TARGETS if semantic else tuple(f"E{i}" for i in range(max_units))
     if abilities:  # cast (kind 4) is detailed by the ability slot and the target rule
         return dict(head_labels=(_SEMANTIC_KINDS + ("cast",), _DIRS, targets, _ABILITY_SLOTS) * max_units,
-                    group_size=4, detail_heads={2: 1, 3: 2, 4: (3, 2)}, action_stats=_micro_action_stats)
+                    group_size=4, detail_heads={2: 1, 3: 2, 4: (3, 2)}, action_stats=_micro_action_stats,
+                    action_mask=_micro_mask)
     return dict(head_labels=(_SEMANTIC_KINDS if semantic else _KINDS, _DIRS, targets) * max_units,
-                group_size=3, detail_heads={2: 1, 3: 2}, action_stats=_micro_action_stats)
+                group_size=3, detail_heads={2: 1, 3: 2}, action_stats=_micro_action_stats, action_mask=_micro_mask)
+
+
+def _micro_mask(env) -> list[np.ndarray]:
+    """MicroEnv action masks: attacks on empty enemy slots (slot targeting); casts only by units
+    with an ability they can cast now, and only those ability slots."""
+    heads = [int(n) for n in env.action_space.nvec[0]]
+    per = sum(heads)
+    offs = np.cumsum([0, *heads])
+    m = np.ones(env.max_own * per, np.uint8)
+    live = [e is not None for e in env._enemy[:env.max_enemy]]
+    live += [False] * (env.max_enemy - len(live))
+    weak = SEMANTIC_TARGETS.index("weak_in_range")
+    for i, u in enumerate(env._own[:env.max_own]):
+        if u is None:  # an empty slot's actions are ignored
+            continue
+        base = i * per
+        if env.targeting == "slot" and any(live):
+            m[base + offs[2]:base + offs[3]] = live
+        if env.abilities:
+            ok = [u.is_hero and env.cast_command(u, k, weak, env._own, env._enemy) is not None
+                  for k in range(heads[3])]
+            if any(ok):
+                m[base + offs[3]:base + offs[4]] = ok
+            else:
+                m[base + 4] = 0  # kind "cast"
+    return [m]
 
 
 def _micro_action_stats(env, actions: list[np.ndarray]) -> Counter:
@@ -222,7 +252,7 @@ def _selfplay_task(units: tuple[str, ...] = ("hfoo",) * 4, max_units: int = 6,
         name=name, obs_size=obs_size, act_sizes=act_sizes, num_agents=2,
         make_env=lambda inst: MicroSelfPlayEnv(sc, max_units=max_units, name=inst),
         flatten=_micro_flatten, to_action=lambda a: np.asarray(a, dtype=np.int64).reshape(max_units, 3),
-        scenario=sc, reward_scale=10.0, **_micro_labels(max_units),
+        scenario=sc, reward_scale=10.0, **{**_micro_labels(max_units), "action_mask": None},  # masks: MicroEnv only
         description=f"Self-play: {len(units)} {units[0]} vs {len(units)} {units[0]}, both sides are agents.",
     )
 

@@ -150,9 +150,12 @@ def evaluate(task_name: str, checkpoint: Path, episodes: int, games: int, step_s
                     if not comp:
                         comp.update(u.type for u in getattr(env, "_own", ()) if u is not None)
                     dec = pol.step(o, state)
+                    mask = task.action_mask(env)[0] if task.action_mask is not None else None
                     a, at = [], 0
                     for n in task.act_sizes:
                         logits = dec[at:at + n].astype(np.float64)
+                        if mask is not None and mask[at:at + n].any():  # as the trainer samples
+                            logits = np.where(mask[at:at + n] > 0, logits, -np.inf)
                         at += n
                         if greedy:
                             a.append(int(np.argmax(logits)))

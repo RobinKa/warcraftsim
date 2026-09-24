@@ -81,14 +81,18 @@ class PufferPolicy:
             x = s * out + (1 - s) * x
         return self.decoder @ x
 
-    def run(self, obs: np.ndarray) -> PolicyOutput:
-        """Evaluate one episode of observations [T, obs_size], from a zero recurrent state."""
+    def run(self, obs: np.ndarray, masks: np.ndarray | None = None) -> PolicyOutput:
+        """Evaluate one episode of observations [T, obs_size], from a zero recurrent state.
+        `masks` [T, sum(act_sizes)] (0: not possible) are applied as the trainer samples."""
         state = self.initial_state()
         outs = [self.step(o, state) for o in np.asarray(obs, np.float32)]
         dec = np.asarray(outs)
         probs, ents, at = [], [], 0
         for n in self.act_sizes:
             logits = dec[:, at:at + n].astype(np.float64)
+            if masks is not None:
+                m = np.asarray(masks[:, at:at + n]) > 0
+                logits = np.where(m | ~m.any(axis=1, keepdims=True), logits, -np.inf)
             logits -= logits.max(axis=1, keepdims=True)
             p = np.exp(logits)
             p /= p.sum(axis=1, keepdims=True)

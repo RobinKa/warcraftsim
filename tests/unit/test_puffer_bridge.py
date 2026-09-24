@@ -57,7 +57,7 @@ def test_bridge_protocol(tmp_path):
         c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         c.connect(sock_path)
         c.sendall(struct.pack("<4I", MAGIC, VERSION, 2, 1) + b"fake".ljust(32, b"\0"))
-        assert struct.unpack("<I", _recv(c, 4)) == (1,)
+        assert struct.unpack("<II", _recv(c, 8)) == (1, 0)  # one agent, no action masks
         c.sendall(struct.pack("<I", 1))
         assert np.frombuffer(_recv(c, 8), np.float32).tolist() == [0.0, 1.0]
         results = []
@@ -78,7 +78,7 @@ def test_bridge_protocol(tmp_path):
         c2 = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         c2.connect(sock_path)
         c2.sendall(hello)
-        assert struct.unpack("<I", _recv(c2, 4)) == (0,)
+        assert struct.unpack("<II", _recv(c2, 8)) == (0, 0)
         c2.close()
         # ... and served once the first trainer is gone (a restarted trainer reuses the games)
         c.close()
@@ -90,7 +90,7 @@ def test_bridge_protocol(tmp_path):
         c3 = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         c3.connect(sock_path)
         c3.sendall(hello)
-        assert struct.unpack("<I", _recv(c3, 4)) == (1,)
+        assert struct.unpack("<II", _recv(c3, 8)) == (1, 0)
         c3.sendall(struct.pack("<I", 1))
         assert np.frombuffer(_recv(c3, 8), np.float32).tolist() == [0.0, 1.0]
         c3.close()
@@ -214,7 +214,7 @@ def test_bridge_two_agents(tmp_path):
         c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         c.connect(sock_path)
         c.sendall(struct.pack("<4I", MAGIC, VERSION, 1, 1) + b"fake2".ljust(32, b"\0"))
-        assert struct.unpack("<I", _recv(c, 4)) == (2,)
+        assert struct.unpack("<II", _recv(c, 8)) == (2, 0)
         c.sendall(struct.pack("<I", 1))
         assert np.frombuffer(_recv(c, 8), np.float32).tolist() == [0.0, 10.0]
         for t in (1, 2):
@@ -226,6 +226,33 @@ def test_bridge_two_agents(tmp_path):
             assert rewards == (1.0, 2.0)
         assert terminals == (1.0, 1.0) and obs == [0.0, 10.0]  # auto-reset
         assert stats == [(1.0, 2.0, 2.0, 1.0), (1.0, 4.0, 2.0, -1.0)]
+        c.close()
+    finally:
+        bridge.close()
+
+
+def test_bridge_action_masks(tmp_path):
+    """With Task.action_mask, each observation is followed by the masks (a byte per option)."""
+    task = Task(name="fakem", obs_size=2, act_sizes=(3, 2), make_env=FakeEnv,
+                flatten=lambda o: np.asarray(o, np.float32), to_action=lambda a: int(a[0]),
+                outcome=lambda env, info: 0.0,
+                action_mask=lambda env: [np.array([1, 0, 1, 1, env.t % 2], np.uint8)])
+    sock_path = str(tmp_path / "b.sock")
+    bridge = BridgeServer(task, 1, tmp_path / "run", sock_path, record_every=0, video_every=0)
+    bridge.launch_games(log=lambda m: None)
+    bridge.serve()
+    try:
+        c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        c.connect(sock_path)
+        c.sendall(struct.pack("<4I", MAGIC, VERSION, 2, 2) + b"fakem".ljust(32, b"\0"))
+        assert struct.unpack("<II", _recv(c, 8)) == (1, 5)
+        c.sendall(struct.pack("<I", 1))
+        assert np.frombuffer(_recv(c, 8), np.float32).tolist() == [0.0, 1.0]
+        assert list(_recv(c, 5)) == [1, 0, 1, 1, 0]
+        c.sendall(struct.pack("<Iff", 2, 1.0, 0.0))
+        assert np.frombuffer(_recv(c, 8), np.float32).tolist() == [1.0, 1.0]
+        assert list(_recv(c, 5)) == [1, 0, 1, 1, 1]  # the state after the step
+        struct.unpack("<ff4f", _recv(c, 24))
         c.close()
     finally:
         bridge.close()

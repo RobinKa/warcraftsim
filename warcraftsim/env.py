@@ -312,7 +312,7 @@ class MicroEnv(Wc3Env):
     per hit point left: killing it removes the most damage soonest).
     With abilities (semantic targeting only): [kind, direction, target, ability]; kind 4 casts
     the hero's ability in slot `ability` (data.abilities.hero_abilities). An ability for enemies
-    goes to the enemy the target rule picks, "in range" meaning its cast range; one for allies
+    goes to the enemy the target rule picks among those within its cast range; one for allies
     to an own unit by the same rules (weakest = lowest share of hit points; nearest = another
     unit; threat = the one with the most DPS); instant ones need no target. A cast that is not
     possible (not learned, cooling down, too little mana, no target) does nothing. Unit features
@@ -462,9 +462,10 @@ class MicroEnv(Wc3Env):
         if info.cast == "instant":
             return ImmediateOrder(unit.id, oid)
         reach = info.at(info.range, level) + REACH
-        if info.side == "enemy":
-            j = self._rule_target(unit, rule, enemy, reach)
-            target = enemy[j] if j is not None and enemy[j].dist(unit.x, unit.y) <= reach else None
+        if info.side == "enemy":  # the rule picks among the enemies within cast range
+            in_reach = [e if e is not None and e.dist(unit.x, unit.y) <= reach else None for e in enemy]
+            j = self._rule_target(unit, rule, in_reach, reach)
+            target = in_reach[j] if j is not None else None
         else:
             j = self._ally_target(unit, rule, own, reach)
             target = own[j] if j is not None else None

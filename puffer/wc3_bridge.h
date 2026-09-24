@@ -8,11 +8,13 @@
 //
 // Protocol (little-endian, all float32 unless noted):
 //   hello  -> u32 magic 'W3PF', u32 version, u32 obs_size, u32 num_atns, char task[32]
-//          <- u32 num_agents (0 = refused)
-//   reset  -> u32 1                      <- obs[num_agents][OBS_SIZE]
+//          <- u32 num_agents (0 = refused), u32 mask_size (0: no action masks; else the sum of ACT_SIZES)
+//   reset  -> u32 1                      <- obs[num_agents][OBS_SIZE], masks
 //   step   -> u32 2, actions[num_agents][NUM_ATNS]
-//          <- obs[num_agents][OBS_SIZE], reward[num_agents], terminal[num_agents],
+//          <- obs[num_agents][OBS_SIZE], masks, reward[num_agents], terminal[num_agents],
 //             stats[num_agents][4] = {episode ended, return, length, outcome (+1 win, -1 loss, 0 tie)}
+//   masks: u8[num_agents][mask_size] when mask_size > 0, one byte per option of every action head
+//          (0: not possible now); they go to PufferLib's action mask (sampling and the loss)
 #include <errno.h>
 #include <stdlib.h>
 #include <sys/socket.h>
@@ -24,7 +26,7 @@
 #include "pufferenv.h"
 
 #define WC3_MAGIC 0x46503357u  // "W3PF"
-#define WC3_VERSION 1u
+#define WC3_VERSION 2u
 #define WC3_MAX_AGENTS 2
 
 struct Log {
@@ -43,6 +45,7 @@ struct Env {
     int tag;
     int boundary_reached;
     int num_agents;
+    unsigned int mask_size;
     unsigned int rng;
     int fd;
 };
@@ -66,6 +69,9 @@ static void wc3_io(int fd, void* buf, size_t n, int writing) {
 static void wc3_read_obs(Env* env) {
     for (int a = 0; a < env->num_agents; a++) {
         wc3_io(env->fd, env->agents[a].observations, OBS_SIZE * sizeof(float), 0);
+    }
+    for (int a = 0; a < env->num_agents && env->mask_size > 0; a++) {
+        wc3_io(env->fd, env->agents[a].action_mask, env->mask_size, 0);
     }
 }
 
@@ -101,10 +107,18 @@ void puf_init(Env* env, Dict* kwargs) {
     strncpy(task, WC3_TASK, sizeof(task) - 1);
     wc3_io(env->fd, hello, sizeof(hello), 1);
     wc3_io(env->fd, task, sizeof(task), 1);
-    unsigned int agents = 0;
-    wc3_io(env->fd, &agents, sizeof(agents), 0);
+    unsigned int reply[2] = {0, 0};
+    wc3_io(env->fd, reply, sizeof(reply), 0);
+    unsigned int agents = reply[0];
     assert(agents >= 1 && agents <= WC3_MAX_AGENTS && "bridge refused this environment");
     env->num_agents = (int)agents;
+    int act_sizes[] = ACT_SIZES;
+    unsigned int options = 0;
+    for (int h = 0; h < NUM_ATNS; h++) {
+        options += (unsigned int)act_sizes[h];
+    }
+    assert((reply[1] == 0 || reply[1] == options) && "bridge action mask size does not match ACT_SIZES");
+    env->mask_size = reply[1];
     for (int a = 0; a < env->num_agents; a++) {
         env->agents[a].policy = 0;
         env->agents[a].action_mask = NULL;
