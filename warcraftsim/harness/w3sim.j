@@ -28,7 +28,9 @@ globals
     constant real W3S_CFG_CLEAR_X = 0.0
     constant real W3S_CFG_CLEAR_Y = 0.0
     constant real W3S_CFG_CLEAR_R = 0.0
-    constant integer W3S_VERSION = 3
+    constant integer W3S_VERSION = 4
+    constant integer W3S_QS_SKILLS = 8
+    constant integer W3S_ABIL_SLOTS = 4  // warcraftsim.protocol.HERO_ABILITY_SLOTS
     boolean w3s_full = true
     integer array w3s_removed
     integer w3s_nremoved = 0
@@ -36,6 +38,7 @@ globals
     constant integer W3S_MBOX = 1048576
     constant integer W3S_CHUNK = 40
     hashtable w3s_ht = null
+    hashtable w3s_abil = null  // hero type -> ability code per slot (W3S_InitHeroAbilities)
     timer w3s_clock = null
     timer w3s_timer = null
     group w3s_group = null
@@ -69,6 +72,8 @@ globals
     real array w3s_qs_facing
     integer array w3s_qs_hp
     integer array w3s_qs_level
+    integer array w3s_qs_nskill  // skills to learn (op 93), W3S_QS_SKILLS per queued spawn
+    integer array w3s_qs_skill
     boolean w3s_end = false
     boolean array w3s_scripted
     integer array w3s_alive
@@ -237,6 +242,9 @@ function W3S_SerUnit takes unit u returns nothing
     local integer res = GetResourceAmount(u)
     local integer h = ((((((((((typ * 31 + owner) * 31 + x) * 31 + y) * 31 + facing) * 31 + hp) * 31 + maxhp) * 31 + mana) * 31 + maxmana) * 31 + order) * 31 + flags) * 31 + vis
     local integer i
+    local integer a
+    local integer array alevel
+    local integer array acool
     set h = h * 31 + res
     if IsUnitType(u, UNIT_TYPE_HERO) then
         set h = (h * 31 + GetHeroXP(u)) * 31 + GetHeroSkillPoints(u)
@@ -244,6 +252,22 @@ function W3S_SerUnit takes unit u returns nothing
         loop
             exitwhen i >= 6
             set h = h * 31 + GetItemTypeId(UnitItemInSlot(u, i))
+            set i = i + 1
+        endloop
+        // each ability slot: learned level and cooldown left (0.1 s)
+        set i = 0
+        loop
+            exitwhen i >= W3S_ABIL_SLOTS
+            set a = LoadInteger(w3s_abil, typ, i)
+            set alevel[i] = 0
+            set acool[i] = 0
+            if a != 0 then
+                set alevel[i] = GetUnitAbilityLevel(u, a)
+                if alevel[i] > 0 then
+                    set acool[i] = R2I(BlzGetUnitAbilityCooldownRemaining(u, a) * 10.0 + 0.5)
+                endif
+            endif
+            set h = (h * 31 + alevel[i]) * 31 + acool[i]
             set i = i + 1
         endloop
     endif
@@ -277,6 +301,13 @@ function W3S_SerUnit takes unit u returns nothing
         loop
             exitwhen i >= 6
             call W3S_Tok(GetItemTypeId(UnitItemInSlot(u, i)))
+            set i = i + 1
+        endloop
+        set i = 0
+        loop
+            exitwhen i >= W3S_ABIL_SLOTS
+            call W3S_Tok(alevel[i])
+            call W3S_Tok(acool[i])
             set i = i + 1
         endloop
     endif
@@ -372,6 +403,12 @@ function W3S_Order takes string name returns nothing
     call W3S_Rec("O")
     call W3S_Tok(OrderId(name))
     call W3S_End()
+endfunction
+
+// hero type -> ability code per slot (warcraftsim.data.abilities.hero_ability_table)
+function W3S_InitHeroAbilities takes nothing returns nothing
+    set w3s_abil = InitHashtable()
+    // @HERO_ABILITIES@
 endfunction
 
 // must match warcraftsim.protocol.ORDER_NAMES
@@ -561,7 +598,16 @@ function W3S_ApplyOne takes integer at returns integer
             set w3s_qs_facing[w3s_nqs] = I2R(w3s_cmd[at + 5])
             set w3s_qs_hp[w3s_nqs] = w3s_cmd[at + 6]
             set w3s_qs_level[w3s_nqs] = w3s_cmd[at + 7]
+            set w3s_qs_nskill[w3s_nqs] = 0
             set w3s_nqs = w3s_nqs + 1
+            set ok = true
+        endif
+    elseif op == 93 then
+        // the spawn queued last learns a skill when it spawns: ability code
+        set n = 2
+        if w3s_nqs > 0 and w3s_qs_nskill[w3s_nqs - 1] < W3S_QS_SKILLS then
+            set w3s_qs_skill[(w3s_nqs - 1) * W3S_QS_SKILLS + w3s_qs_nskill[w3s_nqs - 1]] = w3s_cmd[at + 1]
+            set w3s_qs_nskill[w3s_nqs - 1] = w3s_qs_nskill[w3s_nqs - 1] + 1
             set ok = true
         endif
     elseif op == 91 then
@@ -722,12 +768,19 @@ endfunction
 function W3S_SpawnQueued takes integer i returns nothing
     local unit u = CreateUnit(Player(w3s_qs_player[i]), w3s_qs_type[i], w3s_qs_x[i], w3s_qs_y[i], w3s_qs_facing[i])
     local integer hp
+    local integer j
     if u == null then
         return
     endif
     if w3s_qs_level[i] > 1 and IsUnitType(u, UNIT_TYPE_HERO) then
         call SetHeroLevel(u, w3s_qs_level[i], false)
     endif
+    set j = 0
+    loop
+        exitwhen j >= w3s_qs_nskill[i]
+        call SelectHeroSkill(u, w3s_qs_skill[i * W3S_QS_SKILLS + j])
+        set j = j + 1
+    endloop
     if w3s_qs_hp[i] > 0 then
         set hp = R2I(GetUnitState(u, UNIT_STATE_MAX_LIFE) * I2R(w3s_qs_hp[i]) / 1000.0 + 0.5)
         if hp < 1 then
@@ -1079,6 +1132,7 @@ function W3S_Init takes nothing returns nothing
     local trigger t
     local region r
     set w3s_ht = InitHashtable()
+    call W3S_InitHeroAbilities()
     set w3s_group = CreateGroup()
     set w3s_all = CreateGroup()
     call W3S_Configure()

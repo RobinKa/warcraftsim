@@ -62,6 +62,24 @@ class HarnessConfig:
     clear_area: tuple[float, float, float] | None = None  # (x, y, radius): remove trees there
     order_names: tuple[str, ...] | None = None  # order strings resolved in the first observation
 
+    hero_abilities: dict[str, tuple[str, ...]] | None = None  # hero type -> ability per slot
+
+    def resolved_hero_abilities(self) -> dict[str, tuple[str, ...]]:
+        from .abilities import hero_ability_table
+
+        if self.hero_abilities is not None:
+            return self.hero_abilities
+        try:
+            return hero_ability_table()
+        except (FileNotFoundError, OSError):
+            return {}
+
+    def hero_abilities_code(self) -> str:
+        lines = [f"    call SaveInteger(w3s_abil, '{hero}', {k}, '{code}')"
+                 for hero, codes in sorted(self.resolved_hero_abilities().items()) for k, code in enumerate(codes)
+                 if len(hero) == 4 and len(code) == 4]
+        return "\n".join(lines) if lines else "    // no hero abilities"
+
     def resolved_order_names(self) -> tuple[str, ...]:
         from ..protocol import ORDER_NAMES, all_order_names
 
@@ -130,6 +148,9 @@ def _split_harness(src: str, cfg: HarnessConfig) -> tuple[str, str]:
     body, n = re.subn(r"^\s*// @ORDERS@\s*$", lambda _m: orders, body, flags=re.M)
     if n != 1:
         raise MapBuildError("harness order table marker not found")
+    body, n = re.subn(r"^\s*// @HERO_ABILITIES@\s*$", lambda _m: cfg.hero_abilities_code(), body, flags=re.M)
+    if n != 1:
+        raise MapBuildError("harness hero ability marker not found")
     spawn = cfg.spawn_code()
     body, n = re.subn(r"^\s*// @SCENARIO_SPAWN@\s*$", lambda _m: spawn, body, flags=re.M)
     if n != 1:

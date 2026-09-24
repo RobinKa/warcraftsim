@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum, IntFlag
 from typing import Iterable, Sequence
 
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 MAILBOX_BASE = 1048576
 COORD_BIAS = 65536
 MAX_COMMAND_INTS = 8000
@@ -52,9 +52,11 @@ ORDER_NAMES: tuple[str, ...] = (
 
 def all_order_names() -> tuple[str, ...]:
     """ORDER_NAMES followed by every ability order string in the game data (needs the game files)."""
+    from .data.abilities import ability_order_strings
     from .data.objects import order_strings
 
-    return ORDER_NAMES + tuple(o for o in order_strings() if o not in ORDER_NAMES)
+    names = ORDER_NAMES + tuple(o for o in order_strings() if o not in ORDER_NAMES)
+    return names + tuple(o for o in ability_order_strings() if o not in names)
 
 
 _TOKEN_RE = re.compile(r'call Preload\( "(.*?)" \)')
@@ -151,6 +153,8 @@ class Unit:
     hero_xp: int = 0
     skill_points: int = 0
     items: tuple[int, ...] = ()
+    # heroes: per ability slot (data.abilities.hero_abilities order), (level, cooldown left in s)
+    abilities: tuple[tuple[int, float], ...] = ()
 
     @property
     def type(self) -> str:
@@ -280,7 +284,9 @@ def tokens_from_text(text: str) -> list[str]:
 
 
 _FIELDS = {"T": 4, "P": 14, "O": 1, "D": 5, "E": 4, "C": 1, "U": 14, "R": 1}
-_HERO_EXTRA = 9
+HERO_ABILITY_SLOTS = 4
+# heroes: level, xp, skill points, 6 items, then per ability slot its level and cooldown left (0.1 s)
+_HERO_EXTRA = 9 + 2 * HERO_ABILITY_SLOTS
 
 
 def _i32(v: int) -> int:
@@ -373,6 +379,7 @@ def parse_tokens(toks: list[str], order_names: Sequence[str] = ORDER_NAMES) -> O
             if len(v) > _FIELDS["U"]:
                 u.hero_level, u.hero_xp, u.skill_points = v[14], v[15], v[16]
                 u.items = tuple(v[17:23])
+                u.abilities = tuple((v[23 + 2 * k], v[24 + 2 * k] / 10.0) for k in range(HERO_ABILITY_SLOTS))
             units.append(u)
         elif tag == "D":
             if dests is None:
@@ -446,6 +453,7 @@ class Op(IntEnum):
     SET_RESOURCES = 90
     SPAWN = 91
     QUEUE_SPAWN = 92
+    QUEUE_SKILL = 93
     CAMERA = 96
     END_GAME = 97
     SNAPSHOT = 98
@@ -568,7 +576,8 @@ class Spawn(Command):
 @dataclass(frozen=True)
 class QueueSpawn(Command):
     """Scenarios: a unit for the next Restart (spawned after the old units are removed). `hp_permille`
-    > 0 scales its hit points to that share of its own maximum; heroes start at `hero_level`."""
+    > 0 scales its hit points to that share of its own maximum; heroes start at `hero_level` and
+    learn `skills` in order (ability codes; one entry per skill point, e.g. twice for level 2)."""
     player: int
     unit_type: str
     x: float
@@ -576,10 +585,23 @@ class QueueSpawn(Command):
     facing: float = 0.0
     hp_permille: int = 0
     hero_level: int = 1
+    skills: tuple[str, ...] = ()
 
     def encode(self) -> list[int]:
-        return [Op.QUEUE_SPAWN, self.player, fourcc(self.unit_type), _coord(self.x), _coord(self.y),
-                int(self.facing) % 360, int(self.hp_permille), int(self.hero_level)]
+        out = [Op.QUEUE_SPAWN, self.player, fourcc(self.unit_type), _coord(self.x), _coord(self.y),
+               int(self.facing) % 360, int(self.hp_permille), int(self.hero_level)]
+        for skill in self.skills:
+            out += QueueSkill(skill).encode()
+        return out
+
+
+@dataclass(frozen=True)
+class QueueSkill(Command):
+    """Scenarios: the unit queued last (QueueSpawn) learns `ability` when it spawns."""
+    ability: str
+
+    def encode(self) -> list[int]:
+        return [Op.QUEUE_SKILL, fourcc(self.ability)]
 
 
 @dataclass(frozen=True)
@@ -626,8 +648,8 @@ def encode_commands(commands: Iterable[Command]) -> list[int]:
 
 
 _OP_LENGTHS = {Op.POINT: 5, Op.TARGET: 4, Op.IMMEDIATE: 3, Op.BUILD: 5, Op.LEARN: 3, Op.TARGET_DESTRUCTABLE: 4,
-               Op.ITEM: 7, Op.SET_RESOURCES: 4, Op.SPAWN: 5, Op.QUEUE_SPAWN: 8, Op.CAMERA: 3, Op.END_GAME: 1,
-               Op.SNAPSHOT: 1, Op.RESTART: 1}
+               Op.ITEM: 7, Op.SET_RESOURCES: 4, Op.SPAWN: 5, Op.QUEUE_SPAWN: 8, Op.QUEUE_SKILL: 2, Op.CAMERA: 3,
+               Op.END_GAME: 1, Op.SNAPSHOT: 1, Op.RESTART: 1}
 
 
 def command_ops(ints: Sequence[int]) -> list[int]:

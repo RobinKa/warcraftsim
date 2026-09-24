@@ -1,7 +1,7 @@
 function PreloadFiles takes nothing returns nothing
 
 	call Preload( "V" )
-	call Preload( "3" )
+	call Preload( "4" )
 	call Preload( "T" )
 	call Preload( "0" )
 	call Preload( "63" )

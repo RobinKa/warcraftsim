@@ -252,6 +252,36 @@ def test_fresh_process_episodes_never_continue_a_parked_game(game_dir):
         assert inst._spare is None or not inst._spare._parked
 
 
+def test_hero_skills_and_casting(game_dir):
+    """Queued heroes learn their skills; observations report each ability slot's level and
+    cooldown; a cast (Storm Bolt) hits and starts the cooldown."""
+    from warcraftsim import Wc3Game
+    from warcraftsim.data.abilities import ability_info, hero_abilities
+    from warcraftsim.protocol import QueueSpawn
+
+    sc = Scenario(units=(), victory="elimination", max_game_seconds=40, name="abilities")
+    setup = GameSetup(slots=[Agent("human"), Scripted("orc")], scenario=sc, step_seconds=0.5, window=(320, 240))
+    slots = hero_abilities()["Hmkg"]
+    with Wc3Game(setup, name="it_abilities") as g:
+        g.reset()
+        obs = g.reset(spawns=[QueueSpawn(0, "Hmkg", -300, 0, 0, hero_level=3, skills=("AHtb", "AHtb", "AHtc")),
+                              QueueSpawn(1, "hfoo", 200, 0, 180)])
+        mk = next(u for u in obs.units if u.type == "Hmkg")
+        levels = dict(zip(slots, (lvl for lvl, _ in mk.abilities)))
+        assert levels["AHtb"] == 2 and levels["AHtc"] == 1 and levels["AHbh"] == 0
+        assert mk.skill_points == 0 and all(cd == 0 for _, cd in mk.abilities)
+        foe = next(u for u in obs.units if u.type == "hfoo")
+        g.cast(mk, ability_info()["AHtb"].order, target=foe)
+        hp0 = foe.hp
+        for _ in range(4):
+            obs = g.step()
+        mk, foe = obs.unit(mk.id), obs.unit(foe.id)
+        cd = dict(zip(slots, (c for _, c in mk.abilities)))["AHtb"]
+        assert 0 < cd < ability_info()["AHtb"].cooldown[1]
+        assert foe.hp < hp0 - 100 or not foe.alive  # Storm Bolt level 2: 225 damage
+        assert mk.mana < mk.max_mana
+
+
 def test_replay_of_a_respawned_episode(game_dir, tmp_path):
     """Episodes that start with queued spawns (random compositions) replay exactly."""
     import numpy as np

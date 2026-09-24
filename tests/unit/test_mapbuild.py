@@ -53,3 +53,11 @@ def test_scenario_spawns_keep_their_settings():
     sc = Scenario.skirmish(["hfoo"], ["hfoo"], max_hp=100, center=(64.0, -32.0))
     units = sc.absolute_units()
     assert [u.max_hp for u in units] == [100, 100] and units[0].x == 64.0 - 350.0 and units[0].y == -32.0
+
+
+def test_hero_ability_table_in_the_harness():
+    from warcraftsim.data.mapbuild import HarnessConfig, _split_harness, harness_source
+
+    cfg = HarnessConfig(hero_abilities={"Hmkg": ("AHtc", "AHtb", "AHbh", "AHav")}, order_names=("stop",))
+    _, body = _split_harness(harness_source(), cfg)
+    assert "call SaveInteger(w3s_abil, 'Hmkg', 1, 'AHtb')" in body

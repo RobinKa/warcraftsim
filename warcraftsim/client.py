@@ -192,7 +192,7 @@ class Wc3Game:
 
     def cast(self, unit: Unit | int, order: str | int, target: Unit | int | None = None,
              x: float | None = None, y: float | None = None) -> None:
-        """Cast an ability by order string ("stormbolt", "thunderclap") or ability code ("AHtb")."""
+        """Cast an ability by order string ("thunderbolt" is Storm Bolt, "thunderclap"; see data.abilities)."""
         if target is not None:
             self.order_target(unit, order, target)
         elif x is not None and y is not None:

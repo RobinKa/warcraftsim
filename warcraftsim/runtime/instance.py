@@ -215,8 +215,12 @@ class GameSetup:
 
     def map_key(self) -> str:
         from ..data.mapbuild import harness_source
-        blob = json.dumps({"map": self.map, "harness": asdict(self.harness_config()),
-                           "source": hashlib.sha1(harness_source().encode()).hexdigest()}, sort_keys=True)
+        cfg = self.harness_config()
+        # the tables generated from game data are part of the built script too
+        tables = json.dumps([cfg.resolved_order_names(), cfg.resolved_hero_abilities()], sort_keys=True)
+        blob = json.dumps({"map": self.map, "harness": asdict(cfg),
+                           "source": hashlib.sha1(harness_source().encode()).hexdigest(),
+                           "tables": hashlib.sha1(tables.encode()).hexdigest()}, sort_keys=True)
         return hashlib.sha1(blob.encode()).hexdigest()[:12]
 
 
