@@ -108,10 +108,30 @@ class BridgeServer:
         self._threads: list[threading.Thread] = []
         self._stop = threading.Event()
         self._render_queue: queue.Queue = queue.Queue()
+        self._episode_log = self._bridge_log = None
+        self._open_logs()
+
+    def _open_logs(self) -> None:
         for sub in ("renders", "replays", "videos"):
             (self.run_dir / sub).mkdir(parents=True, exist_ok=True)
-        self._episode_log = open(self.run_dir / f"episodes-{worker}.jsonl", "a")
-        self._bridge_log = open(self.run_dir / f"bridge-{worker}.jsonl", "a")
+        self._episode_log = open(self.run_dir / f"episodes-{self.worker}.jsonl", "a")
+        self._bridge_log = open(self.run_dir / f"bridge-{self.worker}.jsonl", "a")
+
+    def set_run(self, run_dir: str | os.PathLike, record_every: int, video_every: int) -> None:
+        """Write to another run from now on (sweeps: the games serve one trainer after another).
+        Call between trainers; the next trainer starts every game on a new episode."""
+        with self._lock:
+            for f in (self._episode_log, self._bridge_log):
+                f.close()
+            self.run_dir = Path(run_dir)
+            self.record_every, self.video_every = record_every, video_every
+            self._episodes = self._steps = 0
+            for slot in self.slots:
+                if slot.recorder is not None:
+                    slot.recorder.close()
+                slot.recorder = slot.replay_path = slot.trace = None
+                slot.episodes = 0
+            self._open_logs()
 
     # ---- setup --------------------------------------------------------------------------------
 
@@ -310,14 +330,16 @@ class BridgeServer:
                     np.savez_compressed(replay.with_suffix(".steps.npz"), obs=np.stack(t["obs"]),
                                         actions=np.stack(t["actions"]), rewards=np.stack(t["rewards"]),
                                         outcomes=np.asarray(outcomes, np.float32), time=time.time())
-                self._render_queue.put((replay, episode, outcome, slot.ep_return[0]))
+                self._render_queue.put((replay, episode, outcome, slot.ep_return[0], self.run_dir))
             except Exception as e:  # a missing video must not stop training
                 print(f"bridge: replay not saved: {e}")
             slot.replay_path = None
 
-    def _media_event(self, kind: str, path: Path, episode: int, outcome: float, ret: float, **extra) -> None:
-        with self._lock, open(self.run_dir / f"media-{self.worker}.jsonl", "a") as f:
-            f.write(json.dumps({"time": time.time(), "kind": kind, "file": str(path.relative_to(self.run_dir)),
+    def _media_event(self, kind: str, path: Path, episode: int, outcome: float, ret: float,
+                     run_dir: Path | None = None, **extra) -> None:
+        run_dir = run_dir or self.run_dir
+        with self._lock, open(run_dir / f"media-{self.worker}.jsonl", "a") as f:
+            f.write(json.dumps({"time": time.time(), "kind": kind, "file": str(path.relative_to(run_dir)),
                                 "episode": episode, "outcome": outcome, "return": round(ret, 4), **extra}) + "\n")
 
     # ---- background work ----------------------------------------------------------------------
@@ -327,24 +349,24 @@ class BridgeServer:
 
         while not self._stop.is_set():
             try:
-                replay, episode, outcome, ret = self._render_queue.get(timeout=1)
+                replay, episode, outcome, ret, run_dir = self._render_queue.get(timeout=1)
             except queue.Empty:
                 continue
             try:
                 setup = self.slots[0].env.setup
-                out = self.run_dir / "videos" / (replay.stem + ".mp4")
-                overlay = self._overlay(replay, episode)
+                out = run_dir / "videos" / (replay.stem + ".mp4")
+                overlay = self._overlay(replay, episode, run_dir)
                 render_replay(setup, replay, out, name=f"{self.name}render{self.worker}", overlay=overlay)
                 extra = {}
                 if overlay is not None and overlay.values is not None:  # value calibration
                     extra = {"value0": round(float(overlay.values[0, 0]), 4),
                              "return0": round(float(overlay.returns[0, 0]), 4),
                              "policy_step": overlay.policy_step}
-                self._media_event("video", out, episode, outcome, ret, **extra)
+                self._media_event("video", out, episode, outcome, ret, run_dir, **extra)
             except Exception as e:
                 print(f"bridge: video not rendered: {e}")
 
-    def _overlay(self, replay: Path, episode: int):
+    def _overlay(self, replay: Path, episode: int, run_dir: Path):
         """What the policy thought during a video episode, from the checkpoint of that time."""
         from ..overlay import EpisodeOverlay
         from .policy import PufferPolicy, checkpoint_at, checkpoint_step
@@ -353,10 +375,10 @@ class BridgeServer:
         if not steps_file.exists():
             return None
         trace = dict(np.load(steps_file))
-        info = json.loads((self.run_dir / "run.json").read_text()) if (self.run_dir / "run.json").exists() else {}
+        info = json.loads((run_dir / "run.json").read_text()) if (run_dir / "run.json").exists() else {}
         args = info.get("args", {})
         outputs, step = None, None
-        ckpt = checkpoint_at(self.run_dir / "checkpoints", float(trace["time"]))
+        ckpt = checkpoint_at(run_dir / "checkpoints", float(trace["time"]))
         if ckpt is not None:
             try:
                 pol = PufferPolicy(ckpt, self.task.obs_size, self.task.act_sizes, hidden=args.get("hidden", 128),
@@ -366,7 +388,7 @@ class BridgeServer:
             except (OSError, ValueError) as e:
                 print(f"bridge: policy not evaluated for the video: {e}")
         return EpisodeOverlay(self.task, trace, outputs, gamma=args.get("gamma", 0.99),
-                              title=f"{info.get('name', self.run_dir.name)} · episode {episode}",
+                              title=f"{info.get('name', run_dir.name)} · episode {episode}",
                               policy_step=step)
 
     def _stats_loop(self) -> None:
@@ -378,11 +400,13 @@ class BridgeServer:
             sps = (steps - last_steps) / (now - last_t)
             last_steps, last_t = steps, now
             step_s = self.slots[0].env.setup.step_seconds if self.slots else 0.25
-            self._bridge_log.write(json.dumps({"time": now, "worker": self.worker, "steps": steps,
-                                               "episodes": episodes,
-                                               "env_sps": round(sps, 1),
-                                               "game_x_realtime": round(sps * step_s, 1)}) + "\n")
-            self._bridge_log.flush()
+            with self._lock:
+                if steps < last_steps:  # a new run started
+                    continue
+                self._bridge_log.write(json.dumps({"time": now, "worker": self.worker, "steps": steps,
+                                                   "episodes": episodes, "env_sps": round(sps, 1),
+                                                   "game_x_realtime": round(sps * step_s, 1)}) + "\n")
+                self._bridge_log.flush()
 
     def close(self) -> None:
         self._stop.set()
@@ -400,8 +424,9 @@ class BridgeServer:
 
 
 def run_worker(task_name: str, num_envs: int, run_dir: str, socket_path: str, record_every: int, video_every: int,
-               name: str, worker: int, ready, stop) -> None:
-    """Bridge worker process: its own games and GIL (multiprocessing target)."""
+               name: str, worker: int, ready, stop, control=None, acks=None) -> None:
+    """Bridge worker process: its own games and GIL (multiprocessing target). `control` (a queue)
+    takes ("run", run_dir, record_every, video_every) to switch runs; each is acknowledged on `acks`."""
     from .tasks import get_task
 
     bridge = BridgeServer(get_task(task_name), num_envs, run_dir, socket_path, record_every, video_every, name,
@@ -410,6 +435,15 @@ def run_worker(task_name: str, num_envs: int, run_dir: str, socket_path: str, re
         bridge.launch_games(log=lambda m: print(f"[worker {worker}] {m}", flush=True))
         bridge.serve()
         ready.set()
-        stop.wait()
+        while not stop.wait(0.2):
+            if control is None:
+                continue
+            try:
+                msg = control.get_nowait()
+            except queue.Empty:
+                continue
+            if msg[0] == "run":
+                bridge.set_run(*msg[1:])
+                acks.put(worker)
     finally:
         bridge.close()

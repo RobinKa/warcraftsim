@@ -178,7 +178,8 @@ function renderRuns() {
     return `<div class="run ${r.name === state.selected ? "sel" : ""}" data-run="${r.name}">
       <div class="n"><span><input type="checkbox" data-cmp="${r.name}" ${state.compare.has(r.name) ? "checked" : ""}>${r.name}</span>${badge(r.status)}</div>
       <div class="m"><span>${r.task} · ${r.envs} games</span><span>win ${wr}</span></div>
-      <div class="m"><span>${fmt(s.agent_steps || 0, 0)} steps</span><span>${ago(s.updated)}</span></div></div>`;
+      <div class="m"><span>${fmt(s.agent_steps || 0, 0)} steps</span><span>${ago(s.updated)}</span></div>${r.sweep ? `
+      <div class="m" title="sweep ${r.sweep.group}"><span style="color:var(--accent)">sweep ${r.sweep.index}/${r.sweep.of}</span><span>${r.sweep.options || "base"}</span></div>` : ""}</div>`;
   }).join("") || `<div class="empty">no runs</div>`;
   document.querySelectorAll(".run").forEach(el => el.onclick = ev => {
     if (ev.target.dataset.cmp) return;
@@ -205,7 +206,7 @@ function renderMain() {
   if (firstRender) {
     main.dataset.run = state.selected;
     main.innerHTML = `
-      <div class="title"><h2>${info.name}</h2>${badge(info.status)}<span class="desc">${info.description || ""}</span></div>
+      <div class="title"><h2>${info.name}</h2>${badge(info.status)}<span class="desc">${info.description || ""}</span>${info.sweep ? `<span class="desc" style="color:var(--accent)">sweep ${info.sweep.group} ${info.sweep.index}/${info.sweep.of}: ${info.sweep.options || "base options"}</span>` : ""}</div>
       <div class="cards" id="cards"></div>
       <div class="grid">
         <h4>Outcomes</h4>

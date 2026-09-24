@@ -115,9 +115,19 @@ def main() -> None:
                 print(f"{cfg}: failed (exit {res.returncode}) {res.stderr[-300:]}", flush=True)
                 continue
             med = lambda k: statistics.median(r.get(k, 0.0) for r in rows)  # noqa: E731
+            allrows = [json.loads(line) for line in log.read_text().splitlines()]
+            wins = [(r["agent_steps"], r["env/win_rate"]) for r in allrows if r.get("env/n")]
+            learn = ""
+            if wins:
+                k = max(1, len(wins) // 10)
+                roll = [(wins[i][0], sum(w for _, w in wins[max(0, i - k + 1):i + 1]) / len(wins[max(0, i - k + 1):i + 1]))
+                        for i in range(len(wins))]
+                first = lambda th: next((f"{st / 1e6:.2f}M" for st, w in roll if w >= th), "-")  # noqa: E731
+                learn = (f"  win rate: final {roll[-1][1]:.2f} best {max(w for _, w in roll):.2f}, "
+                         f">=0.5 at {first(0.5)} >=0.8 at {first(0.8)} >=0.95 at {first(0.95)}")
             print(f"{cfg:40s} SPS {med('SPS'):6.0f}  per epoch: rollout {med('perf/rollout'):.3f}s "
                   f"env {med('perf/eval_env'):.3f}s model {med('perf/eval_model'):.3f}s "
-                  f"train {med('perf/train'):.3f}s  ({time.time() - t:.0f}s)\n{'':40s} cores: {cpu}", flush=True)
+                  f"train {med('perf/train'):.3f}s  ({time.time() - t:.0f}s)\n{'':40s} cores: {cpu}{learn}", flush=True)
     finally:
         stop.set()
         for p in procs:

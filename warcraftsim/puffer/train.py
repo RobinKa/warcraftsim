@@ -1,6 +1,11 @@
 """Train a PufferLib 5.0 policy on a Warcraft III task.
 
-    python -m warcraftsim.puffer.train --task micro --envs 16 --timesteps 2_000_000
+    python -m warcraftsim.puffer.train --task micro --envs 24 --timesteps 2_000_000
+    python -m warcraftsim.puffer.train --task footmen2 --name f2-lr --timesteps 1e6 \
+        --sweep "--lr 0.003" --sweep "--lr 0.01" --sweep "--lr 0.01 --train.gae_lambda=0.95"
+
+A sweep launches the games once and trains one run per --sweep after another (runs
+<name>-1, <name>-2, ...; the dashboard shows them like any other run).
 
 A run lives in runs/<name>/:
     run.json         configuration and status (read by the dashboard)
@@ -17,6 +22,7 @@ import argparse
 import json
 import multiprocessing as mp
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -81,7 +87,8 @@ def trainer_args(args, envs: int, agents_per_env: int = 1) -> list[str]:
         f"--vec.total_agents={agents}", f"--vec.num_buffers={buffers}",
         f"--vec.num_threads={max(envs, buffers)}",
         f"--train.total_timesteps={int(args.timesteps)}", f"--train.horizon={horizon}",
-        f"--train.minibatch_size={minibatch}", f"--train.learning_rate={args.lr}",
+        f"--train.minibatch_size={minibatch}", f"--train.replay_ratio={args.replay_ratio}",
+        f"--train.learning_rate={args.lr}",
         f"--train.ent_coef={args.ent_coef}", f"--train.gamma={args.gamma}",
         f"--policy.hidden_size={args.hidden}", f"--policy.num_layers={args.layers}",
         "--base.eval_episodes=0", f"--base.checkpoint_interval={args.checkpoint_interval}",
@@ -89,15 +96,17 @@ def trainer_args(args, envs: int, agents_per_env: int = 1) -> list[str]:
     ]
 
 
-def main(argv: list[str] | None = None) -> int:
+def make_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--task", default="micro")
-    ap.add_argument("--envs", type=int, default=16, help="parallel games")
-    ap.add_argument("--workers", type=int, default=4, help="bridge processes (each runs envs/workers games)")
+    ap.add_argument("--envs", type=int, default=24, help="parallel games")
+    ap.add_argument("--workers", type=int, default=6, help="bridge processes (each runs envs/workers games)")
     ap.add_argument("--timesteps", type=float, default=1_000_000)
-    ap.add_argument("--name", help="run name (default: task + timestamp)")
+    ap.add_argument("--name", help="run name (default: task + timestamp); with --sweep, the runs' prefix")
     ap.add_argument("--horizon", type=int, default=64)
     ap.add_argument("--minibatch", type=int, default=0, help="default: the whole batch (envs * horizon)")
+    ap.add_argument("--replay-ratio", type=float, default=1.0,
+                    help="updates per epoch = replay_ratio * batch / minibatch")
     ap.add_argument("--buffers", type=int, default=0, help="trainer buffers (default: one per two games)")
     ap.add_argument("--lr", type=float, default=0.003)
     ap.add_argument("--ent-coef", type=float, default=0.001,
@@ -110,42 +119,83 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--record-every", type=int, default=20, help="trajectory render every N episodes of game 0")
     ap.add_argument("--video-every", type=int, default=60, help="replay video every N episodes of game 0 (0: off)")
     ap.add_argument("--init-from", help="start from a checkpoint: a .bin file, or a run name (its latest)")
-    ap.add_argument("extra", nargs="*", help="extra PufferLib arguments, e.g. --train.clip_coef=0.1")
-    args = ap.parse_args(argv)
+    ap.add_argument("--sweep", action="append", default=[], metavar="OPTIONS",
+                    help="a sweep: one run per --sweep, each with these options on top of the others "
+                         "(e.g. --sweep '--lr 0.01' --sweep '--lr 0.003 --train.gae_lambda=0.95'); "
+                         "the games are launched once and serve the runs one after another")
+    return ap
 
-    task = get_task(args.task)
-    init = None
-    if args.init_from:
-        init = Path(args.init_from)
-        if not init.is_file():
-            found = sorted((RUNS_DIR / args.init_from / "checkpoints").rglob("*.bin"), key=lambda p: p.stat().st_mtime)
-            if not found:
-                raise SystemExit(f"--init-from: no checkpoint file or run with checkpoints named {args.init_from!r}")
-            init = found[-1]
-        args.extra = [*args.extra, f"--base.load_model_path={init.resolve()}"]
-    name = args.name or f"{task.name}-{datetime.now():%Y%m%d-%H%M%S}"
-    run = Run(RUNS_DIR / name, {
-        "name": name, "task": task.name, "description": task.description, "envs": args.envs,
-        "timesteps": int(args.timesteps), "agents_per_env": task.num_agents, "obs_size": task.obs_size,
-        "act_sizes": list(task.act_sizes),
-        "args": {k: v for k, v in vars(args).items() if k != "extra"}, "extra": args.extra,
-        "created": time.time(), "status": "building", "init_from": str(init) if init else None,
-    })
-    print(f"run {name}: {run.dir}", flush=True)
+
+def parse(ap: argparse.ArgumentParser, argv: list[str]) -> argparse.Namespace:
+    """Our options, plus any --section.key=value PufferLib options (kept in args.extra)."""
+    args, unknown = ap.parse_known_args(argv)
+    bad = [u for u in unknown if not (u.startswith("--") and "." in u.split("=")[0] and "=" in u)]
+    if bad:
+        ap.error(f"unrecognized arguments: {' '.join(bad)}")
+    args.extra = unknown
+    return args
+
+
+def _resolve_init(args) -> Path | None:
+    if not args.init_from:
+        return None
+    init = Path(args.init_from)
+    if not init.is_file():
+        found = sorted((RUNS_DIR / args.init_from / "checkpoints").rglob("*.bin"), key=lambda p: p.stat().st_mtime)
+        if not found:
+            raise SystemExit(f"--init-from: no checkpoint file or run with checkpoints named {args.init_from!r}")
+        init = found[-1]
+    args.extra = [*args.extra, f"--base.load_model_path={init.resolve()}"]
+    return init
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    ap = make_parser()
+    base = parse(ap, argv)
+    task = get_task(base.task)
+    group = base.name or f"{task.name}-{datetime.now():%Y%m%d-%H%M%S}"
+    configs = base.sweep or [""]
+    plans = []  # (args, run name, sweep info)
+    for i, cfg in enumerate(configs):
+        args = parse(ap, [*argv, *shlex.split(cfg)])
+        if (args.task, args.envs, args.workers) != (base.task, base.envs, base.workers):
+            ap.error("--sweep options cannot change --task, --envs or --workers (the runs share the games)")
+        name = f"{group}-{i + 1}" if base.sweep else group
+        plans.append((args, name, {"group": group, "index": i + 1, "of": len(configs), "options": cfg}
+                      if base.sweep else None))
+
+    runs = []
+    for args, name, sweep in plans:
+        init = _resolve_init(args)
+        runs.append(Run(RUNS_DIR / name, {
+            "name": name, "task": task.name, "description": task.description, "envs": args.envs,
+            "timesteps": int(args.timesteps), "agents_per_env": task.num_agents, "obs_size": task.obs_size,
+            "act_sizes": list(task.act_sizes),
+            "args": {k: v for k, v in vars(args).items() if k not in ("extra", "sweep")}, "extra": args.extra,
+            "created": time.time(), "status": "queued" if sweep and sweep["index"] > 1 else "building",
+            "init_from": str(init) if init else None, "sweep": sweep,
+        }))
+        print(f"run {name}: {RUNS_DIR / name}" + (f"  [{sweep['options']}]" if sweep else ""), flush=True)
     binary = build_trainer(task)
-    run.save(status="launching games", trainer=str(binary))
-    workers = max(1, min(args.workers, args.envs))
-    counts = [args.envs // workers + (1 if w < args.envs % workers else 0) for w in range(workers)]
+    first = runs[0]
+    first.save(status="launching games", trainer=str(binary))
+    workers = max(1, min(base.workers, base.envs))
+    counts = [base.envs // workers + (1 if w < base.envs % workers else 0) for w in range(workers)]
     Path("/dev/shm/warcraftsim").mkdir(parents=True, exist_ok=True)
-    sockets = [f"/dev/shm/warcraftsim/bridge-{name}-{w}.sock" for w in range(workers)]
+    sockets = [f"/dev/shm/warcraftsim/bridge-{group}-{w}.sock" for w in range(workers)]
     ctx = mp.get_context("spawn")
     stop_event = ctx.Event()
     readies = [ctx.Event() for _ in range(workers)]
+    controls = [ctx.Queue() for _ in range(workers)]
+    acks = ctx.Queue()
     slot, _slot_lock = claim_slot()
     games = "train" if slot == 0 else f"train{slot}_"
+    a0 = plans[0][0]
     procs = [ctx.Process(target=run_worker, daemon=True, args=(
-        task.name, counts[w], str(run.dir), sockets[w], args.record_every if w == 0 else 0,
-        args.video_every if w == 0 else 0, f"{games}{w}-", w, readies[w], stop_event)) for w in range(workers)]
+        task.name, counts[w], str(first.dir), sockets[w], a0.record_every if w == 0 else 0,
+        a0.video_every if w == 0 else 0, f"{games}{w}-", w, readies[w], stop_event, controls[w], acks))
+        for w in range(workers)]
     trainer = None
     stopping = False
 
@@ -157,6 +207,8 @@ def main(argv: list[str] | None = None) -> int:
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    current = first
+    code = 0
     try:
         t0 = time.time()
         for p in procs:
@@ -165,23 +217,33 @@ def main(argv: list[str] | None = None) -> int:
             while not ready.wait(1):
                 if not p.is_alive():
                     raise RuntimeError(f"bridge worker {procs.index(p)} failed to start its games")
-        print(f"bridge: {args.envs} games in {workers} workers ready in {time.time() - t0:.0f}s", flush=True)
-        env = dict(os.environ, WC3_BRIDGE=";".join(sockets), PUFFER_JSONL=str(run.dir / "train.jsonl"))
-        # OpenMP threads that finished their game spin at the barrier by default: with 2 buffers
-        # the trainer burned 10.7 cores (more than 24 games); passive, 2.5
-        env.setdefault("OMP_WAIT_POLICY", "passive")
-        cmd = [str(binary), *trainer_args(args, args.envs, task.num_agents), f"--base.checkpoint_dir={run.dir / 'checkpoints'}",
-               f"--base.log_dir={run.dir / 'logs'}"]
-        run.save(status="training", started=time.time(), command=cmd)
-        with open(run.dir / "trainer.log", "wb") as log:
-            trainer = subprocess.Popen(cmd, cwd=PUFFER_BUILD, env=env, stdout=log, stderr=subprocess.STDOUT)
-            code = trainer.wait()
-        status = "stopped" if stopping else ("finished" if code == 0 else f"failed (exit {code})")
-        run.save(status=status, finished=time.time())
-        print(f"run {name}: {status}", flush=True)
+        print(f"bridge: {base.envs} games in {workers} workers ready in {time.time() - t0:.0f}s", flush=True)
+        for (args, name, sweep), run in zip(plans, runs):
+            if stopping:
+                run.save(status="stopped (sweep ended)")
+                continue
+            current = run
+            if run is not first:  # point the bridge workers at this run
+                for w, q in enumerate(controls):
+                    q.put(("run", str(run.dir), args.record_every if w == 0 else 0, args.video_every if w == 0 else 0))
+                for _ in controls:
+                    acks.get(timeout=60)
+            env = dict(os.environ, WC3_BRIDGE=";".join(sockets), PUFFER_JSONL=str(run.dir / "train.jsonl"))
+            # OpenMP threads that finished their game spin at the barrier by default: with 2 buffers
+            # the trainer burned 10.7 cores (more than 24 games); passive, 2.5
+            env.setdefault("OMP_WAIT_POLICY", "passive")
+            cmd = [str(binary), *trainer_args(args, args.envs, task.num_agents),
+                   f"--base.checkpoint_dir={run.dir / 'checkpoints'}", f"--base.log_dir={run.dir / 'logs'}"]
+            run.save(status="training", started=time.time(), command=cmd, trainer=str(binary))
+            with open(run.dir / "trainer.log", "wb") as log:
+                trainer = subprocess.Popen(cmd, cwd=PUFFER_BUILD, env=env, stdout=log, stderr=subprocess.STDOUT)
+                code = trainer.wait()
+            status = "stopped" if stopping else ("finished" if code == 0 else f"failed (exit {code})")
+            run.save(status=status, finished=time.time())
+            print(f"run {name}: {status}", flush=True)
         return 0 if code == 0 or stopping else 1
     except Exception as e:
-        run.save(status=f"failed: {e}", finished=time.time())
+        current.save(status=f"failed: {e}", finished=time.time())
         raise
     finally:
         stop_event.set()
