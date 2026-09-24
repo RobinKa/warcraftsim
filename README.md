@@ -156,8 +156,8 @@ PufferLib 5.0 (`third_party/PufferLib`, the current `5.0` branch) is a native CU
 # needs the CUDA toolkit (nvcc), clang, ccache, NCCL, libomp:
 #   sudo apt-get install ccache libnccl2 libnccl-dev libomp-14-dev libomp5-14 libgl-dev libx11-dev
 python -m warcraftsim.puffer.train --task nav --timesteps 400000                  # navigation
-python -m warcraftsim.puffer.train --task footmen2 --timesteps 1000000 \
-    --lr 0.01 --minibatch 384 --replay-ratio 4                                     # 2 v 2 footmen, ~95% wins in ~3 min
+python -m warcraftsim.puffer.train --task footmen2 --step-seconds 0.5 --timesteps 400000 \
+    --lr 0.01 --minibatch 192 --replay-ratio 4                                     # 2 v 2 footmen: 95% wins in ~1.5 min
 python -m warcraftsim.puffer.train --task micro_mirror --timesteps 3000000        # 4 v 4 footmen
 python -m warcraftsim.puffer.train --task selfplay_micro --envs 8 --timesteps 3000000 # both sides learn
 # a sweep: the games launch once, then one run per --sweep (runs NAME-1, NAME-2, ... in the dashboard)
@@ -169,7 +169,9 @@ Tasks (add more in `tasks.py`; `scripts/baselines.py` measures scripted policies
 * `nav`: reach a point.
 * `footmen2`: 2 vs 2 footmen with 100 hit points against the scripted opponent (episodes ~17 s).
   * Scripted baselines win 0% (random), 30% (noop), 65–70% (focus fire), 90% (focus fire, and pulling a footman back while it is low and being hit).
-  * PPO learns focus fire and the pull-back: 95% wins after ~650k steps (lr 0.01, minibatch 384, replay ratio 4).
+  * Tuned by sweeps (`f2-sweep1`..`5`, `f2-step*` in the dashboard): 0.5 s steps, lr 0.01, minibatch 192, replay ratio 4, the learning rate annealed over 400k steps → 95% wins after ~0.2M steps (~1.5 min), 98-100% soon after; 1.0 s steps: 100% for both seeds.
+  * Most of the speed came from more updates per sample (1 → 32 per epoch), then from longer steps and a shorter annealing schedule. Horizon 32 learns fastest at first but ends lower.
+  * Early policies learned focus fire plus pulling a hurt footman back. The 100% policy instead holds position until the enemies arrive: the scripted opponent then splits its damage over both footmen, while ours focus one enemy.
 * `footmen<N>v<M>[_hp<HP>][_ehp<EHP>]`: N agent footmen against M scripted ones with HP hit points each (default 100), the enemies EHP (a handicap).
 * `micro`: 4 footmen vs 3 scripted grunts. This is hard: scripted baselines win about 1 game in 3.
 * `micro_mirror`: 4 vs 4 footmen against the scripted opponent.
