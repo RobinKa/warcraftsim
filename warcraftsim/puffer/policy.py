@@ -62,23 +62,29 @@ class PufferPolicy:
             raise ValueError(f"{path}: {len(w)} floats, expected {pos} (wrong architecture?)")
         self.hidden = hidden
 
+    def initial_state(self) -> list[np.ndarray]:
+        """The recurrent state at the start of an episode (the trainer zeroes it after a terminal)."""
+        return [np.zeros(self.hidden, np.float32) for _ in self.gru]
+
+    def step(self, o: np.ndarray, state: list[np.ndarray]) -> np.ndarray:
+        """One observation [obs_size] -> the decoder output [sum(act_sizes) + 1] (logits per head,
+        then the value); `state` (from initial_state) is updated in place."""
+        h = self.hidden
+        x = self.encoder @ np.asarray(o, np.float32)
+        for i, wl in enumerate(self.gru):
+            c = wl @ x
+            hid, gate, hw = c[:h], c[h:2 * h], c[2 * h:]
+            h_tilde = np.where(hid >= 0, hid + 0.5, _sigmoid(hid))
+            out = state[i] + _sigmoid(gate) * (h_tilde - state[i])
+            state[i] = out
+            s = _sigmoid(hw)
+            x = s * out + (1 - s) * x
+        return self.decoder @ x
+
     def run(self, obs: np.ndarray) -> PolicyOutput:
         """Evaluate one episode of observations [T, obs_size], from a zero recurrent state."""
-        obs = np.asarray(obs, np.float32)
-        h = self.hidden
-        state = [np.zeros(h, np.float32) for _ in self.gru]
-        outs = []
-        for o in obs:
-            x = self.encoder @ o
-            for i, wl in enumerate(self.gru):
-                c = wl @ x
-                hid, gate, hw = c[:h], c[h:2 * h], c[2 * h:]
-                h_tilde = np.where(hid >= 0, hid + 0.5, _sigmoid(hid))
-                out = state[i] + _sigmoid(gate) * (h_tilde - state[i])
-                state[i] = out
-                s = _sigmoid(hw)
-                x = s * out + (1 - s) * x
-            outs.append(self.decoder @ x)
+        state = self.initial_state()
+        outs = [self.step(o, state) for o in np.asarray(obs, np.float32)]
         dec = np.asarray(outs)
         probs, ents, at = [], [], 0
         for n in self.act_sizes:
