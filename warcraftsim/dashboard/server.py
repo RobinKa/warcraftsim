@@ -33,7 +33,7 @@ EPISODE_SERIES = {
     "length": lambda e: float(e.get("length", 0)),
     "game_time": lambda e: e.get("game_time"),
     **{f"act_{k}": (lambda k: lambda e: e.get("act", {}).get(k))(k)
-       for k in ("noop", "stop", "move", "attack", "attack_invalid", "attack_weakest", "focus_fire")},
+       for k in ("noop", "stop", "retreat", "move", "attack", "attack_invalid", "attack_weakest", "focus_fire")},
     **{f"combat_{k}": (lambda k: lambda e: e.get("combat", {}).get(k))(k)
        for k in ("dealt", "taken", "kills", "losses", "focus_dealt", "focus_taken")},
 }

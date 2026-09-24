@@ -5,9 +5,15 @@
 Policies (per own unit, every step):
     noop      units fight on their own (auto-acquire)
     focus     everyone attacks the weakest enemy
-    pull<L>   focus, but a unit below L% hit points that is being hit (lost hit points in the
-              last second) and is not the healthiest walks away from the enemies until it is no
-              longer being hit, then rejoins (the enemies switch to another target meanwhile)
+    range     each unit attacks the weakest enemy within its own attack range (none: fights on
+              its own), so melee units do not walk past the front line to reach a target
+    sticky    range, but a unit keeps its target while that is alive and in reach (a new attack
+              order restarts the attack wind-up)
+    [base]pull<L>
+              base (focus if omitted), but a unit below L% hit points that is being hit (lost
+              hit points in the last second) and is not the healthiest walks away from the
+              enemies until it is no longer being hit, then rejoins (the enemies switch to
+              another target meanwhile); e.g. pull35, rangepull35, nooppull35
 """
 
 from __future__ import annotations
@@ -19,7 +25,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
+from warcraftsim.data.objects import combat_stats
 from warcraftsim.puffer.tasks import get_task
+
+REACH = 90  # added to the attack range: ranges count from the attacker's edge, positions are centers
 
 
 def act(policy: str, env, state: dict, max_units: int) -> np.ndarray:
@@ -28,6 +37,9 @@ def act(policy: str, env, state: dict, max_units: int) -> np.ndarray:
     live = [i for i, e in enumerate(enemy) if e is not None]
     if not live or policy == "noop":
         return a
+    base, pull, low = policy.partition("pull")
+    base = base or "focus"
+    stats = combat_stats()
     weakest = min(live, key=lambda i: enemy[i].hp)
     ex = sum(enemy[i].x for i in live) / len(live)
     ey = sum(enemy[i].y for i in live) / len(live)
@@ -35,15 +47,25 @@ def act(policy: str, env, state: dict, max_units: int) -> np.ndarray:
     for i, u in enumerate(own[:max_units]):
         if u is None:
             continue
-        a[i] = (3, 0, weakest)
-        if not policy.startswith("pull"):
+        if base == "focus":
+            a[i] = (3, 0, weakest)
+        elif base in ("range", "sticky"):
+            st = stats.get(u.type)
+            reach = (st.range if st else 100) + REACH
+            near = [j for j in live if enemy[j].dist(u.x, u.y) <= reach]
+            targets = state.setdefault("targets", {})
+            kept = [j for j in near if enemy[j].id == targets.get(u.id)] if base == "sticky" else []
+            if near:
+                j = kept[0] if kept else min(near, key=lambda j: enemy[j].hp)
+                a[i] = (3, 0, j)
+                targets[u.id] = enemy[j].id
+        if not pull:
             continue
-        low = int(policy[4:]) / 100
-        hist = state.setdefault(u.id, [u.hp] * 4)
+        hist = state.setdefault(("hp", u.id), [u.hp] * 4)
         hit = u.hp < hist[0]
         hist.append(u.hp)
         del hist[0]
-        if hit and u.hp < low * u.max_hp and u.hp < healthiest:
+        if hit and u.hp < int(low) / 100 * u.max_hp and u.hp < healthiest:
             ang = math.atan2(u.y - ey, u.x - ex)
             a[i] = (2, round(ang / (math.pi / 4)) % 8, 0)
     return a

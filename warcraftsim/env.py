@@ -6,7 +6,8 @@
   -1 loss, 0 otherwise.
 * ``MicroEnv``: scenario fights with a factored discrete action per own unit
   (noop / stop / move in one of 8 directions / attack an enemy slot), reward =
-  damage balance + outcome.
+  damage balance + outcome. With ``targeting="semantic"`` the target is a rule (the
+  weakest enemy in range, the nearest, ...) and stop becomes retreat.
 * ``NavigateEnv``: move one unit to a target point as fast as possible.
 * ``MicroSelfPlayEnv``: two policies control the two sides of a scenario (dict API).
 
@@ -255,15 +256,26 @@ def _issue(view, attacking: dict[int, int], unit: Unit, kind: int, direction: in
         attacking.pop(unit.id, None)
 
 
+# Attack targets as rules (MicroEnv targeting="semantic"), for the unit given the order. "In range":
+# within its attack range (+ REACH); rules without a candidate fall back to the nearest enemy.
+SEMANTIC_TARGETS = ("weak_in_range", "nearest", "weakest", "hero", "threat")
+REACH = 90.0  # attack ranges count from the attacker's edge, positions are centers
+
+
 class MicroEnv(Wc3Env):
     """Scenario fights. Action per own-unit slot: [kind, direction, target].
 
     kind 0 noop, 1 stop, 2 move `move_distance` in direction (8-way), 3 attack enemy slot `target`.
+    With targeting="semantic": kind 1 retreats (moves `move_distance` straight away from the
+    nearest enemy) and `target` picks a rule from SEMANTIC_TARGETS: the weakest enemy in range,
+    the nearest, the weakest overall, a hero, or the biggest threat in range (the highest DPS
+    per hit point left: killing it removes the most damage soonest).
     Reward: (enemy hp lost - own hp lost) / initial total hp per step, +1/-1 for win/loss.
     """
 
     def __init__(self, scenario: Scenario | None = None, max_own: int = 12, max_enemy: int = 12,
-                 move_distance: float = 250.0, opponent: str = "scripted", name: str = "micro0", **kw):
+                 move_distance: float = 250.0, opponent: str = "scripted", name: str = "micro0",
+                 targeting: str = "slot", **kw):
         from .runtime.instance import Agent, Idle, Scripted
 
         self.scenario = scenario or Scenario.skirmish(["hfoo"] * 4, ["hfoo"] * 4)
@@ -272,6 +284,11 @@ class MicroEnv(Wc3Env):
         super().__init__(setup, player=0, max_units=max_own + max_enemy, name=name, **kw)
         self.max_own, self.max_enemy = max_own, max_enemy
         self.move_distance = move_distance
+        if targeting not in ("slot", "semantic"):
+            raise ValueError(f"targeting must be 'slot' or 'semantic', not {targeting!r}")
+        self.targeting = targeting
+        self.kind_names = ("noop", "retreat", "move", "attack") if targeting == "semantic" else \
+            ("noop", "stop", "move", "attack")
         self.observation_space = spaces.Dict({
             "own": spaces.Box(-np.inf, np.inf, (max_own, UNIT_FEATURES), np.float32),
             "own_types": spaces.Box(0, 10_000, (max_own,), np.int64),
@@ -281,7 +298,8 @@ class MicroEnv(Wc3Env):
             "enemy_mask": spaces.MultiBinary(max_enemy),
             "time": spaces.Box(0, np.inf, (1,), np.float32),
         })
-        self.action_space = spaces.MultiDiscrete(np.tile([4, 8, max_enemy], (max_own, 1)))
+        n_targets = len(SEMANTIC_TARGETS) if targeting == "semantic" else max_enemy
+        self.action_space = spaces.MultiDiscrete(np.tile([4, 8, n_targets], (max_own, 1)))
         self._own: list[Unit] = []
         self._enemy: list[Unit] = []
         self._hp0 = (1.0, 1.0)
@@ -310,15 +328,58 @@ class MicroEnv(Wc3Env):
         return {"own": of, "own_types": ot, "own_mask": om, "enemy": ef, "enemy_types": et, "enemy_mask": em,
                 "time": np.array([obs.game_time / max(self.scenario.max_game_seconds, 1)], np.float32)}
 
+    def target_slot(self, unit: Unit, target: int) -> int | None:
+        """The enemy slot an attack with head value `target` goes to (None: no such enemy)."""
+        live = [j for j, e in enumerate(self._enemy) if e is not None]
+        if self.targeting == "slot":
+            return target if target in live else None
+        if not live:
+            return None
+        stats = combat_stats()
+        dist = {j: self._enemy[j].dist(unit.x, unit.y) for j in live}
+        nearest = min(live, key=dist.__getitem__)
+        st = stats.get(unit.type)
+        reach = (st.range if st else 100.0) + REACH
+        in_range = [j for j in live if dist[j] <= reach]
+        rule = SEMANTIC_TARGETS[target]
+        if rule == "weak_in_range":
+            return min(in_range, key=lambda j: self._enemy[j].hp) if in_range else nearest
+        if rule == "weakest":
+            return min(live, key=lambda j: self._enemy[j].hp)
+        if rule == "hero":
+            heroes = [j for j in live if (s := stats.get(self._enemy[j].type)) is not None and s.is_hero]
+            return min(heroes, key=dist.__getitem__) if heroes else nearest
+        if rule == "threat":
+            def threat(j: int) -> float:
+                e = self._enemy[j]
+                s = stats.get(e.type)
+                return (s.dps if s else 0.0) / max(e.hp, 1)
+            return max(in_range, key=threat) if in_range else nearest
+        return nearest
+
     def _commands(self, action: np.ndarray) -> list[Command]:
         action = np.asarray(action).reshape(self.max_own, 3)
         for i, unit in enumerate(self._own):
             if unit is None:
                 continue
             kind, direction, target = (int(v) for v in action[i])
+            if kind == 1 and self.targeting == "semantic":
+                self._retreat(unit)
+                continue
+            slot = self.target_slot(unit, target) if kind == 3 else None
             _issue(self.game, self._attacking, unit, kind, direction,
-                   self._enemy[target] if kind == 3 and target < len(self._enemy) else None, self.move_distance)
+                   self._enemy[slot] if slot is not None else None, self.move_distance)
         return []
+
+    def _retreat(self, unit: Unit) -> None:
+        live = [e for e in self._enemy if e is not None]
+        if not live:
+            return
+        e = min(live, key=lambda e: e.dist(unit.x, unit.y))
+        d = max(e.dist(unit.x, unit.y), 1.0)
+        self.game.move(unit, unit.x + (unit.x - e.x) / d * self.move_distance,
+                       unit.y + (unit.y - e.y) / d * self.move_distance)
+        self._attacking.pop(unit.id, None)
 
     def step(self, action):
         self._commands(action)
