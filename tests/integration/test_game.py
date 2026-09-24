@@ -169,3 +169,43 @@ def test_replay_video_with_audio(game_dir, tmp_path):
     level = subprocess.run(["ffmpeg", "-i", str(out), "-vn", "-af", "volumedetect", "-f", "null", "-"],
                            capture_output=True, text=True).stderr
     assert float(level.split("max_volume:")[1].split("dB")[0]) > -40  # not silent
+
+
+def test_scenario_spare_parks_the_running_game(game_dir, tmp_path):
+    """Video episodes (relaunch=True, then save_replay) swap processes without a game load."""
+    import time
+
+    from warcraftsim import Wc3Game
+
+    sc = Scenario.skirmish(["hfoo"] * 2, ["hfoo"] * 2, max_hp=60, max_game_seconds=20)
+    setup = GameSetup(slots=[Agent("human"), Scripted("orc")], scenario=sc, scenario_spare=True)
+
+    def play(g, obs):
+        seen = {}
+        while not obs.game_over:
+            seen[obs.seq] = sorted((u.id, u.x, u.y, u.hp) for u in obs.units if u.alive)
+            obs = g.step()
+        return seen
+
+    with Wc3Game(setup, name="it_spare_sc") as g:
+        play(g, g.reset())  # episode 1, and the spare loads in the background
+        g.instance._spare_thread.join()
+        t = time.time()
+        live = play(g, g.reset(relaunch=True))  # the video episode, in the (fresh) spare
+        swap_in = time.time() - t
+        replay = g.instance.save_replay(tmp_path / "ep.w3g")
+        t = time.time()
+        obs = g.reset()  # back to the parked game: an in-game restart
+        resume = time.time() - t
+        assert obs.game_time < 1.0 and not obs.game_over
+        play(g, obs)
+    assert swap_in < 3.0 and resume < 1.0, (swap_in, resume)
+    with GameInstance(setup, name="it_spare_sc_play") as inst:
+        obs = inst.play_replay(replay)
+        played = {}
+        while True:
+            played[obs.seq] = sorted((u.id, u.x, u.y, u.hp) for u in obs.units if u.alive)
+            if obs.game_over:
+                break
+            obs = inst.step()
+    assert len(live) > 10 and live == {k: played[k] for k in live}

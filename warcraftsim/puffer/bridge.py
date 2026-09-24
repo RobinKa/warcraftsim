@@ -142,6 +142,8 @@ class BridgeServer:
             env = self.task.make_env(f"{self.name}{i}")
             if self.window and getattr(env, "setup", None) is not None:
                 env.setup.window = self.window  # videos are rendered at full size regardless
+            if i == 0 and self.video_every and getattr(env, "setup", None) is not None:
+                env.setup.scenario_spare = True  # video episodes start and end without a game load
             obs, info = self.task.reset(env)
             return _Slot(i, env, obs, info)
 

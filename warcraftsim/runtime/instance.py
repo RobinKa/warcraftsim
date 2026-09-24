@@ -157,6 +157,10 @@ class GameSetup:
     # Melee only: keep a second game loaded and waiting at game time 0, so restart() is instant
     # instead of a ~8 s relaunch. Costs one more idle process (~400 MB) and its load time.
     warm_spare: bool = True
+    # Scenarios too, for relaunch=True (a single-episode replay, e.g. for a video): the spare
+    # takes over and the process that was running is parked as the next spare; the relaunch
+    # after the replay was saved resumes it with an in-game restart. Neither costs a load.
+    scenario_spare: bool = False
 
     def __post_init__(self):
         self.slots = tuple(self.slots)
@@ -611,11 +615,16 @@ class GameInstance:
             obs = self._await_observation(new_episode=True)
             self.episode += 1
             return obs
+        was_ended = self._ended
         self._ended = False
         self._playback = None
         spare = self._take_spare()
         if spare is not None:
-            return self._swap_in(spare)
+            if spare._parked:  # a scenario game paused at an episode boundary: restart it in-game
+                return self._resume_parked(spare)
+            park = (self.setup.scenario is not None and not was_ended and self.proc is not None
+                    and self.proc.poll() is None and self._conn is not None)
+            return self._swap_in(spare, park=park)
         self._stop_process()
         for f in self.ipc_dir.iterdir():
             f.unlink()
@@ -624,8 +633,8 @@ class GameInstance:
     # ---- warm spare (melee) ---------------------------------------------------------------
 
     def _wants_spare(self) -> bool:
-        return (self.setup.warm_spare and self.setup.scenario is None and not self.warm_spare_child
-                and not self._display_shared())
+        return (self.setup.warm_spare and (self.setup.scenario is None or self.setup.scenario_spare)
+                and not self.warm_spare_child and not self._display_shared())
 
     def _display_shared(self) -> bool:
         return self._own_display is None and self._display is not None
@@ -655,28 +664,56 @@ class GameInstance:
         self._spare_thread = threading.Thread(target=run, name=f"spare-{spare.name}", daemon=True)
         self._spare_thread.start()
 
+    _parked = False  # a spare that is a paused scenario game (see scenario_spare), not a fresh one
+
     def _take_spare(self) -> "GameInstance | None":
         spare, thread = self._spare, self._spare_thread
         self._spare = self._spare_thread = None
         if spare is None:
             return None
+        if spare._parked:
+            return spare
         thread.join()
         if self._spare_error is not None or spare.last_obs is None:
             spare.close()
             return None
         return spare
 
-    def _swap_in(self, spare: "GameInstance") -> Observation:
-        """Continue with the spare's process (waiting at game time 0); the retired process is shut
-        down in the background, which then loads the next spare under its name."""
+    def _swap_in(self, spare: "GameInstance", park: bool = False) -> Observation:
+        """Continue with the spare's process (waiting at game time 0). The retired process is shut
+        down in the background, which then loads the next spare under its name, or, with `park`
+        (scenarios), kept as it is as the next spare."""
         for attr in _PROCESS_ATTRS:
             mine, theirs = getattr(self, attr), getattr(spare, attr)
             setattr(self, attr, theirs)
             setattr(spare, attr, mine)
         self._pending_speed = self._speed
         self.episode += 1
-        self._start_spare(recycled=spare)
+        if park:
+            spare._parked = True
+            self._spare, self._spare_thread, self._spare_error = spare, None, None
+        else:
+            spare._parked = False
+            self._start_spare(recycled=spare)
         return self.last_obs
+
+    def _resume_parked(self, parked: "GameInstance") -> Observation:
+        """Continue with a parked scenario game: a new episode by in-game restart. The process
+        that ran until now (its game ended to save a replay) reloads as the next spare."""
+        for attr in _PROCESS_ATTRS:
+            mine, theirs = getattr(self, attr), getattr(parked, attr)
+            setattr(self, attr, theirs)
+            setattr(parked, attr, mine)
+        parked._parked = False
+        self._pending_speed = self._speed
+        key = f"{self._proc_episode}:{self._last_seq}"
+        self._cmd_log[key] = self._cmd_log.get(key, []) + Restart().encode()
+        self._reply(ints=Restart().encode())
+        self._last_seq = None
+        obs = self._await_observation(new_episode=True)
+        self.episode += 1
+        self._start_spare(recycled=parked)
+        return obs
 
     def set_speed(self, speed: float | None) -> None:
         """Change the virtual clock speed from the next step on (None: adaptive)."""
