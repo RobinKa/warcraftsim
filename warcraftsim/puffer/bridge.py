@@ -244,6 +244,8 @@ class BridgeServer:
             obs, info = slot.pending
             slot.pending = None
             return self._begin_episode(slot, obs, info)
+        # a new trainer: an episode cut short by the last one ends here, a video episode's with it
+        slot.replay_path = None
         try:
             obs, info = self.task.reset(slot.env)
             return self._begin_episode(slot, obs, info)
@@ -355,6 +357,10 @@ class BridgeServer:
         if slot.replay_path is not None:
             try:
                 inst = slot.env.game.instance
+                # a video re-simulates its whole replay: only a process that ran just this episode
+                # (plus the empty one it started with, when episodes are spawned) plays back in sync
+                if inst._proc_episode > 1:
+                    raise GameError(f"the episode ran in a game that had {inst._proc_episode} episodes before")
                 replay = inst.save_replay(slot.replay_path)
                 if slot.trace is not None:
                     t = slot.trace
@@ -363,7 +369,7 @@ class BridgeServer:
                                         outcomes=np.asarray(outcomes, np.float32), time=time.time())
                 self._render_queue.put((replay, episode, outcome, slot.ep_return[0], self.run_dir))
             except Exception as e:  # a missing video must not stop training
-                print(f"bridge: replay not saved: {e}")
+                print(f"bridge: replay not saved: {e}", flush=True)
             slot.replay_path = None
 
     def _media_event(self, kind: str, path: Path, episode: int, outcome: float, ret: float,

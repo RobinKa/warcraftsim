@@ -211,6 +211,47 @@ def test_scenario_spare_parks_the_running_game(game_dir, tmp_path):
     assert len(live) > 10 and live == {k: played[k] for k in live}
 
 
+def test_fresh_process_episodes_never_continue_a_parked_game(game_dir):
+    """A video episode needs a process that ran nothing else (its replay is re-simulated from the
+    start). Parking must not leak: an interrupted video episode goes back to the parked game, two
+    video episodes in a row relaunch, and a recycled process is retired, not parked."""
+    from warcraftsim import Wc3Game
+
+    sc = Scenario.skirmish(["hfoo"] * 2, ["hfoo"] * 2, max_hp=60, max_game_seconds=20)
+    setup = GameSetup(slots=[Agent("human"), Scripted("orc")], scenario=sc, scenario_spare=True, window=(320, 240))
+
+    def play(g, obs):
+        while not obs.game_over:
+            obs = g.step()
+
+    with Wc3Game(setup, name="it_spare_leak") as g:
+        inst = g.instance
+        play(g, g.reset())
+        play(g, g.reset())
+        long_pid = inst.pid
+        inst._spare_thread.join()
+        g.reset(relaunch=True)  # a video episode in the fresh spare; the long game parks
+        assert inst.pid != long_pid and inst._spare._parked and inst._proc_episode == 0
+        g.step()  # ... cut short (the trainer went away)
+        obs = g.reset()  # the next normal episode continues the parked game
+        assert inst.pid == long_pid and inst._proc_episode > 1
+        play(g, obs)
+        inst._spare_thread.join()
+        g.reset(relaunch=True)  # video episode
+        first_video = inst.pid
+        g.reset(relaunch=True)  # and another one right away: a fresh process, the long game stays parked
+        assert inst.pid not in (long_pid, first_video) and inst._proc_episode == 0
+        assert inst._spare._parked and inst._spare.pid == long_pid
+        play(g, g.reset())  # back to the long game
+        assert inst.pid == long_pid
+        inst._spare_thread.join()
+        inst.setup.recycle_steps = 1
+        g.reset()  # recycle: the long game's process retires
+        inst.setup.recycle_steps = 0
+        assert inst.pid != long_pid and inst._proc_episode == 0
+        assert inst._spare is None or not inst._spare._parked
+
+
 def test_replay_of_a_respawned_episode(game_dir, tmp_path):
     """Episodes that start with queued spawns (random compositions) replay exactly."""
     import numpy as np

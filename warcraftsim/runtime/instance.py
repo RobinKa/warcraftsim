@@ -619,9 +619,12 @@ class GameInstance:
         main menu, and the .wgc is what sets exact slots and AI difficulty. relaunch=True always
         starts a fresh process (e.g. so a saved replay holds exactly one episode).
         """
-        if self.setup.recycle_steps and self._proc_steps >= self.setup.recycle_steps:
-            relaunch = True
-        if self.setup.scenario is not None and not self._ended and self._playback is None and not relaunch:
+        recycle = bool(self.setup.recycle_steps and self._proc_steps >= self.setup.recycle_steps)
+        # a parked game (see scenario_spare) means this process only ran a fresh-process episode:
+        # the next normal episode continues the parked game, even if that episode was cut short
+        parked = self._spare is not None and self._spare._parked
+        if (self.setup.scenario is not None and not self._ended and self._playback is None and not relaunch
+                and not recycle and not parked):
             key = f"{self._proc_episode}:{self._last_seq}"
             self._cmd_log[key] = self._cmd_log.get(key, []) + Restart().encode()
             self._reply(ints=Restart().encode())
@@ -633,11 +636,18 @@ class GameInstance:
         self._ended = False
         self._playback = None
         spare = self._take_spare()
-        if spare is not None:
-            if spare._parked:  # a scenario game paused at an episode boundary: restart it in-game
+        if spare is not None and spare._parked:
+            if not relaunch:  # back to the paused game: a new episode by in-game restart
                 return self._resume_parked(spare)
-            park = (self.setup.scenario is not None and not was_ended and self.proc is not None
-                    and self.proc.poll() is None and self._conn is not None)
+            # a fresh process is wanted: never the parked game (its replay would hold every episode
+            # it ever ran, and a video of one would re-simulate them all, desynced). It stays parked.
+            self._spare, self._spare_thread, self._spare_error = spare, None, None
+            spare = None
+        elif spare is not None:
+            # park the running game for a fresh-process episode (a video), to continue it afterwards;
+            # a recycled one (too many steps in one process) is retired
+            park = (self.setup.scenario is not None and relaunch and not recycle and not was_ended
+                    and self.proc is not None and self.proc.poll() is None and self._conn is not None)
             return self._swap_in(spare, park=park)
         self._stop_process()
         for f in self.ipc_dir.iterdir():
