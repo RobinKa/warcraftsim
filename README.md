@@ -23,16 +23,17 @@ Python (warcraftsim)                 Wine prefix per game                 Warcra
 ------------------------------       -------------------------------      -------------------------------------
 Wc3Game / Wc3Env / Wc3VecEnv          .wgc game config (slots, AI)  --->   map = stock map + injected JASS harness
 GameInstance ── TCP 127.0.0.1 ──────────────────────────────────────────── w3shim.dll (injected by w3launch.exe)
-     │                                                                       - virtual clock (game runs N x faster)
-     │  obs.txt / act.txt in /dev/shm  (CustomMapData\w3sim)                  - blocks the game at every step
-     └──────────────────────────────────────────────────────────────────── harness: Preload() observations,
-                                                                              Preloader() + natives for commands
+     │  observations and commands travel with the step sync:              - virtual clock (game runs N x faster)
+     │  "OBS n len" + tokens  ->   <- "GO ... A n ints"                    - blocks the game at every step
+     └──────────────────────────────────────────────────────────────────── harness: Preload() observation tokens
+                                                                              (captured by the shim), mailbox native
+                                                                              for commands
 ```
 
 * **Harness** (`warcraftsim/harness/w3sim.j`): JASS injected into the map script by
   `data/mapbuild.py`. On every step (a game-time timer) it:
   1. writes an observation: players, changed units, events and command results;
-  2. reads the next commands (`Preloader`);
+  2. reads the next commands through a mailbox native the shim answers;
   3. issues them with ordinary order natives (`IssuePointOrderById`, ...).
 
   Its other jobs:
@@ -41,7 +42,8 @@ GameInstance ── TCP 127.0.0.1 ───────────────�
   * It runs scenarios.
 * **w3shim.dll** (`shim/`, mingw, 32-bit). It is injected into the game by `w3launch.exe`, and all its hooks are in the game's import table or a few engine functions:
   * **Virtual clock:** replaces the game's timers (QPC, GetTickCount, FILETIME, rdtsc helper) and scales its waits, so the game runs as fast as the CPU allows.
-  * **Step sync:** when the harness opens its action file, the DLL freezes the clock, reports "OBS" over TCP and waits for "GO". That makes stepping exactly synchronous and deterministic in game time.
+  * **Step sync:** when the harness calls its mailbox native, the DLL freezes the clock, sends the observation over TCP ("OBS") and waits for "GO" with the next commands. That makes stepping exactly synchronous and deterministic in game time.
+  * **Frame capture and audio** for videos (see Watching games).
 * **`.wgc` game configs** start a local game directly, with no menus or Battle.net. They set the map, the slots (agents are computer slots with no AI; built-in AIs get easy/normal/insane) and an observer as the local player.
 
 ## Setup (once)

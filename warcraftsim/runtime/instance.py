@@ -146,10 +146,11 @@ class GameSetup:
     # True: the first agent is the local (user) player instead of a computer slot watched by an
     # observer. Only one slot can be a user in a local game.
     agent_is_user: bool = False
-    # Relaunch the game process at the next episode boundary after this many steps: the engine
-    # leaks JASS compiler memory on every Preloader call (~20 KB/step) and fails with "Not enough
-    # memory" after ~20k steps. 0 = never.
-    recycle_steps: int = 8000
+    # Relaunch the game process at the next episode boundary after this many steps (0 = never).
+    # Reading actions with Preloader leaked ~20 KB of JASS compiler memory per step ("Not enough
+    # memory" after ~20k steps); the mailbox harness grows by ~0.6 KB per step, so this is only a
+    # safety net (each relaunch stalls the trainer's batch for a game load).
+    recycle_steps: int = 200_000
     # Melee only: keep a second game loaded and waiting at game time 0, so restart() is instant
     # instead of a ~8 s relaunch. Costs one more idle process (~400 MB) and its load time.
     warm_spare: bool = True

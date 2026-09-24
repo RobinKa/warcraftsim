@@ -25,10 +25,12 @@
 ## Step protocol
 
 1. The harness timer fires every `step_seconds` of game time.
-2. The harness writes the observation with `PreloadGenStart`, then `Preload(token)`×N, then `PreloadGenEnd("w3sim\\obs.txt")`.
-3. The harness calls `Preloader("w3sim\\act.txt")`, which makes the game open the file with `CreateFileW`. The shim intercepts that call, freezes the virtual clock and sends `OBS n`, then blocks on the socket.
-4. Python reads `obs.txt` and parses and merges it. It writes `act.txt` (lines of `call SetPlayerTechMaxAllowed(Player(PLAYER_NEUTRAL_PASSIVE), 1048576+i, v)`) and answers `GO [speed=..] [turbo=..]`.
-5. The game runs the action file. The Preloader interpreter executes natives with nested calls and constants, but not map functions, `set`, or `BlzSetAbilityTooltip`. The harness then reads the mailbox and issues the orders.
+2. The harness writes the observation with `PreloadGenStart`, then `Preload(token)`×N, then `PreloadGenEnd("w3sim\\obs.txt")`. The shim hooks `Preload`/`PreloadGenEnd` (`shim/obs.c`) and keeps the tokens in memory instead of checking the disk per token and writing a file.
+3. The harness calls `GetPlayerTechMaxAllowed(Player(PLAYER_NEUTRAL_PASSIVE), 1048575)`. The shim hooks that native (`shim/sync.c`): it freezes the virtual clock, sends `OBS n len` followed by the tokens, then blocks on the socket.
+4. Python parses and merges the observation and answers `GO [speed=..] [turbo=..] [frame=..] [capture=..] A n v1 .. vn` with the encoded commands.
+5. The native returns n; the harness reads the command integers with the same native (keys 1048577+i, answered from the `A` list) and issues the orders.
+
+Before the mailbox, actions went through a file the harness loaded with `Preloader`. The engine compiled it as JASS on every step (~7 ms under Wine, and ~20 KB of compiler memory that was never freed: "Not enough memory" after ~20k steps, hence game recycling). Games no longer need recycling (`recycle_steps` is a safety net at 200k steps). The `CreateFileW` hook on `act.txt` still exists as a fallback sync point.
 
 ## Things learned about the 1.29 engine (keep these in mind)
 
