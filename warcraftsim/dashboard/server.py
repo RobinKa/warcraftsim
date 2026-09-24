@@ -33,7 +33,8 @@ EPISODE_SERIES = {
     "game_time": lambda e: e.get("game_time"),
     **{f"act_{k}": (lambda k: lambda e: e.get("act", {}).get(k))(k)
        for k in ("noop", "stop", "move", "attack", "attack_invalid", "attack_weakest", "focus_fire")},
-    **{f"combat_{k}": (lambda k: lambda e: e.get("combat", {}).get(k))(k) for k in ("dealt", "taken", "kills", "losses")},
+    **{f"combat_{k}": (lambda k: lambda e: e.get("combat", {}).get(k))(k)
+       for k in ("dealt", "taken", "kills", "losses", "focus_dealt", "focus_taken")},
 }
 MAX_POINTS = 600
 
@@ -74,6 +75,24 @@ def _downsample(rows: list, n: int = MAX_POINTS) -> list:
         return rows
     step = len(rows) / n
     return [rows[int(i * step)] for i in range(n)] + [rows[-1]]
+
+
+def _binned(xs: list[float], rows: list[dict], n: int = MAX_POINTS) -> list[dict]:
+    """At most n points: consecutive rows averaged per bin (each value over the rows that have it),
+    x = the bin's mean x. The page smooths on top of this."""
+    if not rows:
+        return []
+    size = max(1, -(-len(rows) // n))
+    out = []
+    for i in range(0, len(rows), size):
+        chunk, cx = rows[i:i + size], xs[i:i + size]
+        point = {"steps": sum(cx) / len(cx), "n": len(chunk)}
+        for key in chunk[-1].keys() | chunk[0].keys():
+            vals = [r[key] for r in chunk if isinstance(r.get(key), (int, float)) and not isinstance(r.get(key), bool)]
+            if vals:
+                point[key] = sum(vals) / len(vals)
+        out.append(point)
+    return out
 
 
 def _rolling(values: list[float], window: int) -> list[float]:
@@ -152,13 +171,16 @@ class Dashboard:
         train_rows = self.cache.read(d / "train.jsonl")
         train = [{k: r[k] for k in TRAIN_KEYS if k in r} for r in train_rows]
         episodes = self._merged(d, "episodes")
-        window = max(10, min(100, len(episodes) // 20 or 10))
         steps = _interp_steps([e["time"] for e in episodes], train_rows)
-        ep_series = [{"episode": i + 1, "steps": steps[i], "time": e["time"]} for i, e in enumerate(episodes)]
-        for name, get in EPISODE_SERIES.items():
-            idx = [i for i, e in enumerate(episodes) if get(e) is not None]
-            for i, v in zip(idx, _rolling([float(get(episodes[i])) for i in idx], window)):
-                ep_series[i][name] = v
+        ep_rows = []
+        for e in episodes:
+            row = {}
+            for name, get in EPISODE_SERIES.items():
+                v = get(e)
+                if v is not None:
+                    row[name] = float(v)
+            ep_rows.append(row)
+        ep_series = _binned(steps, ep_rows)
         # throughput: sum the bridge workers' latest rates in 5 s buckets
         buckets: dict[int, dict[int, float]] = {}
         for r in self._merged(d, "bridge"):
@@ -175,9 +197,8 @@ class Dashboard:
         return {
             "calibration": calibration,
             "info": info,
-            "train": _downsample(train),
-            "episodes": _downsample(ep_series),
-            "episode_window": window,
+            "train": _binned([r.get("agent_steps", 0) for r in train], train),
+            "episodes": ep_series,
             "recent_episodes": [dict(e, episode=len(episodes) - k) for k, e in enumerate(episodes[-15:][::-1])],
             "bridge": _downsample(bridge),
             "media": [m for m in media if (d / m["file"]).exists()][-40:][::-1],

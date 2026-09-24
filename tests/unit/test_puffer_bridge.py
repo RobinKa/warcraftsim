@@ -194,7 +194,7 @@ class FakeSelfPlayEnv:
         self.t += 1
         done = self.t >= 2
         obs = type("O", (), {"players": [self._Player("VICTORY"), self._Player("DEFEAT")], "game_time": 0.5 * self.t,
-                             "game_over": done})()
+                             "game_over": done, "units": []})()
         return ({0: np.array([self.t], np.float32), 1: np.array([10.0 + self.t], np.float32)},
                 {0: float(actions[0]), 1: float(actions[1])}, {0: done, 1: done}, {0: False, 1: False},
                 {0: {"obs": obs}, 1: {}})

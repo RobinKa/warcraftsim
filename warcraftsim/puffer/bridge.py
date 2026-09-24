@@ -84,6 +84,8 @@ class _Slot:
         self.trace: dict[str, list] | None = None  # policy inputs/outputs of a video episode
         self.actions: Counter = Counter()
         self.first_obs = None  # the episode's first harness observation
+        self.hp: dict[int, int] = {}  # unit -> hit points at the last step (damage concentration)
+        self.focus = [0.0, 0.0, 0.0, 0.0]  # dealt: max per step, total; taken: max per step, total
 
 
 class BridgeServer:
@@ -219,6 +221,8 @@ class BridgeServer:
         slot.ep_return, slot.ep_length = [0.0] * self.task.num_agents, 0
         slot.actions = Counter()
         slot.first_obs = info.get("obs")
+        slot.hp = {u.id: u.hp for u in slot.first_obs.units if u.alive} if slot.first_obs else {}
+        slot.focus = [0.0, 0.0, 0.0, 0.0]
         slot.trace = {"obs": [np.stack(obs)], "actions": [], "rewards": []} if slot.replay_path else None
         if slot.recorder is not None:
             slot.recorder.close()
@@ -275,6 +279,22 @@ class BridgeServer:
         if self.task.action_stats is not None:
             slot.actions.update(self.task.action_stats(slot.env, actions))
         obs, rewards, done, info, outcomes = self.task.step(slot.env, actions)
+        o = info.get("obs")
+        if o is not None:  # damage concentration: how much of a step's damage hit a single unit
+            dealt: list[int] = []
+            taken: list[int] = []
+            for u in o.units:
+                before = slot.hp.get(u.id)
+                if before is None or u.owner not in o.players:
+                    continue
+                loss = before - (u.hp if u.alive else 0)
+                if loss > 0:
+                    (taken if u.owner == 0 else dealt).append(loss)
+            slot.hp = {u.id: u.hp for u in o.units if u.alive}
+            for k, losses in ((0, dealt), (2, taken)):
+                if losses:
+                    slot.focus[k] += max(losses)
+                    slot.focus[k + 1] += sum(losses)
         if slot.trace is not None:
             slot.trace["actions"].append(np.stack(actions))
             slot.trace["rewards"].append(np.asarray(rewards, np.float32))
@@ -313,6 +333,11 @@ class BridgeServer:
                 row["act"] = action_summary(slot.actions)
             combat = combat_stats(slot.first_obs, o)
             if combat:
+                f = slot.focus
+                if f[1]:
+                    combat["focus_dealt"] = round(f[0] / f[1], 4)  # 1: every step's damage hit one enemy
+                if f[3]:
+                    combat["focus_taken"] = round(f[2] / f[3], 4)
                 row["combat"] = combat
             self._episode_log.write(json.dumps(row) + "\n")
             self._episode_log.flush()

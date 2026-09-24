@@ -41,7 +41,13 @@ main { padding:14px 18px 40px; overflow:auto; }
 .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(420px,1fr)); gap:12px; }
 .chart { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px 6px; position:relative; }
 .chart h3 { margin:0 0 6px; font-size:12px; font-weight:600; color:var(--muted); display:flex; justify-content:space-between; }
+.chart .plot { position:relative; }
 .chart canvas { width:100%; height:210px; display:block; }
+.chart canvas.overlay { position:absolute; left:0; top:0; pointer-events:none; }
+.legend { display:flex; flex-wrap:wrap; gap:16px; align-items:center; margin:2px 0 10px; color:var(--muted); font-size:12px; }
+.legend svg { vertical-align:middle; margin-right:5px; }
+.smooth { display:flex; align-items:center; gap:6px; }
+.smooth input { width:120px; accent-color:var(--accent); }
 .tip { position:absolute; pointer-events:none; background:#0b0f13ee; border:1px solid var(--line); border-radius:6px; padding:5px 8px;
        font-size:11px; white-space:nowrap; display:none; z-index:5; }
 section { margin-top:18px; }
@@ -66,7 +72,9 @@ pre.cmd { background:var(--panel); border:1px solid var(--line); border-radius:8
 <body>
 <header>
   <h1>warcraft<span>sim</span></h1><span class="sub">Warcraft III 1.29 · PufferLib 5.0 training dashboard</span>
-  <div class="right"><span id="clock"></span><label><input type="checkbox" id="auto" checked> auto-refresh</label></div>
+  <div class="right"><label class="smooth" title="exponential moving average over the points of every chart">smoothing
+    <input type="range" id="smooth" min="0" max="0.99" step="0.01"><span id="smoothv"></span></label>
+    <span id="clock"></span><label><input type="checkbox" id="auto" checked> auto-refresh</label></div>
 </header>
 <div class="layout">
   <aside><h2>Runs <span style="float:right;text-transform:none;letter-spacing:0">☑ compare</span></h2><div id="runs"></div></aside>
@@ -74,7 +82,23 @@ pre.cmd { background:var(--panel); border:1px solid var(--line); border-radius:8
 </div>
 <script>
 const COLORS = ["#e0a33a", "#539bf5", "#4cc38a", "#e5534b", "#b083f0", "#39c5cf", "#f47067", "#c69026"];
+const DASHES = [[], [7, 4], [2, 3], [10, 3, 2, 3], [14, 5], [4, 2, 1, 2]];  // line style per compared run
 let state = { runs: [], selected: null, compare: new Set(), data: {}, mediaKey: "" };
+const ui = { smooth: 0.6, hoverX: null, hoverChart: null, charts: {} };
+try { const v = parseFloat(localStorage.getItem("smooth")); if (!Number.isNaN(v)) ui.smooth = v; } catch (e) {}
+// shareable view: #run=NAME&compare=A,B&smooth=0.8
+(() => {
+  const h = new URLSearchParams(location.hash.slice(1));
+  if (h.get("run")) state.selected = h.get("run");
+  if (h.get("compare")) h.get("compare").split(",").filter(Boolean).forEach(n => state.compare.add(n));
+  if (h.get("smooth") !== null && !Number.isNaN(parseFloat(h.get("smooth")))) ui.smooth = parseFloat(h.get("smooth"));
+})();
+function saveHash() {
+  const h = new URLSearchParams();
+  if (state.selected) h.set("run", state.selected);
+  if (state.compare.size) h.set("compare", [...state.compare].join(","));
+  history.replaceState(null, "", "#" + h.toString());
+}
 
 function fmt(v, d = 2) {
   if (v === null || v === undefined || Number.isNaN(v)) return "–";
@@ -83,6 +107,7 @@ function fmt(v, d = 2) {
   if (a >= 1e6) return (v / 1e6).toFixed(2) + "M";
   if (a >= 1e4) return (v / 1e3).toFixed(1) + "K";
   if (a >= 100) return v.toFixed(0);
+  if (a > 0 && a < 0.01) return v.toExponential(1);
   return v.toFixed(d);
 }
 function ago(t) {
@@ -103,22 +128,40 @@ function badge(status) {
   const cls = status === "training" ? "training" : status.startsWith("failed") ? "failed" : status === "finished" ? "finished" : "";
   return `<span class="badge ${cls}">${status}</span>`;
 }
+function dashSvg(dash, color = "#d7dee6") {
+  return `<svg width="34" height="8"><line x1="0" y1="4" x2="34" y2="4" stroke="${color}" stroke-width="2" stroke-dasharray="${dash.join(",")}"/></svg>`;
+}
+// TensorBoard-style debiased exponential moving average
+function smooth(points, a) {
+  if (!(a > 0) || points.length < 3) return points;
+  let last = 0, w = 0;
+  return points.map(([x, y]) => { last = last * a + (1 - a) * y; w = w * a + (1 - a); return [x, last / w]; });
+}
 
-// ---- tiny canvas line chart ----------------------------------------------------------------
-function lineChart(canvas, series, opts = {}) {
-  const dpr = window.devicePixelRatio || 1, W = canvas.clientWidth, H = canvas.clientHeight;
+// ---- charts: base canvas + overlay canvas (crosshair shared by all charts) -------------------
+function drawChart(id) {
+  const c = ui.charts[id]; if (!c) return;
+  const canvas = c.canvas, dpr = window.devicePixelRatio || 1, W = canvas.clientWidth, H = canvas.clientHeight;
   canvas.width = W * dpr; canvas.height = H * dpr;
+  c.overlay.width = W * dpr; c.overlay.height = H * dpr; c.overlay.style.width = W + "px"; c.overlay.style.height = H + "px";
   const g = canvas.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, W, H);
   const pad = { l: 46, r: 10, t: 8, b: 22 };
-  const pts = series.flatMap(s => s.points);
-  if (!pts.length) { g.fillStyle = "#8795a3"; g.fillText(opts.empty || "no data yet", 12, H / 2); canvas._chart = null; return; }
-  let x0 = Math.min(...pts.map(p => p[0])), x1 = Math.max(...pts.map(p => p[0]));
-  let y0 = opts.ymin ?? Math.min(...pts.map(p => p[1])), y1 = opts.ymax ?? Math.max(...pts.map(p => p[1]));
+  const series = c.series.map(s => ({ ...s, pts: s.dots || s.raw ? s.points : smooth(s.points, ui.smooth) }));
+  const pts = series.flatMap(s => s.pts);
+  c.geo = null;
+  if (!pts.length) { g.fillStyle = "#8795a3"; g.font = "11px system-ui"; g.fillText(c.opts.empty || "no data yet", 12, H / 2); return; }
+  // one x range for all charts (0 .. latest step of the shown runs), so they line up
+  let x0 = ui.xrange ? ui.xrange[0] : Math.min(...pts.map(p => p[0]));
+  let x1 = ui.xrange ? ui.xrange[1] : Math.max(...pts.map(p => p[0]));
+  // y range without the most extreme 0.5% on either side (a partial last epoch reports huge SPS)
+  const ys = pts.map(p => p[1]).sort((a, b) => a - b), q = k => ys[Math.min(ys.length - 1, Math.max(0, Math.round(k * (ys.length - 1))))];
+  let y0 = c.opts.ymin ?? (ys.length > 50 ? q(0.005) : ys[0]), y1 = c.opts.ymax ?? (ys.length > 50 ? q(0.995) : ys[ys.length - 1]);
   if (x1 === x0) x1 = x0 + 1;
-  if (y1 === y0) { y1 += 1; y0 -= opts.ymin !== undefined ? 0 : 1; }
-  const yr = y1 - y0; if (opts.ymin === undefined) y0 -= yr * 0.05; if (opts.ymax === undefined) y1 += yr * 0.05;
+  if (y1 === y0) { y1 += 1; y0 -= c.opts.ymin !== undefined ? 0 : 1; }
+  const yr = y1 - y0; if (c.opts.ymin === undefined) y0 -= yr * 0.05; if (c.opts.ymax === undefined) y1 += yr * 0.05;
   const X = x => pad.l + (x - x0) / (x1 - x0) * (W - pad.l - pad.r);
-  const Y = y => H - pad.b - (y - y0) / (y1 - y0) * (H - pad.t - pad.b);
+  const Yraw = y => H - pad.b - (y - y0) / (y1 - y0) * (H - pad.t - pad.b);
+  const Y = y => Math.max(pad.t - 2, Math.min(H - pad.b + 2, Yraw(y)));  // clip outliers to the frame
   g.font = "10px system-ui"; g.strokeStyle = "#2a3440"; g.fillStyle = "#8795a3"; g.lineWidth = 1;
   for (let i = 0; i <= 4; i++) {
     const y = y0 + (y1 - y0) * i / 4, py = Math.round(Y(y)) + .5;
@@ -127,33 +170,68 @@ function lineChart(canvas, series, opts = {}) {
   }
   for (let i = 0; i <= 4; i++) {
     const x = x0 + (x1 - x0) * i / 4;
-    g.fillText(opts.xfmt ? opts.xfmt(x) : fmt(x, 0), Math.min(X(x) - 12, W - 40), H - 6);
+    g.fillText(fmt(x, 0), Math.min(X(x) - 12, W - 40), H - 6);
   }
-  series.forEach((s, i) => {
-    if (!s.points.length) return;
-    g.strokeStyle = g.fillStyle = s.color || COLORS[i % COLORS.length]; g.lineWidth = s.width || 1.6; g.globalAlpha = s.alpha || 1;
-    if (s.dash) g.setLineDash(s.dash);
-    if (s.dots) s.points.forEach(p => { g.beginPath(); g.arc(X(p[0]), Y(p[1]), 3, 0, 7); g.fill(); });
-    else { g.beginPath(); s.points.forEach((p, j) => j ? g.lineTo(X(p[0]), Y(p[1])) : g.moveTo(X(p[0]), Y(p[1]))); g.stroke(); }
-    g.setLineDash([]); g.globalAlpha = 1;
-  });
-  canvas._chart = { series, X, Y, x0, x1, pad, W, H, opts };
+  for (const s of series) {
+    if (!s.pts.length) continue;
+    g.strokeStyle = g.fillStyle = s.color; g.lineWidth = s.run === 0 ? 1.8 : 1.5; g.setLineDash(s.dash || []);
+    if (s.dots) {
+      for (const p of s.pts) { g.beginPath(); g.arc(X(p[0]), Y(p[1]), 3, 0, 7); s.run === 0 ? g.fill() : g.stroke(); }
+    } else {
+      if (ui.smooth > 0 && s.points.length > 2) {  // the raw points, faint, under the smoothed line
+        g.globalAlpha = 0.18; g.beginPath();
+        s.points.forEach((p, j) => j ? g.lineTo(X(p[0]), Y(p[1])) : g.moveTo(X(p[0]), Y(p[1]))); g.stroke(); g.globalAlpha = 1;
+      }
+      g.beginPath(); s.pts.forEach((p, j) => j ? g.lineTo(X(p[0]), Y(p[1])) : g.moveTo(X(p[0]), Y(p[1]))); g.stroke();
+    }
+    g.setLineDash([]);
+  }
+  c.geo = { series, X, Y, x0, x1, pad, W, H };
+  drawCrosshair(id);
 }
-function attachTip(canvas, tip) {
+
+function nearest(pts, x) {
+  let lo = 0, hi = pts.length - 1;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (pts[m][0] < x) lo = m; else hi = m; }
+  return Math.abs(pts[lo][0] - x) <= Math.abs(pts[hi][0] - x) ? pts[lo] : pts[hi];
+}
+
+function drawCrosshair(id) {
+  const c = ui.charts[id]; if (!c) return;
+  const dpr = window.devicePixelRatio || 1, g = c.overlay.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, c.overlay.width, c.overlay.height);
+  const geo = c.geo, x = ui.hoverX;
+  if (!geo || x === null || x < geo.x0 || x > geo.x1) { c.tip.style.display = "none"; return; }
+  const px = Math.round(geo.X(x)) + .5;
+  g.strokeStyle = "rgba(215,222,230,.55)"; g.lineWidth = 1;
+  g.beginPath(); g.moveTo(px, geo.pad.t); g.lineTo(px, geo.H - geo.pad.b); g.stroke();
+  const rows = [];
+  for (const s of geo.series) {
+    if (!s.pts.length) continue;
+    const p = nearest(s.pts, x);
+    g.fillStyle = s.color; g.beginPath(); g.arc(geo.X(p[0]), geo.Y(p[1]), 2.6, 0, 7); g.fill();
+    rows.push(`<div>${dashSvg(s.dash || [], s.color)}${s.name}${s.runName ? ` <span style="color:#8795a3">${s.runName}</span>` : ""}: <b>${fmt(p[1], 3)}</b></div>`);
+  }
+  if (ui.hoverChart === id && rows.length) {
+    c.tip.innerHTML = `<div style="color:#8795a3">steps ${fmt(x, 0)}</div>` + rows.join("");
+    c.tip.style.display = "block";
+    const left = px + 14 + 260 > geo.W ? px - 14 - Math.min(c.tip.offsetWidth || 240, 320) : px + 14;
+    c.tip.style.left = Math.max(0, left) + "px"; c.tip.style.top = "30px";
+  } else c.tip.style.display = "none";
+}
+
+function drawAllCrosshairs() { for (const id in ui.charts) drawCrosshair(id); }
+
+function registerChart(id, opts) {
+  const canvas = document.getElementById(id), overlay = document.getElementById(id + "-ov"), tip = document.getElementById(id + "-tip");
+  ui.charts[id] = { canvas, overlay, tip, opts, series: [], geo: null };
   canvas.addEventListener("mousemove", ev => {
-    const c = canvas._chart; if (!c) return;
+    const geo = ui.charts[id].geo; if (!geo) return;
     const r = canvas.getBoundingClientRect(), mx = ev.clientX - r.left;
-    const x = c.x0 + (mx - c.pad.l) / (c.W - c.pad.l - c.pad.r) * (c.x1 - c.x0);
-    const rows = c.series.map((s, i) => {
-      if (!s.points.length) return "";
-      let best = s.points[0];
-      for (const p of s.points) if (Math.abs(p[0] - x) < Math.abs(best[0] - x)) best = p;
-      return `<div><span style="color:${s.color || COLORS[i % COLORS.length]}">■</span> ${s.name}: <b>${fmt(best[1], 3)}</b></div>`;
-    }).join("");
-    tip.innerHTML = `<div style="color:#8795a3">${c.opts.xname || "x"} ${c.opts.xfmt ? c.opts.xfmt(x) : fmt(x, 0)}</div>` + rows;
-    tip.style.display = "block"; tip.style.left = Math.min(mx + 14, c.W - 150) + "px"; tip.style.top = (ev.clientY - r.top + 20) + "px";
+    ui.hoverX = geo.x0 + (mx - geo.pad.l) / (geo.W - geo.pad.l - geo.pad.r) * (geo.x1 - geo.x0);
+    ui.hoverChart = id; drawAllCrosshairs();
   });
-  canvas.addEventListener("mouseleave", () => tip.style.display = "none");
+  canvas.addEventListener("mouseleave", () => { ui.hoverX = null; ui.hoverChart = null; drawAllCrosshairs(); });
 }
 
 // ---- data --------------------------------------------------------------------------------------
@@ -183,54 +261,85 @@ function renderRuns() {
   }).join("") || `<div class="empty">no runs</div>`;
   document.querySelectorAll(".run").forEach(el => el.onclick = ev => {
     if (ev.target.dataset.cmp) return;
-    state.selected = el.dataset.run; state.mediaKey = ""; refresh();
+    state.selected = el.dataset.run; state.mediaKey = ""; saveHash(); refresh();
   });
   document.querySelectorAll("[data-cmp]").forEach(el => el.onchange = () => {
-    el.checked ? state.compare.add(el.dataset.cmp) : state.compare.delete(el.dataset.cmp); refresh();
+    el.checked ? state.compare.add(el.dataset.cmp) : state.compare.delete(el.dataset.cmp); saveHash(); refresh();
   });
 }
 
-function chartBox(id, title, extra = "") {
-  return `<div class="chart"><h3>${title}<span>${extra}</span></h3><canvas id="${id}"></canvas><div class="tip" id="${id}-tip"></div></div>`;
+// Every chart: series = [source, key, name, color, transform?]; sources: ep (episodes), tr (trainer
+// epochs), br (bridge throughput), cal (value calibration, dots)
+const EP = (key, name, color) => ["ep", key, name, color];
+const TR = (key, name, color, f) => ["tr", key, name, color, f];
+const SECTIONS = [
+  ["Outcomes", [
+    ["c-win", "Win rate", "vs env steps", [EP("win_rate", "win rate", "#4cc38a")], { ymin: 0, ymax: 1 }],
+    ["c-out", "Outcomes", "win · draw (time limit) · loss",
+      [EP("win_rate", "win", "#4cc38a"), EP("draw_rate", "draw", "#e0a33a"), EP("loss_rate", "loss", "#e5534b")], { ymin: 0, ymax: 1 }],
+    ["c-ret", "Episode return", "", [EP("return", "return", "#e0a33a")], {}],
+    ["c-len", "Episode length", "game seconds", [EP("game_time", "game seconds", "#539bf5")], {}],
+  ]],
+  ["Behaviour", [
+    ["c-act", "Action mix", "share of unit-steps", [EP("act_noop", "noop", "#8795a3"), EP("act_stop", "stop", "#e0c33a"),
+      EP("act_move", "move", "#539bf5"), EP("act_attack", "attack", "#e5534b")], { ymin: 0, ymax: 1, empty: "no action statistics for this task/run" }],
+    ["c-tgt", "Targeting", "damage concentration: share hitting one unit per step",
+      [EP("combat_focus_dealt", "damage dealt on one enemy", "#e0a33a"), EP("combat_focus_taken", "damage taken on one unit", "#e5534b"),
+       EP("act_attack_weakest", "attack orders on the weakest", "#4cc38a"), EP("act_attack_invalid", "invalid attack orders", "#8795a3")],
+      { ymin: 0, ymax: 1, empty: "no combat statistics yet" }],
+    ["c-cmb", "Combat", "per episode, agent side", [EP("combat_dealt", "damage dealt (share of enemy HP)", "#4cc38a"),
+      EP("combat_taken", "damage taken (share of own HP)", "#e5534b")], { ymin: 0, ymax: 1, empty: "no combat statistics yet" }],
+    ["c-kill", "Kills · losses", "units per episode", [EP("combat_kills", "kills", "#4cc38a"), EP("combat_losses", "losses", "#e5534b")],
+      { ymin: 0, empty: "no combat statistics yet" }],
+  ]],
+  ["Learning", [
+    ["c-val", "Value calibration", "video episodes: V(s₀) vs discounted return",
+      [["cal", "value0", "predicted V(s₀)", "#e0a33a"], ["cal", "return0", "actual discounted return", "#539bf5"]],
+      { empty: "appears with the first replay video rendered after a checkpoint" }],
+    ["c-lpol", "Policy loss", "", [TR("loss/policy", "policy loss", "#e0a33a")], {}],
+    ["c-lval", "Value loss", "", [TR("loss/value", "value loss", "#539bf5")], {}],
+    ["c-lent", "Entropy", "sum over action heads", [TR("loss/entropy", "entropy", "#b083f0")], {}],
+    ["c-lkl", "Approx. KL", "per update", [TR("loss/kl", "kl", "#4cc38a")], { ymin: 0 }],
+    ["c-lclip", "Clip fraction", "", [TR("loss/clipfrac", "clip fraction", "#39c5cf")], { ymin: 0 }],
+  ]],
+  ["System", [
+    ["c-sps", "Throughput", "trainer SPS · game time vs real time",
+      [TR("SPS", "trainer SPS", "#e0a33a"), ["br", "game_x_realtime", "game × realtime", "#4cc38a"]], { ymin: 0 }],
+    ["c-perf", "Trainer time per epoch", "seconds", [TR("perf/rollout", "rollout", "#e0a33a"),
+      TR("perf/eval_env", "waiting for games", "#e5534b"), TR("perf/eval_model", "model forward", "#539bf5"),
+      TR("perf/train", "PPO update", "#4cc38a")], { ymin: 0 }],
+  ]],
+];
+
+function seriesPoints(d, src, key) {
+  if (src === "ep") return d.episodes.filter(e => e[key] !== undefined).map(e => [e.steps, e[key]]);
+  if (src === "tr") return d.train.filter(r => r[key] !== undefined).map(r => [r.agent_steps ?? r.steps, r[key]]);
+  if (src === "br") return d.bridge.map(b => [b.steps, b[key]]);
+  if (src === "cal") return d.calibration.map(c => [c.steps, c[key]]);
+  return [];
 }
 
 function renderMain() {
   const d = state.data[state.selected]; if (!d) return;
-  const info = d.info, tr = d.train, ep = d.episodes, last = tr[tr.length - 1] || {};
+  const info = d.info, tr = d.train, last = tr[tr.length - 1] || {};
   const run = state.runs.find(r => r.name === state.selected) || {}, s = run.summary || {};
   const bridge = d.bridge[d.bridge.length - 1] || {};
   const elapsed = (info.finished || Date.now() / 1000) - (info.started || info.created);
   const progress = Math.min(1, (last.agent_steps || 0) / info.timesteps);
   const main = document.getElementById("main");
-  const firstRender = main.dataset.run !== state.selected;
-  if (firstRender) {
+  if (main.dataset.run !== state.selected) {
     main.dataset.run = state.selected;
+    ui.charts = {};
+    const box = ([id, title, sub]) => `<div class="chart"><h3>${title}<span>${sub}</span></h3><div class="plot"><canvas id="${id}"></canvas><canvas class="overlay" id="${id}-ov"></canvas><div class="tip" id="${id}-tip"></div></div></div>`;
     main.innerHTML = `
       <div class="title"><h2>${info.name}</h2>${badge(info.status)}<span class="desc">${info.description || ""}</span>${info.sweep ? `<span class="desc" style="color:var(--accent)">sweep ${info.sweep.group} ${info.sweep.index}/${info.sweep.of}: ${info.sweep.options || "base options"}</span>` : ""}</div>
       <div class="cards" id="cards"></div>
-      <div class="grid">
-        <h4>Outcomes</h4>
-        ${chartBox("c-win", "Win rate", `rolling ${d.episode_window} episodes · vs env steps`)}
-        ${chartBox("c-out", "Outcomes", "win · draw (time limit) · loss")}
-        ${chartBox("c-ret", "Episode return", "rolling mean")}
-        ${chartBox("c-len", "Episode length", "game seconds")}
-        <h4>Behaviour</h4>
-        ${chartBox("c-act", "Action mix", "share of unit-steps")}
-        ${chartBox("c-tgt", "Targeting", "of attack orders")}
-        ${chartBox("c-cmb", "Combat", "per episode, agent side")}
-        ${chartBox("c-kill", "Kills · losses", "units per episode")}
-        <h4>Learning</h4>
-        ${chartBox("c-val", "Value calibration", "video episodes: V(s₀) vs discounted return")}
-        ${chartBox("c-loss", "PPO losses", "policy · value · kl")}
-        ${chartBox("c-ent", "Entropy · clip fraction", "")}
-        <h4>System</h4>
-        ${chartBox("c-sps", "Throughput", "trainer SPS · game time vs real time")}
-        ${chartBox("c-perf", "Trainer time per epoch", "seconds: rollout (env + model) · train")}
-      </div>
+      <div class="legend" id="legend"></div>
+      <div class="grid">${SECTIONS.map(([name, charts]) => `<h4>${name}</h4>` + charts.map(box).join("")).join("")}</div>
       <section><h3>Replays &amp; renders</h3><div class="media" id="media"></div></section>
       <section><h3>Recent episodes</h3><div id="episodes"></div></section>
       <section><h3>Run</h3><pre class="cmd" id="cmd"></pre></section>`;
-    ["c-win", "c-out", "c-ret", "c-len", "c-act", "c-tgt", "c-cmb", "c-kill", "c-val", "c-loss", "c-ent", "c-sps", "c-perf"].forEach(id => attachTip(document.getElementById(id), document.getElementById(id + "-tip")));
+    for (const [, charts] of SECTIONS) for (const [id, , , , opts] of charts) registerChart(id, opts);
   }
   document.getElementById("cards").innerHTML = [
     ["Status", `${info.status}`, `<div class="progress"><div style="width:${(100 * progress).toFixed(1)}%"></div></div>`],
@@ -245,48 +354,27 @@ function renderMain() {
     ["GPU", last["util/gpu_percent"] !== undefined ? `${fmt(last["util/gpu_percent"], 0)}% <small>${fmt(last["util/vram_used_gb"], 1)} GB</small>` : "–"],
   ].map(([k, v, x = ""]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div>${x}</div>`).join("");
 
-  const xs = { xname: "steps" };
-  const cmpNames = [...state.compare].filter(n => n !== state.selected && state.data[n]);
-  const epSeries = (key, name, color) => [
-    { name: name || state.selected, points: ep.map(e => [e.steps, e[key]]), color: color || COLORS[0], width: 2 },
-    ...cmpNames.map((n, i) => ({ name: n, points: state.data[n].episodes.map(e => [e.steps, e[key]]), color: COLORS[(i + 1) % COLORS.length] })),
-  ];
-  lineChart(document.getElementById("c-win"), epSeries("win_rate"), { ymin: 0, ymax: 1, ...xs });
-  lineChart(document.getElementById("c-ret"), epSeries("return"), xs);
-  lineChart(document.getElementById("c-len"), epSeries("game_time"), xs);
-  const E = (key, name, color, extra = {}) => ({ name, color, points: ep.filter(e => e[key] !== undefined).map(e => [e.steps, e[key]]), ...extra });
-  lineChart(document.getElementById("c-out"), [E("win_rate", "win", "#4cc38a"), E("draw_rate", "draw", "#e0a33a"),
-    E("loss_rate", "loss", "#e5534b")], { ymin: 0, ymax: 1, ...xs });
-  lineChart(document.getElementById("c-act"), [E("act_noop", "noop", "#8795a3"), E("act_stop", "stop", "#e0c33a"),
-    E("act_move", "move", "#539bf5"), E("act_attack", "attack", "#e5534b")],
-    { ymin: 0, ymax: 1, empty: "no action statistics for this task/run", ...xs });
-  lineChart(document.getElementById("c-tgt"), [E("act_focus_fire", "focus fire (same target as the others)", "#e0a33a"),
-    E("act_attack_weakest", "on the weakest enemy", "#4cc38a"), E("act_attack_invalid", "invalid target (ignored)", "#e5534b")],
-    { ymin: 0, ymax: 1, empty: "no attack statistics yet", ...xs });
-  lineChart(document.getElementById("c-cmb"), [E("combat_dealt", "damage dealt (share of enemy HP)", "#4cc38a"),
-    E("combat_taken", "damage taken (share of own HP)", "#e5534b")], { ymin: 0, ymax: 1, empty: "no combat statistics yet", ...xs });
-  lineChart(document.getElementById("c-kill"), [E("combat_kills", "kills", "#4cc38a"), E("combat_losses", "losses", "#e5534b")],
-    { ymin: 0, empty: "no combat statistics yet", ...xs });
-  lineChart(document.getElementById("c-val"), [
-    { name: "predicted V(s₀)", points: d.calibration.map(c => [c.steps, c.value0]), color: "#e0a33a", dots: true },
-    { name: "actual discounted return", points: d.calibration.map(c => [c.steps, c.return0]), color: "#539bf5", dots: true }],
-    { empty: "appears with the first replay video rendered after a checkpoint", ...xs });
-  const T = key => tr.filter(r => r[key] !== undefined).map(r => [r.agent_steps, r[key]]);
-  lineChart(document.getElementById("c-loss"), [
-    { name: "policy", points: T("loss/policy"), color: COLORS[0] },
-    { name: "value", points: T("loss/value"), color: COLORS[1] },
-    { name: "kl ×100", points: T("loss/kl").map(p => [p[0], p[1] * 100]), color: COLORS[2] }], xs);
-  lineChart(document.getElementById("c-ent"), [
-    { name: "entropy", points: T("loss/entropy"), color: COLORS[4] },
-    { name: "clipfrac", points: T("loss/clipfrac"), color: COLORS[5] }], xs);
-  lineChart(document.getElementById("c-sps"), [
-    { name: "trainer SPS", points: T("SPS"), color: COLORS[0] },
-    { name: "game × realtime", points: d.bridge.map(b => [b.steps, b.game_x_realtime]), color: COLORS[2] }], xs);
-  lineChart(document.getElementById("c-perf"), [
-    { name: "rollout", points: T("perf/rollout"), color: COLORS[0] },
-    { name: "  env (waiting for games)", points: T("perf/eval_env"), color: COLORS[3] },
-    { name: "  model forward", points: T("perf/eval_model"), color: COLORS[1] },
-    { name: "train (PPO update)", points: T("perf/train"), color: COLORS[2] }], { ymin: 0, ...xs });
+  // runs shown: the selected one (solid) and the compared ones (other line styles)
+  const shown = [state.selected, ...[...state.compare].filter(n => n !== state.selected && state.data[n])];
+  const maxStep = Math.max(1, ...shown.map(n => { const t = state.data[n].train; return t.length ? (t[t.length - 1].agent_steps ?? 0) : 0; }),
+                           ...shown.map(n => { const e = state.data[n].episodes; return e.length ? e[e.length - 1].steps : 0; }));
+  ui.xrange = [0, maxStep];
+  document.getElementById("legend").innerHTML = shown.length > 1
+    ? shown.map((n, i) => `<span>${dashSvg(DASHES[i % DASHES.length])}${n}${state.data[n]?.info?.sweep ? ` <span style="color:var(--accent)">${state.data[n].info.sweep.options}</span>` : ""}</span>`).join("")
+    : "";
+  for (const [, charts] of SECTIONS) {
+    for (const [id, , , defs] of charts) {
+      const c = ui.charts[id]; if (!c) continue;
+      c.series = [];
+      shown.forEach((n, ri) => {
+        for (const [src, key, name, color] of defs) {
+          c.series.push({ name, color, run: ri, runName: shown.length > 1 ? n : "", dash: DASHES[ri % DASHES.length],
+                          dots: src === "cal", points: seriesPoints(state.data[n], src, key) });
+        }
+      });
+      drawChart(id);
+    }
+  }
 
   const key = d.media.map(m => m.file).join("|");
   if (key !== state.mediaKey) {  // only rebuild the gallery when it changed (keeps videos playing)
@@ -301,15 +389,22 @@ function renderMain() {
   }
   const pct = v => v === undefined ? "–" : (100 * v).toFixed(0) + "%";
   const mix = a => a ? ["noop", "stop", "move", "attack"].filter(k => a[k] !== undefined).map(k => `${k} ${pct(a[k])}`).join(" · ") : "–";
-  document.getElementById("episodes").innerHTML = d.recent_episodes.length ? `<table><tr><th>#</th><th>game</th><th>outcome</th><th>return</th><th>length</th><th>game time</th><th>dealt / taken</th><th>kills / losses</th><th>actions</th><th>focus</th><th>when</th></tr>` +
-    d.recent_episodes.map(e => { const c = e.combat || {}, a = e.act || {};
-      return `<tr><td>${e.episode}</td><td>${e.env}</td><td class="${e.outcome > 0 ? "win" : e.outcome < 0 ? "loss" : ""}">${e.outcome > 0 ? "win" : e.outcome < 0 ? "loss" : "draw"}</td><td>${fmt(e.return, 3)}</td><td>${e.length}</td><td>${e.game_time ? e.game_time.toFixed(1) + "s" : "–"}</td><td>${pct(c.dealt)} / ${pct(c.taken)}</td><td>${c.kills ?? "–"} / ${c.losses ?? "–"}</td><td>${mix(e.act)}</td><td>${pct(a.focus_fire)}</td><td>${ago(e.time)}</td></tr>`; }).join("") + `</table>` : `<div class="empty">no episodes yet</div>`;
+  document.getElementById("episodes").innerHTML = d.recent_episodes.length ? `<table><tr><th>#</th><th>game</th><th>outcome</th><th>return</th><th>length</th><th>game time</th><th>dealt / taken</th><th>kills / losses</th><th>actions</th><th>focus dealt / taken</th><th>when</th></tr>` +
+    d.recent_episodes.map(e => { const c = e.combat || {};
+      return `<tr><td>${e.episode}</td><td>${e.env}</td><td class="${e.outcome > 0 ? "win" : e.outcome < 0 ? "loss" : ""}">${e.outcome > 0 ? "win" : e.outcome < 0 ? "loss" : "draw"}</td><td>${fmt(e.return, 3)}</td><td>${e.length}</td><td>${e.game_time ? e.game_time.toFixed(1) + "s" : "–"}</td><td>${pct(c.dealt)} / ${pct(c.taken)}</td><td>${c.kills ?? "–"} / ${c.losses ?? "–"}</td><td>${mix(e.act)}</td><td>${pct(c.focus_dealt)} / ${pct(c.focus_taken)}</td><td>${ago(e.time)}</td></tr>`; }).join("") + `</table>` : `<div class="empty">no episodes yet</div>`;
   document.getElementById("cmd").textContent = (info.command || []).join(" ");
 }
 
+const slider = document.getElementById("smooth");
+slider.value = ui.smooth; document.getElementById("smoothv").textContent = (+ui.smooth).toFixed(2);
+slider.addEventListener("input", () => {
+  ui.smooth = parseFloat(slider.value); document.getElementById("smoothv").textContent = ui.smooth.toFixed(2);
+  try { localStorage.setItem("smooth", ui.smooth); } catch (e) {}
+  for (const id in ui.charts) drawChart(id);
+});
 refresh();
 setInterval(() => { if (document.getElementById("auto").checked) refresh(); }, 5000);
-window.addEventListener("resize", () => state.selected && renderMain());
+window.addEventListener("resize", () => { for (const id in ui.charts) drawChart(id); });
 </script>
 </body>
 </html>
