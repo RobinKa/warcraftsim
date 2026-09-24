@@ -284,6 +284,15 @@ static int __fastcall GameUpdate_hook(void *self, void *edx, DWORD now) {
         BYTE *game = (BYTE *)self;
         *(DWORD *)(game + GAME_PENDING_MS) = (DWORD)t;
         now = *(DWORD *)(game + GAME_PREV_NOW); /* no elapsed time: the lag controller stays out */
+    } else if (self) {
+        /* Frame-stepped clock (video): a frame never advances the game by more than one frame
+         * step. Otherwise time that passed before capture started (a replay counts its loading
+         * time) is simulated in the first frame and the video skips the first seconds. */
+        double step = clock_frame_seconds();
+        DWORD prev = *(DWORD *)((BYTE *)self + GAME_PREV_NOW);
+        DWORD max_ms = (DWORD)(step * 1000.0 + 0.5);
+        if (step > 0 && prev && now - prev > max_ms && now - prev < 0x80000000u)
+            now = prev + max_ms;
     }
     if (!g_profile)
         return GameUpdate_orig(self, edx, now);

@@ -120,8 +120,11 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
     out.parent.mkdir(parents=True, exist_ok=True)
     # a real-time clock while the map loads: a fast one leaves a backlog that the engine simulates
     # in one frame at the start (the first ~4 s of game time would never be rendered)
-    setup = GameSetup(**{**setup.__dict__, "warm_spare": False, "speed": 1.0, "window": (1024, 768),
-                         "audio": audio, "music_volume": music_volume})
+    # replays count the map load (one ~6 s engine update) as elapsed time and then race through that
+    # much game time without drawing (videos started ~4 s in): load on an almost stopped clock
+    # (0.03x: starts ~0.5 s in; 0.01x: the load never finishes)
+    setup = GameSetup(**{**setup.__dict__, "warm_spare": False, "speed": 1.0, "launch_speed": 0.03,
+                         "window": (1024, 768), "audio": audio, "music_volume": music_volume})
     # the pointer must be off the game window from the start: replays show a label on the unit under it
     xvfb = Xvfb(*setup.window)
     _park_pointer(xvfb.display)

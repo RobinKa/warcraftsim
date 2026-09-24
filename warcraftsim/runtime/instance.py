@@ -126,6 +126,8 @@ class GameSetup:
     # Much higher than needed only makes the game's background threads wake up (and hit the
     # wineserver) more often; lower than the reachable rate throttles the game.
     speed: float | None = None
+    # clock speed until the first observation (map loading); see _launch_once
+    launch_speed: float = 1.0
     turbo_ms: int = 0  # >0: simulate up to this much game time per frame, bypassing turn pacing
     # Shortest real wait (ms) the virtual clock turns a timed wait into. Game threads that poll with
     # 100-1000 ms timeouts would otherwise spin (timeouts / clock speed round to 0), each wait a
@@ -412,7 +414,11 @@ class GameInstance:
         self.inst_dir.mkdir(parents=True, exist_ok=True)
         log_path = self.inst_dir / "shim.log"
         env = wine.wine_env(self.prefix, DISPLAY=self._display, W3SIM_PORT=str(port),
-                            W3SIM_SPEED=str(self._speed), W3SIM_TURBO_MS=str(self.setup.turbo_ms),
+                            # real time until the game starts: a fast clock during loading becomes a
+                            # backlog the engine simulates in one frame at the start (in replays too:
+                            # videos then skip their first seconds); the step speed is sent with the
+                            # first GO
+                            W3SIM_SPEED=str(self.setup.launch_speed), W3SIM_TURBO_MS=str(self.setup.turbo_ms),
                             W3SIM_WAIT_FLOOR=str(self.setup.wait_floor_ms),
                             W3SIM_AUDIO="1" if self.setup.audio else "0",
                             W3SIM_LOG=_winpath(log_path))
@@ -446,6 +452,7 @@ class GameInstance:
         self._proc_episode = -1
         self._proc_steps = 0
         self.episode += 1
+        self._pending_speed = self._speed
         return self._await_observation(new_episode=True)
 
     # ---- stepping -------------------------------------------------------------------------
