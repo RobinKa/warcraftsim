@@ -172,6 +172,10 @@ def _micro_mask(env) -> list[np.ndarray]:
                 m[base + offs[3]:base + offs[4]] = ok
             else:
                 m[base + 4] = 0  # kind "cast"
+        if getattr(env, "tactical", False) and env.retreating(u):
+            m[base:base + heads[0]] = 0  # a committed retreat goes on: only noop (= continue)
+            m[base] = 1
+            continue
         if getattr(env, "tactical", False):
             m[base + 2] = 0  # no plain moves
             hist = env.encoder._hp.get(u.id) if env.encoder is not None else None

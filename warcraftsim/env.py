@@ -330,6 +330,9 @@ def _issue(view, attacking: dict[int, int], unit: Unit, kind: int, direction: in
 # within its attack range (+ REACH); rules without a candidate fall back to the nearest enemy.
 SEMANTIC_TARGETS = ("weak_in_range", "nearest", "weakest", "hero", "threat")
 REACH = 90.0  # attack ranges count from the attacker's edge, positions are centers
+# tactical mode: a retreat goes on this long (game seconds), re-ordered every step: pulling a unit
+# out of a fight pays only if it stays out for a while, which step-by-step exploration rarely does
+RETREAT_COMMIT = 1.5
 
 
 class MicroEnv(Wc3Env):
@@ -414,6 +417,7 @@ class MicroEnv(Wc3Env):
             from .data.abilities import ability_order_strings
             self._cast_orders = {self.game._orders[o] for o in ability_order_strings() if o in self.game._orders}
         self._attacking = {}
+        self._retreat_until: dict[int, float] = {}  # tactical: unit -> game time its retreat ends
         self._slots = ([], [])
         own, enemy = self._split(obs)
         own, enemy = [u for u in own if u], [u for u in enemy if u]
@@ -558,7 +562,12 @@ class MicroEnv(Wc3Env):
             if unit is None:
                 continue
             kind, direction, target = (int(v) for v in action[i][:3])
+            if self.tactical and self.retreating(unit):
+                self._retreat(unit)  # a committed retreat goes on (the mask allows only noop)
+                continue
             if kind == 1 and self.targeting == "semantic":
+                if self.tactical:
+                    self._retreat_until[unit.id] = self._now() + RETREAT_COMMIT
                 self._retreat(unit)
                 continue
             if kind == 4:
@@ -585,6 +594,14 @@ class MicroEnv(Wc3Env):
                 cmd = self.cast_command(unit, choice[0], choice[1], self._enemy, self._own)
                 if cmd is not None:
                     self.game.issue(cmd)
+
+    def _now(self) -> float:
+        obs = self.game.obs
+        return obs.game_time if obs is not None else 0.0
+
+    def retreating(self, unit: Unit) -> bool:
+        """Tactical mode: whether `unit` is in a committed retreat."""
+        return self._now() < getattr(self, "_retreat_until", {}).get(unit.id, -1.0)
 
     def _retreat(self, unit: Unit) -> None:
         live = [e for e in self._enemy if e is not None]
