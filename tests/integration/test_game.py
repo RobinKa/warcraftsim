@@ -317,3 +317,27 @@ def test_replay_of_a_respawned_episode(game_dir, tmp_path):
             played[obs.seq] = sorted((u.id, u.x, u.y, u.hp) for u in obs.units if u.alive)
     assert len(live) > 10 and all(played.get(k) == v for k, v in live.items() if k > 0)
     assert obs.game_over
+
+
+def test_mirror_selfplay_env(game_dir):
+    """Both sides of MirrorSelfPlayEnv act with the full action set: zero-sum rewards, opposite
+    outcomes, each side's masks allow what the casting script does."""
+    from warcraftsim.agents.micro import micro_action
+    from warcraftsim.puffer.tasks import get_task
+
+    task = get_task("mirror_mix_abil_self_hp400")
+    env = task.make_env("it_selfplay")
+    env.setup.window, env.setup.step_seconds = (320, 240), 0.5
+    try:
+        task.reset(env)
+        states, done, total = [{}, {}], False, [0.0, 0.0]
+        while not done:
+            acts = [micro_action("castnoop", env.sides[a], states[a], 5).ravel() for a in range(2)]
+            for a, m in enumerate(task.action_mask(env)):
+                m, act = m.reshape(5, -1), acts[a].reshape(5, 4)
+                assert all(m[i, act[i, 0]] for i in range(5))
+            _, rewards, done, _, outcomes = task.step(env, acts)
+            total = [t + r for t, r in zip(total, rewards)]
+        assert abs(total[0] + total[1]) < 1e-6 and outcomes[0] == -outcomes[1]
+    finally:
+        env.close()
