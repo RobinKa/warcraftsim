@@ -376,8 +376,9 @@ class MicroEnv(Wc3Env):
             self.kind_names += ("cast",)
         self.group = 4 if abilities else 3  # action heads per unit
         self.relational = relational
-        # tactical action masks (semantic targeting): retreat only for a unit that is losing hit
-        # points, no plain moves; exploring either elsewhere costs a lot and teaches little
+        # tactical action masks (semantic targeting): retreat only for a hurt unit (below half its
+        # hit points) that is losing hit points, no plain moves; exploring either elsewhere costs
+        # a lot and teaches little
         self.tactical = tactical
         feat = (UNIT_FEATURES + (ABILITY_FEATURES * HERO_ABILITY_SLOTS if abilities else 0)
                 + (RELATIONAL_FEATURES if relational else 0))

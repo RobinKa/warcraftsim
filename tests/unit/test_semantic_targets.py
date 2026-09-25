@@ -151,9 +151,9 @@ def test_tactical_mask(monkeypatch):
     env, _ = _env(monkeypatch, [_unit(10, "hfoo", 400, 300)])
     env.abilities, env.max_own, env.max_enemy, env.tactical = False, 2, 1, True
     env.action_space = spaces.MultiDiscrete(np.tile([4, 8, 5], (2, 1)))
-    hurt, fine = _unit(1, "hfoo", 0, 300, owner=0), _unit(2, "hfoo", 0, 500, owner=0)
+    hurt, fine = _unit(1, "hfoo", 0, 200, owner=0), _unit(2, "hfoo", 0, 400, owner=0)  # max 500
     env._own = [hurt, fine]
-    env.encoder = SimpleNamespace(_hp={1: [420, 380, 330, 300], 2: [500, 500, 500, 500]})
+    env.encoder = SimpleNamespace(_hp={1: [320, 280, 230, 200], 2: [480, 450, 420, 400]})  # both hit
     (m,) = _micro_mask(env)
-    assert m[:4].tolist() == [1, 1, 0, 1]  # losing hit points: may retreat; never a plain move
-    assert m[17:21].tolist() == [1, 0, 0, 1]
+    assert m[:4].tolist() == [1, 1, 0, 1]  # hurt and losing hit points: may retreat; never a plain move
+    assert m[17:21].tolist() == [1, 0, 0, 1]  # losing hit points but above half: no retreat

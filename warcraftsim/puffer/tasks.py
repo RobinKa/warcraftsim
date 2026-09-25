@@ -144,6 +144,11 @@ def _micro_labels(max_units: int, semantic: bool = False, abilities: bool = Fals
                 group_size=3, detail_heads={2: 1, 3: 2}, action_stats=_micro_action_stats, action_mask=_micro_mask)
 
 
+# tactical masks: a retreat is possible below this share of hit points (while losing them); at any
+# hit points, random retreats of healthy units cost more than the useful ones teach
+TACTICAL_RETREAT_HP = 0.5
+
+
 def _micro_mask(env) -> list[np.ndarray]:
     """MicroEnv action masks: attacks on empty enemy slots (slot targeting); casts only by units
     with an ability they can cast now, and only those ability slots."""
@@ -170,8 +175,8 @@ def _micro_mask(env) -> list[np.ndarray]:
         if getattr(env, "tactical", False):
             m[base + 2] = 0  # no plain moves
             hist = env.encoder._hp.get(u.id) if env.encoder is not None else None
-            if not hist or u.hp >= hist[0]:
-                m[base + 1] = 0  # retreat: only while losing hit points (over the last HP_HISTORY steps)
+            if not hist or u.hp >= hist[0] or u.hp > TACTICAL_RETREAT_HP * u.max_hp:
+                m[base + 1] = 0  # retreat: only while losing hit points (over HP_HISTORY steps) and hurt
     return [m]
 
 
