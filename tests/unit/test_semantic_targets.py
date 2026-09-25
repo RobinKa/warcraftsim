@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import numpy as np
+
 import warcraftsim.env as env_mod
 from warcraftsim.data.objects import CombatStats
 from warcraftsim.env import SEMANTIC_TARGETS, MicroEnv
@@ -124,3 +126,18 @@ def test_micro_action_mask(monkeypatch):
     assert hero[:5].tolist() == [1, 1, 1, 1, 1] and hero[18:].tolist() == [0, 1, 0, 0]
     assert foot[:5].tolist() == [1, 1, 1, 1, 0] and foot[18:].all()  # no abilities: no cast
     assert empty.all() and hero[5:18].all()
+
+
+def test_relational_features(monkeypatch):
+    from warcraftsim.env import RELATIONAL_FEATURES, UnitEncoder
+
+    monkeypatch.setattr(env_mod, "combat_stats", lambda: STATS)
+    enc = UnitEncoder.__new__(UnitEncoder)
+    enc.stats, enc.features, enc.relational = STATS, RELATIONAL_FEATURES, True
+    f = np.zeros(RELATIONAL_FEATURES, np.float32)
+    me = _unit(1, "hfoo", 0, 50, owner=0)  # 50 hp; a footman next to it and a rifleman 350 away
+    buddy = _unit(2, "hfoo", 0, 400, owner=0)
+    foes = [_unit(10, "hfoo", 150, 300), None, _unit(11, "hrif", 350, 300)]
+    enc._encode_relations(me, [me, buddy, None], foes, f)
+    incoming = STATS["hfoo"].dps + STATS["hrif"].dps  # both reach it
+    assert np.allclose(f, [0.15, 1 / 5, 2 / 5, 1.0, 50 / incoming / 20])

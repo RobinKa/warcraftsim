@@ -33,6 +33,7 @@ from .scenario import Scenario
 
 UNIT_FEATURES = 32
 ABILITY_FEATURES = 10  # per hero ability slot, after the UNIT_FEATURES (UnitEncoder ability_slots)
+RELATIONAL_FEATURES = 5  # UnitEncoder relational: the unit against the opposing side (last)
 PLAYER_FEATURES = 8
 _N_FLAGS = 12
 
@@ -54,7 +55,8 @@ class UnitEncoder:
 
     HP_HISTORY = 4  # steps of hit point history per unit (1 s at 0.25 s steps)
 
-    def __init__(self, player: int, origin: tuple[float, float], extent: float, ability_slots: int = 0):
+    def __init__(self, player: int, origin: tuple[float, float], extent: float, ability_slots: int = 0,
+                 relational: bool = False):
         self.player = player
         self.origin = origin
         self.extent = extent
@@ -63,10 +65,14 @@ class UnitEncoder:
         self._hp: dict[int, list[int]] = {}  # unit -> hit points of the last HP_HISTORY encodes
         # heroes' abilities: per slot ABILITY_FEATURES after the unit features
         self.ability_slots = ability_slots
-        self.features = UNIT_FEATURES + ABILITY_FEATURES * ability_slots
+        # relational features: what an MLP otherwise has to work out from positions and types
+        self.relational = relational
+        self.features = UNIT_FEATURES + ABILITY_FEATURES * ability_slots + (RELATIONAL_FEATURES if relational else 0)
 
     def encode(self, units: Sequence[Unit], obs: Observation, orders: dict[str, int], max_units: int,
-               allies: set[int] = frozenset()) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+               allies: set[int] = frozenset(), opponents: Sequence[Unit | None] = ()
+               ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """`opponents`: the other side's units, for the relational features."""
         feats = np.zeros((max_units, self.features), dtype=np.float32)
         types = np.zeros(max_units, dtype=np.int64)
         ids = np.zeros(max_units, dtype=np.int64)
@@ -112,6 +118,8 @@ class UnitEncoder:
                 f[31] = float(st.hits_air)
             if self.ability_slots and u.abilities:
                 self._encode_abilities(u, f)
+            if self.relational:
+                self._encode_relations(u, units, opponents, f)
             types[i] = self.vocab.get(u.type, 0)
             ids[i] = u.id
             mask[i] = True
@@ -122,6 +130,27 @@ class UnitEncoder:
             hist.append(u.hp)
             del hist[0]
         return feats, types, ids, mask
+
+    def _encode_relations(self, u: Unit, side: Sequence[Unit | None], opponents: Sequence[Unit | None],
+                          f: np.ndarray) -> None:
+        """Distance to the nearest opponent, opponents within the unit's attack range, opponents
+        that have it within theirs, whether it is its side's weakest unit (focus fire picks it),
+        and the seconds it would survive the damage of those opponents (the reason to pull back)."""
+        o = self.features - RELATIONAL_FEATURES
+        foes = [e for e in opponents if e is not None]
+        if not foes:
+            return
+        st = self.stats.get(u.type)
+        reach = (st.range if st else 100.0) + REACH
+        dist = [e.dist(u.x, u.y) for e in foes]
+        threats = [e for e, d in zip(foes, dist)
+                   if d <= ((s.range if (s := self.stats.get(e.type)) else 100.0) + REACH)]
+        incoming = sum(s.dps for e in threats if (s := self.stats.get(e.type)) is not None)
+        f[o] = min(min(dist) / 1000.0, 2.0)
+        f[o + 1] = sum(d <= reach for d in dist) / 5.0
+        f[o + 2] = len(threats) / 5.0
+        f[o + 3] = float(u.hp <= min(v.hp for v in side if v is not None))
+        f[o + 4] = min(u.hp / incoming / 20.0, 1.0) if incoming > 0 else 1.0
 
     def _encode_abilities(self, u: Unit, f: np.ndarray) -> None:
         """Per learned ability slot: level, ready to cast, cooldown left, how it is cast (unit /
@@ -323,7 +352,8 @@ class MicroEnv(Wc3Env):
 
     def __init__(self, scenario: Scenario | None = None, max_own: int = 12, max_enemy: int = 12,
                  move_distance: float = 250.0, opponent: str = "scripted", name: str = "micro0",
-                 targeting: str = "slot", abilities: bool = False, opponent_casts: bool | None = None, **kw):
+                 targeting: str = "slot", abilities: bool = False, opponent_casts: bool | None = None,
+                 relational: bool = False, **kw):
         from .runtime.instance import Agent, Idle, Scripted
 
         self.scenario = scenario or Scenario.skirmish(["hfoo"] * 4, ["hfoo"] * 4)
@@ -344,7 +374,9 @@ class MicroEnv(Wc3Env):
         if abilities:
             self.kind_names += ("cast",)
         self.group = 4 if abilities else 3  # action heads per unit
-        feat = UNIT_FEATURES + (ABILITY_FEATURES * HERO_ABILITY_SLOTS if abilities else 0)
+        self.relational = relational
+        feat = (UNIT_FEATURES + (ABILITY_FEATURES * HERO_ABILITY_SLOTS if abilities else 0)
+                + (RELATIONAL_FEATURES if relational else 0))
         self.observation_space = spaces.Dict({
             "own": spaces.Box(-np.inf, np.inf, (max_own, feat), np.float32),
             "own_types": spaces.Box(0, 10_000, (max_own,), np.int64),
@@ -371,7 +403,8 @@ class MicroEnv(Wc3Env):
     def _on_reset(self, obs: Observation) -> None:
         cx, cy = self.scenario.resolved_center()
         self.encoder = UnitEncoder(self.player, (cx, cy), 1500.0,
-                                   ability_slots=HERO_ABILITY_SLOTS if self.abilities else 0)
+                                   ability_slots=HERO_ABILITY_SLOTS if self.abilities else 0,
+                                   relational=self.relational)
         if self.abilities:
             from .data.abilities import ability_order_strings
             self._cast_orders = {self.game._orders[o] for o in ability_order_strings() if o in self.game._orders}
@@ -385,8 +418,8 @@ class MicroEnv(Wc3Env):
     def _encode(self, obs: Observation) -> dict[str, np.ndarray]:
         self._own, self._enemy = self._split(obs)
         orders = self.game._orders
-        of, ot, _, om = self.encoder.encode(self._own, obs, orders, self.max_own)
-        ef, et, _, em = self.encoder.encode(self._enemy, obs, orders, self.max_enemy)
+        of, ot, _, om = self.encoder.encode(self._own, obs, orders, self.max_own, opponents=self._enemy)
+        ef, et, _, em = self.encoder.encode(self._enemy, obs, orders, self.max_enemy, opponents=self._own)
         return {"own": of, "own_types": ot, "own_mask": om, "enemy": ef, "enemy_types": et, "enemy_mask": em,
                 "time": np.array([obs.game_time / max(self.scenario.max_game_seconds, 1)], np.float32)}
 

@@ -18,7 +18,8 @@ from typing import Any, Callable
 
 import numpy as np
 
-from ..env import ABILITY_FEATURES, SEMANTIC_TARGETS, UNIT_FEATURES, MicroEnv, MicroSelfPlayEnv, NavigateEnv
+from ..env import (ABILITY_FEATURES, RELATIONAL_FEATURES, SEMANTIC_TARGETS, UNIT_FEATURES, MicroEnv,
+                   MicroSelfPlayEnv, NavigateEnv)
 from ..protocol import HERO_ABILITY_SLOTS
 from ..scenario import Scenario
 
@@ -115,9 +116,10 @@ def _nav_task(distance: float = 1200.0) -> Task:
 _FEAT = UNIT_FEATURES
 
 
-def _micro_sizes(max_units: int, targets: int | None = None, abilities: bool = False) -> tuple[int, tuple[int, ...]]:
+def _micro_sizes(max_units: int, targets: int | None = None, abilities: bool = False,
+                 relational: bool = False) -> tuple[int, tuple[int, ...]]:
     k = max_units
-    feat = _FEAT + (ABILITY_FEATURES * HERO_ABILITY_SLOTS if abilities else 0)
+    feat = _FEAT + (ABILITY_FEATURES * HERO_ABILITY_SLOTS if abilities else 0) + (RELATIONAL_FEATURES if relational else 0)
     heads = (5, 8, targets or k, HERO_ABILITY_SLOTS) if abilities else (4, 8, targets or k)
     return k * feat + k + k * feat + k + 1, heads * k
 
@@ -333,17 +335,17 @@ def mirror_spawner(units: tuple[int, int] = (2, 4), heroes: int = 1, hero_levels
 
 
 def _mirror_task(name: str = "mirror_mix", max_units: int = 5, hp_permille: int = 250,
-                 targeting: str = "slot", abilities: bool = False) -> Task:
+                 targeting: str = "slot", abilities: bool = False, relational: bool = False) -> Task:
     # fights last longer with more hit points: 45 s at 25%, 70 s at 50%
     sc = Scenario(units=(), victory="elimination", max_game_seconds=round(20 + hp_permille / 10), name=name)
     semantic = targeting == "semantic"
-    obs_size, act_sizes = _micro_sizes(max_units, len(SEMANTIC_TARGETS) if semantic else None, abilities)
+    obs_size, act_sizes = _micro_sizes(max_units, len(SEMANTIC_TARGETS) if semantic else None, abilities, relational)
     spawner = mirror_spawner(units=(2, max_units - 1), hp_permille=hp_permille, skills=abilities)
     group = 4 if abilities else 3
 
     def make_env(inst: str):
         env = MicroEnv(sc, max_own=max_units, max_enemy=max_units, name=inst, targeting=targeting,
-                       abilities=abilities)
+                       abilities=abilities, relational=relational)
         env.spawner = spawner
         return env
 
@@ -353,6 +355,8 @@ def _mirror_task(name: str = "mirror_mix", max_units: int = 5, hp_permille: int 
                  " ability slot head and the target rules; the scripted opponent casts too.")
     elif semantic:
         extra = " Attack targets are rules (weakest in range, nearest, weakest, hero, threat); stop is retreat."
+    if relational:
+        extra += " Units also see relational features (nearest opponent, in range, threatened, weakest, time to die)."
     return Task(
         name=name, obs_size=obs_size, act_sizes=act_sizes, make_env=make_env,
         flatten=_micro_flatten, to_action=lambda a: np.asarray(a, dtype=np.int64).reshape(max_units, group),
@@ -378,14 +382,14 @@ def _footmen_task(name: str) -> Task | None:
 
 
 def _mirror_variant(name: str) -> Task | None:
-    """mirror_mix[_sem][_abil][_hp{P}]: mirror_mix with semantic attack targets (MicroEnv
+    """mirror_mix[_sem][_abil][_rel][_hp{P}]: mirror_mix with semantic attack targets (MicroEnv
     targeting="semantic"), hero abilities (skill builds and casting; implies semantic targets),
-    and/or P permille of the units' hit points (default 250)."""
-    m = re.fullmatch(r"mirror_mix(_sem)?(_abil)?(?:_hp(\d+))?", name)
-    if not m or not (m[1] or m[2] or m[3]):
+    relational unit features, and/or P permille of the units' hit points (default 250)."""
+    m = re.fullmatch(r"mirror_mix(_sem)?(_abil)?(_rel)?(?:_hp(\d+))?", name)
+    if not m or not (m[1] or m[2] or m[3] or m[4]):
         return None
-    return _mirror_task(name, hp_permille=int(m[3] or 250), targeting="semantic" if m[1] or m[2] else "slot",
-                        abilities=bool(m[2]))
+    return _mirror_task(name, hp_permille=int(m[4] or 250), targeting="semantic" if m[1] or m[2] else "slot",
+                        abilities=bool(m[2]), relational=bool(m[3]))
 
 
 def get_task(name: str) -> Task:
@@ -394,5 +398,5 @@ def get_task(name: str) -> Task:
     task = _footmen_task(name) or _mirror_variant(name)
     if task is None:
         raise KeyError(f"unknown task {name!r}; available: {sorted(TASKS)}, footmen<N>v<M>[_hp<HP>][_ehp<EHP>] "
-                       f"and mirror_mix[_sem][_abil][_hp<permille>]")
+                       f"and mirror_mix[_sem][_abil][_rel][_hp<permille>]")
     return task
