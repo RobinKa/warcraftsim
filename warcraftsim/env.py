@@ -353,7 +353,7 @@ class MicroEnv(Wc3Env):
     def __init__(self, scenario: Scenario | None = None, max_own: int = 12, max_enemy: int = 12,
                  move_distance: float = 250.0, opponent: str = "scripted", name: str = "micro0",
                  targeting: str = "slot", abilities: bool = False, opponent_casts: bool | None = None,
-                 relational: bool = False, **kw):
+                 relational: bool = False, tactical: bool = False, **kw):
         from .runtime.instance import Agent, Idle, Scripted
 
         self.scenario = scenario or Scenario.skirmish(["hfoo"] * 4, ["hfoo"] * 4)
@@ -375,6 +375,9 @@ class MicroEnv(Wc3Env):
             self.kind_names += ("cast",)
         self.group = 4 if abilities else 3  # action heads per unit
         self.relational = relational
+        # tactical action masks (semantic targeting): retreat only for a unit that is losing hit
+        # points, no plain moves; exploring either elsewhere costs a lot and teaches little
+        self.tactical = tactical
         feat = (UNIT_FEATURES + (ABILITY_FEATURES * HERO_ABILITY_SLOTS if abilities else 0)
                 + (RELATIONAL_FEATURES if relational else 0))
         self.observation_space = spaces.Dict({

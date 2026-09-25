@@ -167,6 +167,11 @@ def _micro_mask(env) -> list[np.ndarray]:
                 m[base + offs[3]:base + offs[4]] = ok
             else:
                 m[base + 4] = 0  # kind "cast"
+        if getattr(env, "tactical", False):
+            m[base + 2] = 0  # no plain moves
+            hist = env.encoder._hp.get(u.id) if env.encoder is not None else None
+            if not hist or u.hp >= hist[0]:
+                m[base + 1] = 0  # retreat: only while losing hit points (over the last HP_HISTORY steps)
     return [m]
 
 
@@ -335,7 +340,8 @@ def mirror_spawner(units: tuple[int, int] = (2, 4), heroes: int = 1, hero_levels
 
 
 def _mirror_task(name: str = "mirror_mix", max_units: int = 5, hp_permille: int = 250,
-                 targeting: str = "slot", abilities: bool = False, relational: bool = False) -> Task:
+                 targeting: str = "slot", abilities: bool = False, relational: bool = False,
+                 tactical: bool = False) -> Task:
     # fights last longer with more hit points: 45 s at 25%, 70 s at 50%
     sc = Scenario(units=(), victory="elimination", max_game_seconds=round(20 + hp_permille / 10), name=name)
     semantic = targeting == "semantic"
@@ -345,7 +351,7 @@ def _mirror_task(name: str = "mirror_mix", max_units: int = 5, hp_permille: int 
 
     def make_env(inst: str):
         env = MicroEnv(sc, max_own=max_units, max_enemy=max_units, name=inst, targeting=targeting,
-                       abilities=abilities, relational=relational)
+                       abilities=abilities, relational=relational, tactical=tactical)
         env.spawner = spawner
         return env
 
@@ -357,6 +363,8 @@ def _mirror_task(name: str = "mirror_mix", max_units: int = 5, hp_permille: int 
         extra = " Attack targets are rules (weakest in range, nearest, weakest, hero, threat); stop is retreat."
     if relational:
         extra += " Units also see relational features (nearest opponent, in range, threatened, weakest, time to die)."
+    if tactical:
+        extra += " Tactical masks: retreat only while losing hit points, no plain moves."
     return Task(
         name=name, obs_size=obs_size, act_sizes=act_sizes, make_env=make_env,
         flatten=_micro_flatten, to_action=lambda a: np.asarray(a, dtype=np.int64).reshape(max_units, group),
@@ -382,14 +390,15 @@ def _footmen_task(name: str) -> Task | None:
 
 
 def _mirror_variant(name: str) -> Task | None:
-    """mirror_mix[_sem][_abil][_rel][_hp{P}]: mirror_mix with semantic attack targets (MicroEnv
+    """mirror_mix[_sem][_abil][_rel][_tac][_hp{P}]: mirror_mix with semantic attack targets (MicroEnv
     targeting="semantic"), hero abilities (skill builds and casting; implies semantic targets),
-    relational unit features, and/or P permille of the units' hit points (default 250)."""
-    m = re.fullmatch(r"mirror_mix(_sem)?(_abil)?(_rel)?(?:_hp(\d+))?", name)
-    if not m or not (m[1] or m[2] or m[3] or m[4]):
+    relational unit features, tactical action masks (implies semantic targets), and/or P permille
+    of the units' hit points (default 250)."""
+    m = re.fullmatch(r"mirror_mix(_sem)?(_abil)?(_rel)?(_tac)?(?:_hp(\d+))?", name)
+    if not m or not any(m.groups()):
         return None
-    return _mirror_task(name, hp_permille=int(m[4] or 250), targeting="semantic" if m[1] or m[2] else "slot",
-                        abilities=bool(m[2]), relational=bool(m[3]))
+    return _mirror_task(name, hp_permille=int(m[5] or 250), targeting="semantic" if m[1] or m[2] or m[4] else "slot",
+                        abilities=bool(m[2]), relational=bool(m[3]), tactical=bool(m[4]))
 
 
 def get_task(name: str) -> Task:
@@ -398,5 +407,5 @@ def get_task(name: str) -> Task:
     task = _footmen_task(name) or _mirror_variant(name)
     if task is None:
         raise KeyError(f"unknown task {name!r}; available: {sorted(TASKS)}, footmen<N>v<M>[_hp<HP>][_ehp<EHP>] "
-                       f"and mirror_mix[_sem][_abil][_rel][_hp<permille>]")
+                       f"and mirror_mix[_sem][_abil][_rel][_tac][_hp<permille>]")
     return task

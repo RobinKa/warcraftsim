@@ -141,3 +141,19 @@ def test_relational_features(monkeypatch):
     enc._encode_relations(me, [me, buddy, None], foes, f)
     incoming = STATS["hfoo"].dps + STATS["hrif"].dps  # both reach it
     assert np.allclose(f, [0.15, 1 / 5, 2 / 5, 1.0, 50 / incoming / 20])
+
+
+def test_tactical_mask(monkeypatch):
+    from gymnasium import spaces
+
+    from warcraftsim.puffer.tasks import _micro_mask
+
+    env, _ = _env(monkeypatch, [_unit(10, "hfoo", 400, 300)])
+    env.abilities, env.max_own, env.max_enemy, env.tactical = False, 2, 1, True
+    env.action_space = spaces.MultiDiscrete(np.tile([4, 8, 5], (2, 1)))
+    hurt, fine = _unit(1, "hfoo", 0, 300, owner=0), _unit(2, "hfoo", 0, 500, owner=0)
+    env._own = [hurt, fine]
+    env.encoder = SimpleNamespace(_hp={1: [420, 380, 330, 300], 2: [500, 500, 500, 500]})
+    (m,) = _micro_mask(env)
+    assert m[:4].tolist() == [1, 1, 0, 1]  # losing hit points: may retreat; never a plain move
+    assert m[17:21].tolist() == [1, 0, 0, 1]
