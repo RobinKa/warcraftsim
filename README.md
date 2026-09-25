@@ -305,11 +305,13 @@ Each run writes `runs/<name>/`, which the dashboard shows live:
 * `episodes.jsonl`: every finished episode.
 * `renders/`: trajectory animations.
 * `replays/` and `videos/`: single-episode replays rendered to real game footage in the background (40 fps).
-  * The footage shows which units are the agent's (rings and slot labels A0, A1, ...; enemies E0, ...) and each step's orders: move arrows, attack lines with a crosshair on the target, stop markers.
+  * The footage shows which units are the agent's (rings and slot labels A0, A1, ...; enemies E0, ...) and each step's orders: move arrows, attack lines with a crosshair on the target, stop markers, and casts (the ability's name, a line to its target and its area).
+  * Every unit has a hit point bar, and a mana bar if it has mana. Under a hero there is a square per learned ability: green when ready, grey filling up during the cooldown, a blue outline when mana is short, a dot for passives.
   * A side panel shows what the policy thought. It evaluates the latest checkpoint before the episode (`puffer/policy.py`, numpy) on the observations the agent saw, and plots:
     * the value V(s) against the discounted return that actually followed;
     * reward and TD error per step;
     * team hit points;
+    * each hero's level, mana and learned abilities (level, and ready / cooldown seconds / no mana / passive);
     * per unit, the action probabilities and the sampled action;
     * the policy entropy;
     * an outcome card at the end.
