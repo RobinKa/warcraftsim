@@ -405,6 +405,16 @@ and thread kind; `W3SIM_PROFILE=1..3` adds the shim's per-second profile to each
 
 These numbers are for WineHQ **stable** 11.0, which is picked automatically from `/opt/wine-stable` (override with `WARCRAFTSIM_WINE`). Staging 11.18 was about 25% slower in parallel runs.
 
+
+Training throughput (`mirror_mix_abil_hp400`, 24 games): the games alone step 3,550 times per second (`scripts/bench_env.py`, random actions), training about 1,830. Measured, and not the limit:
+* the CPU: 25 of 32 cores are busy;
+* the number of games: 36 give 1,871 steps/s, 48 give 1,751;
+* trainer buffers: 12 is best (24: 1,758; 6: 1,743; 4: 1,663; 3: 1,559);
+* blocking CUDA sync: 1,756;
+* the window: 160x120 is 3% faster than 320x240; rendering takes 1-2 cores in all.
+
+The limit is PufferLib's synchronous rollout. Each buffer thread runs its horizon step by step (inference, then its games), and training waits until every buffer is done. So each epoch lasts as long as the slowest buffer: steps take 6.8 ms (p90 9.6), and an episode reset takes 28 ms (max 52).
+
 ## Tests
 
 ```bash
