@@ -359,7 +359,7 @@ class MicroEnv(Wc3Env):
     def __init__(self, scenario: Scenario | None = None, max_own: int = 12, max_enemy: int = 12,
                  move_distance: float = 250.0, opponent: str = "scripted", name: str = "micro0",
                  targeting: str = "slot", abilities: bool = False, opponent_casts: bool | None = None,
-                 relational: bool = False, tactical: bool = False, **kw):
+                 relational: bool = False, tactical: bool = False, kill_reward: float = 0.0, **kw):
         from .runtime.instance import Agent, Idle, Scripted
 
         self.scenario = scenario or Scenario.skirmish(["hfoo"] * 4, ["hfoo"] * 4)
@@ -381,6 +381,9 @@ class MicroEnv(Wc3Env):
             self.kind_names += ("cast",)
         self.group = 4 if abilities else 3  # action heads per unit
         self.relational = relational
+        # added to the reward per enemy unit killed and subtracted per own unit lost: a unit pulled
+        # out of a fight pays off as a death that doesn't happen, sooner than the outcome
+        self.kill_reward = kill_reward
         # tactical action masks (semantic targeting): retreat only for a hurt unit (below half its
         # hit points) that is losing hit points, no plain moves; exploring either elsewhere costs
         # a lot and teaches little
@@ -425,6 +428,7 @@ class MicroEnv(Wc3Env):
         own, enemy = [u for u in own if u], [u for u in enemy if u]
         self._hp0 = (max(sum(u.max_hp for u in own), 1), max(sum(u.max_hp for u in enemy), 1))
         self._hp_prev = (sum(u.hp for u in own), sum(u.hp for u in enemy))
+        self._alive_prev = (len(own), len(enemy))
 
     def _encode(self, obs: Observation) -> dict[str, np.ndarray]:
         self._own, self._enemy = self._split(obs)
@@ -627,13 +631,19 @@ class MicroEnv(Wc3Env):
         return self._encode(obs), reward, terminated, truncated, {"obs": obs}
 
     def _reward(self, obs: Observation) -> tuple[float, bool, bool]:
-        own_hp = sum(u.hp for u in obs.units if u.alive and u.owner == self.player)
-        enemy_hp = sum(u.hp for u in obs.units if u.alive and u.owner != self.player and u.owner in obs.players)
+        own = [u for u in obs.units if u.alive and u.owner == self.player]
+        enemy = [u for u in obs.units if u.alive and u.owner != self.player and u.owner in obs.players]
+        own_hp, enemy_hp = sum(u.hp for u in own), sum(u.hp for u in enemy)
         dealt = (self._hp_prev[1] - enemy_hp) / self._hp0[1]
         taken = (self._hp_prev[0] - own_hp) / self._hp0[0]
         self._hp_prev = (own_hp, enemy_hp)
+        kills = 0.0
+        if self.kill_reward:
+            prev = getattr(self, "_alive_prev", (len(own), len(enemy)))
+            kills = self.kill_reward * ((prev[1] - len(enemy)) - (prev[0] - len(own)))
+            self._alive_prev = (len(own), len(enemy))
         outcome, terminated, truncated = self._outcome(obs)
-        return float(dealt - taken + outcome), terminated, truncated
+        return float(dealt - taken + kills + outcome), terminated, truncated
 
 
 class MirrorSelfPlayEnv(MicroEnv):

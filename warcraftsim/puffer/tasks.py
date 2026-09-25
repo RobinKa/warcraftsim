@@ -351,7 +351,7 @@ def mirror_spawner(units: tuple[int, int] = (2, 4), heroes: int = 1, hero_levels
 
 def _mirror_task(name: str = "mirror_mix", max_units: int = 5, hp_permille: int = 250,
                  targeting: str = "slot", abilities: bool = False, relational: bool = False,
-                 tactical: bool = False, selfplay: bool = False) -> Task:
+                 tactical: bool = False, selfplay: bool = False, kill_reward: float = 0.0) -> Task:
     # fights last longer with more hit points: 45 s at 25%, 70 s at 50%
     sc = Scenario(units=(), victory="elimination", max_game_seconds=round(20 + hp_permille / 10), name=name)
     semantic = targeting == "semantic"
@@ -362,7 +362,7 @@ def _mirror_task(name: str = "mirror_mix", max_units: int = 5, hp_permille: int 
     def make_env(inst: str):
         env = (MirrorSelfPlayEnv if selfplay else MicroEnv)(
             sc, max_own=max_units, max_enemy=max_units, name=inst, targeting=targeting, abilities=abilities,
-            relational=relational, tactical=tactical)
+            relational=relational, tactical=tactical, kill_reward=kill_reward)
         env.spawner = spawner
         return env
 
@@ -376,6 +376,8 @@ def _mirror_task(name: str = "mirror_mix", max_units: int = 5, hp_permille: int 
         extra += " Units also see relational features (nearest opponent, in range, threatened, weakest, time to die)."
     if tactical:
         extra += " Tactical masks: retreat only while losing hit points, no plain moves."
+    if kill_reward:
+        extra += f" Reward {kill_reward:+g} per enemy killed, {-kill_reward:+g} per own unit lost."
     labels = _micro_labels(max_units, semantic, abilities)
     if selfplay:
         extra += " Self-play: the policy plays both sides (two agents per game; the win rate is side 0's)."
@@ -470,12 +472,13 @@ def _mirror_variant(name: str) -> Task | None:
     (MicroEnv targeting="semantic"), hero abilities (skill builds and casting; implies semantic
     targets), relational unit features, tactical action masks, self-play (MirrorSelfPlayEnv: the
     policy plays both sides), and/or P permille of the units' hit points (default 250)."""
-    m = re.fullmatch(r"mirror_mix(_sem)?(_abil)?(_rel)?(_tac)?(_self)?(?:_hp(\d+))?", name)
+    m = re.fullmatch(r"mirror_mix(_sem)?(_abil)?(_rel)?(_tac)?(_kill)?(_self)?(?:_hp(\d+))?", name)
     if not m or not any(m.groups()):
         return None
-    return _mirror_task(name, hp_permille=int(m[6] or 250),
-                        targeting="semantic" if m[1] or m[2] or m[4] or m[5] else "slot",
-                        abilities=bool(m[2]), relational=bool(m[3]), tactical=bool(m[4]), selfplay=bool(m[5]))
+    return _mirror_task(name, hp_permille=int(m[7] or 250),
+                        targeting="semantic" if m[1] or m[2] or m[4] or m[6] else "slot",
+                        abilities=bool(m[2]), relational=bool(m[3]), tactical=bool(m[4]), selfplay=bool(m[6]),
+                        kill_reward=0.2 if m[5] else 0.0)
 
 
 def get_task(name: str) -> Task:
@@ -484,5 +487,5 @@ def get_task(name: str) -> Task:
     task = _footmen_task(name) or _mirror_variant(name)
     if task is None:
         raise KeyError(f"unknown task {name!r}; available: {sorted(TASKS)}, footmen<N>v<M>[_hp<HP>][_ehp<EHP>] "
-                       f"and mirror_mix[_sem][_abil][_rel][_tac][_self][_hp<permille>]")
+                       f"and mirror_mix[_sem][_abil][_rel][_tac][_kill][_self][_hp<permille>]")
     return task
