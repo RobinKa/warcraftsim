@@ -271,6 +271,9 @@ Tasks (add more in `tasks.py`; `scripts/baselines.py` measures scripted policies
     | value-loss weight 0.5 / 4 (default 2) | 42% / 38% |
     | value clipping off / gradient norm 0.5 / lr floor 20% | 40% / 40% / 41% |
     | V-trace / momentum 0.9 / momentum 0.98 | 38% / 37% / 36% |
+    | one agent per unit, one shared policy (`_units`, 3M agent steps = 0.6M game steps) | 43% / 45% (30% after 54k game steps, 0.6 min) |
+
+    Scripts that cast more carefully don't do better either (`smartcast`: area spells only with two enemies inside, targeted spells on the biggest threat, heals below half; 200 episodes each): `castnoop` 53%, `smartcastnoop` 48%, `smartcastpull35` 55%. Against a casting opponent, reasonable strategies all end near a coin flip: the headroom here may be small.
 
     The trained policy plays as well greedily as sampled (43% / 42%), so that is its level. With the scripted casting rule in place of its own casts it wins 45%; `castnoop` (no attack orders at all, the same casting) wins 50%. So the gap to the scripts is partly casting, and partly attack orders that do worse than letting units auto-acquire. Only a better starting point moved the plateau.
 
