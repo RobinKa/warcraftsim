@@ -23,6 +23,16 @@ aside h2 { font-size:11px; text-transform:uppercase; letter-spacing:1px; color:v
 .run .n { font-weight:600; display:flex; justify-content:space-between; gap:6px; align-items:center; }
 .run .m { color:var(--muted); font-size:12px; display:flex; justify-content:space-between; margin-top:2px; }
 .run input { margin:0 6px 0 0; accent-color:var(--accent); }
+.runtools { margin:0 4px 10px; display:flex; flex-direction:column; gap:6px; }
+.runtools input[type=search] { width:100%; background:var(--panel); border:1px solid var(--line); border-radius:5px;
+  color:var(--text); padding:5px 8px; font:inherit; }
+.runtools .row { display:flex; gap:6px; align-items:center; font-size:12px; color:var(--muted); white-space:nowrap; }
+.runtools #selcount { margin-left:auto; }
+.runtools button { background:var(--panel); border:1px solid var(--line); border-radius:5px; color:var(--text);
+  padding:3px 8px; font:inherit; font-size:12px; cursor:pointer; }
+.runtools button:hover { background:var(--panel2); }
+.runtools label { display:flex; align-items:center; gap:5px; cursor:pointer; }
+.runtools label input { margin:0; accent-color:var(--accent); }
 .badge { font-size:10px; padding:1px 6px; border-radius:9px; background:#2d3743; color:var(--muted); white-space:nowrap; }
 .badge.training { background:#1e3a2c; color:var(--good); }
 .badge.failed { background:#3d1f1f; color:var(--bad); }
@@ -78,12 +88,21 @@ pre.cmd { background:var(--panel); border:1px solid var(--line); border-radius:8
     <span id="clock"></span><label><input type="checkbox" id="auto" checked> auto-refresh</label></div>
 </header>
 <div class="layout">
-  <aside><h2>Runs <span style="float:right;text-transform:none;letter-spacing:0">☑ compare</span></h2><div id="runs"></div></aside>
+  <aside><h2>Runs <span style="float:right;text-transform:none;letter-spacing:0">☑ compare</span></h2>
+    <div class="runtools">
+      <input type="search" id="runfilter" placeholder="filter: name, task, sweep options" autocomplete="off">
+      <div class="row"><button id="selall" title="compare every run listed">select all</button>
+        <button id="selnone" title="compare none">clear</button><span id="selcount"></span></div>
+      <div class="row"><label title="list only the compared runs (and the one shown)"><input type="checkbox" id="selonly"> show selected only</label></div>
+    </div>
+    <div id="runs"></div></aside>
   <main id="main"><div class="empty">No runs yet. Start one with <code>python -m warcraftsim.puffer.train --task micro</code>.</div></main>
 </div>
 <script>
 const COLORS = ["#e0a33a", "#539bf5", "#4cc38a", "#e5534b", "#b083f0", "#39c5cf", "#f47067", "#c69026"];
-const DASHES = [[], [7, 4], [2, 3], [10, 3, 2, 3], [14, 5], [4, 2, 1, 2]];  // line style per compared run
+// line style per compared run (a whole sweep is often compared: 12 distinct ones, then they repeat)
+const DASHES = [[], [7, 4], [2, 3], [10, 3, 2, 3], [14, 5], [4, 2, 1, 2], [1, 5], [18, 3, 3, 3, 3, 3],
+                [5, 5], [10, 2, 2, 2, 2, 2], [3, 6, 9, 6], [20, 6]];
 let state = { runs: [], selected: null, compare: new Set(), data: {}, mediaKey: "" };
 const ui = { smooth: 0.6, hoverX: null, hoverChart: null, charts: {} };
 try { const v = parseFloat(localStorage.getItem("smooth")); if (!Number.isNaN(v)) ui.smooth = v; } catch (e) {}
@@ -253,8 +272,29 @@ async function refresh() {
   document.getElementById("clock").textContent = "updated " + new Date().toLocaleTimeString();
 }
 
+// run list controls: a text filter, and "selected only" (the compared runs and the one shown)
+const runUI = { filter: "", only: false };
+try { runUI.filter = localStorage.getItem("runFilter") || ""; runUI.only = localStorage.getItem("runOnly") === "1"; } catch (e) {}
+function listedRuns() {
+  const f = runUI.filter.trim().toLowerCase();
+  return state.runs.filter(r => (!f || [r.name, r.task, r.sweep ? r.sweep.options || "base" : ""].join(" ").toLowerCase().includes(f))
+    && (!runUI.only || state.compare.has(r.name) || r.name === state.selected));
+}
+function setupRunTools() {
+  const filter = document.getElementById("runfilter"), only = document.getElementById("selonly");
+  filter.value = runUI.filter; only.checked = runUI.only;
+  const keep = () => { try { localStorage.setItem("runFilter", runUI.filter); localStorage.setItem("runOnly", runUI.only ? "1" : "0"); } catch (e) {} };
+  filter.oninput = () => { runUI.filter = filter.value; keep(); renderRuns(); };
+  only.onchange = () => { runUI.only = only.checked; keep(); renderRuns(); };
+  document.getElementById("selall").onclick = () => { listedRuns().forEach(r => state.compare.add(r.name)); saveHash(); refresh(); };
+  document.getElementById("selnone").onclick = () => { state.compare.clear(); saveHash(); refresh(); };
+}
+
 function renderRuns() {
-  document.getElementById("runs").innerHTML = state.runs.map(r => {
+  const n = state.compare.size;
+  document.getElementById("selcount").textContent = n ? `${n} selected` : "";
+  const listed = listedRuns();
+  document.getElementById("runs").innerHTML = listed.map(r => {
     const s = r.summary || {};
     const wr = s.win_rate_100 === null || s.win_rate_100 === undefined ? "–" : (100 * s.win_rate_100).toFixed(0) + "%";
     return `<div class="run ${r.name === state.selected ? "sel" : ""}" data-run="${r.name}">
@@ -262,7 +302,7 @@ function renderRuns() {
       <div class="m"><span>${r.task} · ${r.envs} games</span><span>win ${wr}</span></div>
       <div class="m"><span>${fmt(s.agent_steps || 0, 0)} steps</span><span>${ago(s.updated)}</span></div>${r.sweep ? `
       <div class="m" title="sweep ${r.sweep.group}"><span style="color:var(--accent)">sweep ${r.sweep.index}/${r.sweep.of}</span><span>${r.sweep.options || "base"}</span></div>` : ""}</div>`;
-  }).join("") || `<div class="empty">no runs</div>`;
+  }).join("") || `<div class="empty">${state.runs.length ? "no runs match" : "no runs"}</div>`;
   document.querySelectorAll(".run").forEach(el => el.onclick = ev => {
     if (ev.target.dataset.cmp) return;
     state.selected = el.dataset.run; state.mediaKey = ""; saveHash(); refresh();
@@ -409,6 +449,7 @@ slider.addEventListener("input", () => {
   try { localStorage.setItem("smooth", ui.smooth); } catch (e) {}
   for (const id in ui.charts) drawChart(id);
 });
+setupRunTools();
 refresh();
 setInterval(() => { if (document.getElementById("auto").checked) refresh(); }, 5000);
 window.addEventListener("resize", () => { for (const id in ui.charts) drawChart(id); });
