@@ -205,6 +205,32 @@ Tasks (add more in `tasks.py`; `scripts/baselines.py` measures scripted policies
     | PPO from the fitted castpull35, lr 0.001, 2.5M steps | 52% |
 
     Not casting against a caster loses badly. PPO from scratch found a shortcut: 60-66% of its actions are casts and 94% of those aren't possible. An impossible cast does nothing, so this means "do nothing, and cast each ability the moment it's ready".
+
+    Sweeps for learning speed from scratch (with action masks; 600k steps, ~5 min each; runs `abil6-*`, `abil6b-*`). At this budget the win rate is still rising, so faster runs show as higher numbers:
+
+    | round 1 (base: lr 0.001, minibatch 192, replay ratio 4, horizon 64, γ 0.99, λ 0.9, entropy 0.001) | win @0.3M | win @0.6M |
+    |---|---|---|
+    | lr 0.003 | 21% | 29% (peak 34%) |
+    | replay ratio 8 | 9% | 27% |
+    | base | 4% | 25% |
+    | lr 0.002 | 7% | 23% |
+    | minibatch 384 | 8% | 22% |
+    | hidden 256 | 4% | 21% |
+    | λ 0.95 / entropy 0.0003 | 1% | 15% |
+    | γ 0.97 | 0% | 0% (never learned) |
+
+    | round 2 (base: lr 0.003) | win @0.3M | @0.45M | @0.6M |
+    |---|---|---|---|
+    | horizon 32 | 27% | 35% | 33% (peak 40%) |
+    | lr 0.005 | 26% | 28% | 33% |
+    | λ 0.8 | 24% | 31% | 33% (peak 38%) |
+    | γ 0.995 | 24% | 31% | 33% |
+    | clip 0.3 | 20% | 33% | 34% |
+    | base (lr 0.003; round 1: 21% / 29%) | 19% | 28% | 33% |
+    | replay ratio 8 | 10% | 26% | 30% |
+    | entropy 0.003 | 7% | 16% | 24% |
+
+    Seed noise is about ±4 points at 0.6M, where the learning rate has annealed to zero and most configs end alike; the earlier columns separate them better. The minibatch must be a multiple of the horizon (PufferLib asserts it).
   * lr 0.01 (tuned on `footmen2`) is far too high with 15 action heads: the KL per update was 1.0-1.5 (clip fraction 0.9) and the win rate peaked at 29%. The KL at a given lr grows with the number of heads (≈0.15 with 6, 0.3 with 9, 1.0+ with 15); lr 0.003 keeps it at 0.03-0.14.
 * `footmen<N>v<M>[_hp<HP>][_ehp<EHP>]`: N agent footmen against M scripted ones with HP hit points each (default 100), the enemies EHP (a handicap).
 * `micro`: 4 footmen vs 3 scripted grunts. This is hard: scripted baselines win about 1 game in 3.
