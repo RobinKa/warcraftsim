@@ -120,7 +120,9 @@ void puf_init(Env* env, Dict* kwargs) {
     assert((reply[1] == 0 || reply[1] == options) && "bridge action mask size does not match ACT_SIZES");
     env->mask_size = reply[1];
     for (int a = 0; a < env->num_agents; a++) {
-        env->agents[a].policy = 0;
+        // a self-play pool (--selfplay.enabled=1): the second side of an env assigned to a
+        // historical policy plays with it (the tag is only read for those envs)
+        env->agents[a].policy = a == 1 ? 1 : 0;
         env->agents[a].action_mask = NULL;
     }
 }
