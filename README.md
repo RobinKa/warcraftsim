@@ -268,6 +268,9 @@ Tasks (add more in `tasks.py`; `scripts/baselines.py` measures scripted policies
     | 0.25 s steps (horizon 32) | 33-35% |
     | **start from the fitted `castpull35` (masked BC), lr 0.001** | **52%** (50% after 0.27M steps) |
     | start from the fitted `castpull35`, lr 0.003 | 48% |
+    | value-loss weight 0.5 / 4 (default 2) | 42% / 38% |
+    | value clipping off / gradient norm 0.5 / lr floor 20% | 40% / 40% / 41% |
+    | V-trace / momentum 0.9 / momentum 0.98 | 38% / 37% / 36% |
 
     The trained policy plays as well greedily as sampled (43% / 42%), so that is its level. With the scripted casting rule in place of its own casts it wins 45%; `castnoop` (no attack orders at all, the same casting) wins 50%. So the gap to the scripts is partly casting, and partly attack orders that do worse than letting units auto-acquire. Only a better starting point moved the plateau.
 
