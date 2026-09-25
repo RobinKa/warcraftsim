@@ -158,6 +158,8 @@ def test_tactical_mask(monkeypatch):
     (m,) = _micro_mask(env)
     assert m[:4].tolist() == [1, 1, 0, 1]  # hurt and losing hit points: may retreat; never a plain move
     assert m[17:21].tolist() == [1, 0, 0, 1]  # losing hit points but above half: no retreat
-    env._retreat_until[1] = 11.0  # a committed retreat: noop (= go on) only
+    env._retreat_until[1] = env._retreat_until[2] = 11.0  # committed retreats: noop (= go on) only
     (m,) = _micro_mask(env)
-    assert m[:4].tolist() == [1, 0, 0, 0] and env.retreating(hurt) and not env.retreating(fine)
+    assert m[:4].tolist() == [1, 0, 0, 0] and env.retreating(hurt) and env.retreating(fine)
+    env.encoder._hp[1] = [230, 200, 200, 200]  # no longer losing hit points: the retreat is over
+    assert not env.retreating(hurt)

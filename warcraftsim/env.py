@@ -330,9 +330,11 @@ def _issue(view, attacking: dict[int, int], unit: Unit, kind: int, direction: in
 # within its attack range (+ REACH); rules without a candidate fall back to the nearest enemy.
 SEMANTIC_TARGETS = ("weak_in_range", "nearest", "weakest", "hero", "threat")
 REACH = 90.0  # attack ranges count from the attacker's edge, positions are centers
-# tactical mode: a retreat goes on this long (game seconds), re-ordered every step: pulling a unit
-# out of a fight pays only if it stays out for a while, which step-by-step exploration rarely does
-RETREAT_COMMIT = 1.5
+# tactical mode: a retreat goes on (re-ordered every step) while the unit keeps losing hit points,
+# for at most this long (game seconds): pulling a unit out pays only if it stays out until the
+# enemies switch targets, which step-by-step exploration rarely does. (A fixed 1.5 s commitment
+# kept units out too long: the pull-back script dropped from 68% to 51%.)
+RETREAT_MAX = 3.0
 
 
 class MicroEnv(Wc3Env):
@@ -567,7 +569,7 @@ class MicroEnv(Wc3Env):
                 continue
             if kind == 1 and self.targeting == "semantic":
                 if self.tactical:
-                    self._retreat_until[unit.id] = self._now() + RETREAT_COMMIT
+                    self._retreat_until[unit.id] = self._now() + RETREAT_MAX
                 self._retreat(unit)
                 continue
             if kind == 4:
@@ -600,8 +602,13 @@ class MicroEnv(Wc3Env):
         return obs.game_time if obs is not None else 0.0
 
     def retreating(self, unit: Unit) -> bool:
-        """Tactical mode: whether `unit` is in a committed retreat."""
-        return self._now() < getattr(self, "_retreat_until", {}).get(unit.id, -1.0)
+        """Tactical mode: whether `unit` is in a committed retreat: it chose to retreat less than
+        RETREAT_MAX ago and it is still losing hit points (over the last two steps)."""
+        until = getattr(self, "_retreat_until", {}).get(unit.id)
+        if until is None or self._now() >= until:
+            return False
+        hist = self.encoder._hp.get(unit.id) if self.encoder is not None else None
+        return bool(hist) and len(hist) >= 3 and unit.hp < hist[-3]
 
     def _retreat(self, unit: Unit) -> None:
         live = [e for e in self._enemy if e is not None]
