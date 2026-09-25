@@ -27,7 +27,7 @@
 
 #define WC3_MAGIC 0x46503357u  // "W3PF"
 #define WC3_VERSION 2u
-#define WC3_MAX_AGENTS 2
+#define WC3_MAX_AGENTS 16  // e.g. one agent per unit (UnitAgentsTask), both sides in self-play
 
 struct Log {
     float episode_return;
