@@ -133,9 +133,11 @@ def fit(data: Path, out: Path | None, epochs: int, hidden: int, layers: int, gam
 
 
 def evaluate(task_name: str, checkpoint: Path, episodes: int, games: int, step_seconds: float,
-             hidden: int, layers: int, greedy: bool = False, script_casts: bool = False) -> dict:
+             hidden: int, layers: int, greedy: bool = False, script_casts: bool = False,
+             forbid: tuple[int, ...] = ()) -> dict:
     """`script_casts`: heroes cast what MicroEnv.scripted_cast picks instead of what the policy
-    chose (a diagnostic: is the policy's casting what separates it from the scripts?)."""
+    chose (a diagnostic: is the policy's casting what separates it from the scripts?). `forbid`:
+    unit action kinds (first-head values) masked for every unit (does the policy need them?)."""
     from .policy import PufferPolicy
 
     task = get_task(task_name)
@@ -158,6 +160,14 @@ def evaluate(task_name: str, checkpoint: Path, episodes: int, games: int, step_s
                         comp.update(u.type for u in getattr(env, "_own", ()) if u is not None)
                     dec = pol.step(o, state)
                     mask = task.action_mask(env)[0] if task.action_mask is not None else None
+                    if forbid:
+                        mask = np.ones(sum(task.act_sizes), np.uint8) if mask is None else mask.copy()
+                        at = 0
+                        for h, n in enumerate(task.act_sizes):
+                            if h % task.group_size == 0:
+                                mask[[at + k for k in forbid]] = 0
+                                mask[at] = 1  # noop stays
+                            at += n
                     a, at = [], 0
                     for n in task.act_sizes:
                         logits = dec[at:at + n].astype(np.float64)
@@ -193,7 +203,8 @@ def evaluate(task_name: str, checkpoint: Path, episodes: int, games: int, step_s
     n = sum(total.values())
     res = {"episodes": n, "win_rate": total[1.0] / max(n, 1), "loss_rate": total[-1.0] / max(n, 1),
            "by_type": {t: c[1.0] / sum(c.values()) for t, c in by_type.items()}}
-    mode = ("greedy" if greedy else "sampled") + (", scripted casts" if script_casts else "")
+    mode = ("greedy" if greedy else "sampled") + (", scripted casts" if script_casts else "") + (
+        f", kinds {list(forbid)} forbidden" if forbid else "")
     print(f"{checkpoint} on {task_name} ({mode}): win {res['win_rate']:.0%} "
           f"({total[1.0]}/{n}), loss {total[-1.0]}, draw {total[0.0]}", flush=True)
     if by_type:
@@ -232,6 +243,7 @@ def main(argv: list[str] | None = None) -> None:
     e.add_argument("--layers", type=int, default=2)
     e.add_argument("--greedy", action="store_true", help="most likely actions instead of sampling")
     e.add_argument("--script-casts", action="store_true", help="heroes cast by the scripted rule instead")
+    e.add_argument("--forbid", default="", help="unit action kinds to mask for every unit, e.g. retreat")
     args = ap.parse_args(argv)
     if args.cmd == "collect":
         collect(args.task, args.policy, args.episodes, args.games, args.step_seconds,
@@ -239,8 +251,11 @@ def main(argv: list[str] | None = None) -> None:
     elif args.cmd == "fit":
         fit(args.data, args.out, args.epochs, args.hidden, args.layers, args.gamma, args.lr, args.smoothing)
     else:
+        task = get_task(args.task)
+        kinds = task.head_labels[0] if task.head_labels else ()
+        forbid = tuple(kinds.index(k) if k in kinds else int(k) for k in args.forbid.split(",") if k)
         evaluate(args.task, args.checkpoint, args.episodes, args.games, args.step_seconds, args.hidden,
-                 args.layers, args.greedy, args.script_casts)
+                 args.layers, args.greedy, args.script_casts, forbid)
 
 
 if __name__ == "__main__":

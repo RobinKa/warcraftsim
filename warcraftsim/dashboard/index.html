@@ -103,7 +103,7 @@ const COLORS = ["#e0a33a", "#539bf5", "#4cc38a", "#e5534b", "#b083f0", "#39c5cf"
 // line style per compared run (a whole sweep is often compared: 12 distinct ones, then they repeat)
 const DASHES = [[], [7, 4], [2, 3], [10, 3, 2, 3], [14, 5], [4, 2, 1, 2], [1, 5], [18, 3, 3, 3, 3, 3],
                 [5, 5], [10, 2, 2, 2, 2, 2], [3, 6, 9, 6], [20, 6]];
-let state = { runs: [], selected: null, compare: new Set(), data: {}, mediaKey: "" };
+let state = { runs: [], selected: null, compare: new Set(), data: {}, dataVer: {}, mediaKey: "" };
 const ui = { smooth: 0.6, hoverX: null, hoverChart: null, charts: {} };
 try { const v = parseFloat(localStorage.getItem("smooth")); if (!Number.isNaN(v)) ui.smooth = v; } catch (e) {}
 // shareable view: #run=NAME&compare=A,B&smooth=0.8
@@ -260,16 +260,41 @@ function registerChart(id, opts) {
 // ---- data --------------------------------------------------------------------------------------
 async function getJSON(url) { const r = await fetch(url); if (!r.ok) throw new Error(r.status); return r.json(); }
 
-async function refresh() {
+// one refresh at a time: a click or the timer during one asks for another pass after it (with many
+// runs compared, overlapping refreshes piled up and a click's refresh waited behind all of them)
+let refreshing = null, refreshAgain = false;
+function refresh() {
+  if (refreshing) { refreshAgain = true; return refreshing; }
+  refreshing = (async () => {
+    try { do { refreshAgain = false; await refreshOnce(); } while (refreshAgain); }
+    finally { refreshing = null; }
+  })();
+  return refreshing;
+}
+async function refreshOnce() {
   try {
     state.runs = await getJSON("/api/runs");
     if (!state.selected && state.runs.length) state.selected = state.runs[0].name;
     renderRuns();
-    const names = new Set([state.selected, ...state.compare].filter(Boolean));
-    for (const n of names) state.data[n] = await getJSON("/api/runs/" + encodeURIComponent(n));
-    if (state.selected) renderMain();
+    // the shown run always; a compared run only when its files changed (finished runs: once)
+    const ver = n => { const r = state.runs.find(r => r.name === n); return r ? `${r.status}|${(r.summary || {}).updated}` : ""; };
+    const names = [...new Set([state.selected, ...state.compare].filter(Boolean))]
+      .filter(n => n === state.selected || !state.data[n] || state.dataVer[n] !== ver(n));
+    for (let i = 0; i < names.length; i += 6) {  // a few at a time
+      await Promise.all(names.slice(i, i + 6).map(async n => {
+        state.data[n] = await getJSON("/api/runs/" + encodeURIComponent(n));
+        state.dataVer[n] = ver(n);
+      }));
+      if (state.selected && state.data[state.selected]) renderMain();
+    }
   } catch (e) { console.error(e); }
   document.getElementById("clock").textContent = "updated " + new Date().toLocaleTimeString();
+}
+// a selection change shows at once (with the data already loaded), then loads what is missing
+function selectionChanged() {
+  saveHash(); renderRuns();
+  if (state.selected && state.data[state.selected]) renderMain();
+  refresh();
 }
 
 // run list controls: a text filter, and "selected only" (the compared runs and the one shown)
@@ -286,8 +311,8 @@ function setupRunTools() {
   const keep = () => { try { localStorage.setItem("runFilter", runUI.filter); localStorage.setItem("runOnly", runUI.only ? "1" : "0"); } catch (e) {} };
   filter.oninput = () => { runUI.filter = filter.value; keep(); renderRuns(); };
   only.onchange = () => { runUI.only = only.checked; keep(); renderRuns(); };
-  document.getElementById("selall").onclick = () => { listedRuns().forEach(r => state.compare.add(r.name)); saveHash(); refresh(); };
-  document.getElementById("selnone").onclick = () => { state.compare.clear(); saveHash(); refresh(); };
+  document.getElementById("selall").onclick = () => { listedRuns().forEach(r => state.compare.add(r.name)); selectionChanged(); };
+  document.getElementById("selnone").onclick = () => { state.compare.clear(); selectionChanged(); };
 }
 
 function renderRuns() {
@@ -305,10 +330,10 @@ function renderRuns() {
   }).join("") || `<div class="empty">${state.runs.length ? "no runs match" : "no runs"}</div>`;
   document.querySelectorAll(".run").forEach(el => el.onclick = ev => {
     if (ev.target.dataset.cmp) return;
-    state.selected = el.dataset.run; state.mediaKey = ""; saveHash(); refresh();
+    state.selected = el.dataset.run; state.mediaKey = ""; selectionChanged();
   });
   document.querySelectorAll("[data-cmp]").forEach(el => el.onchange = () => {
-    el.checked ? state.compare.add(el.dataset.cmp) : state.compare.delete(el.dataset.cmp); saveHash(); refresh();
+    el.checked ? state.compare.add(el.dataset.cmp) : state.compare.delete(el.dataset.cmp); selectionChanged();
   });
 }
 
