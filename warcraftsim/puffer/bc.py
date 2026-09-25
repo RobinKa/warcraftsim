@@ -133,7 +133,9 @@ def fit(data: Path, out: Path | None, epochs: int, hidden: int, layers: int, gam
 
 
 def evaluate(task_name: str, checkpoint: Path, episodes: int, games: int, step_seconds: float,
-             hidden: int, layers: int, greedy: bool = False) -> dict:
+             hidden: int, layers: int, greedy: bool = False, script_casts: bool = False) -> dict:
+    """`script_casts`: heroes cast what MicroEnv.scripted_cast picks instead of what the policy
+    chose (a diagnostic: is the policy's casting what separates it from the scripts?)."""
     from .policy import PufferPolicy
 
     task = get_task(task_name)
@@ -167,6 +169,13 @@ def evaluate(task_name: str, checkpoint: Path, episodes: int, games: int, step_s
                         else:
                             p = np.exp(logits - logits.max())
                             a.append(int(rng.choice(n, p=p / p.sum())))
+                    if script_casts:
+                        g = task.group_size
+                        for i, u in enumerate(env._own):
+                            if u is not None and u.is_hero and g > 3:
+                                choice = env.scripted_cast(u, env._own, env._enemy)
+                                if choice is not None:
+                                    a[i * g:i * g + 4] = [4, 0, choice[1], choice[0]]
                     return a
 
                 *_, outcome = _play(task, env, choose)
@@ -184,7 +193,8 @@ def evaluate(task_name: str, checkpoint: Path, episodes: int, games: int, step_s
     n = sum(total.values())
     res = {"episodes": n, "win_rate": total[1.0] / max(n, 1), "loss_rate": total[-1.0] / max(n, 1),
            "by_type": {t: c[1.0] / sum(c.values()) for t, c in by_type.items()}}
-    print(f"{checkpoint} on {task_name} ({'greedy' if greedy else 'sampled'}): win {res['win_rate']:.0%} "
+    mode = ("greedy" if greedy else "sampled") + (", scripted casts" if script_casts else "")
+    print(f"{checkpoint} on {task_name} ({mode}): win {res['win_rate']:.0%} "
           f"({total[1.0]}/{n}), loss {total[-1.0]}, draw {total[0.0]}", flush=True)
     if by_type:
         print("win rate in episodes with the unit type: " + ", ".join(
@@ -221,6 +231,7 @@ def main(argv: list[str] | None = None) -> None:
     e.add_argument("--hidden", type=int, default=128)
     e.add_argument("--layers", type=int, default=2)
     e.add_argument("--greedy", action="store_true", help="most likely actions instead of sampling")
+    e.add_argument("--script-casts", action="store_true", help="heroes cast by the scripted rule instead")
     args = ap.parse_args(argv)
     if args.cmd == "collect":
         collect(args.task, args.policy, args.episodes, args.games, args.step_seconds,
@@ -229,7 +240,7 @@ def main(argv: list[str] | None = None) -> None:
         fit(args.data, args.out, args.epochs, args.hidden, args.layers, args.gamma, args.lr, args.smoothing)
     else:
         evaluate(args.task, args.checkpoint, args.episodes, args.games, args.step_seconds, args.hidden,
-                 args.layers, args.greedy)
+                 args.layers, args.greedy, args.script_casts)
 
 
 if __name__ == "__main__":
