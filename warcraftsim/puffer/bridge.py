@@ -375,10 +375,18 @@ class BridgeServer:
                 replay = inst.save_replay(slot.replay_path)
                 if slot.trace is not None:
                     t = slot.trace
-                    extra = {"masks": np.stack(t["masks"])} if "masks" in t else {}
-                    np.savez_compressed(replay.with_suffix(".steps.npz"), obs=np.stack(t["obs"]),
-                                        actions=np.stack(t["actions"]), rewards=np.stack(t["rewards"]),
-                                        outcomes=np.asarray(outcomes, np.float32), time=time.time(), **extra)
+                    arrays = {"obs": np.stack(t["obs"]), "actions": np.stack(t["actions"]),
+                              "rewards": np.stack(t["rewards"]), "outcomes": np.asarray(outcomes, np.float32)}
+                    if "masks" in t:
+                        arrays["masks"] = np.stack(t["masks"])
+                    if getattr(self.task, "display_task", None) is not None:  # one agent per unit: the team
+                        T = len(arrays["actions"])
+                        arrays["actions"] = arrays["actions"].reshape(T, 1, -1)
+                        arrays["rewards"] = arrays["rewards"][:, :1]
+                        arrays["outcomes"] = arrays["outcomes"][:1]
+                        if "masks" in arrays:
+                            arrays["masks"] = arrays["masks"].reshape(len(arrays["masks"]), 1, -1)
+                    np.savez_compressed(replay.with_suffix(".steps.npz"), time=time.time(), **arrays)
                 self._render_queue.put((replay, episode, outcome, slot.ep_return[0], self.run_dir))
             except Exception as e:  # a missing video must not stop training
                 print(f"bridge: replay not saved: {e}", flush=True)
@@ -428,6 +436,9 @@ class BridgeServer:
         args = info.get("args", {})
         outputs, step = None, None
         ckpt = checkpoint_at(run_dir / "checkpoints", float(trace["time"]))
+        task = getattr(self.task, "display_task", None) or self.task
+        if task is not self.task:  # one agent per unit: the team's orders, no per-unit probabilities yet
+            ckpt = None
         if ckpt is not None:
             try:
                 pol = PufferPolicy(ckpt, self.task.obs_size, self.task.act_sizes, hidden=args.get("hidden", 128),
@@ -438,7 +449,7 @@ class BridgeServer:
                 step = checkpoint_step(ckpt)
             except (OSError, ValueError) as e:
                 print(f"bridge: policy not evaluated for the video: {e}")
-        return EpisodeOverlay(self.task, trace, outputs, gamma=args.get("gamma", 0.99),
+        return EpisodeOverlay(task, trace, outputs, gamma=args.get("gamma", 0.99),
                               title=f"{info.get('name', run_dir.name)} · episode {episode}",
                               policy_step=step)
 

@@ -383,6 +383,64 @@ def _mirror_task(name: str = "mirror_mix", max_units: int = 5, hp_permille: int 
     )
 
 
+@dataclass
+class UnitAgentsTask(Task):
+    """A single-agent micro task played by one agent per unit, all with the same policy (parameter
+    sharing: every unit's experience trains the same behavior). Agent i sees its unit's features
+    and whether it is alive, then the whole observation of the base task; it gives its unit's
+    action heads; every agent gets the team's reward and outcome. A dead or missing unit's agent
+    can only noop. `display_task` (the base task) labels videos, which show the team's orders."""
+    base: Task | None = None
+    display_task: Task | None = None
+
+    def _agents_obs(self, env, obs) -> list[np.ndarray]:
+        flat = self.base.flatten(obs)
+        return [np.concatenate([obs["own"][i], obs["own_mask"][i:i + 1].astype(np.float32), flat]).astype(np.float32)
+                for i in range(self.num_agents)]
+
+    def reset(self, env, options: dict | None = None):
+        obs, info = env.reset(options=options)
+        return self._agents_obs(env, obs), info
+
+    def step(self, env, actions: list[np.ndarray]):
+        team = np.concatenate([np.asarray(a, dtype=np.int64).ravel() for a in actions])
+        obs, reward, terminated, truncated, info = env.step(self.base.to_action(team))
+        done = terminated or truncated
+        outcome = self.base.outcome(env, info) if done else 0.0
+        n = self.num_agents
+        return self._agents_obs(env, obs), [float(reward) * self.reward_scale] * n, done, info, [outcome] * n
+
+    def combine(self, per_agent: list[np.ndarray]) -> np.ndarray:
+        """The team's action (or mask) in the base task's layout."""
+        return np.concatenate([np.asarray(a).ravel() for a in per_agent])
+
+
+def _unit_agents(base: Task, name: str) -> UnitAgentsTask:
+    heads = base.act_sizes[:base.group_size]
+    per = sum(heads)
+    k = base.num_atns // base.group_size
+    unit_feat = (base.obs_size - 1) // (2 * k) - 1  # (feat + mask) per unit, own and enemy halves
+
+    def mask(env):
+        m = base.action_mask(env)[0].reshape(k, per).copy()
+        for i in range(k):
+            if i >= len(env._own) or env._own[i] is None:  # no unit: noop only
+                m[i, :heads[0]] = 0
+                m[i, 0] = 1
+        return list(m)
+
+    def stats(env, actions):
+        return base.action_stats(env, [np.concatenate([np.asarray(a).ravel() for a in actions])])
+
+    return UnitAgentsTask(
+        name=name, obs_size=base.obs_size + unit_feat + 1, act_sizes=heads, make_env=base.make_env,
+        flatten=base.flatten, to_action=lambda a: np.asarray(a, dtype=np.int64).reshape(-1, base.group_size),
+        outcome=base.outcome, description=base.description + f" One agent per unit ({k}), one shared policy.",
+        scenario=base.scenario, num_agents=k, reward_scale=base.reward_scale,
+        head_labels=base.head_labels[:base.group_size], group_size=base.group_size, detail_heads=base.detail_heads,
+        action_stats=stats, action_mask=mask, train_defaults=base.train_defaults, base=base, display_task=base)
+
+
 def _footmen_task(name: str) -> Task | None:
     """footmen{N}v{M}[_hp{HP}][_ehp{EHP}]: N agent footmen against M scripted ones, HP hit points
     each (default 100), the enemies EHP (default: HP; a handicap)."""
@@ -396,6 +454,9 @@ def _footmen_task(name: str) -> Task | None:
 
 
 def _mirror_variant(name: str) -> Task | None:
+    if name.endswith("_units") and name != "_units":  # one agent per unit on top of any variant
+        base = get_task(name[:-len("_units")])
+        return _unit_agents(base, name)
     """mirror_mix[_sem][_abil][_rel][_tac][_self][_hp{P}]: mirror_mix with semantic attack targets
     (MicroEnv targeting="semantic"), hero abilities (skill builds and casting; implies semantic
     targets), relational unit features, tactical action masks, self-play (MirrorSelfPlayEnv: the
