@@ -134,6 +134,9 @@ function W3S_EnumAdd takes nothing returns nothing
     local unit u = GetEnumUnit()
     if GetUnitTypeId(u) == 0 then
         call GroupRemoveUnit(w3s_all, u) // removed from the game
+        // its registry entries hold the handle: flushed, or every dead unit of every episode stays
+        // referenced (a game that ran for an hour had grown by 150 MB and stepped 25% slower)
+        call FlushChildHashtable(w3s_ht, GetHandleId(u))
         if w3s_prune and w3s_nremoved < 8000 then
             set w3s_removed[w3s_nremoved] = GetHandleId(u)
             set w3s_nremoved = w3s_nremoved + 1
@@ -144,6 +147,7 @@ function W3S_EnumAdd takes nothing returns nothing
         if w3s_prune and IsUnitType(u, UNIT_TYPE_DEAD) and not IsUnitType(u, UNIT_TYPE_HERO) and LoadBoolean(w3s_ht, GetHandleId(u), 4) then
             // reported as dead already: drop it (heroes stay, they can be revived)
             call GroupRemoveUnit(w3s_all, u)
+            call FlushChildHashtable(w3s_ht, GetHandleId(u))
             if w3s_nremoved < 8000 then
                 set w3s_removed[w3s_nremoved] = GetHandleId(u)
                 set w3s_nremoved = w3s_nremoved + 1
