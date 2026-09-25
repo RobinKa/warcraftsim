@@ -143,6 +143,27 @@ def combat_stats() -> dict[str, CombatStats]:
     return {k: CombatStats(**v) for k, v in json.loads(cache.read_text()).items()}
 
 
+@lru_cache(maxsize=1)
+def unit_names() -> dict[str, str]:
+    """Unit type -> its display name ("Mountain King"), from the *UnitStrings.txt files."""
+    cache = paths.CACHE_DIR / "unit_names.json"
+    if cache.exists():
+        return json.loads(cache.read_text())
+    names: dict[str, str] = {}
+    with GameArchives() as g:
+        for fname in sorted(g.names("Units\\*UnitStrings.txt"), key=str.lower):
+            current = None
+            for line in g.read(fname).decode("latin-1").splitlines():
+                line = line.strip()
+                if line.startswith("[") and line.endswith("]"):
+                    current = line[1:-1]
+                elif current and line.startswith("Name=") and current not in names:
+                    names[current] = line[5:].strip().strip('"')
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps(names))
+    return names
+
+
 def unit_vocabulary() -> dict[str, int]:
     """Unit type code -> index 1..N (0 is reserved for unknown/padding). Stable: sorted by code."""
     return {code: i + 1 for i, code in enumerate(sorted(unit_table()))}

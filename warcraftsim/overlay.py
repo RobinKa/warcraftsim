@@ -51,6 +51,52 @@ def _ability_orders() -> dict[str, tuple[str, float]]:
         return {}
 
 
+def _hero_abilities(u: Unit) -> list[tuple[str, int, str, float, float]]:
+    """A hero's learned abilities: (name, level, state, cooldown share left, seconds left); state
+    is "ready", "cooldown", "mana" (not enough) or "passive"."""
+    try:
+        from .data.abilities import ability_info, hero_abilities
+        from .env import ability_ready
+        info_by_code, slots = ability_info(), hero_abilities().get(u.type, ())
+    except Exception:
+        return []
+    out = []
+    for k, code in enumerate(slots):
+        if k >= len(u.abilities) or not u.abilities[k][0]:
+            continue
+        level, left = u.abilities[k]
+        info = info_by_code.get(code)
+        if info is None:
+            continue
+        full = info.at(info.cooldown, level) or 1.0
+        if not info.castable:
+            state = "passive"
+        elif left > 0:
+            state = "cooldown"
+        elif not ability_ready(u, k, info):
+            state = "mana"
+        else:
+            state = "ready"
+        out.append((info.name, level, state, min(left / full, 1.0), left))
+    return out
+
+
+def _unit_name(unit_type: str) -> str:
+    try:
+        from .data.objects import unit_names
+        return unit_names().get(unit_type, unit_type)
+    except Exception:
+        return unit_type
+
+
+def _hp_color(frac: float) -> tuple[int, int, int]:
+    return (70, 210, 90) if frac > 0.6 else (230, 200, 60) if frac > 0.3 else (235, 70, 60)
+
+
+ABILITY_COLORS = {"ready": (90, 220, 110), "cooldown": (120, 124, 134), "mana": (90, 150, 255),
+                  "passive": (150, 150, 160)}
+
+
 def _ability_name(unit_type: str, slot: int) -> str:
     try:
         from .data.abilities import ability_info, hero_abilities
@@ -176,11 +222,14 @@ class EpisodeOverlay:
                   and owners.get(c.unit) in self.agent_players]
         pos_a = {u.id: (u.x, u.y) for u in obs_a.units if u.alive}
         pos_b = {u.id: (u.x, u.y) for u in obs_b.units if u.alive} if obs_b is not None else {}
+        units_a = {u.id: u for u in obs_a.units if u.alive}
+        units_b = {u.id: u for u in obs_b.units} if obs_b is not None else {}
         out = []
         for k, raw in enumerate(frames):
             img = Image.frombytes("RGB", (self.w, self.h), raw, "raw", "BGRX")
             if self.world:
-                self._draw_world(img, (k + 1) / len(frames), pos_a, pos_b, labels, orders, owners)
+                self._draw_world(img, (k + 1) / len(frames), pos_a, pos_b, labels, orders, owners,
+                                 units_a, units_b)
             self.canvas.paste(img, (0, 0))
             out.append(self.canvas.tobytes())
         return out
@@ -209,7 +258,7 @@ class EpisodeOverlay:
         return [frame] * int(self.END_SECONDS * fps)
 
     def _draw_world(self, img: Image.Image, f: float, pos_a: dict, pos_b: dict, labels: dict,
-                    orders: list, owners: dict) -> None:
+                    orders: list, owners: dict, units_a: dict | None = None, units_b: dict | None = None) -> None:
         d = ImageDraw.Draw(img)
 
         def at(uid: int):
@@ -280,6 +329,40 @@ class EpisodeOverlay:
             sx, sy = self._screen(*p)
             d.text((sx, sy + 13), label, font=self.f_label, fill=color, anchor="mt", stroke_width=2,
                    stroke_fill=(0, 0, 0))
+            ua = (units_a or {}).get(uid)
+            if ua is not None:
+                self._unit_bars(d, sx, sy, ua, (units_b or {}).get(uid) or ua, f)
+
+    def _unit_bars(self, d: ImageDraw.ImageDraw, sx: float, sy: float, ua: Unit, ub: Unit, f: float) -> None:
+        """Hit points and mana above a unit (between the step's two observations), and under them
+        a square per learned hero ability: green ready, grey filling up while it cools down,
+        blue outline without the mana for it, a dot for a passive one."""
+        w, x0, y0 = 40, sx - 20, sy - 36
+        hp = ua.hp + (ub.hp - ua.hp) * f if ub.alive else ua.hp * (1 - f)
+        frac = max(0.0, min(hp / max(ua.max_hp, 1), 1.0))
+        d.rectangle([x0 - 1, y0 - 1, x0 + w + 1, y0 + 5], fill=(0, 0, 0))
+        d.rectangle([x0, y0, x0 + w * frac, y0 + 4], fill=_hp_color(frac))
+        y = y0 + 6
+        if ua.max_mana > 0:
+            mana = ua.mana + (ub.mana - ua.mana) * f
+            d.rectangle([x0 - 1, y - 1, x0 + w + 1, y + 3], fill=(0, 0, 0))
+            d.rectangle([x0, y, x0 + w * max(0.0, min(mana / ua.max_mana, 1.0)), y + 2], fill=(90, 150, 255))
+            y += 5
+        if ua.abilities:
+            abilities = _hero_abilities(ua)
+            x = sx - (len(abilities) * 10 - 2) / 2
+            for _, _, state, left, _ in abilities:
+                color = ABILITY_COLORS[state]
+                if state == "passive":
+                    d.ellipse([x + 2, y + 2, x + 6, y + 6], fill=color)
+                elif state == "mana":
+                    d.rectangle([x, y, x + 8, y + 8], outline=color, width=2)
+                else:
+                    d.rectangle([x, y, x + 8, y + 8], fill=(40, 42, 48) if state == "cooldown" else color,
+                                outline=(0, 0, 0))
+                    if state == "cooldown" and left < 0.85:  # the part already cooled down
+                        d.rectangle([x + 1, y + 1 + 7 * left, x + 7, y + 7], fill=color)
+                x += 10
 
     # ---- side panel -----------------------------------------------------------------------------
 
@@ -323,7 +406,8 @@ class EpisodeOverlay:
         self._chart(d, (x0, y, x1, y + 50), rew, t, "reward per step (bars)  ·  TD error r + γV' − V (line)",
                     f"{self.td[t, 0]:+.3f}" if self.td is not None else "")
         y += 58
-        y = self._hp_bars(d, obs, x0, x1, y) + 6
+        y = self._hp_bars(d, obs, x0, x1, y) + 4
+        y = self._hero_rows(d, obs, x0, x1, y) + 4
         y = self._action_rows(d, obs, t, x0, x1, y)
         if self.entropy is not None and y + 46 < self.h:
             ent = [(self.entropy[:, a], AGENT_COLORS[a], False) for a in range(self.A)]
@@ -383,6 +467,38 @@ class EpisodeOverlay:
             d.rectangle([bx0, y + 2, bx1, y + 11], outline=(60, 64, 76))
             d.rectangle([bx0, y + 2, bx0 + (bx1 - bx0) * hp / mx, y + 11], fill=color)
             d.text((x1, y), f"{hp:.0f}/{mx:.0f} hp · {len(alive)} units", font=self.f_small, fill=FG, anchor="ra")
+            y += 15
+        return y
+
+    def _hero_rows(self, d: ImageDraw.ImageDraw, obs: Observation, x0: int, x1: int, y: int) -> int:
+        """Per hero: level, mana, and its learned abilities with their level and state."""
+        rows = []
+        for a, p in enumerate(self.agent_players):
+            own, enemy = _slots(obs, p, self._slot_ids)
+            rows += [(f"{'AB'[a]}{i}", AGENT_COLORS[a], u) for i, u in enumerate(own) if u is not None and u.is_hero]
+            if self.A == 1:
+                rows += [(f"E{i}", (215, 215, 220), u) for i, u in enumerate(enemy) if u is not None and u.is_hero]
+        for label, color, u in rows:
+            d.text((x0, y), f"{label} {_unit_name(u.type)}  level {u.hero_level}", font=self.f_bold, fill=color)
+            if u.max_mana:
+                bx0, bx1 = x1 - 150, x1 - 76
+                d.rectangle([bx0, y + 4, bx1, y + 10], outline=(60, 64, 76))
+                d.rectangle([bx0, y + 4, bx0 + (bx1 - bx0) * min(u.mana / u.max_mana, 1.0), y + 10],
+                            fill=(90, 150, 255))
+                d.text((x1, y), f"{u.mana}/{u.max_mana} mana", font=self.f_small, fill=DIM, anchor="ra")
+            y += 14
+            x = x0 + 10
+            abilities = _hero_abilities(u)
+            if not abilities:
+                d.text((x, y), "no abilities learned", font=self.f_small, fill=DIM)
+            for name, level, state, _, seconds in abilities:
+                text = f"{name} {level} " + {"ready": "ready", "mana": "no mana", "passive": "passive",
+                                              "cooldown": f"{seconds:.0f}s"}[state]
+                width = d.textlength(text, font=self.f_small) + 14
+                if x + width > x1 and x > x0 + 10:
+                    x, y = x0 + 10, y + 13
+                d.text((x, y), text, font=self.f_small, fill=ABILITY_COLORS[state])
+                x += width
             y += 15
         return y
 
