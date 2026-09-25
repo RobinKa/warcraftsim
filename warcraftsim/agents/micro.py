@@ -16,6 +16,9 @@ Policies (per own unit, every step):
     cast<policy>
               <policy>, and heroes cast whatever MicroEnv.scripted_cast picks (the scripted
               opponent's rule) when they are not pulled back; e.g. castpull35, castnoop
+    smartcast<policy>
+              the same with MicroEnv.scripted_cast(smart=True): instant area spells only with two
+              enemies inside, targeted spells on the biggest threat, heals below half
 
 With semantic targeting (MicroEnv targeting="semantic") the same decisions are expressed with the
 env's rules: focus = "weakest", range = "weak_in_range", walking away = retreat.
@@ -39,6 +42,9 @@ def micro_action(policy: str, env, state: dict, max_units: int) -> np.ndarray:
     `state` carries memory between steps of an episode (start each episode with {})."""
     own, enemy = env._own, env._enemy  # by slot; None: dead
     semantic = getattr(env, "targeting", "slot") == "semantic"
+    smart = policy.startswith("smartcast")
+    if smart:
+        policy = policy[5:]
     cast = policy.startswith("cast")
     if cast:
         policy = policy[4:]
@@ -49,7 +55,7 @@ def micro_action(policy: str, env, state: dict, max_units: int) -> np.ndarray:
     if cast:
         casts = {}
         for i, u in enumerate(own[:max_units]):
-            if u is not None and u.is_hero and (choice := env.scripted_cast(u, own, enemy)) is not None:
+            if u is not None and u.is_hero and (choice := env.scripted_cast(u, own, enemy, smart)) is not None:
                 casts[i] = choice
     if policy == "noop":
         for i, (slot, rule) in (casts.items() if cast else ()):

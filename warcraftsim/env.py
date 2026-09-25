@@ -512,17 +512,19 @@ class MicroEnv(Wc3Env):
             return TargetOrder(unit.id, oid, target.id)
         return PointOrder(unit.id, oid, target.x, target.y)
 
-    def scripted_cast(self, unit: Unit, own: Sequence[Unit | None],
-                      enemy: Sequence[Unit | None]) -> tuple[int, int] | None:
+    def scripted_cast(self, unit: Unit, own: Sequence[Unit | None], enemy: Sequence[Unit | None],
+                      smart: bool = False) -> tuple[int, int] | None:
         """A simple caster: (ability slot, target rule) of the first ready ability in slot order
         with a use now, else None. For enemies: the weakest enemy in cast range (instant ones:
         an enemy within their area); for allies: the most hurt own unit in range below 70% hit
         points; self buffs: below half hit points with an enemy within 500. Used by the scripted
-        opponent and scripts."""
+        opponent and scripts. `smart`: instant area spells only with two enemies in the area,
+        targeted ones on the biggest threat (DPS per hit point left), heals below half."""
         from .data.abilities import ability_info, hero_abilities
 
         info_by_code = ability_info()
         weak = SEMANTIC_TARGETS.index("weak_in_range")
+        rule = SEMANTIC_TARGETS.index("threat") if smart else weak
         foes = [e for e in enemy if e is not None]
         for slot, code in enumerate(hero_abilities().get(unit.type, ())):
             info = info_by_code.get(code)
@@ -530,21 +532,22 @@ class MicroEnv(Wc3Env):
                 continue
             level = unit.abilities[slot][0]
 
-            def near(d: float) -> bool:
-                return any(e.dist(unit.x, unit.y) <= d for e in foes)
+            def near(d: float, n: int = 1) -> bool:
+                return sum(e.dist(unit.x, unit.y) <= d for e in foes) >= n
 
             if info.cast == "instant":
-                if info.side == "enemy" and near(max(info.at(info.area, level), 250.0)):
+                if info.side == "enemy" and near(max(info.at(info.area, level), 250.0), 2 if smart else 1):
                     return slot, weak
                 # self buffs (Divine Shield) when hurt in a fight
                 if info.side != "enemy" and near(500.0) and unit.hp < 0.5 * unit.max_hp:
                     return slot, weak
             elif info.side == "enemy":
                 if near(info.at(info.range, level) + REACH):
-                    return slot, weak
+                    return slot, rule
             elif info.side == "ally":
                 reach = info.at(info.range, level) + REACH
-                if any(a is not None and a.dist(unit.x, unit.y) <= reach and a.hp < 0.7 * a.max_hp for a in own):
+                low = 0.5 if smart else 0.7
+                if any(a is not None and a.dist(unit.x, unit.y) <= reach and a.hp < low * a.max_hp for a in own):
                     return slot, weak
         return None
 
