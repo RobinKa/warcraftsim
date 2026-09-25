@@ -19,7 +19,7 @@ from typing import Any, Callable
 import numpy as np
 
 from ..env import (ABILITY_FEATURES, RELATIONAL_FEATURES, SEMANTIC_TARGETS, UNIT_FEATURES, MicroEnv,
-                   MicroSelfPlayEnv, NavigateEnv)
+                   MicroSelfPlayEnv, MirrorSelfPlayEnv, NavigateEnv)
 from ..protocol import HERO_ABILITY_SLOTS
 from ..scenario import Scenario
 
@@ -181,8 +181,9 @@ def _micro_action_stats(env, actions: list[np.ndarray]) -> Counter:
     c: Counter = Counter()
     kinds = getattr(env, "kind_names", _KINDS)
     for agent, action in enumerate(actions):
-        own, enemy = env._units[agent] if hasattr(env, "_units") else (env._own, env._enemy)
-        resolve = None if hasattr(env, "_units") else getattr(env, "target_slot", None)
+        side = env.sides[agent] if getattr(env, "sides", None) else env  # MirrorSelfPlayEnv: per player
+        own, enemy = env._units[agent] if hasattr(env, "_units") else (side._own, side._enemy)
+        resolve = None if hasattr(env, "_units") else getattr(side, "target_slot", None)
         a = np.asarray(action, int).reshape(-1, getattr(env, "group", 3))
         targets = []
         for i in range(min(len(own), len(a))):
@@ -191,7 +192,7 @@ def _micro_action_stats(env, actions: list[np.ndarray]) -> Counter:
             kind, _, target = a[i][:3]
             c["unit_steps"] += 1
             c[kinds[kind]] += 1
-            if kinds[kind] == "cast" and env.cast_command(own[i], int(a[i][3]), int(target), own, enemy) is None:
+            if kinds[kind] == "cast" and side.cast_command(own[i], int(a[i][3]), int(target), own, enemy) is None:
                 c["cast_invalid"] += 1  # not learned, cooling down, no mana or no target: nothing happens
             if kind == 3:
                 if resolve is not None:
@@ -341,7 +342,7 @@ def mirror_spawner(units: tuple[int, int] = (2, 4), heroes: int = 1, hero_levels
 
 def _mirror_task(name: str = "mirror_mix", max_units: int = 5, hp_permille: int = 250,
                  targeting: str = "slot", abilities: bool = False, relational: bool = False,
-                 tactical: bool = False) -> Task:
+                 tactical: bool = False, selfplay: bool = False) -> Task:
     # fights last longer with more hit points: 45 s at 25%, 70 s at 50%
     sc = Scenario(units=(), victory="elimination", max_game_seconds=round(20 + hp_permille / 10), name=name)
     semantic = targeting == "semantic"
@@ -350,8 +351,9 @@ def _mirror_task(name: str = "mirror_mix", max_units: int = 5, hp_permille: int 
     group = 4 if abilities else 3
 
     def make_env(inst: str):
-        env = MicroEnv(sc, max_own=max_units, max_enemy=max_units, name=inst, targeting=targeting,
-                       abilities=abilities, relational=relational, tactical=tactical)
+        env = (MirrorSelfPlayEnv if selfplay else MicroEnv)(
+            sc, max_own=max_units, max_enemy=max_units, name=inst, targeting=targeting, abilities=abilities,
+            relational=relational, tactical=tactical)
         env.spawner = spawner
         return env
 
@@ -365,10 +367,14 @@ def _mirror_task(name: str = "mirror_mix", max_units: int = 5, hp_permille: int 
         extra += " Units also see relational features (nearest opponent, in range, threatened, weakest, time to die)."
     if tactical:
         extra += " Tactical masks: retreat only while losing hit points, no plain moves."
+    labels = _micro_labels(max_units, semantic, abilities)
+    if selfplay:
+        extra += " Self-play: the policy plays both sides (two agents per game; the win rate is side 0's)."
+        labels["action_mask"] = lambda env: [_micro_mask(side)[0] for side in env.sides.values()]
     return Task(
         name=name, obs_size=obs_size, act_sizes=act_sizes, make_env=make_env,
         flatten=_micro_flatten, to_action=lambda a: np.asarray(a, dtype=np.int64).reshape(max_units, group),
-        outcome=_micro_outcome, scenario=sc, reward_scale=10.0, **_micro_labels(max_units, semantic, abilities),
+        outcome=_micro_outcome, scenario=sc, reward_scale=10.0, num_agents=2 if selfplay else 1, **labels,
         # sweeps abil6*, from scratch with action masks: 30% wins after 0.1M steps (was 0.66M)
         train_defaults=dict(step_seconds=0.5, horizon=16, lr=0.003, minibatch=192, replay_ratio=4.0,
                             extra=["--train.gae_lambda=0.8", "--train.clip_coef=0.3"]) if abilities else {},
@@ -390,15 +396,16 @@ def _footmen_task(name: str) -> Task | None:
 
 
 def _mirror_variant(name: str) -> Task | None:
-    """mirror_mix[_sem][_abil][_rel][_tac][_hp{P}]: mirror_mix with semantic attack targets (MicroEnv
-    targeting="semantic"), hero abilities (skill builds and casting; implies semantic targets),
-    relational unit features, tactical action masks (implies semantic targets), and/or P permille
-    of the units' hit points (default 250)."""
-    m = re.fullmatch(r"mirror_mix(_sem)?(_abil)?(_rel)?(_tac)?(?:_hp(\d+))?", name)
+    """mirror_mix[_sem][_abil][_rel][_tac][_self][_hp{P}]: mirror_mix with semantic attack targets
+    (MicroEnv targeting="semantic"), hero abilities (skill builds and casting; implies semantic
+    targets), relational unit features, tactical action masks, self-play (MirrorSelfPlayEnv: the
+    policy plays both sides), and/or P permille of the units' hit points (default 250)."""
+    m = re.fullmatch(r"mirror_mix(_sem)?(_abil)?(_rel)?(_tac)?(_self)?(?:_hp(\d+))?", name)
     if not m or not any(m.groups()):
         return None
-    return _mirror_task(name, hp_permille=int(m[5] or 250), targeting="semantic" if m[1] or m[2] or m[4] else "slot",
-                        abilities=bool(m[2]), relational=bool(m[3]), tactical=bool(m[4]))
+    return _mirror_task(name, hp_permille=int(m[6] or 250),
+                        targeting="semantic" if m[1] or m[2] or m[4] or m[5] else "slot",
+                        abilities=bool(m[2]), relational=bool(m[3]), tactical=bool(m[4]), selfplay=bool(m[5]))
 
 
 def get_task(name: str) -> Task:
@@ -407,5 +414,5 @@ def get_task(name: str) -> Task:
     task = _footmen_task(name) or _mirror_variant(name)
     if task is None:
         raise KeyError(f"unknown task {name!r}; available: {sorted(TASKS)}, footmen<N>v<M>[_hp<HP>][_ehp<EHP>] "
-                       f"and mirror_mix[_sem][_abil][_rel][_tac][_hp<permille>]")
+                       f"and mirror_mix[_sem][_abil][_rel][_tac][_self][_hp<permille>]")
     return task

@@ -17,6 +17,7 @@ Every env exposes the raw ``Observation`` as ``info["obs"]``.
 
 from __future__ import annotations
 
+import copy
 import math
 from typing import Any, Sequence
 
@@ -594,13 +595,59 @@ class MicroEnv(Wc3Env):
     def step(self, action):
         self._commands(action)
         obs = self.game.step()
+        reward, terminated, truncated = self._reward(obs)
+        return self._encode(obs), reward, terminated, truncated, {"obs": obs}
+
+    def _reward(self, obs: Observation) -> tuple[float, bool, bool]:
         own_hp = sum(u.hp for u in obs.units if u.alive and u.owner == self.player)
         enemy_hp = sum(u.hp for u in obs.units if u.alive and u.owner != self.player and u.owner in obs.players)
         dealt = (self._hp_prev[1] - enemy_hp) / self._hp0[1]
         taken = (self._hp_prev[0] - own_hp) / self._hp0[0]
         self._hp_prev = (own_hp, enemy_hp)
         outcome, terminated, truncated = self._outcome(obs)
-        return self._encode(obs), float(dealt - taken + outcome), terminated, truncated, {"obs": obs}
+        return float(dealt - taken + outcome), terminated, truncated
+
+
+class MirrorSelfPlayEnv(MicroEnv):
+    """Self-play with MicroEnv's full action set (semantic targets, abilities, masks, ...): this
+    env plays player 0, `sides[1]` (a copy bound to player 1's view of the same game, with its own
+    unit slots, encoder and order state) plays player 1. Dict API like MicroSelfPlayEnv; both see
+    the fight from their own side and the rewards are zero-sum. The observations and actions are
+    those of the single-agent MicroEnv, so one policy plays both sides and also the scripted
+    opponent."""
+
+    possible_agents = (0, 1)
+
+    def __init__(self, scenario: Scenario | None = None, **kw):
+        from .runtime.instance import Agent
+
+        scenario = scenario or Scenario.skirmish(["hfoo"] * 4, ["hfoo"] * 4)
+        setup = GameSetup(slots=[Agent("human"), Agent("orc")], scenario=scenario)
+        super().__init__(scenario, setup=setup, opponent_casts=False, **kw)
+        self.sides: dict[int, MicroEnv] = {0: self}
+
+    def _side(self, player: int) -> MicroEnv:
+        side = copy.copy(self)
+        side.player = player
+        side.game = self.game.as_player(player)
+        side._slots, side._attacking, side.encoder, side.sides = ([], []), {}, None, None
+        return side
+
+    def reset(self, *, seed: int | None = None, options: dict | None = None):
+        obs0, info = super().reset(seed=seed, options=options)
+        side = self.sides[1] = self._side(1)
+        side._on_reset(info["obs"])
+        return {0: obs0, 1: side._encode(info["obs"])}, {0: info, 1: info}
+
+    def step(self, actions: dict[int, np.ndarray]):
+        for p, side in self.sides.items():
+            side._commands(actions[p])
+        obs = self.game.step()
+        encoded, rewards, terminated, truncated = {}, {}, {}, {}
+        for p, side in self.sides.items():
+            rewards[p], terminated[p], truncated[p] = side._reward(obs)
+            encoded[p] = side._encode(obs)
+        return encoded, rewards, terminated, truncated, {p: {"obs": obs} for p in self.sides}
 
 
 class NavigateEnv(Wc3Env):
