@@ -12,6 +12,9 @@ Policies (per own unit, every step):
               hit points in the last second) and is not the healthiest walks away from the
               enemies until it is no longer being hit, then rejoins (the enemies switch to
               another target meanwhile); e.g. pull35, rangepull35, nooppull35
+    [base]pull<L>p<P>
+              the same, but a unit that could pull back does so only with probability P% per
+              step (a diagnostic: does pulling back some of the time already pay?), e.g. pull35p20
 
     cast<policy>
               <policy>, and heroes cast whatever MicroEnv.scripted_cast picks (the scripted
@@ -63,6 +66,9 @@ def micro_action(policy: str, env, state: dict, max_units: int) -> np.ndarray:
         return a
     base, pull, low = policy.partition("pull")
     base = base or "focus"
+    low, _, prob = low.partition("p")
+    prob = int(prob) / 100 if prob else 1.0
+    rng = state.setdefault("rng", np.random.default_rng()) if prob < 1 else None
     stats = combat_stats()
     weakest = min(live, key=lambda i: enemy[i].hp)
     ex = sum(enemy[i].x for i in live) / len(live)
@@ -91,7 +97,7 @@ def micro_action(policy: str, env, state: dict, max_units: int) -> np.ndarray:
         hit = u.hp < hist[0]
         hist.append(u.hp)
         del hist[0]
-        if hit and u.hp < int(low) / 100 * u.max_hp and u.hp < healthiest:
+        if hit and u.hp < int(low) / 100 * u.max_hp and u.hp < healthiest and (rng is None or rng.random() < prob):
             a[i] = 0
             if semantic:
                 a[i, 0] = 1  # retreat
