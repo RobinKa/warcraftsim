@@ -127,8 +127,10 @@ def make_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def parse(ap: argparse.ArgumentParser, argv: list[str]) -> argparse.Namespace:
-    """Our options, plus any --section.key=value PufferLib options (kept in args.extra)."""
+def parse(ap: argparse.ArgumentParser, argv: list[str], task_defaults: dict | None = None) -> argparse.Namespace:
+    """Our options, plus any --section.key=value PufferLib options (kept in args.extra).
+    `task_defaults` (Task.train_defaults) fill the options the command line does not give;
+    their "extra" entries (PufferLib options) apply unless the same key is given."""
     joined, i = [], 0
     while i < len(argv):  # --sweep "--x.y=1": argparse would take the value for an option
         if argv[i] == "--sweep" and i + 1 < len(argv):
@@ -142,6 +144,14 @@ def parse(ap: argparse.ArgumentParser, argv: list[str]) -> argparse.Namespace:
     if bad:
         ap.error(f"unrecognized arguments: {' '.join(bad)}")
     args.extra = unknown
+    for key, value in (task_defaults or {}).items():
+        if key == "extra":
+            given = {u.split("=")[0] for u in args.extra}
+            args.extra = [*(v for v in value if v.split("=")[0] not in given), *args.extra]
+            continue
+        flags = next(a.option_strings for a in ap._actions if a.dest == key)
+        if not any(j == f or j.startswith(f + "=") for j in joined for f in flags):
+            setattr(args, key, value)
     return args
 
 
@@ -162,13 +172,13 @@ def _resolve_init(args) -> Path | None:
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     ap = make_parser()
-    base = parse(ap, argv)
-    task = get_task(base.task)
+    task = get_task(parse(ap, argv).task)
+    base = parse(ap, argv, task.train_defaults)  # the task's tuned settings where not given
     group = base.name or f"{task.name}-{datetime.now():%Y%m%d-%H%M%S}"
     configs = base.sweep or [""]
     plans = []  # (args, run name, sweep info)
     for i, cfg in enumerate(configs):
-        args = parse(ap, [*argv, *shlex.split(cfg)])
+        args = parse(ap, [*argv, *shlex.split(cfg)], task.train_defaults)
         if (args.task, args.envs, args.workers, args.step_seconds) != (base.task, base.envs, base.workers,
                                                                        base.step_seconds):
             ap.error("--sweep options cannot change --task, --envs, --workers or --step-seconds (the runs share the games)")

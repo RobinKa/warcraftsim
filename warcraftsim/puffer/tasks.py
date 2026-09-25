@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
 import numpy as np
@@ -48,6 +48,9 @@ class Task:
     # env -> per agent, one byte per option of every action head (0: not possible now); PufferLib
     # samples and trains with them (None: everything allowed)
     action_mask: Callable[[Any], list[np.ndarray]] | None = None
+    # train.py settings found by sweeps for this task (used where the command line does not set
+    # them): its option names (horizon, lr, minibatch, ...), "extra": PufferLib --section.key=value
+    train_defaults: dict[str, Any] = field(default_factory=dict)
 
     @property
     def num_atns(self) -> int:
@@ -262,8 +265,10 @@ TASKS: dict[str, Callable[[], Task]] = {
     "micro": _micro_task,
     "micro_mirror": lambda: _micro_task(("hfoo",) * 4, ("hfoo",) * 4, name="micro_mirror"),
     # the smallest fight worth learning: pull a damaged footman back so the enemies switch targets
-    "footmen2": lambda: _micro_task(("hfoo",) * 2, ("hfoo",) * 2, max_units=2, name="footmen2", max_hp=100,
-                                    max_game_seconds=40),
+    "footmen2": lambda: replace(_micro_task(("hfoo",) * 2, ("hfoo",) * 2, max_units=2, name="footmen2", max_hp=100,
+                                            max_game_seconds=40),
+                                # sweeps f2-*: 95% wins after ~0.2M steps
+                                train_defaults=dict(step_seconds=0.5, lr=0.01, minibatch=192, replay_ratio=4.0)),
     "selfplay_micro": _selfplay_task,
     "mirror_mix": lambda: _mirror_task(),  # defined below
 }
@@ -352,6 +357,9 @@ def _mirror_task(name: str = "mirror_mix", max_units: int = 5, hp_permille: int 
         name=name, obs_size=obs_size, act_sizes=act_sizes, make_env=make_env,
         flatten=_micro_flatten, to_action=lambda a: np.asarray(a, dtype=np.int64).reshape(max_units, group),
         outcome=_micro_outcome, scenario=sc, reward_scale=10.0, **_micro_labels(max_units, semantic, abilities),
+        # sweeps abil6*, from scratch with action masks: 30% wins after 0.1M steps (was 0.66M)
+        train_defaults=dict(step_seconds=0.5, horizon=16, lr=0.003, minibatch=192, replay_ratio=4.0,
+                            extra=["--train.gae_lambda=0.8", "--train.clip_coef=0.3"]) if abilities else {},
         description=f"Mirror match, a new composition every episode: a hero (level 1-3) and 2-{max_units - 1} "
                     f"units from all races, {hp_permille / 10:.0f}% hit points, vs the scripted opponent." + extra,
     )
