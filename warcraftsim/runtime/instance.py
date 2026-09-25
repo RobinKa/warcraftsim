@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
 import shutil
 import socket
 import subprocess
@@ -150,11 +151,13 @@ class GameSetup:
     # True: the first agent is the local (user) player instead of a computer slot watched by an
     # observer. Only one slot can be a user in a local game.
     agent_is_user: bool = False
-    # Relaunch the game process at the next episode boundary after this many steps (0 = never).
-    # Reading actions with Preloader leaked ~20 KB of JASS compiler memory per step ("Not enough
-    # memory" after ~20k steps); the mailbox harness grows by ~0.6 KB per step, so this is only a
-    # safety net (each relaunch stalls the trainer's batch for a game load).
-    recycle_steps: int = 200_000
+    # Relaunch the game process at the next episode boundary after about this many steps (0 =
+    # never; each game at its own point within ±30%, so games started together do not all reload
+    # at once: 24 did, and the trainer stalled for 90 s). Reading actions with Preloader leaked
+    # ~20 KB of JASS compiler memory per step ("Not enough memory" after ~20k steps) and dead units
+    # stayed referenced until the harness flushed them; now it is only a safety net (each relaunch
+    # stalls the trainer's batch for a game load).
+    recycle_steps: int = 500_000
     # Melee only: keep a second game loaded and waiting at game time 0, so restart() is instant
     # instead of a ~8 s relaunch. Costs one more idle process (~400 MB) and its load time.
     warm_spare: bool = True
@@ -624,7 +627,8 @@ class GameInstance:
         main menu, and the .wgc is what sets exact slots and AI difficulty. relaunch=True always
         starts a fresh process (e.g. so a saved replay holds exactly one episode).
         """
-        recycle = bool(self.setup.recycle_steps and self._proc_steps >= self.setup.recycle_steps)
+        jitter = 0.7 + 0.6 * random.Random(self.base_name).random()  # fixed per game
+        recycle = bool(self.setup.recycle_steps and self._proc_steps >= self.setup.recycle_steps * jitter)
         # a parked game (see scenario_spare) means this process only ran a fresh-process episode:
         # the next normal episode continues the parked game, even if that episode was cut short
         parked = self._spare is not None and self._spare._parked
