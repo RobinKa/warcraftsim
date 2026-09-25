@@ -129,6 +129,9 @@ def losses(net, meta, obs, act, ret, mask, live, legal=None, vf_coef: float = 0.
         if legal is not None and legal.shape[-1] > 1:  # action masks: only the legal options count,
             ok = legal[..., at - n:at] > 0              # smoothing spreads over them alone
             ok = ok | ~ok.any(dim=-1, keepdim=True)
+            # a recorded choice the mask forbids (e.g. a script choosing retreat during a committed
+            # retreat, which the env carries on regardless) teaches nothing: left out
+            w = w * ok.gather(-1, target.unsqueeze(-1)).squeeze(-1).float()
             logits = logits.masked_fill(~ok, -1e9)
             logp = torch.log_softmax(logits, dim=-1)
             nll = -logp.gather(-1, target.unsqueeze(-1)).squeeze(-1)
