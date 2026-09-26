@@ -206,13 +206,14 @@ def main() -> int:
         grouped = args.groups > 1 and league is None
         if grouped:  # pipelined: act for group g, send, receive group g+1's previous step, act for it, ...
             G = args.groups
-            parts = [list(range(g * n_env // G, (g + 1) * n_env // G)) for g in range(G)]
+            # contiguous groups: slices are views (no gather / scatter kernels per group)
+            parts = [slice(g * n_env // G, (g + 1) * n_env // G) for g in range(G)]
             pending = [False] * G
 
             def receive(g: int, t_done: int) -> None:
                 nonlocal obs_t, masks_t
                 E = parts[g]
-                o, m, rew, term, stats = envs.recv(E)
+                o, m, rew, term, stats = envs.recv(range(E.start, E.stop))
                 obs_t[E] = torch.as_tensor(o, device=device)
                 masks_t[E] = torch.as_tensor(m, device=device)
                 b_rew[t_done, E] = torch.as_tensor(rew, device=device) * reward_scale
@@ -247,7 +248,7 @@ def main() -> int:
                             b_ref[t, E] = ref.heads(obs_t[E], u_r, rh, masks_t[E], actions=acts)[1]
                     b_obs[t, E], b_masks[t, E], b_act[t, E] = obs_t[E], masks_t[E], acts
                     b_logp[t, E], b_val[t, E], b_start[t, E] = logp, v, start[E]
-                    envs.send(E, acts.view(len(E), -1).cpu().numpy())
+                    envs.send(range(E.start, E.stop), acts.view(E.stop - E.start, -1).cpu().numpy())
                     pending[g] = True
                     t_model += time.time() - tm
             te = time.time()
