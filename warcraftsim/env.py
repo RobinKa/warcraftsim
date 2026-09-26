@@ -380,7 +380,7 @@ class MicroEnv(Wc3Env):
                  move_distance: float = 250.0, opponent: str = "scripted", name: str = "micro0",
                  targeting: str = "slot", abilities: bool = False, opponent_casts: bool | None = None,
                  relational: bool = False, tactical: bool = False, kill_reward: float = 0.0,
-                 rejoin: bool = False, **kw):
+                 rejoin: bool = False, draw_reward: float = 0.0, **kw):
         from .runtime.instance import Agent, Idle, Scripted
 
         self.scenario = scenario or Scenario.skirmish(["hfoo"] * 4, ["hfoo"] * 4)
@@ -415,6 +415,10 @@ class MicroEnv(Wc3Env):
         # into the fight; otherwise it stands where the retreat left it, out of reach, and pulling
         # back only pays when an attack order follows (without focus fire: 4% wins against 59%)
         self.rejoin = rejoin
+        # added to the reward when the time runs out (a draw). In mirror fights waiting is safer than
+        # attacking (the side that walks into range is hit first), so self-play drifts into standing
+        # off until the time limit; -1 makes a draw as bad as a loss for both sides
+        self.draw_reward = draw_reward
         feat = (UNIT_FEATURES + (ABILITY_FEATURES * HERO_ABILITY_SLOTS if abilities else 0)
                 + (RELATIONAL_FEATURES if relational else 0))
         self.observation_space = spaces.Dict({
@@ -764,6 +768,8 @@ class MicroEnv(Wc3Env):
             kills = self.kill_reward * ((prev[1] - len(enemy)) - (prev[0] - len(own)))
             self._alive_prev = (len(own), len(enemy))
         outcome, terminated, truncated = self._outcome(obs)
+        if truncated:
+            outcome += self.draw_reward
         return float(dealt - taken + kills + outcome), terminated, truncated
 
 

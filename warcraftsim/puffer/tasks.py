@@ -447,7 +447,7 @@ def mirror_spawner(units: tuple[int, int] = (2, 4), heroes: int = 1, hero_levels
 def _mirror_task(name: str = "mirror_mix", max_units: int = 5, hp_permille: int = 250,
                  targeting: str = "slot", abilities: bool = False, relational: bool = False,
                  tactical: bool = False, selfplay: bool = False, kill_reward: float = 0.0,
-                 rejoin: bool = False) -> Task:
+                 rejoin: bool = False, draw_reward: float = 0.0) -> Task:
     # fights last longer with more hit points: 45 s at 25%, 70 s at 50%
     sc = Scenario(units=(), victory="elimination", max_game_seconds=round(20 + hp_permille / 10), name=name)
     semantic, general = targeting == "semantic", targeting == "general"
@@ -459,7 +459,7 @@ def _mirror_task(name: str = "mirror_mix", max_units: int = 5, hp_permille: int 
     def make_env(inst: str):
         env = (MirrorSelfPlayEnv if selfplay else MicroEnv)(
             sc, max_own=max_units, max_enemy=max_units, name=inst, targeting=targeting, abilities=abilities,
-            relational=relational, tactical=tactical, kill_reward=kill_reward, rejoin=rejoin)
+            relational=relational, tactical=tactical, kill_reward=kill_reward, rejoin=rejoin, draw_reward=draw_reward)
         env.spawner = spawner
         return env
 
@@ -478,6 +478,8 @@ def _mirror_task(name: str = "mirror_mix", max_units: int = 5, hp_permille: int 
         extra += " Tactical masks: retreat only while losing hit points, no plain moves."
     if rejoin:
         extra += " After a pull-back, a unit told nothing attack-moves back into the fight."
+    if draw_reward:
+        extra += f" A draw (the time runs out) is worth {draw_reward:+g}, for both sides."
     if kill_reward:
         extra += f" Reward {kill_reward:+g} per enemy killed, {-kill_reward:+g} per own unit lost."
     labels = _micro_labels(max_units, semantic, abilities, general)
@@ -496,7 +498,9 @@ def _mirror_task(name: str = "mirror_mix", max_units: int = 5, hp_permille: int 
         **_micro_layout(max_units, abilities, relational, general),
         mask_info=_micro_masks(targeting, abilities, tactical, rejoin),
         reward_info=_MICRO_REWARD + (f" {kill_reward:+g} per enemy unit killed, {-kill_reward:+g} per own unit lost."
-                                     if kill_reward else "") + (" Zero-sum between the sides." if selfplay else ""),
+                                     if kill_reward else "") + (f" A draw (time limit) is worth {draw_reward:+g}."
+                                                                 if draw_reward else "")
+                    + (" Zero-sum between the sides." if selfplay and not draw_reward else ""),
     )
 
 
@@ -615,7 +619,7 @@ def _mirror_variant(name: str) -> Task | None:
     fight after a pull-back: implies tactical), kill rewards, self-play (MirrorSelfPlayEnv: the
     policy plays both sides), and/or P permille of the units' hit points (default 250)."""
     m = re.fullmatch(r"mirror_mix(?P<gen>_gen)?(?P<sem>_sem)?(?P<abil>_abil)?(?P<rel>_rel)?(?P<tac>_tac)?"
-                     r"(?P<rejoin>_rejoin)?(?P<kill>_kill)?(?P<self>_self)?(?:_hp(?P<hp>\d+))?", name)
+                     r"(?P<rejoin>_rejoin)?(?P<kill>_kill)?(?P<nodraw>_nodraw)?(?P<self>_self)?(?:_hp(?P<hp>\d+))?", name)
     if not m or not any(m.groups()):
         return None
     tactical = bool(m["tac"] or m["rejoin"])
@@ -625,7 +629,8 @@ def _mirror_variant(name: str) -> Task | None:
                         targeting="general" if m["gen"] else
                         "semantic" if m["sem"] or m["abil"] or tactical or m["self"] else "slot",
                         abilities=bool(m["abil"]), relational=bool(m["rel"]), tactical=tactical,
-                        selfplay=bool(m["self"]), kill_reward=0.2 if m["kill"] else 0.0, rejoin=bool(m["rejoin"]))
+                        selfplay=bool(m["self"]), kill_reward=0.2 if m["kill"] else 0.0, rejoin=bool(m["rejoin"]),
+                        draw_reward=-1.0 if m["nodraw"] else 0.0)
 
 
 def get_task(name: str) -> Task:
@@ -634,5 +639,5 @@ def get_task(name: str) -> Task:
     task = _footmen_task(name) or _mirror_variant(name)
     if task is None:
         raise KeyError(f"unknown task {name!r}; available: {sorted(TASKS)}, footmen<N>v<M>[_hp<HP>][_ehp<EHP>] "
-                       f"and mirror_mix[_gen][_sem][_abil][_rel][_tac][_rejoin][_kill][_self][_hp<permille>]")
+                       f"and mirror_mix[_gen][_sem][_abil][_rel][_tac][_rejoin][_kill][_nodraw][_self][_hp<permille>]")
     return task
