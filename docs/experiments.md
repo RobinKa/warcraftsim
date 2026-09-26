@@ -243,6 +243,21 @@ castpull35 52%. The action space can express what the built-in retreat and targe
   1.25 units per game instead of 2.3. Only a pointer at units could learn this: the rule-based
   targets of the older tasks had no rule for it.
 
+### Hero abilities with general orders (`mirror_mix_gen_abil_hp400`)
+
+The same recipe on the ability task, against the casting scripted opponent: `castpull35` with
+general orders (52% over 2000 episodes) fitted in 40 epochs (order accuracy 98.8%, recall of casts
+0.96, moves 0.96, attacks 0.99), then fine-tuned gently (runs `genabil-*`):
+
+| | win rate |
+|---|---|
+| the clone, no updates | 51% |
+| fine-tuned, 0.5M / 1M / 1.5M / 2M steps | 61% / 68% / 69% / 68% |
+| PufferLib's network: from scratch / from the fitted script (earlier) | 42-45% / 52% |
+
+The plateau of the older tasks ("reasonable strategies all end near a coin flip") was the network's,
+not the task's.
+
 ### League self-play (`mirror_mix_gen_self_hp400`)
 
 The first league run (`genleague`: from the fitted `pull35`, gentle fine-tuning, 3M steps; half the
