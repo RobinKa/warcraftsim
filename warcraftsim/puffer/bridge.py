@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import signal
 import socket
 import struct
 import threading
@@ -491,6 +492,10 @@ def run_worker(task_name: str, num_envs: int, run_dir: str, socket_path: str, re
     takes ("run", run_dir, record_every, video_every) to switch runs; each is acknowledged on `acks`."""
     from .tasks import get_task
 
+    def term(signum, frame):  # terminated (e.g. stopped while launching): close the games first
+        raise SystemExit(1)
+
+    signal.signal(signal.SIGTERM, term)
     bridge = BridgeServer(get_task(task_name), num_envs, run_dir, socket_path, record_every, video_every, name,
                           worker, step_seconds=step_seconds)
     try:
@@ -508,6 +513,7 @@ def run_worker(task_name: str, num_envs: int, run_dir: str, socket_path: str, re
                 bridge.set_run(*msg[1:])
                 acks.put(worker)
     finally:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)  # the cleanup must finish
         bridge.close()
         # a video render still running (its thread dies with the process) leaves its game and Xvfb
         reaper.reap()

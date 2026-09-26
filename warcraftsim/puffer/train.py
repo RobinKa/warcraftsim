@@ -235,10 +235,11 @@ def main(argv: list[str] | None = None) -> int:
         for p in procs:
             p.start()
         for p, ready in zip(procs, readies):
-            while not ready.wait(1):
+            while not stopping and not ready.wait(1):  # a stop while the games start: at once
                 if not p.is_alive():
                     raise RuntimeError(f"bridge worker {procs.index(p)} failed to start its games")
-        print(f"bridge: {base.envs} games in {workers} workers ready in {time.time() - t0:.0f}s", flush=True)
+        if not stopping:
+            print(f"bridge: {base.envs} games in {workers} workers ready in {time.time() - t0:.0f}s", flush=True)
         for (args, name, sweep), run in zip(plans, runs):
             if stopping:
                 run.save(status="stopped (sweep ended)")
