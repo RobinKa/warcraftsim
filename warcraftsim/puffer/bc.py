@@ -244,7 +244,12 @@ def evaluate(task_name: str, checkpoint: Path, episodes: int, games: int, step_s
     from .policy import PufferPolicy
 
     task = get_task(task_name)
-    pol = PufferPolicy(checkpoint, task.obs_size, task.act_sizes, hidden=hidden, layers=layers)
+    entity = Path(checkpoint).suffix in (".pt", ".npz")  # the torch trainer's EntityNet (numpy here)
+    if entity:
+        from ..rl.numpy_model import load as load_entity
+        pol = load_entity(checkpoint)
+    else:
+        pol = PufferPolicy(checkpoint, task.obs_size, task.act_sizes, hidden=hidden, layers=layers)
     per_game = [episodes // games + (i < episodes % games) for i in range(games)]
 
     by_type: dict[str, Counter] = {}  # unit type in the (mirror) composition -> outcomes
@@ -259,10 +264,19 @@ def evaluate(task_name: str, checkpoint: Path, episodes: int, games: int, step_s
                 comp: set[str] = set()
 
                 def choose(o, env):
+                    nonlocal state
                     if not comp:
                         comp.update(u.type for u in getattr(env, "_own", ()) if u is not None)
-                    dec = pol.step(o, state)
                     mask = task.action_mask(env)[0] if task.action_mask is not None else None
+                    if entity:
+                        m = mask.copy() if mask is not None else np.ones(pol.k * pol.per, np.uint8)
+                        for i in range(pol.k):  # forbidden kinds, for every unit (noop stays)
+                            for kk in forbid:
+                                m[i * pol.per + kk] = 0
+                            m[i * pol.per] = 1
+                        a, _, _, state, _ = pol.step(np.asarray(o)[None], state, m[None], rng=rng, greedy=greedy)
+                        return a[0]
+                    dec = pol.step(o, state)
                     if forbid:
                         mask = np.ones(sum(task.act_sizes), np.uint8) if mask is None else mask.copy()
                         at = 0

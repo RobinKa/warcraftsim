@@ -62,26 +62,23 @@ def combat_stats(first, last, player: int = 0) -> dict | None:
 
 
 def _torch_overlay(ckpt: Path, steps_file: Path) -> list | None:
-    """PolicyOutputs of an EntityNet checkpoint for a video's trace (warcraftsim/rl/overlay_eval.py)."""
-    import subprocess
-    import tempfile
-
-    from .bc import _torch_python
+    """PolicyOutputs of a torch-trainer checkpoint (EntityNet) for a video's trace, in numpy."""
+    from ..rl.numpy_model import episode_outputs, load
     from .policy import PolicyOutput
 
-    script = Path(__file__).resolve().parents[1] / "rl" / "overlay_eval.py"
-    with tempfile.TemporaryDirectory() as tmp:
-        out = Path(tmp) / "out.npz"
-        r = subprocess.run([_torch_python(), str(script), str(ckpt), str(steps_file), str(out)],
-                           capture_output=True, text=True, timeout=300)
-        if r.returncode != 0 or not out.exists():
-            print(f"bridge: policy not evaluated for the video: {r.stderr[-300:]}")
-            return None
-        d = np.load(out)
-        n = len([k for k in d.files if k.startswith("probs")])
-        probs = [d[f"probs{j}"] for j in range(n)]
-        return [PolicyOutput(values=d["values"][:, a], probs=[p[:, a] for p in probs], entropy=d["entropy"][:, a])
-                for a in range(d["values"].shape[1])]
+    try:
+        net = load(ckpt)
+        trace = np.load(steps_file)
+        masks = trace["masks"] if "masks" in trace.files else None
+        outs = []
+        for a in range(trace["obs"].shape[1]):
+            values, probs, ent = episode_outputs(net, trace["obs"][:, a], masks[:, a] if masks is not None else None,
+                                                 trace["actions"][:, a])
+            outs.append(PolicyOutput(values=values, probs=probs, entropy=ent))
+        return outs
+    except Exception as e:  # noqa: BLE001 (a video without the panel rather than none)
+        print(f"bridge: policy not evaluated for the video: {e}")
+        return None
 
 
 def _recv(conn: socket.socket, n: int) -> bytes:

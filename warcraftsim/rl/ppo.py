@@ -94,6 +94,9 @@ def main() -> int:
                          "advantages are noise, and PPO would follow them away from the clone)")
     ap.add_argument("--target-kl", type=float, default=0.0,
                     help="stop an epoch's updates once the policy moved this far (approximate KL; 0: off)")
+    ap.add_argument("--groups", type=int, default=1,
+                    help="step the games in this many groups, pipelined: while one group's games step, the "
+                         "network acts for the next (a slow game stalls only its group). Single-agent tasks.")
     ap.add_argument("--eval-only", type=int, default=0, help="1: play without updating (win rates in train.jsonl)")
     ap.add_argument("--no-compile", type=int, default=0,
                     help="skip torch.compile of the rollout step (CUDA graphs: ~2 ms instead of ~20 per step)")
@@ -200,7 +203,58 @@ def main() -> int:
         b_h = torch.zeros(T, B, net.core_size, device=device)
         b_ref = torch.zeros(T, B, device=device)
         t_env = t_model = 0.0
-        for t in range(T):
+        grouped = args.groups > 1 and league is None
+        if grouped:  # pipelined: act for group g, send, receive group g+1's previous step, act for it, ...
+            G = args.groups
+            parts = [list(range(g * n_env // G, (g + 1) * n_env // G)) for g in range(G)]
+            pending = [False] * G
+
+            def receive(g: int, t_done: int) -> None:
+                nonlocal obs_t, masks_t
+                E = parts[g]
+                o, m, rew, term, stats = envs.recv(E)
+                obs_t[E] = torch.as_tensor(o, device=device)
+                masks_t[E] = torch.as_tensor(m, device=device)
+                b_rew[t_done, E] = torch.as_tensor(rew, device=device) * reward_scale
+                b_done[t_done, E] = torch.as_tensor(term, device=device)
+                start[E] = b_done[t_done, E]
+                for s_ in stats[stats[:, 0] > 0.5]:
+                    finished["n"] += 1
+                    finished["wins"] += s_[3] > 0.5
+                    finished["losses"] += s_[3] < -0.5
+                    finished["ret"] += float(s_[1])
+                    finished["len"] += float(s_[2])
+
+            for t in range(T):
+                for g in range(G):
+                    E = parts[g]
+                    te = time.time()
+                    if pending[g]:
+                        receive(g, t - 1)
+                    tm = time.time()
+                    t_env += tm - te
+                    with torch.no_grad():
+                        hg = h[E] * (1 - start[E]).unsqueeze(-1)
+                        b_h[t, E] = hg
+                        acts, logp, _, v, hg = step_fn(obs_t[E], hg, masks_t[E])
+                        acts, logp, v, hg = acts.clone(), logp.clone(), v.clone(), hg.clone()
+                        h[E] = hg
+                        if ref is not None:
+                            rh = ref_h[E] * (1 - start[E]).unsqueeze(-1)
+                            u_r, x_r = ref.encode(obs_t[E])
+                            rh = ref.gru(x_r, rh)
+                            ref_h[E] = rh
+                            b_ref[t, E] = ref.heads(obs_t[E], u_r, rh, masks_t[E], actions=acts)[1]
+                    b_obs[t, E], b_masks[t, E], b_act[t, E] = obs_t[E], masks_t[E], acts
+                    b_logp[t, E], b_val[t, E], b_start[t, E] = logp, v, start[E]
+                    envs.send(E, acts.view(len(E), -1).cpu().numpy())
+                    pending[g] = True
+                    t_model += time.time() - tm
+            te = time.time()
+            for g in range(G):  # the last step's results: the next rollout starts from them
+                receive(g, T - 1)
+            t_env += time.time() - te
+        for t in range(0 if not grouped else T, T):
             tm = time.time()
             with torch.no_grad():
                 h = h * (1 - start).unsqueeze(-1)

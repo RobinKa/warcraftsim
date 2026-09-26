@@ -76,12 +76,22 @@ class BridgeEnvs:
     def step(self, actions: np.ndarray):
         """actions [n agents, num_atns] -> obs, masks, rewards, terminals, stats [n, 4] (episode
         ended, return, length, outcome)."""
+        envs = range(len(self.conns))
+        self.send(envs, actions)
+        return self.recv(envs)
+
+    def send(self, envs, actions: np.ndarray) -> None:
+        """Starts a step of environments `envs` (their agents' actions [len(envs) * agents, num_atns])."""
         a = self.agents
-        acts = np.asarray(actions, np.float32).reshape(len(self.conns), a * self.num_atns)
-        for conn, act in zip(self.conns, acts):
-            conn.sendall(struct.pack("<I", 2) + act.tobytes())
+        acts = np.asarray(actions, np.float32).reshape(len(envs), a * self.num_atns)
+        for e, act in zip(envs, acts):
+            self.conns[e].sendall(struct.pack("<I", 2) + act.tobytes())
+
+    def recv(self, envs):
+        """The results of the step `send` started for `envs` (as step returns them)."""
+        a = self.agents
         obs, masks, rew, term, stats = [], [], [], [], []
-        for conn in self.conns:
+        for conn in (self.conns[e] for e in envs):
             o, m = self._read_obs(conn)
             obs.append(o)
             masks.append(m)
