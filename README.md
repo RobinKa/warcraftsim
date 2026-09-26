@@ -163,6 +163,8 @@ python -m warcraftsim.puffer.train --task micro_mirror --timesteps 3000000      
 python -m warcraftsim.puffer.train --task selfplay_micro --envs 8 --timesteps 3000000 # both sides learn
 # a sweep: the games launch once, then one run per --sweep (runs NAME-1, NAME-2, ... in the dashboard)
 python -m warcraftsim.puffer.train --task footmen2 --name f2 --timesteps 1e6 --sweep "--lr 0.01" --sweep "--lr 0.02"
+# notes: what a run tests (runs/<name>/notes.md; editable in the dashboard); in a --sweep, for that run
+python -m warcraftsim.puffer.train --task footmen2 --name f2 --note "lr sweep" --sweep "--lr 0.01 --note 'seed 1'"
 python -m warcraftsim dashboard                                                    # http://localhost:8765
 ```
 
@@ -352,7 +354,8 @@ Notes:
 * Runs can train concurrently. Each run claims a machine-wide training slot, and its games are named after that slot, so consecutive runs reuse their Wine prefixes.
 
 Each run writes `runs/<name>/`, which the dashboard shows live:
-* `run.json`: configuration and status.
+* `run.json`: configuration and status, and how it was launched: the command line, the equivalent command for this run alone (a sweep's run with its own options), the git commit (and whether there were uncommitted changes), and which options came from the task's defaults.
+* `notes.md`: notes (`--note`, or written in the dashboard).
 * `train.jsonl`: one line per trainer epoch (SPS, losses, win rate), from a small patch applied to the build copy.
 * `episodes.jsonl`: every finished episode.
 * `renders/`: trajectory animations.
@@ -372,7 +375,11 @@ Each run writes `runs/<name>/`, which the dashboard shows live:
 * `checkpoints/`.
 
 The dashboard shows:
-* the run list, with comparison;
+* the run list, with comparison; each run's parent and the first line of its notes. The filter matches every word against names, tasks, sweep options, notes and parents;
+* per run:
+  * notes, editable;
+  * lineage: what it started from (a random policy, another run's checkpoint, or a fitted script with its policy, episodes and win rate), the chain back from there, its sweep and sibling runs, and the runs started from it;
+  * at the bottom, the launch commands (copyable) and the whole configuration. Runs from before launches were recorded get a command rebuilt from their options;
 * progress cards;
 * **Outcomes**: win rate, win/draw/loss, return, episode length;
 * **Behaviour** (from the actions the policy sent):

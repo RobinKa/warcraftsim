@@ -77,7 +77,29 @@ table { width:100%; border-collapse:collapse; background:var(--panel); border:1p
 th, td { text-align:left; padding:5px 10px; border-bottom:1px solid var(--line); font-variant-numeric:tabular-nums; }
 th { color:var(--muted); font-weight:500; font-size:11px; text-transform:uppercase; letter-spacing:.5px; }
 .empty { color:var(--muted); padding:30px; text-align:center; }
-pre.cmd { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px; color:var(--muted); white-space:pre-wrap; font-size:11px; }
+pre.cmd { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px; color:var(--muted); white-space:pre-wrap; font-size:11px; margin:0 0 8px; }
+.run .from, .run .note { font-size:11.5px; margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.run .from { color:var(--muted); }
+.run .note { color:var(--text); opacity:.8; }
+.about { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:12px; margin-bottom:14px; }
+.panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+.panel h3 { margin:0 0 8px; font-size:12px; font-weight:600; color:var(--muted); display:flex; justify-content:space-between; gap:8px; }
+.panel h3 span { font-weight:400; }
+#notes { width:100%; min-height:74px; resize:vertical; background:var(--bg); color:var(--text); border:1px solid var(--line);
+  border-radius:6px; padding:6px 8px; font:inherit; }
+.panel .row { display:flex; gap:8px; align-items:center; margin-top:6px; font-size:12px; color:var(--muted); }
+.panel button, .copy { background:var(--panel2); border:1px solid var(--line); border-radius:5px; color:var(--text);
+  padding:2px 9px; font:inherit; font-size:12px; cursor:pointer; }
+dl.facts { display:grid; grid-template-columns:auto 1fr; gap:5px 12px; margin:0; font-size:12.5px; }
+dl.facts dt { color:var(--muted); }
+dl.facts dd { margin:0; min-width:0; overflow-wrap:anywhere; }
+a.go { color:var(--blue); cursor:pointer; text-decoration:none; }
+a.go:hover { text-decoration:underline; }
+.cmdhead { display:flex; justify-content:space-between; align-items:center; color:var(--muted); font-size:12px; margin:10px 0 4px; }
+.kv { display:flex; flex-wrap:wrap; gap:4px 6px; font-size:11.5px; margin-bottom:8px; }
+.kv span { background:var(--panel); border:1px solid var(--line); border-radius:4px; padding:1px 6px; color:var(--muted); }
+.kv span b { color:var(--text); font-weight:500; }
+.kv span.def { border-style:dashed; }
 </style>
 </head>
 <body>
@@ -90,7 +112,7 @@ pre.cmd { background:var(--panel); border:1px solid var(--line); border-radius:8
 <div class="layout">
   <aside><h2>Runs <span style="float:right;text-transform:none;letter-spacing:0">☑ compare</span></h2>
     <div class="runtools">
-      <input type="search" id="runfilter" placeholder="filter: name, task, sweep options" autocomplete="off">
+      <input type="search" id="runfilter" placeholder="filter: name, task, sweep options, notes, parent" autocomplete="off">
       <div class="row"><button id="selall" title="compare every run listed">select all</button>
         <button id="selnone" title="compare none">clear</button><span id="selcount"></span></div>
       <div class="row"><label title="list only the compared runs (and the one shown)"><input type="checkbox" id="selonly"> show selected only</label></div>
@@ -301,8 +323,10 @@ function selectionChanged() {
 const runUI = { filter: "", only: false };
 try { runUI.filter = localStorage.getItem("runFilter") || ""; runUI.only = localStorage.getItem("runOnly") === "1"; } catch (e) {}
 function listedRuns() {
-  const f = runUI.filter.trim().toLowerCase();
-  return state.runs.filter(r => (!f || [r.name, r.task, r.sweep ? r.sweep.options || "base" : ""].join(" ").toLowerCase().includes(f))
+  const words = runUI.filter.trim().toLowerCase().split(/\s+/).filter(Boolean);  // every word must match
+  const text = r => [r.name, r.task, r.sweep ? r.sweep.options || "base" : "", r.notes || "",
+                     r.parent ? `${r.parent.name} ${parentShort(r.parent)}` : ""].join(" ").toLowerCase();
+  return state.runs.filter(r => (!words.length || words.every(w => text(r).includes(w)))
     && (!runUI.only || state.compare.has(r.name) || r.name === state.selected));
 }
 function setupRunTools() {
@@ -326,7 +350,9 @@ function renderRuns() {
       <div class="n"><span><input type="checkbox" data-cmp="${r.name}" ${state.compare.has(r.name) ? "checked" : ""}>${r.name}</span>${badge(r.status)}</div>
       <div class="m"><span>${r.task} · ${r.envs} games</span><span>win ${wr}</span></div>
       <div class="m"><span>${fmt(s.agent_steps || 0, 0)} steps</span><span>${ago(s.updated)}</span></div>${r.sweep ? `
-      <div class="m" title="sweep ${r.sweep.group}"><span style="color:var(--accent)">sweep ${r.sweep.index}/${r.sweep.of}</span><span>${r.sweep.options || "base"}</span></div>` : ""}</div>`;
+      <div class="m" title="sweep ${r.sweep.group}"><span style="color:var(--accent)">sweep ${r.sweep.index}/${r.sweep.of}</span><span>${esc(r.sweep.options || "base")}</span></div>` : ""}${r.parent ? `
+      <div class="from" title="started from ${esc(parentText(r.parent))}">← ${esc(parentShort(r.parent))}</div>` : ""}${r.notes && r.notes.trim() ? `
+      <div class="note" title="${esc(r.notes.trim())}">${esc(r.notes.trim().split("\n")[0])}</div>` : ""}</div>`;
   }).join("") || `<div class="empty">${state.runs.length ? "no runs match" : "no runs"}</div>`;
   document.querySelectorAll(".run").forEach(el => el.onclick = ev => {
     if (ev.target.dataset.cmp) return;
@@ -404,14 +430,24 @@ function renderMain() {
     const box = ([id, title, sub]) => `<div class="chart"><h3>${title}<span>${sub}</span></h3><div class="plot"><canvas id="${id}"></canvas><canvas class="overlay" id="${id}-ov"></canvas><div class="tip" id="${id}-tip"></div></div></div>`;
     main.innerHTML = `
       <div class="title"><h2>${info.name}</h2>${badge(info.status)}<span class="desc">${info.description || ""}</span>${info.sweep ? `<span class="desc" style="color:var(--accent)">sweep ${info.sweep.group} ${info.sweep.index}/${info.sweep.of}: ${info.sweep.options || "base options"}</span>` : ""}</div>
+      <div class="about">
+        <div class="panel"><h3>Notes<span id="notestate"></span></h3>
+          <textarea id="notes" placeholder="what this run tests and what came of it (runs/${esc(info.name)}/notes.md)"></textarea>
+          <div class="row"><button id="savenotes">save</button><span>Ctrl+Enter saves</span></div></div>
+        <div class="panel"><h3>Lineage</h3><dl class="facts" id="lineage"></dl></div>
+      </div>
       <div class="cards" id="cards"></div>
       <div class="legend" id="legend"></div>
       <div class="grid">${SECTIONS.map(([name, charts]) => `<h4>${name}</h4>` + charts.map(box).join("")).join("")}</div>
       <section><h3>Replays &amp; renders</h3><div class="media" id="media"></div></section>
       <section><h3>Recent episodes</h3><div id="episodes"></div></section>
-      <section><h3>Run</h3><pre class="cmd" id="cmd"></pre></section>`;
+      <section><h3>Launch &amp; configuration</h3><div id="launch"></div></section>`;
     for (const [, charts] of SECTIONS) for (const [id, , , , opts] of charts) registerChart(id, opts);
+    setupNotes(info);
+  } else if (!ui.notesDirty && document.activeElement !== document.getElementById("notes")) {
+    document.getElementById("notes").value = info.notes || "";  // edited elsewhere meanwhile
   }
+  renderLineage(d);
   document.getElementById("cards").innerHTML = [
     ["Status", `${info.status}`, `<div class="progress"><div style="width:${(100 * progress).toFixed(1)}%"></div></div>`],
     ["Env steps", `${fmt(last.agent_steps || 0, 0)} <small>/ ${fmt(info.timesteps, 0)}</small>`],
@@ -464,7 +500,96 @@ function renderMain() {
   document.getElementById("episodes").innerHTML = d.recent_episodes.length ? `<table><tr><th>#</th><th>game</th><th>outcome</th><th>return</th><th>length</th><th>game time</th><th>dealt / taken</th><th>kills / losses</th><th>actions</th><th>focus dealt / taken</th><th>when</th></tr>` +
     d.recent_episodes.map(e => { const c = e.combat || {};
       return `<tr><td>${e.episode}</td><td>${e.env}</td><td class="${e.outcome > 0 ? "win" : e.outcome < 0 ? "loss" : ""}">${e.outcome > 0 ? "win" : e.outcome < 0 ? "loss" : "draw"}</td><td>${fmt(e.return, 3)}</td><td>${e.length}</td><td>${e.game_time ? e.game_time.toFixed(1) + "s" : "–"}</td><td>${pct(c.dealt)} / ${pct(c.taken)}</td><td>${c.kills ?? "–"} / ${c.losses ?? "–"}</td><td>${mix(e.act)}</td><td>${pct(c.focus_dealt)} / ${pct(c.focus_taken)}</td><td>${ago(e.time)}</td></tr>`; }).join("") + `</table>` : `<div class="empty">no episodes yet</div>`;
-  document.getElementById("cmd").textContent = (info.command || []).join(" ");
+  renderLaunch(info);
+}
+
+// ---- notes, lineage, launch ---------------------------------------------------------------------
+function esc(t) { return String(t ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]); }
+function parentShort(p) { return p.kind === "bc" ? `BC ${p.policy || p.name}` : p.name; }
+function parentText(p) {
+  if (p.kind === "run") return `run ${p.name}` + (p.steps != null ? ` at ${fmt(p.steps, 0)} steps` : "");
+  if (p.kind === "bc") return `behavior cloning of ${p.policy || "?"} on ${p.task || "?"} (runs/bc/${p.name})`;
+  return p.name;
+}
+const go = n => `<a class="go" data-go="${esc(n)}">${esc(n)}</a>`;
+function bindGo(root) {
+  root.querySelectorAll("[data-go]").forEach(a => a.onclick = () => {
+    state.selected = a.dataset.go; state.mediaKey = ""; selectionChanged();
+  });
+}
+function setupNotes(info) {
+  const box = document.getElementById("notes"), st = document.getElementById("notestate");
+  box.value = info.notes || ""; ui.notesDirty = false; st.textContent = "";
+  const name = info.name;
+  const save = async () => {
+    st.textContent = "saving…";
+    try {
+      const r = await fetch("/api/runs/" + encodeURIComponent(name) + "/notes", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ notes: box.value }) });
+      if (!r.ok) throw new Error((await r.json()).error || r.status);
+      ui.notesDirty = false; st.textContent = "saved";
+      if (state.data[name]) state.data[name].info.notes = box.value;
+      const run = state.runs.find(r => r.name === name); if (run) run.notes = box.value;
+      renderRuns();
+    } catch (e) { st.textContent = "not saved: " + e.message; }
+  };
+  box.oninput = () => { ui.notesDirty = true; st.textContent = "unsaved"; };
+  box.onkeydown = e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); } };
+  document.getElementById("savenotes").onclick = save;
+}
+function renderLineage(d) {
+  const info = d.info, p = info.parent, rows = [];
+  if (!p) rows.push(["Started from", "scratch (random weights)"]);
+  else if (p.kind === "run") rows.push(["Started from", `${go(p.name)}${p.steps != null ? ` at ${fmt(p.steps, 0)} steps` : ""}`]);
+  else if (p.kind === "bc") rows.push(["Started from", `behavior cloning of <b>${esc(p.policy || "?")}</b> on ${esc(p.task || "?")}` +
+    (p.episodes ? ` (${fmt(p.episodes, 0)} episodes; the script wins ${(100 * (p.win_rate || 0)).toFixed(0)}%)` : "") +
+    ` <span style="color:var(--muted)">runs/bc/${esc(p.name)}</span>`]);
+  else rows.push(["Started from", esc(p.name)]);
+  // the chain back: parents of parents (runs known to the list)
+  const chain = []; let q = p, seen = new Set([info.name]);
+  while (q && q.kind === "run" && !seen.has(q.name)) {
+    seen.add(q.name); const r = state.runs.find(r => r.name === q.name); if (!r) break;
+    q = r.parent; if (q) chain.push(q.kind === "run" ? go(q.name) : esc(parentShort(q)));
+  }
+  if (chain.length) rows.push(["Before that", chain.join(" ← ")]);
+  if (info.sweep) {
+    const sib = [];
+    for (let k = 1; k <= info.sweep.of; k++) { const n = `${info.sweep.group}-${k}`; sib.push(n === info.name ? `<b>${k}</b>` : `<a class="go" data-go="${esc(n)}">${k}</a>`); }
+    rows.push(["Sweep", `${esc(info.sweep.group)} ${info.sweep.index}/${info.sweep.of}: <code>${esc(info.sweep.options || "base options")}</code> · runs ${sib.join(" ")}`]);
+  }
+  rows.push(["Continued by", info.children && info.children.length ? info.children.map(go).join(", ") : "–"]);
+  rows.push(["Task", esc(info.task)]);
+  const el = document.getElementById("lineage");
+  el.innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+  bindGo(el);
+}
+function renderLaunch(info) {
+  const l = info.launch || {}, a = info.args || {}, parts = [];
+  const cmdBlock = (title, text) => `<div class="cmdhead"><span>${title}</span><button class="copy" data-copy="${esc(text)}">copy</button></div><pre class="cmd">${esc(text)}</pre>`;
+  if (l.run_command) parts.push(cmdBlock(l.rebuilt ? "Equivalent command (rebuilt from the recorded options: this run predates recorded launches)"
+                                                   : "This run on its own", l.run_command));
+  if (l.command && l.command !== l.run_command) parts.push(cmdBlock(info.sweep ? "Launched with (the whole sweep)" : "Launched with", l.command));
+  const g = l.git || {};
+  const facts = [];
+  if (g.commit) facts.push(["Code", `<code>${esc(g.commit)}</code> ${esc(g.subject || "")}${g.dirty ? ` <span class="loss">(uncommitted changes)</span>` : ""}`]);
+  if (l.host) facts.push(["Host", `${esc(l.host)} <span style="color:var(--muted)">${esc(l.cwd || "")}</span>`]);
+  if (l.time) facts.push(["Launched", new Date(l.time * 1000).toLocaleString()]);
+  if (facts.length) parts.push(`<dl class="facts" style="margin:4px 0 10px">${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>`);
+  const defaulted = new Set((info.task_defaults_used || []).map(d => d.split("=")[0].replace(/^--/, "").replace(/-/g, "_")));
+  const skip = new Set(["name", "note", "sweep"]);
+  const kv = Object.entries(a).filter(([k, v]) => !skip.has(k) && v !== null && v !== "" && !(Array.isArray(v) && !v.length))
+    .map(([k, v]) => `<span class="${defaulted.has(k) ? "def" : ""}" title="${defaulted.has(k) ? "from the task's defaults" : ""}">${esc(k)} <b>${esc(v)}</b></span>`);
+  const extra = (info.extra || []).filter(e => !e.startsWith("--base.load_model_path="))
+    .map(e => { const [k, v] = e.replace(/^--/, "").split("="); return `<span class="${defaulted.has(k) ? "def" : ""}">${esc(k)} <b>${esc(v)}</b></span>`; });
+  parts.push(`<div class="cmdhead"><span>Configuration${defaulted.size ? " (dashed: the task's defaults)" : ""}</span></div><div class="kv">${[...kv, ...extra].join("")}</div>`);
+  if (info.command) parts.push(cmdBlock("Trainer command", info.command.join(" ")));
+  const el = document.getElementById("launch");
+  el.innerHTML = parts.join("");
+  el.querySelectorAll("[data-copy]").forEach(b => b.onclick = async () => {
+    try { await navigator.clipboard.writeText(b.dataset.copy); b.textContent = "copied"; }
+    catch (e) { b.textContent = "select it"; }
+    setTimeout(() => b.textContent = "copy", 1500);
+  });
 }
 
 const slider = document.getElementById("smooth");

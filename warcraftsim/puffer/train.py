@@ -8,7 +8,8 @@ A sweep launches the games once and trains one run per --sweep after another (ru
 <name>-1, <name>-2, ...; the dashboard shows them like any other run).
 
 A run lives in runs/<name>/:
-    run.json         configuration and status (read by the dashboard)
+    run.json         configuration and status (read by the dashboard), and how it was launched
+    notes.md         free-text notes (--note, or edited in the dashboard)
     train.jsonl      trainer log, one line per epoch (SPS, losses, env/win_rate, ...)
     episodes-*.jsonl every finished episode (one file per bridge worker)
     trainer.log      the trainer's terminal output
@@ -24,6 +25,7 @@ import multiprocessing as mp
 import os
 import shlex
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -120,6 +122,9 @@ def make_parser() -> argparse.ArgumentParser:
     ap.add_argument("--video-every", type=int, default=60, help="replay video every N episodes of game 0 (0: off)")
     ap.add_argument("--step-seconds", type=float, default=0, help="game time per step (default: the task's, 0.25)")
     ap.add_argument("--init-from", help="start from a checkpoint: a .bin file, or a run name (its latest)")
+    ap.add_argument("--note", action="append", default=[],
+                    help="a note for the run (runs/<name>/notes.md; the dashboard shows and edits it); "
+                         "in a --sweep, for that run only")
     ap.add_argument("--sweep", action="append", default=[], metavar="OPTIONS",
                     help="a sweep: one run per --sweep, each with these options on top of the others "
                          "(e.g. --sweep '--lr 0.01' --sweep '--lr 0.003 --train.gae_lambda=0.95'); "
@@ -144,15 +149,46 @@ def parse(ap: argparse.ArgumentParser, argv: list[str], task_defaults: dict | No
     if bad:
         ap.error(f"unrecognized arguments: {' '.join(bad)}")
     args.extra = unknown
+    args.defaulted = []  # what came from the task's defaults (shown with the run's configuration)
     for key, value in (task_defaults or {}).items():
         if key == "extra":
             given = {u.split("=")[0] for u in args.extra}
-            args.extra = [*(v for v in value if v.split("=")[0] not in given), *args.extra]
+            used = [v for v in value if v.split("=")[0] not in given]
+            args.extra = [*used, *args.extra]
+            args.defaulted += used
             continue
         flags = next(a.option_strings for a in ap._actions if a.dest == key)
         if not any(j == f or j.startswith(f + "=") for j in joined for f in flags):
             setattr(args, key, value)
+            args.defaulted.append(f"{flags[0]}={value}")
     return args
+
+
+def _without(argv: list[str], options: tuple[str, ...]) -> list[str]:
+    """argv without these options (and their values, as `--opt value` or `--opt=value`)."""
+    out, i = [], 0
+    while i < len(argv):
+        a = argv[i]
+        if a in options:
+            i += 2
+            continue
+        if not any(a.startswith(o + "=") for o in options):
+            out.append(a)
+        i += 1
+    return out
+
+
+def _git() -> dict:
+    """The code a run was launched with: commit, subject, and whether tracked files had changes."""
+    def git(*cmd):
+        r = subprocess.run(["git", "-C", str(paths.REPO_ROOT), *cmd], capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 else None
+
+    commit = git("rev-parse", "--short=10", "HEAD")
+    if not commit:
+        return {}
+    return {"commit": commit, "subject": git("log", "-1", "--format=%s"),
+            "dirty": bool(git("status", "--porcelain", "--untracked-files=no"))}
 
 
 def _resolve_init(args) -> Path | None:
@@ -187,15 +223,27 @@ def main(argv: list[str] | None = None) -> int:
                       if base.sweep else None))
 
     runs = []
-    for args, name, sweep in plans:
+    launched = {"command": shlex.join(["python", "-m", "warcraftsim.puffer.train", *argv]), "cwd": os.getcwd(),
+                "git": _git(), "host": socket.gethostname(), "time": time.time()}
+    alone = _without(argv, ("--sweep", "--name", "--note"))
+    for (args, name, sweep), cfg in zip(plans, configs):
+        # this run on its own: the sweep's shared options, its own ones, its name
+        own = shlex.split(cfg)
+        one = shlex.join(["python", "-m", "warcraftsim.puffer.train", *alone, *_without(own, ("--note",)),
+                          "--name", name])
         runs.append(Run(RUNS_DIR / name, {
             "name": name, "task": task.name, "description": task.description, "envs": args.envs,
             "timesteps": int(args.timesteps), "agents_per_env": task.num_agents, "obs_size": task.obs_size,
             "act_sizes": list(task.act_sizes),
-            "args": {k: v for k, v in vars(args).items() if k not in ("extra", "sweep")}, "extra": args.extra,
+            "args": {k: v for k, v in vars(args).items() if k not in ("extra", "sweep", "defaulted", "note")},
+            "extra": args.extra, "task_defaults_used": args.defaulted,
             "created": time.time(), "status": "queued" if sweep and sweep["index"] > 1 else "building",
-            "init_from": args.init_from, "sweep": sweep,
+            "init_from": args.init_from, "sweep": sweep, "launch": dict(launched, run_command=one),
         }))
+        if args.note:
+            notes = RUNS_DIR / name / "notes.md"
+            old = notes.read_text() if notes.exists() else ""
+            notes.write_text((old.rstrip() + "\n\n" if old.strip() else "") + "\n".join(args.note) + "\n")
         print(f"run {name}: {RUNS_DIR / name}" + (f"  [{sweep['options']}]" if sweep else ""), flush=True)
     binary = build_trainer(task)
     first = runs[0]

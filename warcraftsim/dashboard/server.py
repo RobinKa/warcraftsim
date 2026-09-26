@@ -5,6 +5,10 @@
 Reads what the training runs write (run.json, train.jsonl, episodes[-w].jsonl, bridge[-w].jsonl,
 media[-w].jsonl from each bridge worker w, renders/, videos/) and serves it as JSON plus one
 self-contained page. Episodes are placed on the trainer's step axis by their timestamps.
+
+Lineage: a run started from a checkpoint (run.json init_from) has a parent, another run or a
+behavior-cloning dataset (runs/bc/<name>, its meta.json); the parent lists it as a child. Notes
+live in runs/<name>/notes.md (train.py --note; POST /api/runs/<name>/notes edits them).
 """
 
 from __future__ import annotations
@@ -39,6 +43,11 @@ EPISODE_SERIES = {
        for k in ("dealt", "taken", "kills", "losses", "focus_dealt", "focus_taken")},
 }
 MAX_POINTS = 600
+MAX_NOTES = 64 * 1024
+# train.py options in the order its command line gives them (a command rebuilt for older runs)
+_ARG_ORDER = ("task", "envs", "workers", "timesteps", "step_seconds", "horizon", "minibatch", "replay_ratio",
+              "buffers", "lr", "ent_coef", "gamma", "hidden", "layers", "checkpoint_interval", "record_every",
+              "video_every", "init_from")
 
 
 class _JsonlCache:
@@ -150,11 +159,87 @@ def _interp_steps(times: list[float], train: list[dict]) -> list[float]:
     return out
 
 
+def _rebuilt_command(info: dict) -> str:
+    """An equivalent command line for a run recorded before launches were (its options)."""
+    import shlex
+
+    args = info.get("args", {})
+    parts = ["python", "-m", "warcraftsim.puffer.train"]
+    for key in _ARG_ORDER:
+        v = args.get(key)
+        if v is None or v == "" or (key in ("buffers", "step_seconds", "minibatch") and not v):
+            continue
+        if key == "timesteps":
+            v = int(v)
+        parts += [f"--{key.replace('_', '-')}", str(v)]
+    extra = [e for e in info.get("extra", []) if not e.startswith("--base.load_model_path=")]
+    return shlex.join([*parts, *extra, "--name", info.get("name", "")])
+
+
 class Dashboard:
     def __init__(self, runs_dir: Path):
         self.runs_dir = Path(runs_dir)
         self.cache = _JsonlCache()
         self._summaries: dict[Path, tuple[tuple, dict]] = {}  # run dir -> (file mtimes, summary)
+        self._bc_meta: dict[str, tuple[float, dict]] = {}  # dataset -> (mtime, meta.json)
+
+    def notes(self, d: Path) -> str:
+        try:
+            return (d / "notes.md").read_text()
+        except (FileNotFoundError, UnicodeDecodeError):
+            return ""
+
+    def set_notes(self, name: str, text: str) -> bool:
+        d = self.runs_dir / name
+        if d.parent != self.runs_dir or not (d / "run.json").exists() or len(text) > MAX_NOTES:
+            return False
+        tmp = d / "notes.md.tmp"
+        tmp.write_text(text)
+        tmp.replace(d / "notes.md")
+        return True
+
+    def parent(self, info: dict) -> dict | None:
+        """Where a run started from: {"kind": "run", "name", "steps"} for another run's checkpoint,
+        {"kind": "bc", "name", "policy", "task", "episodes", "win_rate"} for a fitted script."""
+        init = info.get("init_from")
+        if not init:
+            return None
+        path = Path(init)
+        if not path.is_absolute():  # given relative to the repository (runs/...), or a run name
+            path = self.runs_dir.parent / path
+        try:
+            parts = path.resolve().relative_to(self.runs_dir.resolve()).parts
+        except ValueError:
+            parts = (init,) if "/" not in init else ()
+        if not parts:
+            return {"kind": "file", "name": init}
+        if parts[0] == "bc" and len(parts) > 1:
+            meta_file = self.runs_dir / "bc" / parts[1] / "meta.json"
+            out = {"kind": "bc", "name": parts[1]}
+            try:
+                mtime = meta_file.stat().st_mtime
+                cached = self._bc_meta.get(parts[1])
+                if not cached or cached[0] != mtime:
+                    cached = (mtime, json.loads(meta_file.read_text()))
+                    self._bc_meta[parts[1]] = cached
+                out.update({k: cached[1].get(k) for k in ("policy", "task", "episodes", "win_rate")})
+            except (FileNotFoundError, json.JSONDecodeError):
+                pass
+            return out
+        steps = info.get("init_steps")
+        if steps is None and len(parts) > 1 and Path(parts[-1]).stem.isdigit():
+            steps = int(Path(parts[-1]).stem)
+        return {"kind": "run", "name": parts[0], "steps": steps}
+
+    def _lineage(self, runs: list[dict]) -> None:
+        """Adds parent, children and notes to each run of the list."""
+        children: dict[str, list[str]] = {}
+        for r in runs:
+            r["parent"] = self.parent(r)
+            if r["parent"] and r["parent"]["kind"] == "run":
+                children.setdefault(r["parent"]["name"], []).append(r["name"])
+        for r in runs:
+            r["children"] = sorted(children.get(r.get("name"), []))
 
     def _merged(self, d: Path, stem: str) -> list[dict]:
         """<stem>.jsonl plus <stem>-<worker>.jsonl files, ordered by time."""
@@ -198,13 +283,36 @@ class Dashboard:
             }
             self._summaries[d] = (stamp, info["summary"])
             out.append(info)
+        for info in out:
+            info["notes"] = self.notes(self.runs_dir / info.get("name", ""))
+            info.pop("description", None)  # the list doesn't show these: less to send every refresh
+            info.pop("command", None)
+        self._lineage(out)
         return sorted(out, key=lambda r: r.get("created", 0), reverse=True)
+
+    def _runs_from(self, name: str) -> list[dict]:
+        """The runs started from a checkpoint of run `name` (their run.json files only)."""
+        out = []
+        for d in self.runs_dir.iterdir():
+            try:
+                info = json.loads((d / "run.json").read_text())
+            except (FileNotFoundError, NotADirectoryError, json.JSONDecodeError):
+                continue
+            parent = self.parent(info)
+            if parent and parent["kind"] == "run" and parent["name"] == name:
+                out.append(info)
+        return out
 
     def run(self, name: str) -> dict | None:
         d = self.runs_dir / name
         if not (d / "run.json").exists() or d.parent != self.runs_dir:
             return None
         info = json.loads((d / "run.json").read_text())
+        info["notes"] = self.notes(d)
+        info["parent"] = self.parent(info)
+        info["children"] = sorted(r["name"] for r in self._runs_from(name))
+        if "launch" not in info:
+            info["launch"] = {"run_command": _rebuilt_command(info), "rebuilt": True}
         train_rows = self.cache.read(d / "train.jsonl")
         train = [{k: r[k] for k in TRAIN_KEYS if k in r} for r in train_rows]
         episodes = self._merged(d, "episodes")
@@ -277,6 +385,22 @@ def make_handler(dash: Dashboard):
                 if dash.runs_dir.resolve() not in target.parents or not target.is_file():
                     return self._send(b"not found", "text/plain", 404)
                 return self._file(target)
+            self._send(b"not found", "text/plain", 404)
+
+        def do_POST(self):
+            path = urllib.parse.unquote(urllib.parse.urlparse(self.path).path)
+            if path.startswith("/api/runs/") and path.endswith("/notes"):
+                length = int(self.headers.get("Content-Length") or 0)
+                if length > MAX_NOTES * 4:
+                    return self._json({"error": "too long"}, 413)
+                try:
+                    text = json.loads(self.rfile.read(length) or b"{}").get("notes", "")
+                except (json.JSONDecodeError, AttributeError):
+                    return self._json({"error": "expected {\"notes\": text}"}, 400)
+                name = path[len("/api/runs/"):-len("/notes")]
+                if not isinstance(text, str) or not dash.set_notes(name, text):
+                    return self._json({"error": "no such run, or notes too long"}, 400)
+                return self._json({"ok": True})
             self._send(b"not found", "text/plain", 404)
 
         def _file(self, target: Path) -> None:
