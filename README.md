@@ -294,6 +294,18 @@ Tasks (add more in `tasks.py`; `scripts/baselines.py` measures scripted policies
     | 56% | 70% | 70% | 65% | 47% | 66% |
 
     So near the focus policy, occasional retreats have a clear gradient (+10 points at a 10% rate), and yet PPO from the focus clone removes them.
+
+    The horizon was the problem. All the runs above used horizon 16 (`Task.train_defaults` of the ability tasks, tuned there for speed over the first 0.6M steps). GAE then sums at most 16 steps (8 s) and trusts the value estimate after that, while a pull-back pays off later: the unit survives to fight on, and the enemy that chased it gets focused. From the focus clone (lr 0.001; runs `lamfocus*`):
+
+    | horizon, λ | win @0.6M | @1.5M |
+    |---|---|---|
+    | 16, 0.8 (`focusrl4-*`) | 48-52% | 48-50% |
+    | 16, 0.95 | 49% | 50% |
+    | **64, 0.95** (2 seeds) | 54% / 52% | **60% / 59%** |
+    | 64, 0.99 | 54% | 59% |
+    | 128, 0.95 (minibatch 384) | 52% | 53% |
+
+    With retreats forbidden at evaluation, the 60% policy drops to 48%. It learned to pull back, which no run from the focus clone had done. From scratch, horizon 64 doesn't help (41-44% after 1.5M; runs `lamscratch-*`). Near noop, pulling back alone doesn't pay, so there is nothing to follow yet: PPO first needs focus fire, which it doesn't find on its own either.
   * lr 0.01 (tuned on `footmen2`) is far too high with 15 action heads: the KL per update was 1.0-1.5 (clip fraction 0.9) and the win rate peaked at 29%. The KL at a given lr grows with the number of heads (≈0.15 with 6, 0.3 with 9, 1.0+ with 15); lr 0.003 keeps it at 0.03-0.14.
 * `footmen<N>v<M>[_hp<HP>][_ehp<EHP>]`: N agent footmen against M scripted ones with HP hit points each (default 100), the enemies EHP (a handicap).
 * `micro`: 4 footmen vs 3 scripted grunts. This is hard: scripted baselines win about 1 game in 3.
