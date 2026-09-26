@@ -98,6 +98,9 @@ def _park_pointer(display: str) -> None:
         subprocess.run(["xdotool", "mousemove", str(int(out[0]) - 1), str(int(out[1]) - 1)], env=env, check=False)
 
 
+FOLLOW_GAIN = 0.35  # of the way to the fight's centre per step: smooth, and it keeps up with a chase
+
+
 def _follow_target(obs: Observation, player: int | None) -> tuple[float, float] | None:
     units = [u for u in obs.units if u.alive and not u.is_structure
              and (u.owner == player if player is not None else u.owner in obs.players)]
@@ -180,12 +183,20 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
 
         inst.set_frame_capture(1000.0 * speed / fps, on_frame, on_audio if audio else None)
         follow = follow_player is not None or setup.scenario is None
+        # scenarios: the camera follows the fight (the centre of all units, smoothed so that a death
+        # or a unit breaking away doesn't jerk it), panned over each step; the overlay is told where
+        # it is on every frame (it projects positions relative to the camera)
+        follow_fight = follow_player is None and setup.scenario is not None
+        cam = setup.scenario.resolved_center() if setup.scenario is not None else None
         last = None
         for t in range(max_steps):
             if obs.game_over:
                 break
             commands = decode_commands((inst._playback or {}).get(f"{inst._proc_episode}:{obs.seq}", []))
             target = _follow_target(obs, follow_player) if follow else None
+            cam_from = cam
+            if follow_fight and (c := _follow_target(obs, None)) is not None:
+                target = cam = (cam[0] + FOLLOW_GAIN * (c[0] - cam[0]), cam[1] + FOLLOW_GAIN * (c[1] - cam[1]))
             before = obs
             try:
                 obs = inst.step([Camera(*target)] if target else [])
@@ -196,7 +207,11 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
             batch, pending[:] = list(pending), []
             if batch:
                 last = batch[-1]
-                write(overlay.render_step(batch, t, before, obs, commands) if overlay is not None else batch)
+                # where the camera really was (the game stops it at the map's camera bounds, short of
+                # the target): the harness reports it; else assume it reached the target
+                cams = (before.camera or cam_from, (obs.camera if obs is not None else None) or cam)
+                write(overlay.render_step(batch, t, before, obs, commands, camera=cams if follow_fight else None)
+                      if overlay is not None else batch)
             if obs is None:
                 break
         if overlay is not None and last is not None:

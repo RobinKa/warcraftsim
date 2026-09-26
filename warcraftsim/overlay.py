@@ -201,8 +201,9 @@ class EpisodeOverlay:
     # ---- frames ---------------------------------------------------------------------------------
 
     def render_step(self, frames: list[bytes], t: int, obs_a: Observation, obs_b: Observation | None,
-                    commands: Sequence[Command]) -> list[bytes]:
-        """The frames captured while step t (from observation obs_a to obs_b) was simulated."""
+                    commands: Sequence[Command], camera: tuple | None = None) -> list[bytes]:
+        """The frames captured while step t (from observation obs_a to obs_b) was simulated.
+        `camera` (from, to): the camera panned between these points over the step."""
         t = min(t, self.T - 1)
         panel = self._panel(t, obs_a)
         self.canvas.paste(panel, (self.w, 0))
@@ -227,6 +228,10 @@ class EpisodeOverlay:
         out = []
         for k, raw in enumerate(frames):
             img = Image.frombytes("RGB", (self.w, self.h), raw, "raw", "BGRX")
+            if camera is not None and camera[0] is not None:
+                f = (k + 1) / len(frames)
+                self.camera = (camera[0][0] + f * (camera[1][0] - camera[0][0]),
+                               camera[0][1] + f * (camera[1][1] - camera[0][1]))
             if self.world:
                 self._draw_world(img, (k + 1) / len(frames), pos_a, pos_b, labels, orders, owners,
                                  units_a, units_b)

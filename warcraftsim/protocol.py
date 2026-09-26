@@ -241,6 +241,7 @@ class Observation:
     damaged_records: int = 0  # records lost to stray entries in the file (normally 0)
     full: bool = True  # False: `units` holds only the units that changed (see merge_observation)
     removed: list[int] = field(default_factory=list)  # units that left the game since the last observation
+    camera: tuple[float, float] | None = None  # the local camera's target (videos), if the harness reports it
 
     @property
     def game_time(self) -> float:
@@ -283,7 +284,7 @@ def tokens_from_text(text: str) -> list[str]:
     return [t for t in _TOKEN_RE.findall(text) if _KEEP_RE.fullmatch(t)]
 
 
-_FIELDS = {"T": 4, "P": 14, "O": 1, "D": 5, "E": 4, "C": 1, "U": 14, "R": 1}
+_FIELDS = {"T": 4, "P": 14, "O": 1, "D": 5, "E": 4, "C": 1, "U": 14, "R": 1, "K": 2}
 HERO_ABILITY_SLOTS = 4
 # heroes: level, xp, skill points, 6 items, then per ability slot its level and cooldown left (0.1 s)
 _HERO_EXTRA = 9 + 2 * HERO_ABILITY_SLOTS
@@ -351,6 +352,7 @@ def parse_tokens(toks: list[str], order_names: Sequence[str] = ORDER_NAMES) -> O
     orders: list[int] | None = None
     ended = False
     damaged = 0
+    camera = None
     full = True
     removed: list[int] = []
 
@@ -405,6 +407,8 @@ def parse_tokens(toks: list[str], order_names: Sequence[str] = ORDER_NAMES) -> O
             orders.append(v[0])
         elif tag == "T":
             seq, game_ms, over, full = v[0], v[1], bool(v[2]), bool(v[3])
+        elif tag == "K":  # optional: harnesses before it have none
+            camera = (float(v[0]), float(v[1]))
     if not ended:
         raise ProtocolError("observation has no end marker (partial write?)")
     if version != PROTOCOL_VERSION:
@@ -416,6 +420,7 @@ def parse_tokens(toks: list[str], order_names: Sequence[str] = ORDER_NAMES) -> O
     obs.damaged_records = damaged
     obs.full = full
     obs.removed = removed
+    obs.camera = camera  # the local camera's target (x, y), or None
     return obs
 
 

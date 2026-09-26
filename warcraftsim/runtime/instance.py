@@ -216,13 +216,14 @@ class GameSetup:
         flags = 0 if self.fog_enabled else 1
         return Wgc(map_path, slots, game_speed=self.wgc_speed, flags=flags)
 
-    def map_key(self) -> str:
+    def map_key(self, source: str | None = None) -> str:
+        """The built map's cache key; `source`: another harness source than the current one."""
         from ..data.mapbuild import harness_source
         cfg = self.harness_config()
         # the tables generated from game data are part of the built script too
         tables = json.dumps([cfg.resolved_order_names(), cfg.resolved_hero_abilities()], sort_keys=True)
         blob = json.dumps({"map": self.map, "harness": asdict(cfg),
-                           "source": hashlib.sha1(harness_source().encode()).hexdigest(),
+                           "source": hashlib.sha1((source or harness_source()).encode()).hexdigest(),
                            "tables": hashlib.sha1(tables.encode()).hexdigest()}, sort_keys=True)
         return hashlib.sha1(blob.encode()).hexdigest()[:12]
 
@@ -242,6 +243,27 @@ def _set_reg_values(text: str, key: str, values: dict[str, int]) -> str:
     body = [line for line in lines[start + 1:end] if not any(line.startswith(f'"{k}"=') for k in values)]
     body += [f'"{k}"=dword:{v:08x}' for k, v in values.items()]
     return "\n".join(lines[:start + 1] + body + lines[end:])
+
+
+def recorded_map(setup: "GameSetup", replay: Path, key: str | None) -> Path | None:
+    """The cached map a replay was recorded on: its key from the replay's command file, or for
+    replays from before that was saved, the key with the harness source as git had it when the
+    replay was written. None: not found (the current map is used)."""
+    cache = paths.CACHE_DIR / "maps"
+    if key:
+        return cache / f"{key}.w3x" if (cache / f"{key}.w3x").exists() else None
+    try:
+        when = int(replay.stat().st_mtime)
+        rev = subprocess.run(["git", "-C", str(paths.REPO_ROOT), "log", "-1", f"--before={when}", "--format=%H",
+                              "--", "warcraftsim/harness/w3sim.j"], capture_output=True, text=True, timeout=10).stdout.strip()
+        if not rev:
+            return None
+        src = subprocess.run(["git", "-C", str(paths.REPO_ROOT), "show", f"{rev}:warcraftsim/harness/w3sim.j"],
+                             capture_output=True, text=True, timeout=10).stdout
+        path = cache / f"{setup.map_key(src)}.w3x"
+        return path if src and path.exists() else None
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 
 def commands_path(replay: Path) -> Path:
@@ -345,7 +367,8 @@ class GameInstance:
         if not doc_link.is_symlink():
             doc_link.symlink_to(work, target_is_directory=True)
         maps_cache = paths.CACHE_DIR / "maps"
-        cached = maps_cache / f"{self.setup.map_key()}.w3x"
+        self._map_key = self.setup.map_key()  # replays name it: they play back only on this map
+        cached = maps_cache / f"{self._map_key}.w3x"
         with _map_lock:
             if not cached.exists():
                 build_map(self.setup.map, cached, self.setup.harness_config())
@@ -398,10 +421,15 @@ class GameInstance:
         game: the harness runs again, receives the recorded agent orders at the same steps and
         writes observations. Commands passed to step() are ignored (except Camera and Snapshot)."""
         log_file = commands_path(Path(replay))
-        self._playback = json.loads(log_file.read_text())["commands"] if log_file.exists() else {}
+        saved = json.loads(log_file.read_text()) if log_file.exists() else {}
+        self._playback = saved.get("commands", {})
         self._stop_process()
         if self.prefix is None:
             self._prepare()
+        # the map the replay was recorded on (a harness change since then builds another one)
+        recorded = recorded_map(self.setup, Path(replay), saved.get("map_key"))
+        if recorded is not None:
+            shutil.copyfile(recorded, self.prefix / "drive_c" / wine.WORK_DIR / "map.w3x")
         if not self._display:
             self._own_display = Xvfb(*self.setup.window)
             self._display = self._own_display.display
@@ -807,6 +835,7 @@ class GameInstance:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(replay, dest)
                 commands_path(dest).write_text(json.dumps({"format": "warcraftsim-commands", "version": 1,
+                                                           "map_key": getattr(self, "_map_key", None),
                                                            "commands": log}))
                 self._ended = True
                 return dest
