@@ -37,7 +37,7 @@ from pathlib import Path
 from .. import paths
 from .bridge import run_worker
 from .build import PUFFER_BUILD, build_trainer
-from .tasks import get_task
+from .tasks import describe_spaces, get_task
 
 RUNS_DIR = Path(os.environ.get("WARCRAFTSIM_RUNS", paths.REPO_ROOT / "runs"))
 
@@ -241,7 +241,7 @@ def main(argv: list[str] | None = None) -> int:
         runs.append(Run(RUNS_DIR / name, {
             "name": name, "task": task.name, "description": task.description, "envs": args.envs,
             "timesteps": int(args.timesteps), "agents_per_env": task.num_agents, "obs_size": task.obs_size,
-            "act_sizes": list(task.act_sizes),
+            "act_sizes": list(task.act_sizes), "spaces": describe_spaces(task),
             "args": {k: v for k, v in vars(args).items() if k not in ("extra", "sweep", "defaulted", "note")},
             "extra": args.extra, "task_defaults_used": args.defaulted,
             "created": time.time(), "status": "queued" if sweep and sweep["index"] > 1 else "building",

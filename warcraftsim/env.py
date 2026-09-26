@@ -37,6 +37,18 @@ ABILITY_FEATURES = 10  # per hero ability slot, after the UNIT_FEATURES (UnitEnc
 RELATIONAL_FEATURES = 5  # UnitEncoder relational: the unit against the opposing side (last)
 PLAYER_FEATURES = 8
 _N_FLAGS = 12
+# what UnitEncoder puts in each column (shown with the runs on the dashboard)
+UNIT_FEATURE_NAMES = (
+    "is own", "is ally", "is enemy", "is neutral", "x (/1500 from the centre)", "y (/1500 from the centre)",
+    "hit points (share)", "max hit points (/1000)", "mana (share)", "max mana (/1000)", "facing sin", "facing cos",
+    *(f"flag {f.name.lower()}" for f in UnitFlags if f is not UnitFlags.DEAD),
+    "current order (none/move/attack/harvest/other, /4)", "hit points lost last step (share)",
+    "hit points lost over the last 4 steps (share)", "type: attack range (/1000)", "type: damage per second (/40)",
+    "type: armor (/10)", "type: speed (/500)", "type: attack cooldown (/3 s)", "type: hits air")
+ABILITY_FEATURE_NAMES = ("level (/3)", "ready to cast", "cooldown left (/20 s)", "cast on a unit", "cast on a point",
+                         "cast instantly", "for enemies", "for allies", "cast range (/1000)", "area (/500)")
+RELATIONAL_FEATURE_NAMES = ("nearest opponent distance (/1000)", "opponents within its reach (/5)",
+                            "opponents that reach it (/5)", "is its side's weakest", "seconds it survives their damage (/20)")
 
 
 def _order_class(order: int, orders: dict[str, int]) -> int:

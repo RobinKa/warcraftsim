@@ -18,8 +18,9 @@ from typing import Any, Callable
 
 import numpy as np
 
-from ..env import (ABILITY_FEATURES, RELATIONAL_FEATURES, SEMANTIC_TARGETS, UNIT_FEATURES, MicroEnv,
-                   MicroSelfPlayEnv, MirrorSelfPlayEnv, NavigateEnv)
+from ..env import (ABILITY_FEATURE_NAMES, ABILITY_FEATURES, RELATIONAL_FEATURE_NAMES, RELATIONAL_FEATURES,
+                   SEMANTIC_TARGETS, UNIT_FEATURE_NAMES, UNIT_FEATURES, MicroEnv, MicroSelfPlayEnv, MirrorSelfPlayEnv,
+                   NavigateEnv)
 from ..protocol import HERO_ABILITY_SLOTS
 from ..scenario import Scenario
 
@@ -52,6 +53,13 @@ class Task:
     # train.py settings found by sweeps for this task (used where the command line does not set
     # them): its option names (horizon, lr, minibatch, ...), "extra": PufferLib --section.key=value
     train_defaults: dict[str, Any] = field(default_factory=dict)
+    # for people (describe_spaces, the dashboard): the observation's blocks (name, rows, the
+    # feature names of a row) in flattened order, the names of a unit's action heads, what the
+    # action masks allow, and the reward
+    obs_layout: tuple[tuple[str, int, tuple[str, ...]], ...] = ()
+    head_names: tuple[str, ...] = ()
+    mask_info: str = ""
+    reward_info: str = ""
 
     @property
     def num_atns(self) -> int:
@@ -108,6 +116,10 @@ def _nav_task(distance: float = 1200.0) -> Task:
         to_action=lambda a: int(a[0]),
         outcome=outcome, scenario=sc, head_labels=(("stop", *_DIRS),),
         description="Move a footman 1200 units to a target (stop or 8 directions); reward = progress.",
+        obs_layout=(("the footman and its target", 1, ("target dx (/1000)", "target dy (/1000)", "facing sin",
+                                                        "facing cos", "moving", "time (share of the limit)")),),
+        head_names=("move",), reward_info="Per step: the distance gained toward the target (/1000); "
+                                          "success within the target's radius.",
     )
 
 
@@ -122,6 +134,35 @@ def _micro_sizes(max_units: int, targets: int | None = None, abilities: bool = F
     feat = _FEAT + (ABILITY_FEATURES * HERO_ABILITY_SLOTS if abilities else 0) + (RELATIONAL_FEATURES if relational else 0)
     heads = (5, 8, targets or k, HERO_ABILITY_SLOTS) if abilities else (4, 8, targets or k)
     return k * feat + k + k * feat + k + 1, heads * k
+
+
+def _micro_layout(max_units: int, abilities: bool = False, relational: bool = False) -> dict:
+    """obs_layout and head_names of the micro tasks (the order of _micro_flatten)."""
+    feat = (*UNIT_FEATURE_NAMES,
+            *(f"ability {k + 1}: {n}" for k in range(HERO_ABILITY_SLOTS if abilities else 0) for n in ABILITY_FEATURE_NAMES),
+            *(RELATIONAL_FEATURE_NAMES if relational else ()))
+    return dict(obs_layout=(("own units (slots A0..)", max_units, feat), ("own slot alive", max_units, ("alive",)),
+                            ("enemy units (slots E0..)", max_units, feat), ("enemy slot alive", max_units, ("alive",)),
+                            ("time", 1, ("episode time (share of the limit)",))),
+                head_names=("order", "direction", "target", "ability")[:4 if abilities else 3])
+
+
+_MICRO_REWARD = ("Per step: (enemy hit points lost − own hit points lost) / the sides' initial hit points; "
+                 "+1 win, −1 loss at the end.")
+
+
+def _micro_masks(targeting: str = "slot", abilities: bool = False, tactical: bool = False,
+                 rejoin: bool = False) -> str:
+    rules = ["attacks on empty enemy slots are masked" if targeting == "slot" else
+             "targets are rules (always possible; resolved when ordered)"]
+    if abilities:
+        rules.append("cast only for a hero that can cast something now, and only its castable ability slots")
+    if tactical:
+        rules.append(f"no plain moves; retreat only below {TACTICAL_RETREAT_HP:.0%} hit points while losing them; "
+                     "during a committed retreat only noop (it carries on, up to 3 s while still losing hit points)")
+    if rejoin:
+        rules.append("after a pull-back, noop attack-moves the unit back into the fight")
+    return "; ".join(rules) + "."
 
 
 def _micro_flatten(obs: dict) -> np.ndarray:
@@ -261,6 +302,7 @@ def _micro_task(own: tuple[str, ...] = ("hfoo",) * 4, enemy: tuple[str, ...] = (
         flatten=_micro_flatten, to_action=lambda a: np.asarray(a, dtype=np.int64).reshape(max_units, 3),
         outcome=_micro_outcome, scenario=sc, reward_scale=10.0, **_micro_labels(max_units),
         description=f"{len(own)} {own[0]} vs {len(enemy)} {enemy[0]} (scripted); per unit: noop/stop/move/attack.",
+        **_micro_layout(max_units), mask_info=_micro_masks(), reward_info=_MICRO_REWARD,
     )
 
 
@@ -274,6 +316,7 @@ def _selfplay_task(units: tuple[str, ...] = ("hfoo",) * 4, max_units: int = 6,
         flatten=_micro_flatten, to_action=lambda a: np.asarray(a, dtype=np.int64).reshape(max_units, 3),
         scenario=sc, reward_scale=10.0, **{**_micro_labels(max_units), "action_mask": None},  # masks: MicroEnv only
         description=f"Self-play: {len(units)} {units[0]} vs {len(units)} {units[0]}, both sides are agents.",
+        **_micro_layout(max_units), mask_info="None.", reward_info=_MICRO_REWARD + " Zero-sum between the sides.",
     )
 
 
@@ -394,6 +437,10 @@ def _mirror_task(name: str = "mirror_mix", max_units: int = 5, hp_permille: int 
                             extra=["--train.gae_lambda=0.8", "--train.clip_coef=0.3"]) if abilities else {},
         description=f"Mirror match, a new composition every episode: a hero (level 1-3) and 2-{max_units - 1} "
                     f"units from all races, {hp_permille / 10:.0f}% hit points, vs the scripted opponent." + extra,
+        **_micro_layout(max_units, abilities, relational),
+        mask_info=_micro_masks(targeting, abilities, tactical, rejoin),
+        reward_info=_MICRO_REWARD + (f" {kill_reward:+g} per enemy unit killed, {-kill_reward:+g} per own unit lost."
+                                     if kill_reward else "") + (" Zero-sum between the sides." if selfplay else ""),
     )
 
 
@@ -429,6 +476,29 @@ class UnitAgentsTask(Task):
         return np.concatenate([np.asarray(a).ravel() for a in per_agent])
 
 
+def describe_spaces(task: Task) -> dict:
+    """The observation and action spaces for people (run.json "spaces"; the dashboard shows it)."""
+    blocks = [{"name": n, "rows": r, "features": list(f)} for n, r, f in task.obs_layout]
+    if sum(b["rows"] * len(b["features"]) for b in blocks) != task.obs_size:
+        blocks = []  # no layout (or an outdated one): only the size
+    g = max(task.group_size, 1)
+    heads = []
+    for h in range(g):
+        labels = task.head_labels[h] if h < len(task.head_labels) else ()
+        used_by = []
+        if h and task.head_labels:
+            for kind, offs in task.detail_heads.items():
+                if h in (offs if isinstance(offs, (tuple, list)) else (offs,)) and kind < len(task.head_labels[0]):
+                    used_by.append(task.head_labels[0][kind])
+        heads.append({"name": task.head_names[h] if h < len(task.head_names) else f"head {h + 1}",
+                      "size": task.act_sizes[h], "options": list(labels) or [str(i) for i in range(task.act_sizes[h])],
+                      "used_by": used_by})
+    return {"observation": {"size": task.obs_size, "blocks": blocks},
+            "actions": {"units": task.num_atns // g, "heads": heads, "sizes": list(task.act_sizes),
+                        "masks": task.mask_info if task.action_mask is not None else "None."},
+            "agents": task.num_agents, "reward": task.reward_info, "reward_scale": task.reward_scale}
+
+
 def _unit_agents(base: Task, name: str) -> UnitAgentsTask:
     heads = base.act_sizes[:base.group_size]
     per = sum(heads)
@@ -452,7 +522,12 @@ def _unit_agents(base: Task, name: str) -> UnitAgentsTask:
         outcome=base.outcome, description=base.description + f" One agent per unit ({k}), one shared policy.",
         scenario=base.scenario, num_agents=k, reward_scale=base.reward_scale,
         head_labels=base.head_labels[:base.group_size], group_size=base.group_size, detail_heads=base.detail_heads,
-        action_stats=stats, action_mask=mask, train_defaults=base.train_defaults, base=base, display_task=base)
+        action_stats=stats, action_mask=mask, train_defaults=base.train_defaults, base=base, display_task=base,
+        obs_layout=(("this agent's unit", 1, base.obs_layout[0][2] if base.obs_layout else ()),
+                    ("its slot alive", 1, ("alive",)), *base.obs_layout) if base.obs_layout else (),
+        head_names=base.head_names,
+        mask_info=base.mask_info + " A dead or missing unit's agent can only noop.",
+        reward_info=base.reward_info + " Every agent gets the team's reward.")
 
 
 def _footmen_task(name: str) -> Task | None:

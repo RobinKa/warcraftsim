@@ -9,7 +9,9 @@ head that only details some choices of the unit's first head (the move direction
 target) counts only on steps with that choice; plus the value fitted to the discounted return
 (scaled rewards).
 
-Standalone (numpy + torch), run by bc.py with a Python that has torch.
+Standalone (numpy + torch), run by bc.py with a Python that has torch. Every epoch goes to
+fit.jsonl next to the output (the dashboard plots it): train and validation loss, the value's
+error, accuracy per head kind, and precision / recall / share per unit order (the first head).
 """
 
 from __future__ import annotations
@@ -190,38 +192,59 @@ def main() -> None:
           f"{meta['task']} (win {meta['win_rate']:.0%}); train {len(train)}, validate {len(val)}; {device}",
           flush=True)
     t0 = time.time()
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    log = open(args.out.parent / "fit.jsonl", "w")  # this fit's curves (a new fit replaces them)
+    kinds = meta.get("kind_names") or []
     for epoch in range(args.epochs):
         net.train()
         rng.shuffle(train)
+        train_loss, train_n = 0.0, 0
         for obs, act, ret, mask, live, legal in batches(episodes, train, args.batch, device):
             loss, _, _ = losses(net, meta, obs, act, ret, mask, live, legal, args.vf_coef, args.smoothing)
             opt.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(net.parameters(), 1.0)
             opt.step()
+            train_loss, train_n = train_loss + loss.item(), train_n + 1
+        lr_now = sched.get_last_lr()[0]
         sched.step()
+        # validate every epoch (cheap: a tenth of the episodes)
+        net.eval()
+        tot, vl, nb, acc = 0.0, 0.0, 0, {}
+        with torch.no_grad():
+            for obs, act, ret, mask, live, legal in batches(episodes, val, args.batch, device):
+                loss, v, st = losses(net, meta, obs, act, ret, mask, live, legal, args.vf_coef, args.smoothing)
+                tot, vl, nb = tot + loss.item(), vl + v, nb + 1
+                for k, s in st.items():
+                    a = acc.setdefault(k, {kk: 0 * vv if isinstance(vv, np.ndarray) else 0.0 for kk, vv in s.items()})
+                    for kk, vv in s.items():
+                        a[kk] = a[kk] + vv
+        parts = []
+        for k, a in sorted(acc.items()):
+            if not a["n"]:
+                continue
+            parts.append(f"{k} acc {a['hit'] / a['n']:.3f}")
+            if k == "first":  # per choice that occurs: precision / recall
+                parts += [f"[{c}] p {a['tp'][c] / max(a['pred'][c], 1):.2f} r {a['tp'][c] / a['true'][c]:.2f}"
+                          for c in range(len(a["true"])) if a["true"][c]]
+        row = {"epoch": epoch + 1, "time": time.time(), "seconds": round(time.time() - t0, 1), "lr": lr_now,
+               "train_loss": train_loss / max(train_n, 1), "val_loss": tot / nb, "value_mse": vl / nb,
+               "acc": {k: a["hit"] / a["n"] for k, a in acc.items() if a["n"]}, "choices": {}}
+        first = acc.get("first")
+        if first:
+            total = first["true"].sum()
+            for c in range(len(first["true"])):
+                if first["true"][c] or first["pred"][c]:
+                    row["choices"][kinds[c] if c < len(kinds) else str(c)] = {
+                        "precision": first["tp"][c] / max(first["pred"][c], 1),
+                        "recall": first["tp"][c] / max(first["true"][c], 1),
+                        "share": first["true"][c] / max(total, 1)}
+        log.write(json.dumps(row) + "\n")
+        log.flush()
         if epoch % 5 == 4 or epoch == args.epochs - 1:
-            net.eval()
-            tot, vl, nb, acc = 0.0, 0.0, 0, {}
-            with torch.no_grad():
-                for obs, act, ret, mask, live, legal in batches(episodes, val, args.batch, device):
-                    loss, v, st = losses(net, meta, obs, act, ret, mask, live, legal, args.vf_coef, args.smoothing)
-                    tot, vl, nb = tot + loss.item(), vl + v, nb + 1
-                    for k, s in st.items():
-                        a = acc.setdefault(k, {kk: 0 * vv if isinstance(vv, np.ndarray) else 0.0 for kk, vv in s.items()})
-                        for kk, vv in s.items():
-                            a[kk] = a[kk] + vv
-            parts = []
-            for k, a in sorted(acc.items()):
-                if not a["n"]:
-                    continue
-                parts.append(f"{k} acc {a['hit'] / a['n']:.3f}")
-                if k == "first":  # per choice that occurs: precision / recall
-                    parts += [f"[{c}] p {a['tp'][c] / max(a['pred'][c], 1):.2f} r {a['tp'][c] / a['true'][c]:.2f}"
-                              for c in range(len(a["true"])) if a["true"][c]]
             print(f"epoch {epoch + 1:3d}  val loss {tot / nb:.4f}  value mse {vl / nb:.2f}  {'  '.join(parts)}  "
                   f"({time.time() - t0:.0f}s)", flush=True)
-    args.out.parent.mkdir(parents=True, exist_ok=True)
+    log.close()
     net.export(args.out)
     print(f"wrote {args.out}", flush=True)
 

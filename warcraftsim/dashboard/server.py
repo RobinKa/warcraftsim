@@ -9,6 +9,9 @@ self-contained page. Episodes are placed on the trainer's step axis by their tim
 Lineage: a run started from a checkpoint (run.json init_from) has a parent, another run or a
 behavior-cloning dataset (runs/bc/<name>, its meta.json); the parent lists it as a child. Notes
 live in runs/<name>/notes.md (train.py --note; POST /api/runs/<name>/notes edits them).
+Behavior cloning datasets (runs/bc/<name>: bc.json, meta.json, episodes-*.jsonl, fit.jsonl,
+evals.jsonl; warcraftsim.puffer.bc) are runs named bc/<name> of kind "bc". evals.jsonl in a run's
+directory (bc eval of its checkpoints) shows with the run.
 Sweeps (/api/sweeps): the runs of one train.py launch, with runs/sweeps/<group>/sweep.json (how it
 was launched) and notes.md (its description; POST /api/sweeps/<group>/notes). Older sweeps get
 theirs rebuilt from their runs.
@@ -194,6 +197,38 @@ def _rebuilt_sweep_command(infos: list[dict], group: str) -> str:
     return shlex.join(parts)
 
 
+_SPACES: dict[str, dict | None] = {}
+
+
+def _spaces(info: dict) -> dict | None:
+    """A run's observation and action spaces: recorded at launch, else described by the current
+    code (flagged, and whether its sizes match the run's)."""
+    if info.get("spaces"):
+        return info["spaces"]
+    task = info.get("task")
+    if not task:
+        return None
+    if task not in _SPACES:
+        try:
+            from ..puffer.tasks import describe_spaces, get_task
+            _SPACES[task] = describe_spaces(get_task(task))
+        except Exception:  # a task that no longer exists
+            _SPACES[task] = None
+    d = _SPACES[task]
+    if d is None:
+        return None
+    same = (info.get("obs_size") in (None, d["observation"]["size"])
+            and info.get("act_sizes") in (None, d["actions"]["sizes"]))
+    return {**d, "from_current_code": True, "sizes_match": same}
+
+
+def _parent_key(p: dict | None) -> str | None:
+    """The run name of a parent: a run's name, or bc/<dataset>."""
+    if not p:
+        return None
+    return p["name"] if p["kind"] == "run" else f"bc/{p['name']}" if p["kind"] == "bc" else None
+
+
 def _rebuilt_command(info: dict) -> str:
     """An equivalent command line for a run recorded before launches were (its options)."""
     import shlex
@@ -289,13 +324,99 @@ class Dashboard:
             return ""
 
     def set_notes(self, name: str, text: str) -> bool:
-        d = self.runs_dir / name
-        if d.parent != self.runs_dir or not (d / "run.json").exists() or len(text) > MAX_NOTES:
+        d = self._bc_dir(name) if name.startswith("bc/") else self.runs_dir / name
+        if d is None or len(text) > MAX_NOTES or not (
+                d.parent == self.runs_dir / "bc" or (d.parent == self.runs_dir and (d / "run.json").exists())):
             return False
         tmp = d / "notes.md.tmp"
         tmp.write_text(text)
         tmp.replace(d / "notes.md")
         return True
+
+    # ---- behavior cloning datasets ----------------------------------------------------------------
+    def _bc_dir(self, name: str) -> Path | None:
+        """runs/bc/<dataset> for the run name bc/<dataset>."""
+        if not name.startswith("bc/"):
+            return None
+        ds = name[3:]
+        if not ds or ds.startswith(".") or "/" in ds or "\\" in ds:
+            return None
+        d = self.runs_dir / "bc" / ds
+        return d if (d / "meta.json").exists() or (d / "bc.json").exists() else None
+
+    def _bc_info(self, d: Path) -> dict:
+        def read(f):
+            try:
+                return json.loads((d / f).read_text())
+            except (FileNotFoundError, json.JSONDecodeError):
+                return {}
+        info, meta = read("bc.json"), read("meta.json")
+        collect = info.get("collect") or {}
+        status = info.get("status") or ("fitted" if (d / "policy.bin").exists() else "collected")
+        return {**info, "kind": "bc", "name": f"bc/{d.name}", "dataset": d.name,
+                "task": info.get("task") or meta.get("task"), "policy": info.get("policy") or meta.get("policy"),
+                "status": status, "created": info.get("created") or (d / "meta.json").stat().st_mtime,
+                "envs": collect.get("games"), "meta": meta,
+                "description": f"Behavior cloning: the {info.get('policy') or meta.get('policy')} script's "
+                               f"demonstrations, and PufferLib's network fitted to them."}
+
+    def _bc_summary(self, d: Path) -> dict:
+        files = [f for f in [d / "bc.json", d / "meta.json", d / "fit.jsonl", d / "evals.jsonl",
+                             *sorted(d.glob("episodes-*.jsonl"))] if f.exists()]
+        stamp = tuple((f.name, f.stat().st_mtime) for f in files)
+        cached = self._summaries.get(d)
+        if cached and cached[0] == stamp:
+            return cached[1]
+        eps = [r for f in d.glob("episodes-*.jsonl") for r in self.cache.read(f)]
+        fit = self.cache.read(d / "fit.jsonl")
+        evals = self.cache.read(d / "evals.jsonl")
+        sampled = [e for e in evals if not e.get("greedy") and not e.get("forbid") and not e.get("script_casts")]
+        summary = {
+            "episodes": len(eps), "agent_steps": sum(e.get("length", 0) for e in eps),
+            "script_win_rate": (sum(1 for e in eps if e.get("outcome", 0) > 0) / len(eps)) if eps else None,
+            # the list's win column: the fitted policy's (latest plain evaluation)
+            "win_rate_100": sampled[-1]["win_rate"] if sampled else None,
+            "fit_epochs": fit[-1]["epoch"] if fit else None,
+            "fit_acc": (fit[-1].get("acc") or {}).get("first") if fit else None,
+            "updated": max(f.stat().st_mtime for f in files) if files else None,
+        }
+        self._summaries[d] = (stamp, summary)
+        return summary
+
+    def bc_runs(self) -> list[dict]:
+        root = self.runs_dir / "bc"
+        out = []
+        if root.is_dir():
+            for d in sorted(root.iterdir()):
+                if (d / "meta.json").exists() or (d / "bc.json").exists():
+                    info = self._bc_info(d)
+                    info.pop("meta", None)
+                    info["summary"] = self._bc_summary(d)
+                    out.append(info)
+        return out
+
+    def bc_run(self, name: str) -> dict | None:
+        d = self._bc_dir(name)
+        if d is None:
+            return None
+        info = self._bc_info(d)
+        info["notes"] = self.notes(d)
+        info["spaces"] = _spaces({**info, "obs_size": info.get("obs_size") or info["meta"].get("obs_size"),
+                                  "act_sizes": info.get("act_sizes") or info["meta"].get("act_sizes")})
+        info["children"] = sorted(r["name"] for r in self._runs_from(name))
+        eps = sorted((r for f in d.glob("episodes-*.jsonl") for r in self.cache.read(f)),
+                     key=lambda r: (r.get("time", 0), r.get("episode", 0)))
+        rows = []
+        for e in eps:
+            row = {}
+            for key, get in EPISODE_SERIES.items():
+                v = get(e)
+                if v is not None:
+                    row[key] = float(v)
+            rows.append(row)
+        return {"kind": "bc", "info": info, "fit": self.cache.read(d / "fit.jsonl"),
+                "episodes": _binned(list(range(1, len(rows) + 1)), rows), "evals": self.cache.read(d / "evals.jsonl"),
+                "summary": self._bc_summary(d)}
 
     def parent(self, info: dict) -> dict | None:
         """Where a run started from: {"kind": "run", "name", "steps"} for another run's checkpoint,
@@ -334,9 +455,10 @@ class Dashboard:
         """Adds parent, children and notes to each run of the list."""
         children: dict[str, list[str]] = {}
         for r in runs:
-            r["parent"] = self.parent(r)
-            if r["parent"] and r["parent"]["kind"] == "run":
-                children.setdefault(r["parent"]["name"], []).append(r["name"])
+            r["parent"] = self.parent(r) if r.get("kind") != "bc" else None
+            key = _parent_key(r["parent"])
+            if key:
+                children.setdefault(key, []).append(r["name"])
         for r in runs:
             r["children"] = sorted(children.get(r.get("name"), []))
 
@@ -382,34 +504,37 @@ class Dashboard:
             }
             self._summaries[d] = (stamp, info["summary"])
             out.append(info)
+        out += self.bc_runs()
         for info in out:
             info["notes"] = self.notes(self.runs_dir / info.get("name", ""))
-            info.pop("description", None)  # the list doesn't show these: less to send every refresh
-            info.pop("command", None)
+            for k in ("description", "command", "spaces"):  # the list doesn't show these: less to send
+                info.pop(k, None)
         self._lineage(out)
         out = sorted(out, key=lambda r: r.get("created", 0), reverse=True)
         self._runs_cache = (time.time(), out)
         return out
 
     def _runs_from(self, name: str) -> list[dict]:
-        """The runs started from a checkpoint of run `name` (their run.json files only)."""
+        """The runs started from a checkpoint of `name` (a run, or bc/<dataset>)."""
         out = []
         for d in self.runs_dir.iterdir():
             try:
                 info = json.loads((d / "run.json").read_text())
             except (FileNotFoundError, NotADirectoryError, json.JSONDecodeError):
                 continue
-            parent = self.parent(info)
-            if parent and parent["kind"] == "run" and parent["name"] == name:
+            if _parent_key(self.parent(info)) == name:
                 out.append(info)
         return out
 
     def run(self, name: str) -> dict | None:
+        if name.startswith("bc/"):
+            return self.bc_run(name)
         d = self.runs_dir / name
         if not (d / "run.json").exists() or d.parent != self.runs_dir:
             return None
         info = json.loads((d / "run.json").read_text())
         info["notes"] = self.notes(d)
+        info["spaces"] = _spaces(info)
         info["parent"] = self.parent(info)
         info["children"] = sorted(r["name"] for r in self._runs_from(name))
         if "launch" not in info:
@@ -448,6 +573,7 @@ class Dashboard:
             "recent_episodes": [dict(e, episode=len(episodes) - k) for k, e in enumerate(episodes[-15:][::-1])],
             "bridge": _downsample(bridge),
             "media": [m for m in media if (d / m["file"]).exists()][-40:][::-1],
+            "evals": self.cache.read(d / "evals.jsonl"),
         }
 
 

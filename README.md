@@ -377,8 +377,18 @@ Each run writes `runs/<name>/`, which the dashboard shows live:
 The dashboard shows:
 * the run list, with comparison; each run's parent and the first line of its notes. The filter matches every word against names, tasks, sweep options, notes and parents;
 * sweeps as groups in the list, collapsed until opened. Each group's checkbox compares all its runs, or none. A sweep's page has its description (editable; `--note` options outside the `--sweep` ones; `runs/sweeps/<name>/notes.md`), where its runs started from, a table of its runs (their own options, status, steps, win rate), and its launch command (rebuilt from its runs for older sweeps);
+* behavior cloning datasets (`runs/bc/<name>`) as runs named `bc/<name>`, with their own page:
+  * the demonstrations: the script's outcomes, action mix, combat and episode lengths;
+  * the fit per epoch: train and validation loss, accuracy per head, recall and precision per unit order, the value's error;
+  * `bc eval` results;
+  * the runs started from it;
+  * the collect and fit commands.
+
+  `bc.py backfill` rebuilds the episode log of a dataset recorded before these logs existed;
 * per run:
   * notes, editable;
+  * the observation space (its blocks, and every feature by name and index) and the action space (the heads per unit, their choices, which order each detail head belongs to), the action masks and the reward. Recorded at launch; for older runs, described by the current code, with a warning if the sizes differ;
+  * `bc eval` results for its checkpoints;
   * lineage: what it started from (a random policy, another run's checkpoint, or a fitted script with its policy, episodes and win rate), the chain back from there, its sweep and sibling runs, and the runs started from it;
   * at the bottom, the launch commands (copyable) and the whole configuration. Runs from before launches were recorded get a command rebuilt from their options;
 * progress cards;

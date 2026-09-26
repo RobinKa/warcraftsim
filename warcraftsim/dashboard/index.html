@@ -101,6 +101,15 @@ pre.cmd { background:var(--panel); border:1px solid var(--line); border-radius:8
 .sweep .note, .sweep .from { font-size:11.5px; margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .sweep .note { color:var(--text); opacity:.8; } .sweep .from { color:var(--muted); }
 table.runs td, table.runs th { font-size:12px; padding:4px 8px; }
+.spaces { display:grid; grid-template-columns:repeat(auto-fit,minmax(380px,1fr)); gap:12px; }
+.spaces table td, .spaces table th { font-size:12px; padding:4px 8px; vertical-align:top; }
+.spaces details summary { cursor:pointer; color:var(--blue); }
+.spaces ol { margin:4px 0 2px; padding-left:34px; columns:2; column-gap:18px; font-size:11.5px; color:var(--muted); }
+.spaces ol li::marker { color:#5d6b79; }
+.chips { display:flex; flex-wrap:wrap; gap:3px; }
+.chips span { background:var(--panel2); border:1px solid var(--line); border-radius:4px; padding:0 5px; font-size:11.5px; }
+.warn { color:var(--accent); }
+.badge.bc { background:#2d2440; color:#b083f0; }
 table.runs td.opts { font-family:ui-monospace, monospace; font-size:11.5px; }
 table.runs tr.shown td { background:var(--panel2); }
 .run .from, .run .note { font-size:11.5px; margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -221,9 +230,10 @@ function drawChart(id) {
   const pts = series.flatMap(s => s.pts);
   c.geo = null;
   if (!pts.length) { g.fillStyle = "#8795a3"; g.font = "11px system-ui"; g.fillText(c.opts.empty || "no data yet", 12, H / 2); return; }
-  // one x range for all charts (0 .. latest step of the shown runs), so they line up
-  let x0 = ui.xrange ? ui.xrange[0] : Math.min(...pts.map(p => p[0]));
-  let x1 = ui.xrange ? ui.xrange[1] : Math.max(...pts.map(p => p[0]));
+  // one x range for all charts of an axis (0 .. the latest step of the shown runs), so they line up
+  const xr = (ui.xranges || {})[c.opts.axis || "steps"];
+  let x0 = xr ? xr[0] : Math.min(...pts.map(p => p[0]));
+  let x1 = xr ? xr[1] : Math.max(...pts.map(p => p[0]));
   // y range without the most extreme 0.5% on either side (a partial last epoch reports huge SPS)
   const ys = pts.map(p => p[1]).sort((a, b) => a - b), q = k => ys[Math.min(ys.length - 1, Math.max(0, Math.round(k * (ys.length - 1))))];
   let y0 = c.opts.ymin ?? (ys.length > 50 ? q(0.005) : ys[0]), y1 = c.opts.ymax ?? (ys.length > 50 ? q(0.995) : ys[ys.length - 1]);
@@ -272,7 +282,8 @@ function drawCrosshair(id) {
   const dpr = window.devicePixelRatio || 1, g = c.overlay.getContext("2d");
   g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, c.overlay.width, c.overlay.height);
   const geo = c.geo, x = ui.hoverX;
-  if (!geo || x === null || x < geo.x0 || x > geo.x1) { c.tip.style.display = "none"; return; }
+  const axis = c.opts.axis || "steps";  // the cursor shows on the charts of the hovered one's axis
+  if (!geo || x === null || x < geo.x0 || x > geo.x1 || (ui.hoverAxis || "steps") !== axis) { c.tip.style.display = "none"; return; }
   const px = Math.round(geo.X(x)) + .5;
   g.strokeStyle = "rgba(215,222,230,.55)"; g.lineWidth = 1;
   g.beginPath(); g.moveTo(px, geo.pad.t); g.lineTo(px, geo.H - geo.pad.b); g.stroke();
@@ -284,7 +295,7 @@ function drawCrosshair(id) {
     rows.push(`<div>${dashSvg(s.dash || [], s.color)}${s.name}${s.runName ? ` <span style="color:#8795a3">${s.runName}</span>` : ""}: <b>${fmt(p[1], 3)}</b></div>`);
   }
   if (rows.length) {  // every chart shows its values at the hovered step
-    c.tip.innerHTML = `<div style="color:#8795a3">steps ${fmt(x, 0)}</div>` + rows.join("");
+    c.tip.innerHTML = `<div style="color:#8795a3">${axis} ${fmt(x, axis === "steps" ? 0 : 1)}</div>` + rows.join("");
     c.tip.style.display = "block";
     c.tip.classList.toggle("hovered", ui.hoverChart === id);
     const w = c.tip.offsetWidth || 200;
@@ -302,7 +313,7 @@ function registerChart(id, opts) {
     const geo = ui.charts[id].geo; if (!geo) return;
     const r = canvas.getBoundingClientRect(), mx = ev.clientX - r.left;
     ui.hoverX = geo.x0 + (mx - geo.pad.l) / (geo.W - geo.pad.l - geo.pad.r) * (geo.x1 - geo.x0);
-    ui.hoverChart = id; drawAllCrosshairs();
+    ui.hoverChart = id; ui.hoverAxis = ui.charts[id].opts.axis || "steps"; drawAllCrosshairs();
   });
   canvas.addEventListener("mouseleave", () => { ui.hoverX = null; ui.hoverChart = null; drawAllCrosshairs(); });
 }
@@ -394,6 +405,11 @@ function keepExpanded() { try { localStorage.setItem("expanded", JSON.stringify(
 function winText(s) { return s && s.win_rate_100 != null ? (100 * s.win_rate_100).toFixed(0) + "%" : "–"; }
 function runCard(r, inSweep) {
   const s = r.summary || {};
+  if (r.kind === "bc") return `<div class="run ${state.view === "run" && r.name === state.selected ? "sel" : ""}" data-run="${esc(r.name)}">
+    <div class="n"><span><span class="badge bc" style="margin-right:6px">BC</span>${esc(r.policy || r.dataset)}</span>${badge(r.status)}</div>
+    <div class="m"><span title="${esc(r.task)}">${esc(r.task)}</span><span>clone ${winText(s)}</span></div>
+    <div class="m"><span>${fmt(s.episodes || 0, 0)} demos · script ${s.script_win_rate != null ? (100 * s.script_win_rate).toFixed(0) + "%" : "–"}</span><span>${(r.children || []).length} runs</span></div>${r.notes && r.notes.trim() ? `
+    <div class="note" title="${esc(r.notes.trim())}">${esc(r.notes.trim().split("\n")[0])}</div>` : ""}</div>`;
   return `<div class="run ${state.view === "run" && r.name === state.selected ? "sel" : ""}" data-run="${esc(r.name)}">
     <div class="n"><span><input type="checkbox" data-cmp="${esc(r.name)}" ${state.compare.has(r.name) ? "checked" : ""}>${esc(r.name)}</span>${badge(r.status)}</div>${inSweep ? `
     <div class="m"><span title="${esc(r.sweep.options || "base")}" style="font-family:ui-monospace,monospace;font-size:11.5px">${esc(r.sweep.options || "base options")}</span><span>win ${winText(s)}</span></div>
@@ -580,6 +596,7 @@ function seriesPoints(d, src, key) {
 
 function renderMain() {
   const d = state.data[state.selected]; if (!d) return;
+  if (d.kind === "bc") return renderBC(d);
   const info = d.info, tr = d.train, last = tr[tr.length - 1] || {};
   const run = state.runs.find(r => r.name === state.selected) || {}, s = run.summary || {};
   const bridge = d.bridge[d.bridge.length - 1] || {};
@@ -603,8 +620,11 @@ function renderMain() {
       <div class="grid">${SECTIONS.map(([name, charts]) => `<h4>${name}</h4>` + charts.map(box).join("")).join("")}</div>
       <section><h3>Replays &amp; renders</h3><div class="media" id="media"></div></section>
       <section><h3>Recent episodes</h3><div id="episodes"></div></section>
+      <section id="evalsec" style="display:none"><h3>Evaluations <span style="text-transform:none;letter-spacing:0">(bc eval of its checkpoints)</span></h3><div id="evals"></div></section>
+      <section><h3>Observation &amp; action spaces</h3><div id="spaces"></div></section>
       <section><h3>Launch &amp; configuration</h3><div id="launch"></div></section>`;
     for (const [, charts] of SECTIONS) for (const [id, , , , opts] of charts) registerChart(id, opts);
+    document.getElementById("spaces").innerHTML = spacesHtml(info.spaces);
     setupNotes(info);
   } else if (!ui.notesDirty && document.activeElement !== document.getElementById("notes")) {
     document.getElementById("notes").value = info.notes || "";  // edited elsewhere meanwhile
@@ -628,7 +648,7 @@ function renderMain() {
   const off = n => state.data[n].info.init_steps || 0;
   const maxStep = Math.max(1, ...shown.map(n => { const t = state.data[n].train; return off(n) + (t.length ? (t[t.length - 1].agent_steps ?? 0) : 0); }),
                            ...shown.map(n => { const e = state.data[n].episodes; return off(n) + (e.length ? e[e.length - 1].steps : 0); }));
-  ui.xrange = [0, maxStep];
+  ui.xranges = { steps: [0, maxStep] };
   document.getElementById("legend").innerHTML = shown.length > 1
     ? shown.map((n, i) => `<span>${dashSvg(DASHES[i % DASHES.length])}${n}${state.data[n]?.info?.sweep ? ` <span style="color:var(--accent)">${state.data[n].info.sweep.options}</span>` : ""}</span>`).join("")
     : "";
@@ -663,6 +683,151 @@ function renderMain() {
     d.recent_episodes.map(e => { const c = e.combat || {};
       return `<tr><td>${e.episode}</td><td>${e.env}</td><td class="${e.outcome > 0 ? "win" : e.outcome < 0 ? "loss" : ""}">${e.outcome > 0 ? "win" : e.outcome < 0 ? "loss" : "draw"}</td><td>${fmt(e.return, 3)}</td><td>${e.length}</td><td>${e.game_time ? e.game_time.toFixed(1) + "s" : "–"}</td><td>${pct(c.dealt)} / ${pct(c.taken)}</td><td>${c.kills ?? "–"} / ${c.losses ?? "–"}</td><td>${mix(e.act)}</td><td>${pct(c.focus_dealt)} / ${pct(c.focus_taken)}</td><td>${ago(e.time)}</td></tr>`; }).join("") + `</table>` : `<div class="empty">no episodes yet</div>`;
   renderLaunch(info);
+  renderEvals(d.evals);
+}
+
+// ---- observation and action spaces ----------------------------------------------------------------
+function spacesHtml(sp) {
+  if (!sp) return `<div class="empty">not recorded, and the task no longer exists</div>`;
+  const o = sp.observation || {}, a = sp.actions || {};
+  let at = 0;
+  const blocks = (o.blocks || []).map(b => {
+    const n = b.rows * b.features.length, from = at; at += n;
+    const feats = b.features.length > 1
+      ? `<details><summary>${b.features.length} features per row</summary><ol start="0">${b.features.map(f => `<li>${esc(f)}</li>`).join("")}</ol></details>`
+      : esc(b.features[0] || "");
+    return `<tr><td>${esc(b.name)}</td><td>${b.rows} × ${b.features.length}</td><td>${from}–${from + n - 1}</td><td>${feats}</td></tr>`;
+  }).join("");
+  const heads = (a.heads || []).map(h => `<tr><td><b>${esc(h.name)}</b></td><td>${h.size}</td>
+      <td><div class="chips">${h.options.map(x => `<span>${esc(x)}</span>`).join("")}</div></td>
+      <td>${h.used_by && h.used_by.length ? `when the order is ${h.used_by.map(esc).join(" or ")}` : "always"}</td></tr>`).join("");
+  const warn = sp.from_current_code ? `<div class="${sp.sizes_match ? "" : "warn"}" style="margin-bottom:8px;font-size:12px;color:var(--muted)">
+      Not recorded with this run (it predates that): described by the current code for its task${sp.sizes_match ? "; the sizes match the run's" : ". <span class='warn'>The sizes differ from the run's: the task changed since.</span>"}</div>` : "";
+  return `${warn}<div class="spaces">
+    <div class="panel"><h3>Observation<span>${o.size} floats per agent${sp.agents > 1 ? ` · ${sp.agents} agents per game` : ""}</span></h3>
+      ${blocks ? `<table><tr><th>block</th><th>shape</th><th>index</th><th>features</th></tr>${blocks}</table>` : `<div style="color:var(--muted)">a flat vector (no layout recorded)</div>`}</div>
+    <div class="panel"><h3>Actions<span>${a.units > 1 ? `${a.units} units × ` : ""}${(a.heads || []).length} heads = ${(a.sizes || []).length} discrete heads</span></h3>
+      <table><tr><th>head (per unit)</th><th>size</th><th>choices</th><th>counts</th></tr>${heads}</table>
+      <dl class="facts" style="margin-top:10px"><dt>Masks</dt><dd>${esc(a.masks || "None.")}</dd>
+        <dt>Reward</dt><dd>${esc(sp.reward || "")}${sp.reward_scale && sp.reward_scale !== 1 ? ` <span style="color:var(--muted)">(× ${sp.reward_scale} for the trainer)</span>` : ""}</dd></dl></div>
+  </div>`;
+}
+
+// ---- evaluations (bc eval rows of a run's or a dataset's checkpoints) -------------------------------
+function renderEvals(evals) {
+  const sec = document.getElementById("evalsec"), el = document.getElementById("evals");
+  if (!sec || !el) return;
+  sec.style.display = evals && evals.length ? "" : "none";
+  if (!evals || !evals.length) return;
+  el.innerHTML = `<table class="runs"><tr><th>when</th><th>checkpoint</th><th>mode</th><th>episodes</th><th>win</th><th>loss</th><th>draw</th><th>by unit type</th></tr>` +
+    evals.slice().reverse().map(e => {
+      const mode = [e.greedy ? "greedy" : "sampled", e.script_casts ? "scripted casts" : "", ...(e.forbid || []).map(k => `no ${k}`)].filter(Boolean).join(", ");
+      const ck = e.steps != null ? `${fmt(e.steps, 0)} steps` : (e.checkpoint || "").split("/").pop();
+      const types = Object.entries(e.by_type || {}).sort((a, b) => a[1][0] / a[1][1] - b[1][0] / b[1][1])
+        .map(([t, [w, n]]) => `${esc(t)} ${(100 * w / n).toFixed(0)}% (${n})`).join(", ");
+      return `<tr title="${esc(e.command || "")}"><td>${new Date(e.time * 1000).toLocaleString()}</td><td>${esc(ck)}</td><td>${esc(mode)}</td>
+        <td>${e.episodes}</td><td class="win">${(100 * e.win_rate).toFixed(0)}%</td><td class="loss">${(100 * e.loss_rate).toFixed(0)}%</td>
+        <td>${e.draw_rate != null ? (100 * e.draw_rate).toFixed(0) + "%" : "–"}</td>
+        <td>${types ? `<details><summary>${Object.keys(e.by_type).length} types</summary><span style="color:var(--muted)">${types}</span></details>` : "–"}</td></tr>`;
+    }).join("") + `</table>`;
+}
+
+// ---- a behavior cloning dataset's page (run bc/<name>) ------------------------------------------
+const KIND_COLORS = { noop: "#8795a3", stop: "#e0c33a", retreat: "#b083f0", move: "#539bf5", attack: "#e5534b", cast: "#f56ed2" };
+function fitPoints(d, key) {  // key: a path into the fit rows (acc.first, choices.retreat.recall)
+  return (d.fit || []).map(r => [r.epoch, key.split(".").reduce((o, k) => o == null ? o : o[k], r)]).filter(p => typeof p[1] === "number");
+}
+function renderBC(d) {
+  const info = d.info, s = d.summary || {}, fit = d.fit || [], last = fit[fit.length - 1] || {};
+  const main = document.getElementById("main");
+  const kinds = Object.keys(last.choices || {});
+  const FIT = (key, name, color) => ["fit", key, name, color];
+  const sections = [
+    ["Fit (validation episodes, per epoch)", [
+      ["b-loss", "Loss", "cross-entropy + value", [FIT("train_loss", "train", "#e0a33a"), FIT("val_loss", "validation", "#539bf5")], { axis: "epoch", empty: "no fit recorded (fitted before fits were logged)" }],
+      ["b-acc", "Accuracy", "choices the network's most likely action matches", [FIT("acc.first", "unit order", "#4cc38a"), FIT("acc.detail1", "direction", "#539bf5"),
+        FIT("acc.detail2", "target", "#e5534b"), FIT("acc.detail3", "ability", "#f56ed2")], { axis: "epoch", ymin: 0, ymax: 1, empty: "no fit recorded" }],
+      ["b-rec", "Recall per order", "share of the script's choices it predicts", kinds.map(k => FIT(`choices.${k}.recall`, k, KIND_COLORS[k] || "#39c5cf")), { axis: "epoch", ymin: 0, ymax: 1, empty: "no fit recorded" }],
+      ["b-prec", "Precision per order", "share of its predictions the script made", kinds.map(k => FIT(`choices.${k}.precision`, k, KIND_COLORS[k] || "#39c5cf")), { axis: "epoch", ymin: 0, ymax: 1, empty: "no fit recorded" }],
+      ["b-val", "Value error", "mean squared error on the discounted return", [FIT("value_mse", "value MSE", "#b083f0")], { axis: "epoch", ymin: 0, empty: "no fit recorded" }],
+    ]],
+    ["Demonstrations (the script's episodes)", [
+      ["b-win", "Outcomes", "win · draw · loss", [EP("win_rate", "win", "#4cc38a"), EP("draw_rate", "draw", "#e0a33a"), EP("loss_rate", "loss", "#e5534b")], { axis: "episode", ymin: 0, ymax: 1 }],
+      ["b-act", "Action mix", "share of unit-steps", ["noop", "stop", "retreat", "move", "attack", "cast"].map(k => EP("act_" + k, k, KIND_COLORS[k])), { axis: "episode", ymin: 0, ymax: 1 }],
+      ["b-cmb", "Combat", "per episode", [EP("combat_dealt", "damage dealt", "#4cc38a"), EP("combat_taken", "damage taken", "#e5534b")], { axis: "episode", ymin: 0, ymax: 1, empty: "not recorded for this dataset (collected before combat was logged)" }],
+      ["b-len", "Episode length", "steps", [EP("length", "steps", "#539bf5")], { axis: "episode", ymin: 0 }],
+    ]],
+  ];
+  const sig = info.name + "|" + kinds.join(",");
+  if (main.dataset.run !== sig) {
+    main.dataset.run = sig; ui.charts = {};
+    const box = ([id, title, sub]) => `<div class="chart"><h3>${title}<span>${sub}</span></h3><div class="plot"><canvas id="${id}"></canvas><canvas class="overlay" id="${id}-ov"></canvas><div class="tip" id="${id}-tip"></div></div></div>`;
+    main.innerHTML = `
+      <div class="title"><h2>${esc(info.name)}</h2><span class="badge bc">BC</span>${badge(info.status)}<span class="desc">${esc(info.description || "")}</span></div>
+      <div class="about">
+        <div class="panel"><h3>Notes<span id="notestate"></span></h3>
+          <textarea id="notes" placeholder="what this dataset is for (runs/bc/${esc(info.dataset)}/notes.md)"></textarea>
+          <div class="row"><button id="savenotes">save</button><span>Ctrl+Enter saves</span></div></div>
+        <div class="panel"><h3>Lineage</h3><dl class="facts" id="lineage"></dl></div>
+      </div>
+      <div class="cards" id="cards"></div>
+      <div class="grid">${sections.map(([name, charts]) => `<h4>${name}</h4>` + charts.map(box).join("")).join("")}</div>
+      <section id="evalsec" style="display:none"><h3>Evaluations <span style="text-transform:none;letter-spacing:0">(bc eval: the fitted network playing the task)</span></h3><div id="evals"></div></section>
+      <section><h3>Runs started from it</h3><div id="bcchildren"></div></section>
+      <section><h3>Observation &amp; action spaces</h3><div id="spaces"></div></section>
+      <section><h3>Commands</h3><div id="launch"></div></section>`;
+    for (const [, charts] of sections) for (const [id, , , , opts] of charts) registerChart(id, opts);
+    setupNotes(info);
+    document.getElementById("spaces").innerHTML = spacesHtml(info.spaces);
+  } else if (!ui.notesDirty && document.activeElement !== document.getElementById("notes")) {
+    document.getElementById("notes").value = info.notes || "";
+  }
+  const col = info.collect || {}, fi = info.fit || {};
+  const evals = d.evals || [], plain = evals.filter(e => !e.greedy && !(e.forbid || []).length && !e.script_casts), greedy = evals.filter(e => e.greedy && !(e.forbid || []).length);
+  const pct = v => v == null ? "–" : (100 * v).toFixed(0) + "%";
+  document.getElementById("cards").innerHTML = [
+    ["Status", esc(info.status || "")],
+    ["Script", `${esc(info.policy || "?")}`],
+    ["Demonstrations", `${fmt(s.episodes || 0, 0)} <small>episodes · ${fmt(s.agent_steps || 0, 0)} steps</small>`],
+    ["Script wins", pct(s.script_win_rate)],
+    ["Fit", fit.length ? `${last.epoch} <small>epochs · ${fmt(last.seconds || 0, 0)} s</small>` : (fi.finished ? `<small>done (not logged)</small>` : "–")],
+    ["Order accuracy", last.acc && last.acc.first != null ? pct(last.acc.first) + " <small>validation</small>" : "–"],
+    ["Clone wins", plain.length ? `${pct(plain[plain.length - 1].win_rate)} <small>sampled${greedy.length ? ` · ${pct(greedy[greedy.length - 1].win_rate)} greedy` : ""}</small>` : "–"],
+    ["Runs from it", `${(info.children || []).length}`],
+  ].map(([k, v]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+  const rows = [["Script", `<b>${esc(info.policy || "?")}</b> <span style="color:var(--muted)">(warcraftsim/agents/micro.py)</span>`], ["Task", esc(info.task || "")]];
+  if (col.games || col.step_seconds) rows.push(["Collected", `${col.games ? col.games + " games, " : ""}${col.step_seconds || "?"} s steps${info.backfilled ? ` <span style="color:var(--muted)">(logs rebuilt from the recording)</span>` : ""}`]);
+  if (fi.epochs) rows.push(["Fit settings", `${fi.epochs} epochs, hidden ${fi.hidden}, ${fi.layers} layers, lr ${fi.lr}, label smoothing ${fi.smoothing}`]);
+  rows.push(["Used by", (info.children || []).length ? info.children.map(go).join(", ") : "–"]);
+  const lin = document.getElementById("lineage");
+  lin.innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+  bindGo(lin);
+  ui.xranges = { epoch: [1, Math.max(2, fit.length ? last.epoch : 2)], episode: [0, Math.max(1, s.episodes || 1)] };
+  for (const [, charts] of sections) {
+    for (const [id, , , defs] of charts) {
+      const c = ui.charts[id]; if (!c) continue;
+      c.series = defs.map(([src, key, name, color]) => ({ name, color, run: 0, runName: "", dash: [],
+        points: src === "fit" ? fitPoints(d, key) : d.episodes.filter(e => e[key] !== undefined).map(e => [e.steps, e[key]]),
+        raw: src === "fit" }));
+      drawChart(id);
+    }
+  }
+  renderEvals(evals);
+  const kids = (info.children || []).map(n => state.runs.find(r => r.name === n)).filter(Boolean);
+  const ch = document.getElementById("bcchildren");
+  ch.innerHTML = kids.length ? `<table class="runs"><tr><th>run</th><th>task</th><th>status</th><th>steps</th><th>win (last 100)</th><th>notes</th></tr>` +
+    kids.map(r => `<tr><td>${go(r.name)}</td><td>${esc(r.task)}</td><td>${badge(r.status)}</td><td>${fmt((r.summary || {}).agent_steps || 0, 0)}</td>
+      <td>${winText(r.summary)}</td><td style="color:var(--muted)">${esc((r.notes || "").trim().split("\n")[0])}</td></tr>`).join("") + `</table>`
+    : `<div style="color:var(--muted)">none yet</div>`;
+  bindGo(ch);
+  const parts = [];
+  const cmd = (title, text) => `<div class="cmdhead"><span>${title}</span><button class="copy" data-copy="${esc(text)}">copy</button></div><pre class="cmd">${esc(text)}</pre>`;
+  if (col.command) parts.push(cmd(info.backfilled ? "Collected with (rebuilt)" : "Collected with", col.command));
+  if (fi.command) parts.push(cmd("Fitted with", fi.command));
+  if (fi.trainer) parts.push(cmd("Fit script", fi.trainer));
+  const g = col.git || fi.git;
+  if (g && g.commit) parts.push(`<dl class="facts"><dt>Code</dt><dd><code>${esc(g.commit)}</code> ${esc(g.subject || "")}${g.dirty ? ` <span class="loss">(uncommitted changes)</span>` : ""}</dd></dl>`);
+  finishLaunch(document.getElementById("launch"), parts.length ? parts : [`<div style="color:var(--muted)">not recorded</div>`]);
 }
 
 // ---- notes, lineage, launch ---------------------------------------------------------------------
@@ -709,7 +874,7 @@ function renderLineage(d) {
   else if (p.kind === "run") rows.push(["Started from", `${go(p.name)}${p.steps != null ? ` at ${fmt(p.steps, 0)} steps` : ""}`]);
   else if (p.kind === "bc") rows.push(["Started from", `behavior cloning of <b>${esc(p.policy || "?")}</b> on ${esc(p.task || "?")}` +
     (p.episodes ? ` (${fmt(p.episodes, 0)} episodes; the script wins ${(100 * (p.win_rate || 0)).toFixed(0)}%)` : "") +
-    ` <span style="color:var(--muted)">runs/bc/${esc(p.name)}</span>`]);
+    ` · ${go("bc/" + p.name)}`]);
   else rows.push(["Started from", esc(p.name)]);
   // the chain back: parents of parents (runs known to the list)
   const chain = []; let q = p, seen = new Set([info.name]);
