@@ -225,6 +225,30 @@ python -m warcraftsim.puffer.train --task mirror_mix_sem_hp400 --lr 0.001 \
   * A small value weight (0.005) matters. The returns are noisy, and at 0.05 the value took over the shared layers: retreat recall was 0.11 instead of 0.82.
 * `eval` plays a checkpoint (sampled, or `--greedy`; `--forbid retreat` masks an order kind) and records the result with the dataset or run it belongs to.
 
+### General orders, entity networks and league self-play (`--trainer torch`)
+
+The tasks above give PufferLib's network built-in tactics (a retreat order, target rules like "weakest"). `mirror_mix_gen*` tasks use general orders instead, closer to what a player can do, as in AlphaStar and OpenAI Five. Per unit:
+* an order kind: noop, stop, hold, move, attack, attack-move or cast;
+* for move and attack-move, a direction (16) and a distance (150, 350 or 700);
+* for attack and cast, a pointer at any unit slot (own slots, then the enemy's);
+* for cast, an ability slot.
+
+Masks rule out only what is impossible, and the game handles the rest (a target out of range: the unit walks there first). A pull-back is a move away, focus fire is every unit attacking the same slot. The scripts speak these orders too (`pull35`: 71%, the same as with the built-in retreat).
+
+PufferLib 5's native trainer fixes the network to encoder → MinGRU → decoder, so pointing at units needs our own trainer, `warcraftsim/rl` (PyTorch; it runs with the torch Python, like the behavior cloning fit):
+* **EntityNet** (`rl/model.py`): each unit is a token (a shared MLP, then a transformer over all units), a GRU core carries memory, and each own unit's orders are sampled autoregressively: kind → ability → target (the unit's query against every unit's key) → direction and distance. A head counts in the action's probability only when the chosen kind uses it.
+* **PPO** (`rl/ppo.py`): normalized advantages, updates on sequence chunks, the rollout step compiled with CUDA graphs (20 → 2 ms), a KL term to a reference policy (`--torch.ref=... --torch.ref_kl=0.1`, as AlphaStar keeps near its supervised policy), value warmup and a KL target for fine-tuning a clone, an evaluation-only mode.
+* **League** (`rl/league.py`) for self-play tasks (`mirror_mix_gen_self*`): the learner plays side 0 of every game; side 1 is itself (both sides' experience trains it), a past snapshot chosen by prioritized fictitious self-play (the ones it beats less, more often), or a scripted anchor (noop, focus, pull35) that doesn't drift with the league. Win rates by opponent go to the dashboard's League tab.
+
+```bash
+python -m warcraftsim.puffer.bc collect mirror_mix_gen_hp400 --policy pull35 --episodes 2000 --games 12
+python -m warcraftsim.puffer.bc fit runs/bc/mirror_mix_gen_hp400-pull35 --model entity     # policy.pt
+python -m warcraftsim.puffer.train --trainer torch --task mirror_mix_gen_hp400 --horizon 64 \
+    --init-from runs/bc/mirror_mix_gen_hp400-pull35/policy.pt --lr 0.0001 --torch.vf_warmup=10 --torch.target_kl=0.02
+python -m warcraftsim.puffer.train --trainer torch --task mirror_mix_gen_self_hp400 --horizon 64 \
+    --init-from runs/bc/mirror_mix_gen_hp400-pull35/policy.pt ...                              # league self-play
+```
+
 Notes:
 * Action masks: a task can say which options of each action head are possible right now (`Task.action_mask`). The bridge sends them with every observation, and PufferLib samples and trains with them. Micro tasks mask attacks on empty enemy slots (slot targeting), casts that aren't possible, and the tactical-mode rules.
 * Updates per epoch are `replay_ratio × batch / minibatch`; the minibatch must be a multiple of the horizon.
