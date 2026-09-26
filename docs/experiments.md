@@ -278,6 +278,27 @@ Two changes for the next run: a draw counts as a loss for both sides (`_nodraw`)
 scripts include `amove`, which attack-moves at the nearest enemy each step like the game's scripted
 opponent: an anchor that punishes running away.
 
+The second run (`genleague2`, with both) beat its `amove` 92-100%, and the game's scripted opponent
+still only 18%. The script was broken: it re-ordered every unit every step, and a new order cancels
+an attack in progress, so its units hardly landed a hit. The game's scripted opponent orders only
+idle units (at the nearest enemy's position) and leaves fighting units alone. With that behavior
+(`amove` now), the script matches it: 84% and 22% for two policies that score 91% and 18% against
+the game's opponent.
+
+Meanwhile the three policies form a cycle, as non-transitive games do (`scripts/match.py`, 120
+episodes each):
+
+| | against |
+|---|---|
+| `genft-1` (trained against the scripted opponent) | wins 91% against the scripted opponent |
+| `genleague2` | wins 70% against `genft-1` (65-16, 39 draws), 57% against `genleague` |
+| the scripted opponent | wins 82% against `genleague2` |
+
+The fine-tuned policy waits for the attack-moving opponent and punishes it; the league policies
+out-wait the fine-tuned one, which walks into them; the scripted opponent keeps coming and runs the
+league policies down. A league needs every one of these styles among its opponents; this is what
+AlphaStar's league exploiters are for.
+
 ## Other findings
 
 * lr 0.01 (tuned on `footmen2`) is far too high with 15 action heads: the KL per update was 1.0-1.5 (clip fraction 0.9) and the win rate peaked at 29%. The KL at a given lr grows with the number of heads (≈0.15 with 6, 0.3 with 9, 1.0+ with 15); lr 0.003 keeps it at 0.03-0.14.
