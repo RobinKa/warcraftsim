@@ -385,7 +385,7 @@ The dashboard shows:
   * the collect and fit commands.
 
   `bc.py backfill` rebuilds the episode log of a dataset recorded before these logs existed;
-* per run:
+* per run, in tabs (Overview, one per chart section, Replays, Episodes, Evaluations, Spaces, Launch & config; the tab shown stays when another run is opened and is part of the link):
   * notes, editable;
   * the observation space (its blocks, and every feature by name and index) and the action space (the heads per unit, their choices, which order each detail head belongs to), the action masks and the reward. Recorded at launch; for older runs, described by the current code, with a warning if the sizes differ;
   * `bc eval` results for its checkpoints;
