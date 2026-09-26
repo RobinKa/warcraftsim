@@ -71,12 +71,29 @@ main { padding:14px 18px 40px; overflow:auto; min-height:0; }
 .tip.hovered { background:#0b0f13f2; border-color:#4a5868; }
 section { margin-top:18px; }
 section > h3 { font-size:13px; margin:0 0 8px; color:var(--muted); text-transform:uppercase; letter-spacing:.8px; }
-.media { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:12px; }
-.item { background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
-.item video, .item iframe { width:100%; aspect-ratio:16/10; border:0; display:block; background:#000; }
-.item.wide { grid-column:span 2; }
-.item.wide video { aspect-ratio:auto; }
-@media (max-width: 900px) { .item.wide { grid-column:span 1; } }
+/* replays: one player, the episodes beside it */
+.rp-top { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px; color:var(--muted); font-size:12px; }
+.seg { display:inline-flex; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+.seg button { background:var(--panel); border:0; color:var(--muted); padding:4px 12px; font:inherit; font-size:12px; cursor:pointer; }
+.seg button + button { border-left:1px solid var(--line); }
+.seg button.on { background:var(--panel2); color:var(--text); }
+.seg button:disabled { opacity:.45; cursor:default; }
+.seg .n { margin-left:5px; color:var(--muted); }
+.replays { display:grid; grid-template-columns:minmax(0,1fr) 280px; gap:12px; align-items:start; }
+@media (max-width: 1100px) { .replays { grid-template-columns:1fr; } }
+.viewer { background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+.viewer video { display:block; width:100%; max-height:calc(100vh - 290px); background:#000; }
+.viewer iframe { display:block; width:100%; height:calc(100vh - 290px); min-height:380px; border:0; background:var(--bg); }
+.viewer .cap { padding:8px 12px; display:flex; justify-content:space-between; gap:12px; color:var(--muted); font-size:12.5px; border-top:1px solid var(--line); }
+.viewer .cap a { color:var(--blue); text-decoration:none; }
+.viewer .none { padding:60px 20px; text-align:center; color:var(--muted); }
+.playlist { background:var(--panel); border:1px solid var(--line); border-radius:8px; max-height:calc(100vh - 250px); overflow-y:auto; }
+.playlist .it { padding:7px 12px; border-bottom:1px solid var(--line); cursor:pointer; display:grid; grid-template-columns:1fr auto; gap:1px 8px; font-size:12px; }
+.playlist .it:last-child { border-bottom:0; }
+.playlist .it:hover { background:var(--panel2); }
+.playlist .it.on { background:var(--panel2); box-shadow:inset 3px 0 0 var(--accent); }
+.playlist .ep { font-weight:600; }
+.playlist .sub { color:var(--muted); font-variant-numeric:tabular-nums; }
 .grid h4 { grid-column:1/-1; margin:8px 0 -4px; font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.8px; }
 .item .cap { padding:6px 10px; display:flex; justify-content:space-between; color:var(--muted); font-size:12px; }
 .item .cap a { color:var(--blue); text-decoration:none; }
@@ -630,7 +647,7 @@ function renderMain() {
             <div class="panel"><h3>Lineage</h3><dl class="facts" id="lineage"></dl></div>
           </div>`],
         ...SECTIONS.map(([name, charts]) => [slug(name), name, `<div class="grid">${charts.map(box).join("")}</div>`, true]),
-        ["replays", "Replays", `<div class="media" id="media"></div>`],
+        ["replays", "Replays", `<div id="media"></div>`],
         ["episodes", "Episodes", `<div id="episodes"></div>`],
         ["evals", "Evaluations", `<div style="color:var(--muted);margin-bottom:8px">bc eval of its checkpoints</div><div id="evals"></div>`],
         ["spaces", "Spaces", `<div id="spaces"></div>`],
@@ -680,17 +697,7 @@ function renderMain() {
     }
   }
 
-  const key = d.media.map(m => m.file).join("|");
-  if (key !== state.mediaKey) {  // only rebuild the gallery when it changed (keeps videos playing)
-    state.mediaKey = key;
-    const videos = d.media.filter(m => m.kind === "video").slice(0, 6);
-    const renders = d.media.filter(m => m.kind === "render").slice(0, 6);
-    const cap = m => `<div class="cap"><span>episode ${m.episode} · <span class="${m.outcome > 0 ? "win" : m.outcome < 0 ? "loss" : ""}">${m.outcome > 0 ? "win" : m.outcome < 0 ? "loss" : "tie"}</span> · return ${fmt(m.return, 2)}</span><a href="/files/${state.selected}/${m.file}" target="_blank">open ↗</a></div>`;
-    document.getElementById("media").innerHTML =
-      videos.map(m => `<div class="item wide"><video src="/files/${state.selected}/${m.file}" controls muted loop preload="metadata"></video>${cap(m)}</div>`).join("") +
-      renders.map(m => `<div class="item"><iframe src="/files/${state.selected}/${m.file}" loading="lazy"></iframe>${cap(m)}</div>`).join("") ||
-      `<div class="empty">No replays yet: trajectory renders appear every few episodes, game videos every ${info.args?.video_every || "N"} episodes of game 0.</div>`;
-  }
+  renderReplays(d);
   const pct = v => v === undefined ? "–" : (100 * v).toFixed(0) + "%";
   const mix = a => a ? ["noop", "stop", "retreat", "move", "attack", "cast"].filter(k => a[k] !== undefined).map(k => `${k} ${pct(a[k])}`).join(" · ") : "–";
   document.getElementById("episodes").innerHTML = d.recent_episodes.length ? `<table><tr><th>#</th><th>game</th><th>outcome</th><th>return</th><th>length</th><th>game time</th><th>dealt / taken</th><th>kills / losses</th><th>actions</th><th>focus dealt / taken</th><th>when</th></tr>` +
@@ -739,6 +746,64 @@ function setTabCount(id, n, keep) {
   c.textContent = n; c.style.display = n ? "" : "none";
   b.style.display = n || keep ? "" : "none";
   if (!n && !keep && b.classList.contains("on")) showTab(document.querySelector(".tabs").dataset.kind, "overview");
+}
+
+// ---- replays: game videos and trajectory renders, one player and the episodes beside it ------------
+ui.replay = { kind: "video", outcome: "all", file: null };
+const outcomeText = o => o > 0 ? "win" : o < 0 ? "loss" : "tie";
+function renderReplays(d) {
+  const el = document.getElementById("media"); if (!el) return;
+  const media = d.media || [], run = d.info.name;
+  const count = k => media.filter(m => m.kind === k).length;
+  setTabCount("replays", media.length, true);
+  if (!count(ui.replay.kind) && media.length) ui.replay.kind = count("video") ? "video" : "render";
+  const want = m => ui.replay.outcome === "all" || outcomeText(m.outcome) === ui.replay.outcome;
+  const list = media.filter(m => m.kind === ui.replay.kind && want(m));
+  if (el.dataset.run !== run) {  // the page's frame, once per run
+    el.dataset.run = run; el.dataset.list = ""; el.dataset.viewer = "";
+    el.innerHTML = `<div class="rp-top">
+        <div class="seg" id="rp-kind"><button data-k="video">Game videos<span class="n"></span></button><button data-k="render">Trajectory renders<span class="n"></span></button></div>
+        <div class="seg" id="rp-out"><button data-o="all">all</button><button data-o="win">wins</button><button data-o="loss">losses</button><button data-o="tie">ties</button></div>
+        <span id="rp-hint"></span></div>
+      <div class="replays"><div class="viewer" id="rp-viewer"></div><div class="playlist" id="rp-list"></div></div>`;
+    el.querySelectorAll("#rp-kind button").forEach(b => b.onclick = () => { ui.replay.kind = b.dataset.k; ui.replay.file = null; renderReplays(d); });
+    el.querySelectorAll("#rp-out button").forEach(b => b.onclick = () => { ui.replay.outcome = b.dataset.o; renderReplays(d); });
+  }
+  el.querySelectorAll("#rp-kind button").forEach(b => {
+    const n = count(b.dataset.k); b.querySelector(".n").textContent = n; b.disabled = !n; b.classList.toggle("on", b.dataset.k === ui.replay.kind); });
+  el.querySelectorAll("#rp-out button").forEach(b => b.classList.toggle("on", b.dataset.o === ui.replay.outcome));
+  document.getElementById("rp-hint").textContent = ui.replay.kind === "video"
+    ? `game footage of game 0, every ${d.info.args?.video_every || "N"} episodes: the policy's view beside it`
+    : `the units' positions and hit points, every ${d.info.args?.record_every || "N"} episodes of game 0`;
+  const cur = list.find(m => m.file === ui.replay.file) || list[0];
+  const listKey = list.map(m => m.file).join("|");
+  const box = document.getElementById("rp-list");
+  if (el.dataset.list !== listKey) {  // rebuilt only when the episodes change (keeps the scroll)
+    el.dataset.list = listKey;
+    box.innerHTML = list.map(m => `<div class="it" data-file="${esc(m.file)}">
+        <span class="ep">episode ${m.episode}</span><span class="${m.outcome > 0 ? "win" : m.outcome < 0 ? "loss" : ""}">${outcomeText(m.outcome)}</span>
+        <span class="sub">return ${fmt(m.return, 2)}${m.value0 != null ? ` · V(s₀) ${fmt(m.value0, 2)}` : ""}</span><span class="sub">${m.time ? ago(m.time) : ""}</span></div>`).join("")
+      || `<div class="none" style="padding:20px;color:var(--muted)">none${ui.replay.outcome !== "all" ? " with this outcome" : ""}</div>`;
+    box.querySelectorAll(".it").forEach(it => it.onclick = () => { ui.replay.file = it.dataset.file; renderReplays(d); });
+  }
+  box.querySelectorAll(".it").forEach(it => it.classList.toggle("on", !!cur && it.dataset.file === cur.file));
+  const viewer = document.getElementById("rp-viewer");
+  if (!cur) {
+    if (el.dataset.viewer !== "none") {
+      el.dataset.viewer = "none";
+      viewer.innerHTML = `<div class="none">${media.length ? "No episode matches." : `No replays yet: trajectory renders come every ${d.info.args?.record_every || "N"} episodes of game 0, game videos every ${d.info.args?.video_every || "N"} (rendered in the background).`}</div>`;
+    }
+    return;
+  }
+  if (el.dataset.viewer === cur.file) return;  // playing: left alone
+  el.dataset.viewer = cur.file; ui.replay.file = cur.file;
+  const src = `/files/${encodeURIComponent(run).replace(/%2F/g, "/")}/${cur.file}`;
+  const cal = cur.value0 != null ? ` · predicted V(s₀) ${fmt(cur.value0, 2)}, discounted return ${fmt(cur.return0, 2)}` : "";
+  viewer.innerHTML = (cur.kind === "video"
+      ? `<video src="${src}" controls muted autoplay loop playsinline></video>`
+      : `<iframe src="${src}#autoplay" title="trajectory"></iframe>`) +
+    `<div class="cap"><span>episode ${cur.episode} · <span class="${cur.outcome > 0 ? "win" : cur.outcome < 0 ? "loss" : ""}">${outcomeText(cur.outcome)}</span> · return ${fmt(cur.return, 2)}${cal}${cur.time ? ` · ${ago(cur.time)}` : ""}</span>
+      <a href="${src}" target="_blank">open ↗</a></div>`;
 }
 
 // ---- observation and action spaces ----------------------------------------------------------------

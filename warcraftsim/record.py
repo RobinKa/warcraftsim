@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import json
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -55,6 +56,7 @@ class TrajectoryRecorder:
         self.close()
 
 
+@lru_cache(maxsize=8)  # the maps don't change: rendering many episodes loads each once
 def _terrain_layer(map_name: str | None) -> dict | None:
     """Walkable mask of the map, downsampled to terrain tiles (128 world units), base64 bits."""
     if not map_name:
@@ -73,50 +75,80 @@ def _terrain_layer(map_name: str | None) -> dict | None:
             "bits": base64.b64encode(np.packbits(tiles.astype(np.uint8)).tobytes()).decode()}
 
 
-_HTML = """<!doctype html><meta charset="utf-8"><title>warcraftsim trajectory</title>
-<style>body{font:13px sans-serif;margin:12px;background:#111;color:#ddd}canvas{background:#222;border:1px solid #444}
-#bar{display:flex;gap:8px;align-items:center;margin:6px 0}#t{width:600px}pre{margin:4px 0}</style>
-<div id="bar"><button id="play">play</button><input id="t" type="range" min="0" value="0">
-<span id="lbl"></span><label>speed <select id="spd"><option>1</option><option selected>4</option><option>16</option>
-</select></label></div><canvas id="c" width="900" height="680"></canvas><pre id="info"></pre>
+_HTML = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>warcraftsim trajectory</title>
+<style>
+:root{--bg:#0f1318;--panel:#171d24;--line:#2a3440;--text:#d7dee6;--muted:#8795a3;--accent:#e0a33a}
+*{box-sizing:border-box}
+body{font:13px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;margin:0;padding:8px;background:var(--bg);color:var(--text)}
+#bar{display:flex;gap:10px;align-items:center;margin:0 0 8px;flex-wrap:wrap}
+#bar button,#bar select{background:var(--panel);border:1px solid var(--line);border-radius:5px;color:var(--text);font:inherit;padding:2px 10px;cursor:pointer}
+#t{flex:1;min-width:120px;accent-color:var(--accent)}
+#lbl{color:var(--muted);font-variant-numeric:tabular-nums;min-width:118px}
+label{color:var(--muted)}
+canvas{display:block;max-width:100%;max-height:calc(100vh - 84px);width:auto;height:auto;margin:0 auto;background:#161c22;border:1px solid var(--line);border-radius:6px}
+#info{display:flex;gap:18px;flex-wrap:wrap;margin:6px 2px 0;color:var(--muted);font-size:12px}
+#info b{color:var(--text);font-weight:500}.sw{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px}
+</style>
+<div id="bar"><button id="play">play</button><input id="t" type="range" min="0" value="0"><span id="lbl"></span>
+<label>speed <select id="spd"><option value="1">1×</option><option value="2" selected>2×</option><option value="4">4×</option><option value="8">8×</option></select></label></div>
+<canvas id="c" width="960" height="600"></canvas><div id="info"></div>
 <script>
 const D = __DATA__;
 const frames = D.frames, T = D.terrain;
 const colors = ["#e33","#36f","#2cb","#a3d","#ee3","#f92","#3c3","#e7b","#999","#8cf","#064","#720"];
 const cv = document.getElementById("c"), cx = cv.getContext("2d"), sl = document.getElementById("t");
 sl.max = frames.length - 1;
+// the view: where the units were over the episode (not the whole map), with a margin
 let minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
-if (T) { minx=T.x0; miny=T.y0; maxx=T.x0+T.w*T.cell; maxy=T.y0+T.h*T.cell; }
-else for (const f of frames) for (const u of f.u) { minx=Math.min(minx,u[3]); maxx=Math.max(maxx,u[3]);
+for (const f of frames) for (const u of f.u) { if (u[2] >= 12) continue; minx=Math.min(minx,u[3]); maxx=Math.max(maxx,u[3]);
   miny=Math.min(miny,u[4]); maxy=Math.max(maxy,u[4]); }
-const pad = T ? 0 : 300; minx-=pad; miny-=pad; maxx+=pad; maxy+=pad;
+if (minx > maxx) { minx=-500; maxx=500; miny=-500; maxy=500; }
+const pad = Math.max(250, 0.15 * Math.max(maxx-minx, maxy-miny)); minx-=pad; miny-=pad; maxx+=pad; maxy+=pad;
 const sc = Math.min(cv.width/(maxx-minx), cv.height/(maxy-miny));
-const X = x => (x-minx)*sc, Y = y => cv.height-(y-miny)*sc;
+const ox = (cv.width - (maxx-minx)*sc) / 2, oy = (cv.height - (maxy-miny)*sc) / 2;  // centred
+const X = x => ox + (x-minx)*sc, Y = y => cv.height - oy - (y-miny)*sc;
 let bg = null;
 if (T) { bg = document.createElement("canvas"); bg.width = cv.width; bg.height = cv.height;
-  const g = bg.getContext("2d"), bytes = atob(T.bits); g.fillStyle = "#16202a"; g.fillRect(0,0,bg.width,bg.height);
-  g.fillStyle = "#3a3f2f";
+  const g = bg.getContext("2d"), bytes = atob(T.bits); g.fillStyle = "#12171d"; g.fillRect(0,0,bg.width,bg.height);
+  g.fillStyle = "#2b3036";
   for (let r=0;r<T.h;r++) for (let c=0;c<T.w;c++) { const i=r*T.w+c;
     if (bytes.charCodeAt(i>>3) & (128>>(i&7))) g.fillRect(X(T.x0+c*T.cell), Y(T.y0+(r+1)*T.cell), T.cell*sc+1, T.cell*sc+1); } }
+const R = Math.max(5, Math.min(14, 20 * sc));  // a unit's size on screen: about its size in the game
 function draw(i) {
   const f = frames[i]; cx.clearRect(0,0,cv.width,cv.height); if (bg) cx.drawImage(bg,0,0);
-  for (const u of f.u) { const [id,type,own,x,y,hp,mhp,fl] = u, s = (fl&2) ? 7 : (fl&1) ? 6 : 4;
+  cx.font = "11px system-ui, sans-serif";
+  for (const u of f.u) { const [id,type,own,x,y,hp,mhp,fl] = u, s = (fl&2) ? R * 1.4 : (fl&1) ? R * 1.25 : R;
     cx.fillStyle = own < colors.length ? colors[own] : "#777"; cx.beginPath();
     if (fl&2) cx.rect(X(x)-s, Y(y)-s, 2*s, 2*s); else cx.arc(X(x), Y(y), s, 0, 7); cx.fill();
-    if (mhp > 0 && own < 12) { cx.fillStyle="#000"; cx.fillRect(X(x)-s, Y(y)-s-4, 2*s, 2);
-      cx.fillStyle="#4f4"; cx.fillRect(X(x)-s, Y(y)-s-4, 2*s*hp/mhp, 2); } }
-  for (const id of f.d) {}
-  document.getElementById("lbl").textContent = "t=" + (f.t/1000).toFixed(1) + "s  step " + i + "/" + (frames.length-1);
-  document.getElementById("info").textContent = Object.entries(f.p).map(([p,v]) =>
-    "player " + p + ": gold " + v[0] + " lumber " + v[1] + " food " + v[2] + "/" + v[3] +
-    ["", "  VICTORY", "  DEFEAT", "  TIE"][v[4]] + "  units " + f.u.filter(u => u[2] == p).length).join("\\n");
+    if (fl&1) { cx.strokeStyle = "#fff"; cx.lineWidth = 1.5; cx.stroke(); }  // a hero
+    if (mhp > 0 && own < 12) { cx.fillStyle="#000"; cx.fillRect(X(x)-s, Y(y)-s-6, 2*s, 3);
+      cx.fillStyle = hp/mhp > .5 ? "#4cc38a" : hp/mhp > .25 ? "#e0a33a" : "#e5534b"; cx.fillRect(X(x)-s, Y(y)-s-6, 2*s*hp/mhp, 3); }
+    if (own < 12) { cx.fillStyle = "#8795a3"; cx.fillText(type, X(x) - 12, Y(y) + s + 12); } }
+  document.getElementById("lbl").textContent = (f.t/1000).toFixed(1) + " s · step " + i + "/" + (frames.length-1);
+  document.getElementById("info").innerHTML = Object.entries(f.p).map(([p,v]) => {
+    const n = f.u.filter(u => u[2] == p), hp = n.reduce((a, u) => a + u[5], 0);
+    return `<span><span class="sw" style="background:${colors[p] || "#777"}"></span>player ${p}${p == 0 ? " (agent)" : ""}: <b>${n.length}</b> units, <b>${hp}</b> hp` +
+      ["", " · <b style='color:#4cc38a'>victory</b>", " · <b style='color:#e5534b'>defeat</b>", " · tie"][v[4]] + "</span>"; }).join("");
 }
-let timer = null;
-document.getElementById("play").onclick = () => { if (timer) { clearInterval(timer); timer = null; return; }
-  timer = setInterval(() => { const n = +sl.value + +document.getElementById("spd").value;
-    if (n >= frames.length) { clearInterval(timer); timer = null; } sl.value = Math.min(n, frames.length-1); draw(+sl.value); }, 50); };
-sl.oninput = () => draw(+sl.value);
+// playback in game time: speed 2× plays a 20 s fight in 10 s
+let timer = null, now = frames[0].t;
+const btn = document.getElementById("play");
+function stop() { clearInterval(timer); timer = null; btn.textContent = "play"; }
+function play() {
+  if (+sl.value >= frames.length - 1) sl.value = 0;
+  now = frames[+sl.value].t; btn.textContent = "pause";
+  timer = setInterval(() => {
+    now += 50 * +document.getElementById("spd").value;
+    let i = +sl.value; while (i < frames.length - 1 && frames[i + 1].t <= now) i++;
+    if (i !== +sl.value) { sl.value = i; draw(i); }
+    if (i >= frames.length - 1) stop();
+  }, 50);
+}
+btn.onclick = () => timer ? stop() : play();
+sl.oninput = () => { draw(+sl.value); now = frames[+sl.value].t; };
 draw(0);
+if (location.hash.includes("autoplay")) play();  // the dashboard's viewer
 </script>
 """
 
