@@ -584,7 +584,8 @@ const SECTIONS = [
   ]],
   ["Behaviour", [
     ["c-act", "Action mix", "share of unit-steps", [EP("act_noop", "noop", "#8795a3"), EP("act_stop", "stop", "#e0c33a"),
-      EP("act_retreat", "retreat", "#b083f0"), EP("act_move", "move", "#539bf5"), EP("act_cast", "cast", "#f56ed2"), EP("act_attack", "attack", "#e5534b")], { ymin: 0, ymax: 1, empty: "no action statistics for this task/run" }],
+      EP("act_hold", "hold", "#c69026"), EP("act_retreat", "retreat", "#b083f0"), EP("act_move", "move", "#539bf5"),
+      EP("act_attack_move", "attack-move", "#39c5cf"), EP("act_cast", "cast", "#f56ed2"), EP("act_attack", "attack", "#e5534b")], { ymin: 0, ymax: 1, empty: "no action statistics for this task/run" }],
     ["c-tgt", "Targeting", "damage concentration: share hitting one unit per step",
       [EP("combat_focus_dealt", "damage dealt on one enemy", "#e0a33a"), EP("combat_focus_taken", "damage taken on one unit", "#e5534b"),
        EP("act_attack_weakest", "attack orders on the weakest", "#4cc38a"), EP("act_attack_invalid", "invalid attack orders", "#8795a3"),
@@ -884,7 +885,8 @@ function renderEvals(evals) {
 }
 
 // ---- a behavior cloning dataset's page (run bc/<name>) ------------------------------------------
-const KIND_COLORS = { noop: "#8795a3", stop: "#e0c33a", retreat: "#b083f0", move: "#539bf5", attack: "#e5534b", cast: "#f56ed2" };
+const KIND_COLORS = { noop: "#8795a3", stop: "#e0c33a", hold: "#c69026", retreat: "#b083f0", move: "#539bf5",
+                      attack_move: "#39c5cf", attack: "#e5534b", cast: "#f56ed2" };
 function fitPoints(d, key) {  // key: a path into the fit rows (acc.first, choices.retreat.recall)
   return (d.fit || []).map(r => [r.epoch, key.split(".").reduce((o, k) => o == null ? o : o[k], r)]).filter(p => typeof p[1] === "number");
 }
@@ -906,7 +908,7 @@ function renderBC(d) {
     ], "fit", "Fit"],
     ["Demonstrations (the script's episodes)", [
       ["b-win", "Outcomes", "win · draw · loss", [EP("win_rate", "win", "#4cc38a"), EP("draw_rate", "draw", "#e0a33a"), EP("loss_rate", "loss", "#e5534b")], { axis: "episode", ymin: 0, ymax: 1 }],
-      ["b-act", "Action mix", "share of unit-steps", ["noop", "stop", "retreat", "move", "attack", "cast"].map(k => EP("act_" + k, k, KIND_COLORS[k])), { axis: "episode", ymin: 0, ymax: 1 }],
+      ["b-act", "Action mix", "share of unit-steps", ["noop", "stop", "hold", "retreat", "move", "attack_move", "attack", "cast"].map(k => EP("act_" + k, k, KIND_COLORS[k])), { axis: "episode", ymin: 0, ymax: 1 }],
       ["b-cmb", "Combat", "per episode", [EP("combat_dealt", "damage dealt", "#4cc38a"), EP("combat_taken", "damage taken", "#e5534b")], { axis: "episode", ymin: 0, ymax: 1, empty: "not recorded for this dataset (collected before combat was logged)" }],
       ["b-len", "Episode length", "steps", [EP("length", "steps", "#539bf5")], { axis: "episode", ymin: 0 }],
     ], "demos", "Demonstrations"],
