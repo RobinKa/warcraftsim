@@ -208,7 +208,7 @@ class BridgeServer:
             magic, version, obs_size, num_atns = struct.unpack("<4I", _recv(conn, 16))
             task_name = _recv(conn, 32).split(b"\0")[0].decode()
             ok = (magic == MAGIC and version == VERSION and obs_size == self.task.obs_size
-                  and num_atns == self.task.num_atns and task_name == self.task.name)
+                  and num_atns == self.task.num_atns and task_name == self.task.name[:31])  # the hello carries 31 characters
             with self._lock:
                 if ok and self._free:
                     slot = self._free.pop(0)
