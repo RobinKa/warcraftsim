@@ -10,6 +10,8 @@ A sweep launches the games once and trains one run per --sweep after another (ru
 A run lives in runs/<name>/:
     run.json         configuration and status (read by the dashboard), and how it was launched
     notes.md         free-text notes (--note, or edited in the dashboard)
+A sweep also writes runs/sweeps/<name>/: sweep.json (its launch and runs) and notes.md (the --note
+options outside the --sweep ones: the sweep's description).
     train.jsonl      trainer log, one line per epoch (SPS, losses, env/win_rate, ...)
     episodes-*.jsonl every finished episode (one file per bridge worker)
     trainer.log      the trainer's terminal output
@@ -178,6 +180,11 @@ def _without(argv: list[str], options: tuple[str, ...]) -> list[str]:
     return out
 
 
+def _add_note(path: Path, notes: list[str]) -> None:
+    old = path.read_text() if path.exists() else ""
+    path.write_text((old.rstrip() + "\n\n" if old.strip() else "") + "\n".join(notes) + "\n")
+
+
 def _git() -> dict:
     """The code a run was launched with: commit, subject, and whether tracked files had changes."""
     def git(*cmd):
@@ -240,10 +247,18 @@ def main(argv: list[str] | None = None) -> int:
             "created": time.time(), "status": "queued" if sweep and sweep["index"] > 1 else "building",
             "init_from": args.init_from, "sweep": sweep, "launch": dict(launched, run_command=one),
         }))
-        if args.note:
-            notes = RUNS_DIR / name / "notes.md"
-            old = notes.read_text() if notes.exists() else ""
-            notes.write_text((old.rstrip() + "\n\n" if old.strip() else "") + "\n".join(args.note) + "\n")
+        # in a sweep, the notes outside the --sweep options describe the sweep; the rest this run
+        own_notes = args.note[len(base.note):] if sweep else args.note
+        if own_notes:
+            _add_note(RUNS_DIR / name / "notes.md", own_notes)
+    if base.sweep:  # runs/sweeps/<group>: how the sweep was launched, and its description
+        sweep_dir = RUNS_DIR / "sweeps" / group
+        sweep_dir.mkdir(parents=True, exist_ok=True)
+        (sweep_dir / "sweep.json").write_text(json.dumps({
+            "group": group, "task": task.name, "created": time.time(), "runs": [name for _, name, _ in plans],
+            "options": configs, "launch": launched}, indent=2))
+        if base.note:
+            _add_note(sweep_dir / "notes.md", base.note)
         print(f"run {name}: {RUNS_DIR / name}" + (f"  [{sweep['options']}]" if sweep else ""), flush=True)
     binary = build_trainer(task)
     first = runs[0]

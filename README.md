@@ -376,6 +376,7 @@ Each run writes `runs/<name>/`, which the dashboard shows live:
 
 The dashboard shows:
 * the run list, with comparison; each run's parent and the first line of its notes. The filter matches every word against names, tasks, sweep options, notes and parents;
+* sweeps as groups in the list, collapsed until opened. Each group's checkbox compares all its runs, or none. A sweep's page has its description (editable; `--note` options outside the `--sweep` ones; `runs/sweeps/<name>/notes.md`), where its runs started from, a table of its runs (their own options, status, steps, win rate), and its launch command (rebuilt from its runs for older sweeps);
 * per run:
   * notes, editable;
   * lineage: what it started from (a random policy, another run's checkpoint, or a fitted script with its policy, episodes and win rate), the chain back from there, its sweep and sibling runs, and the runs started from it;

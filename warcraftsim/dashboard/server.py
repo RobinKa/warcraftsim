@@ -9,6 +9,9 @@ self-contained page. Episodes are placed on the trainer's step axis by their tim
 Lineage: a run started from a checkpoint (run.json init_from) has a parent, another run or a
 behavior-cloning dataset (runs/bc/<name>, its meta.json); the parent lists it as a child. Notes
 live in runs/<name>/notes.md (train.py --note; POST /api/runs/<name>/notes edits them).
+Sweeps (/api/sweeps): the runs of one train.py launch, with runs/sweeps/<group>/sweep.json (how it
+was launched) and notes.md (its description; POST /api/sweeps/<group>/notes). Older sweeps get
+theirs rebuilt from their runs.
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ import mimetypes
 from collections import OrderedDict
 import os
 import threading
+import time
 import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -159,6 +163,37 @@ def _interp_steps(times: list[float], train: list[dict]) -> list[float]:
     return out
 
 
+def _options(info: dict) -> dict:
+    """A run's train.py options as flag -> value (PufferLib --section.key=value options included)."""
+    args, out = info.get("args", {}), {}
+    for key in _ARG_ORDER:
+        v = args.get(key)
+        if v is None or v == "" or (key in ("buffers", "step_seconds", "minibatch") and not v):
+            continue
+        out[f"--{key.replace('_', '-')}"] = str(int(v) if key == "timesteps" else v)
+    for e in info.get("extra", []):
+        k, _, v = e.partition("=")
+        if k != "--base.load_model_path":
+            out[k] = v
+    return out
+
+
+def _flags(opts: dict) -> list[str]:
+    return [p for k, v in opts.items() for p in ((f"{k}={v}",) if "." in k else (k, v))]
+
+
+def _rebuilt_sweep_command(infos: list[dict], group: str) -> str:
+    """A sweep launch equivalent to its runs: the options they share, then each run's own."""
+    import shlex
+
+    opts = [_options(i) for i in infos]
+    shared = {k: v for k, v in opts[0].items() if all(o.get(k) == v for o in opts[1:])}
+    parts = ["python", "-m", "warcraftsim.puffer.train", *_flags(shared), "--name", group]
+    for o in opts:
+        parts += ["--sweep", shlex.join(_flags({k: v for k, v in o.items() if k not in shared})) or ""]
+    return shlex.join(parts)
+
+
 def _rebuilt_command(info: dict) -> str:
     """An equivalent command line for a run recorded before launches were (its options)."""
     import shlex
@@ -182,6 +217,70 @@ class Dashboard:
         self.cache = _JsonlCache()
         self._summaries: dict[Path, tuple[tuple, dict]] = {}  # run dir -> (file mtimes, summary)
         self._bc_meta: dict[str, tuple[float, dict]] = {}  # dataset -> (mtime, meta.json)
+        self._runs_cache: tuple[float, list[dict]] = (0.0, [])  # the list and the sweeps from one scan
+
+    def _sweep_dir(self, group: str) -> Path | None:
+        if not group or group.startswith(".") or "/" in group or "\\" in group:
+            return None
+        return self.runs_dir / "sweeps" / group
+
+    def sweeps(self) -> list[dict]:
+        """Every sweep: its runs (in sweep order), description, launch, task, and when."""
+        runs = self._recent_runs()
+        groups: dict[str, dict] = {}
+        for r in runs:
+            sw = r.get("sweep")
+            if not sw or not sw.get("group"):
+                continue
+            g = groups.setdefault(sw["group"], {"group": sw["group"], "task": r.get("task"), "of": sw.get("of"),
+                                                "created": r.get("created", 0), "members": []})
+            g["created"] = min(g["created"], r.get("created", 0))
+            g["members"].append((sw.get("index", 0), r))
+        out = []
+        for g in groups.values():
+            members = [r for _, r in sorted(g.pop("members"), key=lambda m: m[0])]
+            g["runs"] = [r["name"] for r in members]
+            d = self._sweep_dir(g["group"])
+            g["notes"] = self.notes(d) if d else ""
+            meta = {}
+            try:
+                meta = json.loads((d / "sweep.json").read_text())
+            except (FileNotFoundError, NotADirectoryError, json.JSONDecodeError, TypeError):
+                pass
+            if meta.get("launch"):
+                g["launch"] = meta["launch"]
+            else:
+                infos = []
+                for r in members:
+                    try:
+                        infos.append(json.loads((self.runs_dir / r["name"] / "run.json").read_text()))
+                    except (FileNotFoundError, json.JSONDecodeError):
+                        pass
+                g["launch"] = {"command": _rebuilt_sweep_command(infos, g["group"]) if infos else "", "rebuilt": True}
+            parents: dict[str, int] = {}
+            for r in members:
+                p = r.get("parent")
+                key = json.dumps(p, sort_keys=True) if p else ""
+                parents[key] = parents.get(key, 0) + 1
+            g["parents"] = [{"parent": json.loads(k) if k else None, "runs": n} for k, n in parents.items()]
+            out.append(g)
+        return sorted(out, key=lambda g: g["created"], reverse=True)
+
+    def set_sweep_notes(self, group: str, text: str) -> bool:
+        d = self._sweep_dir(group)
+        if d is None or len(text) > MAX_NOTES or not any(
+                (r.get("sweep") or {}).get("group") == group for r in self._recent_runs()):
+            return False
+        d.mkdir(parents=True, exist_ok=True)
+        tmp = d / "notes.md.tmp"
+        tmp.write_text(text)
+        tmp.replace(d / "notes.md")
+        return True
+
+    def _recent_runs(self, max_age: float = 2.0) -> list[dict]:
+        """runs(), reused for a moment (the page asks for the runs and the sweeps together)."""
+        t, runs = self._runs_cache
+        return runs if time.time() - t < max_age else self.runs()
 
     def notes(self, d: Path) -> str:
         try:
@@ -288,7 +387,9 @@ class Dashboard:
             info.pop("description", None)  # the list doesn't show these: less to send every refresh
             info.pop("command", None)
         self._lineage(out)
-        return sorted(out, key=lambda r: r.get("created", 0), reverse=True)
+        out = sorted(out, key=lambda r: r.get("created", 0), reverse=True)
+        self._runs_cache = (time.time(), out)
+        return out
 
     def _runs_from(self, name: str) -> list[dict]:
         """The runs started from a checkpoint of run `name` (their run.json files only)."""
@@ -376,6 +477,8 @@ def make_handler(dash: Dashboard):
                 return self._send(_page(), "text/html; charset=utf-8")
             if path == "/api/runs":
                 return self._json(dash.runs())
+            if path == "/api/sweeps":
+                return self._json(dash.sweeps())
             if path.startswith("/api/runs/"):
                 data = dash.run(path[len("/api/runs/"):])
                 return self._json(data) if data else self._json({"error": "no such run"}, 404)
@@ -400,6 +503,18 @@ def make_handler(dash: Dashboard):
                 name = path[len("/api/runs/"):-len("/notes")]
                 if not isinstance(text, str) or not dash.set_notes(name, text):
                     return self._json({"error": "no such run, or notes too long"}, 400)
+                return self._json({"ok": True})
+            if path.startswith("/api/sweeps/") and path.endswith("/notes"):
+                length = int(self.headers.get("Content-Length") or 0)
+                if length > MAX_NOTES * 4:
+                    return self._json({"error": "too long"}, 413)
+                try:
+                    text = json.loads(self.rfile.read(length) or b"{}").get("notes", "")
+                except (json.JSONDecodeError, AttributeError):
+                    return self._json({"error": "expected {\"notes\": text}"}, 400)
+                group = path[len("/api/sweeps/"):-len("/notes")]
+                if not isinstance(text, str) or not dash.set_sweep_notes(group, text):
+                    return self._json({"error": "no such sweep, or notes too long"}, 400)
                 return self._json({"ok": True})
             self._send(b"not found", "text/plain", 404)
 

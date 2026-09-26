@@ -86,6 +86,23 @@ th, td { text-align:left; padding:5px 10px; border-bottom:1px solid var(--line);
 th { color:var(--muted); font-weight:500; font-size:11px; text-transform:uppercase; letter-spacing:.5px; }
 .empty { color:var(--muted); padding:30px; text-align:center; }
 pre.cmd { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px; color:var(--muted); white-space:pre-wrap; font-size:11px; margin:0 0 8px; }
+.sweep { padding:7px 9px; border-radius:6px; cursor:pointer; margin-bottom:4px; border:1px solid var(--line); background:#151b22; }
+.sweep:hover { background:var(--panel); }
+.sweep.sel { background:var(--panel2); border-color:#4a5868; }
+.sweep.has-shown { border-left:3px solid var(--accent); }
+.sweep .n { font-weight:600; display:flex; justify-content:space-between; gap:6px; align-items:center; }
+.sweep .n > span:first-child { display:flex; align-items:center; min-width:0; }
+.sweep .m { color:var(--muted); font-size:12px; display:flex; justify-content:space-between; margin-top:2px; }
+.sweep .m span:first-child { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sweep .m span:last-child { flex:none; white-space:nowrap; margin-left:8px; }
+.sweep input { margin:0 6px 0 0; accent-color:var(--accent); }
+.caret { background:none; border:0; color:var(--muted); cursor:pointer; padding:0 4px 0 0; font:inherit; width:16px; text-align:left; }
+.sweepruns { margin:-2px 0 6px 12px; padding-left:6px; border-left:1px dashed var(--line); }
+.sweep .note, .sweep .from { font-size:11.5px; margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sweep .note { color:var(--text); opacity:.8; } .sweep .from { color:var(--muted); }
+table.runs td, table.runs th { font-size:12px; padding:4px 8px; }
+table.runs td.opts { font-family:ui-monospace, monospace; font-size:11.5px; }
+table.runs tr.shown td { background:var(--panel2); }
 .run .from, .run .note { font-size:11.5px; margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .run .from { color:var(--muted); }
 .run .note { color:var(--text); opacity:.8; }
@@ -133,20 +150,23 @@ const COLORS = ["#e0a33a", "#539bf5", "#4cc38a", "#e5534b", "#b083f0", "#39c5cf"
 // line style per compared run (a whole sweep is often compared: 12 distinct ones, then they repeat)
 const DASHES = [[], [7, 4], [2, 3], [10, 3, 2, 3], [14, 5], [4, 2, 1, 2], [1, 5], [18, 3, 3, 3, 3, 3],
                 [5, 5], [10, 2, 2, 2, 2, 2], [3, 6, 9, 6], [20, 6]];
-let state = { runs: [], selected: null, compare: new Set(), data: {}, dataVer: {}, mediaKey: "" };
+let state = { runs: [], sweeps: [], selected: null, compare: new Set(), data: {}, dataVer: {}, mediaKey: "",
+              view: "run", sweep: null };  // view: a run's page, or a sweep's (state.sweep)
 const ui = { smooth: 0.6, hoverX: null, hoverChart: null, charts: {} };
 try { const v = parseFloat(localStorage.getItem("smooth")); if (!Number.isNaN(v)) ui.smooth = v; } catch (e) {}
 // shareable view: #run=NAME&compare=A,B&smooth=0.8
 (() => {
   const h = new URLSearchParams(location.hash.slice(1));
   if (h.get("run")) state.selected = h.get("run");
+  if (h.get("sweep")) { state.view = "sweep"; state.sweep = h.get("sweep"); }
   if (h.get("compare")) h.get("compare").split(",").filter(Boolean).forEach(n => state.compare.add(n));
   if (h.get("smooth") !== null && !Number.isNaN(parseFloat(h.get("smooth")))) ui.smooth = parseFloat(h.get("smooth"));
   if (h.get("hover")) ui.hoverX = parseFloat(h.get("hover"));  // a cursor position (screenshots)
 })();
 function saveHash() {
   const h = new URLSearchParams();
-  if (state.selected) h.set("run", state.selected);
+  if (state.view === "sweep" && state.sweep) h.set("sweep", state.sweep);
+  else if (state.selected) h.set("run", state.selected);
   if (state.compare.size) h.set("compare", [...state.compare].join(","));
   history.replaceState(null, "", "#" + h.toString());
 }
@@ -303,9 +323,10 @@ function refresh() {
 }
 async function refreshOnce() {
   try {
-    state.runs = await getJSON("/api/runs");
+    [state.runs, state.sweeps] = await Promise.all([getJSON("/api/runs"), getJSON("/api/sweeps")]);
     if (!state.selected && state.runs.length) state.selected = state.runs[0].name;
     renderRuns();
+    if (state.view === "sweep") renderSweep();
     // the shown run always; a compared run only when its files changed (finished runs: once)
     const ver = n => { const r = state.runs.find(r => r.name === n); return r ? `${r.status}|${(r.summary || {}).updated}` : ""; };
     const names = [...new Set([state.selected, ...state.compare].filter(Boolean))]
@@ -315,7 +336,7 @@ async function refreshOnce() {
         state.data[n] = await getJSON("/api/runs/" + encodeURIComponent(n));
         state.dataVer[n] = ver(n);
       }));
-      if (state.selected && state.data[state.selected]) renderMain();
+      if (state.view === "run" && state.selected && state.data[state.selected]) renderMain();
     }
   } catch (e) { console.error(e); }
   document.getElementById("clock").textContent = "updated " + new Date().toLocaleTimeString();
@@ -323,7 +344,12 @@ async function refreshOnce() {
 // the shown run in view in the run list (on a selection change, not on refreshes: those would
 // fight scrolling the list)
 function showSelectedRun() {
-  const el = document.querySelector(`.run[data-run="${CSS.escape(state.selected || "")}"]`);
+  if (state.view === "run") {  // a run inside a collapsed sweep: open the sweep
+    const r = state.runs.find(r => r.name === state.selected);
+    if (r && r.sweep && !ui.expanded.has(r.sweep.group)) { ui.expanded.add(r.sweep.group); keepExpanded(); renderRuns(); }
+  }
+  const el = state.view === "sweep" ? document.querySelector(`.sweep[data-sweep="${CSS.escape(state.sweep || "")}"]`)
+                                    : document.querySelector(`.run[data-run="${CSS.escape(state.selected || "")}"]`);
   if (!el) return;
   const r = el.getBoundingClientRect(), list = document.getElementById("runs").getBoundingClientRect();
   if (r.top < list.top || r.bottom > list.bottom + 1) el.scrollIntoView({ block: "center" });  // a visible one stays
@@ -331,9 +357,16 @@ function showSelectedRun() {
 // a selection change shows at once (with the data already loaded), then loads what is missing
 function selectionChanged() {
   saveHash(); renderRuns(); showSelectedRun();
-  if (state.selected && state.data[state.selected]) renderMain();
+  if (state.view === "sweep") renderSweep();
+  else if (state.selected && state.data[state.selected]) renderMain();
+  else if (state.selected) {  // its data is on the way: not the previous page meanwhile
+    const m = document.getElementById("main");
+    m.dataset.run = ""; m.innerHTML = `<div class="empty">loading ${esc(state.selected)}…</div>`;
+  }
   refresh();
 }
+function openRun(name) { state.view = "run"; state.selected = name; state.mediaKey = ""; selectionChanged(); }
+function openSweep(group) { state.view = "sweep"; state.sweep = group; ui.expanded.add(group); keepExpanded(); selectionChanged(); }
 
 // run list controls: a text filter, and "selected only" (the compared runs and the one shown)
 const runUI = { filter: "", only: false };
@@ -355,28 +388,141 @@ function setupRunTools() {
   document.getElementById("selnone").onclick = () => { state.compare.clear(); selectionChanged(); };
 }
 
+// the run list: runs, and sweeps as groups of runs (collapsed unless opened, filtered or "selected only")
+try { ui.expanded = new Set(JSON.parse(localStorage.getItem("expanded") || "[]")); } catch (e) { ui.expanded = new Set(); }
+function keepExpanded() { try { localStorage.setItem("expanded", JSON.stringify([...ui.expanded])); } catch (e) {} }
+function winText(s) { return s && s.win_rate_100 != null ? (100 * s.win_rate_100).toFixed(0) + "%" : "–"; }
+function runCard(r, inSweep) {
+  const s = r.summary || {};
+  return `<div class="run ${state.view === "run" && r.name === state.selected ? "sel" : ""}" data-run="${esc(r.name)}">
+    <div class="n"><span><input type="checkbox" data-cmp="${esc(r.name)}" ${state.compare.has(r.name) ? "checked" : ""}>${esc(r.name)}</span>${badge(r.status)}</div>${inSweep ? `
+    <div class="m"><span title="${esc(r.sweep.options || "base")}" style="font-family:ui-monospace,monospace;font-size:11.5px">${esc(r.sweep.options || "base options")}</span><span>win ${winText(s)}</span></div>
+    <div class="m"><span>${fmt(s.agent_steps || 0, 0)} steps</span><span>${ago(s.updated)}</span></div>` : `
+    <div class="m"><span title="${esc(r.task)} · ${r.envs} games">${esc(r.task)} · ${r.envs} games</span><span>win ${winText(s)}</span></div>
+    <div class="m"><span>${fmt(s.agent_steps || 0, 0)} steps</span><span>${ago(s.updated)}</span></div>`}${r.parent && !(inSweep && inSweep.sameParent) ? `
+    <div class="from" title="started from ${esc(parentText(r.parent))}">← ${esc(parentShort(r.parent))}</div>` : ""}${r.notes && r.notes.trim() ? `
+    <div class="note" title="${esc(r.notes.trim())}">${esc(r.notes.trim().split("\n")[0])}</div>` : ""}</div>`;
+}
+function sweepStatus(runs) {  // the most telling status of a sweep's runs
+  const st = runs.map(r => r.status || "");
+  const n = f => st.filter(f).length;
+  if (n(x => x === "training" || x.startsWith("launching") || x === "building")) return "training";
+  if (n(x => x === "queued")) return "queued";
+  if (n(x => x.startsWith("failed"))) return `failed ${n(x => x.startsWith("failed"))}/${st.length}`;
+  if (n(x => x === "finished") === st.length) return "finished";
+  return st.length ? st[0] : "";
+}
+function sweepHeader(g, runs, expanded, shown) {
+  const inCmp = runs.filter(r => state.compare.has(r.name)).length;
+  const best = runs.reduce((b, r) => (r.summary && r.summary.win_rate_100 != null && (!b || r.summary.win_rate_100 > b.summary.win_rate_100)) ? r : b, null);
+  const parents = new Set(runs.map(r => r.parent ? parentShort(r.parent) : "scratch"));
+  return `<div class="sweep ${state.view === "sweep" && state.sweep === g.group ? "sel" : ""} ${shown ? "has-shown" : ""}" data-sweep="${esc(g.group)}">
+    <div class="n"><span><button class="caret" data-toggle="${esc(g.group)}" title="${expanded ? "collapse" : "expand"}">${expanded ? "▾" : "▸"}</button><input type="checkbox" data-cmpsweep="${esc(g.group)}" ${inCmp === runs.length && runs.length ? "checked" : ""} data-some="${inCmp > 0 && inCmp < runs.length ? 1 : 0}" title="compare all its runs">${esc(g.group)}</span>${badge(sweepStatus(runs))}</div>
+    <div class="m"><span title="${esc(g.task)}">${esc(g.task)}</span><span>${runs.length} runs</span></div>
+    <div class="m"><span>${best ? `best ${esc(best.name.slice(g.group.length + 1) ? "#" + best.name.slice(g.group.length + 1) : best.name)}: ${winText(best.summary)}` : "no episodes yet"}</span><span>${ago(Math.max(...runs.map(r => (r.summary || {}).updated || 0)))}</span></div>${[...parents].some(p => p !== "scratch") ? `
+    <div class="from">← ${esc([...parents].join(", "))}</div>` : ""}${g.notes && g.notes.trim() ? `
+    <div class="note" title="${esc(g.notes.trim())}">${esc(g.notes.trim().split("\n")[0])}</div>` : ""}</div>`;
+}
 function renderRuns() {
   const n = state.compare.size;
   document.getElementById("selcount").textContent = n ? `${n} selected` : "";
-  const listed = listedRuns();
-  document.getElementById("runs").innerHTML = listed.map(r => {
-    const s = r.summary || {};
-    const wr = s.win_rate_100 === null || s.win_rate_100 === undefined ? "–" : (100 * s.win_rate_100).toFixed(0) + "%";
-    return `<div class="run ${r.name === state.selected ? "sel" : ""}" data-run="${r.name}">
-      <div class="n"><span><input type="checkbox" data-cmp="${r.name}" ${state.compare.has(r.name) ? "checked" : ""}>${r.name}</span>${badge(r.status)}</div>
-      <div class="m"><span title="${esc(r.task)} · ${r.envs} games">${r.task} · ${r.envs} games</span><span>win ${wr}</span></div>
-      <div class="m"><span>${fmt(s.agent_steps || 0, 0)} steps</span><span>${ago(s.updated)}</span></div>${r.sweep ? `
-      <div class="m" title="sweep ${r.sweep.group}"><span style="color:var(--accent);flex:none;margin-right:8px">sweep ${r.sweep.index}/${r.sweep.of}</span><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:initial" title="${esc(r.sweep.options || "base")}">${esc(r.sweep.options || "base")}</span></div>` : ""}${r.parent ? `
-      <div class="from" title="started from ${esc(parentText(r.parent))}">← ${esc(parentShort(r.parent))}</div>` : ""}${r.notes && r.notes.trim() ? `
-      <div class="note" title="${esc(r.notes.trim())}">${esc(r.notes.trim().split("\n")[0])}</div>` : ""}</div>`;
-  }).join("") || `<div class="empty">${state.runs.length ? "no runs match" : "no runs"}</div>`;
-  document.querySelectorAll(".run").forEach(el => el.onclick = ev => {
+  const listed = new Set(listedRuns().map(r => r.name));
+  const words = runUI.filter.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const sweeps = new Map(state.sweeps.map(g => [g.group, g]));
+  const html = [], done = new Set();
+  for (const r of state.runs) {  // newest first; a sweep where its newest run is
+    if (!r.sweep || !sweeps.has(r.sweep.group)) { if (listed.has(r.name)) html.push(runCard(r, null)); continue; }
+    const g = sweeps.get(r.sweep.group);
+    if (done.has(g.group)) continue;
+    done.add(g.group);
+    const all = g.runs.map(n => state.runs.find(x => x.name === n)).filter(Boolean);
+    // a sweep whose name or description matches the filter lists all its runs
+    const text = [g.group, g.notes || "", g.task || ""].join(" ").toLowerCase();
+    const whole = words.length && words.every(w => text.includes(w));
+    let members = all.filter(x => listed.has(x.name) || (whole && (!runUI.only || state.compare.has(x.name) || x.name === state.selected)));
+    if (!members.length) continue;
+    const auto = words.length > 0 || runUI.only;  // searching or "selected only": show what matched
+    const expanded = ui.expanded.has(g.group) || (auto && !whole);
+    const shown = state.view === "run" && all.some(x => x.name === state.selected);
+    const sameParent = new Set(all.map(x => JSON.stringify(x.parent || null))).size === 1;
+    html.push(sweepHeader(g, all, expanded, shown));
+    if (expanded) html.push(`<div class="sweepruns">${members.map(x => runCard(x, { sameParent })).join("")}</div>`);
+  }
+  const box = document.getElementById("runs");
+  box.innerHTML = html.join("") || `<div class="empty">${state.runs.length ? "no runs match" : "no runs"}</div>`;
+  box.querySelectorAll("[data-some='1']").forEach(el => el.indeterminate = true);
+  box.querySelectorAll(".run").forEach(el => el.onclick = ev => {
     if (ev.target.dataset.cmp) return;
-    state.selected = el.dataset.run; state.mediaKey = ""; selectionChanged();
+    openRun(el.dataset.run);
   });
-  document.querySelectorAll("[data-cmp]").forEach(el => el.onchange = () => {
+  box.querySelectorAll("[data-cmp]").forEach(el => el.onchange = () => {
     el.checked ? state.compare.add(el.dataset.cmp) : state.compare.delete(el.dataset.cmp); selectionChanged();
   });
+  box.querySelectorAll(".sweep").forEach(el => el.onclick = ev => {
+    if (ev.target.dataset.cmpsweep || ev.target.dataset.toggle) return;
+    openSweep(el.dataset.sweep);
+  });
+  box.querySelectorAll("[data-toggle]").forEach(el => el.onclick = () => {
+    const g = el.dataset.toggle;
+    ui.expanded.has(g) ? ui.expanded.delete(g) : ui.expanded.add(g); keepExpanded(); renderRuns();
+  });
+  box.querySelectorAll("[data-cmpsweep]").forEach(el => el.onchange = () => {  // all its runs in or out
+    const g = sweeps.get(el.dataset.cmpsweep); if (!g) return;
+    const allIn = g.runs.every(n => state.compare.has(n));
+    g.runs.forEach(n => allIn ? state.compare.delete(n) : state.compare.add(n));
+    selectionChanged();
+  });
+}
+
+// ---- a sweep's page ------------------------------------------------------------------------------
+function renderSweep() {
+  const g = state.sweeps.find(x => x.group === state.sweep), main = document.getElementById("main");
+  if (!g) { if (state.sweeps.length) main.innerHTML = `<div class="empty">no sweep ${esc(state.sweep)}</div>`; return; }
+  const runs = g.runs.map(n => state.runs.find(r => r.name === n)).filter(Boolean);
+  if (main.dataset.run !== "sweep:" + g.group) {
+    main.dataset.run = "sweep:" + g.group; ui.charts = {};
+    main.innerHTML = `
+      <div class="title"><h2>sweep ${esc(g.group)}</h2><span id="sweepbadge"></span><span class="desc">${esc(g.task)} · ${runs.length} runs · ${new Date(g.created * 1000).toLocaleString()}</span></div>
+      <div class="about">
+        <div class="panel"><h3>Description<span id="notestate"></span></h3>
+          <textarea id="notes" placeholder="what this sweep tests and what came of it (runs/sweeps/${esc(g.group)}/notes.md)"></textarea>
+          <div class="row"><button id="savenotes">save</button><span>Ctrl+Enter saves</span></div></div>
+        <div class="panel"><h3>Lineage</h3><dl class="facts" id="lineage"></dl></div>
+      </div>
+      <div class="row" style="display:flex;gap:8px;margin:0 0 8px"><button class="copy" id="cmpall">compare all its runs in the charts</button><button class="copy" id="cmpnone">stop comparing them</button></div>
+      <table class="runs" id="sweepruns"></table>
+      <section><h3>Launch</h3><div id="launch"></div></section>`;
+    setupNotes({ name: g.group, notes: g.notes }, "/api/sweeps/" + encodeURIComponent(g.group) + "/notes", () => {
+      const x = state.sweeps.find(x => x.group === g.group); if (x) x.notes = document.getElementById("notes").value; });
+    document.getElementById("cmpall").onclick = () => { g.runs.forEach(n => state.compare.add(n)); openRun(g.runs[0]); };
+    document.getElementById("cmpnone").onclick = () => { g.runs.forEach(n => state.compare.delete(n)); selectionChanged(); };
+  } else if (!ui.notesDirty && document.activeElement !== document.getElementById("notes")) {
+    document.getElementById("notes").value = g.notes || "";
+  }
+  document.getElementById("sweepbadge").innerHTML = badge(sweepStatus(runs));
+  const rows = [];
+  for (const p of g.parents || []) {
+    const q = p.parent;
+    const what = !q ? "scratch (random weights)" : q.kind === "run" ? `${go(q.name)}${q.steps != null ? ` at ${fmt(q.steps, 0)} steps` : ""}`
+      : q.kind === "bc" ? `behavior cloning of <b>${esc(q.policy || "?")}</b> on ${esc(q.task || "?")}${q.win_rate != null ? ` (the script wins ${(100 * q.win_rate).toFixed(0)}%)` : ""}` : esc(q.name);
+    rows.push(["Started from", what + ((g.parents || []).length > 1 ? ` <span style="color:var(--muted)">(${p.runs} runs)</span>` : "")]);
+  }
+  rows.push(["Task", esc(g.task)]);
+  const lin = document.getElementById("lineage");
+  lin.innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+  bindGo(lin);
+  document.getElementById("sweepruns").innerHTML = `<tr><th>#</th><th>run</th><th>its options</th><th>status</th><th>steps</th><th>win (last 100)</th><th>compare</th><th>notes</th></tr>` +
+    runs.map(r => { const s = r.summary || {};
+      return `<tr><td>${r.sweep.index}</td><td>${go(r.name)}</td><td class="opts">${esc(r.sweep.options || "base options")}</td><td>${badge(r.status)}</td>
+        <td>${fmt(s.agent_steps || 0, 0)} / ${fmt(r.timesteps || 0, 0)}</td><td>${winText(s)}</td>
+        <td><input type="checkbox" data-cmp="${esc(r.name)}" ${state.compare.has(r.name) ? "checked" : ""}></td>
+        <td style="color:var(--muted)">${esc((r.notes || "").trim().split("\n")[0])}</td></tr>`; }).join("");
+  const tbl = document.getElementById("sweepruns");
+  bindGo(tbl);
+  tbl.querySelectorAll("[data-cmp]").forEach(el => el.onchange = () => {
+    el.checked ? state.compare.add(el.dataset.cmp) : state.compare.delete(el.dataset.cmp); selectionChanged();
+  });
+  renderLaunchInto(document.getElementById("launch"), g.launch || {}, null, true);
 }
 
 // Every chart: series = [source, key, name, color, transform?]; sources: ep (episodes), tr (trainer
@@ -528,24 +674,28 @@ function parentText(p) {
   return p.name;
 }
 const go = n => `<a class="go" data-go="${esc(n)}">${esc(n)}</a>`;
+const goSweep = g => `<a class="go" data-gosweep="${esc(g)}">${esc(g)}</a>`;
 function bindGo(root) {
-  root.querySelectorAll("[data-go]").forEach(a => a.onclick = () => {
-    state.selected = a.dataset.go; state.mediaKey = ""; selectionChanged();
-  });
+  root.querySelectorAll("[data-go]").forEach(a => a.onclick = () => openRun(a.dataset.go));
+  root.querySelectorAll("[data-gosweep]").forEach(a => a.onclick = () => openSweep(a.dataset.gosweep));
 }
-function setupNotes(info) {
+// the notes box of a run's page (default) or a sweep's (url, onSaved)
+function setupNotes(info, url, onSaved) {
   const box = document.getElementById("notes"), st = document.getElementById("notestate");
   box.value = info.notes || ""; ui.notesDirty = false; st.textContent = "";
   const name = info.name;
   const save = async () => {
     st.textContent = "saving…";
     try {
-      const r = await fetch("/api/runs/" + encodeURIComponent(name) + "/notes", {
+      const r = await fetch(url || "/api/runs/" + encodeURIComponent(name) + "/notes", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ notes: box.value }) });
       if (!r.ok) throw new Error((await r.json()).error || r.status);
       ui.notesDirty = false; st.textContent = "saved";
-      if (state.data[name]) state.data[name].info.notes = box.value;
-      const run = state.runs.find(r => r.name === name); if (run) run.notes = box.value;
+      if (onSaved) onSaved();
+      else {
+        if (state.data[name]) state.data[name].info.notes = box.value;
+        const run = state.runs.find(r => r.name === name); if (run) run.notes = box.value;
+      }
       renderRuns();
     } catch (e) { st.textContent = "not saved: " + e.message; }
   };
@@ -571,7 +721,9 @@ function renderLineage(d) {
   if (info.sweep) {
     const sib = [];
     for (let k = 1; k <= info.sweep.of; k++) { const n = `${info.sweep.group}-${k}`; sib.push(n === info.name ? `<b>${k}</b>` : `<a class="go" data-go="${esc(n)}">${k}</a>`); }
-    rows.push(["Sweep", `${esc(info.sweep.group)} ${info.sweep.index}/${info.sweep.of}: <code>${esc(info.sweep.options || "base options")}</code> · runs ${sib.join(" ")}`]);
+    const g = state.sweeps.find(x => x.group === info.sweep.group);
+    const about = g && g.notes && g.notes.trim() ? `<br><span style="color:var(--muted)">${esc(g.notes.trim().split("\n")[0])}</span>` : "";
+    rows.push(["Sweep", `${goSweep(info.sweep.group)} ${info.sweep.index}/${info.sweep.of}: <code>${esc(info.sweep.options || "base options")}</code> · runs ${sib.join(" ")}${about}`]);
   }
   rows.push(["Continued by", info.children && info.children.length ? info.children.map(go).join(", ") : "–"]);
   rows.push(["Task", esc(info.task)]);
@@ -579,18 +731,26 @@ function renderLineage(d) {
   el.innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
   bindGo(el);
 }
-function renderLaunch(info) {
-  const l = info.launch || {}, a = info.args || {}, parts = [];
+function renderLaunch(info) { renderLaunchInto(document.getElementById("launch"), info.launch || {}, info, false); }
+// launch commands, code version and (for a run) its configuration; a sweep's page shows its launch
+function renderLaunchInto(el, l, info, sweep) {
+  const a = (info && info.args) || {}, parts = [];
   const cmdBlock = (title, text) => `<div class="cmdhead"><span>${title}</span><button class="copy" data-copy="${esc(text)}">copy</button></div><pre class="cmd">${esc(text)}</pre>`;
-  if (l.run_command) parts.push(cmdBlock(l.rebuilt ? "Equivalent command (rebuilt from the recorded options: this run predates recorded launches)"
-                                                   : "This run on its own", l.run_command));
-  if (l.command && l.command !== l.run_command) parts.push(cmdBlock(info.sweep ? "Launched with (the whole sweep)" : "Launched with", l.command));
+  if (sweep) {
+    if (l.command) parts.push(cmdBlock(l.rebuilt ? "Equivalent command (rebuilt from its runs' options: the sweep predates recorded launches)"
+                                                 : "Launched with", l.command));
+  } else {
+    if (l.run_command) parts.push(cmdBlock(l.rebuilt ? "Equivalent command (rebuilt from the recorded options: this run predates recorded launches)"
+                                                     : "This run on its own", l.run_command));
+    if (l.command && l.command !== l.run_command) parts.push(cmdBlock(info.sweep ? "Launched with (the whole sweep)" : "Launched with", l.command));
+  }
   const g = l.git || {};
   const facts = [];
   if (g.commit) facts.push(["Code", `<code>${esc(g.commit)}</code> ${esc(g.subject || "")}${g.dirty ? ` <span class="loss">(uncommitted changes)</span>` : ""}`]);
   if (l.host) facts.push(["Host", `${esc(l.host)} <span style="color:var(--muted)">${esc(l.cwd || "")}</span>`]);
   if (l.time) facts.push(["Launched", new Date(l.time * 1000).toLocaleString()]);
   if (facts.length) parts.push(`<dl class="facts" style="margin:4px 0 10px">${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>`);
+  if (sweep) { finishLaunch(el, parts); return; }
   const defaulted = new Set((info.task_defaults_used || []).map(d => d.split("=")[0].replace(/^--/, "").replace(/-/g, "_")));
   const skip = new Set(["name", "note", "sweep"]);
   const kv = Object.entries(a).filter(([k, v]) => !skip.has(k) && v !== null && v !== "" && !(Array.isArray(v) && !v.length))
@@ -599,7 +759,9 @@ function renderLaunch(info) {
     .map(e => { const [k, v] = e.replace(/^--/, "").split("="); return `<span class="${defaulted.has(k) ? "def" : ""}">${esc(k)} <b>${esc(v)}</b></span>`; });
   parts.push(`<div class="cmdhead"><span>Configuration${defaulted.size ? " (dashed: the task's defaults)" : ""}</span></div><div class="kv">${[...kv, ...extra].join("")}</div>`);
   if (info.command) parts.push(cmdBlock("Trainer command", info.command.join(" ")));
-  const el = document.getElementById("launch");
+  finishLaunch(el, parts);
+}
+function finishLaunch(el, parts) {
   el.innerHTML = parts.join("");
   el.querySelectorAll("[data-copy]").forEach(b => b.onclick = async () => {
     try { await navigator.clipboard.writeText(b.dataset.copy); b.textContent = "copied"; }
