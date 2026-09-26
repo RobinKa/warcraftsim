@@ -61,6 +61,29 @@ def combat_stats(first, last, player: int = 0) -> dict | None:
             "kills": len(enemy0) - len(enemy1), "losses": len(own0) - len(own1)}
 
 
+def _torch_overlay(ckpt: Path, steps_file: Path) -> list | None:
+    """PolicyOutputs of an EntityNet checkpoint for a video's trace (warcraftsim/rl/overlay_eval.py)."""
+    import subprocess
+    import tempfile
+
+    from .bc import _torch_python
+    from .policy import PolicyOutput
+
+    script = Path(__file__).resolve().parents[1] / "rl" / "overlay_eval.py"
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "out.npz"
+        r = subprocess.run([_torch_python(), str(script), str(ckpt), str(steps_file), str(out)],
+                           capture_output=True, text=True, timeout=300)
+        if r.returncode != 0 or not out.exists():
+            print(f"bridge: policy not evaluated for the video: {r.stderr[-300:]}")
+            return None
+        d = np.load(out)
+        n = len([k for k in d.files if k.startswith("probs")])
+        probs = [d[f"probs{j}"] for j in range(n)]
+        return [PolicyOutput(values=d["values"][:, a], probs=[p[:, a] for p in probs], entropy=d["entropy"][:, a])
+                for a in range(d["values"].shape[1])]
+
+
 def _recv(conn: socket.socket, n: int) -> bytes:
     buf = bytearray()
     while len(buf) < n:
@@ -439,6 +462,9 @@ class BridgeServer:
         ckpt = checkpoint_at(run_dir / "checkpoints", float(trace["time"]))
         task = getattr(self.task, "display_task", None) or self.task
         if task is not self.task:  # one agent per unit: the team's orders, no per-unit probabilities yet
+            ckpt = None
+        if ckpt is not None and ckpt.suffix == ".pt":  # the torch trainer's: evaluated with the torch Python
+            outputs, step = _torch_overlay(ckpt, steps_file), checkpoint_step(ckpt)
             ckpt = None
         if ckpt is not None:
             try:

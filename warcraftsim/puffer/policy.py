@@ -104,8 +104,9 @@ class PufferPolicy:
 
 def checkpoint_at(checkpoint_dir: str | os.PathLike, when: float) -> Path | None:
     """The newest checkpoint written at or before wall time `when` (else the oldest one)."""
-    files = sorted(Path(checkpoint_dir).rglob("*.bin"), key=lambda p: p.stat().st_mtime)
-    files = [f for f in files if re.fullmatch(r"\d+\.bin", f.name)]
+    files = sorted([*Path(checkpoint_dir).rglob("*.bin"), *Path(checkpoint_dir).rglob("*.pt")],
+                   key=lambda p: p.stat().st_mtime)
+    files = [f for f in files if re.fullmatch(r"\d+\.(bin|pt)", f.name)]  # .pt: the torch trainer's
     if not files:
         return None
     before = [f for f in files if f.stat().st_mtime <= when]

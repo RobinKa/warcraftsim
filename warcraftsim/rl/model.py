@@ -70,6 +70,8 @@ class EntityNet(nn.Module):
         self.direction = nn.Linear(d, self.n_dir)
         self.distance = nn.Linear(d, self.n_dist)
         self.value = nn.Sequential(nn.Linear(core, d), nn.ReLU(), nn.Linear(d, 1))
+        self._keep_dists = False  # heads() records each head's distribution in last_dists (videos)
+        self.last_dists: dict = {}
 
     # ---- observation -> unit states and core ---------------------------------------------------
     def parse(self, obs: torch.Tensor):
@@ -125,9 +127,18 @@ class EntityNet(nn.Module):
             return a, logp.gather(-1, a.unsqueeze(-1)).squeeze(-1), ent
 
         g = (lambda i: actions[..., i]) if actions is not None else (lambda i: None)
-        kind, lp_k, en_k = pick(self.kind(z), mk, g(0))
+        dists = {}  # head -> its distribution [N, k, n] (conditioned on the earlier choices)
+        _pick = pick
+
+        def pick(logits, mask, given, head=None):  # noqa: F811 (records each head's distribution)
+            out = _pick(logits, mask, given)
+            if head is not None and self._keep_dists:
+                m_ = mask | ~mask.any(-1, keepdim=True)
+                dists[head] = torch.softmax(logits.masked_fill(~m_, NEG), -1)
+            return out
+        kind, lp_k, en_k = pick(self.kind(z), mk, g(0), 0)
         z1 = z + self.kind_emb(kind)
-        ability, lp_a, en_a = pick(self.ability(z1), ma, g(4))
+        ability, lp_a, en_a = pick(self.ability(z1), ma, g(4), 4)
         z2 = z1 + self.ability_emb(ability)
         logits_t = torch.einsum("nkd,njd->nkj", self.query(z2), self.key(u)) / math.sqrt(self.d)
         # structure: attacks at enemies; a cast at the side its ability is for
@@ -142,9 +153,9 @@ class EntityNet(nn.Module):
             side = torch.where(for_enemy.unsqueeze(-1), enemy_slot, ~enemy_slot)
             tmask = torch.where(is_cast.unsqueeze(-1), tmask & side, tmask)
             instant = own_units[..., self.abil_instant].gather(-1, ability.unsqueeze(-1)).squeeze(-1) > 0.5
-        target, lp_t, en_t = pick(logits_t, tmask, g(3))
-        direction, lp_d, en_d = pick(self.direction(z1), md, g(1))
-        distance, lp_s, en_s = pick(self.distance(z1), mdist, g(2))
+        target, lp_t, en_t = pick(logits_t, tmask, g(3), 3)
+        direction, lp_d, en_d = pick(self.direction(z1), md, g(1), 1)
+        distance, lp_s, en_s = pick(self.distance(z1), mdist, g(2), 2)
 
         moves = ((kind == K_MOVE) | (kind == K_AMOVE)).float()
         aims = (is_attack | (is_cast & ~instant)).float()
@@ -152,6 +163,7 @@ class EntityNet(nn.Module):
         logp = lp_k + moves * (lp_d + lp_s) + aims * lp_t + casts * lp_a
         ent = en_k + moves * (en_d + en_s) + aims * en_t + casts * en_a
         acts = torch.stack([kind, direction, distance, target, ability], -1)
+        self.last_dists = dists
         return acts, logp.sum(-1), ent.sum(-1), self.value(h).squeeze(-1)
 
     def step(self, obs, h, masks, greedy: bool = False):

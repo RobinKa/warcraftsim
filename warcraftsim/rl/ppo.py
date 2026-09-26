@@ -89,6 +89,11 @@ def main() -> int:
     ap.add_argument("--ref", help="a reference policy (.pt, e.g. a fitted script) to stay near: as AlphaStar's KL "
                                   "to its supervised policy, which keeps what the demonstrations knew while RL explores")
     ap.add_argument("--ref-kl", type=float, default=0.0, help="weight of the KL to --ref")
+    ap.add_argument("--vf-warmup", type=int, default=0,
+                    help="epochs that train only the value (a cloned policy's value is barely trained: its first "
+                         "advantages are noise, and PPO would follow them away from the clone)")
+    ap.add_argument("--target-kl", type=float, default=0.0,
+                    help="stop an epoch's updates once the policy moved this far (approximate KL; 0: off)")
     ap.add_argument("--eval-only", type=int, default=0, help="1: play without updating (win rates in train.jsonl)")
     ap.add_argument("--no-compile", type=int, default=0,
                     help="skip torch.compile of the rollout step (CUDA graphs: ~2 ms instead of ~20 per step)")
@@ -271,7 +276,11 @@ def main() -> int:
         chunks = [(t, b) for t in range(0, T, L) for b in range(B)]
         per_mb = max(1, args.minibatch // L)
         stats_acc = {"policy": 0.0, "value": 0.0, "entropy": 0.0, "kl": 0.0, "clipfrac": 0.0, "n": 0}
+        warm = epoch < args.vf_warmup
+        stop_kl = False
         for _ in range(args.epochs):
+            if stop_kl:
+                break
             order = np.random.permutation(len(chunks))
             for i in range(0, len(order), per_mb):
                 sel = [chunks[j] for j in order[i:i + per_mb]]
@@ -289,8 +298,8 @@ def main() -> int:
                 pg = -torch.min(ratio * a, ratio.clamp(1 - args.clip, 1 + args.clip) * a).mean()
                 vl = 0.5 * ((v - ret[idx_t, idx_b]) ** 2).mean()
                 el = ent.mean()
-                loss = pg + args.vf_coef * vl - args.ent_coef * el
-                if ref is not None:  # KL(policy || reference) on the rollout's actions (k3 estimator)
+                loss = args.vf_coef * vl if warm else pg + args.vf_coef * vl - args.ent_coef * el
+                if ref is not None and not warm:  # KL(policy || reference) on the rollout's actions (k3)
                     lr_ = b_ref[idx_t, idx_b] - logp
                     ref_kl = (lr_.exp() - 1 - lr_).mean()
                     loss = loss + args.ref_kl * ref_kl
@@ -306,6 +315,9 @@ def main() -> int:
                     stats_acc["kl"] += ((ratio - 1) - (logp - old)).mean().item()
                     stats_acc["clipfrac"] += ((ratio - 1).abs() > args.clip).float().mean().item()
                     stats_acc["n"] += 1
+                    if args.target_kl and not warm and ((ratio - 1) - (logp - old)).mean().item() > args.target_kl:
+                        stop_kl = True
+                        break
         t_train = time.time() - t1
         epoch += 1
         n = max(stats_acc.pop("n"), 1)
