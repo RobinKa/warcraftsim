@@ -6,8 +6,9 @@ into groups for the whole run:
     self    the learner also plays side 1: both sides' experience trains it
     past    side 1 is a past snapshot of the learner, chosen per episode by prioritized fictitious
             self-play (PFSP): snapshots the learner beats less often are chosen more often
-    script  side 1 is a fixed scripted policy (noop, focus, pull35: an anchor that does not drift
-            with the league, and a yardstick across runs)
+    script  side 1 is a fixed scripted policy (noop, focus, pull35, amove: anchors that do not drift
+            with the league, and yardsticks across runs; amove attack-moves at the nearest enemy, as the
+            game's scripted opponent does: without such a chaser, self-play learned to run away)
 
 Scripts decide from side 1's own observations (numpy), with general orders.
 """
@@ -131,6 +132,19 @@ class Scripts:
         enemy_alive = obs[:, at + k * F:at + k * F + k] > 0.5
         a = np.zeros((N, k, self.group), np.int64)
         if name == "noop":
+            return a.reshape(N, -1)
+        if name == "amove":  # attack-move toward the nearest enemy, as the game's scripted opponent does
+            dx = enemy[:, None, :, self.i_x] - own[..., None, self.i_x]
+            dy = enemy[:, None, :, self.i_y] - own[..., None, self.i_y]
+            dist = np.where(enemy_alive[:, None, :], dx ** 2 + dy ** 2, np.inf)
+            j = dist.argmin(-1)
+            ax = np.take_along_axis(dx, j[..., None], -1)[..., 0]
+            ay = np.take_along_axis(dy, j[..., None], -1)[..., 0]
+            d = np.round(np.arctan2(ay, ax) / (2 * math.pi / self.n_dir)).astype(np.int64) % self.n_dir
+            live = own_alive & enemy_alive.any(-1)[:, None]
+            a[..., 0] = np.where(live, KINDS.index("attack_move"), 0)
+            a[..., 1] = np.where(live, d, 0)
+            a[..., 2] = np.where(live, 1, 0)
             return a.reshape(N, -1)
         ehp = np.where(enemy_alive, enemy[..., self.i_hp] * enemy[..., self.i_maxhp], np.inf)
         weakest = ehp.argmin(-1)  # [N]

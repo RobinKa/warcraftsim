@@ -81,7 +81,7 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--self-share", type=float, default=0.5, help="self-play: share of games against itself")
     ap.add_argument("--script-share", type=float, default=0.25, help="self-play: share against scripts")
-    ap.add_argument("--scripts", default="noop,focus,pull35", help="self-play: the scripted opponents")
+    ap.add_argument("--scripts", default="noop,focus,pull35,amove", help="self-play: the scripted opponents")
     ap.add_argument("--pfsp", default="hard", choices=("hard", "variance", "uniform"),
                     help="self-play: how past snapshots are chosen (by the learner's win rate p against them: "
                          "hard (1-p)^2, variance p(1-p), uniform)")

@@ -610,7 +610,7 @@ const SECTIONS = [
   ["League", [
     ["c-lg-script", "Against the scripts", "the learner's win rate per epoch (draws count half)",
       [TR("league/script:noop", "noop", "#8795a3"), TR("league/script:focus", "focus", "#e0a33a"),
-       TR("league/script:pull35", "pull35", "#b083f0")], { ymin: 0, ymax: 1, empty: "no league (a self-play run with --trainer torch)" }],
+       TR("league/script:pull35", "pull35", "#b083f0"), TR("league/script:amove", "attack-move", "#e5534b")], { ymin: 0, ymax: 1, empty: "no league (a self-play run with --trainer torch)" }],
     ["c-lg-past", "Against its past", "win rate against past snapshots (PFSP) and against itself",
       [TR("league/past", "past snapshots", "#539bf5"), TR("league/self", "itself", "#4cc38a")], { ymin: 0, ymax: 1, empty: "no league" }],
     ["c-lg-members", "League size", "past snapshots", [TR("league/members", "snapshots", "#39c5cf")], { ymin: 0, empty: "no league" }],

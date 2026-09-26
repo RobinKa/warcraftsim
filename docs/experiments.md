@@ -243,6 +243,26 @@ castpull35 52%. The action space can express what the built-in retreat and targe
   1.25 units per game instead of 2.3. Only a pointer at units could learn this: the rule-based
   targets of the older tasks had no rule for it.
 
+### League self-play (`mirror_mix_gen_self_hp400`)
+
+The first league run (`genleague`: from the fitted `pull35`, gentle fine-tuning, 3M steps; half the
+games against itself, a quarter against past snapshots by PFSP, a quarter against the scripts noop,
+focus and pull35) looked good on its own terms: it beat its past snapshots 63-70% and the focus and
+pull35 scripts 70-80% (40% at the start). Head-to-head it beat the 91% policy `genft-1` 68%
+(`scripts/match.py`: 46 wins, 11 losses, 43 draws).
+
+Against the game's scripted opponent, which attack-moves at the nearest enemy, it won 4%.
+
+It had learned to run: 38-61% of its orders were moves away from the enemy. In a mirror fight the
+side that walks into range is hit first, so against copies of itself waiting and backing off pays,
+and the games ran into the time limit (draws went from 18% of its self-play games to 46%). None of
+its opponents chased relentlessly, so nothing punished running; the scripted opponent does exactly
+that, and ran it down. Self-play found an equilibrium of its own games, not strength.
+
+Two changes for the next run: a draw counts as a loss for both sides (`_nodraw`), and the league's
+scripts include `amove`, which attack-moves at the nearest enemy each step like the game's scripted
+opponent: an anchor that punishes running away.
+
 ## Other findings
 
 * lr 0.01 (tuned on `footmen2`) is far too high with 15 action heads: the KL per update was 1.0-1.5 (clip fraction 0.9) and the win rate peaked at 29%. The KL at a given lr grows with the number of heads (≈0.15 with 6, 0.3 with 9, 1.0+ with 15); lr 0.003 keeps it at 0.03-0.14.
