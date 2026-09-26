@@ -9,6 +9,15 @@ Throne (Legacy 1.29). The tools read its archives and build the maps they use lo
 videos of your runs stay in `runs/`, which is not committed. warcraftsim is not affiliated with or
 endorsed by Blizzard Entertainment.
 
+<p align="center">
+  <a href="docs/media/pullback-rejoin-1.webm"><img src="docs/media/pullback-rejoin-1.gif" width="760" alt="A trained policy micro-managing a mirror match"></a>
+</p>
+
+*A policy trained with PPO (run `rejoin-1`) in a 3 v 3 mirror match (a Crypt Lord and two units a side) against the scripted
+opponent: the hurt unit A2 pulls back while A0 and A1 keep fighting, rejoins, and the agent wins. The panel on the right shows what
+the policy saw and thought: its value estimate, rewards, team hit points and every unit's action probabilities.
+[Full episode with sound (WebM)](docs/media/pullback-rejoin-1.webm).*
+
 ```python
 from warcraftsim import Wc3Game, GameSetup, Agent, BuiltinAI
 
@@ -20,6 +29,11 @@ with Wc3Game(GameSetup(map="(2)EchoIsles", slots=[Agent("human"), BuiltinAI("orc
         obs = game.step()                    # 0.25 s of game time
     print(obs.players[0].result)
 ```
+
+<p align="center"><img src="docs/media/dashboard-comparison.png" width="900" alt="The training dashboard comparing four runs"></p>
+
+*The training dashboard comparing four runs from the same starting point: with horizon 64 (orange, blue) the return keeps
+rising, with horizon 16 (green, red) it doesn't (see [experiments](docs/experiments.md#the-horizon)).*
 
 ## How it works
 
@@ -175,195 +189,52 @@ python -m warcraftsim dashboard                                                 
 
 Tasks (add more in `tasks.py`; `scripts/baselines.py` measures scripted policies on any of them):
 * `nav`: reach a point.
-* `footmen2`: 2 vs 2 footmen with 100 hit points against the scripted opponent (episodes ~17 s).
-  * Scripted baselines win 0% (random), 30% (noop), 65–70% (focus fire), 90% (focus fire, and pulling a footman back while it is low and being hit).
-  * Tuned by sweeps (`f2-sweep1`..`5`, `f2-step*` in the dashboard): 0.5 s steps, lr 0.01, minibatch 192, replay ratio 4, the learning rate annealed over 400k steps → 95% wins after ~0.2M steps (~1.5 min), 98-100% soon after; 1.0 s steps: 100% for both seeds.
-  * Most of the speed came from more updates per sample (1 → 32 per epoch), then from longer steps and a shorter annealing schedule. Horizon 32 learns fastest at first but ends lower.
-  * Early policies learned focus fire plus pulling a hurt footman back. The 100% policy instead holds position until the enemies arrive: the scripted opponent then splits its damage over both footmen, while ours focus one enemy.
-* `mirror_mix[_sem][_abil][_hp<P>]`: a mirror match with a new random composition every episode: a hero (level 1-3) and 2-4 units from all races (footman, rifleman, knight, grunt, headhunter, tauren, ghoul, crypt fiend, abomination, archer, huntress), at P‰ of their hit points (default 250). Unit features include the type's range, DPS, armor, speed and cooldown (`data.objects.combat_stats`); episodes are spawned through `QueueSpawn` + `Restart` (`Wc3Game.reset(spawns=...)`).
-  * Hit points decide whether micro matters (scripted baselines, 120-150 episodes each; the time limit scales with hit points):
-
-    | hit points | episode | noop | focus + pull back (`pull35`) |
-    |---|---|---|---|
-    | 25% | 21 s | 55% | 44% |
-    | 35% | 28 s | 53% | 64% |
-    | 40% | 31 s | 54% | 80% |
-    | 50% | 36-40 s | 53% | 79% |
-
-    At 25% units die within a few hits and every order costs more than it gains (attacking the weakest enemy in range 48-50%, pulling back without focus 19%); RL at 25% converged to noop (lr 0.003: 52%). `mirror_mix_hp400` is the training setting.
-  * `_sem`: the target head picks a rule instead of an enemy slot (weakest in range, nearest, weakest, hero, threat = DPS per hit point left) and stop becomes retreat (straight away from the nearest enemy), so an order means the same whatever the composition (`MicroEnv(targeting="semantic")`).
-  * `_abil` (implies `_sem`): heroes fight with their abilities. Each hero gets a random skill build for its level (fighting abilities only: no summons, far sight, blink or sacrifices), the same on both sides. Heroes can also cast:
-    * each unit has a fourth action head, the ability slot, and a fifth kind, cast;
-    * the target rules pick an enemy within the ability's cast range, or an own unit for heals and buffs (the most hurt, the nearest, a hero, the strongest);
-    * instant abilities need no target;
-    * a cast that isn't possible (not learned, cooling down, too little mana, no target) does nothing and is counted as `cast_invalid`.
-
-    Units get 10 more features per ability slot: level, ready, cooldown, how it is cast, for whom, range, area. The scripted opponent's heroes cast what `MicroEnv.scripted_cast` picks. Scripts: `cast<policy>`, e.g. `castpull35`.
-
-    Results on `mirror_mix_abil_hp400` (0.5 s steps; runs `abil40-*`):
-
-    | policy | win rate |
-    |---|---|
-    | noop (no casting) | 31% |
-    | pull35 (no casting) | 29% |
-    | castnoop | 50% |
-    | castpull35 | 50% |
-    | PPO from scratch, lr 0.001, 2.5M steps | 42% |
-    | PPO from the fitted castpull35, lr 0.001, 2.5M steps | 52% |
-
-    Not casting against a caster loses badly. PPO from scratch found a shortcut: 60-66% of its actions are casts and 94% of those aren't possible. An impossible cast does nothing, so this means "do nothing, and cast each ability the moment it's ready".
-
-    Sweeps for learning speed from scratch (with action masks; 600k steps, ~5 min each; runs `abil6-*`, `abil6b-*`). At this budget the win rate is still rising, so faster runs show as higher numbers:
-
-    | round 1 (base: lr 0.001, minibatch 192, replay ratio 4, horizon 64, γ 0.99, λ 0.9, entropy 0.001) | win @0.3M | win @0.6M |
-    |---|---|---|
-    | lr 0.003 | 21% | 29% (peak 34%) |
-    | replay ratio 8 | 9% | 27% |
-    | base | 4% | 25% |
-    | lr 0.002 | 7% | 23% |
-    | minibatch 384 | 8% | 22% |
-    | hidden 256 | 4% | 21% |
-    | λ 0.95 / entropy 0.0003 | 1% | 15% |
-    | γ 0.97 | 0% | 0% (never learned) |
-
-    | round 2 (base: lr 0.003) | win @0.3M | @0.45M | @0.6M |
-    |---|---|---|---|
-    | horizon 32 | 27% | 35% | 33% (peak 40%) |
-    | lr 0.005 | 26% | 28% | 33% |
-    | λ 0.8 | 24% | 31% | 33% (peak 38%) |
-    | γ 0.995 | 24% | 31% | 33% |
-    | clip 0.3 | 20% | 33% | 34% |
-    | base (lr 0.003; round 1: 21% / 29%) | 19% | 28% | 33% |
-    | replay ratio 8 | 10% | 26% | 30% |
-    | entropy 0.003 | 7% | 16% | 24% |
-
-    | round 3 (base: lr 0.003, horizon 32) | 30% reached at | win @0.3M | @0.45M | @0.6M |
-    |---|---|---|---|---|
-    | horizon 16 | 0.19M (1.8 min) | 33% | 39% | 39% |
-    | clip 0.3 | 0.25M | 34% | 33% | 40% |
-    | λ 0.8 | 0.27M | 31% | 37% | 36% (peak 42%) |
-    | lr 0.005 + λ 0.8 + γ 0.995 + clip 0.3 | 0.30M | 29% | 38% | 38% |
-    | lr 0.005 | 0.31M | 29% | 27% | 35% |
-    | γ 0.995 | 0.33M | 27% | 34% | 32% |
-    | base (horizon 32; round 2: 27% / 35% / 33%) | 0.40M | 21% | 31% | 36% |
-    | minibatch 96 | 0.45M | 27% | 30% | 35% |
-
-    | round 4 (base: lr 0.003, horizon 16) | 30% reached at | 35% reached at | win @0.3M | @0.6M |
-    |---|---|---|---|---|
-    | **λ 0.8 + clip 0.3** | **0.10M (1.0 min)** | **0.15M (1.5 min)** | 34% | **45%** (peak 47%) |
-    | horizon 8 | 0.13M | 0.15M | 37% | 40% |
-    | horizon 8 + λ 0.8 | 0.12M | 0.15M | 33% | 41% |
-    | clip 0.3 | 0.13M | 0.24M | 42% | 41% |
-    | λ 0.8 | 0.15M | 0.25M | 35% | 40% |
-    | base (horizon 16; round 3: 0.19M) | 0.23M | 0.29M | 35% | 38% |
-    | lr 0.005 | 0.24M | 0.37M | 32% | 39% |
-
-    Shorter horizons (64 → 32 → 16) give more, smaller updates per sample and learned fastest; horizon 8 costs throughput (the trainer updates twice as often). The winner, horizon 16 with λ 0.8 and clip 0.3, is the task's default now (`Task.train_defaults`, used where the command line doesn't set an option). It reaches 30% wins after 0.1M steps; the settings this started from needed 0.66M.
-
-    Seed noise is about ±4 points at 0.6M, where the learning rate has annealed to zero and most configs end alike; the earlier columns separate them better. The minibatch must be a multiple of the horizon (PufferLib asserts it).
-
-    The plateau: from scratch the tuned settings reach 40-45% after 0.6M steps, and 42-44% after 2.5M (runs `abilbest-*`). What was tried at 600k steps (runs `plat-*`; base 40%, other seeds 45% and 38-45%):
-
-    | change | win @0.6M |
-    |---|---|
-    | hidden 256 / 3 layers | 39% / 39% |
-    | entropy 0.003 annealed to 0 | 43% |
-    | γ 0.995 | 40% |
-    | replay ratio 2 / 8 | 39% / 40% |
-    | relational features (`_rel`: nearest opponent, in range, threatened, weakest, time to die) | 37-39% |
-    | tactical masks (`_tac`: retreat only while losing hit points, no plain moves) | 38-40% (faster early; retreat still unused) |
-    | 0.25 s steps (horizon 32) | 33-35% |
-    | **start from the fitted `castpull35` (masked BC), lr 0.001** | **52%** (50% after 0.27M steps) |
-    | start from the fitted `castpull35`, lr 0.003 | 48% |
-    | value-loss weight 0.5 / 4 (default 2) | 42% / 38% |
-    | value clipping off / gradient norm 0.5 / lr floor 20% | 40% / 40% / 41% |
-    | V-trace / momentum 0.9 / momentum 0.98 | 38% / 37% / 36% |
-    | one agent per unit, one shared policy (`_units`, 3M agent steps = 0.6M game steps) | 43% / 45% (30% after 54k game steps, 0.6 min) |
-
-    Scripts that cast more carefully don't do better either (`smartcast`: area spells only with two enemies inside, targeted spells on the biggest threat, heals below half; 200 episodes each): `castnoop` 53%, `smartcastnoop` 48%, `smartcastpull35` 55%. Against a casting opponent, reasonable strategies all end near a coin flip: the headroom here may be small.
-
-    The trained policy plays as well greedily as sampled (43% / 42%), so that is its level. With the scripted casting rule in place of its own casts it wins 45%; `castnoop` (no attack orders at all, the same casting) wins 50%. So the gap to the scripts is partly casting, and partly attack orders that do worse than letting units auto-acquire. Only a better starting point moved the plateau.
-
-    Longer from the fitted script (`bclong`, 2.5M steps, lr 0.001): 47% at 0.3M, 50% at 2.5M, flat. It keeps the script's style: 91% attack orders, 6% casts.
-
-    Self-play (`mirror_mix_abil_self_hp400`, `MirrorSelfPlayEnv`: the policy plays both sides of the same game with the full action set; the observations and actions are the single-agent task's, so a checkpoint also plays the scripted opponent with `bc eval`). Starting from `bclong`, 3M agent steps (run `selfplay1`), against the scripted opponent over training: 50% → 51% (0.6M) → 44% (1.2M) → 42% (1.8M) → 41% (2.4M) → 49% (3.0M, lr at 0). Plain self-play against the latest self drifts away from what beats the script and doesn't improve it. PufferLib's self-play pool (older checkpoints as opponents in part of the games: `--selfplay.enabled=1 --vec.num_policies=2 --vec.hist_policy_percent=0.5`) works with this env; the second agent carries policy tag 1. With it (run `selfpool1`: half the games against a past checkpoint, resampled every 100k steps, from `bclong`, 3M agent steps), the results against the scripted opponent stay at 45-52% (47%, 48%, 52%, 48%, 45%, 49% over training): no drift, but no gain either.
-  * Without abilities the plateau is an exploration problem. `pull35` (68%) is focus fire plus pulling hurt units back, and neither half works alone: focus fire 53% (noop 51-54%), pulling back without focus 19% (at 25% hit points). PPO from scratch with every improvement above ends at noop's level (runs `sem6-*`: 47-49%; with tactical masks `semtac6-*`: 42-48%, 97% noop and no retreats): trying either half alone is punished, so it never finds the pair.
-  * Tactical mode (`_tac`) tries to make the pull-back discoverable:
-    * no plain moves;
-    * a retreat only for a unit below half its hit points that is losing them;
-    * a chosen retreat goes on, re-ordered every step, while the unit keeps losing hit points (at most 3 s), so one decision is the whole pull-back.
-
-    With the same mechanics `pull35` still wins 68% (a first version with a fixed 1.5 s commitment kept units out too long: 51%). PPO still doesn't learn it. From a fitted focus-fire script (`focus`, 49%, no retreats; runs `focusrl*`) it holds ~50% and drops its retreats from 1-2% to 0%, even with the commitment. A reward for kills and losses (`_kill`, ±0.2 per unit) doesn't change that (48% from the focus clone; from scratch 49% with tactical mode, 48% without; runs `kill-*`, `killnotac`). From the fitted `pull35` (`pullrl2`), PPO keeps its retreats (3% → 2% of unit decisions) and goes from 58% to 65-66% in 3M steps. PPO can value retreats when they come with the rest of the strategy: forbidden at evaluation (`bc eval --forbid retreat`), the final `pullrl2` policy drops from 66% to 46% (240 episodes each). Pulling back pays because the attack-moving opponent keeps switching targets and chasing, and that happens only when the whole team pulls hurt units consistently. A lone retreat while the rest fight just loses that unit's damage. Isolated exploratory retreats therefore look useless, and the strategy has to come from somewhere else (a script, replays).
-    Yet pulling back only now and then already pays. With focus fire, a script that pulls a unit back only with probability P each step it could (`pull<L>p<P>`, 200 episodes each) wins:
-
-    | focus | pull35 | pull35p30 | pull35p10 | pull50 | pull50p10 |
-    |---|---|---|---|---|---|
-    | 56% | 70% | 70% | 65% | 47% | 66% |
-
-    So near the focus policy, occasional retreats have a clear gradient (+10 points at a 10% rate), and yet PPO from the focus clone removes them.
-
-    The horizon was the problem. All the runs above used horizon 16 (`Task.train_defaults` of the ability tasks, tuned there for speed over the first 0.6M steps). GAE then sums at most 16 steps (8 s) and trusts the value estimate after that, while a pull-back pays off later: the unit survives to fight on, and the enemy that chased it gets focused. From the focus clone (lr 0.001; runs `lamfocus*`):
-
-    | horizon, λ | win @0.6M | @1.5M |
-    |---|---|---|
-    | 16, 0.8 (`focusrl4-*`) | 48-52% | 48-50% |
-    | 16, 0.95 | 49% | 50% |
-    | **64, 0.95** (2 seeds) | 54% / 52% | **60% / 59%** |
-    | 64, 0.99 | 54% | 59% |
-    | 128, 0.95 (minibatch 384) | 52% | 53% |
-
-    With retreats forbidden at evaluation, the 60% policy drops to 48%. It learned to pull back, which no run from the focus clone had done. From scratch, horizon 64 doesn't help (41-44% after 1.5M; runs `lamscratch-*`). Near noop, pulling back alone doesn't pay, so there is nothing to follow yet: PPO first needs focus fire, which it doesn't find on its own either.
-
-    Pulling back without focus fire failed for a mechanical reason: a unit that pulled back stood where the move left it, out of reach, until an attack order came. Without focus fire, 1-2 steps later, it never came (`nooppull35`: 4% at 40% hit points, 1% at 70%, many draws). `_rejoin` (implies `_tac`) makes the pull-back one whole maneuver: when it ends and the unit is told nothing (noop), it attack-moves back into the fight. With it (200 episodes each):
-
-    | noop | nooppull35 | nooppull35p10 | focus | pull35 | pull35p10 |
-    |---|---|---|---|---|---|
-    | 52% | 40% | 57% | 48% | 70% | 65% |
-
-    Now occasional pull-backs from noop pay a little (+5), but PPO from scratch still doesn't find them (horizon 64, λ 0.95: 47% for both seeds, retreats 1%; runs `rejoin-*`; 41-44% without rejoin).
-  * lr 0.01 (tuned on `footmen2`) is far too high with 15 action heads: the KL per update was 1.0-1.5 (clip fraction 0.9) and the win rate peaked at 29%. The KL at a given lr grows with the number of heads (≈0.15 with 6, 0.3 with 9, 1.0+ with 15); lr 0.003 keeps it at 0.03-0.14.
+* `footmen2`: 2 vs 2 footmen with 100 hit points against the scripted opponent (episodes ~17 s). With its tuned settings, 95% wins after ~0.2M steps (~1.5 min).
 * `footmen<N>v<M>[_hp<HP>][_ehp<EHP>]`: N agent footmen against M scripted ones with HP hit points each (default 100), the enemies EHP (a handicap).
 * `micro`: 4 footmen vs 3 scripted grunts. This is hard: scripted baselines win about 1 game in 3.
 * `micro_mirror`: 4 vs 4 footmen against the scripted opponent.
 * `selfplay_micro`: 4 vs 4 footmen with both sides served to the trainer as agents of the same policy. `--envs` counts games, so each game gives two agents. The dashboard's win rate is side 0's.
+* `mirror_mix[_sem][_abil][_rel][_tac][_rejoin][_kill][_self][_hp<P>][_units]`: a mirror match with a new random composition every episode: a hero (level 1-3) and 2-4 units from all races (footman, rifleman, knight, grunt, headhunter, tauren, ghoul, crypt fiend, abomination, archer, huntress), the same on both sides. Unit features include the type's range, DPS, armor, speed and cooldown (`data.objects.combat_stats`); episodes are spawned through `QueueSpawn` + `Restart` (`Wc3Game.reset(spawns=...)`).
+  * `_hp<P>`: P‰ of the units' hit points (default 250). With more hit points micro matters more; `_hp400` is the training setting (noop wins 54%, focus fire plus pulling hurt units back 80%).
+  * `_sem`: the target head picks a rule instead of an enemy slot (weakest in range, nearest, weakest, hero, threat = DPS per hit point left) and stop becomes retreat (straight away from the nearest enemy), so an order means the same whatever the composition (`MicroEnv(targeting="semantic")`).
+  * `_abil` (implies `_sem`): heroes fight with their abilities. Each hero gets a random skill build for its level (fighting abilities only: no summons, far sight, blink or sacrifices), the same on both sides. Each unit has a fourth action head, the ability slot, and a fifth kind, cast; the target rules pick an enemy within the ability's cast range, or an own unit for heals and buffs; instant abilities need no target. Units get 10 more features per ability slot (level, ready, cooldown, how it is cast, for whom, range, area). The scripted opponent's heroes cast what `MicroEnv.scripted_cast` picks.
+  * `_rel`: relational unit features (nearest opponent, opponents in reach, threatened, weakest, time to die).
+  * `_tac`: tactical mode. No plain moves; a retreat only for a unit below half its hit points that is losing them; a chosen retreat goes on while the unit keeps losing hit points (at most 3 s), so one decision is the whole pull-back.
+  * `_rejoin` (implies `_tac`): when a pull-back ends and the unit is told nothing, it attack-moves back into the fight.
+  * `_kill`: ±0.2 reward per enemy killed / own unit lost.
+  * `_self`: self-play (`MirrorSelfPlayEnv`): the policy plays both sides. With PufferLib's self-play pool (`--selfplay.enabled=1 --vec.num_policies=2 --vec.hist_policy_percent=0.5`), part of the games are against past checkpoints.
+  * `_units`: one agent per unit, all with the same policy.
+
+  Scripted policies for baselines and demonstrations (`agents/micro.py`): `noop`, `focus`, `range`, `sticky`, `[base]pull<L>[p<P>]` (pull a hurt unit back below L% hit points, with probability P), `cast<policy>` and `smartcast<policy>` (heroes cast too).
+
+What we found (details, tables and the runs behind them: [docs/experiments.md](docs/experiments.md)):
+* Sweeps made learning much faster: `footmen2` reaches 95% wins in ~1.5 min; on the ability task the tuned settings (horizon 16, λ 0.8, clip 0.3) reach 30% wins after 0.1M steps instead of 0.66M.
+* On the mirror matches, PPO from scratch ends near "let the units fight on their own". Team tactics (focus fire plus pulling hurt units back) don't emerge from random exploration, because either half alone doesn't pay.
+* Starting from a fitted script (behavior cloning) fixes that: PPO keeps the script's tactics and sharpens them (the fitted `pull35`: 58% → 66-73%).
+* Longer credit (horizon 64, λ 0.95) lets PPO discover pull-backs from a fitted focus-fire script (50% → 60%; forbidding retreats costs it 12 points), which horizon 16 never did.
 
 Warm start from a script (behavior cloning, `puffer/bc.py`):
 ```bash
 python -m warcraftsim.puffer.bc collect mirror_mix_sem_hp400 --policy pull35 --episodes 2000 --games 8  # ~5 min
-python -m warcraftsim.puffer.bc fit runs/bc/mirror_mix_sem_hp400-pull35        # torch; ~2 min on the GPU
+python -m warcraftsim.puffer.bc fit runs/bc/mirror_mix_sem_hp400-pull35        # torch; ~4 min on the GPU
 python -m warcraftsim.puffer.bc eval mirror_mix_sem_hp400 runs/bc/mirror_mix_sem_hp400-pull35/policy.bin
 python -m warcraftsim.puffer.train --task mirror_mix_sem_hp400 --lr 0.001 \
     --init-from runs/bc/mirror_mix_sem_hp400-pull35/policy.bin ...
 ```
-* `collect` plays a scripted policy (`agents/micro.py`) in games set up like the trainer's and saves the observations, actions, scaled rewards and which unit slots were alive.
+* `collect` plays a scripted policy (`agents/micro.py`) in games set up like the trainer's and saves the observations, actions, action masks, scaled rewards and which unit slots were alive.
 * `fit` trains PufferLib's network (linear encoder, MinGRU layers, a linear decoder with the value as its last output) in torch and writes its weight file. It needs torch, which is not in the venv: it runs with `WC3_TORCH_PYTHON` or the first Python that has it.
   * Direction and target heads count only on steps where the unit moved or attacked.
   * Label smoothing (0.1) keeps every choice possible, so PPO can still try what the script never does.
   * A small value weight (0.005) matters. The returns are noisy, and at 0.05 the value took over the shared layers: retreat recall was 0.11 instead of 0.82.
-* Results on `mirror_mix_sem_hp400` (noop 54%, the `pull35` script 67-68% at 0.5 s steps; runs `mix40-*` in the dashboard):
-
-    | start | lr, entropy | win rate |
-    |---|---|---|
-    | random (PPO from scratch) | 0.003, 0.001 | 44% after 3M steps; never learned to retreat |
-    | random (PPO from scratch) | 0.001, 0.001 | 47-48% after 2.5M (92% noop, no retreats) |
-    | `pull35` fitted exactly (62% sampled, 64% greedy) | 0.001, 0.001 | ~70% throughout (stopped at 0.8M) |
-    | `pull35` label-smoothed (33% sampled) | 0.001, 0.001 | 67-69% after 1M, 70% (best 73%) after 2M |
-    | `pull35` label-smoothed | 0.001, 0.003 | 62% after 2M (more randomness, no new behavior) |
-    | noop label-smoothed (~18% sampled) | 0.003, 0.001 | 42-47% at 1-1.5M (stopped): no better than from scratch, still 25% harmful attacks |
-    | noop label-smoothed | 0.001, 0.001 | 49-50% after 2.5M (90% noop, no retreats) |
-
-  Without a good script to start from, PPO converges to letting the units fight on their own (≈ noop); it never discovers pulling hurt units back. From the script, it converges onto the script's behavior (99% of attacks on "weakest", 3-4% retreats) rather than beyond it. Random actions are very costly here: 7.5% of them turn noop's 54% into ~18%, since a random retreat or retarget takes a unit out of the fight for a second or two. Exploration is therefore punished hard.
+* `eval` plays a checkpoint (sampled, or `--greedy`; `--forbid retreat` masks an order kind) and records the result with the dataset or run it belongs to.
 
 Notes:
-* Action masks: a task can say which options of each action head are possible right now (`Task.action_mask`). The bridge sends them with every observation, and PufferLib samples and trains with them. Micro tasks mask:
-  * attacks on empty enemy slots (slot targeting);
-  * with abilities, "cast" for a unit that can't cast anything now, and the ability slots that can't be cast.
-
-  Before masks, 94% of the from-scratch policy's casts on `mirror_mix_abil_hp400` were impossible. With them, it reached 39% at 0.9M steps against 35% without.
-* Updates per epoch are `replay_ratio × batch / minibatch`. With the minibatch equal to the batch (the old default), there was one update per epoch and learning was slow: `footmen2` reached 61% wins in 1M steps, against 97% with 16 updates.
-* PufferLib 5.0 does not normalize advantages, and the micro rewards per step are small. Two settings keep the entropy bonus of the 18 action heads from outweighing the reward and pushing the policy to uniform:
+* Action masks: a task can say which options of each action head are possible right now (`Task.action_mask`). The bridge sends them with every observation, and PufferLib samples and trains with them. Micro tasks mask attacks on empty enemy slots (slot targeting), casts that aren't possible, and the tactical-mode rules.
+* Updates per epoch are `replay_ratio × batch / minibatch`; the minibatch must be a multiple of the horizon.
+* PufferLib 5.0 does not normalize advantages, and the micro rewards per step are small. Two settings keep the entropy bonus of the many action heads from outweighing the reward and pushing the policy to uniform:
   * `--ent-coef` defaults to 0.001;
   * micro tasks scale rewards by 10 (`Task.reward_scale`; logged returns are scaled too).
+* The KL per update grows with the number of action heads at a given learning rate: lr 0.01 suits `footmen2` (6 heads) but is far too high for 15 heads; use 0.003 or less there.
 * Runs can train concurrently. Each run claims a machine-wide training slot, and its games are named after that slot, so consecutive runs reuse their Wine prefixes.
 
 Each run writes `runs/<name>/`, which the dashboard shows live:
@@ -387,35 +258,23 @@ Each run writes `runs/<name>/`, which the dashboard shows live:
   * `scripts/calibrate_camera.py` measures the camera projection the drawing uses.
 * `checkpoints/`.
 
-The dashboard shows:
-* the run list, with comparison; each run's parent and the first line of its notes. The filter matches every word against names, tasks, sweep options, notes and parents;
-* sweeps as groups in the list, collapsed until opened. Each group's checkbox compares all its runs, or none. A sweep's page has its description (editable; `--note` options outside the `--sweep` ones; `runs/sweeps/<name>/notes.md`), where its runs started from, a table of its runs (their own options, status, steps, win rate), and its launch command (rebuilt from its runs for older sweeps);
-* behavior cloning datasets (`runs/bc/<name>`) as runs named `bc/<name>`, with their own page:
-  * the demonstrations: the script's outcomes, action mix, combat and episode lengths;
-  * the fit per epoch: train and validation loss, accuracy per head, recall and precision per unit order, the value's error;
-  * `bc eval` results;
-  * the runs started from it;
-  * the collect and fit commands.
+The dashboard (`python -m warcraftsim dashboard`) shows:
+* the run list: runs, sweeps as collapsible groups (a checkbox compares all of a sweep's runs), and behavior cloning datasets. Each run shows its parent and the first line of its notes; the filter matches names, tasks, sweep options, notes and parents;
+* per run, in tabs:
+  * **Overview**: progress cards, notes (editable), and lineage: what it started from (random weights, another run's checkpoint, or a fitted script), the chain back from there, its sweep, and the runs started from it;
+  * **Outcomes**: win rate, win/draw/loss, return, episode length;
+  * **Behaviour** (from the actions the policy sent): the action mix, targeting (focus fire, attacks on the weakest enemy, invalid targets), damage dealt and taken, kills and losses;
+  * **Learning**: value calibration (predicted V(s₀) against the actual return of video episodes), PPO losses, entropy, KL and clip fraction;
+  * **System**: throughput, and the trainer's time per epoch;
+  * **Replays**: game videos and trajectory renders in one player, with the episodes beside it;
+  * **Episodes**: the recent episodes with their combat and action statistics;
+  * **Evaluations**: `bc eval` results for its checkpoints;
+  * **Spaces**: the observation (its blocks, every feature by name and index), the action heads with their choices, the action masks and the reward;
+  * **Launch & config**: the commands (copyable), the git commit, the whole configuration;
+* per sweep: its description, where its runs started from, a table of its runs, its launch command;
+* per behavior cloning dataset: the demonstrations (outcomes, action mix, combat), the fit per epoch (loss, accuracy, recall and precision per unit order), evaluations, and the runs started from it.
 
-  `bc.py backfill` rebuilds the episode log of a dataset recorded before these logs existed;
-* per run, in tabs (Overview, one per chart section, Replays, Episodes, Evaluations, Spaces, Launch & config; the tab shown stays when another run is opened and is part of the link):
-  * notes, editable;
-  * the observation space (its blocks, and every feature by name and index) and the action space (the heads per unit, their choices, which order each detail head belongs to), the action masks and the reward. Recorded at launch; for older runs, described by the current code, with a warning if the sizes differ;
-  * `bc eval` results for its checkpoints;
-  * lineage: what it started from (a random policy, another run's checkpoint, or a fitted script with its policy, episodes and win rate), the chain back from there, its sweep and sibling runs, and the runs started from it;
-  * at the bottom, the launch commands (copyable) and the whole configuration. Runs from before launches were recorded get a command rebuilt from their options;
-* progress cards;
-* **Outcomes**: win rate, win/draw/loss, return, episode length;
-* **Behaviour** (from the actions the policy sent):
-  * the action mix (noop/stop/retreat/move/attack);
-  * targeting: focus fire, attacks on the weakest enemy, invalid targets;
-  * damage dealt and taken, kills and losses;
-* **Learning**:
-  * value calibration: predicted V(s₀) against the actual return of video episodes;
-  * PPO losses, entropy and clip fraction;
-* **System**: throughput, and the trainer's time per epoch split into rollout (waiting for games, model) and training;
-* a gallery of replay videos and trajectory renders;
-* the recent episodes with their combat and action statistics.
+Compared runs share the charts: one colour and line style per run. The tab, the compared runs and the smoothing are part of the link.
 
 Example: `nav` with 16 games went from a 3% to a 62% success rate within 100k steps (about 3 minutes, at about 550 env steps/s).
 
@@ -468,8 +327,15 @@ The limit is PufferLib's synchronous rollout. Each buffer thread runs its horizo
 ## Tests
 
 ```bash
-.venv/bin/pytest                 # unit tests (need the game files, not Wine)
+.venv/bin/pytest                 # unit tests (those that need the game's files or native tools skip without them)
 .venv/bin/pytest -m wine         # integration tests: launch real games
 ```
 
-See `docs/architecture.md` for design notes, limits and what is known about the engine.
+See `docs/architecture.md` for design notes, limits and what is known about the engine, and
+`docs/experiments.md` for the training experiments.
+
+## License
+
+MIT (see `LICENSE`). The submodules in `third_party/` keep their own licenses (PufferLib and StormLib:
+MIT; MinHook and pjass: BSD 2-Clause). Warcraft III and its game data belong to Blizzard Entertainment
+and are not part of this repository.
