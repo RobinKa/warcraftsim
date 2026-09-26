@@ -222,6 +222,26 @@ castpull35 52%. The action space can express what the built-in retreat and targe
   clipped): it walked away from what the clone knew before its value estimates were any good, and
   collapsed. A KL penalty toward the clone, as AlphaStar keeps its policy near the supervised one,
   kept it stable, and it went on past the script it was cloned from (77% against 71%).
+* **Gentle fine-tuning works better than the anchor** (runs `genft-*`: lr 1e-4, 10 epochs that train
+  only the value first, each epoch's updates stopped at a KL of 0.02):
+
+  | | 0.5M | 1M | 1.5M | 2M |
+  |---|---|---|---|---|
+  | gentle (`genft-1`) | 75% | 81% | 87% | **91%** |
+  | gentle, with the KL to the clone (`genft-2`) | 71% | 73% | 74% | 75% |
+  | lr 3e-4 with the KL to the clone (`genbc-3`) | 70% | 72% | 75% | 76% |
+
+  The collapse came from the first updates, made before the value head could judge anything.
+  With the value trained first and small steps, the anchor only holds the policy back.
+
+  What the 91% policy does differently (`scripts/target_choice.py`, 40 episodes): it keeps the
+  script's pull-backs (7% of orders are moves) and its focus fire (99% of the attacks in a step go to
+  one enemy), but not its target: 72% of its attacks go to the enemy with the fewest hit points,
+  where the script's go there always. When it picks another, that is mostly the enemy with the
+  lowest share of its hit points left (71% of those), often the hero (55%). It finishes the most
+  damaged unit, often the hero, which carries more hit points and does more damage. Its side loses
+  1.25 units per game instead of 2.3. Only a pointer at units could learn this: the rule-based
+  targets of the older tasks had no rule for it.
 
 ## Other findings
 
