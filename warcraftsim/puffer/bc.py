@@ -204,14 +204,26 @@ def _torch_python() -> str:
 
 
 def fit(data: Path, out: Path | None, epochs: int, hidden: int, layers: int, gamma: float, lr: float,
-        smoothing: float = 0.1) -> Path:
-    out = out or data / "policy.bin"
-    script = Path(__file__).with_name("bc_train.py")
-    cmd = [_torch_python(), str(script), str(data), str(out), f"--epochs={epochs}", f"--hidden={hidden}",
-           f"--layers={layers}", f"--gamma={gamma}", f"--lr={lr}", f"--smoothing={smoothing}"]
+        smoothing: float = 0.1, model: str = "puffer") -> Path:
+    """model "puffer": PufferLib's network (policy.bin, for train.py); "entity": the torch trainer's
+    EntityNet (policy.pt, for train.py --trainer torch; general-order tasks)."""
+    if model == "entity":
+        from .tasks import task_spec
+        meta = json.loads((data / "meta.json").read_text())
+        out = out or data / "policy.pt"
+        spec_path = data / "spec.json"
+        spec_path.write_text(json.dumps(task_spec(get_task(meta["task"])), indent=1))
+        script = Path(__file__).resolve().parents[1] / "rl" / "bc_fit.py"
+        cmd = [_torch_python(), str(script), str(data), "--spec", str(spec_path), "--out", str(out),
+               f"--epochs={epochs}", f"--gamma={gamma}"]
+    else:
+        out = out or data / "policy.bin"
+        script = Path(__file__).with_name("bc_train.py")
+        cmd = [_torch_python(), str(script), str(data), str(out), f"--epochs={epochs}", f"--hidden={hidden}",
+               f"--layers={layers}", f"--gamma={gamma}", f"--lr={lr}", f"--smoothing={smoothing}"]
     status = _Status(data)
     status.update(status="fitting", fit={"epochs": epochs, "hidden": hidden, "layers": layers, "gamma": gamma, "lr": lr,
-                                         "smoothing": smoothing, "out": str(out), "command": _command(),
+                                         "smoothing": smoothing, "model": model, "out": str(out), "command": _command(),
                                          "trainer": shlex.join(cmd), "git": _git(), "started": time.time(),
                                          "finished": None})
     try:
@@ -405,6 +417,8 @@ def main(argv: list[str] | None = None) -> None:
     f.add_argument("--gamma", type=float, default=0.99)
     f.add_argument("--lr", type=float, default=0.003)
     f.add_argument("--smoothing", type=float, default=0.1, help="label smoothing (keeps unused choices possible)")
+    f.add_argument("--model", choices=("puffer", "entity"), default="puffer",
+                   help="entity: the torch trainer's network (general-order tasks; writes policy.pt)")
     e = sub.add_parser("eval", help="play a checkpoint and report its win rate")
     e.add_argument("task")
     e.add_argument("checkpoint", type=Path)
@@ -426,7 +440,7 @@ def main(argv: list[str] | None = None) -> None:
         for d in args.data:
             backfill(d)
     elif args.cmd == "fit":
-        fit(args.data, args.out, args.epochs, args.hidden, args.layers, args.gamma, args.lr, args.smoothing)
+        fit(args.data, args.out, args.epochs, args.hidden, args.layers, args.gamma, args.lr, args.smoothing, args.model)
     else:
         task = get_task(args.task)
         kinds = task.head_labels[0] if task.head_labels else ()

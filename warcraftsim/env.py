@@ -338,6 +338,14 @@ def _issue(view, attacking: dict[int, int], unit: Unit, kind: int, direction: in
         attacking.pop(unit.id, None)
 
 
+# General orders (MicroEnv targeting="general"): per unit [kind, direction, distance, target,
+# ability]. No built-in tactics (no retreat, no target rules): a pull-back is a move away and a
+# focus fire is an attack on the same unit. Targets point at a unit slot: own slots first, then the
+# enemy's. Points are offsets from the unit: one of 16 directions at one of these distances.
+GENERAL_KINDS = ("noop", "stop", "hold", "move", "attack", "attack_move", "cast")
+GENERAL_DIRECTIONS = 16
+GENERAL_DISTANCES = (150.0, 350.0, 700.0)
+
 # Attack targets as rules (MicroEnv targeting="semantic"), for the unit given the order. "In range":
 # within its attack range (+ REACH); rules without a candidate fall back to the nearest enemy.
 SEMANTIC_TARGETS = ("weak_in_range", "nearest", "weakest", "hero", "threat")
@@ -381,11 +389,11 @@ class MicroEnv(Wc3Env):
         super().__init__(setup, player=0, max_units=max_own + max_enemy, name=name, **kw)
         self.max_own, self.max_enemy = max_own, max_enemy
         self.move_distance = move_distance
-        if targeting not in ("slot", "semantic"):
-            raise ValueError(f"targeting must be 'slot' or 'semantic', not {targeting!r}")
+        if targeting not in ("slot", "semantic", "general"):
+            raise ValueError(f"targeting must be 'slot', 'semantic' or 'general', not {targeting!r}")
         self.targeting = targeting
-        if abilities and targeting != "semantic":
-            raise ValueError("abilities need targeting='semantic' (cast targets are rules)")
+        if abilities and targeting == "slot":
+            raise ValueError("abilities need targeting='semantic' or 'general'")
         self.abilities = abilities
         self.opponent_casts = abilities if opponent_casts is None else opponent_casts
         self.kind_names = ("noop", "retreat", "move", "attack") if targeting == "semantic" else \
@@ -393,6 +401,8 @@ class MicroEnv(Wc3Env):
         if abilities:
             self.kind_names += ("cast",)
         self.group = 4 if abilities else 3  # action heads per unit
+        if targeting == "general":  # the same heads with or without abilities (cast is then masked)
+            self.kind_names, self.group = GENERAL_KINDS, 5
         self.relational = relational
         # added to the reward per enemy unit killed and subtracted per own unit lost: a unit pulled
         # out of a fight pays off as a death that doesn't happen, sooner than the outcome
@@ -418,6 +428,9 @@ class MicroEnv(Wc3Env):
         })
         n_targets = len(SEMANTIC_TARGETS) if targeting == "semantic" else max_enemy
         heads = [len(self.kind_names), 8, n_targets] + ([HERO_ABILITY_SLOTS] if abilities else [])
+        if targeting == "general":
+            heads = [len(GENERAL_KINDS), GENERAL_DIRECTIONS, len(GENERAL_DISTANCES), max_own + max_enemy,
+                     HERO_ABILITY_SLOTS]
         self.action_space = spaces.MultiDiscrete(np.tile(heads, (max_own, 1)))
         self._own: list[Unit] = []
         self._enemy: list[Unit] = []
@@ -579,7 +592,88 @@ class MicroEnv(Wc3Env):
                     return slot, weak
         return None
 
+    # ---- general orders ------------------------------------------------------------------------
+    def pointed(self, target: int) -> Unit | None:
+        """The unit a general target points at: own slots, then the enemy's (None: empty slot)."""
+        pool, j = (self._own, target) if target < self.max_own else (self._enemy, target - self.max_own)
+        return pool[j] if 0 <= j < len(pool) else None
+
+    @staticmethod
+    def offset_point(unit: Unit, direction: int, distance: int) -> tuple[float, float]:
+        a = direction * 2 * math.pi / GENERAL_DIRECTIONS
+        d = GENERAL_DISTANCES[distance]
+        return unit.x + d * math.cos(a), unit.y + d * math.sin(a)
+
+    def ready_abilities(self, unit: Unit) -> list[bool]:
+        """Per hero ability slot: learned, castable, off cooldown and enough mana."""
+        if not self.abilities or not unit.is_hero:
+            return [False] * HERO_ABILITY_SLOTS
+        from .data.abilities import ability_info, hero_abilities
+
+        codes, info = hero_abilities().get(unit.type, ()), ability_info()
+        return [k < len(codes) and ability_ready(unit, k, info.get(codes[k])) and info[codes[k]].in_builds
+                for k in range(HERO_ABILITY_SLOTS)]
+
+    def general_cast(self, unit: Unit, slot: int, target: int) -> Command | None:
+        """Cast ability `slot` on the unit `target` points at (instant: no target; point: its
+        position). Enemy abilities need an enemy, ally abilities an own unit; out of range is
+        fine: the unit walks there first."""
+        from .data.abilities import ability_info, hero_abilities
+
+        codes = hero_abilities().get(unit.type, ())
+        info = ability_info().get(codes[slot]) if slot < len(codes) else None
+        if not ability_ready(unit, slot, info):
+            return None
+        try:
+            oid = self.game.order_id(info.order)
+        except KeyError:
+            return None
+        if info.cast == "instant":
+            return ImmediateOrder(unit.id, oid)
+        t = self.pointed(target)
+        if t is None or (info.side == "enemy") != (target >= self.max_own):
+            return None
+        if info.cast == "unit":
+            return TargetOrder(unit.id, oid, t.id)
+        return PointOrder(unit.id, oid, t.x, t.y)
+
+    def _general_commands(self, action: np.ndarray) -> None:
+        a = np.asarray(action).reshape(self.max_own, self.group)
+        for i, unit in enumerate(self._own):
+            if unit is None:
+                continue
+            kind, direction, distance, target, ability = (int(v) for v in a[i][:5])
+            name = GENERAL_KINDS[kind]
+            if name == "noop":
+                continue
+            if name == "attack":
+                t = self.pointed(target) if target >= self.max_own else None
+                if t is None:
+                    continue
+                # re-ordering the same attack restarts the approach and wind-up: not issued again
+                if self._attacking.get(unit.id) == t.id and unit.order == self.game.order_id("attack"):
+                    continue
+                self.game.attack(unit, t)
+                self._attacking[unit.id] = t.id
+                continue
+            if name == "cast":
+                cmd = self.general_cast(unit, ability, target)
+                if cmd is None:
+                    continue
+                self.game.issue(cmd)
+            elif name in ("stop", "hold"):
+                (self.game.stop if name == "stop" else self.game.hold)(unit)
+            else:
+                x, y = self.offset_point(unit, direction, distance)
+                (self.game.move if name == "move" else self.game.attack_move)(unit, x, y)
+            self._attacking.pop(unit.id, None)
+
     def _commands(self, action: np.ndarray) -> list[Command]:
+        if self.targeting == "general":
+            self._general_commands(action)
+            if self.opponent_casts:
+                self._opponent_casts()
+            return []
         action = np.asarray(action).reshape(self.max_own, self.group)
         for i, unit in enumerate(self._own):
             if unit is None:

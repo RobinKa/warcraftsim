@@ -34,7 +34,8 @@ from pathlib import Path
 TRAIN_KEYS = ("agent_steps", "SPS", "epoch", "uptime", "env/win_rate", "env/loss_rate", "env/episode_return",
               "env/episode_length", "env/n", "loss/policy", "loss/value", "loss/entropy", "loss/kl",
               "loss/old_kl", "loss/clipfrac", "importance", "perf/rollout", "perf/eval_env", "perf/eval_model",
-              "perf/eval_copy", "perf/train", "util/gpu_percent", "util/vram_used_gb", "util/cpu_mem_gb", "time")
+              "perf/eval_copy", "perf/train", "util/gpu_percent", "util/vram_used_gb", "util/cpu_mem_gb", "time",
+              "loss/ref_kl", "lr")
 # per-episode series (rolling means): name -> value of an episode row (None: not recorded)
 EPISODE_SERIES = {
     "win_rate": lambda e: 1.0 if e.get("outcome", 0) > 0 else 0.0,
@@ -220,6 +221,13 @@ def _spaces(info: dict) -> dict | None:
     same = (info.get("obs_size") in (None, d["observation"]["size"])
             and info.get("act_sizes") in (None, d["actions"]["sizes"]))
     return {**d, "from_current_code": True, "sizes_match": same}
+
+
+def _read_json(path: Path) -> dict | None:
+    try:
+        return json.loads(path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
 
 
 def _parent_key(p: dict | None) -> str | None:
@@ -540,7 +548,7 @@ class Dashboard:
         if "launch" not in info:
             info["launch"] = {"run_command": _rebuilt_command(info), "rebuilt": True}
         train_rows = self.cache.read(d / "train.jsonl")
-        train = [{k: r[k] for k in TRAIN_KEYS if k in r} for r in train_rows]
+        train = [{k: v for k, v in r.items() if k in TRAIN_KEYS or k.startswith("league/")} for r in train_rows]
         episodes = self._merged(d, "episodes")
         steps = _interp_steps([e["time"] for e in episodes], train_rows)
         ep_rows = []
@@ -574,6 +582,7 @@ class Dashboard:
             "bridge": _downsample(bridge),
             "media": [m for m in media if (d / m["file"]).exists()][-40:][::-1],
             "evals": self.cache.read(d / "evals.jsonl"),
+            "league": _read_json(d / "league.json"),
         }
 
 

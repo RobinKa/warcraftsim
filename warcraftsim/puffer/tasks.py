@@ -18,9 +18,9 @@ from typing import Any, Callable
 
 import numpy as np
 
-from ..env import (ABILITY_FEATURE_NAMES, ABILITY_FEATURES, RELATIONAL_FEATURE_NAMES, RELATIONAL_FEATURES,
-                   SEMANTIC_TARGETS, UNIT_FEATURE_NAMES, UNIT_FEATURES, MicroEnv, MicroSelfPlayEnv, MirrorSelfPlayEnv,
-                   NavigateEnv)
+from ..env import (ABILITY_FEATURE_NAMES, ABILITY_FEATURES, GENERAL_DIRECTIONS, GENERAL_DISTANCES, GENERAL_KINDS,
+                   RELATIONAL_FEATURE_NAMES, RELATIONAL_FEATURES, SEMANTIC_TARGETS, UNIT_FEATURE_NAMES, UNIT_FEATURES,
+                   MicroEnv, MicroSelfPlayEnv, MirrorSelfPlayEnv, NavigateEnv)
 from ..protocol import HERO_ABILITY_SLOTS
 from ..scenario import Scenario
 
@@ -129,14 +129,16 @@ _FEAT = UNIT_FEATURES
 
 
 def _micro_sizes(max_units: int, targets: int | None = None, abilities: bool = False,
-                 relational: bool = False) -> tuple[int, tuple[int, ...]]:
+                 relational: bool = False, general: bool = False) -> tuple[int, tuple[int, ...]]:
     k = max_units
     feat = _FEAT + (ABILITY_FEATURES * HERO_ABILITY_SLOTS if abilities else 0) + (RELATIONAL_FEATURES if relational else 0)
     heads = (5, 8, targets or k, HERO_ABILITY_SLOTS) if abilities else (4, 8, targets or k)
+    if general:
+        heads = (len(GENERAL_KINDS), GENERAL_DIRECTIONS, len(GENERAL_DISTANCES), 2 * k, HERO_ABILITY_SLOTS)
     return k * feat + k + k * feat + k + 1, heads * k
 
 
-def _micro_layout(max_units: int, abilities: bool = False, relational: bool = False) -> dict:
+def _micro_layout(max_units: int, abilities: bool = False, relational: bool = False, general: bool = False) -> dict:
     """obs_layout and head_names of the micro tasks (the order of _micro_flatten)."""
     feat = (*UNIT_FEATURE_NAMES,
             *(f"ability {k + 1}: {n}" for k in range(HERO_ABILITY_SLOTS if abilities else 0) for n in ABILITY_FEATURE_NAMES),
@@ -144,7 +146,8 @@ def _micro_layout(max_units: int, abilities: bool = False, relational: bool = Fa
     return dict(obs_layout=(("own units (slots A0..)", max_units, feat), ("own slot alive", max_units, ("alive",)),
                             ("enemy units (slots E0..)", max_units, feat), ("enemy slot alive", max_units, ("alive",)),
                             ("time", 1, ("episode time (share of the limit)",))),
-                head_names=("order", "direction", "target", "ability")[:4 if abilities else 3])
+                head_names=("order", "direction", "distance", "target", "ability") if general else
+                ("order", "direction", "target", "ability")[:4 if abilities else 3])
 
 
 _MICRO_REWARD = ("Per step: (enemy hit points lost − own hit points lost) / the sides' initial hit points; "
@@ -153,6 +156,9 @@ _MICRO_REWARD = ("Per step: (enemy hit points lost − own hit points lost) / th
 
 def _micro_masks(targeting: str = "slot", abilities: bool = False, tactical: bool = False,
                  rejoin: bool = False) -> str:
+    if targeting == "general":
+        return ("orders for empty slots (noop only), attacks with no enemy left, casts without a ready ability and "
+                "targets in empty slots are masked; nothing else (out of range: the unit walks there first).")
     rules = ["attacks on empty enemy slots are masked" if targeting == "slot" else
              "targets are rules (always possible; resolved when ordered)"]
     if abilities:
@@ -175,7 +181,16 @@ _SEMANTIC_KINDS = ("noop", "retreat", "move", "attack")
 _ABILITY_SLOTS = tuple(f"ability {k + 1}" for k in range(HERO_ABILITY_SLOTS))
 
 
-def _micro_labels(max_units: int, semantic: bool = False, abilities: bool = False) -> dict:
+_DIRS16 = tuple(f"{round(k * 360 / GENERAL_DIRECTIONS)}°" for k in range(GENERAL_DIRECTIONS))
+
+
+def _micro_labels(max_units: int, semantic: bool = False, abilities: bool = False, general: bool = False) -> dict:
+    if general:  # move / attack-move: direction and distance; attack: target; cast: ability and target
+        targets = tuple(f"A{i}" for i in range(max_units)) + tuple(f"E{i}" for i in range(max_units))
+        return dict(head_labels=(GENERAL_KINDS, _DIRS16, tuple(f"{d:.0f}" for d in GENERAL_DISTANCES), targets,
+                                 _ABILITY_SLOTS) * max_units,
+                    group_size=5, detail_heads={3: (1, 2), 4: 3, 5: (1, 2), 6: (4, 3)},
+                    action_stats=_micro_action_stats, action_mask=_micro_mask)
     targets = SEMANTIC_TARGETS if semantic else tuple(f"E{i}" for i in range(max_units))
     if abilities:  # cast (kind 4) is detailed by the ability slot and the target rule
         return dict(head_labels=(_SEMANTIC_KINDS + ("cast",), _DIRS, targets, _ABILITY_SLOTS) * max_units,
@@ -190,9 +205,35 @@ def _micro_labels(max_units: int, semantic: bool = False, abilities: bool = Fals
 TACTICAL_RETREAT_HP = 0.5
 
 
+def _general_mask(env) -> np.ndarray:
+    """General orders: only what is impossible is masked: orders for empty slots (noop only),
+    attacks with no enemy left, casts without a ready ability, targets in empty slots."""
+    heads = [int(n) for n in env.action_space.nvec[0]]
+    per, offs = sum(heads), np.cumsum([0, *heads])
+    k, e = env.max_own, env.max_enemy
+    own = [i < len(env._own) and env._own[i] is not None for i in range(k)]
+    enemy = [j < len(env._enemy) and env._enemy[j] is not None for j in range(e)]
+    m = np.zeros(k * per, np.uint8)
+    for i in range(k):
+        base = i * per
+        m[base + offs[:-1]] = 1  # the first option of every head: some option stays possible
+        u = env._own[i] if own[i] else None
+        if u is None:
+            continue
+        ready = env.ready_abilities(u)
+        m[base:base + heads[0]] = [1, 1, 1, 1, any(enemy), 1, any(ready)]
+        m[base + offs[1]:base + offs[3]] = 1
+        m[base + offs[3]:base + offs[4]] = own + enemy
+        if any(ready):
+            m[base + offs[4]:base + offs[5]] = ready
+    return m
+
+
 def _micro_mask(env) -> list[np.ndarray]:
     """MicroEnv action masks: attacks on empty enemy slots (slot targeting); casts only by units
     with an ability they can cast now, and only those ability slots."""
+    if env.targeting == "general":
+        return [_general_mask(env)]
     heads = [int(n) for n in env.action_space.nvec[0]]
     per = sum(heads)
     offs = np.cumsum([0, *heads])
@@ -235,16 +276,27 @@ def _micro_action_stats(env, actions: list[np.ndarray]) -> Counter:
         own, enemy = env._units[agent] if hasattr(env, "_units") else (side._own, side._enemy)
         resolve = None if hasattr(env, "_units") else getattr(side, "target_slot", None)
         a = np.asarray(action, int).reshape(-1, getattr(env, "group", 3))
+        general = getattr(side, "targeting", "") == "general"
+        attack = kinds.index("attack")
         targets = []
         for i in range(min(len(own), len(a))):
             if own[i] is None:
                 continue
-            kind, _, target = a[i][:3]
+            kind, target = a[i][0], a[i][3 if general else 2]
             c["unit_steps"] += 1
             c[kinds[kind]] += 1
-            if kinds[kind] == "cast" and side.cast_command(own[i], int(a[i][3]), int(target), own, enemy) is None:
-                c["cast_invalid"] += 1  # not learned, cooling down, no mana or no target: nothing happens
-            if kind == 3:
+            if kinds[kind] == "cast":
+                cmd = (side.general_cast(own[i], int(a[i][4]), int(target)) if general else
+                       side.cast_command(own[i], int(a[i][3]), int(target), own, enemy))
+                if cmd is None:
+                    c["cast_invalid"] += 1  # not learned, cooling down, no mana or no target: nothing happens
+            if kind == attack and general:
+                j = int(target) - side.max_own
+                if 0 <= j < len(enemy) and enemy[j] is not None:
+                    targets.append(j)
+                else:
+                    c["attack_invalid"] += 1
+            elif kind == attack:
                 if resolve is not None:
                     slot = resolve(own[i], int(target))
                 else:
@@ -398,10 +450,11 @@ def _mirror_task(name: str = "mirror_mix", max_units: int = 5, hp_permille: int 
                  rejoin: bool = False) -> Task:
     # fights last longer with more hit points: 45 s at 25%, 70 s at 50%
     sc = Scenario(units=(), victory="elimination", max_game_seconds=round(20 + hp_permille / 10), name=name)
-    semantic = targeting == "semantic"
-    obs_size, act_sizes = _micro_sizes(max_units, len(SEMANTIC_TARGETS) if semantic else None, abilities, relational)
+    semantic, general = targeting == "semantic", targeting == "general"
+    obs_size, act_sizes = _micro_sizes(max_units, len(SEMANTIC_TARGETS) if semantic else None, abilities, relational,
+                                       general)
     spawner = mirror_spawner(units=(2, max_units - 1), hp_permille=hp_permille, skills=abilities)
-    group = 4 if abilities else 3
+    group = 5 if general else 4 if abilities else 3
 
     def make_env(inst: str):
         env = (MirrorSelfPlayEnv if selfplay else MicroEnv)(
@@ -416,6 +469,9 @@ def _mirror_task(name: str = "mirror_mix", max_units: int = 5, hp_permille: int 
                  " ability slot head and the target rules; the scripted opponent casts too.")
     elif semantic:
         extra = " Attack targets are rules (weakest in range, nearest, weakest, hero, threat); stop is retreat."
+    if general:
+        extra += (" General orders per unit: noop, stop, hold, move and attack-move (16 directions x 3 distances),"
+                  " attack and cast (a pointer at any unit slot).")
     if relational:
         extra += " Units also see relational features (nearest opponent, in range, threatened, weakest, time to die)."
     if tactical or rejoin:
@@ -424,7 +480,7 @@ def _mirror_task(name: str = "mirror_mix", max_units: int = 5, hp_permille: int 
         extra += " After a pull-back, a unit told nothing attack-moves back into the fight."
     if kill_reward:
         extra += f" Reward {kill_reward:+g} per enemy killed, {-kill_reward:+g} per own unit lost."
-    labels = _micro_labels(max_units, semantic, abilities)
+    labels = _micro_labels(max_units, semantic, abilities, general)
     if selfplay:
         extra += " Self-play: the policy plays both sides (two agents per game; the win rate is side 0's)."
         labels["action_mask"] = lambda env: [_micro_mask(side)[0] for side in env.sides.values()]
@@ -437,7 +493,7 @@ def _mirror_task(name: str = "mirror_mix", max_units: int = 5, hp_permille: int 
                             extra=["--train.gae_lambda=0.8", "--train.clip_coef=0.3"]) if abilities else {},
         description=f"Mirror match, a new composition every episode: a hero (level 1-3) and 2-{max_units - 1} "
                     f"units from all races, {hp_permille / 10:.0f}% hit points, vs the scripted opponent." + extra,
-        **_micro_layout(max_units, abilities, relational),
+        **_micro_layout(max_units, abilities, relational, general),
         mask_info=_micro_masks(targeting, abilities, tactical, rejoin),
         reward_info=_MICRO_REWARD + (f" {kill_reward:+g} per enemy unit killed, {-kill_reward:+g} per own unit lost."
                                      if kill_reward else "") + (" Zero-sum between the sides." if selfplay else ""),
@@ -499,6 +555,13 @@ def describe_spaces(task: Task) -> dict:
             "agents": task.num_agents, "reward": task.reward_info, "reward_scale": task.reward_scale}
 
 
+def task_spec(task: Task) -> dict:
+    """What a trainer outside this package needs to know about a task (warcraftsim/rl: spec.json)."""
+    return {"task": task.name, "obs_size": task.obs_size, "num_atns": task.num_atns, "act_sizes": list(task.act_sizes),
+            "group_size": task.group_size, "agents": task.num_agents, "reward_scale": task.reward_scale,
+            "spaces": describe_spaces(task)}
+
+
 def _unit_agents(base: Task, name: str) -> UnitAgentsTask:
     heads = base.act_sizes[:base.group_size]
     per = sum(heads)
@@ -551,13 +614,16 @@ def _mirror_variant(name: str) -> Task | None:
     semantic targets), relational unit features, tactical action masks (and units rejoining the
     fight after a pull-back: implies tactical), kill rewards, self-play (MirrorSelfPlayEnv: the
     policy plays both sides), and/or P permille of the units' hit points (default 250)."""
-    m = re.fullmatch(r"mirror_mix(?P<sem>_sem)?(?P<abil>_abil)?(?P<rel>_rel)?(?P<tac>_tac)?(?P<rejoin>_rejoin)?"
-                     r"(?P<kill>_kill)?(?P<self>_self)?(?:_hp(?P<hp>\d+))?", name)
+    m = re.fullmatch(r"mirror_mix(?P<gen>_gen)?(?P<sem>_sem)?(?P<abil>_abil)?(?P<rel>_rel)?(?P<tac>_tac)?"
+                     r"(?P<rejoin>_rejoin)?(?P<kill>_kill)?(?P<self>_self)?(?:_hp(?P<hp>\d+))?", name)
     if not m or not any(m.groups()):
         return None
     tactical = bool(m["tac"] or m["rejoin"])
+    if m["gen"] and (m["sem"] or tactical):
+        raise KeyError(f"{name}: _gen (general orders) has no semantic targets or tactical mode")
     return _mirror_task(name, hp_permille=int(m["hp"] or 250),
-                        targeting="semantic" if m["sem"] or m["abil"] or tactical or m["self"] else "slot",
+                        targeting="general" if m["gen"] else
+                        "semantic" if m["sem"] or m["abil"] or tactical or m["self"] else "slot",
                         abilities=bool(m["abil"]), relational=bool(m["rel"]), tactical=tactical,
                         selfplay=bool(m["self"]), kill_reward=0.2 if m["kill"] else 0.0, rejoin=bool(m["rejoin"]))
 
@@ -568,5 +634,5 @@ def get_task(name: str) -> Task:
     task = _footmen_task(name) or _mirror_variant(name)
     if task is None:
         raise KeyError(f"unknown task {name!r}; available: {sorted(TASKS)}, footmen<N>v<M>[_hp<HP>][_ehp<EHP>] "
-                       f"and mirror_mix[_sem][_abil][_rel][_tac][_rejoin][_kill][_self][_hp<permille>]")
+                       f"and mirror_mix[_gen][_sem][_abil][_rel][_tac][_rejoin][_kill][_self][_hp<permille>]")
     return task

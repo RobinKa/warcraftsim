@@ -604,6 +604,15 @@ const SECTIONS = [
     ["c-lent", "Entropy", "sum over action heads", [TR("loss/entropy", "entropy", "#b083f0")], {}],
     ["c-lkl", "Approx. KL", "per update", [TR("loss/kl", "kl", "#4cc38a")], { ymin: 0 }],
     ["c-lclip", "Clip fraction", "", [TR("loss/clipfrac", "clip fraction", "#39c5cf")], { ymin: 0 }],
+    ["c-lref", "KL to the reference", "torch trainer --ref: how far the policy moved from the fitted script", [TR("loss/ref_kl", "KL", "#f56ed2")], { ymin: 0, empty: "no reference policy" }],
+  ]],
+  ["League", [
+    ["c-lg-script", "Against the scripts", "the learner's win rate per epoch (draws count half)",
+      [TR("league/script:noop", "noop", "#8795a3"), TR("league/script:focus", "focus", "#e0a33a"),
+       TR("league/script:pull35", "pull35", "#b083f0")], { ymin: 0, ymax: 1, empty: "no league (a self-play run with --trainer torch)" }],
+    ["c-lg-past", "Against its past", "win rate against past snapshots (PFSP) and against itself",
+      [TR("league/past", "past snapshots", "#539bf5"), TR("league/self", "itself", "#4cc38a")], { ymin: 0, ymax: 1, empty: "no league" }],
+    ["c-lg-members", "League size", "past snapshots", [TR("league/members", "snapshots", "#39c5cf")], { ymin: 0, empty: "no league" }],
   ]],
   ["System", [
     ["c-sps", "Throughput", "trainer SPS · game time vs real time",
@@ -647,6 +656,7 @@ function renderMain() {
             <div class="panel"><h3>Lineage</h3><dl class="facts" id="lineage"></dl></div>
           </div>`],
         ...SECTIONS.map(([name, charts]) => [slug(name), name, `<div class="grid">${charts.map(box).join("")}</div>`, true]),
+        ["leaguetable", "League table", `<div id="leaguetable"></div>`],
         ["replays", "Replays", `<div id="media"></div>`],
         ["episodes", "Episodes", `<div id="episodes"></div>`],
         ["evals", "Evaluations", `<div style="color:var(--muted);margin-bottom:8px">bc eval of its checkpoints</div><div id="evals"></div>`],
@@ -708,6 +718,24 @@ function renderMain() {
       return `<tr><td>${e.episode}</td><td>${e.env}</td><td class="${e.outcome > 0 ? "win" : e.outcome < 0 ? "loss" : ""}">${e.outcome > 0 ? "win" : e.outcome < 0 ? "loss" : "draw"}</td><td>${fmt(e.return, 3)}</td><td>${e.length}</td><td>${e.game_time ? e.game_time.toFixed(1) + "s" : "–"}</td><td>${pct(c.dealt)} / ${pct(c.taken)}</td><td>${c.kills ?? "–"} / ${c.losses ?? "–"}</td><td>${mix(e.act)}</td><td>${pct(c.focus_dealt)} / ${pct(c.focus_taken)}</td><td>${ago(e.time)}</td></tr>`; }).join("") + `</table>` : `<div class="empty">no episodes yet</div>`;
   renderLaunch(info);
   renderEvals(d.evals);
+  renderLeague(d);
+}
+
+// ---- a self-play league: its tabs only when the run has one --------------------------------------
+function renderLeague(d) {
+  const has = !!d.league || (d.train || []).some(r => Object.keys(r).some(k => k.startsWith("league/")));
+  for (const id of ["league", "leaguetable"]) {
+    const b = document.getElementById("tab-" + id);
+    if (b) { b.style.display = has ? "" : "none"; if (!has && b.classList.contains("on")) showTab("run", "overview"); }
+  }
+  const el = document.getElementById("leaguetable"); if (!el || !d.league) return;
+  const L = d.league, rows = [...(L.members || []), ...(L.self ? [L.self] : [])];
+  const pct = v => v == null ? "–" : (100 * v).toFixed(0) + "%";
+  el.innerHTML = `<div style="color:var(--muted);margin-bottom:8px">The learner's results against each opponent (recent win rate: its last 50 games; draws count half).
+      Past snapshots are chosen by PFSP (${esc(L.pfsp)}): the weight shows how likely.</div>
+    <table class="runs"><tr><th>opponent</th><th>games</th><th>wins</th><th>losses</th><th>draws</th><th>recent win rate</th><th>PFSP weight</th></tr>` +
+    rows.map(m => `<tr><td>${esc(m.name)}</td><td>${m.games}</td><td class="win">${m.wins}</td><td class="loss">${m.losses}</td><td>${m.draws}</td>
+      <td>${pct(m.win_rate)}</td><td>${m.weight == null ? "–" : m.weight.toFixed(2)}</td></tr>`).join("") + `</table>`;
 }
 
 // ---- tabs of a run's (or a dataset's) page: the one shown stays when another run is opened ---------

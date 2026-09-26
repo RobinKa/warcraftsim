@@ -37,7 +37,7 @@ from pathlib import Path
 from .. import paths
 from .bridge import run_worker
 from .build import PUFFER_BUILD, build_trainer
-from .tasks import describe_spaces, get_task
+from .tasks import describe_spaces, get_task, task_spec
 
 RUNS_DIR = Path(os.environ.get("WARCRAFTSIM_RUNS", paths.REPO_ROOT / "runs"))
 
@@ -124,6 +124,9 @@ def make_parser() -> argparse.ArgumentParser:
     ap.add_argument("--video-every", type=int, default=60, help="replay video every N episodes of game 0 (0: off)")
     ap.add_argument("--step-seconds", type=float, default=0, help="game time per step (default: the task's, 0.25)")
     ap.add_argument("--init-from", help="start from a checkpoint: a .bin file, or a run name (its latest)")
+    ap.add_argument("--trainer", choices=("puffer", "torch"), default="puffer",
+                    help="puffer: PufferLib 5's native trainer; torch: our PPO with an entity network and "
+                         "pointer heads (warcraftsim/rl; general-order tasks, mirror_mix_gen*)")
     ap.add_argument("--note", action="append", default=[],
                     help="a note for the run (runs/<name>/notes.md; the dashboard shows and edits it); "
                          "in a --sweep, for that run only")
@@ -204,12 +207,44 @@ def _resolve_init(args) -> Path | None:
         return None
     init = Path(args.init_from)
     if not init.is_file():
-        found = sorted((RUNS_DIR / args.init_from / "checkpoints").rglob("*.bin"), key=lambda p: p.stat().st_mtime)
+        pattern = "*.pt" if args.trainer == "torch" else "*.bin"
+        found = sorted((RUNS_DIR / args.init_from / "checkpoints").rglob(pattern), key=lambda p: p.stat().st_mtime)
         if not found:
             raise SystemExit(f"--init-from: no checkpoint file or run with checkpoints named {args.init_from!r}")
         init = found[-1]
-    args.extra = [*args.extra, f"--base.load_model_path={init.resolve()}"]
+    if args.trainer == "puffer":
+        args.extra = [*args.extra, f"--base.load_model_path={init.resolve()}"]
     return init
+
+
+# PufferLib options that mean the same to the torch trainer; --torch.NAME=VALUE passes --NAME VALUE
+_TORCH_OPTIONS = {"--train.gae_lambda": "--gae-lambda", "--train.clip_coef": "--clip", "--train.vf_coef": "--vf-coef",
+                  "--train.max_grad_norm": "--max-grad-norm", "--base.seed": "--seed"}
+
+
+def torch_trainer_cmd(args, run_dir: Path, spec_path: Path, init: Path | None) -> list[str]:
+    """The torch trainer's command line for a run (warcraftsim/rl/ppo.py)."""
+    from .bc import _torch_python
+
+    cmd = [_torch_python(), str(paths.REPO_ROOT / "warcraftsim" / "rl" / "ppo.py"), "--spec", str(spec_path),
+           "--run-dir", str(run_dir), "--envs", str(args.envs), "--timesteps", str(int(args.timesteps)),
+           "--horizon", str(args.horizon), "--lr", str(args.lr), "--gamma", str(args.gamma),
+           "--ent-coef", str(args.ent_coef), "--checkpoint-interval", str(args.checkpoint_interval)]
+    if args.replay_ratio != 1.0:  # passes over each rollout (the torch trainer's default: 4)
+        cmd += ["--epochs", str(max(1, round(args.replay_ratio)))]
+    if args.minibatch:
+        cmd += ["--minibatch", str(args.minibatch)]
+    if init is not None:
+        cmd += ["--init-from", str(init.resolve())]
+    for e in args.extra:
+        key, _, value = e.partition("=")
+        if key in _TORCH_OPTIONS:
+            cmd += [_TORCH_OPTIONS[key], value]
+        elif key.startswith("--torch."):
+            cmd += ["--" + key[len("--torch."):].replace("_", "-"), value]
+        else:
+            print(f"torch trainer: ignoring {e}", flush=True)
+    return cmd
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -260,9 +295,9 @@ def main(argv: list[str] | None = None) -> int:
         if base.note:
             _add_note(sweep_dir / "notes.md", base.note)
         print(f"run {name}: {RUNS_DIR / name}" + (f"  [{sweep['options']}]" if sweep else ""), flush=True)
-    binary = build_trainer(task)
+    binary = build_trainer(task) if base.trainer == "puffer" else None
     first = runs[0]
-    first.save(status="launching games", trainer=str(binary))
+    first.save(status="launching games", trainer=str(binary) if binary else "torch (warcraftsim/rl/ppo.py)")
     workers = max(1, min(base.workers, base.envs))
     counts = [base.envs // workers + (1 if w < base.envs % workers else 0) for w in range(workers)]
     Path("/dev/shm/warcraftsim").mkdir(parents=True, exist_ok=True)
@@ -322,11 +357,18 @@ def main(argv: list[str] | None = None) -> int:
             # OpenMP threads that finished their game spin at the barrier by default: with 2 buffers
             # the trainer burned 10.7 cores (more than 24 games); passive, 2.5
             env.setdefault("OMP_WAIT_POLICY", "passive")
-            cmd = [str(binary), *trainer_args(args, args.envs, task.num_agents),
-                   f"--base.checkpoint_dir={run.dir / 'checkpoints'}", f"--base.log_dir={run.dir / 'logs'}"]
-            run.save(status="training", started=time.time(), command=cmd, trainer=str(binary))
+            if args.trainer == "torch":
+                spec_path = run.dir / "spec.json"
+                spec_path.write_text(json.dumps(task_spec(task), indent=1))
+                cmd = torch_trainer_cmd(args, run.dir, spec_path, init)
+                cwd = paths.REPO_ROOT
+            else:
+                cmd = [str(binary), *trainer_args(args, args.envs, task.num_agents),
+                       f"--base.checkpoint_dir={run.dir / 'checkpoints'}", f"--base.log_dir={run.dir / 'logs'}"]
+                cwd = PUFFER_BUILD
+            run.save(status="training", started=time.time(), command=cmd, trainer=cmd[1] if binary is None else str(binary))
             with open(run.dir / "trainer.log", "wb") as log:
-                trainer = subprocess.Popen(cmd, cwd=PUFFER_BUILD, env=env, stdout=log, stderr=subprocess.STDOUT)
+                trainer = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT)
                 code = trainer.wait()
             status = "stopped" if stopping else ("finished" if code == 0 else f"failed (exit {code})")
             run.save(status=status, finished=time.time())
