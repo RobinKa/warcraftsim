@@ -101,6 +101,15 @@ pre.cmd { background:var(--panel); border:1px solid var(--line); border-radius:8
 .sweep .note, .sweep .from { font-size:11.5px; margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .sweep .note { color:var(--text); opacity:.8; } .sweep .from { color:var(--muted); }
 table.runs td, table.runs th { font-size:12px; padding:4px 8px; }
+/* a run's page: tabs, the bar stays at the top while the tab scrolls */
+.tabs { display:flex; flex-wrap:wrap; gap:2px; border-bottom:1px solid var(--line); margin:0 -18px 14px; padding:0 18px;
+        position:sticky; top:-14px; background:var(--bg); z-index:4; }
+.tab { background:none; border:0; border-bottom:2px solid transparent; color:var(--muted); padding:8px 12px 7px; font:inherit;
+       cursor:pointer; margin-bottom:-1px; }
+.tab:hover { color:var(--text); }
+.tab.on { color:var(--text); border-bottom-color:var(--accent); }
+.tab .count { font-size:10px; padding:0 5px; border-radius:8px; background:var(--panel2); margin-left:4px; }
+.pane > .grid { margin-top:2px; }
 .spaces { display:grid; grid-template-columns:repeat(auto-fit,minmax(380px,1fr)); gap:12px; }
 .spaces table td, .spaces table th { font-size:12px; padding:4px 8px; vertical-align:top; }
 .spaces details summary { cursor:pointer; color:var(--blue); }
@@ -177,6 +186,8 @@ function saveHash() {
   if (state.view === "sweep" && state.sweep) h.set("sweep", state.sweep);
   else if (state.selected) h.set("run", state.selected);
   if (state.compare.size) h.set("compare", [...state.compare].join(","));
+  const kind = state.view === "run" && state.data[state.selected] && state.data[state.selected].kind === "bc" ? "bc" : "run";
+  if (state.view === "run" && ui.tabs && ui.tabs[kind] && ui.tabs[kind] !== "overview") h.set("tab", ui.tabs[kind]);
   history.replaceState(null, "", "#" + h.toString());
 }
 
@@ -222,6 +233,7 @@ function smooth(points, a) {
 function drawChart(id) {
   const c = ui.charts[id]; if (!c) return;
   const canvas = c.canvas, dpr = window.devicePixelRatio || 1, W = canvas.clientWidth, H = canvas.clientHeight;
+  if (!W) { c.geo = null; return; }  // in a hidden tab: drawn when the tab is shown
   canvas.width = W * dpr; canvas.height = H * dpr;
   c.overlay.width = W * dpr; c.overlay.height = H * dpr; c.overlay.style.width = W + "px"; c.overlay.style.height = H + "px";
   const g = canvas.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, W, H);
@@ -608,24 +620,26 @@ function renderMain() {
     ui.charts = {};
     const box = ([id, title, sub]) => `<div class="chart"><h3>${title}<span>${sub}</span></h3><div class="plot"><canvas id="${id}"></canvas><canvas class="overlay" id="${id}-ov"></canvas><div class="tip" id="${id}-tip"></div></div></div>`;
     main.innerHTML = `
-      <div class="title"><h2>${info.name}</h2>${badge(info.status)}<span class="desc">${info.description || ""}</span>${info.sweep ? `<span class="desc" style="color:var(--accent)">sweep ${info.sweep.group} ${info.sweep.index}/${info.sweep.of}: ${info.sweep.options || "base options"}</span>` : ""}</div>
-      <div class="about">
-        <div class="panel"><h3>Notes<span id="notestate"></span></h3>
-          <textarea id="notes" placeholder="what this run tests and what came of it (runs/${esc(info.name)}/notes.md)"></textarea>
-          <div class="row"><button id="savenotes">save</button><span>Ctrl+Enter saves</span></div></div>
-        <div class="panel"><h3>Lineage</h3><dl class="facts" id="lineage"></dl></div>
-      </div>
-      <div class="cards" id="cards"></div>
-      <div class="legend" id="legend"></div>
-      <div class="grid">${SECTIONS.map(([name, charts]) => `<h4>${name}</h4>` + charts.map(box).join("")).join("")}</div>
-      <section><h3>Replays &amp; renders</h3><div class="media" id="media"></div></section>
-      <section><h3>Recent episodes</h3><div id="episodes"></div></section>
-      <section id="evalsec" style="display:none"><h3>Evaluations <span style="text-transform:none;letter-spacing:0">(bc eval of its checkpoints)</span></h3><div id="evals"></div></section>
-      <section><h3>Observation &amp; action spaces</h3><div id="spaces"></div></section>
-      <section><h3>Launch &amp; configuration</h3><div id="launch"></div></section>`;
+      <div class="title"><h2>${info.name}</h2>${badge(info.status)}<span class="desc">${info.description || ""}</span>${info.sweep ? `<span class="desc" style="color:var(--accent)">sweep ${info.sweep.group} ${info.sweep.index}/${info.sweep.of}: ${info.sweep.options || "base options"}</span>` : ""}</div>` +
+      tabsHtml("run", [
+        ["overview", "Overview", `<div class="cards" id="cards"></div>
+          <div class="about">
+            <div class="panel"><h3>Notes<span id="notestate"></span></h3>
+              <textarea id="notes" placeholder="what this run tests and what came of it (runs/${esc(info.name)}/notes.md)"></textarea>
+              <div class="row"><button id="savenotes">save</button><span>Ctrl+Enter saves</span></div></div>
+            <div class="panel"><h3>Lineage</h3><dl class="facts" id="lineage"></dl></div>
+          </div>`],
+        ...SECTIONS.map(([name, charts]) => [slug(name), name, `<div class="grid">${charts.map(box).join("")}</div>`, true]),
+        ["replays", "Replays", `<div class="media" id="media"></div>`],
+        ["episodes", "Episodes", `<div id="episodes"></div>`],
+        ["evals", "Evaluations", `<div style="color:var(--muted);margin-bottom:8px">bc eval of its checkpoints</div><div id="evals"></div>`],
+        ["spaces", "Spaces", `<div id="spaces"></div>`],
+        ["launch", "Launch &amp; config", `<div id="launch"></div>`],
+      ]);
     for (const [, charts] of SECTIONS) for (const [id, , , , opts] of charts) registerChart(id, opts);
     document.getElementById("spaces").innerHTML = spacesHtml(info.spaces);
     setupNotes(info);
+    setupTabs("run");
   } else if (!ui.notesDirty && document.activeElement !== document.getElementById("notes")) {
     document.getElementById("notes").value = info.notes || "";  // edited elsewhere meanwhile
   }
@@ -686,6 +700,47 @@ function renderMain() {
   renderEvals(d.evals);
 }
 
+// ---- tabs of a run's (or a dataset's) page: the one shown stays when another run is opened ---------
+try { ui.tabs = JSON.parse(localStorage.getItem("tabs") || "{}"); } catch (e) { ui.tabs = {}; }
+(() => { const t = new URLSearchParams(location.hash.slice(1)).get("tab"); if (t) ui.tabs.run = ui.tabs.bc = t; })();
+const slug = t => t.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+function tabsHtml(kind, tabs) {
+  const cur = tabs.some(t => t[0] === ui.tabs[kind]) ? ui.tabs[kind] : tabs[0][0];
+  return `<div class="tabs" data-kind="${kind}">${tabs.map(([id, title]) =>
+      `<button class="tab ${id === cur ? "on" : ""}" data-tab="${id}" id="tab-${id}">${title}<span class="count" style="display:none"></span></button>`).join("")}</div>` +
+    (kind === "run" ? `<div class="legend" id="legend"></div>` : "") +
+    tabs.map(([id, , html, charts]) => `<div class="pane" data-pane="${id}"${charts ? " data-charts" : ""}${id === cur ? "" : ` style="display:none"`}>${html}</div>`).join("");
+}
+function setupTabs(kind) {
+  document.querySelectorAll(`.tabs[data-kind="${kind}"] .tab`).forEach(b => b.onclick = () => showTab(kind, b.dataset.tab));
+  const on = document.querySelector(".tab.on");
+  showTab(kind, on ? on.dataset.tab : "overview", true);
+}
+function showTab(kind, id, quiet) {
+  const btn = document.getElementById("tab-" + id);
+  if (!btn || btn.style.display === "none") id = "overview";  // e.g. no evaluations (any more)
+  ui.tabs[kind] = id;
+  try { localStorage.setItem("tabs", JSON.stringify(ui.tabs)); } catch (e) {}
+  document.querySelectorAll(".tab").forEach(b => b.classList.toggle("on", b.dataset.tab === id));
+  let charts = false;
+  document.querySelectorAll(".pane").forEach(p => {
+    const show = p.dataset.pane === id; p.style.display = show ? "" : "none";
+    if (show) charts = p.hasAttribute("data-charts");
+  });
+  const legend = document.getElementById("legend"); if (legend) legend.style.display = charts ? "" : "none";
+  // charts in a hidden tab have no size: drawn when shown
+  document.querySelectorAll(`.pane[data-pane="${id}"] canvas:not(.overlay)`).forEach(c => drawChart(c.id));
+  if (!quiet) saveHash();
+}
+// a tab's count (e.g. evaluations); `keep`: shown also at zero (else the tab hides)
+function setTabCount(id, n, keep) {
+  const b = document.getElementById("tab-" + id); if (!b) return;
+  const c = b.querySelector(".count");
+  c.textContent = n; c.style.display = n ? "" : "none";
+  b.style.display = n || keep ? "" : "none";
+  if (!n && !keep && b.classList.contains("on")) showTab(document.querySelector(".tabs").dataset.kind, "overview");
+}
+
 // ---- observation and action spaces ----------------------------------------------------------------
 function spacesHtml(sp) {
   if (!sp) return `<div class="empty">not recorded, and the task no longer exists</div>`;
@@ -715,10 +770,10 @@ function spacesHtml(sp) {
 
 // ---- evaluations (bc eval rows of a run's or a dataset's checkpoints) -------------------------------
 function renderEvals(evals) {
-  const sec = document.getElementById("evalsec"), el = document.getElementById("evals");
-  if (!sec || !el) return;
-  sec.style.display = evals && evals.length ? "" : "none";
-  if (!evals || !evals.length) return;
+  const n = (evals || []).length;
+  setTabCount("evals", n);
+  const el = document.getElementById("evals");
+  if (!el || !n) return;
   el.innerHTML = `<table class="runs"><tr><th>when</th><th>checkpoint</th><th>mode</th><th>episodes</th><th>win</th><th>loss</th><th>draw</th><th>by unit type</th></tr>` +
     evals.slice().reverse().map(e => {
       const mode = [e.greedy ? "greedy" : "sampled", e.script_casts ? "scripted casts" : "", ...(e.forbid || []).map(k => `no ${k}`)].filter(Boolean).join(", ");
@@ -742,42 +797,47 @@ function renderBC(d) {
   const main = document.getElementById("main");
   const kinds = Object.keys(last.choices || {});
   const FIT = (key, name, color) => ["fit", key, name, color];
+  const noFit = (info.fit || {}).finished && !fit.length ? "no fit recorded (fitted before fits were logged)"
+    : (info.status || "").startsWith("fitting") ? "fitting: the first epoch is on its way" : "not fitted yet";
   const sections = [
-    ["Fit (validation episodes, per epoch)", [
-      ["b-loss", "Loss", "cross-entropy + value", [FIT("train_loss", "train", "#e0a33a"), FIT("val_loss", "validation", "#539bf5")], { axis: "epoch", empty: "no fit recorded (fitted before fits were logged)" }],
+    ["The fit, per epoch (on the validation episodes)", [
+      ["b-loss", "Loss", "cross-entropy + value", [FIT("train_loss", "train", "#e0a33a"), FIT("val_loss", "validation", "#539bf5")], { axis: "epoch", empty: noFit }],
       ["b-acc", "Accuracy", "choices the network's most likely action matches", [FIT("acc.first", "unit order", "#4cc38a"), FIT("acc.detail1", "direction", "#539bf5"),
-        FIT("acc.detail2", "target", "#e5534b"), FIT("acc.detail3", "ability", "#f56ed2")], { axis: "epoch", ymin: 0, ymax: 1, empty: "no fit recorded" }],
-      ["b-rec", "Recall per order", "share of the script's choices it predicts", kinds.map(k => FIT(`choices.${k}.recall`, k, KIND_COLORS[k] || "#39c5cf")), { axis: "epoch", ymin: 0, ymax: 1, empty: "no fit recorded" }],
-      ["b-prec", "Precision per order", "share of its predictions the script made", kinds.map(k => FIT(`choices.${k}.precision`, k, KIND_COLORS[k] || "#39c5cf")), { axis: "epoch", ymin: 0, ymax: 1, empty: "no fit recorded" }],
-      ["b-val", "Value error", "mean squared error on the discounted return", [FIT("value_mse", "value MSE", "#b083f0")], { axis: "epoch", ymin: 0, empty: "no fit recorded" }],
-    ]],
+        FIT("acc.detail2", "target", "#e5534b"), FIT("acc.detail3", "ability", "#f56ed2")], { axis: "epoch", ymin: 0, ymax: 1, empty: noFit }],
+      ["b-rec", "Recall per order", "share of the script's choices it predicts", kinds.map(k => FIT(`choices.${k}.recall`, k, KIND_COLORS[k] || "#39c5cf")), { axis: "epoch", ymin: 0, ymax: 1, empty: noFit }],
+      ["b-prec", "Precision per order", "share of its predictions the script made", kinds.map(k => FIT(`choices.${k}.precision`, k, KIND_COLORS[k] || "#39c5cf")), { axis: "epoch", ymin: 0, ymax: 1, empty: noFit }],
+      ["b-val", "Value error", "mean squared error on the discounted return", [FIT("value_mse", "value MSE", "#b083f0")], { axis: "epoch", ymin: 0, empty: noFit }],
+    ], "fit", "Fit"],
     ["Demonstrations (the script's episodes)", [
       ["b-win", "Outcomes", "win · draw · loss", [EP("win_rate", "win", "#4cc38a"), EP("draw_rate", "draw", "#e0a33a"), EP("loss_rate", "loss", "#e5534b")], { axis: "episode", ymin: 0, ymax: 1 }],
       ["b-act", "Action mix", "share of unit-steps", ["noop", "stop", "retreat", "move", "attack", "cast"].map(k => EP("act_" + k, k, KIND_COLORS[k])), { axis: "episode", ymin: 0, ymax: 1 }],
       ["b-cmb", "Combat", "per episode", [EP("combat_dealt", "damage dealt", "#4cc38a"), EP("combat_taken", "damage taken", "#e5534b")], { axis: "episode", ymin: 0, ymax: 1, empty: "not recorded for this dataset (collected before combat was logged)" }],
       ["b-len", "Episode length", "steps", [EP("length", "steps", "#539bf5")], { axis: "episode", ymin: 0 }],
-    ]],
+    ], "demos", "Demonstrations"],
   ];
   const sig = info.name + "|" + kinds.join(",");
   if (main.dataset.run !== sig) {
     main.dataset.run = sig; ui.charts = {};
     const box = ([id, title, sub]) => `<div class="chart"><h3>${title}<span>${sub}</span></h3><div class="plot"><canvas id="${id}"></canvas><canvas class="overlay" id="${id}-ov"></canvas><div class="tip" id="${id}-tip"></div></div></div>`;
     main.innerHTML = `
-      <div class="title"><h2>${esc(info.name)}</h2><span class="badge bc">BC</span>${badge(info.status)}<span class="desc">${esc(info.description || "")}</span></div>
-      <div class="about">
-        <div class="panel"><h3>Notes<span id="notestate"></span></h3>
-          <textarea id="notes" placeholder="what this dataset is for (runs/bc/${esc(info.dataset)}/notes.md)"></textarea>
-          <div class="row"><button id="savenotes">save</button><span>Ctrl+Enter saves</span></div></div>
-        <div class="panel"><h3>Lineage</h3><dl class="facts" id="lineage"></dl></div>
-      </div>
-      <div class="cards" id="cards"></div>
-      <div class="grid">${sections.map(([name, charts]) => `<h4>${name}</h4>` + charts.map(box).join("")).join("")}</div>
-      <section id="evalsec" style="display:none"><h3>Evaluations <span style="text-transform:none;letter-spacing:0">(bc eval: the fitted network playing the task)</span></h3><div id="evals"></div></section>
-      <section><h3>Runs started from it</h3><div id="bcchildren"></div></section>
-      <section><h3>Observation &amp; action spaces</h3><div id="spaces"></div></section>
-      <section><h3>Commands</h3><div id="launch"></div></section>`;
+      <div class="title"><h2>${esc(info.name)}</h2><span class="badge bc">BC</span>${badge(info.status)}<span class="desc">${esc(info.description || "")}</span></div>` +
+      tabsHtml("bc", [
+        ["overview", "Overview", `<div class="cards" id="cards"></div>
+          <div class="about">
+            <div class="panel"><h3>Notes<span id="notestate"></span></h3>
+              <textarea id="notes" placeholder="what this dataset is for (runs/bc/${esc(info.dataset)}/notes.md)"></textarea>
+              <div class="row"><button id="savenotes">save</button><span>Ctrl+Enter saves</span></div></div>
+            <div class="panel"><h3>Lineage</h3><dl class="facts" id="lineage"></dl></div>
+          </div>`],
+        ...sections.map(([name, charts, id, title]) => [id, title, `<div style="color:var(--muted);margin-bottom:8px">${name}</div><div class="grid">${charts.map(box).join("")}</div>`, true]),
+        ["evals", "Evaluations", `<div style="color:var(--muted);margin-bottom:8px">bc eval: the fitted network playing the task</div><div id="evals"></div>`],
+        ["children", "Runs from it", `<div id="bcchildren"></div>`],
+        ["spaces", "Spaces", `<div id="spaces"></div>`],
+        ["launch", "Commands", `<div id="launch"></div>`],
+      ]);
     for (const [, charts] of sections) for (const [id, , , , opts] of charts) registerChart(id, opts);
     setupNotes(info);
+    setupTabs("bc");
     document.getElementById("spaces").innerHTML = spacesHtml(info.spaces);
   } else if (!ui.notesDirty && document.activeElement !== document.getElementById("notes")) {
     document.getElementById("notes").value = info.notes || "";
@@ -814,6 +874,7 @@ function renderBC(d) {
   }
   renderEvals(evals);
   const kids = (info.children || []).map(n => state.runs.find(r => r.name === n)).filter(Boolean);
+  setTabCount("children", kids.length, true);
   const ch = document.getElementById("bcchildren");
   ch.innerHTML = kids.length ? `<table class="runs"><tr><th>run</th><th>task</th><th>status</th><th>steps</th><th>win (last 100)</th><th>notes</th></tr>` +
     kids.map(r => `<tr><td>${go(r.name)}</td><td>${esc(r.task)}</td><td>${badge(r.status)}</td><td>${fmt((r.summary || {}).agent_steps || 0, 0)}</td>
