@@ -89,7 +89,10 @@ class League:
         return random.choices(self.past, weights=w)[0]
 
     def sample_script(self) -> Member:
-        return random.choice(list(self.scripts.values()))
+        """Scripts are chosen by PFSP too: the ones the learner still loses to come up more."""
+        members = list(self.scripts.values())
+        w = [max(pfsp_weight(m.win_rate(), self.pfsp), 0.05) for m in members]  # every anchor stays in play
+        return random.choices(members, weights=w)[0]
 
     def summary(self) -> dict:
         def row(m: Member) -> dict:
@@ -117,6 +120,7 @@ class Scripts:
         self.i_x, self.i_y = feat.index("x (/1500 from the centre)"), feat.index("y (/1500 from the centre)")
         self.i_hp, self.i_maxhp = feat.index("hit points (share)"), feat.index("max hit points (/1000)")
         self.i_lost = feat.index("hit points lost over the last 4 steps (share)")
+        self.i_order = feat.index("current order (none/move/attack/harvest/other, /4)")
         heads = spec["spaces"]["actions"]["heads"]
         self.n_dir = heads[1]["size"]
         self.group = len(heads)
@@ -133,7 +137,7 @@ class Scripts:
         a = np.zeros((N, k, self.group), np.int64)
         if name == "noop":
             return a.reshape(N, -1)
-        if name == "amove":  # attack-move toward the nearest enemy, as the game's scripted opponent does
+        if name == "amove":  # as the game's scripted opponent: an idle unit attack-moves at the nearest enemy
             dx = enemy[:, None, :, self.i_x] - own[..., None, self.i_x]
             dy = enemy[:, None, :, self.i_y] - own[..., None, self.i_y]
             dist = np.where(enemy_alive[:, None, :], dx ** 2 + dy ** 2, np.inf)
@@ -141,10 +145,12 @@ class Scripts:
             ax = np.take_along_axis(dx, j[..., None], -1)[..., 0]
             ay = np.take_along_axis(dy, j[..., None], -1)[..., 0]
             d = np.round(np.arctan2(ay, ax) / (2 * math.pi / self.n_dir)).astype(np.int64) % self.n_dir
-            live = own_alive & enemy_alive.any(-1)[:, None]
-            a[..., 0] = np.where(live, KINDS.index("attack_move"), 0)
-            a[..., 1] = np.where(live, d, 0)
-            a[..., 2] = np.where(live, 1, 0)
+            # only idle units: a new order would cancel an attack in progress (re-ordering every unit
+            # every step, the first version of this script hardly landed a hit)
+            idle = own_alive & enemy_alive.any(-1)[:, None] & (own[..., self.i_order] < 0.125)
+            a[..., 0] = np.where(idle, KINDS.index("attack_move"), 0)
+            a[..., 1] = np.where(idle, d, 0)
+            a[..., 2] = np.where(idle, 2, 0)  # the farthest step (700): toward the enemy, as far as it goes
             return a.reshape(N, -1)
         ehp = np.where(enemy_alive, enemy[..., self.i_hp] * enemy[..., self.i_maxhp], np.inf)
         weakest = ehp.argmin(-1)  # [N]
