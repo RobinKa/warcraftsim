@@ -842,7 +842,7 @@ function renderEvals(evals) {
   el.innerHTML = `<table class="runs"><tr><th>when</th><th>checkpoint</th><th>mode</th><th>episodes</th><th>win</th><th>loss</th><th>draw</th><th>by unit type</th></tr>` +
     evals.slice().reverse().map(e => {
       const mode = [e.greedy ? "greedy" : "sampled", e.script_casts ? "scripted casts" : "", ...(e.forbid || []).map(k => `no ${k}`)].filter(Boolean).join(", ");
-      const ck = e.steps != null ? `${fmt(e.steps, 0)} steps` : (e.checkpoint || "").split("/").pop();
+      const ck = e.steps != null ? `${fmt(e.steps, 0)} steps` : (e.checkpoint || "").split("/").pop() + (e.fit_epochs ? ` (fit: ${e.fit_epochs} epochs)` : "");
       const types = Object.entries(e.by_type || {}).sort((a, b) => a[1][0] / a[1][1] - b[1][0] / b[1][1])
         .map(([t, [w, n]]) => `${esc(t)} ${(100 * w / n).toFixed(0)}% (${n})`).join(", ");
       return `<tr title="${esc(e.command || "")}"><td>${new Date(e.time * 1000).toLocaleString()}</td><td>${esc(ck)}</td><td>${esc(mode)}</td>

@@ -307,6 +307,12 @@ def evaluate(task_name: str, checkpoint: Path, episodes: int, games: int, step_s
         steps = Path(checkpoint).stem
         if steps.isdigit():
             row["steps"] = int(steps)
+        try:  # a dataset's policy.bin is refitted in place: which fit this was
+            fit_info = json.loads((owner / "bc.json").read_text()).get("fit") or {}
+            if fit_info.get("epochs") and Path(checkpoint).resolve() == Path(fit_info.get("out", "")).resolve():
+                row["fit_epochs"] = fit_info["epochs"]
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
         with open(owner / "evals.jsonl", "a") as f:
             f.write(json.dumps(row) + "\n")
     print(f"{checkpoint} on {task_name} ({mode}): win {res['win_rate']:.0%} "
