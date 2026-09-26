@@ -7,7 +7,13 @@ name = "warcraftsim"
 version = "0.1.0"
 description = "Headless Warcraft III (Legacy TFT 1.29) under Wine, controlled from Python"
 requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Robin Kahlow"}]
+readme = "README.md"
 dependencies = ["numpy"]
+
+[project.urls]
+Repository = "https://github.com/RobinKa/warcraftsim"
 
 [project.optional-dependencies]
 rl = ["gymnasium>=1.0"]
