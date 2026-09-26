@@ -9,14 +9,11 @@ Throne (Legacy 1.29). The tools read its archives and build the maps they use lo
 videos of your runs stay in `runs/`, which is not committed. warcraftsim is not affiliated with or
 endorsed by Blizzard Entertainment.
 
-<p align="center">
-  <a href="docs/media/pullback-rejoin-1.webm"><img src="docs/media/pullback-rejoin-1.gif" width="760" alt="A trained policy micro-managing a mirror match"></a>
-</p>
+https://github.com/user-attachments/assets/361127c0-82ad-462d-8edb-e0c7d6de9482
 
 *A policy trained with PPO (run `rejoin-1`) in a 3 v 3 mirror match (a Crypt Lord and two units a side) against the scripted
 opponent: the hurt unit A2 pulls back while A0 and A1 keep fighting, rejoins, and the agent wins. The panel on the right shows what
-the policy saw and thought: its value estimate, rewards, team hit points and every unit's action probabilities.
-[Full episode with sound (WebM)](docs/media/pullback-rejoin-1.webm).*
+the policy saw and thought: its value estimate, rewards, team hit points and every unit's action probabilities.*
 
 ```python
 from warcraftsim import Wc3Game, GameSetup, Agent, BuiltinAI
