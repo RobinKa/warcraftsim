@@ -359,7 +359,8 @@ class MicroEnv(Wc3Env):
     def __init__(self, scenario: Scenario | None = None, max_own: int = 12, max_enemy: int = 12,
                  move_distance: float = 250.0, opponent: str = "scripted", name: str = "micro0",
                  targeting: str = "slot", abilities: bool = False, opponent_casts: bool | None = None,
-                 relational: bool = False, tactical: bool = False, kill_reward: float = 0.0, **kw):
+                 relational: bool = False, tactical: bool = False, kill_reward: float = 0.0,
+                 rejoin: bool = False, **kw):
         from .runtime.instance import Agent, Idle, Scripted
 
         self.scenario = scenario or Scenario.skirmish(["hfoo"] * 4, ["hfoo"] * 4)
@@ -387,7 +388,11 @@ class MicroEnv(Wc3Env):
         # tactical action masks (semantic targeting): retreat only for a hurt unit (below half its
         # hit points) that is losing hit points, no plain moves; exploring either elsewhere costs
         # a lot and teaches little
-        self.tactical = tactical
+        self.tactical = tactical or rejoin
+        # tactical: a unit whose pull-back ended and that is told nothing (noop) attack-moves back
+        # into the fight; otherwise it stands where the retreat left it, out of reach, and pulling
+        # back only pays when an attack order follows (without focus fire: 4% wins against 59%)
+        self.rejoin = rejoin
         feat = (UNIT_FEATURES + (ABILITY_FEATURES * HERO_ABILITY_SLOTS if abilities else 0)
                 + (RELATIONAL_FEATURES if relational else 0))
         self.observation_space = spaces.Dict({
@@ -571,6 +576,9 @@ class MicroEnv(Wc3Env):
             if self.tactical and self.retreating(unit):
                 self._retreat(unit)  # a committed retreat goes on (the mask allows only noop)
                 continue
+            if self.rejoin and self._retreat_until.pop(unit.id, None) is not None and kind == 0:
+                self._rejoin(unit)  # the pull-back is over
+                continue
             if kind == 1 and self.targeting == "semantic":
                 if self.tactical:
                     self._retreat_until[unit.id] = self._now() + RETREAT_MAX
@@ -613,6 +621,13 @@ class MicroEnv(Wc3Env):
             return False
         hist = self.encoder._hp.get(unit.id) if self.encoder is not None else None
         return bool(hist) and len(hist) >= 3 and unit.hp < hist[-3]
+
+    def _rejoin(self, unit: Unit) -> None:
+        live = [e for e in self._enemy if e is not None]
+        if live:
+            e = min(live, key=lambda e: e.dist(unit.x, unit.y))
+            self.game.attack_move(unit, e.x, e.y)
+            self._attacking.pop(unit.id, None)
 
     def _retreat(self, unit: Unit) -> None:
         live = [e for e in self._enemy if e is not None]

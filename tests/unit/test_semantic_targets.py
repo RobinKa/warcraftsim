@@ -163,3 +163,27 @@ def test_tactical_mask(monkeypatch):
     assert m[:4].tolist() == [1, 0, 0, 0] and env.retreating(hurt) and env.retreating(fine)
     env.encoder._hp[1] = [230, 200, 200, 200]  # no longer losing hit points: the retreat is over
     assert not env.retreating(hurt)
+
+
+def test_rejoin_after_pull_back(monkeypatch):
+    env, moves = _env(monkeypatch, [_unit(10, "hfoo", 400, 300)])
+    attack_moves = []
+    env.game.attack_move = lambda u, x, y: attack_moves.append((u.id, round(x), round(y)))
+    env.max_own, env.group, env.tactical, env.rejoin, env.opponent_casts = 1, 3, True, True, False
+    me = _unit(1, "hfoo", 0, 200, owner=0)
+    env._own = [me]
+    env.encoder = SimpleNamespace(_hp={1: [320, 280, 230, 200]})  # losing hit points
+    env.game.obs, env._retreat_until = SimpleNamespace(game_time=10.0), {}
+    env._commands(np.array([[1, 0, 0]]))  # retreat: committed while it keeps losing hit points
+    env._commands(np.array([[0, 0, 0]]))  # noop during it: the retreat goes on
+    assert moves == [(1, -250, 0), (1, -250, 0)] and not attack_moves
+    env.encoder._hp[1] = [200, 200, 200, 200]  # out of reach: the pull-back is over
+    env._commands(np.array([[0, 0, 0]]))  # noop: back into the fight, once
+    env._commands(np.array([[0, 0, 0]]))
+    assert attack_moves == [(1, 400, 0)] and len(moves) == 2
+    env.rejoin = False  # tactical mode alone: a noop leaves it standing where the retreat ended
+    env.encoder._hp[1] = [320, 280, 230, 200]
+    env._commands(np.array([[1, 0, 0]]))
+    env.encoder._hp[1] = [200, 200, 200, 200]
+    env._commands(np.array([[0, 0, 0]]))
+    assert attack_moves == [(1, 400, 0)]
