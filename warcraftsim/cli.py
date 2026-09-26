@@ -247,7 +247,8 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(fn=_bench)
     p = sub.add_parser("dashboard")
     p.add_argument("--port", type=int, default=8765)
-    p.add_argument("--host", default="0.0.0.0")
+    # this machine only by default: the dashboard has no login, and notes can be edited through it
+    p.add_argument("--host", default="127.0.0.1", help="0.0.0.0: reachable from other machines too")
     p.add_argument("--runs", help="runs directory (default: <repo>/runs)")
     p.set_defaults(fn=_dashboard)
     p = sub.add_parser("view")

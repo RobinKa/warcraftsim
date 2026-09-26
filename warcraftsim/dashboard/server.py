@@ -669,7 +669,7 @@ def make_handler(dash: Dashboard):
     return Handler
 
 
-def serve(runs_dir: str | os.PathLike, host: str = "0.0.0.0", port: int = 8765) -> ThreadingHTTPServer:
+def serve(runs_dir: str | os.PathLike, host: str = "127.0.0.1", port: int = 8765) -> ThreadingHTTPServer:
     server = ThreadingHTTPServer((host, port), make_handler(Dashboard(Path(runs_dir))))
     server.daemon_threads = True
     return server

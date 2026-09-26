@@ -4,6 +4,11 @@ Headless Warcraft III for reinforcement learning: the **real game** (Legacy TFT 
 offline client) under Wine in Ubuntu/WSL2, driven step by step from Python. There is no renderer
 window, no Battle.net and no human input, and it runs much faster than real time.
 
+This repository contains no Blizzard game files: you need your own copy of Warcraft III: The Frozen
+Throne (Legacy 1.29). The tools read its archives and build the maps they use locally. Replays and
+videos of your runs stay in `runs/`, which is not committed. warcraftsim is not affiliated with or
+endorsed by Blizzard Entertainment.
+
 ```python
 from warcraftsim import Wc3Game, GameSetup, Agent, BuiltinAI
 
@@ -60,7 +65,7 @@ GameInstance ── TCP 127.0.0.1 ───────────────�
 3. **Build the native helpers and create the Python venv:**
    ```bash
    git submodule update --init
-   python3 -m venv .venv && .venv/bin/pip install cmake pytest numpy "gymnasium>=1.0" && .venv/bin/pip install -e .
+   python3 -m venv .venv && .venv/bin/pip install cmake && .venv/bin/pip install -e ".[rl,video,dev]"
    scripts/build_native.sh     # StormLib (MPQ), pjass (JASS checker)
    make -C shim                # w3shim.dll, w3launch.exe
    .venv/bin/python -m warcraftsim setup
@@ -165,7 +170,7 @@ python -m warcraftsim.puffer.train --task selfplay_micro --envs 8 --timesteps 30
 python -m warcraftsim.puffer.train --task footmen2 --name f2 --timesteps 1e6 --sweep "--lr 0.01" --sweep "--lr 0.02"
 # notes: what a run tests (runs/<name>/notes.md; editable in the dashboard); in a --sweep, for that run
 python -m warcraftsim.puffer.train --task footmen2 --name f2 --note "lr sweep" --sweep "--lr 0.01 --note 'seed 1'"
-python -m warcraftsim dashboard                                                    # http://localhost:8765
+python -m warcraftsim dashboard                                                    # http://localhost:8765 (--host 0.0.0.0: from other machines)
 ```
 
 Tasks (add more in `tasks.py`; `scripts/baselines.py` measures scripted policies on any of them):

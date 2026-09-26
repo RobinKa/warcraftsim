@@ -1,10 +1,17 @@
+from dataclasses import replace
+
 from warcraftsim.puffer.tasks import get_task
 from warcraftsim.puffer.train import _without, make_parser, parse
 
 
+# the ability tasks' tuned settings (their Task needs the game's data: a stand-in with the same)
+ABIL_DEFAULTS = dict(step_seconds=0.5, horizon=16, lr=0.003, minibatch=192, replay_ratio=4.0,
+                     extra=["--train.gae_lambda=0.8", "--train.clip_coef=0.3"])
+
+
 def test_task_train_defaults_fill_what_is_not_given():
     ap = make_parser()
-    task = get_task("mirror_mix_abil_hp400")
+    task = replace(get_task("micro"), train_defaults=ABIL_DEFAULTS)
     args = parse(ap, ["--task", task.name], task.train_defaults)
     assert (args.horizon, args.lr, args.minibatch, args.replay_ratio, args.step_seconds) == (16, 0.003, 192, 4.0, 0.5)
     assert "--train.gae_lambda=0.8" in args.extra and "--train.clip_coef=0.3" in args.extra
