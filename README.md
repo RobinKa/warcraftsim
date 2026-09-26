@@ -211,7 +211,7 @@ What we found (details, tables and the runs behind them: [docs/experiments.md](d
 * Longer credit (horizon 64, λ 0.95) lets PPO discover pull-backs from a fitted focus-fire script (50% → 60%; forbidding retreats costs it 12 points), which horizon 16 never did.
 * With general orders and the entity network (`--trainer torch`), a fitted `pull35` fine-tuned gently (a low learning rate, the value trained first, small steps) reaches **91%** against the scripted opponent, far past the script (71%). It keeps the script's pull-backs and focus fire, but picks its own focus target: often the most damaged enemy by share of hit points, often the hero, instead of the one with the fewest hit points.
 * The same recipe with hero abilities reaches 68-69% against the casting scripted opponent (the fitted script: 51%; PufferLib's network never passed 52%).
-* A first self-play league learned to run away: it beat its past selves and the 91% policy, but won 4% against an opponent that chases (details in the experiments).
+* League self-play (AlphaStar-style: itself, past snapshots chosen by PFSP, scripted anchors) first learned to run away: it beat its past selves and the 91% policy but won 4% against an opponent that chases. With draws counting as losses and an anchor that chases like the scripted opponent, the league policy wins 82% against the scripted opponent and beats the 91% policy 79% head-to-head.
 
 Warm start from a script (behavior cloning, `puffer/bc.py`):
 ```bash

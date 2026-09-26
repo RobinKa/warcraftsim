@@ -299,6 +299,19 @@ out-wait the fine-tuned one, which walks into them; the scripted opponent keeps 
 league policies down. A league needs every one of these styles among its opponents; this is what
 AlphaStar's league exploiters are for.
 
+The third run (`genleague3`: no draws, the corrected `amove`, scripts chosen by PFSP too, so the ones
+it still loses to come up more) broke the cycle:
+
+| | `genleague3` | `genleague2` | `genft-1` |
+|---|---|---|---|
+| against the game's scripted opponent | **82%** | 18% | 91% |
+| head-to-head against `genft-1` | **79%** (87-18, 15 draws) | 70% | |
+| head-to-head against `genleague2` | 60% (44-21, 55 draws) | | |
+
+It gives up nine points against the scripted opponent to the policy trained only against it, and
+beats that policy four games in five. The anchors decided it: with an opponent in the league that
+chases like the scripted one, running away stopped paying.
+
 ## Other findings
 
 * lr 0.01 (tuned on `footmen2`) is far too high with 15 action heads: the KL per update was 1.0-1.5 (clip fraction 0.9) and the win rate peaked at 29%. The KL at a given lr grows with the number of heads (≈0.15 with 6, 0.3 with 9, 1.0+ with 15); lr 0.003 keeps it at 0.03-0.14.
