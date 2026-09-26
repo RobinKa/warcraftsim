@@ -197,6 +197,32 @@ The fitted `pull35` on the rejoin task (`bc/mirror_mix_sem_rejoin_hp400-pull35`;
 recorded episodes) plays better than the script: 68% sampled and 79% greedy after 60 epochs (56% / 75% after 30,
 when its retreat recall was still rising: 0.80, then 0.86).
 
+## General orders and the entity network (`mirror_mix_gen*`, `--trainer torch`)
+
+General orders have no built-in tactics (see the README). The same scripts, written with them
+(120 episodes each): noop 52%, focus 61%, pull35 71%, pull35p10 58%; with abilities, castnoop and
+castpull35 52%. The action space can express what the built-in retreat and target rules did.
+
+* **From scratch**, PPO with the entity network collapses to noop within ~30k steps (entropy
+  7.6 → 0.01; run `torchsmoke`): random stops, holds and moves are costly, so the first thing it
+  learns is to stop giving orders, and it stays there (~50%).
+* **Behavior cloning**: the entity network fits `pull35`'s general orders almost exactly (40
+  epochs, 3 min: order accuracy 99.4%, recall of the pull-back moves 0.98, of attacks 1.00;
+  `bc/mirror_mix_gen_hp400-pull35`). PufferLib's network, fitted to the same script with the
+  built-in retreat, recalled 0.80-0.86 of the retreats. Played with sampled actions and no updates,
+  the clone wins 65.6% (2242 episodes; run `genbc-1`); the script 68-71%.
+* **PPO from the clone** (lr 3e-4, horizon 64, λ 0.95; runs `genbc-*`):
+
+  | | 0.2M | 0.5M | 1M | 2M |
+  |---|---|---|---|---|
+  | plain PPO (`genbc-2`) | 57% → 21% | stopped at 0.4M (18-47%) | | |
+  | with a KL of 0.1 to the clone (`genbc-3`) | 69% | 71% | 74% | **77%** |
+
+  Plain PPO moved the policy too far per update (KL 0.03-0.06 per epoch, a fifth of the samples
+  clipped): it walked away from what the clone knew before its value estimates were any good, and
+  collapsed. A KL penalty toward the clone, as AlphaStar keeps its policy near the supervised one,
+  kept it stable, and it went on past the script it was cloned from (77% against 71%).
+
 ## Other findings
 
 * lr 0.01 (tuned on `footmen2`) is far too high with 15 action heads: the KL per update was 1.0-1.5 (clip fraction 0.9) and the win rate peaked at 29%. The KL at a given lr grows with the number of heads (≈0.15 with 6, 0.3 with 9, 1.0+ with 15); lr 0.003 keeps it at 0.03-0.14.
