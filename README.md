@@ -209,6 +209,7 @@ What we found (details, tables and the runs behind them: [docs/experiments.md](d
 * On the mirror matches, PPO from scratch ends near "let the units fight on their own". Team tactics (focus fire plus pulling hurt units back) don't emerge from random exploration, because either half alone doesn't pay.
 * Starting from a fitted script (behavior cloning) fixes that: PPO keeps the script's tactics and sharpens them (the fitted `pull35`: 58% → 66-73%).
 * Longer credit (horizon 64, λ 0.95) lets PPO discover pull-backs from a fitted focus-fire script (50% → 60%; forbidding retreats costs it 12 points), which horizon 16 never did.
+* With general orders and the entity network (`--trainer torch`), a fitted `pull35` fine-tuned gently (a low learning rate, the value trained first, small steps) reaches **91%** against the scripted opponent, far past the script (71%). It keeps the script's pull-backs and focus fire, but picks its own focus target: often the most damaged enemy by share of hit points, often the hero, instead of the one with the fewest hit points.
 
 Warm start from a script (behavior cloning, `puffer/bc.py`):
 ```bash
