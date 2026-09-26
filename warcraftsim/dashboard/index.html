@@ -289,7 +289,7 @@ function drawChart(id) {
       for (const p of s.pts) { g.beginPath(); g.arc(X(p[0]), Y(p[1]), 3, 0, 7); s.run === 0 ? g.fill() : g.stroke(); }
     } else {
       if (ui.smooth > 0 && s.points.length > 2) {  // the raw points, faint, under the smoothed line
-        g.globalAlpha = 0.18; g.beginPath();
+        g.globalAlpha = s.many ? 0.07 : 0.18; g.beginPath();  // comparing: fainter, the lines stay readable
         s.points.forEach((p, j) => j ? g.lineTo(X(p[0]), Y(p[1])) : g.moveTo(X(p[0]), Y(p[1]))); g.stroke(); g.globalAlpha = 1;
       }
       g.beginPath(); s.pts.forEach((p, j) => j ? g.lineTo(X(p[0]), Y(p[1])) : g.moveTo(X(p[0]), Y(p[1]))); g.stroke();
@@ -680,8 +680,10 @@ function renderMain() {
   const maxStep = Math.max(1, ...shown.map(n => { const t = state.data[n].train; return off(n) + (t.length ? (t[t.length - 1].agent_steps ?? 0) : 0); }),
                            ...shown.map(n => { const e = state.data[n].episodes; return off(n) + (e.length ? e[e.length - 1].steps : 0); }));
   ui.xranges = { steps: [0, maxStep] };
+  // compared runs: a line style each, and a colour each on charts of one metric (win rate, ...)
+  const runColor = i => COLORS[i % COLORS.length];
   document.getElementById("legend").innerHTML = shown.length > 1
-    ? shown.map((n, i) => `<span>${dashSvg(DASHES[i % DASHES.length])}${n}${state.data[n]?.info?.sweep ? ` <span style="color:var(--accent)">${state.data[n].info.sweep.options}</span>` : ""}</span>`).join("")
+    ? shown.map((n, i) => `<span>${dashSvg(DASHES[i % DASHES.length], runColor(i))}${n}${state.data[n]?.info?.sweep ? ` <span style="color:var(--muted)">${state.data[n].info.sweep.options}</span>` : ""}</span>`).join("")
     : "";
   for (const [, charts] of SECTIONS) {
     for (const [id, , , defs] of charts) {
@@ -689,7 +691,8 @@ function renderMain() {
       c.series = [];
       shown.forEach((n, ri) => {
         for (const [src, key, name, color] of defs) {
-          c.series.push({ name, color, run: ri, runName: shown.length > 1 ? n : "", dash: DASHES[ri % DASHES.length],
+          c.series.push({ name, color: defs.length === 1 && shown.length > 1 ? runColor(ri) : color, run: ri,
+                          runName: shown.length > 1 ? n : "", dash: DASHES[ri % DASHES.length], many: shown.length > 1,
                           dots: src === "cal", points: seriesPoints(state.data[n], src, key) });
         }
       });
