@@ -580,9 +580,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--checkpoint-every", type=int, default=20)
     ap.add_argument("--video-every", type=float, default=15.0, help="minutes between game videos (0: none)")
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    ap.add_argument("--device", help="default: cuda if available (asking opens the GPU driver)")
     ap.add_argument("--note", default="")
     args = ap.parse_args(argv)
+    args.device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
     run_dir = args.runs / args.name
     for sub_dir in ("checkpoints", "replays", "videos"):

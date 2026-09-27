@@ -136,9 +136,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--val-games", type=int, default=8)
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--max-games", type=int, default=0)
-    ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    ap.add_argument("--device", help="default: cuda if available (asking opens the GPU driver)")
     ap.add_argument("--note", default="")
     args = ap.parse_args(argv)
+    args.device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     paths = sorted(p for d in args.data for p in d.glob("game*.npz"))
     if args.max_games:
         paths = paths[:args.max_games]

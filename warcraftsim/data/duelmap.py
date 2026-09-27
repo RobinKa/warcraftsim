@@ -73,6 +73,9 @@ class Rules:
     # other races 96%, human won 5%)
     gold_carry: float = 1.0
     lumber_carry: float = 1.0
+    # the mines' gold (12500 each): at x7 income a player mined its only mine out in ~3 minutes
+    # (a real main mine lasts 15-20); there are no expansions on the duel maps
+    mine_gold: float = 1.0
     # everything that takes time, k times faster, as if the game ran at k times its speed: attack
     # and cast timings, turning, ability cooldowns and durations (harvesting intervals too),
     # regeneration, production (on top of `time`), day and night, and the built-in AI's own waits
@@ -103,6 +106,8 @@ class Rules:
             tag += f"_h{self.harvest:g}_d{self.day:g}_s{self.start:g}"
         if (self.gold_carry, self.lumber_carry) != (1.0, 1.0):
             tag += f"_g{self.gold_carry:g}_l{self.lumber_carry:g}"
+        if self.mine_gold != 1.0:
+            tag += f"_gm{self.mine_gold:g}"
         if self.speed != 1.0:
             tag += f"_x{self.speed:g}"
         if self.max_speed != 522:
@@ -117,7 +122,7 @@ FAST = Rules(hp=0.5, time=1 / 3, cost=0.5)
 # walking workers carry more (gold_carry, lumber_carry): without it night elf beat the other races 96%
 # and human won 5%; with it (96 games, all races) human 37%, orc 57%, undead 29%, night elf 78%
 RUSH = Rules(hp=0.5, time=0.5, cost=0.5, start=2.0, speed=7.0, ai_siege_level=20, ai_by_night=True,
-             gold_carry=6.5, lumber_carry=4.0)
+             gold_carry=6.5, lumber_carry=4.0, mine_gold=7.0)
 FASTEST_UNIT = 400  # the base movement speed of the fastest melee units (gyrocopter, hippogryph)
 # harvest abilities' integer fields: gold per trip (Har3, Bgm1, Egm1), lumber per trip (Har2),
 # lumber per chop (Har1; wisps: Wha2), with the data column they are in
@@ -156,7 +161,7 @@ def duel_layout(size: int = DEFAULT_SIZE, seed: int = 0, base_x: float = BASE_X)
     return {"size": size, "starts": starts, "mines": mines, "trees": trees, "camps": camps}
 
 
-def _script_units(layout: dict) -> str:
+def _script_units(layout: dict, mine_gold: int = MINE_GOLD) -> str:
     """The map's units, in three functions: mines and trees are made once; a melee restart in the
     game (harness W3S_MeleeReset) keeps the mines (refilled: the built-in AI's towns hold on to
     them) and re-runs W3S_DuelCreeps."""
@@ -165,7 +170,7 @@ def _script_units(layout: dict) -> str:
              "    local player p = Player(PLAYER_NEUTRAL_PASSIVE)"]
     for x, y in layout["mines"]:
         lines += [f"    set u = CreateUnit(p, 'ngol', {x:.1f}, {y:.1f}, 270.0)",
-                  f"    call SetResourceAmount(u, {MINE_GOLD})"]
+                  f"    call SetResourceAmount(u, {mine_gold})"]
     lines += ["    set u = null", "    set p = null", "endfunction", "",
               "function W3S_DuelCreeps takes nothing returns nothing",
               "    local player h = Player(PLAYER_NEUTRAL_AGGRESSIVE)"]
@@ -400,7 +405,7 @@ def make_duel_map(source: str | Path, dest: str | Path, size: int = DEFAULT_SIZE
             files["war3map.doo"] = empty_doodads(m.read("war3map.doo"))
             script = files["war3map.j"].decode("latin-1")
             main = script.index("function main takes nothing returns nothing")
-            script = script[:main] + _script_units(layout) + script[main:]
+            script = script[:main] + _script_units(layout, round(MINE_GOLD * rules.mine_gold)) + script[main:]
             # the units come before InitBlizzard, where the stock script made its pre-placed ones
             script = re.sub(r"(\n\s*call InitBlizzard\(\s*\))", r"\n    call W3S_DuelTrees()\n    call W3S_DuelUnits()\1",
                             script, count=1)
@@ -451,7 +456,7 @@ def duel_map_path(name: str) -> Path:
 
     size, rules, base_x = parse_duel_name(name)
     src = stock_map_path("(2)EchoIsles")
-    out = paths.CACHE_DIR / "maps" / f"duel{size}_b{base_x:g}{rules.tag}_v11.w3x"
+    out = paths.CACHE_DIR / "maps" / f"duel{size}_b{base_x:g}{rules.tag}_v12.w3x"
     with _lock:
         if not out.exists():
             make_duel_map(src, out, size, rules, base_x)
