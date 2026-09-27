@@ -81,6 +81,38 @@ def _torch_overlay(ckpt: Path, steps_file: Path) -> list | None:
         return None
 
 
+def _league_seats(seat: dict, trace: dict, steps_file: Path, outputs: list | None, task) -> tuple[list, list | None]:
+    """A league game's two sides: their names, and side 1's outputs from its own policy (a past
+    snapshot's, a script's choices), not the learner's."""
+    from ..overlay import _steps
+    from .policy import PolicyOutput
+
+    learner, opp = seat.get("learner", "learner"), seat.get("opponent", {})
+    kind = opp.get("kind")
+    if kind == "past":
+        steps = int(opp["name"].split(":")[1]) if opp.get("name", "").split(":")[-1].isdigit() else 0
+        name = f"{learner} at {_steps(steps)} (past)" if steps else f"{learner} at the start (past)"
+        if outputs is not None and opp.get("path") and Path(opp["path"]).exists():
+            past = _torch_overlay(Path(opp["path"]), steps_file)
+            if past is not None:
+                outputs = [outputs[0], past[1]]
+    elif kind == "script":
+        name = f"script {opp.get('script', opp.get('name', '?'))}"
+        if outputs is not None:
+            actions = np.asarray(trace["actions"])[:, 1]
+            T = len(actions)
+            probs = []
+            for h, n in enumerate(task.act_sizes):
+                one = np.zeros((T, n))
+                one[np.arange(T), np.clip(actions[:, h].astype(int), 0, n - 1)] = 1.0
+                probs.append(one)
+            outputs = [outputs[0], PolicyOutput(values=np.full(T, np.nan), probs=probs,
+                                                entropy=np.zeros((T, len(task.act_sizes))))]
+    else:
+        name = f"{learner} ({opp.get('name', 'itself')})"
+    return [f"{learner} (learning)", name], outputs
+
+
 def _recv(conn: socket.socket, n: int) -> bytes:
     buf = bytearray()
     while len(buf) < n:
@@ -408,6 +440,15 @@ class BridgeServer:
                         if "masks" in arrays:
                             arrays["masks"] = arrays["masks"].reshape(len(arrays["masks"]), 1, -1)
                     np.savez_compressed(replay.with_suffix(".steps.npz"), time=time.time(), **arrays)
+                # league games: who played side 1 (the trainer publishes it for this game)
+                seats = self.run_dir / "seats.json"
+                if slot.index == 0 and seats.exists():
+                    try:
+                        seat = json.loads(seats.read_text()).get("0")
+                        if seat:
+                            replay.with_suffix(".seats.json").write_text(json.dumps(seat))
+                    except (OSError, ValueError):
+                        pass
                 self._render_queue.put((replay, episode, outcome, slot.ep_return[0], self.run_dir))
             except Exception as e:  # a missing video must not stop training
                 print(f"bridge: replay not saved: {e}", flush=True)
@@ -473,9 +514,13 @@ class BridgeServer:
                 step = checkpoint_step(ckpt)
             except (OSError, ValueError) as e:
                 print(f"bridge: policy not evaluated for the video: {e}")
+        names = None
+        seats_file = replay.with_suffix(".seats.json")
+        if seats_file.exists() and trace["obs"].shape[1] == 2:
+            names, outputs = _league_seats(json.loads(seats_file.read_text()), trace, steps_file, outputs, self.task)
         return EpisodeOverlay(task, trace, outputs, gamma=args.get("gamma", 0.99),
                               title=f"{info.get('name', run_dir.name)} · episode {episode}",
-                              policy_step=step)
+                              policy_step=step, agent_names=names)
 
     def _stats_loop(self) -> None:
         last_steps, last_t = 0, time.time()

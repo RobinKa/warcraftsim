@@ -31,7 +31,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from client import BridgeEnvs  # noqa: E402
 from league import League, Member, Scripts  # noqa: E402
-from model import EntityNet  # noqa: E402
+from model import KINDS, EntityNet  # noqa: E402
 
 STOP = False
 
@@ -49,9 +49,25 @@ def gpu_stats() -> dict:
 
 
 def load_checkpoint(path: str | Path, spec: dict, device) -> tuple[EntityNet, dict]:
+    """A checkpoint's network for `spec`. When the task's unit features differ from the ones it
+    was trained with (e.g. a task with abilities after one without), the unit encoder's input
+    weights are matched by feature name: features it never saw start at zero weight, so the
+    network acts exactly as before until training finds a use for them."""
     ck = torch.load(path, map_location=device, weights_only=False)
     net = EntityNet(spec, **ck.get("config", {})).to(device)
-    net.load_state_dict(ck["model"])
+    state = dict(ck["model"])
+    old = (ck.get("spec") or {}).get("spaces", {}).get("observation", {}).get("blocks", [{}])[0].get("features")
+    if old is not None and list(old) != list(net.feat):
+        missing = [f for f in old if f not in net.feat]
+        if missing:
+            raise ValueError(f"{path}: features the task no longer has: {missing[:5]}")
+        w_old = state["unit_mlp.0.weight"]
+        w = torch.zeros(w_old.shape[0], net.F, dtype=w_old.dtype, device=w_old.device)
+        for j, f in enumerate(old):
+            w[:, net.feat.index(f)] = w_old[:, j]
+        state["unit_mlp.0.weight"] = w
+        print(f"{path}: unit features {len(old)} -> {net.F} (new ones start at zero weight)", flush=True)
+    net.load_state_dict(state)
     return net, ck
 
 
@@ -218,6 +234,9 @@ def main() -> int:
     ap.add_argument("--layers", type=int, default=2)
     ap.add_argument("--core", type=int, default=256)
     ap.add_argument("--init-from", help="a checkpoint (.pt) to start from")
+    ap.add_argument("--cast-bias", type=float, default=0.0,
+                    help="added to the cast order's logit at the start: a checkpoint trained without "
+                         "abilities never had cast possible, and would almost never try it")
     ap.add_argument("--checkpoint-interval", type=int, default=20, help="epochs")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--self-share", type=float, default=0.5, help="self-play: share of games against itself")
@@ -257,9 +276,12 @@ def main() -> int:
     log = open(os.environ.get("PUFFER_JSONL", run_dir / "train.jsonl"), "a")
 
     def new_net() -> EntityNet:
-        if args.init_from:
-            return load_checkpoint(args.init_from, spec, device)[0]
-        return EntityNet(spec, d=args.d, layers=args.layers, core=args.core).to(device)
+        n = (load_checkpoint(args.init_from, spec, device)[0] if args.init_from
+             else EntityNet(spec, d=args.d, layers=args.layers, core=args.core).to(device))
+        if args.cast_bias:
+            with torch.no_grad():
+                n.kind.bias[KINDS.index("cast")] += args.cast_bias
+        return n
 
     net = new_net()
     if args.init_from:
@@ -311,6 +333,21 @@ def main() -> int:
     opponent = {e: (league.sample_past() if g == "past" else league.sample_script() if g == "script" else None)
                 for e, g in enumerate(groups) if g in ("past", "script", "exploit")}
     opp_nets: dict[str, EntityNet] = {}
+
+    def publish_seats() -> None:
+        """Who plays side 1 of game 0, the one the bridge records (its videos name both sides)."""
+        if league is None:
+            return
+        g, m = groups[0], opponent.get(0)
+        seat = ({"name": "itself", "kind": "self"} if g == "self" else
+                {"name": "the exploiter", "kind": "self"} if g == "exploit" else
+                {"name": m.name, "kind": "script", "script": m.name.split(":", 1)[1]} if m.path is None else
+                {"name": m.name, "kind": "past", "path": m.path})
+        tmp = run_dir / "seats.json.tmp"
+        tmp.write_text(json.dumps({"0": {"learner": run_dir.name, "opponent": seat}}))
+        tmp.replace(run_dir / "seats.json")
+
+    publish_seats()
     opp_h = net.initial_state(len(opp_rows), device)
     opp_start = torch.ones(len(opp_rows), device=device)
 
@@ -396,6 +433,8 @@ def main() -> int:
                     opponent[e] = league.sample_past()
                 elif groups[e] == "script":
                     opponent[e] = league.sample_script()
+                if e == 0:
+                    publish_seats()
         steps += main.B * T
         t_rollout = time.time() - t0
 

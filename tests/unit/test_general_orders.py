@@ -88,6 +88,35 @@ def test_league_scripts_and_pfsp():
     assert KINDS[pull[1, 0]] == "move" and pull[1, 1] == 8   # hurt and losing hit points: away (west)
     assert KINDS[pull[2, 0]] == "attack"                     # hurt but not being hit: keeps fighting
     assert pfsp_weight(0.9) < pfsp_weight(0.5) < pfsp_weight(0.1) and pfsp_weight(None) == 1.0
+
+
+    # with abilities: "cast<script>" casts like the game's scripted opponent
+    lay = _micro_layout(5, abilities=True, general=True)
+    obs_size, act = _micro_sizes(5, abilities=True, general=True)
+    spec = {"obs_size": obs_size, "spaces": {
+        "observation": {"blocks": [{"name": n, "rows": r, "features": list(f)} for n, r, f in lay["obs_layout"]]},
+        "actions": {"heads": [{"name": n, "size": z} for n, z in zip(lay["head_names"], act[:5])]}}}
+    s = Scripts(spec)
+    k, F = s.k, s.F
+    feat = spec["spaces"]["observation"]["blocks"][0]["features"]
+    obs = np.zeros((1, obs_size), np.float32)
+    own = obs[0, :k * F].reshape(k, F)
+    enemy = obs[0, k * F + k:2 * k * F + k].reshape(k, F)
+    obs[0, k * F:k * F + 2] = 1
+    obs[0, 2 * k * F + k:2 * k * F + k + 2] = 1
+    for i in range(2):
+        own[i, s.i_x], own[i, s.i_hp], own[i, s.i_maxhp] = -0.2, 0.9, 0.5
+    for j, hp in enumerate([0.8, 0.4]):
+        enemy[j, s.i_x], enemy[j, s.i_hp], enemy[j, s.i_maxhp] = 0.2, hp, 0.5  # 600 apart
+    f = lambda name: feat.index(name)  # noqa: E731
+    own[0, f("ability 2: ready to cast")] = 1  # a bolt on enemies, range 600
+    own[0, f("ability 2: cast on a unit")] = own[0, f("ability 2: for enemies")] = 1
+    own[0, f("ability 2: cast range (/1000)")] = 0.6
+    a = s.act("castamove", obs).reshape(k, -1)
+    assert KINDS[a[0, 0]] == "cast" and a[0, 4] == 1 and a[0, 3] == k + 1  # the weakest enemy in range
+    assert KINDS[a[1, 0]] != "cast"
+    own[0, f("ability 2: cast range (/1000)")] = 0.3  # out of range
+    assert KINDS[s.act("castamove", obs).reshape(k, -1)[0, 0]] != "cast"
     league = League(Path("/tmp"), ["noop"])
     a, b = league.add_snapshot("a.pt", 0), league.add_snapshot("b.pt", 10)
     for _ in range(20):

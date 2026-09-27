@@ -124,9 +124,19 @@ class Scripts:
         heads = spec["spaces"]["actions"]["heads"]
         self.n_dir = heads[1]["size"]
         self.group = len(heads)
+        # ability features (tasks with abilities): per slot, as MicroEnv._encode_abilities writes them
+        self.abil = []
+        for s in range(heads[4]["size"]):
+            names = [f"ability {s + 1}: {n}" for n in ("ready to cast", "cast instantly", "for enemies",
+                                                       "for allies", "cast range (/1000)", "area (/500)")]
+            if all(n in feat for n in names):
+                self.abil.append([feat.index(n) for n in names])
 
     def act(self, name: str, obs: np.ndarray) -> np.ndarray:
-        """obs [N, obs] (side 1's own view) -> actions [N, k * group]."""
+        """obs [N, obs] (side 1's own view) -> actions [N, k * group]. "cast<script>": the script,
+        and heroes cast as the game's scripted opponent does (casts)."""
+        if name.startswith("cast"):
+            return self.casts(obs, self.act(name[4:], obs))
         k, F = self.k, self.F
         N = obs.shape[0]
         own = obs[:, :k * F].reshape(N, k, F)
@@ -177,4 +187,57 @@ class Scripts:
             move[..., 1] = d
             move[..., 2] = 1
             a = np.where((hurt & any_enemy[:, None])[..., None], move, a)
+        return a.reshape(N, -1)
+
+    def casts(self, obs: np.ndarray, actions: np.ndarray) -> np.ndarray:
+        """`actions` with casts where a hero has a use for a ready ability, by the rules of
+        MicroEnv.scripted_cast (the first ready ability in slot order with a use): enemy spells on
+        the weakest enemy in cast range, instant area spells with an enemy in the area, ally
+        spells on the most hurt own unit in range below 70% hit points, self buffs below half hit
+        points with an enemy within 500. A unit pulled back (moving) keeps its move."""
+        k, F = self.k, self.F
+        N = obs.shape[0]
+        own = obs[:, :k * F].reshape(N, k, F)
+        own_alive = obs[:, k * F:k * F + k] > 0.5
+        at = k * F + k
+        enemy = obs[:, at:at + k * F].reshape(N, k, F)
+        enemy_alive = obs[:, at + k * F:at + k * F + k] > 0.5
+        a = actions.reshape(N, k, self.group).copy()
+        scale = 1500.0  # positions are /1500 from the centre
+        de = np.hypot(own[..., None, self.i_x] - enemy[:, None, :, self.i_x],
+                      own[..., None, self.i_y] - enemy[:, None, :, self.i_y]) * scale  # [N, k, k]
+        de = np.where(enemy_alive[:, None, :], de, np.inf)
+        do = np.hypot(own[..., None, self.i_x] - own[:, None, :, self.i_x],
+                      own[..., None, self.i_y] - own[:, None, :, self.i_y]) * scale
+        do = np.where(own_alive[:, None, :], do, np.inf)
+        ehp = np.where(enemy_alive, enemy[..., self.i_hp] * enemy[..., self.i_maxhp], np.inf)
+        ohp = own[..., self.i_hp]
+        cast, move = KINDS.index("cast"), KINDS.index("move")
+        for n in range(N):
+            for i in range(k):
+                if not own_alive[n, i] or a[n, i, 0] == move:
+                    continue
+                for s, (ready, instant, for_enemy, for_ally, rng, area) in enumerate(self.abil):
+                    f = own[n, i]
+                    if f[ready] < 0.5:
+                        continue
+                    target = None
+                    if f[instant] > 0.5:
+                        if f[for_enemy] > 0.5 and (de[n, i] <= max(f[area] * 500.0, 250.0)).any():
+                            target = 0
+                        elif f[for_enemy] < 0.5 and ohp[n, i] < 0.5 and (de[n, i] <= 500.0).any():
+                            target = 0
+                    elif f[for_enemy] > 0.5:
+                        reach = f[rng] * 1000.0 + 90.0
+                        hp = np.where(de[n, i] <= reach, ehp[n], np.inf)
+                        if np.isfinite(hp).any():
+                            target = k + int(hp.argmin())
+                    elif f[for_ally] > 0.5:
+                        reach = f[rng] * 1000.0 + 90.0
+                        hurt = np.where((do[n, i] <= reach) & (ohp[n] < 0.7), ohp[n], np.inf)
+                        if np.isfinite(hurt).any():
+                            target = int(hurt.argmin())
+                    if target is not None:
+                        a[n, i] = (cast, 0, 0, target, s)
+                        break
         return a.reshape(N, -1)
