@@ -22,6 +22,7 @@ import json
 import os
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -125,6 +126,9 @@ class Learner:
         # launch overhead dominates a step: CUDA graphs (~2 ms instead of ~20)
         self.step_fn = (torch.compile(net.step, mode="reduce-overhead")
                         if device.type == "cuda" and not args.no_compile else net.step)
+        # the update's forward (sequences, with backward): compiled 2.3x faster (29 ms per minibatch)
+        self.evaluate_fn = (torch.compile(net.evaluate)
+                            if device.type == "cuda" and not args.no_compile else net.evaluate)
         self.h = net.initial_state(self.B, device)
         self.ref_h = net.initial_state(self.B, device)
         self.start = torch.ones(self.B, device=device)  # the next observation begins an episode
@@ -172,6 +176,11 @@ class Learner:
 
     def update(self, T: int, progress: float) -> dict:
         """GAE and PPO epochs on the rollout; progress (0..1) anneals the learning rate."""
+        return self.train(self.prepare(T), progress)
+
+    def prepare(self, T: int) -> dict:
+        """The finished rollout for an update: its buffers, advantages (GAE) and returns. The next
+        rollout gets new buffers (begin), so the update can run while it is collected."""
         args, net, dev = self.args, self.net, self.device
         with torch.no_grad():
             _, x = net.encode(self.obs_t)
@@ -184,7 +193,15 @@ class Learner:
             delta = self.b_rew[t] + args.gamma * nv * nonterm - self.b_val[t]
             gae = delta + args.gamma * args.gae_lambda * nonterm * gae
             adv[t] = gae
-        ret = adv + self.b_val
+        return {"T": T, "adv": adv, "ret": adv + self.b_val, "obs": self.b_obs, "masks": self.b_masks,
+                "act": self.b_act, "h": self.b_h, "start": self.b_start, "logp": self.b_logp, "ref": self.b_ref}
+
+    def train(self, b: dict, progress: float) -> dict:
+        """PPO epochs on a prepared rollout (can run in a thread while the next rollout is collected:
+        its steps then come from a policy the update is changing, and PPO's ratio uses the
+        log-probabilities they were sampled with)."""
+        args, net, dev = self.args, self.net, self.device
+        T, adv, ret = b["T"], b["adv"], b["ret"]
         t1 = time.time()
         lr = args.lr * max(0.0, 1 - progress)
         for g in self.opt.param_groups:
@@ -205,9 +222,9 @@ class Learner:
                 bs = torch.tensor([c[1] for c in sel], device=dev)
                 it = ts.unsqueeze(0) + torch.arange(L, device=dev).unsqueeze(1)  # [L, M]
                 ib = bs.unsqueeze(0).expand(L, -1)
-                logp, ent, v = net.evaluate(self.b_obs[it, ib], self.b_masks[it, ib], self.b_act[it, ib],
-                                            self.b_h[ts, bs], self.b_start[it, ib])
-                old = self.b_logp[it, ib]
+                logp, ent, v = self.evaluate_fn(b["obs"][it, ib], b["masks"][it, ib], b["act"][it, ib],
+                                                b["h"][ts, bs], b["start"][it, ib])
+                old = b["logp"][it, ib]
                 a = adv[it, ib]
                 a = (a - a.mean()) / (a.std() + 1e-8)
                 ratio = (logp - old).exp()
@@ -216,7 +233,7 @@ class Learner:
                 el = ent.mean()
                 loss = args.vf_coef * vl if warm else pg + args.vf_coef * vl - args.ent_coef * el
                 if self.ref is not None and not warm:  # KL(policy || reference) on the rollout's actions (k3)
-                    lr_ = self.b_ref[it, ib] - logp
+                    lr_ = b["ref"][it, ib] - logp
                     ref_kl = (lr_.exp() - 1 - lr_).mean()
                     loss = loss + args.ref_kl * ref_kl
                     acc["ref_kl"] += ref_kl.item()
@@ -501,6 +518,35 @@ def main() -> int:
     steps, epoch, t_begin = start, 0, time.time()
     league_results: dict[str, list] = {}
 
+    # the update of a rollout runs in a thread while the next rollout is collected (the games
+    # would otherwise wait for it: a third of the time)
+    update_job: dict = {}
+
+    def start_update(batches_: list, progress_: float, inline: bool = False) -> None:
+        def work() -> None:
+            try:
+                update_job["stats"] = {L_.name: L_.train(b_, progress_)
+                                       for L_, b_ in zip(learners, batches_) if b_ is not None}
+            except BaseException as e:  # noqa: BLE001 (raised in the main thread)
+                update_job["error"] = e
+        update_job.clear()
+        update_job["thread"] = threading.Thread(target=work, daemon=True)
+        if inline:  # torch.compile can't trace in one thread while compiled code runs in another:
+            work()  # the first updates compile everything here (the shapes repeat every epoch)
+            update_job["thread"] = threading.Thread(target=lambda: None)
+        update_job["thread"].start()
+
+    def finish_update() -> dict:
+        th = update_job.get("thread")
+        if th is None:
+            return {}
+        th.join()
+        if "error" in update_job:
+            raise update_job["error"]
+        stats_ = update_job.get("stats", {})
+        update_job.clear()
+        return stats_
+
     while steps < total and not STOP:
         t0 = time.time()
         for L_ in learners:
@@ -557,8 +603,12 @@ def main() -> int:
         progress = epoch / max(1, int(args.timesteps) // (main.B * T))
         if resumed is not None:  # the learning-rate schedule goes on from where the run was
             progress = resumed["progress"] + (1 - resumed["progress"]) * progress
+        batches = [L_.prepare(T) for L_ in learners]
+        # the previous rollout's update (it ran while this rollout was collected): its losses go with
+        # this row; checkpoints and resets happen now, while no update runs
+        stats_prev = finish_update()
         for L_ in learners:
-            stats_ = L_.update(T, progress)
+            stats_ = stats_prev.get(L_.name, {})
             if L_ is main:
                 row.update(stats_)
                 row.update(L_.win_stats())
@@ -603,10 +653,15 @@ def main() -> int:
                 exploiter.epoch = 0
                 exploiter_member.recent.clear()
                 exploiter_resets += 1
+                batches[learners.index(exploiter)] = None  # its rollout was the old exploiter's
                 print(f"exploiter reset ({exploiter_resets}) to the {args.exploiter_reset_to} policy after winning "
                       f"{p:.0%} against the main learner", flush=True)
         if league is not None:
             league.save()
+        start_update(batches, progress, inline=epoch <= 2)
+    finish_update()
+    path = ck_dir / f"{steps:016d}.pt"  # the last update's weights
+    main.save(path, spec, steps, total)
     envs.close()
     log.close()
     return 0
