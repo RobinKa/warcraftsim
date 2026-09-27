@@ -127,7 +127,8 @@ class Inference:
         threading.Thread(target=self._run, daemon=True).start()
 
     def request(self, items: list[tuple[str, dict]]) -> list[dict]:
-        """[(net key, a view step)] -> [{order, tgt, bx, by, logp (per own unit), value, version}]."""
+        """[(net key, a view step)] -> [{order, tgt, bx, by, logp (per own unit), value, version}]
+        (and the new state "h" for a network with memory, from the step's "h": the last one or None)."""
         done = threading.Event()
         out: list = [None] * len(items)
         for k, (key, st) in enumerate(items):
@@ -183,7 +184,22 @@ class Inference:
             host = [torch.zeros(B, E, fx.F), torch.zeros(B, E, dtype=torch.long), torch.zeros(B, E, dtype=torch.long),
                     torch.zeros(B, E, dtype=torch.bool), torch.zeros(B, G), torch.zeros(B, dtype=torch.long),
                     torch.ones(B, net.config["n_orders"], dtype=torch.bool)]
-        ent, typ, cur, mask, glob, n_own, avail = (h.numpy() for h in host)
+        if net.memory:  # the states in: a buffer of their own (the league's networks may differ in size)
+            d = net.config["d"]
+            if fixed and cuda:
+                self._host_h = getattr(self, "_host_h", {})
+                if d not in self._host_h:
+                    self._host_h[d] = torch.zeros(B, d).pin_memory()
+                host_h = self._host_h[d]
+                host_h.zero_()
+            else:
+                host_h = torch.zeros(B, d)
+            hs = host_h.numpy()
+            for i, st in enumerate(sts):
+                if st.get("h") is not None:
+                    hs[i] = st["h"]
+            host = host + [host_h]
+        ent, typ, cur, mask, glob, n_own, avail = (h.numpy() for h in host[:7])
         avail[:] = True
         mask[:, 0] = True  # (padding rows: one entity, or attention over nothing gives NaNs)
         for i, st in enumerate(sts):
@@ -199,7 +215,8 @@ class Inference:
         O = out["order"].shape[1]
         # everything back in one copy (seven were seven waits)
         packed = torch.cat([out["order"].float(), out["tgt"].float(), out["bx"].float(), out["by"].float(), out["logp"].float(),
-                            out["value"].float()[:, None], out["entropy"].float()[:, None]], 1)
+                            out["value"].float()[:, None], out["entropy"].float()[:, None]]
+                           + ([out["h"].float()] if net.memory else []), 1)
         if cuda:  # wait sleeping: CUDA's default sync spins a core the games need
             done = torch.cuda.Event(blocking=True)
             done.record()
@@ -212,6 +229,8 @@ class Inference:
             o = n_own[i]
             res.append({"order": order[i, :o], "tgt": tgt[i, :o], "bx": bx[i, :o], "by": by[i, :o],
                         "logp": logp[i, :o].copy(), "value": float(value[i]), "entropy": float(entropy[i])})
+            if net.memory:
+                res[-1]["h"] = p[i, 5 * O + 2:].copy()
         return res
 
 
@@ -231,6 +250,7 @@ class Trajectory:
                            "bx": res["bx"].astype(np.int16), "by": res["by"].astype(np.int16),
                            "logp": res["logp"].astype(np.float32), "value": res["value"], "reward": 0.0,
                            "avail": st.get("avail"),
+                           "h": st.get("h"),  # the memory's state going in (None: the game's start, or none)
                            "done": False, "version": res["version"]})
         if len(self.steps) > self.cfg["chunk"]:
             self.flush(bootstrap=True)
@@ -371,12 +391,15 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         rows = unit_rows(obs, t)  # once for both sides
         sts = {s: bot.observe(obs, t, rows) for s, bot in bots.items()}
         live = [s for s in bots if sts[s] is not None]
+        for s in live:
+            sts[s]["h"] = bots[s].h
         results = infer.request([(keys[s], sts[s]) for s in live]) if live else []
         cmds, spans = [], {}
         for s, res in zip(live, results):
             if res is None:
                 continue
             c = bots[s].commands(sts[s], res["order"], res["tgt"], res["bx"], res["by"])
+            bots[s].h = res.get("h")
             spans[s] = (len(cmds), len(cmds) + len(c))
             cmds += c
             if s in trajs:
@@ -633,19 +656,57 @@ def collate(steps: list[dict], device) -> dict:
             "own": torch.arange(O, device=device)[None] < t(n_own)[:, None]}
 
 
-def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict], args, warmup: bool, device) -> dict:
+def pieces(chunks: list[list[dict]], seq_len: int) -> list[list[dict]]:
+    """The chunks (consecutive steps of one game side) cut into sequences of at most seq_len steps."""
+    return [c[a:a + seq_len] for c in chunks for a in range(0, len(c), seq_len)]
+
+
+def collate_seq(seqs: list[list[dict]], device) -> dict:
+    """Sequences as collate() batches of B * T steps (T: the longest; shorter ones padded with steps
+    that have no units, "valid" False), plus "seq" for evaluate(): (B, T, the first steps' states
+    [B, d], no starts: a sequence stays in one game)."""
+    B, T = len(seqs), max(len(q) for q in seqs)
+    first = seqs[0][0]
+    G = len(first["glob"])
+    pad = {"ent": np.zeros((1, fx.F), np.float16), "type": np.zeros(1, np.int16), "cur": np.zeros(1, np.int16),
+           "glob": np.zeros(G, np.float32), "n": 1, "n_own": 0, "logp": np.zeros(0, np.float32), "adv": 0.0, "ret": 0.0,
+           "avail": None, **{k: np.zeros(0, np.int16) for k in ("order", "tgt", "bx", "by")}}
+    flat = [q[t] if t < len(q) else pad for q in seqs for t in range(T)]
+    mb = collate(flat, device)
+    mb["valid"] = torch.tensor([t < len(q) for q in seqs for t in range(T)], device=device)
+    d = next((len(q[0]["h"]) for q in seqs if q[0].get("h") is not None), None)
+    h0 = None
+    if d is not None:
+        h0 = torch.from_numpy(np.stack([q[0]["h"] if q[0].get("h") is not None else np.zeros(d, np.float32)
+                                        for q in seqs])).to(device)
+    mb["seq"] = (B, T, h0, None)
+    return mb
+
+
+def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict], args, warmup: bool, device,
+               chunks: list[list[dict]] | None = None) -> dict:
+    """PPO epochs over the steps; for a network with memory over sequences cut from `chunks` (the
+    actors' pieces of trajectories, in order), from the states the actors had."""
     advs = np.array([s["adv"] for s in steps], np.float32)
     mean, std = float(advs.mean()), float(advs.std()) + 1e-8
     stats: dict[str, list[float]] = {}
     autocast = torch.autocast("cuda", dtype=torch.bfloat16, enabled=bool(device.type == "cuda" and args.bf16))
     net.train()
+    seqs = pieces(chunks, args.seq_len) if net.memory else None
+    per_mb = max(1, args.minibatch // args.seq_len)
     for _ in range(args.epochs):
-        order = np.random.permutation(len(steps))
-        for a in range(0, len(order), args.minibatch):
-            mb = collate([steps[i] for i in order[a:a + args.minibatch]], device)
+        if seqs is None:
+            order = np.random.permutation(len(steps))
+            batches = (collate([steps[i] for i in order[a:a + args.minibatch]], device)
+                       for a in range(0, len(order), args.minibatch))
+        else:
+            order = np.random.permutation(len(seqs))
+            batches = (collate_seq([seqs[i] for i in order[a:a + per_mb]], device) for a in range(0, len(order), per_mb))
+        for mb in batches:
+            seq = mb.get("seq")
             with autocast:  # bf16 matmuls (the losses and log-probabilities in fp32)
                 ev = evaluate(net, mb["ent"], mb["type"], mb["cur"], mb["mask"], mb["glob"], mb["n_own"],
-                              mb["order"], mb["tgt"], mb["bx"], mb["by"], mb["avail"])
+                              mb["order"], mb["tgt"], mb["bx"], mb["by"], mb["avail"], seq=seq)
             ev["value"] = ev["value"].float()
             own = mb["own"].float()
             n_units = own.sum().clamp(min=1)
@@ -653,7 +714,11 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
             log_ratio = (ev["logp"] - mb["logp"]) * own
             ratio = log_ratio.exp()
             pg = -(torch.min(ratio * adv, ratio.clamp(1 - args.clip, 1 + args.clip) * adv) * own).sum() / n_units
-            v_loss = 0.5 * ((ev["value"] - mb["ret"]) ** 2).mean()
+            if "valid" in mb:  # (the padding steps: no units, no value target)
+                valid = mb["valid"].float()
+                v_loss = 0.5 * (((ev["value"] - mb["ret"]) ** 2) * valid).sum() / valid.sum()
+            else:
+                v_loss = 0.5 * ((ev["value"] - mb["ret"]) ** 2).mean()
             entropy = (ev["entropy"] * own).sum() / n_units
             loss = args.vf_coef * v_loss - args.ent_coef * entropy
             if not warmup:
@@ -662,7 +727,8 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
             if ref is not None and args.ref_kl > 0:
                 with torch.no_grad(), autocast:
                     ev_ref = evaluate(ref, mb["ent"], mb["type"], mb["cur"], mb["mask"], mb["glob"], mb["n_own"],
-                                      mb["order"], mb["tgt"], mb["bx"], mb["by"], mb["avail"])
+                                      mb["order"], mb["tgt"], mb["bx"], mb["by"], mb["avail"],
+                                      seq=seq if ref.memory else None)
                 lp, lp_ref = torch.log_softmax(ev["logits"].float(), -1), torch.log_softmax(ev_ref["logits"].float(), -1)
                 kl = (lp.exp() * (lp - lp_ref)).sum(-1)
                 ref_kl = (kl * own).sum() / n_units
@@ -706,6 +772,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--name", required=True)
     ap.add_argument("--init", type=Path, required=True, help="a behavior-cloned policy (fullgame/bc.py) or checkpoint")
+    ap.add_argument("--memory", type=int, default=-1, help="1: the policy gets a memory core (a new one does nothing "
+                                                            "at first), 0: none; -1: as --init")
     ap.add_argument("--runs", type=Path, default=RUNS)
     ap.add_argument("--timesteps", type=float, default=50e6, help="agent steps to train on")
     ap.add_argument("--actors", type=int, default=4, help="actor processes (each a GPU context: few, with many games)")
@@ -744,6 +812,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--native-obs", type=int, default=1, help="observations parsed in C (warcraftsim.native)")
     ap.add_argument("--avail-mask", type=int, default=1, help="mask the orders the player can't pay for yet")
     ap.add_argument("--chunk", type=int, default=64, help="steps per trajectory piece an actor sends")
+    ap.add_argument("--seq-len", type=int, default=16, help="a network with memory: steps per training sequence "
+                                                            "(from the state the actor had at its first)")
     ap.add_argument("--checkpoint-every", type=int, default=20)
     ap.add_argument("--video-every", type=float, default=4.0, help="minutes between game videos (0: none; the actors take turns)")
     ap.add_argument("--shaping", type=float, default=1.0, help="weight of the material-lead reward shaping (0: none)")
@@ -765,8 +835,12 @@ def main(argv: list[str] | None = None) -> int:
     torch.set_num_threads(4)  # the games need the cores
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
-    net, ck = load(args.init, device)
+    net, ck = load(args.init, device, None if args.memory < 0 else bool(args.memory))
     vocab = ck["vocab"]
+    trained_for = ck.get("value_reward")  # the rewards BC's value head learned (fullgame/bc.py)
+    ours = {"gamma": args.gamma, "shaping": args.shaping, "shaping_scale": args.shaping_scale, "tie_break": args.tie_break}
+    if trained_for and trained_for != ours:
+        print(f"note: the value head learned the returns of {trained_for}, this run's rewards are {ours}", flush=True)
     (run_dir / "vocab.json").write_text(json.dumps(vocab))
     ref = copy.deepcopy(net).eval() if args.ref_kl > 0 else None
     if ref is not None:
@@ -848,6 +922,7 @@ def main(argv: list[str] | None = None) -> int:
     agent_steps, update, episodes = ((resumed["steps"], resumed["update"], resumed["episodes"]) if resumed
                                      else (0, 0, 0))
     buf: list[dict] = []
+    chunks: list[list[dict]] = []
     stale = []
     try:
         while agent_steps < args.timesteps:
@@ -868,11 +943,12 @@ def main(argv: list[str] | None = None) -> int:
                         f.write(json.dumps(e) + "\n")
                     continue
                 buf += msg["steps"]
+                chunks.append(msg["steps"])
                 stale += [update - s["version"] for s in msg["steps"] if s["version"] >= 0]
             t_train = time.time()
-            steps, buf = buf, []
+            steps, buf, batch_chunks, chunks = buf, [], chunks, []
             warmup = update < args.value_warmup
-            stats = ppo_update(net, ref, opt, steps, args, warmup, device)
+            stats = ppo_update(net, ref, opt, steps, args, warmup, device, batch_chunks)
             update += 1
             agent_steps += len(steps)
             publish(net, update, run_dir)

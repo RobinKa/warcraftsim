@@ -1184,6 +1184,7 @@ function renderFullBC(d) {
     ["f-acc", "Accuracy (validation)", "the most likely choice is the AI's", [F("val.order_acc", "order (given one)", "#4cc38a"), F("val.target_acc", "target unit", "#e5534b"), F("train.order_acc", "order, train", "#8795a3")], { ymin: 0, ymax: 1 }],
     ["f-rate", "Orders per unit and step", "predicted chance vs the AI's rate", [F("val.order_rate_pred", "predicted", "#539bf5"), F("val.orders_per_unit_step", "the AI", "#e0a33a")], { ymin: 0 }],
     ["f-pt", "Point error", "bins off (x and y, 48 world units each)", [F("val.point_error_bins", "validation", "#b083f0"), F("train.point_error_bins", "train", "#8795a3")], { ymin: 0 }],
+    ["f-value", "Value", "explained variance of self-play's returns in the recorded games", [F("val.value_explained_variance", "validation", "#539bf5"), F("train.value_explained_variance", "train", "#8795a3")], { ymax: 1 }],
   ];
   const playCharts = [
     ["p-win", "Wins against the built-in AI", "per evaluation", [["win_rate", "wins", "#4cc38a"], ["tie_rate", "ties", "#e0a33a"]], { ymin: 0, ymax: 1 }],

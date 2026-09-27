@@ -340,6 +340,81 @@ What mattered, in the order it was found:
 
 3043 games under the v12 rules (walking workers carry more, 7× mines; all races, normal and insane AI; `demos-rush2-1`), 8 epochs: validation loss 3.05 (still falling at the end), the AI's order given a unit gets one: 69% (target unit 86%, point within 5.4 bins), and the rate at which units get orders matches the AI's (9.8% vs 9.9% of unit-steps). Against the normal AI in mirror matchups: 2 wins in 32 (both undead), most games lost within 1–2 minutes. About a third of its ~150 orders a game are refused: workers it cannot afford or house yet, buildings where they don't fit.
 
+### Fewer wasted orders: an availability mask and snapping
+
+A third of the clone's orders were refused, most of them for being unaffordable. The AI only orders what it can pay for, so the clone never saw an unaffordable order and never learned what "can't afford" looks like.
+
+The fixes:
+* **An availability mask** (`fullgame/costs.py`, `--avail-mask`): each order class's gold, lumber and food cost comes from the game's tables, scaled by the map's cost rule. The classes the player can't pay for at the step are masked.
+* **Harvest snapping:** a harvest order aimed at anything other than a gold mine goes to the nearest mine in view.
+* **Build snapping:** in the harness, a build that doesn't fit tries rings of spots around its point.
+
+The share of refused orders fell as follows:
+
+| orders | refused before | refused after |
+|---|---|---|
+| all | 38% | 25% |
+| builds | 53% | 19% |
+| train and research | 58% | 38% |
+| harvest | 77% | 63% |
+
+The clone plays no better for it: in 32 mirror games against the normal AI it won 1, tied 3 and lost 28.
+
+### Self-play from the clone (`fgself-2`)
+
+The setup was PPO from `fullgame-rush2`, mirror matchups, a league (itself, past snapshots, the easy and normal AI), material shaping and the tie-break.
+
+After 2.1M agent steps it beat its past snapshots about 60% of the time, most of the rest ties. Against the built-in AI it had one tie in its last 75 games (easy and normal) and no wins. Self-play improves the policy against its own kind, but that doesn't carry over to the AI. The clone is the weak link: it starts too far behind for the anchor games to give a learning signal. The next steps are a better clone (more games, memory, a value head trained on the demonstrations), then self-play again.
+
+### The clone hoards: stale queues in the demonstrations
+
+The clone's economy is not the problem. It gathers as much as the AI (6791 gold per game vs 6028), but it doesn't spend it.
+
+A frame at 62 s of a night elf mirror game:
+
+| side | gold held | lumber held | food | material (units and buildings) |
+|---|---|---|---|---|
+| the clone | 2552 | 2272 | 17/30 | 3114 |
+| the AI | 1512 | 982 | 53/60 | 7452 |
+
+The cause is in the demonstrations. The AI retries its train orders until it can afford them, and the recorded order events include every attempt:
+* 61% of the AI's train and research orders were unaffordable when issued, and 80% of those started nothing.
+* Each attempt raised the building's queued feature. Nothing ever finished to bring it down.
+
+The effect on the recorded state, over the AI's finished production buildings:
+* They showed "5+ queued" while not busy for 36% of their steps.
+* The clone learned to train mostly in that state: 16% per step, against 2.3% at an idle building.
+* In its own games only accepted orders count, so its buildings are almost never in that state (1% of building steps). It sat mostly at idle buildings, where the learned rate is low.
+
+The fix (`Encoder.encode` with costs):
+* A cost-bearing order counts, both as a label and in the queue, only if the player could pay for it at the step. Costs are deducted in order within the step.
+* A train or research order counts only if production started at that building within 2 steps, or the building was already busy (the order queues behind).
+* BC trains with the same availability mask the policy plays with.
+
+52% of the AI's train labels go. The share of building steps with 5+ queued falls from 23% to 2%, and with a queue but not busy from 22% to 3%.
+
+### Memory and a value head in BC
+
+Two additions to cloning:
+* **A memory core:** a minGRU, scanned in parallel (`--memory`).
+* **A value head:** it learns self-play's returns from the recorded games.
+
+380 games, 3 epochs, the same 20 validation games. Every model is validated on whole game sides.
+
+| model | validation loss | order loss | order accuracy | target | point error (bins) | value explained variance |
+|---|---|---|---|---|---|---|
+| no memory | **3.985** | **0.328** | **61.4%** | **76.2%** | **8.65** | 0.854 |
+| memory, 8 lanes × 32 steps | 4.089 | 0.337 | 59.8% | 75.4% | 9.00 | 0.863 |
+| memory, 32 lanes × 8 steps | 4.106 | 0.339 | 60.2% | 74.0% | 8.99 | **0.868** |
+| memory, 32 lanes × 16 steps (batch 512) | 4.283 | 0.364 | 56.3% | 73.9% | 9.45 | 0.862 |
+
+What the table shows:
+* Memory predicts the value a little better and the orders worse. Batches of consecutive steps vary less than batches of shuffled steps, and the AI's decisions depend mostly on what it currently sees.
+* The value head explains 85% of the variance of self-play's returns in held-out games, so self-play starts from a trained value.
+* Clones stay without memory for now. Self-play can add a core that starts as a no-op (`--memory 1`).
+
+An earlier comparison validated each model on the chunks its own training loader made. Those loaders stop when their first lane runs out of games, which favored early-game steps, so the numbers looked very different (3.39 vs 3.99).
+
 ### Race balance on `duelrush`
 
 In 3389 demonstration games night elf won 96% of its games against the other races, undead 68%, orc 26%, human 5%. The cause is the economy: the speed rules make mining and chopping 7 times faster, but walking only 1.3 times (the engine's movement limit). Human and orc workers walk every load of gold to the town hall, so their gold income rose 1.6 times; night elf and undead gold comes from the mine with no walking and rose 7 times. Gold mined in the first minute: human 571, orc 588, undead 3230, night elf 4005 (all four within 10% of each other at normal speed).

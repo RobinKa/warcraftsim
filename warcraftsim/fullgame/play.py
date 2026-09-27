@@ -73,6 +73,7 @@ class BCAgent:
         sign = self.enc.side(rows, self.player)
         self.view = self.enc.view(self.player, sign, races)
         self.trees = {d.id: (d.x, d.y) for d in (obs.destructables or [])}
+        self.h = None  # the memory core's state (FullGameNet.memory)
 
     def accepted(self, cmds: list[Command], results: list[bool]) -> None:
         """The game's answer to the last step's orders: accepted train / research orders queue."""
@@ -149,6 +150,7 @@ class BCAgent:
             mask = torch.ones(1, n, dtype=torch.bool, device=dev)
             glob = torch.as_tensor(st["glob"], device=dev).unsqueeze(0)
             g, u = self.net.encode(ent, typ, cur, mask, glob)
+            g, self.h = self.net.context(g, self.h)
             O = min(n_own, fx.MAX_OWN)
             avail = torch.as_tensor(st["avail"], device=dev)[None] if st.get("avail") is not None else None
             logits = self.net.order_logits(g, u[:, :O], typ, torch.tensor([O], device=dev), avail=avail)

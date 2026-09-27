@@ -144,3 +144,131 @@ def test_view_avail():
     assert st["avail"].tolist() == [True, True, False, False]  # supply-blocked worker; the barracks too dear
     me[5] = 12
     assert view.step(rows, me, np.zeros((0, 5), np.int64), 1)["avail"].tolist() == [True, True, True, False]
+
+
+def _net(memory: bool, seed: int = 0):
+    from warcraftsim.fullgame.model import FullGameNet
+    torch.manual_seed(seed)
+    net = FullGameNet(n_types=20, n_cur=10, n_orders=30, G=30, d=64, layers=1, memory=memory).eval()
+    net.allowed[:] = True
+    net.order_kind.copy_(torch.randint(0, 5, (30,)))
+    net.order_kind[0] = fx.IMMEDIATE  # (no order: no target)
+    return net
+
+
+def test_memory_scan_matches_steps():
+    """The core stepped as the actors run it and scanned over a sequence (training) agree, with a
+    carried state and an episode's start inside the sequence."""
+    from warcraftsim.fullgame.model import act, evaluate
+    net = _net(True)
+    torch.nn.init.normal_(net.mem_out.weight, std=0.3)  # (zero at first: the memory would do nothing)
+    B, T, E = 3, 11, 12
+    x = [torch.randn(B * T, E, fx.F), torch.randint(0, 20, (B * T, E)), torch.randint(0, 10, (B * T, E)),
+         torch.ones(B * T, E, dtype=torch.bool), torch.randn(B * T, 30), torch.full((B * T,), 5)]
+    starts = torch.zeros(B, T, dtype=torch.bool)
+    starts[1, 4] = starts[2, 0] = True
+    h0 = torch.randn(B, 64)
+    h, acts = h0, []
+    with torch.no_grad():
+        xs = [v.view(B, T, *v.shape[1:]) for v in x]
+        for t in range(T):
+            a = act(net, *[v[:, t] for v in xs], h=torch.where(starts[:, t, None], torch.zeros_like(h), h))
+            h = a["h"]
+            acts.append(a)
+        cat = lambda k: torch.stack([a[k] for a in acts], 1).reshape(B * T, -1)  # noqa: E731
+        ev = evaluate(net, *x, cat("order"), cat("tgt"), cat("bx"), cat("by"), seq=(B, T, h0, starts))
+    own = torch.arange(E)[None] < 5
+    assert float(((ev["logp"] - cat("logp")) * own).abs().max()) < 1e-4
+    assert float((ev["value"] - cat("value")[:, 0]).abs().max()) < 1e-4
+
+
+def test_fresh_memory_is_a_no_op():
+    net, plain = _net(True, 1), _net(False, 1)
+    plain.load_state_dict({k: v for k, v in net.state_dict().items() if not k.startswith("mem_")})
+    g = torch.randn(4, 64)
+    c, h = net.context(g, torch.randn(4, 64))
+    assert torch.equal(c, plain.context(g)[0]) and h.shape == (4, 64)
+
+
+def test_learner_sequences_from_stored_states():
+    """collate_seq: chunks cut into sequences from the states the actors stored, padded; evaluated
+    as one batch they give the actors' log-probabilities."""
+    from warcraftsim.fullgame.model import act, evaluate
+    from warcraftsim.fullgame.selfplay import collate_seq, pieces
+    net = _net(True, 2)
+    torch.nn.init.normal_(net.mem_out.weight, std=0.3)
+    rng = np.random.default_rng(0)
+    chunks = []
+    for length in (13, 7):
+        h, steps = None, []
+        for _ in range(length):
+            n = int(rng.integers(3, 9))
+            st = {"ent": rng.standard_normal((n, fx.F)).astype(np.float16), "type": rng.integers(0, 20, n).astype(np.int16),
+                  "cur": rng.integers(0, 10, n).astype(np.int16), "glob": rng.standard_normal(30).astype(np.float32),
+                  "n": n, "n_own": 2, "avail": None}
+            with torch.no_grad():
+                out = act(net, torch.as_tensor(st["ent"]).float()[None], torch.as_tensor(st["type"]).long()[None],
+                          torch.as_tensor(st["cur"]).long()[None], torch.ones(1, n, dtype=torch.bool),
+                          torch.as_tensor(st["glob"])[None], torch.tensor([2]), h=None if h is None else torch.as_tensor(h)[None])
+            steps.append({**st, **{k: out[k][0, :2].numpy().astype(np.int16) for k in ("order", "tgt", "bx", "by")},
+                          "logp": out["logp"][0, :2].numpy(), "h": h, "adv": 0.0, "ret": 0.0})  # (own units: as the actors)
+            h = out["h"][0].numpy()
+        chunks.append(steps)
+    seqs = pieces(chunks, 5)
+    assert [len(q) for q in seqs] == [5, 5, 3, 5, 2]
+    mb = collate_seq(seqs, "cpu")
+    assert mb["seq"][:2] == (5, 5) and int(mb["valid"].sum()) == 20
+    with torch.no_grad():
+        ev = evaluate(net, mb["ent"], mb["type"], mb["cur"], mb["mask"], mb["glob"], mb["n_own"], mb["order"],
+                      mb["tgt"], mb["bx"], mb["by"], mb["avail"], seq=mb["seq"])
+    assert float(((ev["logp"] - mb["logp"]) * mb["own"]).abs().max()) < 1e-4
+
+
+def test_demo_returns():
+    """BC's value targets: self-play's rewards on a recorded game (zero-sum; the winner's return
+    at the last step is its outcome minus its material lead)."""
+    from warcraftsim.fullgame.bc import returns
+    foot = int.from_bytes(b"hfoo", "big")
+    values = {str(foot): 100}
+    # step, id, type, owner, x, y, facing, hp, max hp, mana, max mana, order, flags, ...
+    rows = []
+    for t, (a, b) in enumerate([(2, 2), (2, 1), (2, 0)]):  # player 1's footmen die
+        rows += [[t, 10 + k, foot, 0, 0, 0, 0, 420, 420, 0, 0, 0, 0] + [0] * 5 for k in range(a)]
+        rows += [[t, 20 + k, foot, 1, 0, 0, 0, 420, 420, 0, 0, 0, 0] + [0] * 5 for k in range(b)]
+    game = {"units": np.array(rows, np.int64), "meta": {"steps": 2, "result": {"0": "VICTORY", "1": "DEFEAT"}}}
+    reward = {"gamma": 0.5, "shaping": 1.0, "shaping_scale": 100.0, "tie_break": 0.5}
+    r0, r1 = returns(game, 0, values, reward), returns(game, 1, values, reward)
+    assert np.allclose(r0, -r1)
+    # phi = 0, 1, 2; rewards: 0.5*1 - 0 = 0.5, 0.5*2 - 1 = 0, then 1 - 2 = -1
+    assert np.allclose(r0, [0.5 + 0.5 * 0 + 0.25 * -1, 0 + 0.5 * -1, -1])
+
+
+def test_demo_orders_the_player_could_not_pay_for_are_dropped():
+    """Encoder.encode with costs: the AI's train orders beyond what it could pay for at the step
+    (costs deducted in order) and ones that started nothing are no labels and queue nothing."""
+    code = lambda s: int.from_bytes(s.encode(), "big")  # noqa: E731
+    hall, peon = code("ogre"), code("opeo")
+    vocab = {"types": [hall, peon], "current_orders": [], "upgrades": [],
+             "orders": [[peon, fx.IMMEDIATE]]}
+    costs = np.array([[0, 0, 0], [75, 0, 1]])
+    B = 1048576
+
+    def unit(t, uid, typ, flags):  # step, id, type, owner, x, y, facing, hp, max hp, ..., order, flags, vis
+        r = [t, uid, typ, 0, -1000, 0, 0, 100, 100, 0, 0, 0, flags, 3] + [0] * 4
+        return r
+    units = [r for t in range(3) for r in (unit(t, B, hall, fx.STRUCTURE), unit(t, B + 1, peon, 4))]  # (in step order)
+    players = [r for t in range(3) for r in ([t, 0, 100, 0, 1, 10, 0, 0, 0, 1, 0], [t, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0])]
+    # step 0: two peons ordered with 100 gold (the second: refused); step 2: one ordered, nothing starts
+    orders = [[0, B, peon, 0, 0, 0, 0], [0, B, peon, 0, 0, 0, 0], [2, B, peon, 0, 0, 0, 0]]
+    events = [[0, 5, B, peon, 0], [1, 6, B, B + 2, peon]]  # a peon started at the hall in step 0, done in step 1
+    game = {"units": np.array(units, np.int64), "players": np.array(players, np.int64),
+            "events": np.array(events, np.int64).reshape(-1, 5), "orders": np.array(orders, np.int64),
+            "trees": np.zeros((0, 5), np.int64), "heroes": np.zeros((0, 16), np.int64),
+            "meta": {"steps": 2, "races": ["orc", "orc"], "result": {}}}
+    plain = fx.Encoder(vocab).encode(game, 0)
+    paid = fx.Encoder(vocab, costs).encode(game, 0)
+    assert plain["y_order"][:, 0].tolist() == [1, 0, 1]  # (the hall is the first own entity)
+    assert paid["y_order"][:, 0].tolist() == [1, 0, 0]  # step 2's order started nothing (the hall not busy)
+    # the queue after the peon is done: without costs the refused order stays queued (stale)
+    assert plain["ent"][1, 0, 26] == pytest.approx(1 / 5) and paid["ent"][1, 0, 26] == 0
+    assert paid["avail"][0].tolist() == [True, True] and plain["avail"].all()

@@ -4,6 +4,12 @@ Tokens: a global token (resources, supply, time, races, upgrades) and one per en
 features, unit type and current order). For each own unit the order head picks an order class
 (0: none), restricted to the orders its unit type gave in the demonstrations; given the order, a
 pointer picks the target entity, and two heads pick the target point's x and y bins.
+
+With `memory` a minGRU core (Feng et al. 2024, as PufferLib's) carries a state across steps (what
+it saw that is out of view now, what it did): h_t = (1 - z_t) h_{t-1} + z_t W x_t, with its gate z_t
+from the step's global token x_t alone, so a sequence's states come from a parallel scan (a GRU
+stepped in Python took as long as the transformer: its kernels are tiny). The heads read the token
+plus a projection of the state (zero at first: a memory network starts as one without).
 """
 
 from __future__ import annotations
@@ -20,10 +26,16 @@ NEG = -1e9
 
 class FullGameNet(nn.Module):
     def __init__(self, n_types: int, n_cur: int, n_orders: int, G: int, d: int = 192, heads: int = 4,
-                 layers: int = 3, dropout: float = 0.0):
+                 layers: int = 3, dropout: float = 0.0, memory: bool = False):
         super().__init__()
         self.config = dict(n_types=n_types, n_cur=n_cur, n_orders=n_orders, G=G, d=d, heads=heads, layers=layers,
-                           dropout=dropout)
+                           dropout=dropout, memory=memory)
+        self.memory = memory
+        if memory:  # the minGRU core: its gate and candidate from the token, the state into the context
+            self.mem_in = nn.Linear(d, 2 * d)
+            self.mem_out = nn.Linear(d, d)
+            nn.init.zeros_(self.mem_out.weight)
+            nn.init.zeros_(self.mem_out.bias)
         self.d = d
         self.ent = nn.Linear(fx.F, d)
         self.type_emb = nn.Embedding(n_types, d)
@@ -55,6 +67,35 @@ class FullGameNet(nn.Module):
         pad = torch.cat([torch.zeros_like(mask[:, :1]), ~mask], 1)
         out = self.transformer(tok, src_key_padding_mask=pad)
         return out[:, 0], out[:, 1:]
+
+    def context(self, g, h=None):
+        """One step: the heads' context from its global token g [N, d] and, with memory, the state
+        after the last step h ([N, d]; None: an episode's start) -> (context [N, d], new state)."""
+        if not self.memory:
+            return g, None
+        z, cand = self.mem_in(g).float().chunk(2, -1)
+        z = torch.sigmoid(z)
+        h = z * cand if h is None else (1 - z) * h.float() + z * cand
+        return g + self.mem_out(h.to(g.dtype)), h
+
+    def context_seq(self, g, h0=None, starts=None):
+        """Sequences: tokens g [B, T, d] -> (contexts [B, T, d], states [B, T, d]), from states h0
+        [B, d] (None: zeros); where starts [B, T] marks an episode's start the state resets."""
+        if not self.memory:
+            return g, None
+        z, cand = self.mem_in(g).float().chunk(2, -1)
+        z = torch.sigmoid(z)
+        a, b = 1 - z, z * cand  # h_t = a_t h_{t-1} + b_t
+        if starts is not None:
+            a = a.masked_fill(starts[..., None], 0.0)
+        if h0 is not None:
+            b = torch.cat([b[:, :1] + a[:, :1] * h0.float()[:, None], b[:, 1:]], 1)
+        k, T = 1, g.shape[1]
+        while k < T:  # Hillis-Steele: after the pass for k, each (a, b) spans the 2k steps up to it
+            b = torch.cat([b[:, :k], b[:, k:] + a[:, k:] * b[:, :-k]], 1)
+            a = torch.cat([a[:, :k], a[:, k:] * a[:, :-k]], 1)
+            k *= 2
+        return g + self.mem_out(b.to(g.dtype)), b
 
     def order_logits(self, g, u, typ, n_own, by_type: bool = True, avail=None):
         """[N, O, n_orders] for the first O entities (own units first; others can only get none).
@@ -111,12 +152,13 @@ def _entropy(logits):
     return -(lp.exp() * lp).sum(-1)
 
 
-def act(net: FullGameNet, ent, typ, cur, mask, glob, n_own, avail=None) -> dict:
+def act(net: FullGameNet, ent, typ, cur, mask, glob, n_own, avail=None, h=None) -> dict:
     """Sample every own unit's order and targets (the first O = min(MAX_OWN, E) entities; the
     orders each unit type got in the demonstrations). -> order, tgt, bx, by, logp [N, O] (the
     action's log-probability per unit: order, plus the targets that order uses; 0 for padding)
-    and value [N]."""
+    and value [N]; with memory the core's new state "h" [N, d] (`h`: the last one, None at a start)."""
     g, u = net.encode(ent, typ, cur, mask, glob)
+    g, h = net.context(g, h)
     O = min(fx.MAX_OWN, u.shape[1])
     logits = net.order_logits(g, u[:, :O], typ, n_own, avail=avail)
     sample = _gumbel_argmax
@@ -129,13 +171,19 @@ def act(net: FullGameNet, ent, typ, cur, mask, glob, n_own, avail=None) -> dict:
     own = torch.arange(O, device=ent.device)[None] < n_own[:, None]
     logp = _logp(logits, order) + uses_ptr * _logp(ptr, tgt) + uses_pt * (_logp(xl, bx) + _logp(yl, by))
     ent = (_entropy(logits) * own).sum(-1) / own.sum(-1).clamp(min=1)  # the order's, mean over own units
-    return {"order": order, "tgt": tgt, "bx": bx, "by": by, "logp": logp * own, "value": net.value(g), "entropy": ent}
+    out = {"order": order, "tgt": tgt, "bx": bx, "by": by, "logp": logp * own, "value": net.value(g), "entropy": ent}
+    if net.memory:
+        out["h"] = h
+    return out
 
 
-def evaluate(net: FullGameNet, ent, typ, cur, mask, glob, n_own, order, tgt, bx, by, avail=None) -> dict:
+def evaluate(net: FullGameNet, ent, typ, cur, mask, glob, n_own, order, tgt, bx, by, avail=None, seq=None) -> dict:
     """Given actions [N, O]: logp [N, O] (as act()), the order distribution's entropy [N, O],
     order logits [N, O, C] and value [N]."""
     g, u = net.encode(ent, typ, cur, mask, glob)
+    if net.memory:  # seq: (B, T, h0 [B, d] or None, starts [B, T] or None): the N = B * T steps in order
+        B, T, h0, starts = seq
+        g = net.context_seq(g.view(B, T, -1), h0, starts)[0].reshape(B * T, -1)
     O = order.shape[1]
     logits = net.order_logits(g, u[:, :O], typ, n_own, avail=avail)
     ptr, xl, z = net.target_logits(g, u, mask, order)
@@ -145,11 +193,16 @@ def evaluate(net: FullGameNet, ent, typ, cur, mask, glob, n_own, order, tgt, bx,
     return {"logp": logp, "entropy": _entropy(logits), "logits": logits, "value": net.value(g)}
 
 
-def load(path, device="cpu") -> tuple[FullGameNet, dict]:
+def load(path, device="cpu", memory: bool | None = None) -> tuple[FullGameNet, dict]:
+    """A checkpoint's network. `memory`: with (a new core, which does nothing at first) or without one."""
     ck = torch.load(path, map_location=device, weights_only=False)
-    net = FullGameNet(**ck["config"]).to(device)
-    missing, unexpected = net.load_state_dict(ck["model"], strict=False)
-    if unexpected or any(not (k.startswith("value_head.") or k == "order_kind") for k in missing):
+    config = dict(ck["config"])
+    if memory is not None:
+        config["memory"] = memory
+    net = FullGameNet(**config).to(device)
+    state = ck["model"] if net.memory else {k: v for k, v in ck["model"].items() if not k.startswith("mem_")}
+    missing, unexpected = net.load_state_dict(state, strict=False)
+    if unexpected or any(not (k.startswith(("value_head.", "mem_")) or k == "order_kind") for k in missing):
         raise RuntimeError(f"{path}: missing {missing}, unexpected {unexpected}")
     if "order_kind" in missing and "vocab" in ck:  # fits from before it: from the vocabulary
         net.order_kind.copy_(torch.as_tensor([0] + [k[1] for k in ck["vocab"]["orders"]], device=net.order_kind.device))

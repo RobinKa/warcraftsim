@@ -272,7 +272,12 @@ class Encoder:
         return View(self, player, sign, races)
 
     def encode(self, game: dict, player: int) -> dict:
-        """The whole game from `player`'s side: arrays over its steps (padded to MAX_ENT)."""
+        """The whole game from `player`'s side: arrays over its steps (padded to MAX_ENT). With costs:
+        orders the player couldn't pay for at the step are no labels and queue nothing (the AI retries
+        its train orders until it can afford them: 61% of its train and research orders were attempts
+        the game refused, and they left stale queues), nor are train / research orders that started
+        nothing within 2 steps at a building that wasn't busy (refused for tech or the hero limit);
+        and "avail" is each step's availability mask."""
         meta = game["meta"]
         T = meta["steps"] + 1
         u, pl, ev, od = game["units"], game["players"], game["events"], game["orders"]
@@ -284,7 +289,8 @@ class Encoder:
                "cur": np.zeros((T, MAX_ENT), np.int16), "mask": np.zeros((T, MAX_ENT), bool),
                "n_own": np.zeros(T, np.int16), "glob": np.zeros((T, self.G), np.float32),
                "y_order": np.zeros((T, MAX_OWN), np.int16), "y_ptr": np.full((T, MAX_OWN), -1, np.int16),
-               "y_x": np.full((T, MAX_OWN), -1, np.int16), "y_y": np.full((T, MAX_OWN), -1, np.int16)}
+               "y_x": np.full((T, MAX_OWN), -1, np.int16), "y_y": np.full((T, MAX_OWN), -1, np.int16),
+               "avail": np.ones((T, self.n_orders), bool)}
         view = self.view(player, sign, races)
         for t in range(T):
             prow = pl[ps[t]:ps[t + 1]]
@@ -295,12 +301,22 @@ class Encoder:
             out["mask"][t, :n] = True
             out["n_own"][t] = st["n_own"]
             out["glob"][t] = st["glob"]
+            if st["avail"] is not None:
+                out["avail"][t] = st["avail"]
             # labels: each own unit's last order in the step
             index = st["index"]
-            view.record_orders((int(r[1]), int(r[2]), int(r[3])) for r in od[os_[t]:os_[t + 1]])
-            for r in od[os_[t]:os_[t + 1]]:
+            rows_t = od[os_[t]:os_[t + 1]]
+            paid = self._paid(rows_t, st, me[0] if len(me) else None, trees)
+            if self.costs is not None:  # train / research orders that started nothing: refused (tech, hero limit)
+                later = ev[es[t]:es[min(t + 3, T)]]
+                started = set(later[np.isin(later[:, 1], list(PRODUCTION_START)), 2].tolist())
+                paid = [ok and not (int(r[3]) == 0 and int(r[2]) >= TYPE_CODE and int(r[1]) in view.own_buildings
+                                    and int(r[1]) not in started and int(r[1]) not in view.busy)
+                        for r, ok in zip(rows_t, paid)]
+            view.record_orders((int(r[1]), int(r[2]), int(r[3])) for r, ok in zip(rows_t, paid) if ok)
+            for r, ok in zip(rows_t, paid):
                 k = index.get(int(r[1]))
-                if k is None or k >= st["n_own"]:
+                if not ok or k is None or k >= st["n_own"]:
                     continue
                 target = int(r[6])
                 lab = relabel(int(r[2]), int(r[3]), target in index, target in trees)
@@ -317,6 +333,35 @@ class Encoder:
                     out["y_x"][t, k] = _bin(np.array(sign * x))
                     out["y_y"][t, k] = _bin(np.array(y))
         return out
+
+
+def _paid_orders(enc: "Encoder", rows: np.ndarray, st: dict, me, trees: dict) -> list[bool]:
+    """Which of a step's recorded orders the player could pay for (costs deducted in order); orders
+    of other players' units and orders that cost nothing: True. All True without costs."""
+    ok = [True] * len(rows)
+    if enc.costs is None or me is None:
+        return ok
+    gold, lumber, fu, fc = int(me[2]), int(me[3]), int(me[4]), int(me[5])
+    index, n_own = st["index"], st["n_own"]
+    for j, r in enumerate(rows):
+        k = index.get(int(r[1]))
+        if k is None or k >= n_own:
+            continue
+        lab = relabel(int(r[2]), int(r[3]), int(r[6]) in index, int(r[6]) in trees)
+        c = enc.order_index.get(lab) if lab is not None else None
+        if c is None:
+            continue
+        cg, cl, cf = (int(v) for v in enc.costs[c])
+        if cg == cl == cf == 0:
+            continue
+        if cg <= gold and cl <= lumber and (cf == 0 or fu + cf <= fc):
+            gold, lumber, fu = gold - cg, lumber - cl, fu + cf
+        else:
+            ok[j] = False
+    return ok
+
+
+Encoder._paid = lambda self, rows, st, me, trees: _paid_orders(self, rows, st, me, trees)
 
 
 class View:

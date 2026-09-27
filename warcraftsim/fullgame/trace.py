@@ -57,3 +57,15 @@ def unit_values() -> dict[str, int]:
         if v > 0:
             out[str(int.from_bytes(oid.encode("latin-1"), "big"))] = v
     return out
+
+
+def material_steps(units, steps: int, values: dict) -> "np.ndarray":
+    """A demonstration's material (as material()) at each step: [steps, 2]. `units`: its unit rows
+    (fullgame.features.load_game: step, id, type, owner, x, y, facing, hp, max hp, ..., flags)."""
+    import numpy as np
+    live = ((units[:, 12] & DEAD_FLAG) == 0) & ((units[:, 3] == 0) | (units[:, 3] == 1))
+    a = units[live]
+    types, inv = np.unique(a[:, 2], return_inverse=True)
+    v = np.array([values.get(str(t), 0) for t in types.tolist()], float)[inv]
+    hp = np.where(a[:, 8] > 0, a[:, 7] / np.maximum(a[:, 8], 1), 1.0)
+    return np.bincount(a[:, 0] * 2 + a[:, 3], weights=v * hp, minlength=2 * steps)[:2 * steps].reshape(steps, 2)
