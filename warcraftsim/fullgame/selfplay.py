@@ -494,6 +494,22 @@ class League:
         if len(self.past) > self.max_past:  # keep the first (the clone) and the newest
             del self.past[1]
 
+    def restore(self, summary: dict) -> None:
+        """Members and records from a league.json (resuming a run)."""
+        for row in summary.get("members", []):
+            if row["name"] in self.scripts:
+                m = self.scripts[row["name"]]
+            elif row.get("path") and Path(row["path"]).exists():
+                m = Member(row["name"], path=row["path"], steps=row.get("steps", 0))
+                self.past.append(m)
+            else:
+                continue
+            m.wins, m.losses, m.draws = row.get("wins", 0.0), row.get("losses", 0.0), row.get("draws", 0.0)
+            m.recent = list(row.get("recent") or [])
+        me = summary.get("self") or {}
+        self.self_member.wins, self.self_member.losses = me.get("wins", 0.0), me.get("losses", 0.0)
+        self.self_member.draws, self.self_member.recent = me.get("draws", 0.0), list(me.get("recent") or [])
+
     def spec(self) -> dict:
         """What the actors draw from: per launch built-in AI or agents; per agent game an opponent."""
         ai_share = self.shares["ai"] if self.scripts else 0.0
@@ -679,6 +695,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--tie-break", type=float, default=0.5, help="a tie's reward: this times tanh(2 x material lead)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", help="default: cuda if available (asking opens the GPU driver)")
+    ap.add_argument("--resume", action="store_true", help="continue the run --name: its latest checkpoint, league and counts")
     ap.add_argument("--note", default="")
     args = ap.parse_args(argv)
     args.device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -715,6 +732,20 @@ def main(argv: list[str] | None = None) -> int:
             "launch": {"command": "python3 -m warcraftsim.fullgame.selfplay " + " ".join(sys.argv[1:] if argv is None else argv),
                        "git": git_info()}}
 
+    resumed = None
+    if args.resume and (run_dir / "run.json").exists():  # the run goes on: its weights, league and counts
+        old = json.loads((run_dir / "run.json").read_text())
+        rows = [json.loads(line) for line in open(run_dir / "train.jsonl")] if (run_dir / "train.jsonl").exists() else []
+        cks = sorted((run_dir / "checkpoints").glob("[0-9]*.pt"))
+        if cks:
+            last = torch.load(cks[-1], map_location=device, weights_only=False)
+            net.load_state_dict(last["model"])
+        resumed = {"steps": rows[-1]["agent_steps"] if rows else 0, "update": rows[-1]["epoch"] if rows else 0,
+                   "episodes": sum(1 for _ in open(run_dir / "episodes.jsonl")) if (run_dir / "episodes.jsonl").exists() else 0,
+                   "checkpoint": cks[-1].name if cks else None}
+        info.update(created=old.get("created", info["created"]), init_from=old.get("init_from", info["init_from"]),
+                    resumes=old.get("resumes", []) + [{"time": time.time(), **resumed}])
+
     def save_info():
         tmp = run_dir / "run.json.tmp"
         tmp.write_text(json.dumps(info, indent=1))
@@ -725,11 +756,14 @@ def main(argv: list[str] | None = None) -> int:
 
     league = League(run_dir, ai, {"ai": args.ai_share, "self": args.self_share, "past": 1.0 - args.self_share},
                     args.max_past, args.pfsp)
-    first = run_dir / "checkpoints" / f"{0:016d}.pt"
-    torch.save({**ck, "model": net.state_dict(), "config": net.config, "vocab": vocab, "agent_steps": 0}, first)
-    league.add_snapshot(first, 0)  # the clone itself: the first past opponent
+    if resumed is not None and (run_dir / "league.json").exists():
+        league.restore(json.loads((run_dir / "league.json").read_text()))
+    else:
+        first = run_dir / "checkpoints" / f"{0:016d}.pt"
+        torch.save({**ck, "model": net.state_dict(), "config": net.config, "vocab": vocab, "agent_steps": 0}, first)
+        league.add_snapshot(first, 0)  # the clone itself: the first past opponent
     league.write()
-    publish(net, 0, run_dir)
+    publish(net, resumed["update"] if resumed else 0, run_dir)
     cfg = {"run_dir": str(run_dir), "device": str(device), "vocab": str(run_dir / "vocab.json"), "races": races,
            "map": args.map, "handicap": args.handicap, "step_seconds": args.step_seconds,
            "max_minutes": args.max_minutes, "max_steps": int(args.max_minutes * 60 / args.step_seconds) + 20,
@@ -751,7 +785,8 @@ def main(argv: list[str] | None = None) -> int:
     info.update(status="training", started=time.time())
     save_info()
     t0 = time.time()
-    agent_steps, update, episodes = 0, 0, 0
+    agent_steps, update, episodes = ((resumed["steps"], resumed["update"], resumed["episodes"]) if resumed
+                                     else (0, 0, 0))
     buf: list[dict] = []
     stale = []
     try:
