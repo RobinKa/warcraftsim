@@ -739,6 +739,9 @@ def main(argv: list[str] | None = None) -> int:
            "agent_games_factor": args.agent_games_factor, "mirror": bool(args.mirror), "learner_pid": os.getpid(),
            "actors": args.actors, "values": unit_values(), "shaping": args.shaping, "shaping_scale": args.shaping_scale,
            "tie_break": args.tie_break, "compile": bool(args.compile)}
+    # the actors compile their network calls: without this each starts a pool of ~32 compile workers
+    # (~100 processes, several GB, idle after the first seconds)
+    os.environ.setdefault("TORCHINDUCTOR_COMPILE_THREADS", "1")
     ctx = torch.multiprocessing.get_context("spawn")
     out_q, stop = ctx.Queue(maxsize=4096), ctx.Event()
     actors = [ctx.Process(target=actor_main, args=(w, cfg, out_q, stop), daemon=True) for w in range(args.actors)]
