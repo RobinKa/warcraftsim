@@ -805,7 +805,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--vf-coef", type=float, default=0.5)
     ap.add_argument("--ent-coef", type=float, default=0.0)
     ap.add_argument("--ref-kl", type=float, default=0.05, help="the KL term towards the initial (cloned) policy")
-    ap.add_argument("--value-warmup", type=int, default=10, help="first updates: the value head only")
+    ap.add_argument("--value-warmup", type=int, default=-1, help="first updates: the value head only (default: 10, "
+                                                                  "2 when BC trained the value head)")
     ap.add_argument("--max-grad-norm", type=float, default=1.0)
     ap.add_argument("--bf16", type=int, default=1, help="the updates' matmuls in bfloat16")
     ap.add_argument("--compile", type=int, default=1, help="the actors' network calls compiled (CUDA graphs)")
@@ -841,6 +842,8 @@ def main(argv: list[str] | None = None) -> int:
     ours = {"gamma": args.gamma, "shaping": args.shaping, "shaping_scale": args.shaping_scale, "tie_break": args.tie_break}
     if trained_for and trained_for != ours:
         print(f"note: the value head learned the returns of {trained_for}, this run's rewards are {ours}", flush=True)
+    if args.value_warmup < 0:  # a value head BC trained on these rewards needs only a short warm-up
+        args.value_warmup = 2 if trained_for == ours else 10
     (run_dir / "vocab.json").write_text(json.dumps(vocab))
     ref = copy.deepcopy(net).eval() if args.ref_kl > 0 else None
     if ref is not None:
