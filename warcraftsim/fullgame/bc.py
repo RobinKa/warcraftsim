@@ -1,6 +1,6 @@
 """Behavior cloning of the built-in AI on whole games (demonstrations from fullgame/collect.py).
 
-    python3 -m warcraftsim.fullgame.bc --data runs/fullgame/demos-1 --name fullgame-1 --epochs 20
+    python3 -m warcraftsim.fullgame.bc --data runs/fullgame/demos-1 runs/fullgame/demos-2 --name fullgame-1
 
 (the torch Python). Writes runs/bc/<name>/: bc.json, vocab.json, fit.jsonl (one row per epoch,
 shown by the dashboard) and policy.pt. Games are encoded on the fly by loader workers (both
@@ -122,7 +122,8 @@ def summarize(stats: list[dict]) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--data", type=Path, required=True, help="a directory of demonstration games (game*.npz)")
+    ap.add_argument("--data", type=Path, nargs="+", required=True,
+                    help="directories of demonstration games (game*.npz)")
     ap.add_argument("--name", required=True)
     ap.add_argument("--runs", type=Path, default=Path(__file__).resolve().parents[2] / "runs")
     ap.add_argument("--epochs", type=int, default=20)
@@ -137,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--note", default="")
     args = ap.parse_args(argv)
-    paths = sorted(args.data.glob("game*.npz"))
+    paths = sorted(p for d in args.data for p in d.glob("game*.npz"))
     if args.max_games:
         paths = paths[:args.max_games]
     random.Random(0).shuffle(paths)
@@ -148,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
     (out / "vocab.json").write_text(json.dumps(vocab))
     enc = fx.Encoder(vocab)
     info = {"kind": "bc", "name": args.name, "created": time.time(), "task": "fullgame", "policy": "built-in AI",
-            "status": "fitting", "data": str(args.data), "games": {"train": len(train), "val": len(val)},
+            "status": "fitting", "data": " ".join(map(str, args.data)), "games": {"train": len(train), "val": len(val)},
             "vocab": {"types": enc.n_types, "orders": enc.n_orders, "upgrades": len(enc.upgrade_index)},
             "args": {k: str(v) for k, v in vars(args).items()}}
     (out / "bc.json").write_text(json.dumps(info, indent=1))
