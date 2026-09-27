@@ -89,8 +89,10 @@ class BCAgent:
             O = min(n_own, fx.MAX_OWN)
             logits = self.net.order_logits(g, u[:, :O], typ, torch.tensor([O], device=dev))
             order = self._sample(logits)  # [1, O]
-            ptr, xl, yl = self.net.target_logits(g, u, mask, order)
-            tgt, bx, by = self._sample(ptr)[0], self._sample(xl)[0], self._sample(yl)[0]
+            ptr, xl, z = self.net.target_logits(g, u, mask, order)
+            tgt, bx_ = self._sample(ptr)[0], self._sample(xl)
+            by = self._sample(self.net.y_logits(z, bx_))[0]
+            bx = bx_[0]
         out: list[Command] = []
         sel = st["sel"]
         for i in range(O):

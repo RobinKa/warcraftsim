@@ -89,7 +89,8 @@ def losses(net: FullGameNet, b: dict, device) -> tuple[torch.Tensor, dict]:
     if net.training:  # the orders each unit type gets (the mask for playing)
         issued_ = own & (y_order > 0)
         net.allowed[typ[:, :O][issued_], y_order[issued_]] = True
-    ptr, xl, yl = net.target_logits(g, u, mask, y_order)
+    ptr, xl, z = net.target_logits(g, u, mask, y_order)
+    yl = net.y_logits(z, y_x)  # given the true x (teacher forcing)
     has_ptr, has_pt = (y_ptr >= 0) & own, (y_x >= 0) & own
     l_ptr = F_.cross_entropy(ptr[has_ptr], y_ptr[has_ptr]) if has_ptr.any() else logits.sum() * 0
     l_pt = (F_.cross_entropy(xl[has_pt], y_x[has_pt]) + F_.cross_entropy(yl[has_pt], y_y[has_pt])

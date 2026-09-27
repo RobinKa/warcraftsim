@@ -35,7 +35,9 @@ class FullGameNet(nn.Module):
         self.cond = nn.Sequential(nn.Linear(2 * d, d), nn.ReLU(), nn.LayerNorm(d))
         self.query = nn.Linear(d, d)
         self.key = nn.Linear(d, d)
-        self.point = nn.Linear(d, 2 * fx.BINS)
+        self.point_x = nn.Linear(d, fx.BINS)
+        self.x_emb = nn.Embedding(fx.BINS, d)  # y is chosen given x (sampled apart, they paired the
+        self.point_y = nn.Sequential(nn.Linear(d, d), nn.ReLU(), nn.Linear(d, fx.BINS))  # x of one spot with the y of another)
         # which orders each unit type got in the demonstrations (filled while training; row 0:
         # unknown types, any)
         self.register_buffer("allowed", torch.zeros(n_types, n_orders, dtype=torch.bool))
@@ -63,14 +65,18 @@ class FullGameNet(nn.Module):
         return logits.masked_fill(~allowed, NEG)
 
     def target_logits(self, g, u, mask, order):
-        """Given each own unit's order [N, O]: pointer logits [N, O, E], x and y logits [N, O, BINS]."""
+        """Given each own unit's order [N, O]: pointer logits [N, O, E], the point's x logits
+        [N, O, BINS], and z (for y_logits)."""
         O = order.shape[1]
         own = u[:, :O]
         z = self.cond(torch.cat([own + self.order_emb(order.long()), g.unsqueeze(1).expand_as(own)], -1))
         ptr = torch.einsum("nod,ned->noe", self.query(z), self.key(u)) / math.sqrt(self.d)
         ptr = ptr.masked_fill(~mask.unsqueeze(1), NEG)
-        xy = self.point(z)
-        return ptr, xy[..., :fx.BINS], xy[..., fx.BINS:]
+        return ptr, self.point_x(z), z
+
+    def y_logits(self, z, x):
+        """The point's y logits [N, O, BINS] given its x bins [N, O]."""
+        return self.point_y(z + self.x_emb(x.clamp(min=0).long()))
 
 
 def load(path, device="cpu") -> tuple[FullGameNet, dict]:
