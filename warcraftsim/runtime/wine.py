@@ -55,6 +55,8 @@ def wine_env(prefix: Path, **extra: str) -> dict[str, str]:
         WINEDLLOVERRIDES="mscoree,mshtml=;winemenubuilder.exe=d;winealsa.drv,winepulse.drv,wineoss.drv=d",
         WINEARCH="win64",
     )
+    from .display import SOFTWARE_GL
+    env.update(SOFTWARE_GL)  # never the GPU (see display.SOFTWARE_GL)
     env.pop("W3SIM_PORT", None)
     env.update(extra)
     return env

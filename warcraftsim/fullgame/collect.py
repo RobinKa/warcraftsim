@@ -86,8 +86,10 @@ def series(setup: GameSetup, name: str, n: int, play: Callable[[GameInstance, Ob
     game. Each after the first reloads the map in the process (GameInstance.restart: the
     engine's RestartGame, ~6 s on duelrush instead of a ~10 s launch). A failed game is lost;
     the rest go on in a new process."""
-    k = 0
+    k = failures = 0
     while k < n:
+        if failures:
+            time.sleep(min(60, 5 * failures))  # e.g. the name in use: not a spin
         try:
             with GameInstance(setup, name=name, timeout=timeout) as g:
                 obs = g.start()
@@ -99,6 +101,26 @@ def series(setup: GameSetup, name: str, n: int, play: Callable[[GameInstance, Ob
                     obs = g.restart()
         except Exception as e:  # noqa: BLE001
             print(f"{name}: game {k - 1} failed: {type(e).__name__}: {e}", flush=True)
+            failures += 1
+            if failures >= 10:
+                print(f"{name}: giving up on {n - k} games", flush=True)
+                return
+
+
+def claim_slot(runs: Path, kind: str = "fullgame") -> tuple[int, object]:
+    """A machine-wide slot number for the games' names (their Wine prefixes); held while the
+    returned file stays open."""
+    import fcntl
+    lock_dir = runs / ".slots"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    for slot in range(64):
+        f = open(lock_dir / f"{kind}-{slot}.lock", "w")
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return slot, f
+        except OSError:
+            f.close()
+    raise RuntimeError("no free slot")
 
 
 def write_info(out: Path, info: dict) -> None:
@@ -178,9 +200,13 @@ def main(argv: list[str] | None = None) -> int:
              for i in range(args.games)]
     lock = threading.Lock()
     done = {"n": 0, "t0": time.time()}
-    names = queue.Queue()  # one game instance name per worker: games reuse their names' prefixes
+    # one game instance name per worker (games reuse their names' Wine prefixes); a machine-wide
+    # slot keeps collections running at once apart
+    slot, slot_lock = claim_slot(args.out.parent.parent if args.out.parent.name == "fullgame" else args.out.parent,
+                                 kind="collect")
+    names = queue.Queue()
     for k in range(args.parallel):
-        names.put(f"demo{k}")
+        names.put(f"demo{slot}_{k}")
     # games of one matchup run one after the other in one process (a restart reloads the map but
     # keeps the slots), in chunks so that every matchup is played from the start
     todo = [p for p in plans if not (args.out / f"game{p[0]:05d}.npz").exists()]

@@ -38,6 +38,13 @@ def _listening(num: int) -> bool:
         return any(line.endswith(needle) for line in f)
 
 
+# Software OpenGL only (Mesa's llvmpipe; the games render with it anyway). Under WSL Mesa otherwise
+# opens the GPU through /dev/dxg (its d3d12 driver) in every Xvfb: hundreds of device creations an
+# hour on the Windows GPU driver, which wedged it next to a CUDA job (2026-09-27: the trainer and
+# every new process touching the GPU hung in dxg calls; an earlier black screen likely the same)
+SOFTWARE_GL = {"GALLIUM_DRIVER": "llvmpipe", "LIBGL_ALWAYS_SOFTWARE": "1"}
+
+
 class Xvfb:
     """A private Xvfb server on a free display number.
 
@@ -63,6 +70,7 @@ class Xvfb:
                 proc = subprocess.Popen(
                     ["Xvfb", f":{num}", "-screen", "0", f"{width}x{height}x24", "-nolisten", "tcp", "-noreset"],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+                    env={**os.environ, **SOFTWARE_GL},
                 )
                 deadline = time.time() + timeout
                 while time.time() < deadline and proc.poll() is None:

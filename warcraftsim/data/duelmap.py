@@ -58,11 +58,21 @@ class Rules:
     come mostly from strength: the hit points per strength point are scaled too (the map's
     gameplay constants, war3mapMisc.txt)."""
     hp: float = 1.0
+    # buildings' hit points (None: as hp). Scaled with the units, bases died within seconds of the
+    # first attack: the race whose AI attacked first won (night elf 96% against the others)
+    building_hp: float | None = None
     time: float = 1.0
     cost: float = 1.0
     harvest: float = 1.0  # gold and lumber per trip and lumber per chop, every race's workers
     day: float = 1.0  # how much faster the day/night cycle runs (the built-in AI attacks by day)
     start: float = 1.0  # starting gold and lumber
+    # what a worker that walks carries per trip: gold (human and orc; night elf and undead gold
+    # comes from the mine without walking) and lumber (every race's). Movement can't speed up with
+    # `speed` (the engine's limit), so walking dominates their trips: at x7 human and orc gold
+    # income rose 1.6 times, night elf and undead 7 times, lumber ~3.5 (night elf then beat the
+    # other races 96%, human won 5%)
+    gold_carry: float = 1.0
+    lumber_carry: float = 1.0
     # everything that takes time, k times faster, as if the game ran at k times its speed: attack
     # and cast timings, turning, ability cooldowns and durations (harvesting intervals too),
     # regeneration, production (on top of `time`), day and night, and the built-in AI's own waits
@@ -87,8 +97,12 @@ class Rules:
         if self == Rules():
             return ""
         tag = f"_hp{self.hp:g}_t{self.time:.2g}_c{self.cost:g}"
+        if self.building_hp is not None:
+            tag += f"_bh{self.building_hp:g}"
         if (self.harvest, self.day, self.start) != (1.0, 1.0, 1.0):
             tag += f"_h{self.harvest:g}_d{self.day:g}_s{self.start:g}"
+        if (self.gold_carry, self.lumber_carry) != (1.0, 1.0):
+            tag += f"_g{self.gold_carry:g}_l{self.lumber_carry:g}"
         if self.speed != 1.0:
             tag += f"_x{self.speed:g}"
         if self.max_speed != 522:
@@ -238,7 +252,8 @@ def rules_files(rules: Rules) -> dict[str, bytes]:
         if len(oid) != 4 or oid not in used:
             continue
         mods = [(field, v) for field, v in (
-            ("uhpm", scaled(num(row, "HP"), rules.hp, 1)), ("ubld", scaled(num(row, "bldtm"), rules.time / k, 1)),
+            ("uhpm", scaled(num(row, "HP"), rules.building_hp if row.get("isbldg") == "1" and rules.building_hp
+                            is not None else rules.hp, 1)), ("ubld", scaled(num(row, "bldtm"), rules.time / k, 1)),
             ("ugol", scaled(num(row, "goldcost"), rules.cost, 1)),
             ("ulum", scaled(num(row, "lumbercost"), rules.cost, 1)),
             ("urtm", scaled(num(row, "reptm"), 1 / k, 1))) if v is not None]
@@ -273,12 +288,18 @@ def rules_files(rules: Rules) -> dict[str, bytes]:
             w3q.append((oid, mods))
     files = {"war3map.w3u": _object_mods(w3u, False), "war3map.w3q": _object_mods(w3q, True)}
     w3a: dict[str, list] = {}
+    carry = {("Ahar", "Har3"): rules.gold_carry, ("Ahar", "Har2"): rules.lumber_carry,
+             ("Ahrl", "Har2"): rules.lumber_carry}
+    for (aid, field), f in carry.items():
+        col = dict(HARVEST_FIELDS[aid])[field]
+        if f != 1.0 and (v := scaled(num(abilities.get(aid, {}), f"Data{'ABCD'[col - 1]}1"), f * rules.harvest, 1)):
+            w3a.setdefault(aid, []).append((field, v, 1, col))
     if rules.harvest != 1.0:
         for aid, fields in HARVEST_FIELDS.items():
             row = abilities.get(aid, {})
             w3a.setdefault(aid, []).extend(
-                (field, v, 1, col) for field, col in fields
-                if (v := scaled(num(row, f"Data{'ABCD'[col - 1]}1"), rules.harvest, 1)) is not None)
+                (field, v, 1, col) for field, col in fields if carry.get((aid, field), 1.0) == 1.0  # (done above)
+                and (v := scaled(num(row, f"Data{'ABCD'[col - 1]}1"), rules.harvest, 1)) is not None)
     if k != 1.0:
         for aid, row in abilities.items():
             if not aid or len(aid) != 4 or aid not in used_abilities:

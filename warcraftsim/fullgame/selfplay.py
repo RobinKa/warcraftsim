@@ -42,6 +42,7 @@ import numpy as np
 import torch
 
 from . import features as fx
+from .collect import claim_slot
 from .model import FullGameNet, act, evaluate, load
 from ..rl.league import Member, pfsp_weight
 
@@ -236,6 +237,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop) -> Non
             time.sleep(1)
             continue
         races = [rng.choice(cfg["races"]), rng.choice(cfg["races"])]
+        if cfg["mirror"]:  # both sides the same race (balanced by construction)
+            races[1] = races[0]
         side = rng.randrange(2)  # the learner's
         ai = _choose(rng, spec["launch"])  # {"kind": "agents"} or {"kind": "ai", "difficulty"}
         slots = [Agent(races[0], handicap=cfg["handicap"]), Agent(races[1], handicap=cfg["handicap"])]
@@ -536,21 +539,6 @@ def git_info() -> dict:
         return {}
 
 
-def claim_slot(runs: Path) -> tuple[int, object]:
-    """A machine-wide slot number for the games' names (their Wine prefixes)."""
-    import fcntl
-    lock_dir = runs / ".slots"
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    for slot in range(64):
-        f = open(lock_dir / f"fullgame-{slot}.lock", "w")
-        try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return slot, f
-        except OSError:
-            f.close()
-    raise RuntimeError("no free slot")
-
-
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--name", required=True)
@@ -564,6 +552,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--agent-games-factor", type=int, default=4, help="those run this many times as many games per launch")
     ap.add_argument("--map", default="duelrush")
     ap.add_argument("--races", default="all")
+    ap.add_argument("--mirror", type=int, default=1, help="both sides play the same race (on duelrush the races "
+                                                           "are far from balanced: night elf beat the others 96%%)")
     ap.add_argument("--handicap", type=int, default=50)
     ap.add_argument("--step-seconds", type=float, default=0.5)
     ap.add_argument("--max-minutes", type=float, default=4.0)
@@ -643,7 +633,7 @@ def main(argv: list[str] | None = None) -> int:
            "wait_floor_ms": args.wait_floor_ms, "games_per_actor": args.games_per_actor,
            "games_per_process": args.games_per_process, "chunk": args.chunk, "gamma": args.gamma, "lam": args.lam,
            "seed": args.seed, "slot": slot, "video_every": args.video_every, "scripted_reset": bool(args.scripted_reset),
-           "agent_games_factor": args.agent_games_factor}
+           "agent_games_factor": args.agent_games_factor, "mirror": bool(args.mirror)}
     ctx = torch.multiprocessing.get_context("spawn")
     out_q, stop = ctx.Queue(maxsize=4096), ctx.Event()
     actors = [ctx.Process(target=actor_main, args=(w, cfg, out_q, stop), daemon=True) for w in range(args.actors)]
