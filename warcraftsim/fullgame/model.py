@@ -56,7 +56,7 @@ class FullGameNet(nn.Module):
         out = self.transformer(tok, src_key_padding_mask=pad)
         return out[:, 0], out[:, 1:]
 
-    def order_logits(self, g, u, typ, n_own, by_type: bool = True):
+    def order_logits(self, g, u, typ, n_own, by_type: bool = True, avail=None):
         """[N, O, n_orders] for the first O entities (own units first; others can only get none).
         `by_type`: only the orders each unit type got in the demonstrations (playing; training
         learns it: a mask there made unseen pairs, e.g. of upgraded buildings, infinitely wrong)."""
@@ -67,6 +67,8 @@ class FullGameNet(nn.Module):
         allowed = is_own.unsqueeze(-1).expand_as(logits).clone()
         if by_type:
             allowed &= self.allowed[typ[:, :O].long()]
+        if avail is not None:  # [N, n_orders]: what the player can pay for now
+            allowed &= avail[:, None, :].bool()
         allowed[..., 0] = True  # no order: always
         return logits.masked_fill(~allowed, NEG)
 
@@ -109,14 +111,14 @@ def _entropy(logits):
     return -(lp.exp() * lp).sum(-1)
 
 
-def act(net: FullGameNet, ent, typ, cur, mask, glob, n_own) -> dict:
+def act(net: FullGameNet, ent, typ, cur, mask, glob, n_own, avail=None) -> dict:
     """Sample every own unit's order and targets (the first O = min(MAX_OWN, E) entities; the
     orders each unit type got in the demonstrations). -> order, tgt, bx, by, logp [N, O] (the
     action's log-probability per unit: order, plus the targets that order uses; 0 for padding)
     and value [N]."""
     g, u = net.encode(ent, typ, cur, mask, glob)
     O = min(fx.MAX_OWN, u.shape[1])
-    logits = net.order_logits(g, u[:, :O], typ, n_own)
+    logits = net.order_logits(g, u[:, :O], typ, n_own, avail=avail)
     sample = _gumbel_argmax
     order = sample(logits)
     ptr, xl, z = net.target_logits(g, u, mask, order)
@@ -130,12 +132,12 @@ def act(net: FullGameNet, ent, typ, cur, mask, glob, n_own) -> dict:
     return {"order": order, "tgt": tgt, "bx": bx, "by": by, "logp": logp * own, "value": net.value(g), "entropy": ent}
 
 
-def evaluate(net: FullGameNet, ent, typ, cur, mask, glob, n_own, order, tgt, bx, by) -> dict:
+def evaluate(net: FullGameNet, ent, typ, cur, mask, glob, n_own, order, tgt, bx, by, avail=None) -> dict:
     """Given actions [N, O]: logp [N, O] (as act()), the order distribution's entropy [N, O],
     order logits [N, O, C] and value [N]."""
     g, u = net.encode(ent, typ, cur, mask, glob)
     O = order.shape[1]
-    logits = net.order_logits(g, u[:, :O], typ, n_own)
+    logits = net.order_logits(g, u[:, :O], typ, n_own, avail=avail)
     ptr, xl, z = net.target_logits(g, u, mask, order)
     yl = net.y_logits(z, bx)
     uses_ptr, uses_pt = net.uses(order)

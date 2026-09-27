@@ -46,6 +46,7 @@ import torch
 
 from . import features as fx
 from .collect import claim_slot
+from .costs import order_costs
 from .trace import DEAD_FLAG, material, trace_step, unit_values  # noqa: F401
 from .play import unit_rows
 from .model import FullGameNet, act, evaluate, load
@@ -173,19 +174,24 @@ class Inference:
             if getattr(self, "_host", None) is None:
                 self._host = [torch.zeros(B, E, fx.F).pin_memory(), torch.zeros(B, E, dtype=torch.long).pin_memory(),
                               torch.zeros(B, E, dtype=torch.long).pin_memory(), torch.zeros(B, E, dtype=torch.bool).pin_memory(),
-                              torch.zeros(B, G).pin_memory(), torch.zeros(B, dtype=torch.long).pin_memory()]
+                              torch.zeros(B, G).pin_memory(), torch.zeros(B, dtype=torch.long).pin_memory(),
+                              torch.ones(B, net.config["n_orders"], dtype=torch.bool).pin_memory()]
             host = self._host
             for h in host:
                 h.zero_()
         else:
             host = [torch.zeros(B, E, fx.F), torch.zeros(B, E, dtype=torch.long), torch.zeros(B, E, dtype=torch.long),
-                    torch.zeros(B, E, dtype=torch.bool), torch.zeros(B, G), torch.zeros(B, dtype=torch.long)]
-        ent, typ, cur, mask, glob, n_own = (h.numpy() for h in host)
+                    torch.zeros(B, E, dtype=torch.bool), torch.zeros(B, G), torch.zeros(B, dtype=torch.long),
+                    torch.ones(B, net.config["n_orders"], dtype=torch.bool)]
+        ent, typ, cur, mask, glob, n_own, avail = (h.numpy() for h in host)
+        avail[:] = True
         mask[:, 0] = True  # (padding rows: one entity, or attention over nothing gives NaNs)
         for i, st in enumerate(sts):
             n = st["n"]
             ent[i, :n], typ[i, :n], cur[i, :n], mask[i, :n] = st["ent"], st["type"], st["cur"], True
             glob[i], n_own[i] = st["glob"], min(st["n_own"], fx.MAX_OWN)
+            if st.get("avail") is not None:
+                avail[i] = st["avail"]
         x = [h.to(self.device, non_blocking=True) for h in host]
         if fixed and net not in self._compiled:
             self._compiled[net] = torch.compile(lambda *a, net=net: act(net, *a), mode="reduce-overhead", dynamic=False)
@@ -224,6 +230,7 @@ class Trajectory:
                            "order": res["order"].astype(np.int16), "tgt": res["tgt"].astype(np.int16),
                            "bx": res["bx"].astype(np.int16), "by": res["by"].astype(np.int16),
                            "logp": res["logp"].astype(np.float32), "value": res["value"], "reward": 0.0,
+                           "avail": st.get("avail"),
                            "done": False, "version": res["version"]})
         if len(self.steps) > self.cfg["chunk"]:
             self.flush(bootstrap=True)
@@ -274,6 +281,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
     from .play import BCAgent
 
     rng = random.Random(cfg["seed"] * 1000 + wid * 16 + k)
+    if cfg.get("avail_mask") and "costs_array" not in cfg:
+        cfg["costs_array"] = np.asarray(cfg["costs"], np.int64)
     # videos: each actor's first game slot in turn (together one every video_every minutes); the
     # filmed game runs in a fresh process, so its replay holds just that game
     films = k == 0 and cfg["video_every"] > 0
@@ -345,7 +354,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     for s in (0, 1):
         if g.setup.slots[s].kind != "agent":
             continue
-        bot = BCAgent(None, vocab, s, None)
+        bot = BCAgent(None, vocab, s, None, costs=cfg.get("costs_array"))
         bot.begin(obs, race_ix)
         bots[s] = bot
         keys[s] = "current" if s == side or opp["kind"] == "self" else opp["path"]
@@ -606,7 +615,11 @@ def collate(steps: list[dict], device) -> dict:
     n_own = np.zeros(B, np.int64)
     acts = {k: np.zeros((B, O), np.int64) for k in ("order", "tgt", "bx", "by")}
     logp = np.zeros((B, O), np.float32)
+    n_orders = next((len(s["avail"]) for s in steps if s.get("avail") is not None), 0)
+    avail = np.ones((B, n_orders), bool) if n_orders else None
     for i, s in enumerate(steps):
+        if avail is not None and s.get("avail") is not None:
+            avail[i] = s["avail"]
         n, o = s["n"], s["n_own"]
         ent[i, :n], typ[i, :n], cur[i, :n], mask[i, :n], glob[i], n_own[i] = s["ent"], s["type"], s["cur"], True, s["glob"], o
         for k in acts:
@@ -614,7 +627,7 @@ def collate(steps: list[dict], device) -> dict:
         logp[i, :o] = s["logp"]
     t = lambda a: torch.from_numpy(a).to(device, non_blocking=True)  # noqa: E731
     return {"ent": t(ent), "type": t(typ), "cur": t(cur), "mask": t(mask), "glob": t(glob), "n_own": t(n_own),
-            **{k: t(v) for k, v in acts.items()}, "logp": t(logp),
+            **{k: t(v) for k, v in acts.items()}, "logp": t(logp), "avail": t(avail) if avail is not None else None,
             "adv": torch.tensor([s["adv"] for s in steps], device=device, dtype=torch.float32),
             "ret": torch.tensor([s["ret"] for s in steps], device=device, dtype=torch.float32),
             "own": torch.arange(O, device=device)[None] < t(n_own)[:, None]}
@@ -632,7 +645,7 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
             mb = collate([steps[i] for i in order[a:a + args.minibatch]], device)
             with autocast:  # bf16 matmuls (the losses and log-probabilities in fp32)
                 ev = evaluate(net, mb["ent"], mb["type"], mb["cur"], mb["mask"], mb["glob"], mb["n_own"],
-                              mb["order"], mb["tgt"], mb["bx"], mb["by"])
+                              mb["order"], mb["tgt"], mb["bx"], mb["by"], mb["avail"])
             ev["value"] = ev["value"].float()
             own = mb["own"].float()
             n_units = own.sum().clamp(min=1)
@@ -649,7 +662,7 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
             if ref is not None and args.ref_kl > 0:
                 with torch.no_grad(), autocast:
                     ev_ref = evaluate(ref, mb["ent"], mb["type"], mb["cur"], mb["mask"], mb["glob"], mb["n_own"],
-                                      mb["order"], mb["tgt"], mb["bx"], mb["by"])
+                                      mb["order"], mb["tgt"], mb["bx"], mb["by"], mb["avail"])
                 lp, lp_ref = torch.log_softmax(ev["logits"].float(), -1), torch.log_softmax(ev_ref["logits"].float(), -1)
                 kl = (lp.exp() * (lp - lp_ref)).sum(-1)
                 ref_kl = (kl * own).sum() / n_units
@@ -729,6 +742,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--bf16", type=int, default=1, help="the updates' matmuls in bfloat16")
     ap.add_argument("--compile", type=int, default=1, help="the actors' network calls compiled (CUDA graphs)")
     ap.add_argument("--native-obs", type=int, default=1, help="observations parsed in C (warcraftsim.native)")
+    ap.add_argument("--avail-mask", type=int, default=1, help="mask the orders the player can't pay for yet")
     ap.add_argument("--chunk", type=int, default=64, help="steps per trajectory piece an actor sends")
     ap.add_argument("--checkpoint-every", type=int, default=20)
     ap.add_argument("--video-every", type=float, default=4.0, help="minutes between game videos (0: none; the actors take turns)")
@@ -814,7 +828,9 @@ def main(argv: list[str] | None = None) -> int:
            "seed": args.seed, "slot": slot, "video_every": args.video_every, "scripted_reset": bool(args.scripted_reset),
            "agent_games_factor": args.agent_games_factor, "mirror": bool(args.mirror), "learner_pid": os.getpid(),
            "actors": args.actors, "values": unit_values(), "shaping": args.shaping, "shaping_scale": args.shaping_scale,
-           "tie_break": args.tie_break, "compile": bool(args.compile), "native_obs": bool(args.native_obs), "max_past": args.max_past,
+           "tie_break": args.tie_break, "compile": bool(args.compile), "native_obs": bool(args.native_obs),
+           "avail_mask": bool(args.avail_mask),
+           "costs": order_costs(vocab, args.map).tolist() if args.avail_mask else None, "max_past": args.max_past,
            "order_names": vocab.get("order_names") or {str(k): v for k, v in fx.demo_order_names(args.runs).items()}}
     # the actors compile their network calls: without this each starts a pool of ~32 compile workers
     # (~100 processes, several GB, idle after the first seconds)

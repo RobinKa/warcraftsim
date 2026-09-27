@@ -972,6 +972,32 @@ endfunction
 // 84 video: camera distance (zoom), over one step
 // 91 spawn unit      player unittype x y  (debug)
 // 99 restart game
+// A build order at (x, y), or else at the first spot nearby where the building fits: rings of
+// 8 spots 64, 128, 192 and 256 away (a policy's point is a 48-unit bin; half its builds were
+// refused where the building did not fit).
+function W3S_Build takes unit u, integer t, real x, real y returns boolean
+    local integer r = 0
+    local integer a
+    local real d
+    if IssueBuildOrderById(u, t, x, y) then
+        return true
+    endif
+    loop
+        set r = r + 1
+        exitwhen r > 4
+        set d = 64.0 * r
+        set a = 0
+        loop
+            exitwhen a >= 8
+            if IssueBuildOrderById(u, t, x + d * Cos(a * 0.785398), y + d * Sin(a * 0.785398)) then
+                return true
+            endif
+            set a = a + 1
+        endloop
+    endloop
+    return false
+endfunction
+
 function W3S_ApplyOne takes integer at returns integer
     local integer op = w3s_cmd[at]
     local unit u = W3S_Unit(w3s_cmd[at + 1])
@@ -995,7 +1021,7 @@ function W3S_ApplyOne takes integer at returns integer
     elseif op == 4 then
         set n = 5
         if W3S_Owned(u) then
-            set ok = IssueBuildOrderById(u, w3s_cmd[at + 2], I2R(w3s_cmd[at + 3] - 65536), I2R(w3s_cmd[at + 4] - 65536))
+            set ok = W3S_Build(u, w3s_cmd[at + 2], I2R(w3s_cmd[at + 3] - 65536), I2R(w3s_cmd[at + 4] - 65536))
         endif
     elseif op == 5 then
         set n = 3

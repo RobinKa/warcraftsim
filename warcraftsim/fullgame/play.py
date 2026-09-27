@@ -57,8 +57,10 @@ def unit_rows(obs: Observation, t: int) -> np.ndarray:
 class BCAgent:
     """The policy playing one player of a live game."""
 
-    def __init__(self, net, vocab: dict, player: int, device, temperature: float = 1.0, order_temperature: float = 1.0):
-        self.net, self.enc, self.player, self.device = net, fx.Encoder(vocab), player, device
+    def __init__(self, net, vocab: dict, player: int, device, temperature: float = 1.0, order_temperature: float = 1.0,
+                 costs=None):
+        """`costs` (costs.order_costs): orders the player can't pay for yet are masked."""
+        self.net, self.enc, self.player, self.device = net, fx.Encoder(vocab, costs), player, device
         self.temperature = temperature
         self.order_temperature = order_temperature  # sharpens the choice among orders only
         self.orders = [(0, 0)] + [tuple(o) for o in vocab["orders"]]  # class -> (order id, kind)
@@ -118,7 +120,16 @@ class BCAgent:
             elif kind == fx.POINT:
                 out.append(Build(unit, oid, x, y) if oid >= TYPE_CODE else PointOrder(unit, oid, x, y))
             elif kind == fx.UNIT:
-                out.append(TargetOrder(unit, oid, int(sel[int(tgt[i]), fx.C_ID])))
+                target = sel[int(tgt[i])]
+                if oid == fx.HARVEST and int(target[fx.C_TYPE]) not in fx.GOLD_MINES:
+                    # harvest on anything but a gold mine: the nearest mine in view (77% of the clone's
+                    # harvest orders pointed elsewhere and were refused)
+                    mines = sel[np.isin(sel[:, fx.C_TYPE], fx.GOLD_MINES)]
+                    if not len(mines):
+                        continue
+                    d = (mines[:, fx.C_X] - sel[i, fx.C_X]) ** 2 + (mines[:, fx.C_Y] - sel[i, fx.C_Y]) ** 2
+                    target = mines[int(np.argmin(d))]
+                out.append(TargetOrder(unit, oid, int(target[fx.C_ID])))
             elif kind == fx.TREE and self.trees:
                 tree = min(self.trees, key=lambda k: (self.trees[k][0] - x) ** 2 + (self.trees[k][1] - y) ** 2)
                 out.append(TargetDestructable(unit, oid, tree))
@@ -139,7 +150,8 @@ class BCAgent:
             glob = torch.as_tensor(st["glob"], device=dev).unsqueeze(0)
             g, u = self.net.encode(ent, typ, cur, mask, glob)
             O = min(n_own, fx.MAX_OWN)
-            logits = self.net.order_logits(g, u[:, :O], typ, torch.tensor([O], device=dev))
+            avail = torch.as_tensor(st["avail"], device=dev)[None] if st.get("avail") is not None else None
+            logits = self.net.order_logits(g, u[:, :O], typ, torch.tensor([O], device=dev), avail=avail)
             order = self._sample(logits)  # [1, O]
             if self.order_temperature != 1.0:  # whether a unit gets an order stays as learned; which one sharpens
                 again = self._sample(logits[..., 1:] / self.order_temperature) + 1
@@ -161,13 +173,13 @@ def matchup_setup(map_name: str, race: str, ai_race: str, difficulty: str, agent
 
 
 def play_game(g: GameInstance, obs: Observation, net, vocab: dict, device, agent_side: int,
-              temperature: float, order_temperature: float = 1.0, values: dict | None = None) -> dict:
+              temperature: float, order_temperature: float = 1.0, values: dict | None = None, costs=None) -> dict:
     """One game from its first observation `obs` (the game's setup: matchup_setup). `values`
     (unit type values, fullgame.trace.unit_values): also a trace for the video's panel ("trace")."""
     from .trace import material, trace_step
     slots = g.setup.slots
     races = [fx.RACES.index(s.race) if s.race in fx.RACES else 0 for s in slots]
-    bot = BCAgent(net, vocab, agent_side, device, temperature, order_temperature)
+    bot = BCAgent(net, vocab, agent_side, device, temperature, order_temperature, costs=costs)
     t0 = time.time()
     order_names = {v: k for k, v in (obs.orders or {}).items()}
     bot.begin(obs, races)
@@ -237,6 +249,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="games of one matchup in one running game (restarts reload the map in it)")
     ap.add_argument("--label", help="the evaluation's name on the dashboard")
     ap.add_argument("--videos", type=int, default=2, help="games to film (the first of a launch each)")
+    ap.add_argument("--avail-mask", type=int, default=1, help="mask the orders the player can't pay for yet")
     ap.add_argument("--mirror", action="store_true", help="the AI plays the agent's race")
     ap.add_argument("--device", help="default: cuda if available")
     ap.add_argument("--seed", type=int, default=0)
@@ -255,7 +268,7 @@ def main(argv: list[str] | None = None) -> int:
     label = args.label or (f"{args.checkpoint.name} (epoch {ck.get('epoch')}) vs {args.difficulty} AI"
                            + (f", temperature {args.temperature:g}" if args.temperature != 1.0 else "")
                            + (f", order temperature {args.order_temperature:g}" if args.order_temperature != 1.0 else "")
-                           + (", mirror matchups" if args.mirror else ""))
+                           + (", mirror matchups" if args.mirror else "") + ("" if args.avail_mask else ", no availability mask"))
     names = queue.Queue()
     for k in range(args.parallel):
         names.put(f"bcplay{k}")
@@ -278,7 +291,7 @@ def main(argv: list[str] | None = None) -> int:
             i = chunk[k][0]
             film = fresh and films.due()
             r = play_game(g, obs, net, vocab, device, side, args.temperature, args.order_temperature,
-                          values=values if film else None)
+                          values=values if film else None, costs=costs)
             trace = r.pop("trace", None)
             r.update({"game": i, "checkpoint": str(args.checkpoint), "time": time.time(), "map": args.map,
                       "eval": eval_id, "label": label, "epoch": ck.get("epoch"), "temperature": args.temperature,
@@ -306,6 +319,8 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             names.put(name)
 
+    from .costs import order_costs
+    costs = order_costs(vocab, args.map) if args.avail_mask else None  # (unaffordable orders masked)
     films = Films(out.parent, 0.0, args.videos, "bcplay_video")  # videos: the fit's Replays on the dashboard
     from .trace import unit_values
     values = unit_values() if args.videos > 0 else None

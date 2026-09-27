@@ -33,6 +33,7 @@ MOVE, AIMOVE = 851986, 851988  # the AI's own move order is played back as a mov
 # returnresources, and autocasts (recharge: moon wells; ambush: archers at night)
 DROPPED_ORDERS = {851974, 852660, 852017, 852020, 852157, 852131}
 HARVEST, SMART = 852018, 851971
+GOLD_MINES = (1852272492, 1969713004, 1701277548)  # ngol, ugol (haunted), egol (entangled): harvest targets
 HARVESTING = {852018, 852017, 852020}  # current orders of a worker in its harvest cycle
 
 
@@ -203,8 +204,11 @@ def bin_center(b: np.ndarray | int) -> np.ndarray | float:
 
 
 class Encoder:
-    def __init__(self, vocab: dict):
+    def __init__(self, vocab: dict, costs: np.ndarray | None = None):
+        """`costs` (costs.order_costs: gold, lumber, food per order class): the views also give
+        each step's availability mask ("avail": what the player can pay for)."""
         self.vocab = vocab
+        self.costs = costs
         self.type_index = {t: i + 1 for i, t in enumerate(vocab["types"])}  # 0: unknown
         self.cur_index = {o: i + 1 for i, o in enumerate(vocab["current_orders"])}
         self.order_index = {tuple(k): i + 1 for i, k in enumerate(vocab["orders"])}  # 0: no order
@@ -357,5 +361,11 @@ class View:
         g[6 + self.races[player]] = 1
         g[6 + len(RACES) + self.races[1 - player]] = 1
         g[6 + 2 * len(RACES):] = self.upgrades
+        avail = None
+        if enc.costs is not None:  # what the player can pay for now (orders beyond it are masked)
+            c = enc.costs
+            gold, lumber, fu, fc = (int(me[2]), int(me[3]), int(me[4]), int(me[5])) if me is not None else (0, 0, 0, 0)
+            avail = (c[:, 0] <= gold) & (c[:, 1] <= lumber) & ((c[:, 2] == 0) | (fu + c[:, 2] <= fc))
+            avail[0] = True
         return {"n": len(sel), "sel": sel, "n_own": n_own, "ent": f, "type": types, "cur": cur, "glob": g,
-                "index": {int(i): k for k, i in enumerate(sel[:, C_ID])}}
+                "index": {int(i): k for k, i in enumerate(sel[:, C_ID])}, "avail": avail}

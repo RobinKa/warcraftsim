@@ -108,3 +108,39 @@ def test_material_potential():
                    U(flags=0, owner=12, type_id=foot, hp=420, max_hp=420)])     # neutral: nothing
     assert potential(obs, 0, values, 100.0) == pytest.approx((67.5 - 590) / 100)
     assert potential(obs, 1, values, 100.0) == pytest.approx(-(67.5 - 590) / 100)  # zero-sum
+
+
+def test_avail_mask_in_act_and_evaluate():
+    from warcraftsim.fullgame.model import FullGameNet, act, evaluate
+    torch.manual_seed(0)
+    net = FullGameNet(n_types=20, n_cur=10, n_orders=30, G=30, d=64, layers=1).eval()
+    net.allowed[:] = True
+    net.order_kind.copy_(torch.randint(0, 5, (30,)))
+    x = [torch.randn(3, 12, fx.F), torch.randint(0, 20, (3, 12)), torch.randint(0, 10, (3, 12)),
+         torch.ones(3, 12, dtype=torch.bool), torch.randn(3, 30), torch.tensor([5, 3, 12])]
+    avail = torch.rand(3, 30) < 0.3
+    avail[:, 0] = True
+    with torch.no_grad():
+        for _ in range(20):
+            a = act(net, *x, avail)
+            own = torch.arange(a["order"].shape[1])[None] < x[5][:, None]
+            chosen = avail.gather(1, a["order"])  # every sampled order is one the player can pay for
+            assert bool((chosen | ~own).all())
+        ev = evaluate(net, *x, a["order"], a["tgt"], a["bx"], a["by"], avail)
+    assert float(((ev["logp"] - a["logp"]) * own).abs().max()) < 1e-5
+
+
+def test_view_avail():
+    code = lambda s: int.from_bytes(s.encode(), "big")  # noqa: E731
+    vocab = {"types": [code("hpea")], "current_orders": [], "upgrades": [],
+             "orders": [[851983, fx.UNIT], [code("hpea"), fx.IMMEDIATE], [code("hbar"), fx.POINT]]}
+    costs = np.array([[0, 0, 0], [0, 0, 0], [38, 0, 1], [80, 30, 0]])
+    enc = fx.Encoder(vocab, costs)
+    view = enc.view(0, 1.0, [0, 1])
+    rows = np.zeros((1, 18), np.int64)
+    rows[0, fx.C_ID], rows[0, fx.C_TYPE], rows[0, fx.C_MAXHP], rows[0, fx.C_HP] = 1048576, code("hpea"), 220, 220
+    me = np.array([0, 0, 50, 10, 10, 10, 0, 0, 0, 0, 0])  # 50 gold, 10 lumber, food 10/10
+    st = view.step(rows, me, np.zeros((0, 5), np.int64), 0)
+    assert st["avail"].tolist() == [True, True, False, False]  # supply-blocked worker; the barracks too dear
+    me[5] = 12
+    assert view.step(rows, me, np.zeros((0, 5), np.int64), 1)["avail"].tolist() == [True, True, True, False]
