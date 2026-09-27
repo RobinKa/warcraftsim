@@ -115,7 +115,8 @@ def main(argv: list[str] | None = None) -> int:
         setup = GameSetup(map=args.map, slots=[BuiltinAI(r0, d0, handicap=args.handicap),
                                                BuiltinAI(r1, d1, handicap=args.handicap)],
                           step_seconds=args.step_seconds, max_game_seconds=args.max_minutes * 60,
-                          record_ai_orders=True, victory=args.victory)
+                          record_ai_orders=True, victory=args.victory,
+                          warm_spare=False)  # one game per instance: a spare would load for nothing
         t0 = time.time()
         name = names.get()
         try:

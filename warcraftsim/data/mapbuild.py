@@ -64,6 +64,7 @@ class HarnessConfig:
     clear_area: tuple[float, float, float] | None = None  # (x, y, radius): remove trees there
     order_names: tuple[str, ...] | None = None  # order strings resolved in the first observation
     record_orders: bool = False  # observations carry the built-in AI players' orders (Observation.issued)
+    melee_reset: str = ""  # melee: the map's function that makes its units; restarts then stay in the game
 
     hero_abilities: dict[str, tuple[str, ...]] | None = None  # hero type -> ability per slot
 
@@ -76,6 +77,17 @@ class HarnessConfig:
             return hero_ability_table()
         except (FileNotFoundError, OSError):
             return {}
+
+    def upgrades_code(self) -> str:
+        """Every upgrade of the game, for melee restarts (whose researched levels go back to 0)."""
+        if not self.melee_reset:
+            return "    // no melee restarts"
+        from .mpq import GameArchives
+        from .objects import parse_slk
+        with GameArchives() as g:
+            rows = parse_slk(g.read("Units\\UpgradeData.slk").decode("latin-1"))
+        ids = sorted({r["upgradeid"] for r in rows if len(r.get("upgradeid", "")) == 4})
+        return "\n".join(f"    call W3S_Upgrade('{u}')" for u in ids)
 
     def hero_abilities_code(self) -> str:
         lines = [f"    call SaveInteger(w3s_abil, '{hero}', {k}, '{code}')"
@@ -142,6 +154,7 @@ def _split_harness(src: str, cfg: HarnessConfig) -> tuple[str, str]:
         "W3S_CFG_CLEAR_Y": f"constant real W3S_CFG_CLEAR_Y = {cy:.1f}",
         "W3S_CFG_CLEAR_R": f"constant real W3S_CFG_CLEAR_R = {cr:.1f}",
         "W3S_CFG_RECORD_ORDERS": f"constant boolean W3S_CFG_RECORD_ORDERS = {jbool(cfg.record_orders)}",
+        "W3S_CFG_MELEE_RESET": f'constant string W3S_CFG_MELEE_RESET = "{cfg.melee_reset}"',
     }
     for name, decl in replacements.items():
         glob, n = re.subn(rf"^\s*constant \w+ {name} = .*$", "    " + decl, glob, flags=re.M)
@@ -155,6 +168,10 @@ def _split_harness(src: str, cfg: HarnessConfig) -> tuple[str, str]:
     body, n = re.subn(r"^\s*// @HERO_ABILITIES@\s*$", lambda _m: cfg.hero_abilities_code(), body, flags=re.M)
     if n != 1:
         raise MapBuildError("harness hero ability marker not found")
+    upgrades = cfg.upgrades_code()
+    body, n = re.subn(r"^\s*// @UPGRADES@\s*$", lambda _m: upgrades, body, flags=re.M)
+    if n != 1:
+        raise MapBuildError("harness upgrade table marker not found")
     spawn = cfg.spawn_code()
     body, n = re.subn(r"^\s*// @SCENARIO_SPAWN@\s*$", lambda _m: spawn, body, flags=re.M)
     if n != 1:

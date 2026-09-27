@@ -140,20 +140,29 @@ def duel_layout(size: int = DEFAULT_SIZE, seed: int = 0, base_x: float = BASE_X)
 
 
 def _script_units(layout: dict) -> str:
-    lines = ["function W3S_DuelUnits takes nothing returns nothing",
+    """The map's units, in three functions: mines and trees are made once; a melee restart in the
+    game (harness W3S_MeleeReset) keeps the mines (refilled: the built-in AI's towns hold on to
+    them) and re-runs W3S_DuelCreeps."""
+    lines = ["function W3S_DuelMines takes nothing returns nothing",
              "    local unit u",
-             "    local player p = Player(PLAYER_NEUTRAL_PASSIVE)",
-             "    local player h = Player(PLAYER_NEUTRAL_AGGRESSIVE)"]
+             "    local player p = Player(PLAYER_NEUTRAL_PASSIVE)"]
     for x, y in layout["mines"]:
         lines += [f"    set u = CreateUnit(p, 'ngol', {x:.1f}, {y:.1f}, 270.0)",
                   f"    call SetResourceAmount(u, {MINE_GOLD})"]
+    lines += ["    set u = null", "    set p = null", "endfunction", "",
+              "function W3S_DuelCreeps takes nothing returns nothing",
+              "    local player h = Player(PLAYER_NEUTRAL_AGGRESSIVE)"]
     for cx, cy, types in layout["camps"]:
         for k, t in enumerate(types):
             dx, dy = ((0.0, 0.0), (-90.0, -70.0), (90.0, -70.0))[k % 3]
-            lines.append(f"    set u = CreateUnit(h, '{t}', {cx + dx:.1f}, {cy + dy:.1f}, 270.0)")
+            lines.append(f"    call CreateUnit(h, '{t}', {cx + dx:.1f}, {cy + dy:.1f}, 270.0)")
+    lines += ["    set h = null", "endfunction", "",
+              "function W3S_DuelTrees takes nothing returns nothing"]
     for x, y, facing, var in layout["trees"]:
         lines.append(f"    call CreateDestructable('{TREE}', {x:.1f}, {y:.1f}, {facing:.1f}, 1.0, {var})")
-    lines += ["    set u = null", "    set p = null", "    set h = null", "endfunction", "", ""]
+    lines += ["endfunction", "",
+              "function W3S_DuelUnits takes nothing returns nothing",
+              "    call W3S_DuelMines()", "    call W3S_DuelCreeps()", "endfunction", "", ""]
     return "\n".join(lines)
 
 
@@ -180,12 +189,25 @@ def rules_files(rules: Rules) -> dict[str, bytes]:
     with GameArchives() as g:
         units = parse_slk(g.read("Units\\UnitBalance.slk").decode("latin-1"))
         upgrades = parse_slk(g.read("Units\\UpgradeData.slk").decode("latin-1"))
+        unit_abilities = parse_slk(g.read("Units\\UnitAbilities.slk").decode("latin-1"))
         weapons = {r.get("serpent"): r for r in  # (the ID column's header in 1.29)
                     parse_slk(g.read("Units\\UnitWeapons.slk").decode("latin-1"))}
         unitdata = {r.get("unitID"): r for r in parse_slk(g.read("Units\\UnitData.slk").decode("latin-1"))}
         abilities = {r.get("alias"): r for r in parse_slk(g.read("Units\\AbilityData.slk").decode("latin-1"))}
         misc = g.read("Units\\MiscGame.txt").decode("latin-1")
     k = rules.speed
+    # only what these games can have: the four races' units (and "other": summons, some buildings)
+    # and this map's creeps, and their abilities (every unit and ability of the game made the map
+    # load slower)
+    races = {"human", "orc", "undead", "nightelf", "other"}
+    creeps = {t for camp in (KOBOLDS, OGRES, GNOLLS) for t in camp}
+    used = {r["unitID"] for r in unitdata.values() if r.get("race") in races or r.get("unitID") in creeps}
+    used |= creeps | {"ngol"}
+    used_abilities = set()
+    for r in unit_abilities:
+        if r.get("unitAbilID") in used:
+            for col in ("abilList", "heroAbilList", "auto"):
+                used_abilities.update(a.strip() for a in (r.get(col) or "").split(",") if len(a.strip()) == 4)
 
     def num(row: dict, key: str) -> int | None:
         try:
@@ -210,7 +232,7 @@ def rules_files(rules: Rules) -> dict[str, bytes]:
     w3u = []
     for row in units:
         oid = row.get("unitBalanceID", "")
-        if len(oid) != 4:
+        if len(oid) != 4 or oid not in used:
             continue
         mods = [(field, v) for field, v in (
             ("uhpm", scaled(num(row, "HP"), rules.hp, 1)), ("ubld", scaled(num(row, "bldtm"), rules.time / k, 1)),
@@ -256,7 +278,7 @@ def rules_files(rules: Rules) -> dict[str, bytes]:
                 if (v := scaled(num(row, f"Data{'ABCD'[col - 1]}1"), rules.harvest, 1)) is not None)
     if k != 1.0:
         for aid, row in abilities.items():
-            if not aid or len(aid) != 4:
+            if not aid or len(aid) != 4 or aid not in used_abilities:
                 continue
             levels = max(1, num(row, "levels") or 1)
             for level in range(1, levels + 1):
@@ -353,7 +375,8 @@ def make_duel_map(source: str | Path, dest: str | Path, size: int = DEFAULT_SIZE
             main = script.index("function main takes nothing returns nothing")
             script = script[:main] + _script_units(layout) + script[main:]
             # the units come before InitBlizzard, where the stock script made its pre-placed ones
-            script = re.sub(r"(\n\s*call InitBlizzard\(\s*\))", r"\n    call W3S_DuelUnits()\1", script, count=1)
+            script = re.sub(r"(\n\s*call InitBlizzard\(\s*\))", r"\n    call W3S_DuelTrees()\n    call W3S_DuelUnits()\1",
+                            script, count=1)
             if (rules.day * rules.speed, rules.start) != (1.0, 1.0):  # after melee initialization (which sets both)
                 script, n = re.subn(r"(\n\s*call RunInitializationTriggers\(\s*\))",
                                     r"\1\n    call W3S_DuelRules()", script, count=1)
@@ -401,7 +424,7 @@ def duel_map_path(name: str) -> Path:
 
     size, rules, base_x = parse_duel_name(name)
     src = stock_map_path("(2)EchoIsles")
-    out = paths.CACHE_DIR / "maps" / f"duel{size}_b{base_x:g}{rules.tag}_v6.w3x"
+    out = paths.CACHE_DIR / "maps" / f"duel{size}_b{base_x:g}{rules.tag}_v9.w3x"
     with _lock:
         if not out.exists():
             make_duel_map(src, out, size, rules, base_x)

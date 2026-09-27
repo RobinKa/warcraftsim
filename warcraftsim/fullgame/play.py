@@ -136,7 +136,7 @@ def play_game(net, vocab: dict, device, name: str, map_name: str, race: str, ai_
     ai = BuiltinAI(ai_race, difficulty, handicap=handicap)
     slots = [agent, ai] if agent_side == 0 else [ai, agent]
     setup = GameSetup(map=map_name, slots=slots, step_seconds=step_seconds, max_game_seconds=max_minutes * 60,
-                      victory="decisive")
+                      victory="decisive", warm_spare=False)  # one game per instance
     races = [fx.RACES.index(s.race) if s.race in fx.RACES else 0 for s in slots]
     bot = BCAgent(net, vocab, agent_side, device, temperature, order_temperature)
     t0 = time.time()

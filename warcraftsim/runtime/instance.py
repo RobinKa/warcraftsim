@@ -148,6 +148,7 @@ class GameSetup:
     mouse_scroll: bool = True  # the camera scrolls with the pointer at a screen edge (off for videos)
     record_ai_orders: bool = False  # melee: observations carry the built-in AI's orders (Observation.issued)
     victory: str = "melee"  # melee games: "melee", or "decisive" (also over with no town hall and no units)
+    melee_reset: bool = False  # duel maps without built-in AI players: restarts reset the game in the running process (0.1 s instead of a 6-10 s launch)
     max_game_seconds: float = 0.0  # 0 = unlimited; otherwise a tie when reached
     fog: bool | None = None  # None: on for melee, off for scenarios
     wgc_speed: int = 1
@@ -193,8 +194,19 @@ class GameSetup:
 
     def harness_config(self) -> HarnessConfig:
         if self.scenario is None:
+            reset = ""
+            if self.melee_reset:
+                from ..data.duelmap import parse_duel_name
+                if parse_duel_name(self.map) is None:
+                    raise ValueError("melee_reset needs a duel map (its unit function is what a restart re-runs)")
+                if any(sl.kind == "ai" for sl in self.slots):
+                    # its engine state outlives the reset: after the first game the AIs stalled (an
+                    # army that never left its base, an economy stuck at 14-17 supply), with its
+                    # scripts started anew and the gold mines kept alike
+                    raise ValueError("melee_reset: the built-in AI does not survive a restart in the game")
+                reset = "W3S_DuelCreeps"
             return HarnessConfig(self.step_seconds, self.agent_players, self.max_game_seconds,
-                                 victory=self.victory, record_orders=self.record_ai_orders)
+                                 victory=self.victory, record_orders=self.record_ai_orders, melee_reset=reset)
         sc = self.scenario
         cx, cy = sc.resolved_center()
         return HarnessConfig(
@@ -233,8 +245,9 @@ class GameSetup:
         # the tables generated from game data are part of the built script too
         tables = json.dumps([cfg.resolved_order_names(), cfg.resolved_hero_abilities()], sort_keys=True)
         harness = asdict(cfg)
-        if not harness["record_orders"]:  # keys from before the option stay the same
-            del harness["record_orders"]
+        for k_, default in (("record_orders", False), ("melee_reset", "")):  # keys from before them stay the same
+            if harness[k_] == default:
+                del harness[k_]
         key = {"map": self.map, "harness": harness,
                "source": hashlib.sha1((source or harness_source()).encode()).hexdigest(),
                "tables": hashlib.sha1(tables.encode()).hexdigest()}
@@ -704,8 +717,8 @@ class GameInstance:
         # a parked game (see scenario_spare) means this process only ran a fresh-process episode:
         # the next normal episode continues the parked game, even if that episode was cut short
         parked = self._spare is not None and self._spare._parked
-        if (self.setup.scenario is not None and not self._ended and self._playback is None and not relaunch
-                and not recycle and not parked):
+        if ((self.setup.scenario is not None or self.setup.melee_reset) and not self._ended
+                and self._playback is None and not relaunch and not recycle and not parked):
             ints = encode_commands([*spawns, Restart()])
             key = f"{self._proc_episode}:{self._last_seq}"
             self._cmd_log[key] = self._cmd_log.get(key, []) + ints

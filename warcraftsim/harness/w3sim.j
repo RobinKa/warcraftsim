@@ -29,6 +29,9 @@ globals
     constant real W3S_CFG_CLEAR_Y = 0.0
     constant real W3S_CFG_CLEAR_R = 0.0
     constant boolean W3S_CFG_RECORD_ORDERS = false
+    // melee maps: the map's function that makes its units (mines, creeps), to restart a game in the
+    // running process; "": a restart relaunches the game (RestartGame returns a .wgc game to the menu)
+    constant string W3S_CFG_MELEE_RESET = ""
     constant integer W3S_VERSION = 4
     constant integer W3S_QS_SKILLS = 8
     constant integer W3S_ABIL_SLOTS = 4  // warcraftsim.protocol.HERO_ABILITY_SLOTS
@@ -78,6 +81,10 @@ globals
     boolean w3s_end = false
     boolean array w3s_scripted
     integer array w3s_alive
+    integer array w3s_upgrades  // melee restarts: every upgrade (their levels go back to 0)
+    integer w3s_nupgrades = 0
+    integer array w3s_start_gold  // melee restarts: what each player started with
+    integer array w3s_start_lumber
     integer array w3s_halls  // victory "decisive": living town halls and units (not structures) per player
     integer array w3s_mobile
     boolean array w3s_participant
@@ -1329,6 +1336,116 @@ function W3S_ScenarioReset takes nothing returns nothing
     call TimerStart(w3s_clock, 1000000.0, false, null)
 endfunction
 
+//===========================================================================
+// melee restart in the running game (W3S_CFG_MELEE_RESET): a new game without relaunching the
+// process (a launch took 6-10 s, a two-minute game at speed 3.5 s)
+
+function W3S_Upgrade takes integer id returns nothing
+    set w3s_upgrades[w3s_nupgrades] = id
+    set w3s_nupgrades = w3s_nupgrades + 1
+endfunction
+
+function W3S_InitUpgrades takes nothing returns nothing
+    // @UPGRADES@
+endfunction
+
+function W3S_RestoreTree takes nothing returns nothing
+    local destructable d = GetEnumDestructable()
+    if GetDestructableLife(d) <= 0.0 then
+        call DestructableRestoreLife(d, GetDestructableMaxLife(d), false)
+    endif
+    set d = null
+endfunction
+
+function W3S_RememberMine takes nothing returns nothing
+    local unit u = GetEnumUnit()
+    if GetUnitTypeId(u) == 'ngol' then
+        call SaveInteger(w3s_ht, GetHandleId(u), 9, GetResourceAmount(u))
+    endif
+    set u = null
+endfunction
+
+// the starting resources, after every initialization of the map (its rules may change them)
+function W3S_RememberStart takes nothing returns nothing
+    local integer i = 0
+    call ForGroup(w3s_all, function W3S_RememberMine)
+    loop
+        exitwhen i >= bj_MAX_PLAYERS
+        set w3s_start_gold[i] = GetPlayerState(Player(i), PLAYER_STATE_RESOURCE_GOLD)
+        set w3s_start_lumber[i] = GetPlayerState(Player(i), PLAYER_STATE_RESOURCE_LUMBER)
+        set i = i + 1
+    endloop
+endfunction
+
+function W3S_MeleeResetPlayer takes integer i returns nothing
+    local player p = Player(i)
+    local integer k = 0
+    local integer n
+    set w3s_result[i] = 0
+    if GetPlayerSlotState(p) == PLAYER_SLOT_STATE_PLAYING then
+        call SetPlayerState(p, PLAYER_STATE_RESOURCE_GOLD, w3s_start_gold[i])
+        call SetPlayerState(p, PLAYER_STATE_RESOURCE_LUMBER, w3s_start_lumber[i])
+        loop
+            exitwhen k >= w3s_nupgrades
+            set n = GetPlayerTechCount(p, w3s_upgrades[k], true)
+            if n > 0 then
+                call BlzDecPlayerTechResearched(p, w3s_upgrades[k], n)
+            endif
+            set k = k + 1
+        endloop
+        set bj_meleeTwinkedHeroes[i] = 0  // the items melee gives the first heroes
+    endif
+    set p = null
+endfunction
+
+// every unit goes but the gold mines (refilled): the built-in AI's towns hold on to their mines,
+// and with new ones its economy and attacks stalled
+function W3S_MeleeResetEnum takes nothing returns nothing
+    local unit u = GetEnumUnit()
+    if GetUnitTypeId(u) == 'ngol' and not IsUnitType(u, UNIT_TYPE_DEAD) then
+        call SetResourceAmount(u, LoadInteger(w3s_ht, GetHandleId(u), 9))
+        call GroupAddUnit(w3s_group, u)
+    else
+        call FlushChildHashtable(w3s_ht, GetHandleId(u))
+        call RemoveUnit(u)
+    endif
+    set u = null
+endfunction
+
+function W3S_KeepEnum takes nothing returns nothing
+    call GroupAddUnit(w3s_all, GetEnumUnit())
+endfunction
+
+function W3S_MeleeReset takes nothing returns nothing
+    local integer i = 0
+    call GroupClear(w3s_group)
+    call ForGroup(w3s_all, function W3S_MeleeResetEnum)
+    call GroupClear(w3s_all)
+    call ForGroup(w3s_group, function W3S_KeepEnum)
+    call GroupClear(w3s_group)
+    call EnumDestructablesInRect(bj_mapInitialPlayableArea, null, function W3S_RestoreTree)
+    call ExecuteFunc(W3S_CFG_MELEE_RESET)  // the map's creeps
+    loop
+        exitwhen i >= bj_MAX_PLAYERS
+        call W3S_MeleeResetPlayer(i)
+        set i = i + 1
+    endloop
+    call MeleeStartingUnits()  // town halls and workers (undead: the haunted mine on the new mine)
+    call SetFloatGameState(GAME_STATE_TIME_OF_DAY, bj_MELEE_STARTING_TOD)
+    // the built-in AI anew: kept running, its engine state still held the old game's towns and
+    // attack groups (an army that never left its base, an AI building 39 buildings at 14 supply)
+    call ExecuteFunc("W3S_StartingAI")
+    set w3s_nev = 0
+    set w3s_niss = 0
+    set w3s_full = true
+    set w3s_nremoved = 0
+    set w3s_seq = 0
+    set w3s_first = true
+    set w3s_over = false
+    set w3s_ncres = 0
+    call TimerStart(w3s_clock, 1000000.0, false, null)
+endfunction
+
 // Scripted opponent: idle units attack-move to the nearest enemy.
 function W3S_ScriptedUnit takes unit u returns nothing
     local unit best = null
@@ -1418,6 +1535,8 @@ function W3S_Step takes nothing returns nothing
         set w3s_restart = false
         if W3S_CFG_SCENARIO then
             call W3S_ScenarioReset()
+        elseif W3S_CFG_MELEE_RESET != "" then
+            call W3S_MeleeReset()
         else
             call PauseTimer(w3s_timer)
             call RestartGame(false)
@@ -1426,6 +1545,8 @@ function W3S_Step takes nothing returns nothing
 endfunction
 
 function W3S_FirstStep takes nothing returns nothing
+    call W3S_RememberStart()
+    call W3S_InitUpgrades()
     call W3S_Step()
     call TimerStart(w3s_timer, W3S_CFG_STEP_S, true, function W3S_Step)
 endfunction
