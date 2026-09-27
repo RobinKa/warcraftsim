@@ -37,6 +37,7 @@ import sys
 import threading
 import time
 import traceback
+import weakref
 from collections import Counter
 from pathlib import Path
 
@@ -114,9 +115,13 @@ class Inference:
         # the current policy's calls compiled with CUDA graphs: the network is small, its calls
         # latency-bound (~150 kernels): 4.6 instead of 9.2 ms. Graphs need fixed shapes: the batch
         # padded to max_batch, the entities to MAX_ENT. Past snapshots (fewer calls) run eagerly.
-        self.compiled = None
-        if compile_ and device.type == "cuda":
-            self.compiled = torch.compile(lambda *a: act(self.nets.current, *a), mode="reduce-overhead", dynamic=False)
+        # every network's calls compiled (past snapshots too: eager ones took ~10 ms each, and a batch
+        # with several snapshots made several; the inference thread is what the games wait for)
+        self.compile = compile_ and device.type == "cuda"
+        if self.compile:  # one compiled variant per network (the same code): more than dynamo's default 8
+            torch._dynamo.config.cache_size_limit = max(torch._dynamo.config.cache_size_limit, 64)
+            torch._dynamo.config.accumulated_cache_size_limit = max(torch._dynamo.config.accumulated_cache_size_limit, 256)
+        self._compiled = weakref.WeakKeyDictionary()  # net -> its compiled act (dropped with the net)
         self.q: queue.Queue = queue.Queue()
         threading.Thread(target=self._run, daemon=True).start()
 
@@ -160,7 +165,7 @@ class Inference:
 
     @torch.no_grad()
     def _forward(self, net: FullGameNet, sts: list[dict]) -> list[dict]:
-        fixed = self.compiled is not None and net is self.nets.current and len(sts) <= self.max_batch
+        fixed = self.compile and len(sts) <= self.max_batch
         B, E = (self.max_batch, fx.MAX_ENT) if fixed else (len(sts), max(st["n"] for st in sts))
         G = len(sts[0]["glob"])
         cuda = self.device.type == "cuda"
@@ -182,7 +187,9 @@ class Inference:
             ent[i, :n], typ[i, :n], cur[i, :n], mask[i, :n] = st["ent"], st["type"], st["cur"], True
             glob[i], n_own[i] = st["glob"], min(st["n_own"], fx.MAX_OWN)
         x = [h.to(self.device, non_blocking=True) for h in host]
-        out = (self.compiled if fixed else lambda *a: act(net, *a))(*x)
+        if fixed and net not in self._compiled:
+            self._compiled[net] = torch.compile(lambda *a, net=net: act(net, *a), mode="reduce-overhead", dynamic=False)
+        out = (self._compiled[net] if fixed else lambda *a: act(net, *a))(*x)
         O = out["order"].shape[1]
         # everything back in one copy (seven were seven waits)
         packed = torch.cat([out["order"].float(), out["tgt"].float(), out["bx"].float(), out["by"].float(), out["logp"].float(),
