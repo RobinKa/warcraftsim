@@ -326,7 +326,8 @@ After micro, the whole melee game (economy, building, tech, armies, heroes), sta
   * A league: the learner against itself (both sides train), past snapshots (prioritized fictitious self-play) and the built-in AI, a fixed anchor whose win rate is the run's yardstick.
   * Reward +1 / -1 / 0 (win, loss, tie at the time limit). Each own unit's decision has its own clipped PPO ratio, and they share the step's advantage.
   * A KL term keeps the policy near the clone (as AlphaStar keeps near its supervised policy); the value head starts untrained, so the first updates train only it.
-  * Every 15 minutes one game is recorded and rendered to a video, with a camera that zooms out to keep every unit in view.
+  * A game video about every 4 minutes (the actors take turns; the filmed game runs in a fresh process) with a side panel like the micro videos': the policy's value against the return that followed, rewards, material, economy, the orders of the step, entropy. A separate process renders them.
+  * Speed: few actor processes (each a GPU context) with many games; every network call compiled into CUDA graphs (the network is small, its calls latency-bound); observations parsed in C (`native/w3obs.c`, `GameSetup.native_obs`: no Python object per unit, no GIL); the whole league's snapshots kept loaded. `--resume` continues a run.
 * **On the dashboard**:
   * collections (`DEMOS`): games, rate, game lengths, ties, win rates by matchup, and videos of a game every 10 minutes (`--video-every`) to check what was recorded;
   * fits (`BC`): loss, accuracy, order rate and point error per epoch, the collections used, each `play.py` evaluation (win–tie–loss by race and matchup, gold mined, refused orders), and videos of the clone's games (`play.py --videos`, 2 by default);
@@ -350,6 +351,7 @@ python3 -m warcraftsim.fullgame.selfplay --name fgself-1 --init runs/bc/fullgame
 | **24 skirmish games in parallel (training setup: 320x240 screens)** | ≈4600 env steps/s (≈1160x real time) |
 | **PufferLib training, 24 games (micro_mirror)** | ≈3000 agent steps/s (was ≈620 before this round of work) |
 | **Demonstrations: built-in AI vs built-in AI on `duelrush`, 24 games in parallel** | ≈2800 games/h with 8 games per process (≈1300/h with a launch per game) |
+| **Whole-game self-play (`duelrush`, 32 games, 4 actor processes)** | ≈750 agent steps/s (≈370 before: GPU contexts, CUDA graphs, observations parsed in C, a separate video renderer; see the self-play notes) |
 | **Game start** | ≈8 s (map load); 16 games ≈2 min (4 load at a time) |
 | **Melee reset** | the map reloads in the running game: ≈3 s (`duel`), ≈5 s (`duelrush`), vs ≈10 s for a launch; with `engine_restart=False`, ≈1 s from a warm spare (a second process that loads in the background) |
 
