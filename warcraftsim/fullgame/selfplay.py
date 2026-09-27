@@ -99,7 +99,9 @@ class Nets:
         if net is None:
             net, _ = load(key, self.device)
         self.snapshots[key] = net  # most recently used last
-        while len(self.snapshots) > 4:
+        # the whole league stays loaded (~8 MB each on the GPU): with a cache of 4 and 8+ snapshots
+        # it reloaded one from disk on almost every call (83% of an actor's time, the games waiting)
+        while len(self.snapshots) > self.cfg["max_past"] + 2:
             self.snapshots.pop(next(iter(self.snapshots)))
         return net
 
@@ -805,7 +807,7 @@ def main(argv: list[str] | None = None) -> int:
            "seed": args.seed, "slot": slot, "video_every": args.video_every, "scripted_reset": bool(args.scripted_reset),
            "agent_games_factor": args.agent_games_factor, "mirror": bool(args.mirror), "learner_pid": os.getpid(),
            "actors": args.actors, "values": unit_values(), "shaping": args.shaping, "shaping_scale": args.shaping_scale,
-           "tie_break": args.tie_break, "compile": bool(args.compile), "native_obs": bool(args.native_obs),
+           "tie_break": args.tie_break, "compile": bool(args.compile), "native_obs": bool(args.native_obs), "max_past": args.max_past,
            "order_names": vocab.get("order_names") or {str(k): v for k, v in fx.demo_order_names(args.runs).items()}}
     # the actors compile their network calls: without this each starts a pool of ~32 compile workers
     # (~100 processes, several GB, idle after the first seconds)
