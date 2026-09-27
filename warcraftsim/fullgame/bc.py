@@ -212,6 +212,7 @@ def main(argv: list[str] | None = None) -> int:
             best = row["val_loss"]
             torch.save(ck, out / "policy.pt")
             info["best_epoch"] = epoch
+            (out / "bc.json").write_text(json.dumps(info, indent=1))  # (the dashboard: which epoch policy.pt is)
     info["status"] = "fitted"
     (out / "bc.json").write_text(json.dumps(info, indent=1))
     return 0

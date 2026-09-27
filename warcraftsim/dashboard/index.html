@@ -145,6 +145,11 @@ table.runs td, table.runs th { font-size:12px; padding:4px 8px; }
 .badge.collecting { background:#1e3a2c; color:var(--good); }
 table.matrix td, table.matrix th { text-align:center; padding:3px 8px; }
 table.matrix td.w { font-variant-numeric: tabular-nums; }
+.cks td { vertical-align:top; } .cks .role { color:var(--muted); font-size:12px; }
+.cks .tag { font-size:11px; padding:1px 6px; border-radius:9px; background:#2d3743; color:var(--muted); margin-right:4px; white-space:nowrap; }
+.cks .tag.lg { background:#1f3a44; color:#39c5cf; } .cks .tag.ev { background:#1e3a2c; color:var(--good); }
+.cks button, .cks a.dl { background:var(--panel); border:1px solid var(--line); border-radius:5px; color:var(--text);
+  padding:1px 7px; font:inherit; font-size:11.5px; cursor:pointer; text-decoration:none; margin-right:4px; }
 table.runs td.opts { font-family:ui-monospace, monospace; font-size:11.5px; }
 table.runs tr.shown td { background:var(--panel2); }
 .run .from, .run .note { font-size:11.5px; margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -731,6 +736,7 @@ function renderMain() {
         ["replays", "Replays", `<div id="media"></div>`],
         ["episodes", "Episodes", `<div id="episodes"></div>`],
         ["evals", "Evaluations", `<div style="color:var(--muted);margin-bottom:8px">bc eval of its checkpoints</div><div id="evals"></div>`],
+        ["checkpoints", "Checkpoints", `<div id="checkpoints"></div>`],
         ["spaces", "Spaces", `<div id="spaces"></div>`],
         ["launch", "Launch &amp; config", `<div id="launch"></div>`],
       ]);
@@ -742,6 +748,7 @@ function renderMain() {
     document.getElementById("notes").value = info.notes || "";  // edited elsewhere meanwhile
   }
   renderLineage(d);
+  renderCheckpoints(d);
   const match = info.kind === "match";
   if (match) {  // two players against each other: the score
     const eps = d.recent_episodes || [];
@@ -1017,6 +1024,7 @@ function renderBC(d) {
           </div>`],
         ...sections.map(([name, charts, id, title]) => [id, title, `<div style="color:var(--muted);margin-bottom:8px">${name}</div><div class="grid">${charts.map(box).join("")}</div>`, true]),
         ["evals", "Evaluations", `<div style="color:var(--muted);margin-bottom:8px">bc eval: the fitted network playing the task</div><div id="evals"></div>`],
+        ["checkpoints", "Checkpoints", `<div id="checkpoints"></div>`],
         ["children", "Runs from it", `<div id="bcchildren"></div>`],
         ["spaces", "Spaces", `<div id="spaces"></div>`],
         ["launch", "Commands", `<div id="launch"></div>`],
@@ -1059,6 +1067,7 @@ function renderBC(d) {
     }
   }
   renderEvals(evals);
+  renderCheckpoints(d);
   const kids = (info.children || []).map(n => state.runs.find(r => r.name === n)).filter(Boolean);
   setTabCount("children", kids.length, true);
   const ch = document.getElementById("bcchildren");
@@ -1190,6 +1199,7 @@ function renderFullBC(d) {
         ["play", "Play", `<div style="color:var(--muted);margin-bottom:8px">fullgame/play.py: the clone playing the built-in AI (every row: one launch)</div><div id="plays"></div>
           <div class="grid" style="margin-top:12px">${playCharts.map(chartBox).join("")}</div><div id="playmatrix" style="margin-top:12px"></div>`, true],
         ["replays", "Replays", `<div id="media"></div>`],
+        ["checkpoints", "Checkpoints", `<div id="checkpoints"></div>`],
         ["children", "Runs from it", `<div id="bcchildren"></div>`],
         ["launch", "Command", `<div id="launch"></div>`],
       ]);
@@ -1234,6 +1244,7 @@ function renderFullBC(d) {
     document.getElementById("playmatrix").innerHTML = matrixHtml(m, `The latest evaluation by matchup: the clone's race (rows) against the AI's (columns)`);
   } else document.getElementById("playmatrix").innerHTML = "";
   renderReplays(d);
+  renderCheckpoints(d);
   const kids = (info.children || []).map(n => state.runs.find(r => r.name === n)).filter(Boolean);
   setTabCount("children", kids.length, true);
   const ch = document.getElementById("bcchildren");
@@ -1244,6 +1255,38 @@ function renderFullBC(d) {
   const cmd = info.command || `python3 -m warcraftsim.fullgame.bc ` + Object.entries(a).filter(([k, v]) => v !== "" && v !== "None" && v !== "False" && k !== "runs" && k !== "device")
     .map(([k, v]) => `--${k.replace(/_/g, "-")} ${String(v).replace(/^\[|\]$/g, "").replace(/PosixPath\('([^']*)'\)/g, "$1").replace(/,/g, "")}`).join(" ");
   finishLaunch(document.getElementById("launch"), [`<div class="cmdhead"><span>Fitted with${info.command ? "" : " (rebuilt from its settings)"}</span><button class="copy" data-copy="${esc(cmd)}">copy</button></div><pre class="cmd">${esc(cmd)}</pre>`]);
+}
+
+// ---- saved checkpoints (runs, behavior cloning fits) -----------------------------------------------
+function ckCommand(d, c) {  // how to use one: play it (whole games) or pit it against a script (micro)
+  const info = d.info || {}, full = info.task === "fullgame" || String(info.task || "").startsWith("fullgame");
+  if (full) return `python3 -m warcraftsim.fullgame.play ${c.path} --games 16 --mirror`;
+  return `python -m warcraftsim.match ${c.path} script:amove --episodes 20`;
+}
+function renderCheckpoints(d) {
+  const el = document.getElementById("checkpoints"); if (!el) return;
+  const cks = d.checkpoints || [];
+  setTabCount("checkpoints", cks.length, false);
+  const key = cks.map(c => c.file + c.time + JSON.stringify(c.league || "") + JSON.stringify(c.eval || "")).join("|");
+  if (el.dataset.key === key) return;  // unchanged: keeps the scroll position
+  el.dataset.key = key;
+  const pct = v => v == null ? "–" : (100 * v).toFixed(0) + "%";
+  const mb = b => b >= 1e6 ? (b / 1e6).toFixed(1) + " MB" : (b / 1e3).toFixed(0) + " kB";
+  const base = `/files/${encodeURIComponent(d.info.name).replace(/%2F/g, "/")}/`;
+  el.innerHTML = cks.length ? `<div style="color:var(--muted);margin-bottom:8px">${cks.length} saved, newest first. Paths are relative to the repository.</div>
+    <table class="runs cks"><tr><th>checkpoint</th><th>saved</th><th>size</th><th></th><th></th></tr>` +
+    cks.map((c, i) => `<tr><td><b>${c.steps != null ? fmt(c.steps, 0) + " steps" : esc(c.file)}</b>${i === 0 && c.steps != null ? ` <span class="tag">latest</span>` : ""}
+        <div class="role">${c.role ? esc(c.role) + " · " : ""}<code>${esc(c.file)}</code></div></td>
+      <td>${ago(c.time)}</td><td>${mb(c.bytes)}</td>
+      <td>${c.league ? `<span class="tag lg" title="a league opponent: the learner's results against it">${esc(c.league.name)} · ${c.league.games || 0} games${c.league.win_rate != null ? ` · learner wins ${pct(c.league.win_rate)}` : ""}</span>` : ""}
+        ${c.eval ? `<span class="tag ev" title="its latest evaluation">evaluated: ${pct(c.eval.win_rate)} of ${c.eval.episodes}${c.eval.n > 1 ? ` (${c.eval.n} evaluations)` : ""}</span>` : ""}</td>
+      <td style="white-space:nowrap"><button data-copy="${esc(c.path)}" title="${esc(c.path)}">copy path</button><button data-copy="${esc(ckCommand(d, c))}" title="${esc(ckCommand(d, c))}">copy command</button><a class="dl" href="${base}${c.file.split("/").map(encodeURIComponent).join("/")}" download>download</a></td></tr>`).join("") + `</table>`
+    : `<div style="color:var(--muted)">no checkpoints saved</div>`;
+  el.querySelectorAll("[data-copy]").forEach(b => b.onclick = async () => {
+    const t = b.textContent;
+    try { await navigator.clipboard.writeText(b.dataset.copy); b.textContent = "copied"; } catch (e) { b.textContent = "select it"; }
+    setTimeout(() => b.textContent = t, 1500);
+  });
 }
 
 // ---- notes, lineage, launch ---------------------------------------------------------------------

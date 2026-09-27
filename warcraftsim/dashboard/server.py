@@ -233,6 +233,50 @@ def _spaces(info: dict) -> dict | None:
     return {**d, "from_current_code": True, "sizes_match": same}
 
 
+def _checkpoints(d: Path, repo: Path, evals: list[dict], league: dict | None = None, roles: dict | None = None) -> list[dict]:
+    """A run's saved checkpoints, newest first: checkpoints/**/*.pt|.bin (the torch trainer and
+    self-play: <agent steps>.pt; PufferLib: <env>/<time>/<steps>.bin) and the run directory's
+    own policy files (behavior cloning: policy.pt = the best epoch, last.pt; self-play: current.pt,
+    the weights the actors load). Each with its steps (from the name), size, time, its path
+    from the repository, the league member it is (self-play) and its evaluations."""
+    files = []
+    ck_dir = d / "checkpoints"
+    if ck_dir.is_dir():
+        files += [f for f in ck_dir.rglob("*") if f.suffix in (".pt", ".bin") and f.is_file()]
+    files += [d / n for n in ("policy.pt", "policy.bin", "last.pt", "current.pt") if (d / n).is_file()]
+    members = {}
+    for m in (league or {}).get("members", []):
+        if m.get("path"):
+            members[Path(m["path"]).name] = m
+    by_ck: dict[str, list[dict]] = {}
+    for e in evals:
+        if e.get("checkpoint"):
+            by_ck.setdefault(Path(e["checkpoint"]).name if "/checkpoints/" in e["checkpoint"] else e["checkpoint"], []).append(e)
+    out = []
+    for f in files:
+        try:
+            st = f.stat()
+        except OSError:
+            continue
+        rel = f.relative_to(d).as_posix()
+        try:
+            path = f.resolve().relative_to(repo.resolve()).as_posix()
+        except ValueError:
+            path = str(f)
+        row = {"file": rel, "path": path, "bytes": st.st_size, "time": st.st_mtime,
+               "steps": int(f.stem) if f.stem.isdigit() else None, "role": (roles or {}).get(f.name)}
+        m = members.get(f.name)
+        if m is not None:
+            row["league"] = {"name": m.get("name"), "games": m.get("games"), "win_rate": m.get("win_rate")}
+        ev = by_ck.get(f.name if f.parent.name == "checkpoints" or f.parent.parent.name == "checkpoints" else path, [])
+        if ev:
+            last = ev[-1]
+            row["eval"] = {"win_rate": last.get("win_rate"), "episodes": last.get("episodes"), "n": len(ev)}
+        out.append(row)
+    out.sort(key=lambda r: (r["steps"] is not None, r["steps"] or 0, r["time"]), reverse=True)
+    return out
+
+
 def _pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -483,7 +527,18 @@ class Dashboard:
             info["datasets"] = [f"fullgame/{Path(x).name}" for x in str(info.get("data", "")).split()
                                 if (self.runs_dir / "fullgame" / Path(x).name / "collect.json").exists()]
             media = self.cache.read(d / "media.jsonl") if (d / "media.jsonl").exists() else []
-            return {"kind": "bc", "info": info, "fit": self.cache.read(d / "fit.jsonl"), "plays": self._plays(d),
+            best = info.get("best_epoch")
+            fit = self.cache.read(d / "fit.jsonl")
+            last_epoch = fit[-1].get("epoch") if fit else None
+            roles = {"policy.pt": "the epoch with the lowest validation loss" + (f" (epoch {best})" if best else ""),
+                     "last.pt": "the last epoch" + (f" (epoch {last_epoch})" if last_epoch else "")}
+            plays = self._plays(d)
+            ck = _checkpoints(d, self.runs_dir.parent, [], None, roles)
+            for row in ck:  # its play.py evaluations
+                ev = [p for p in plays if p.get("checkpoint") and Path(p["checkpoint"]).name == Path(row["file"]).name]
+                if ev:
+                    row["eval"] = {"win_rate": ev[-1]["win_rate"], "episodes": ev[-1]["games"], "n": len(ev)}
+            return {"kind": "bc", "info": info, "fit": self.cache.read(d / "fit.jsonl"), "plays": plays, "checkpoints": ck,
                     "summary": self._bc_summary(d), "media": _latest_media(d, media),
                     "replay_hint": "the clone against the built-in AI (fullgame/play.py --videos)"}
         info["notes"] = self.notes(d)
@@ -501,6 +556,8 @@ class Dashboard:
                     row[key] = float(v)
             rows.append(row)
         return {"kind": "bc", "info": info, "fit": self.cache.read(d / "fit.jsonl"),
+                "checkpoints": _checkpoints(d, self.runs_dir.parent, self.cache.read(d / "evals.jsonl"), None,
+                                            {"policy.pt": "the fitted network", "policy.bin": "the fitted network (PufferLib)"}),
                 "episodes": _binned(list(range(1, len(rows) + 1)), rows), "evals": self.cache.read(d / "evals.jsonl"),
                 "summary": self._bc_summary(d)}
 
@@ -744,7 +801,11 @@ class Dashboard:
         calib_steps = _interp_steps([m["time"] for m in calib], train_rows)
         calibration = [{"steps": st, "episode": m["episode"], "value0": m["value0"], "return0": m["return0"]}
                        for st, m in zip(calib_steps, calib)]
+        league = _read_json(d / "league.json")
+        evals = self.cache.read(d / "evals.jsonl")
         return {
+            "checkpoints": _checkpoints(d, self.runs_dir.parent, evals, league,
+                                        {"current.pt": "the weights the actors play with"}),
             "calibration": calibration,
             "info": info,
             "train": _binned([r.get("agent_steps", 0) for r in train], train),

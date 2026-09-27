@@ -300,6 +300,7 @@ The dashboard (`python -m warcraftsim dashboard`) shows:
   * **Episodes**: the recent episodes with their combat and action statistics;
   * **Evaluations**: `bc eval` results for its checkpoints;
   * **Spaces**: the observation (its blocks, every feature by name and index), the action heads with their choices, the action masks and the reward;
+  * **Checkpoints**: the saved checkpoints, newest first, with the league opponent each one is and its evaluations; copy its path or a command that uses it, or download it (behavior cloning fits: `policy.pt`, `last.pt`);
   * **Launch & config**: the commands (copyable), the git commit, the whole configuration;
 * per sweep: its description, where its runs started from, a table of its runs, its launch command;
 * per behavior cloning dataset: the demonstrations (outcomes, action mix, combat), the fit per epoch (loss, accuracy, recall and precision per unit order), evaluations, and the runs started from it.
