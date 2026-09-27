@@ -289,7 +289,7 @@ Each run writes `runs/<name>/`, which the dashboard shows live:
 * `checkpoints/`.
 
 The dashboard (`python -m warcraftsim dashboard`) shows:
-* the run list: runs, sweeps as collapsible groups (a checkbox compares all of a sweep's runs), and behavior cloning datasets. Each run shows its parent and the first line of its notes; the filter matches names, tasks, sweep options, notes and parents;
+* the run list: runs, sweeps as collapsible groups (a checkbox compares all of a sweep's runs), and behavior cloning datasets. Each run shows its parent and the first line of its notes; the filter matches names, tasks, sweep options, notes and parents, and toggles list only some kinds (training, self-play, matches, BC micro, BC whole game, demos);
 * per run, in tabs:
   * **Overview**: progress cards, notes (editable), and lineage: what it started from (random weights, another run's checkpoint, or a fitted script), the chain back from there, its sweep, and the runs started from it;
   * **Outcomes**: win rate, win/draw/loss, return, episode length;
