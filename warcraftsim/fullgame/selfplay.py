@@ -45,10 +45,12 @@ import torch
 
 from . import features as fx
 from .collect import claim_slot
+from .play import unit_rows
 from .model import FullGameNet, act, evaluate, load
 from ..rl.league import Member, pfsp_weight
 
 RUNS = Path(__file__).resolve().parents[2] / "runs"
+DEAD_FLAG = fx.DEAD  # (the unit flags' dead bit: an int test, not an enum operation)
 
 
 # ---- actors ---------------------------------------------------------------------------------------
@@ -105,8 +107,14 @@ class Nets:
 class Inference:
     """Batches the network calls of an actor's agents (one per game side) on the GPU."""
 
-    def __init__(self, nets: Nets, device):
-        self.nets, self.device = nets, device
+    def __init__(self, nets: Nets, device, max_batch: int, compile_: bool = True):
+        self.nets, self.device, self.max_batch = nets, device, max_batch
+        # the current policy's calls compiled with CUDA graphs: the network is small, its calls
+        # latency-bound (~150 kernels): 4.6 instead of 9.2 ms. Graphs need fixed shapes: the batch
+        # padded to max_batch, the entities to MAX_ENT. Past snapshots (fewer calls) run eagerly.
+        self.compiled = None
+        if compile_ and device.type == "cuda":
+            self.compiled = torch.compile(lambda *a: act(self.nets.current, *a), mode="reduce-overhead", dynamic=False)
         self.q: queue.Queue = queue.Queue()
         threading.Thread(target=self._run, daemon=True).start()
 
@@ -150,17 +158,20 @@ class Inference:
 
     @torch.no_grad()
     def _forward(self, net: FullGameNet, sts: list[dict]) -> list[dict]:
-        B, E = len(sts), max(st["n"] for st in sts)
+        fixed = self.compiled is not None and net is self.nets.current and len(sts) <= self.max_batch
+        B, E = (self.max_batch, fx.MAX_ENT) if fixed else (len(sts), max(st["n"] for st in sts))
         ent = np.zeros((B, E, fx.F), np.float32)
         typ, cur = np.zeros((B, E), np.int64), np.zeros((B, E), np.int64)
         mask = np.zeros((B, E), bool)
-        glob = np.stack([st["glob"] for st in sts])
-        n_own = np.array([min(st["n_own"], fx.MAX_OWN) for st in sts])
+        mask[:, 0] = True  # (padding rows: one entity, or attention over nothing gives NaNs)
+        glob = np.zeros((B, len(sts[0]["glob"])), np.float32)
+        n_own = np.zeros(B, np.int64)
         for i, st in enumerate(sts):
             n = st["n"]
             ent[i, :n], typ[i, :n], cur[i, :n], mask[i, :n] = st["ent"], st["type"], st["cur"], True
+            glob[i], n_own[i] = st["glob"], min(st["n_own"], fx.MAX_OWN)
         t = lambda a: torch.from_numpy(a).to(self.device, non_blocking=True)  # noqa: E731
-        out = act(net, t(ent), t(typ), t(cur), t(mask), t(glob), t(n_own))
+        out = (self.compiled if fixed else lambda *a: act(net, *a))(t(ent), t(typ), t(cur), t(mask), t(glob), t(n_own))
         if self.device.type == "cuda":  # wait sleeping: CUDA's default sync spins a core the games need
             done = torch.cuda.Event(blocking=True)
             done.record()
@@ -216,16 +227,21 @@ class Trajectory:
         self.steps = self.steps[-1:] if bootstrap else []
 
 
+def material(obs, values: dict) -> dict[int, float]:
+    """What each player's living units and buildings cost, times their hit points left: {0: .., 1: ..}."""
+    out = {0: 0.0, 1: 0.0}
+    for u in obs.units:
+        if u.owner in (0, 1) and not int(u.flags) & DEAD_FLAG:
+            out[u.owner] += values.get(str(u.type_id), 0) * (u.hp / u.max_hp if u.max_hp > 0 else 1.0)
+    return out
+
+
 def potential(obs, side: int, values: dict, scale: float) -> float:
     """Reward shaping's potential: the side's material lead (what its living units and buildings
     cost, times their hit points left, minus the enemy's) over `scale`. Full information: the
     reward is not an input. Training a unit raises it, destroying enemy ones raises it."""
-    lead = 0.0
-    for u in obs.units:
-        if u.alive and u.owner in (0, 1):
-            v = values.get(str(u.type_id), 0) * (u.hp / u.max_hp if u.max_hp > 0 else 1.0)
-            lead += v if u.owner == side else -v
-    return lead / scale
+    m = material(obs, values)
+    return (m[side] - m[1 - side]) / scale
 
 
 def unit_values() -> dict[str, int]:
@@ -338,11 +354,13 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         if keys[s] == "current":
             trajs[s] = Trajectory(cfg, out_q, {"worker": wid, "opponent": opp["name"]})
     t, t0 = 0, time.time()
-    values = cfg["values"]
-    phi = {s: potential(obs, s, values, cfg["shaping_scale"]) for s in trajs}  # at the last recorded state
+    values, scale = cfg["values"], cfg["shaping_scale"]
+    mat = material(obs, values)
+    phi = {s: (mat[s] - mat[1 - s]) / scale for s in trajs}  # at the last recorded state
     ret = {s: 0.0 for s in trajs}
     while True:
-        sts = {s: bot.observe(obs, t) for s, bot in bots.items()}
+        rows = unit_rows(obs, t)  # once for both sides
+        sts = {s: bot.observe(obs, t, rows) for s, bot in bots.items()}
         live = [s for s in bots if sts[s] is not None]
         results = infer.request([(keys[s], sts[s]) for s in live]) if live else []
         cmds, spans = [], {}
@@ -354,16 +372,17 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             cmds += c
             if s in trajs:
                 trajs[s].add(sts[s], res)
-                phi[s] = potential(obs, s, values, cfg["shaping_scale"])
+                phi[s] = (mat[s] - mat[1 - s]) / scale
         obs = g.step(cmds)
         for s, (a, b) in spans.items():
             bots[s].accepted(cmds[a:b], obs.command_results[a:b])
         t += 1
+        mat = material(obs, values)
         if obs.game_over or t >= cfg["max_steps"]:
             break
         for s, tr in trajs.items():  # shaping: gamma * phi(s') - phi(s), for the step just taken
             if s in spans and tr.steps:  # (it recorded a step this time)
-                r = cfg["shaping"] * (cfg["gamma"] * potential(obs, s, values, cfg["shaping_scale"]) - phi[s])
+                r = cfg["shaping"] * (cfg["gamma"] * (mat[s] - mat[1 - s]) / scale - phi[s])
                 if tr.steps:
                     tr.steps[-1]["reward"] += r
                     ret[s] += r
@@ -372,7 +391,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         r = obs.players.get(s)
         res = r.result.name if r is not None else "TIE"
         outcome[s] = 1.0 if res == "VICTORY" else -1.0 if res == "DEFEAT" else 0.0
-    lead = {s: potential(obs, s, values, cfg["shaping_scale"]) for s in (0, 1)}
+    lead = {s: (mat[s] - mat[1 - s]) / scale for s in (0, 1)}
     for s, tr in trajs.items():
         # the end: the outcome; a tie (the time limit) goes to the side ahead in material; and the
         # potential back to 0 (so the shaping only moves credit around and sums to ~0 over a game)
@@ -444,7 +463,7 @@ def actor_main(wid: int, cfg: dict, out_q, stop) -> None:
         while nets.current is None and not stop.is_set() and os.getppid() == cfg["learner_pid"]:
             time.sleep(1)
             nets.reload()
-        infer = Inference(nets, device)
+        infer = Inference(nets, device, 2 * cfg["games_per_actor"], cfg["compile"])
         threads = [threading.Thread(target=game_loop, args=(wid, k, cfg, infer, out_q, stop), daemon=True)
                    for k in range(cfg["games_per_actor"])]
         for th in threads:
@@ -651,6 +670,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--value-warmup", type=int, default=10, help="first updates: the value head only")
     ap.add_argument("--max-grad-norm", type=float, default=1.0)
     ap.add_argument("--bf16", type=int, default=1, help="the updates' matmuls in bfloat16")
+    ap.add_argument("--compile", type=int, default=1, help="the actors' network calls compiled (CUDA graphs)")
     ap.add_argument("--chunk", type=int, default=64, help="steps per trajectory piece an actor sends")
     ap.add_argument("--checkpoint-every", type=int, default=20)
     ap.add_argument("--video-every", type=float, default=4.0, help="minutes between game videos (0: none; the actors take turns)")
@@ -718,7 +738,7 @@ def main(argv: list[str] | None = None) -> int:
            "seed": args.seed, "slot": slot, "video_every": args.video_every, "scripted_reset": bool(args.scripted_reset),
            "agent_games_factor": args.agent_games_factor, "mirror": bool(args.mirror), "learner_pid": os.getpid(),
            "actors": args.actors, "values": unit_values(), "shaping": args.shaping, "shaping_scale": args.shaping_scale,
-           "tie_break": args.tie_break}
+           "tie_break": args.tie_break, "compile": bool(args.compile)}
     ctx = torch.multiprocessing.get_context("spawn")
     out_q, stop = ctx.Queue(maxsize=4096), ctx.Event()
     actors = [ctx.Process(target=actor_main, args=(w, cfg, out_q, stop), daemon=True) for w in range(args.actors)]

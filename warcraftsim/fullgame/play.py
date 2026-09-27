@@ -73,12 +73,13 @@ class BCAgent:
     def _sample(self, logits: torch.Tensor) -> torch.Tensor:
         return torch.distributions.Categorical(logits=logits / self.temperature).sample()
 
-    def observe(self, obs: Observation, t: int) -> dict | None:
-        """This step's view (features.View.step), or None when the player has no units."""
+    def observe(self, obs: Observation, t: int, rows: np.ndarray | None = None) -> dict | None:
+        """This step's view (features.View.step), or None when the player has no units. `rows`:
+        unit_rows(obs, t) when already made (both sides of a self-play game share them)."""
         for e in obs.events:
             if int(e.kind) == int(EventKind.TREE_DEATH):
                 self.trees.pop(e.a, None)
-        rows = unit_rows(obs, t)
+        rows = unit_rows(obs, t) if rows is None else rows
         p = obs.players.get(self.player)
         me = (np.asarray([t, self.player, p.gold, p.lumber, p.food_used, p.food_cap, p.upkeep, p.gold_gathered,
                           p.lumber_gathered, p.structures, int(p.result)]) if p is not None else None)
