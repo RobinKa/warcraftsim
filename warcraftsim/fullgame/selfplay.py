@@ -38,7 +38,6 @@ import threading
 import time
 import traceback
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -261,7 +260,7 @@ def _choose(rng: random.Random, options: list[dict]) -> dict:
     return options[-1]
 
 
-def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop) -> None:
+def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render_q) -> None:
     from ..runtime.instance import Agent, BuiltinAI, GameInstance, GameSetup
     from .play import BCAgent
 
@@ -314,7 +313,7 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop) -> Non
                     ep = play_one(g, obs, cfg, vocab, races, side, opp, infer, out_q, wid, record=film)
                     if film:
                         next_video = time.time() + period
-                        film_game(g, ep, cfg, wid)
+                        film_game(g, ep, cfg, wid, render_q)
                     if n + 1 < per_launch:
                         due = films and time.time() >= next_video
                         fresh = due or g._ended  # (a filmed game ended its process: the restart relaunches)
@@ -420,12 +419,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     return ep
 
 
-_RENDERS = ThreadPoolExecutor(1)  # an actor's video renders, in turn
-
-
-def film_game(g, ep: dict, cfg: dict, wid: int) -> None:
-    """Save the game's replay and render it to a video in the background (runs/<name>/videos,
-    listed in media.jsonl for the dashboard)."""
+def film_game(g, ep: dict, cfg: dict, wid: int, render_q) -> None:
+    """Save the game's replay (and the trace for its panel) and queue it for the renderer
+    process (render_main): rendering in the actor took its games' GIL for minutes."""
     run_dir = Path(cfg["run_dir"])
     stem = f"game-{int(ep['time'])}-a{wid}"
     try:
@@ -433,28 +429,49 @@ def film_game(g, ep: dict, cfg: dict, wid: int) -> None:
     except Exception as e:  # noqa: BLE001
         print(f"video: replay not saved: {e}", flush=True)
         return
-    setup = g.setup
     trace = ep.pop("trace", None)
     if trace is not None:
         replay.with_suffix(".trace.json").write_text(json.dumps(trace))
+    row = {"episode": ep.get("episode_id", ""), "title": f"{ep['race']} vs {ep['opponent_race']} ({ep['opponent']})",
+           "outcome": ep["outcome"], "return": ep["return"],
+           "sub": f"{ep['game_time'] / 60:.1f} game minutes · material lead {ep['material_lead']:+.2f} · return {ep['return']:+.2f}",
+           "opponent": ep["opponent"], "game_time": ep["game_time"]}
+    render_q.put((g.setup, str(replay), stem, trace, row, time.time()))
 
-    def render() -> None:
-        from ..video import render_replay
-        from .overlay import FullGameOverlay
-        try:
-            out = render_replay(setup, replay, run_dir / "videos" / f"{stem}.mp4", name=f"fgvid{cfg['slot']}_{wid}", crf=28,
-                                overlay=FullGameOverlay(trace) if trace else None,
-                                fit_all=True, max_steps=cfg["max_steps"] + 40)
-            with open(run_dir / "media.jsonl", "a") as f:
-                f.write(json.dumps({"time": time.time(), "kind": "video", "file": str(out.relative_to(run_dir)),
-                                    "episode": ep.get("episode_id", ""), "title": f"{ep['race']} vs {ep['opponent_race']} "
-                                    f"({ep['opponent']})", "outcome": ep["outcome"], "return": ep["return"],
-                                    "sub": f"{ep['game_time'] / 60:.1f} game minutes · material lead {ep['material_lead']:+.2f} "
-                                           f"· return {ep['return']:+.2f}",
-                                    "opponent": ep["opponent"], "game_time": ep["game_time"]}) + "\n")
-        except Exception as e:  # noqa: BLE001 (one video fewer)
-            print(f"video: {stem} not rendered: {e}", flush=True)
-    _RENDERS.submit(render)  # one at a time: they share the render instance's name
+
+def render_main(cfg: dict, render_q, stop) -> None:
+    """The run's video renderer: one game at a time, real time (the game's own renderer and sound);
+    listed in media.jsonl for the dashboard. When it falls behind, the older games are skipped."""
+    import signal
+
+    from ..runtime import reaper
+    from ..video import render_replay
+    from .overlay import FullGameOverlay
+    signal.signal(signal.SIGTERM, _exit)
+    run_dir = Path(cfg["run_dir"])
+    try:
+        while not stop.is_set() and os.getppid() == cfg["learner_pid"]:
+            try:
+                job = render_q.get(timeout=2)
+            except queue.Empty:
+                continue
+            while True:  # the newest waiting game
+                try:
+                    job = render_q.get_nowait()
+                except queue.Empty:
+                    break
+            setup, replay, stem, trace, row, t = job
+            try:
+                out = render_replay(setup, Path(replay), run_dir / "videos" / f"{stem}.mp4", name=f"fgvid{cfg['slot']}",
+                                    crf=28, overlay=FullGameOverlay(trace) if trace else None, fit_all=True,
+                                    max_steps=cfg["max_steps"] + 40)
+                with open(run_dir / "media.jsonl", "a") as f:
+                    f.write(json.dumps({"time": time.time(), "kind": "video", "file": str(out.relative_to(run_dir)),
+                                        **row}) + "\n")
+            except Exception as e:  # noqa: BLE001 (one video fewer)
+                print(f"video: {stem} not rendered: {e}", flush=True)
+    finally:
+        reaper.reap()
 
 
 def _exit(*_):
@@ -465,7 +482,7 @@ def _interrupt(*_):
     raise KeyboardInterrupt
 
 
-def actor_main(wid: int, cfg: dict, out_q, stop) -> None:
+def actor_main(wid: int, cfg: dict, out_q, stop, render_q) -> None:
     import signal
 
     from ..runtime import reaper
@@ -479,7 +496,7 @@ def actor_main(wid: int, cfg: dict, out_q, stop) -> None:
             time.sleep(1)
             nets.reload()
         infer = Inference(nets, device, 2 * cfg["games_per_actor"], cfg["compile"])
-        threads = [threading.Thread(target=game_loop, args=(wid, k, cfg, infer, out_q, stop), daemon=True)
+        threads = [threading.Thread(target=game_loop, args=(wid, k, cfg, infer, out_q, stop, render_q), daemon=True)
                    for k in range(cfg["games_per_actor"])]
         for th in threads:
             th.start()
@@ -794,8 +811,10 @@ def main(argv: list[str] | None = None) -> int:
     # (~100 processes, several GB, idle after the first seconds)
     os.environ.setdefault("TORCHINDUCTOR_COMPILE_THREADS", "1")
     ctx = torch.multiprocessing.get_context("spawn")
-    out_q, stop = ctx.Queue(maxsize=4096), ctx.Event()
-    actors = [ctx.Process(target=actor_main, args=(w, cfg, out_q, stop), daemon=True) for w in range(args.actors)]
+    out_q, stop, render_q = ctx.Queue(maxsize=4096), ctx.Event(), ctx.Queue()
+    actors = [ctx.Process(target=actor_main, args=(w, cfg, out_q, stop, render_q), daemon=True) for w in range(args.actors)]
+    if args.video_every > 0:
+        actors.append(ctx.Process(target=render_main, args=(cfg, render_q, stop), daemon=True))
     for p in actors:
         p.start()
     info.update(status="training", started=time.time())
