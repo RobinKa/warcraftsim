@@ -48,9 +48,10 @@ def unit_rows(obs: Observation, t: int) -> np.ndarray:
 class BCAgent:
     """The policy playing one player of a live game."""
 
-    def __init__(self, net, vocab: dict, player: int, device, temperature: float = 1.0):
+    def __init__(self, net, vocab: dict, player: int, device, temperature: float = 1.0, order_temperature: float = 1.0):
         self.net, self.enc, self.player, self.device = net, fx.Encoder(vocab), player, device
         self.temperature = temperature
+        self.order_temperature = order_temperature  # sharpens the choice among orders only
         self.orders = [(0, 0)] + [tuple(o) for o in vocab["orders"]]  # class -> (order id, kind)
         self.view = None
         self.trees: dict[int, tuple[int, int]] = {}
@@ -89,6 +90,9 @@ class BCAgent:
             O = min(n_own, fx.MAX_OWN)
             logits = self.net.order_logits(g, u[:, :O], typ, torch.tensor([O], device=dev))
             order = self._sample(logits)  # [1, O]
+            if self.order_temperature != 1.0:  # whether a unit gets an order stays as learned; which one sharpens
+                again = self._sample(logits[..., 1:] / self.order_temperature) + 1
+                order = torch.where(order > 0, again, order)
             ptr, xl, z = self.net.target_logits(g, u, mask, order)
             tgt, bx_ = self._sample(ptr)[0], self._sample(xl)
             by = self._sample(self.net.y_logits(z, bx_))[0]
@@ -122,14 +126,14 @@ class BCAgent:
 
 def play_game(net, vocab: dict, device, name: str, map_name: str, race: str, ai_race: str, difficulty: str,
               agent_side: int, handicap: int, max_minutes: float, step_seconds: float,
-              temperature: float) -> dict:
+              temperature: float, order_temperature: float = 1.0) -> dict:
     agent = Agent(race, handicap=handicap)
     ai = BuiltinAI(ai_race, difficulty, handicap=handicap)
     slots = [agent, ai] if agent_side == 0 else [ai, agent]
     setup = GameSetup(map=map_name, slots=slots, step_seconds=step_seconds, max_game_seconds=max_minutes * 60,
                       victory="decisive")
     races = [fx.RACES.index(s.race) if s.race in fx.RACES else 0 for s in slots]
-    bot = BCAgent(net, vocab, agent_side, device, temperature)
+    bot = BCAgent(net, vocab, agent_side, device, temperature, order_temperature)
     t0 = time.time()
     with GameInstance(setup, name=name, timeout=180) as g:
         obs = g.start()
@@ -174,6 +178,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-minutes", type=float, default=4.0)
     ap.add_argument("--step-seconds", type=float, default=0.5)
     ap.add_argument("--temperature", type=float, default=1.0)
+    ap.add_argument("--order-temperature", type=float, default=1.0,
+                    help="sharpens which order a unit gets, not whether it gets one")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", type=Path, help="results (.jsonl; default: next to the checkpoint, play.jsonl)")
     args = ap.parse_args(argv)
@@ -192,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
         name = free.pop()
         try:
             r = play_game(net, vocab, device, name, args.map, race, ai_race, args.difficulty, side, args.handicap,
-                          args.max_minutes, args.step_seconds, args.temperature)
+                          args.max_minutes, args.step_seconds, args.temperature, args.order_temperature)
         except Exception as e:  # noqa: BLE001 (one game fewer)
             print(f"game {i}: failed: {e}", flush=True)
             return None

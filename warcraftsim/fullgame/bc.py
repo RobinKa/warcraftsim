@@ -130,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--d", type=int, default=192)
     ap.add_argument("--layers", type=int, default=3)
+    ap.add_argument("--dropout", type=float, default=0.1)
     ap.add_argument("--val-games", type=int, default=8)
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--max-games", type=int, default=0)
@@ -154,7 +155,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.note:
         (out / "notes.md").write_text(args.note + "\n")
     device = torch.device(args.device)
-    net = FullGameNet(enc.n_types, enc.n_cur, enc.n_orders, enc.G, d=args.d, layers=args.layers).to(device)
+    net = FullGameNet(enc.n_types, enc.n_cur, enc.n_orders, enc.G, d=args.d, layers=args.layers,
+                      dropout=args.dropout).to(device)
     net.allowed[0] = True  # unknown unit types: any order
     opt = torch.optim.AdamW(net.parameters(), lr=args.lr, weight_decay=1e-4)
     data = Steps(train, vocab, args.batch)
@@ -164,6 +166,7 @@ def main(argv: list[str] | None = None) -> int:
     t0 = time.time()
     total_batches = None
     step = 0
+    best = float("inf")
     for epoch in range(1, args.epochs + 1):
         data.epoch = epoch
         loader = torch.utils.data.DataLoader(data, batch_size=None, num_workers=args.workers, persistent_workers=False,
@@ -198,7 +201,12 @@ def main(argv: list[str] | None = None) -> int:
               f"{va['order_acc']:.3f} rate {va['order_rate_pred']:.3f} (actual {va['orders_per_unit_step']:.3f}) "
               f"target {va['target_acc']:.3f} point err {va['point_error_bins']:.1f} bins ({n} batches, "
               f"{time.time() - t0:.0f}s)", flush=True)
-        torch.save({"model": net.state_dict(), "config": net.config, "vocab": vocab, "epoch": epoch}, out / "policy.pt")
+        ck = {"model": net.state_dict(), "config": net.config, "vocab": vocab, "epoch": epoch, "val_loss": row["val_loss"]}
+        torch.save(ck, out / "last.pt")
+        if row["val_loss"] < best:  # policy.pt: the epoch with the lowest validation loss
+            best = row["val_loss"]
+            torch.save(ck, out / "policy.pt")
+            info["best_epoch"] = epoch
     info["status"] = "fitted"
     (out / "bc.json").write_text(json.dumps(info, indent=1))
     return 0

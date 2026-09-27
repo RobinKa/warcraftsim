@@ -20,15 +20,16 @@ NEG = -1e9
 
 class FullGameNet(nn.Module):
     def __init__(self, n_types: int, n_cur: int, n_orders: int, G: int, d: int = 192, heads: int = 4,
-                 layers: int = 3):
+                 layers: int = 3, dropout: float = 0.0):
         super().__init__()
-        self.config = dict(n_types=n_types, n_cur=n_cur, n_orders=n_orders, G=G, d=d, heads=heads, layers=layers)
+        self.config = dict(n_types=n_types, n_cur=n_cur, n_orders=n_orders, G=G, d=d, heads=heads, layers=layers,
+                           dropout=dropout)
         self.d = d
         self.ent = nn.Linear(fx.F, d)
         self.type_emb = nn.Embedding(n_types, d)
         self.cur_emb = nn.Embedding(n_cur, d)
         self.glob = nn.Sequential(nn.Linear(G, d), nn.ReLU(), nn.Linear(d, d))
-        layer = nn.TransformerEncoderLayer(d, heads, 4 * d, dropout=0.0, batch_first=True, norm_first=True)
+        layer = nn.TransformerEncoderLayer(d, heads, 4 * d, dropout=dropout, batch_first=True, norm_first=True)
         self.transformer = nn.TransformerEncoder(layer, layers, norm=nn.LayerNorm(d), enable_nested_tensor=False)
         self.order = nn.Sequential(nn.Linear(2 * d, d), nn.ReLU(), nn.Linear(d, n_orders))
         self.order_emb = nn.Embedding(n_orders, d)
