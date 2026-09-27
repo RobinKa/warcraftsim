@@ -79,3 +79,18 @@ def test_dashboard_collection_and_plays(tmp_path):
     (p,) = fit["plays"]
     assert (p["games"], p["wins"], p["losses"], p["win_rate"]) == (2, 1, 1, 0.5)
     assert p["matrix"]["human"]["orc"] == [1, 0, 1]
+
+
+def test_describe_spaces_names_orders():
+    code = lambda s: int.from_bytes(s.encode(), "big")  # noqa: E731
+    vocab = {"types": [code("hpea")], "current_orders": [851986], "upgrades": [code("Rhma")],
+             "orders": [[851983, fx.UNIT], [code("hpea"), fx.IMMEDIATE], [code("Rhma"), fx.IMMEDIATE],
+                        [code("hbar"), fx.POINT]],
+             "order_names": {"851983": "attack"}}
+    sp = fx.describe_spaces(vocab)
+    order = sp["actions"]["heads"][0]
+    assert order["options"] == ["none", "attack (unit)", "train hpea", "research Rhma", "build hbar"]
+    assert order["size"] == 5 and [h["name"] for h in sp["actions"]["heads"]][1:] == ["target unit (pointer)", "point x", "point y (given x)"]
+    glob = sp["observation"]["blocks"][0]
+    assert len(glob["features"]) == fx.Encoder(vocab).G  # every global feature named
+    assert len(sp["observation"]["blocks"][1]["features"]) == fx.F
