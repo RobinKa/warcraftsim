@@ -94,3 +94,17 @@ def test_describe_spaces_names_orders():
     glob = sp["observation"]["blocks"][0]
     assert len(glob["features"]) == fx.Encoder(vocab).G  # every global feature named
     assert len(sp["observation"]["blocks"][1]["features"]) == fx.F
+
+
+def test_material_potential():
+    from types import SimpleNamespace as U
+
+    from warcraftsim.fullgame.selfplay import potential
+    foot, hall = int.from_bytes(b"hfoo", "big"), int.from_bytes(b"htow", "big")
+    values = {str(foot): 135, str(hall): 590}
+    obs = U(units=[U(alive=True, owner=0, type_id=foot, hp=210, max_hp=420),   # half a footman: 67.5
+                   U(alive=True, owner=1, type_id=hall, hp=1500, max_hp=1500),  # a whole town hall: 590
+                   U(alive=False, owner=0, type_id=hall, hp=0, max_hp=1500),    # dead: nothing
+                   U(alive=True, owner=12, type_id=foot, hp=420, max_hp=420)])  # neutral: nothing
+    assert potential(obs, 0, values, 100.0) == pytest.approx((67.5 - 590) / 100)
+    assert potential(obs, 1, values, 100.0) == pytest.approx(-(67.5 - 590) / 100)  # zero-sum

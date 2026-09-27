@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import math
 import os
 import queue
 import random
@@ -36,6 +37,7 @@ import sys
 import threading
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -210,6 +212,38 @@ class Trajectory:
         self.steps = self.steps[-1:] if bootstrap else []
 
 
+def potential(obs, side: int, values: dict, scale: float) -> float:
+    """Reward shaping's potential: the side's material lead (what its living units and buildings
+    cost, times their hit points left, minus the enemy's) over `scale`. Full information: the
+    reward is not an input. Training a unit raises it, destroying enemy ones raises it."""
+    lead = 0.0
+    for u in obs.units:
+        if u.alive and u.owner in (0, 1):
+            v = values.get(str(u.type_id), 0) * (u.hp / u.max_hp if u.max_hp > 0 else 1.0)
+            lead += v if u.owner == side else -v
+    return lead / scale
+
+
+def unit_values() -> dict[str, int]:
+    """What each unit type costs (gold + lumber, the game's own tables): {type id: value}."""
+    from ..data.mpq import GameArchives
+    from ..data.objects import parse_slk
+    with GameArchives() as g:
+        rows = parse_slk(g.read("Units\\UnitBalance.slk").decode("latin-1"))
+    out = {}
+    for r in rows:
+        oid = r.get("unitBalanceID", "")
+        if len(oid) != 4:
+            continue
+        try:
+            v = int(float(r.get("goldcost") or 0)) + int(float(r.get("lumbercost") or 0))
+        except ValueError:
+            continue
+        if v > 0:
+            out[str(int.from_bytes(oid.encode("latin-1"), "big"))] = v
+    return out
+
+
 def _choose(rng: random.Random, options: list[dict]) -> dict:
     total = sum(o["p"] for o in options)
     x = rng.random() * total
@@ -225,8 +259,11 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop) -> Non
     from .play import BCAgent
 
     rng = random.Random(cfg["seed"] * 1000 + wid * 16 + k)
-    films = wid == 0 and k == 0 and cfg["video_every"] > 0  # this game slot records the videos
-    next_video = time.time()  # the first game at once: something to watch early
+    # videos: each actor's first game slot in turn (together one every video_every minutes); the
+    # filmed game runs in a fresh process, so its replay holds just that game
+    films = k == 0 and cfg["video_every"] > 0
+    period = cfg["video_every"] * 60 * cfg["actors"]
+    next_video = time.time() + wid * cfg["video_every"] * 60  # actor 0 at once
     vocab = json.loads(Path(cfg["vocab"]).read_text())
     spec_path = Path(cfg["run_dir"]) / "league_spec.json"
     name = f"fgsp{cfg['slot']}_{wid}_{k}"
@@ -254,6 +291,7 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop) -> Non
         try:
             with GameInstance(setup, name=name, timeout=120) as g:
                 obs = g.start()
+                fresh = True
                 for n in range(per_launch):
                     if stop.is_set() or os.getppid() != cfg["learner_pid"]:
                         return
@@ -264,13 +302,15 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop) -> Non
                     opp = ({"name": f"script:ai-{ai['difficulty']}", "kind": "ai"} if ai["kind"] == "ai"
                            else _choose(rng, spec["agents"]))
                     # a video: the first game of a launch (its replay then holds just this game)
-                    film = films and n == 0 and time.time() >= next_video
+                    film = films and fresh and time.time() >= next_video
                     ep = play_one(g, obs, cfg, vocab, races, side, opp, infer, out_q, wid)
                     if film:
-                        next_video = time.time() + cfg["video_every"] * 60
-                        film_game(g, ep, cfg)
+                        next_video = time.time() + period
+                        film_game(g, ep, cfg, wid)
                     if n + 1 < per_launch:
-                        obs = g.restart()  # after a video: a new launch
+                        due = films and time.time() >= next_video
+                        fresh = due or g._ended  # (a filmed game ended its process: the restart relaunches)
+                        obs = g.restart(relaunch=due)
         except Exception as e:  # noqa: BLE001 (a new launch)
             print(f"actor {wid}/{k}: {type(e).__name__}: {e}", flush=True)
             time.sleep(2)
@@ -294,6 +334,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         if keys[s] == "current":
             trajs[s] = Trajectory(cfg, out_q, {"worker": wid, "opponent": opp["name"]})
     t, t0 = 0, time.time()
+    values = cfg["values"]
+    phi = {s: potential(obs, s, values, cfg["shaping_scale"]) for s in trajs}  # at the last recorded state
+    ret = {s: 0.0 for s in trajs}
     while True:
         sts = {s: bot.observe(obs, t) for s, bot in bots.items()}
         live = [s for s in bots if sts[s] is not None]
@@ -307,23 +350,36 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             cmds += c
             if s in trajs:
                 trajs[s].add(sts[s], res)
+                phi[s] = potential(obs, s, values, cfg["shaping_scale"])
         obs = g.step(cmds)
         for s, (a, b) in spans.items():
             bots[s].accepted(cmds[a:b], obs.command_results[a:b])
         t += 1
         if obs.game_over or t >= cfg["max_steps"]:
             break
+        for s, tr in trajs.items():  # shaping: gamma * phi(s') - phi(s), for the step just taken
+            if s in spans and tr.steps:  # (it recorded a step this time)
+                r = cfg["shaping"] * (cfg["gamma"] * potential(obs, s, values, cfg["shaping_scale"]) - phi[s])
+                if tr.steps:
+                    tr.steps[-1]["reward"] += r
+                    ret[s] += r
     outcome = {}
     for s in (0, 1):
         r = obs.players.get(s)
         res = r.result.name if r is not None else "TIE"
         outcome[s] = 1.0 if res == "VICTORY" else -1.0 if res == "DEFEAT" else 0.0
+    lead = {s: potential(obs, s, values, cfg["shaping_scale"]) for s in (0, 1)}
     for s, tr in trajs.items():
-        tr.end(outcome[s])
+        # the end: the outcome; a tie (the time limit) goes to the side ahead in material; and the
+        # potential back to 0 (so the shaping only moves credit around and sums to ~0 over a game)
+        terminal = outcome[s] if outcome[s] != 0.0 else cfg["tie_break"] * math.tanh(2.0 * lead[s])
+        last = terminal - cfg["shaping"] * phi.get(s, 0.0)
+        tr.end(last)
+        ret[s] += last
     me, other = obs.players.get(side), obs.players.get(1 - side)
     ep = {
         "time": time.time(), "worker": wid, "opponent": opp["name"], "outcome": outcome[side],
-        "return": outcome[side], "length": t, "game_time": obs.game_time, "wall_seconds": round(time.time() - t0, 1),
+        "return": round(ret.get(side, outcome[side]), 4), "material_lead": round(lead[side], 3), "length": t, "game_time": obs.game_time, "wall_seconds": round(time.time() - t0, 1),
         "races": races, "side": side, "race": races[side], "opponent_race": races[1 - side],
         "gold": me.gold_gathered if me else 0, "opponent_gold": other.gold_gathered if other else 0,
         "orders": bots[side].issued if side in bots else 0}
@@ -331,11 +387,14 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     return ep
 
 
-def film_game(g, ep: dict, cfg: dict) -> None:
+_RENDERS = ThreadPoolExecutor(1)  # an actor's video renders, in turn
+
+
+def film_game(g, ep: dict, cfg: dict, wid: int) -> None:
     """Save the game's replay and render it to a video in the background (runs/<name>/videos,
     listed in media.jsonl for the dashboard)."""
     run_dir = Path(cfg["run_dir"])
-    stem = f"game-{int(ep['time'])}"
+    stem = f"game-{int(ep['time'])}-a{wid}"
     try:
         replay = g.save_replay(run_dir / "replays" / f"{stem}.w3g")
     except Exception as e:  # noqa: BLE001
@@ -346,16 +405,18 @@ def film_game(g, ep: dict, cfg: dict) -> None:
     def render() -> None:
         from ..video import render_replay
         try:
-            out = render_replay(setup, replay, run_dir / "videos" / f"{stem}.mp4", name=f"fgvid{cfg['slot']}",
+            out = render_replay(setup, replay, run_dir / "videos" / f"{stem}.mp4", name=f"fgvid{cfg['slot']}_{wid}", crf=28,
                                 fit_all=True, max_steps=cfg["max_steps"] + 40)
             with open(run_dir / "media.jsonl", "a") as f:
                 f.write(json.dumps({"time": time.time(), "kind": "video", "file": str(out.relative_to(run_dir)),
-                                    "episode": f"{ep['race']} vs {ep['opponent_race']} ({ep['opponent']})",
-                                    "outcome": ep["outcome"], "return": ep["return"], "opponent": ep["opponent"],
-                                    "game_time": ep["game_time"]}) + "\n")
+                                    "episode": ep.get("episode_id", ""), "title": f"{ep['race']} vs {ep['opponent_race']} "
+                                    f"({ep['opponent']})", "outcome": ep["outcome"], "return": ep["return"],
+                                    "sub": f"{ep['game_time'] / 60:.1f} game minutes · material lead {ep['material_lead']:+.2f} "
+                                           f"· return {ep['return']:+.2f}",
+                                    "opponent": ep["opponent"], "game_time": ep["game_time"]}) + "\n")
         except Exception as e:  # noqa: BLE001 (one video fewer)
             print(f"video: {stem} not rendered: {e}", flush=True)
-    threading.Thread(target=render, daemon=True).start()
+    _RENDERS.submit(render)  # one at a time: they share the render instance's name
 
 
 def _exit(*_):
@@ -564,7 +625,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--step-seconds", type=float, default=0.5)
     ap.add_argument("--max-minutes", type=float, default=4.0)
     ap.add_argument("--wait-floor-ms", type=int, default=5)
-    ap.add_argument("--ai", default="normal", help="built-in AI anchors: difficulties (comma-separated; '' for none)")
+    ap.add_argument("--ai", default="easy,normal", help="built-in AI anchors: difficulties (comma-separated; '' for none)")
     ap.add_argument("--ai-share", type=float, default=0.25, help="share of launches against the built-in AI")
     ap.add_argument("--self-share", type=float, default=0.5, help="of the agent games: against itself")
     ap.add_argument("--snapshot-every", type=int, default=20, help="updates between league snapshots")
@@ -584,7 +645,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-grad-norm", type=float, default=1.0)
     ap.add_argument("--chunk", type=int, default=64, help="steps per trajectory piece an actor sends")
     ap.add_argument("--checkpoint-every", type=int, default=20)
-    ap.add_argument("--video-every", type=float, default=15.0, help="minutes between game videos (0: none)")
+    ap.add_argument("--video-every", type=float, default=4.0, help="minutes between game videos (0: none; the actors take turns)")
+    ap.add_argument("--shaping", type=float, default=1.0, help="weight of the material-lead reward shaping (0: none)")
+    ap.add_argument("--shaping-scale", type=float, default=2000.0, help="material (gold + lumber cost) worth 1 of potential")
+    ap.add_argument("--tie-break", type=float, default=0.5, help="a tie's reward: this times tanh(2 x material lead)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", help="default: cuda if available (asking opens the GPU driver)")
     ap.add_argument("--note", default="")
@@ -644,7 +708,9 @@ def main(argv: list[str] | None = None) -> int:
            "wait_floor_ms": args.wait_floor_ms, "games_per_actor": args.games_per_actor,
            "games_per_process": args.games_per_process, "chunk": args.chunk, "gamma": args.gamma, "lam": args.lam,
            "seed": args.seed, "slot": slot, "video_every": args.video_every, "scripted_reset": bool(args.scripted_reset),
-           "agent_games_factor": args.agent_games_factor, "mirror": bool(args.mirror), "learner_pid": os.getpid()}
+           "agent_games_factor": args.agent_games_factor, "mirror": bool(args.mirror), "learner_pid": os.getpid(),
+           "actors": args.actors, "values": unit_values(), "shaping": args.shaping, "shaping_scale": args.shaping_scale,
+           "tie_break": args.tie_break}
     ctx = torch.multiprocessing.get_context("spawn")
     out_q, stop = ctx.Queue(maxsize=4096), ctx.Event()
     actors = [ctx.Process(target=actor_main, args=(w, cfg, out_q, stop), daemon=True) for w in range(args.actors)]
