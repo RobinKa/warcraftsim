@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections import Counter
 import os
 import queue
 import random
@@ -45,13 +46,21 @@ PLAYER_COLS = ("step", "player", "gold", "lumber", "food_used", "food_cap", "upk
                "lumber_gathered", "structures", "result")
 
 
-def play_game(g: GameInstance, obs, max_steps: int = 4000) -> dict:
-    """One game from its first observation `obs`; returns the arrays of the .npz."""
+def play_game(g: GameInstance, obs, max_steps: int = 4000, values: dict | None = None) -> dict:
+    """One game from its first observation `obs`; returns the arrays of the .npz. `values` (unit
+    type values, fullgame.trace.unit_values): also a trace for the video's panel ("trace")."""
+    from . import features as fx
+    from .trace import material, trace_step
     units, heroes, players, events, orders = [], [], [], [], []
     trees = [(d.id, d.type_id, d.x, d.y, d.life) for d in (obs.destructables or [])]
     order_names = dict(obs.orders or {})
+    names = {v: k for k, v in order_names.items()}
+    kinds = {0: fx.IMMEDIATE, 1: fx.POINT, 2: fx.UNIT, 3: fx.SKILL}  # issued-order kinds -> the labels'
+    trace: list[dict] = []
     t = 0
     while True:
+        if values is not None:
+            trace.append(trace_step(t, obs, material(obs, values), {}))
         for u in obs.units:
             units.append((t, u.id, u.type_id, u.owner, u.x, u.y, u.facing, u.hp, u.max_hp, u.mana, u.max_mana,
                           u.order, int(u.flags), u.visible_to, u.resource, u.hero_level, u.hero_xp,
@@ -68,8 +77,15 @@ def play_game(g: GameInstance, obs, max_steps: int = 4000) -> dict:
         if obs.game_over or t >= max_steps:
             break
         obs = g.step()
+        chose: dict[str, Counter] = {}
+        owner = {u.id: u.owner for u in obs.units}
         for o in obs.issued:  # given during step t, in the state of observation t
             orders.append((t, o.unit, o.order, o.kind, o.x, o.y, o.target))
+            if values is not None and o.order not in fx.DROPPED_ORDERS and owner.get(o.unit) in (0, 1):
+                label = fx.order_label(o.order, kinds.get(o.kind, fx.IMMEDIATE), names)
+                chose.setdefault(str(owner[o.unit]), Counter())[label] += 1
+        if values is not None and trace:
+            trace[-1]["orders"] = {p: dict(c) for p, c in chose.items()}
         t += 1
     result = {p: s.result.name for p, s in obs.players.items()}
     as_array = lambda rows, n: np.asarray(rows, np.int32).reshape(-1, n)  # noqa: E731
@@ -77,7 +93,10 @@ def play_game(g: GameInstance, obs, max_steps: int = 4000) -> dict:
             "players": as_array(players, len(PLAYER_COLS)), "events": as_array(events, 5),
             "orders": as_array(orders, 7), "trees": as_array(trees, 5),
             "meta_extra": {"order_names": order_names, "result": result, "steps": t,
-                           "game_seconds": obs.game_time}}
+                           "game_seconds": obs.game_time},
+            **({"trace": {"steps": trace, "gamma": 0.997,
+                          "outcome": {str(p): 1.0 if r == "VICTORY" else -1.0 if r == "DEFEAT" else 0.0
+                                      for p, r in result.items() if p in (0, 1)}}} if values is not None else {})}
 
 
 def series(setup: GameSetup, name: str, n: int, play: Callable[[GameInstance, Observation, int, bool], None],
@@ -148,19 +167,27 @@ class Films:
             self.count += 1
             return True
 
-    def film(self, g: GameInstance, stem: str, row: dict) -> None:
-        """Save the game's replay (ends it) and render it; `row`: the media row's fields."""
+    def film(self, g: GameInstance, stem: str, row: dict, trace: dict | None = None) -> None:
+        """Save the game's replay (ends it) and render it; `row`: the media row's fields; `trace`:
+        the video's side panel (fullgame.overlay)."""
         try:
             replay = g.save_replay(self.out / "replays" / f"{stem}.w3g")
         except Exception as e:  # noqa: BLE001 (one video fewer)
             print(f"video {stem}: replay not saved: {e}", flush=True)
             return
-        self.pool.submit(self._render, g.setup, replay, stem, row)
+        if trace is not None:
+            replay.with_suffix(".trace.json").write_text(json.dumps(trace))
+        self.pool.submit(self._render, g.setup, replay, stem, row, trace)
 
-    def _render(self, setup: GameSetup, replay: Path, stem: str, row: dict) -> None:
+    def _render(self, setup: GameSetup, replay: Path, stem: str, row: dict, trace: dict | None = None) -> None:
         from ..video import render_replay
         try:
+            overlay = None
+            if trace is not None:
+                from .overlay import FullGameOverlay
+                overlay = FullGameOverlay(trace)
             out = render_replay(setup, replay, self.out / "videos" / f"{stem}.mp4", name=self.name, fit_all=True, crf=28,
+                                overlay=overlay,
                                 max_steps=int(setup.max_game_seconds / setup.step_seconds) + 40)
             with self.lock, open(self.out / "media.jsonl", "a") as f:
                 f.write(json.dumps({"time": time.time(), "kind": "video", "file": str(out.relative_to(self.out)),
@@ -302,11 +329,16 @@ def main(argv: list[str] | None = None) -> int:
 
         def play(g, obs, k, fresh) -> None:
             film = fresh and films.due()
-            data = play_game(g, obs)
+            data = play_game(g, obs, values=values if film else None)
+            trace = data.pop("trace", None)
             winner, minutes = save(chunk[k], data, time.time() - t0[0])
             if film:
                 i = chunk[k][0]
-                films.film(g, f"game{i:05d}", {
+                if trace is not None:
+                    trace.update(title=f"{args.out.name} · game {i}",
+                                 sides=[{"player": 0, "name": f"built-in AI {d0} ({r0})", "kind": "ai"},
+                                        {"player": 1, "name": f"built-in AI {d1} ({r1})", "kind": "ai"}])
+                films.film(g, f"game{i:05d}", trace=trace, row={
                     "episode": i, "title": f"game {i}: {r0} ({d0}) vs {r1} ({d1})",
                     "outcome": 0.0 if winner is None else 1.0 if winner == 0 else -1.0,
                     "result": "tie" if winner is None else f"{(r0, r1)[winner]} won",
@@ -319,6 +351,8 @@ def main(argv: list[str] | None = None) -> int:
             names.put(name)
 
     films = Films(args.out, args.video_every, None, f"demo{slot}_video")
+    from .trace import unit_values
+    values = unit_values() if args.video_every > 0 else None
     try:
         with ThreadPoolExecutor(args.parallel) as ex:
             list(ex.map(run, chunks))

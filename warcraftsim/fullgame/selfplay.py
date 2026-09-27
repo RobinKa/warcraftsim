@@ -37,6 +37,7 @@ import sys
 import threading
 import time
 import traceback
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -45,12 +46,12 @@ import torch
 
 from . import features as fx
 from .collect import claim_slot
+from .trace import DEAD_FLAG, material, trace_step, unit_values  # noqa: F401
 from .play import unit_rows
 from .model import FullGameNet, act, evaluate, load
 from ..rl.league import Member, pfsp_weight
 
 RUNS = Path(__file__).resolve().parents[2] / "runs"
-DEAD_FLAG = fx.DEAD  # (the unit flags' dead bit: an int test, not an enum operation)
 
 
 # ---- actors ---------------------------------------------------------------------------------------
@@ -181,7 +182,8 @@ class Inference:
         for i in range(B):
             o = n_own[i]
             res.append({"order": cpu["order"][i, :o], "tgt": cpu["tgt"][i, :o], "bx": cpu["bx"][i, :o],
-                        "by": cpu["by"][i, :o], "logp": cpu["logp"][i, :o], "value": float(cpu["value"][i])})
+                        "by": cpu["by"][i, :o], "logp": cpu["logp"][i, :o], "value": float(cpu["value"][i]),
+                        "entropy": float(cpu["entropy"][i])})
         return res
 
 
@@ -227,41 +229,12 @@ class Trajectory:
         self.steps = self.steps[-1:] if bootstrap else []
 
 
-def material(obs, values: dict) -> dict[int, float]:
-    """What each player's living units and buildings cost, times their hit points left: {0: .., 1: ..}."""
-    out = {0: 0.0, 1: 0.0}
-    for u in obs.units:
-        if u.owner in (0, 1) and not int(u.flags) & DEAD_FLAG:
-            out[u.owner] += values.get(str(u.type_id), 0) * (u.hp / u.max_hp if u.max_hp > 0 else 1.0)
-    return out
-
-
 def potential(obs, side: int, values: dict, scale: float) -> float:
     """Reward shaping's potential: the side's material lead (what its living units and buildings
     cost, times their hit points left, minus the enemy's) over `scale`. Full information: the
     reward is not an input. Training a unit raises it, destroying enemy ones raises it."""
     m = material(obs, values)
     return (m[side] - m[1 - side]) / scale
-
-
-def unit_values() -> dict[str, int]:
-    """What each unit type costs (gold + lumber, the game's own tables): {type id: value}."""
-    from ..data.mpq import GameArchives
-    from ..data.objects import parse_slk
-    with GameArchives() as g:
-        rows = parse_slk(g.read("Units\\UnitBalance.slk").decode("latin-1"))
-    out = {}
-    for r in rows:
-        oid = r.get("unitBalanceID", "")
-        if len(oid) != 4:
-            continue
-        try:
-            v = int(float(r.get("goldcost") or 0)) + int(float(r.get("lumbercost") or 0))
-        except ValueError:
-            continue
-        if v > 0:
-            out[str(int.from_bytes(oid.encode("latin-1"), "big"))] = v
-    return out
 
 
 def _choose(rng: random.Random, options: list[dict]) -> dict:
@@ -323,7 +296,7 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop) -> Non
                            else _choose(rng, spec["agents"]))
                     # a video: the first game of a launch (its replay then holds just this game)
                     film = films and fresh and time.time() >= next_video
-                    ep = play_one(g, obs, cfg, vocab, races, side, opp, infer, out_q, wid)
+                    ep = play_one(g, obs, cfg, vocab, races, side, opp, infer, out_q, wid, record=film)
                     if film:
                         next_video = time.time() + period
                         film_game(g, ep, cfg, wid)
@@ -337,7 +310,9 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop) -> Non
 
 
 def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: dict, infer: Inference,
-             out_q, wid: int) -> None:
+             out_q, wid: int, record: bool = False) -> dict:
+    """One game from its first observation; `record`: also a trace for the video's panel
+    (fullgame.overlay), in the returned episode row's "trace"."""
     from .play import BCAgent
 
     race_ix = [fx.RACES.index(r) if r in fx.RACES else 0 for r in races]
@@ -358,6 +333,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     mat = material(obs, values)
     phi = {s: (mat[s] - mat[1 - s]) / scale for s in trajs}  # at the last recorded state
     ret = {s: 0.0 for s in trajs}
+    trace: list[dict] = []
+    names = {int(k): v for k, v in (cfg.get("order_names") or {}).items()}
     while True:
         rows = unit_rows(obs, t)  # once for both sides
         sts = {s: bot.observe(obs, t, rows) for s, bot in bots.items()}
@@ -373,6 +350,11 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             if s in trajs:
                 trajs[s].add(sts[s], res)
                 phi[s] = (mat[s] - mat[1 - s]) / scale
+        if record:
+            chose = {s: Counter(fx.order_label(*bots[s].orders[int(c)], names) for c in r["order"] if c)
+                     for s, r in zip(live, results) if r is not None}
+            trace.append(trace_step(t, obs, mat, chose, value={s: r["value"] for s, r in zip(live, results) if r},
+                                    entropy={s: r["entropy"] for s, r in zip(live, results) if r}))
         obs = g.step(cmds)
         for s, (a, b) in spans.items():
             bots[s].accepted(cmds[a:b], obs.command_results[a:b])
@@ -386,6 +368,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                 if tr.steps:
                     tr.steps[-1]["reward"] += r
                     ret[s] += r
+                    if record and trace:
+                        trace[-1].setdefault("reward", {})[str(s)] = round(r, 4)
     outcome = {}
     for s in (0, 1):
         r = obs.players.get(s)
@@ -399,6 +383,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         last = terminal - cfg["shaping"] * phi.get(s, 0.0)
         tr.end(last)
         ret[s] += last
+        if record and trace:
+            trace[-1].setdefault("reward", {})[str(s)] = round(last, 4)
     me, other = obs.players.get(side), obs.players.get(1 - side)
     ep = {
         "time": time.time(), "worker": wid, "opponent": opp["name"], "outcome": outcome[side],
@@ -407,6 +393,15 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         "gold": me.gold_gathered if me else 0, "opponent_gold": other.gold_gathered if other else 0,
         "orders": bots[side].issued if side in bots else 0}
     out_q.put({"episode": ep})
+    if record:  # the video's panel: A = the learner's side
+        who = {"self": "itself", "ai": "built-in AI"}.get(opp["kind"], opp["name"])
+        other = (f"built-in AI {opp['name'].split('-', 1)[1]}" if opp["kind"] == "ai"
+                 else "itself" if opp["kind"] == "self" else f"snapshot {opp['name']}")
+        ep["trace"] = {"steps": trace, "gamma": cfg["gamma"], "outcome": {str(s): v for s, v in outcome.items()},
+                       "title": f"{Path(cfg['run_dir']).name} · policy v{infer.nets.version} · vs {who}",
+                       "sides": [{"player": side, "name": f"learner ({races[side]})", "kind": "agent"},
+                                 {"player": 1 - side, "name": f"{other} ({races[1 - side]})",
+                                  "kind": "ai" if opp["kind"] == "ai" else "agent"}]}
     return ep
 
 
@@ -424,11 +419,16 @@ def film_game(g, ep: dict, cfg: dict, wid: int) -> None:
         print(f"video: replay not saved: {e}", flush=True)
         return
     setup = g.setup
+    trace = ep.pop("trace", None)
+    if trace is not None:
+        replay.with_suffix(".trace.json").write_text(json.dumps(trace))
 
     def render() -> None:
         from ..video import render_replay
+        from .overlay import FullGameOverlay
         try:
             out = render_replay(setup, replay, run_dir / "videos" / f"{stem}.mp4", name=f"fgvid{cfg['slot']}_{wid}", crf=28,
+                                overlay=FullGameOverlay(trace) if trace else None,
                                 fit_all=True, max_steps=cfg["max_steps"] + 40)
             with open(run_dir / "media.jsonl", "a") as f:
                 f.write(json.dumps({"time": time.time(), "kind": "video", "file": str(out.relative_to(run_dir)),
@@ -738,7 +738,8 @@ def main(argv: list[str] | None = None) -> int:
            "seed": args.seed, "slot": slot, "video_every": args.video_every, "scripted_reset": bool(args.scripted_reset),
            "agent_games_factor": args.agent_games_factor, "mirror": bool(args.mirror), "learner_pid": os.getpid(),
            "actors": args.actors, "values": unit_values(), "shaping": args.shaping, "shaping_scale": args.shaping_scale,
-           "tie_break": args.tie_break, "compile": bool(args.compile)}
+           "tie_break": args.tie_break, "compile": bool(args.compile),
+           "order_names": vocab.get("order_names") or {str(k): v for k, v in fx.demo_order_names(args.runs).items()}}
     # the actors compile their network calls: without this each starts a pool of ~32 compile workers
     # (~100 processes, several GB, idle after the first seconds)
     os.environ.setdefault("TORCHINDUCTOR_COMPILE_THREADS", "1")

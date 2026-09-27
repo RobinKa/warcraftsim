@@ -126,7 +126,8 @@ def act(net: FullGameNet, ent, typ, cur, mask, glob, n_own) -> dict:
     uses_ptr, uses_pt = net.uses(order)
     own = torch.arange(O, device=ent.device)[None] < n_own[:, None]
     logp = _logp(logits, order) + uses_ptr * _logp(ptr, tgt) + uses_pt * (_logp(xl, bx) + _logp(yl, by))
-    return {"order": order, "tgt": tgt, "bx": bx, "by": by, "logp": logp * own, "value": net.value(g)}
+    ent = (_entropy(logits) * own).sum(-1) / own.sum(-1).clamp(min=1)  # the order's, mean over own units
+    return {"order": order, "tgt": tgt, "bx": bx, "by": by, "logp": logp * own, "value": net.value(g), "entropy": ent}
 
 
 def evaluate(net: FullGameNet, ent, typ, cur, mask, glob, n_own, order, tgt, bx, by) -> dict:

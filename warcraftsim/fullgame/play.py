@@ -17,6 +17,7 @@ import argparse
 import json
 import queue
 import random
+from collections import Counter
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -91,6 +92,7 @@ class BCAgent:
         """The orders sampled for the view's own units (order class, pointer, x and y bins per unit;
         sequences over the first min(n_own, MAX_OWN) units) as game commands."""
         out: list[Command] = []
+        self.last_sent: list[tuple[int, int]] = []  # (order id, kind) of what it sent: the video's panel
         sel = st["sel"]
         for i in range(min(st["n_own"], fx.MAX_OWN, len(order))):
             c = int(order[i])
@@ -99,6 +101,7 @@ class BCAgent:
             oid, kind = self.orders[c]
             if fx.redundant(oid, kind, int(sel[i, fx.C_ORDER])):  # it is harvesting already
                 continue
+            self.last_sent.append((oid, kind))
             unit = int(sel[i, fx.C_ID])
             x = float(self.view.sign * fx.bin_center(int(bx[i])))
             y = float(fx.bin_center(int(by[i])))
@@ -147,12 +150,15 @@ def matchup_setup(map_name: str, race: str, ai_race: str, difficulty: str, agent
     ai = BuiltinAI(ai_race, difficulty, handicap=handicap)
     slots = [agent, ai] if agent_side == 0 else [ai, agent]
     return GameSetup(map=map_name, slots=slots, step_seconds=step_seconds, max_game_seconds=max_minutes * 60,
-                     victory="decisive", window=screen)  # a small screen: nothing looks at the pixels
+                     victory="decisive", window=screen,  # a small screen: nothing looks at the pixels
+                     record_ai_orders=True)  # (the AI's orders: shown in the videos' panel)
 
 
 def play_game(g: GameInstance, obs: Observation, net, vocab: dict, device, agent_side: int,
-              temperature: float, order_temperature: float = 1.0) -> dict:
-    """One game from its first observation `obs` (the game's setup: matchup_setup)."""
+              temperature: float, order_temperature: float = 1.0, values: dict | None = None) -> dict:
+    """One game from its first observation `obs` (the game's setup: matchup_setup). `values`
+    (unit type values, fullgame.trace.unit_values): also a trace for the video's panel ("trace")."""
+    from .trace import material, trace_step
     slots = g.setup.slots
     races = [fx.RACES.index(s.race) if s.race in fx.RACES else 0 for s in slots]
     bot = BCAgent(net, vocab, agent_side, device, temperature, order_temperature)
@@ -162,9 +168,20 @@ def play_game(g: GameInstance, obs: Observation, net, vocab: dict, device, agent
     t = 0
     sent = failed = 0
     by_kind: dict[str, list[int]] = {}  # command kind -> [sent, failed]
+    names = {v: k for k, v in (obs.orders or {}).items()}
+    kinds = {0: fx.IMMEDIATE, 1: fx.POINT, 2: fx.UNIT, 3: fx.SKILL}
+    trace: list[dict] = []
     while not obs.game_over:
         cmds = bot.act(obs, t)
+        if values is not None:
+            mine = Counter(fx.order_label(o, k, names) for o, k in getattr(bot, "last_sent", []))
+            trace.append(trace_step(t, obs, material(obs, values), {agent_side: mine}))
         obs = g.step(cmds)
+        if values is not None and trace:
+            owner = {u.id: u.owner for u in obs.units}
+            ai = Counter(fx.order_label(o.order, kinds.get(o.kind, fx.IMMEDIATE), names) for o in obs.issued
+                         if o.order not in fx.DROPPED_ORDERS and owner.get(o.unit) == 1 - agent_side)
+            trace[-1]["orders"][str(1 - agent_side)] = dict(ai)
         bot.accepted(cmds, obs.command_results)
         for c, ok in zip(cmds, obs.command_results):  # the game refused the order
             order = getattr(c, "order", None) or getattr(c, "building", None) or 0  # (Build: the building's type)
@@ -182,10 +199,17 @@ def play_game(g: GameInstance, obs: Observation, net, vocab: dict, device, agent
              for p, s in obs.players.items() if p in (0, 1)}
     outcome = results.get(agent_side, "?")
     ai = slots[1 - agent_side]
-    return {"outcome": outcome, "minutes": round(obs.game_time / 60, 2), "orders": bot.issued, "steps": t,
+    out = {"outcome": outcome, "minutes": round(obs.game_time / 60, 2), "orders": bot.issued, "steps": t,
             "failed": failed, "by_kind": by_kind, "sides": sides,
             "race": slots[agent_side].race, "ai_race": ai.race, "difficulty": ai.difficulty, "side": agent_side,
             "seconds": round(time.time() - t0, 1)}
+    if values is not None:
+        res = {s: 1.0 if r == "VICTORY" else -1.0 if r == "DEFEAT" else 0.0 for s, r in results.items() if s in (0, 1)}
+        out["trace"] = {"steps": trace, "gamma": 0.997, "outcome": {str(s): v for s, v in res.items()},
+                        "sides": [{"player": agent_side, "name": f"the clone ({slots[agent_side].race})", "kind": "agent"},
+                                  {"player": 1 - agent_side, "name": f"built-in AI {ai.difficulty} ({ai.race})",
+                                   "kind": "ai"}]}
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -247,7 +271,9 @@ def main(argv: list[str] | None = None) -> int:
         def play(g, obs, k, fresh) -> None:
             i = chunk[k][0]
             film = fresh and films.due()
-            r = play_game(g, obs, net, vocab, device, side, args.temperature, args.order_temperature)
+            r = play_game(g, obs, net, vocab, device, side, args.temperature, args.order_temperature,
+                          values=values if film else None)
+            trace = r.pop("trace", None)
             r.update({"game": i, "checkpoint": str(args.checkpoint), "time": time.time(), "map": args.map,
                       "eval": eval_id, "label": label, "epoch": ck.get("epoch"), "temperature": args.temperature,
                       "order_temperature": args.order_temperature})
@@ -256,7 +282,9 @@ def main(argv: list[str] | None = None) -> int:
                 with open(out, "a") as f:
                     f.write(json.dumps(r) + "\n")
             if film:
-                films.film(g, f"{eval_id.replace('@', '-')}-game{i:03d}", {
+                if trace is not None:
+                    trace["title"] = f"{args.checkpoint.parent.name} · {label}"[:70]
+                films.film(g, f"{eval_id.replace('@', '-')}-game{i:03d}", trace=trace, row={
                     "episode": i, "eval": eval_id, "label": label,
                     "title": f"game {i}: the clone ({race}) vs the built-in AI ({ai_race}, {args.difficulty})",
                     "outcome": {"VICTORY": 1.0, "DEFEAT": -1.0}.get(r["outcome"], 0.0),
@@ -273,6 +301,8 @@ def main(argv: list[str] | None = None) -> int:
             names.put(name)
 
     films = Films(out.parent, 0.0, args.videos, "bcplay_video")  # videos: the fit's Replays on the dashboard
+    from .trace import unit_values
+    values = unit_values() if args.videos > 0 else None
     with ThreadPoolExecutor(args.parallel) as ex:
         list(ex.map(run, chunks))
     if films.count:
