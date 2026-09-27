@@ -35,7 +35,9 @@ class MapBuildError(RuntimeError):
     pass
 
 
-VICTORY_MODES = {"melee": 0, "elimination": 1, "none": 2}
+# decisive: melee, and a player with no town hall and no units left is defeated too (the last
+# buildings of a beaten player could stand for minutes before anyone came for them)
+VICTORY_MODES = {"melee": 0, "elimination": 1, "none": 2, "decisive": 3}
 
 
 @dataclass(frozen=True)
@@ -55,7 +57,7 @@ class HarnessConfig:
     max_game_seconds: float = 0.0  # 0 = no limit; otherwise the game ends in a tie
     scripted_players: tuple[int, ...] = ()  # scenario opponents: idle units attack-move to the nearest enemy
     scenario: bool = False  # remove every pre-placed unit and spawn `spawn`; restart = respawn in-game
-    victory: str = "melee"  # melee (structures) | elimination (units) | none
+    victory: str = "melee"  # melee (structures) | elimination (units) | none | decisive
     send_destructables: bool = True
     spawn: tuple[SpawnSpec, ...] = ()
     resources: tuple[tuple[int, int, int], ...] = ()  # (player, gold, lumber)

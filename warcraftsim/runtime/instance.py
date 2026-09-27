@@ -147,6 +147,7 @@ class GameSetup:
     health_bars: bool = False  # the game's own health bars over every unit (Gameplay option; videos)
     mouse_scroll: bool = True  # the camera scrolls with the pointer at a screen edge (off for videos)
     record_ai_orders: bool = False  # melee: observations carry the built-in AI's orders (Observation.issued)
+    victory: str = "melee"  # melee games: "melee", or "decisive" (also over with no town hall and no units)
     max_game_seconds: float = 0.0  # 0 = unlimited; otherwise a tie when reached
     fog: bool | None = None  # None: on for melee, off for scenarios
     wgc_speed: int = 1
@@ -193,7 +194,7 @@ class GameSetup:
     def harness_config(self) -> HarnessConfig:
         if self.scenario is None:
             return HarnessConfig(self.step_seconds, self.agent_players, self.max_game_seconds,
-                                 record_orders=self.record_ai_orders)
+                                 victory=self.victory, record_orders=self.record_ai_orders)
         sc = self.scenario
         cx, cy = sc.resolved_center()
         return HarnessConfig(

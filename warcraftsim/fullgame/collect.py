@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import queue
 import random
 import threading
 import time
@@ -82,12 +83,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--games", type=int, default=20)
     ap.add_argument("--parallel", type=int, default=4)
-    ap.add_argument("--map", default="duelfast")
+    ap.add_argument("--map", default="duelrush")
     ap.add_argument("--races", default="human,orc", help="the races to draw each side's from (or 'all')")
     ap.add_argument("--difficulty", default="normal", help="easy / normal / insane, or several: normal,insane")
     ap.add_argument("--handicap", type=int, default=50)
     ap.add_argument("--step-seconds", type=float, default=0.5)
-    ap.add_argument("--max-minutes", type=float, default=20.0, help="a tie after this much game time")
+    ap.add_argument("--max-minutes", type=float, default=4.0, help="a tie after this much game time")
+    ap.add_argument("--victory", default="decisive", help="melee, or decisive (also lost with no town hall and "
+                                                          "no units: no minutes of waiting for a last building)")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args(argv)
     races = RACES if args.races == "all" else tuple(args.races.split(","))
@@ -100,6 +103,9 @@ def main(argv: list[str] | None = None) -> int:
              for i in range(args.games)]
     lock = threading.Lock()
     done = {"n": 0, "t0": time.time()}
+    names = queue.Queue()  # one game instance name per worker: games reuse their names' prefixes
+    for k in range(args.parallel):
+        names.put(f"demo{k}")
 
     def one(plan) -> None:
         i, r0, r1, d0, d1 = plan
@@ -109,15 +115,19 @@ def main(argv: list[str] | None = None) -> int:
         setup = GameSetup(map=args.map, slots=[BuiltinAI(r0, d0, handicap=args.handicap),
                                                BuiltinAI(r1, d1, handicap=args.handicap)],
                           step_seconds=args.step_seconds, max_game_seconds=args.max_minutes * 60,
-                          record_ai_orders=True)
+                          record_ai_orders=True, victory=args.victory)
         t0 = time.time()
+        name = names.get()
         try:
-            data = play_game(setup, f"demo{i % args.parallel}")
+            data = play_game(setup, name)
         except Exception as e:  # noqa: BLE001 (one game fewer)
             print(f"game {i}: failed: {e}", flush=True)
             return
+        finally:
+            names.put(name)
         extra = data.pop("meta_extra")
         meta = {"races": [r0, r1], "difficulties": [d0, d1], "handicap": args.handicap, "map": args.map,
+                "victory": args.victory,
                 "step_seconds": args.step_seconds, **extra}
         tmp = path.with_suffix(".tmp.npz")
         np.savez_compressed(tmp, meta=json.dumps(meta), **data)

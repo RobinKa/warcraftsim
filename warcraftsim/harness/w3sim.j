@@ -22,7 +22,7 @@ globals
     constant real W3S_CFG_MAX_GAME_S = 0.0
     constant integer W3S_CFG_AGENT_MASK = 0
     constant boolean W3S_CFG_SCENARIO = false
-    constant integer W3S_CFG_VICTORY = 0
+    constant integer W3S_CFG_VICTORY = 0  // 0 melee, 1 elimination, 2 none, 3 decisive
     constant integer W3S_CFG_SCRIPTED_MASK = 0
     constant boolean W3S_CFG_SEND_DESTRUCTABLES = true
     constant real W3S_CFG_CLEAR_X = 0.0
@@ -78,6 +78,8 @@ globals
     boolean w3s_end = false
     boolean array w3s_scripted
     integer array w3s_alive
+    integer array w3s_halls  // victory "decisive": living town halls and units (not structures) per player
+    integer array w3s_mobile
     boolean array w3s_participant
     // orders the built-in AI players gave since the last observation (W3S_CFG_RECORD_ORDERS; the
     // labels for learning from them): unit, order, kind (0 immediate, 1 point, 2 target, 3 hero
@@ -1128,6 +1130,30 @@ endfunction
 // game result: melee rules (a player is defeated when its team has no structures left),
 // but without removing players or showing dialogs, so the session stays alive.
 
+function W3S_CountDecisiveEnum takes nothing returns nothing
+    local unit u = GetEnumUnit()
+    local integer p = GetPlayerId(GetOwningPlayer(u))
+    if p < bj_MAX_PLAYERS and not IsUnitType(u, UNIT_TYPE_DEAD) and GetUnitTypeId(u) != 0 then
+        if IsUnitType(u, UNIT_TYPE_TOWNHALL) then
+            set w3s_halls[p] = w3s_halls[p] + 1
+        elseif not IsUnitType(u, UNIT_TYPE_STRUCTURE) then
+            set w3s_mobile[p] = w3s_mobile[p] + 1
+        endif
+    endif
+    set u = null
+endfunction
+
+function W3S_CountDecisive takes nothing returns nothing
+    local integer i = 0
+    loop
+        exitwhen i >= bj_MAX_PLAYERS
+        set w3s_halls[i] = 0
+        set w3s_mobile[i] = 0
+        set i = i + 1
+    endloop
+    call ForGroup(w3s_all, function W3S_CountDecisiveEnum)
+endfunction
+
 function W3S_CheckResult takes nothing returns nothing
     local integer i = 0
     local integer j
@@ -1139,12 +1165,17 @@ function W3S_CheckResult takes nothing returns nothing
     endif
     if W3S_CFG_VICTORY == 1 then
         call W3S_CountAlive()
+    elseif W3S_CFG_VICTORY == 3 then
+        call W3S_CountDecisive()
     endif
     loop
         exitwhen i >= bj_MAX_PLAYERS or W3S_CFG_VICTORY == 2
         set p = Player(i)
         if w3s_result[i] == 0 and GetPlayerSlotState(p) == PLAYER_SLOT_STATE_PLAYING and not IsPlayerObserver(p) then
             if W3S_CFG_VICTORY == 0 and MeleeGetAllyStructureCount(p) <= 0 then
+                set w3s_result[i] = 2
+            elseif W3S_CFG_VICTORY == 3 and (MeleeGetAllyStructureCount(p) <= 0 or (w3s_halls[i] <= 0 and w3s_mobile[i] <= 0)) then
+                // melee, and also defeated with no town hall and no units left (nothing to rebuild with)
                 set w3s_result[i] = 2
             elseif W3S_CFG_VICTORY == 1 and w3s_participant[i] and w3s_alive[i] <= 0 then
                 set w3s_result[i] = 2
