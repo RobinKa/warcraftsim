@@ -229,9 +229,13 @@ class GameSetup:
         cfg = self.harness_config()
         # the tables generated from game data are part of the built script too
         tables = json.dumps([cfg.resolved_order_names(), cfg.resolved_hero_abilities()], sort_keys=True)
-        blob = json.dumps({"map": self.map, "harness": asdict(cfg),
-                           "source": hashlib.sha1((source or harness_source()).encode()).hexdigest(),
-                           "tables": hashlib.sha1(tables.encode()).hexdigest()}, sort_keys=True)
+        key = {"map": self.map, "harness": asdict(cfg),
+               "source": hashlib.sha1((source or harness_source()).encode()).hexdigest(),
+               "tables": hashlib.sha1(tables.encode()).hexdigest()}
+        from ..data.duelmap import duel_map_path, parse_duel_name
+        if parse_duel_name(self.map) is not None:  # a generated map: its version (the file's name) too
+            key["generated"] = duel_map_path(self.map).name
+        blob = json.dumps(key, sort_keys=True)
         return hashlib.sha1(blob.encode()).hexdigest()[:12]
 
 

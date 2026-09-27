@@ -307,7 +307,9 @@ def main() -> int:
         n_self = round(n_env * args.self_share)
         n_script = round(n_env * args.script_share) if league.scripts else 0
         n_past = n_env - n_self - n_script - n_exp
-        assert n_past >= 0, "the shares add up to more than all games"
+        if n_past < 1:  # snapshots would join the league but never play (genleague4 and the first genleague5)
+            raise SystemExit(f"league: no games left against past snapshots ({n_self} self, {n_script} script, "
+                             f"{n_exp} exploiter of {n_env}): lower --self-share / --script-share / --exploit-share")
         groups = ["self"] * n_self + ["past"] * n_past + ["script"] * n_script + ["exploit"] * n_exp
         first = ck_dir / f"{0:016d}.pt"  # the start is the league's first member
         torch.save({"model": net.state_dict(), "config": net.config, "steps": 0, "spec": spec, "args": vars(args)}, first)
