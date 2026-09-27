@@ -24,6 +24,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# The transformer layers' fused inference kernel (the "fast path" in eval mode) is an operator
+# torch.compile can't trace: each call split the compiled step into pieces with eager code between
+torch.backends.mha.set_fastpath_enabled(False)
+
 KINDS = ("noop", "stop", "hold", "move", "attack", "attack_move", "cast")
 K_MOVE, K_ATTACK, K_AMOVE, K_CAST = KINDS.index("move"), KINDS.index("attack"), KINDS.index("attack_move"), KINDS.index("cast")
 NEG = -1e9
@@ -121,8 +125,9 @@ class EntityNet(nn.Module):
                 a = given
             elif greedy:
                 a = logp.argmax(-1)
-            else:
-                a = torch.distributions.Categorical(logits=logp).sample()
+            else:  # a sample by the Gumbel-max trick: plain tensor ops (Categorical broke the compiled graph)
+                g_ = -torch.log(-torch.log(torch.rand_like(logp).clamp_(1e-10, 1.0 - 1e-7)))
+                a = (logp + g_).argmax(-1)
             ent = -(logp.exp() * logp.masked_fill(~mask, 0)).sum(-1)
             return a, logp.gather(-1, a.unsqueeze(-1)).squeeze(-1), ent
 
@@ -166,10 +171,21 @@ class EntityNet(nn.Module):
         self.last_dists = dists
         return acts, logp.sum(-1), ent.sum(-1), self.value(h).squeeze(-1)
 
+    def core(self, x: torch.Tensor, h: torch.Tensor) -> torch.Tensor:
+        """The GRU cell (self.gru's parameters and math) in plain tensor ops: torch.compile can't
+        trace the fused CUDA kernel nn.GRUCell calls, which broke the compiled step apart."""
+        g = self.gru
+        i_r, i_z, i_n = F.linear(x, g.weight_ih, g.bias_ih).chunk(3, -1)
+        h_r, h_z, h_n = F.linear(h, g.weight_hh, g.bias_hh).chunk(3, -1)
+        r = torch.sigmoid(i_r + h_r)
+        z = torch.sigmoid(i_z + h_z)
+        n = torch.tanh(i_n + r * h_n)
+        return (1 - z) * n + z * h
+
     def step(self, obs, h, masks, greedy: bool = False):
         """One step for a batch: -> actions [N, k, 5], logp, entropy, value, next core state."""
         u, x = self.encode(obs)
-        h = self.gru(x, h)
+        h = self.core(x, h)
         acts, logp, ent, v = self.heads(obs, u, h, masks, greedy=greedy)
         return acts, logp, ent, v, h
 
@@ -181,7 +197,7 @@ class EntityNet(nn.Module):
         x = x.view(T, B, -1)
         hs, h = [], h0
         for t in range(T):
-            h = self.gru(x[t], h * (1 - starts[t]).unsqueeze(-1))
+            h = self.core(x[t], h * (1 - starts[t]).unsqueeze(-1))
             hs.append(h)
         h = torch.stack(hs).view(T * B, -1)
         _, logp, ent, v = self.heads(obs.reshape(T * B, -1), u, h, masks.reshape(T * B, -1),

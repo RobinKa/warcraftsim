@@ -87,11 +87,12 @@ class OpponentPool:
         self.weights: dict[str, list[torch.Tensor]] = {}
         self.spec, self.device = spec, device
 
-    def load(self, name: str, path: str) -> list[torch.Tensor]:
-        if name not in self.weights:
+    def load(self, path: str) -> list[torch.Tensor]:
+        """A snapshot's weights on the device (cached by path: names repeat across resumed runs)."""
+        if path not in self.weights:
             net = load_checkpoint(path, self.spec, self.device)[0]
-            self.weights[name] = [t.detach().clone() for t in net.state_dict().values()]
-        return self.weights[name]
+            self.weights[path] = [t.detach().clone() for t in net.state_dict().values()]
+        return self.weights[path]
 
     def run(self, weights: list[torch.Tensor], obs: torch.Tensor, h: torch.Tensor,
             masks: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:  # all on the device
@@ -156,7 +157,7 @@ class Learner:
             if self.ref is not None:  # the reference's log-probability of the same orders, with its own memory
                 self.ref_h = self.ref_h * (1 - self.start).unsqueeze(-1)
                 u_r, x_r = self.ref.encode(self.obs_t)
-                self.ref_h = self.ref.gru(x_r, self.ref_h)
+                self.ref_h = self.ref.core(x_r, self.ref_h)
                 self.b_ref[t] = self.ref.heads(self.obs_t, u_r, self.ref_h, self.masks_t, actions=acts)[1]
         self.b_obs[t], self.b_masks[t], self.b_act[t] = self.obs_t, self.masks_t, acts
         self.b_logp[t], self.b_val[t], self.b_start[t] = logp, v, self.start
@@ -174,7 +175,7 @@ class Learner:
         args, net, dev = self.args, self.net, self.device
         with torch.no_grad():
             _, x = net.encode(self.obs_t)
-            last_v = net.value(net.gru(x, self.h * (1 - self.start).unsqueeze(-1))).squeeze(-1)
+            last_v = net.value(net.core(x, self.h * (1 - self.start).unsqueeze(-1))).squeeze(-1)
         adv = torch.zeros(T, self.B, device=dev)
         gae = torch.zeros(self.B, device=dev)
         for t in reversed(range(T)):
@@ -247,9 +248,10 @@ class Learner:
         return {"env/win_rate": f["wins"] / f["n"], "env/loss_rate": f["losses"] / f["n"],
                 "env/episode_return": f["ret"] / f["n"], "env/episode_length": f["len"] / f["n"], "env/n": f["n"]}
 
-    def save(self, path: Path, spec: dict, steps: int) -> None:
+    def save(self, path: Path, spec: dict, steps: int, planned: int | None = None) -> None:
         torch.save({"model": self.net.state_dict(), "config": self.net.config, "steps": steps, "spec": spec,
-                    "args": vars(self.args), "learner": self.name}, path)
+                    "args": vars(self.args), "learner": self.name, "global_steps": steps,
+                    "planned_total": planned}, path)
 
 
 def main() -> int:
@@ -278,7 +280,11 @@ def main() -> int:
     ap.add_argument("--init-from", help="a checkpoint (.pt) to start from")
     ap.add_argument("--resume", help="a run directory to continue: its newest checkpoints (the main learner's "
                                      "and the exploiter's), its league (snapshots and records) and the point of "
-                                     "its learning-rate schedule (--timesteps: the steps still to go)")
+                                     "its learning-rate schedule (--timesteps: the steps still to go); the step "
+                                     "count goes on from its checkpoint's")
+    ap.add_argument("--resume-offset", type=int, default=None,
+                    help="with --resume: steps before the resumed run's first (checkpoints from before they "
+                         "recorded their global step count)")
     ap.add_argument("--cast-bias", type=float, default=0.0,
                     help="added to the cast order's logit at the start: a checkpoint trained without "
                          "abilities never had cast possible, and would almost never try it")
@@ -321,8 +327,10 @@ def main() -> int:
         if not cks:
             raise SystemExit(f"--resume: no checkpoints in {rdir}")
         info = json.loads((rdir / "run.json").read_text()) if (rdir / "run.json").exists() else {}
-        done = torch.load(cks[-1], map_location="cpu", weights_only=False).get("steps", 0)
-        planned = int(info.get("timesteps") or done + args.timesteps)
+        ck = torch.load(cks[-1], map_location="cpu", weights_only=False)
+        offset = args.resume_offset if args.resume_offset is not None else ck.get("global_steps", ck["steps"]) - ck["steps"]
+        done = ck["steps"] + offset  # the whole run's steps so far
+        planned = int(ck.get("planned_total") or int(info.get("timesteps") or ck["steps"] + args.timesteps) + offset)
         exploiters = sorted((rdir / "checkpoints").glob("exploiter-*.pt"))
         resumed = {"dir": rdir, "main": cks[-1], "exploiter": exploiters[-1] if exploiters else None,
                    "progress": min(done / max(planned, 1), 0.99), "steps": done}
@@ -460,7 +468,7 @@ def main() -> int:
                 scripted.append((rows, scripts.act(name.split(":", 1)[1], obs_np[rows])))
                 continue
             # exploiter games: the main learner's current policy; else a league snapshot
-            weights = main_weights if m is None else pool.load(name, m.path)
+            weights = main_weights if m is None else pool.load(m.path)
             idx_t = on_device(idx)
             rows_t = opp_rows_t[idx_t]
             a, h_new = pool.run(weights, obs_g[rows_t], opp_h[idx_t], masks_g[rows_t])
@@ -488,8 +496,9 @@ def main() -> int:
     for L_ in learners:
         L_.observe(dev_["obs"], dev_["masks"])
     T = args.horizon
-    total = int(args.timesteps)
-    steps, epoch, t_begin = 0, 0, time.time()
+    start = resumed["steps"] if resumed is not None else 0  # a resumed run's step count goes on
+    total = start + int(args.timesteps)
+    steps, epoch, t_begin = start, 0, time.time()
     league_results: dict[str, list] = {}
 
     while steps < total and not STOP:
@@ -545,7 +554,7 @@ def main() -> int:
         t_rollout = time.time() - t0
 
         row = {"agent_steps": steps, "epoch": epoch + 1, "uptime": time.time() - t_begin}
-        progress = epoch / max(1, total // (main.B * T))
+        progress = epoch / max(1, int(args.timesteps) // (main.B * T))
         if resumed is not None:  # the learning-rate schedule goes on from where the run was
             progress = resumed["progress"] + (1 - resumed["progress"]) * progress
         for L_ in learners:
@@ -576,12 +585,12 @@ def main() -> int:
         snapshot = league is not None and epoch % args.snapshot_every == 0
         if epoch % args.checkpoint_interval == 0 or steps >= total or STOP or snapshot:
             path = ck_dir / f"{steps:016d}.pt"
-            main.save(path, spec, steps)
+            main.save(path, spec, steps, total)
             if snapshot:
                 league.add_snapshot(str(path), steps)
         if exploiter is not None and snapshot:
             path = ck_dir / f"exploiter-{steps:016d}.pt"
-            exploiter.save(path, spec, steps)
+            exploiter.save(path, spec, steps, total)
             league.add_snapshot(str(path), steps).name = f"exploiter:{steps}"
             p = exploiter_member.win_rate(100)
             high = p is not None and p >= args.exploiter_reset

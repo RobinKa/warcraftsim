@@ -114,7 +114,7 @@ def main() -> None:
                 x = x.view(T, B, -1)
                 h, hs = net.initial_state(B, device), []
                 for t in range(T):
-                    h = net.gru(x[t], h * (1 - starts[t]).unsqueeze(-1))
+                    h = net.core(x[t], h * (1 - starts[t]).unsqueeze(-1))
                     hs.append(h)
                 acts, *_ = net.heads(obs.view(T * B, -1), u, torch.stack(hs).view(T * B, -1),
                                      masks.view(T * B, -1), greedy=True)

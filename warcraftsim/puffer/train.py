@@ -348,6 +348,11 @@ def main(argv: list[str] | None = None) -> int:
             if init is not None:
                 steps = int(init.stem) if init.stem.isdigit() else 0
                 run.save(init_from=str(init), init_steps=steps)  # the dashboard draws it after its parent
+            resume = next((e.split("=", 1)[1] for e in args.extra if e.startswith("--torch.resume=")), None)
+            if resume:  # a resumed run: its parent for the lineage; its step count goes on (no offset)
+                cks = sorted((Path(resume) / "checkpoints").glob("[0-9]*.pt"))
+                if cks:
+                    run.save(init_from=str(cks[-1].resolve()), init_steps=0, resumed_from=Path(resume).name)
             if run is not first:  # point the bridge workers at this run
                 for w, q in enumerate(controls):
                     q.put(("run", str(run.dir), args.record_every if w == 0 else 0, args.video_every if w == 0 else 0))
