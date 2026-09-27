@@ -219,11 +219,15 @@ def pjass_check(script: str) -> None:
 def stock_map_path(name: str) -> Path:
     """Resolve a map name to a file: a path, a stock map ("(2)EchoIsles" or "EchoIsles"), or a
     generated flat map: "flat" (32 x 32 tiles), "flatN" (N x N tiles) or "flat:<stock map>"
-    (full-size flat version of a stock map)."""
+    (full-size flat version of a stock map), or the small melee map "duel" / "duelN"
+    (data/duelmap.py)."""
+    from .duelmap import duel_map_path, parse_duel_name
     from .flatmap import flat_map_path, parse_flat_name
 
     if parse_flat_name(name) is not None:
         return flat_map_path(name)
+    if parse_duel_name(name) is not None:
+        return duel_map_path(name)
     candidates = []
     for sub in ("Maps/FrozenThrone", "Maps"):
         d = paths.GAME_DIR / sub

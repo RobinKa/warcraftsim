@@ -95,20 +95,24 @@ class Slot:
     race: str = "human"
     difficulty: str = "normal"  # built-in AI: easy / normal / insane
     team: int | None = None
+    handicap: int = 100  # the player's units' hit points in percent (50-100; shorter fights)
 
     def __post_init__(self):
         if self.kind not in SLOT_KINDS:
             raise ValueError(f"slot kind must be one of {SLOT_KINDS}, not {self.kind!r}")
+        if not 50 <= self.handicap <= 100:
+            raise ValueError(f"handicap must be 50-100, not {self.handicap}")
         Race.parse(self.race)
         Difficulty.parse(self.difficulty)
 
 
-def Agent(race: str = "human", team: int | None = None) -> Slot:  # noqa: N802 - factory reads like a type
-    return Slot("agent", race, team=team)
+def Agent(race: str = "human", team: int | None = None, handicap: int = 100) -> Slot:  # noqa: N802 - reads like a type
+    return Slot("agent", race, team=team, handicap=handicap)
 
 
-def BuiltinAI(race: str = "orc", difficulty: str = "normal", team: int | None = None) -> Slot:  # noqa: N802
-    return Slot("ai", race, difficulty, team)
+def BuiltinAI(race: str = "orc", difficulty: str = "normal", team: int | None = None,  # noqa: N802
+              handicap: int = 100) -> Slot:
+    return Slot("ai", race, difficulty, team, handicap)
 
 
 def Scripted(race: str = "orc", team: int | None = None) -> Slot:  # noqa: N802
@@ -213,6 +217,7 @@ class GameSetup:
             else:
                 # agents use computer slots too; the harness does not start an AI for them
                 slots.append(WgcSlot.computer(i, s.race, s.difficulty if s.kind == "ai" else "normal", team=team))
+            slots[-1].handicap = s.handicap
         if user is None:
             slots.append(WgcSlot.observer(len(self.slots)))
         flags = 0 if self.fog_enabled else 1

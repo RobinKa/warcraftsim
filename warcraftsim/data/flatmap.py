@@ -105,8 +105,9 @@ def empty_units(data: bytes) -> bytes:
     return b"W3do" + struct.pack("<III", version, subversion, 0)
 
 
-def _resized(m: MpqArchive, size: int) -> dict[str, bytes]:
-    """All files that change when the playable area becomes size x size tiles around (0, 0)."""
+def _resized(m: MpqArchive, size: int, starts: list[tuple[float, float]] | None = None) -> dict[str, bytes]:
+    """All files that change when the playable area becomes size x size tiles around (0, 0)
+    (start locations at `starts`, default (-size*32, 0) and (size*32, 0))."""
     info = parse_w3i(m.read("war3map.w3i"))
     left, right, bottom, top = info.complements
     wt, ht = size + left + right, size + bottom + top
@@ -115,7 +116,7 @@ def _resized(m: MpqArchive, size: int) -> dict[str, bytes]:
     mx, my = CAMERA_MARGIN
     info.camera_bounds = [-half + mx, -half + my, half - mx, half - my, -half + mx, half - my, half - mx, -half + my]
     info.playable_width = info.playable_height = size
-    starts = [(-size * 32.0, 0.0), (size * 32.0, 0.0)]
+    starts = starts or [(-size * 32.0, 0.0), (size * 32.0, 0.0)]
     for i, p in enumerate(info.players):
         p.start_x, p.start_y = starts[i % 2]
     # terrain: same header (tilesets), new size and offset
