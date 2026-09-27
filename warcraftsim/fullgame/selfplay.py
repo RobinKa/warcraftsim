@@ -161,6 +161,10 @@ class Inference:
             ent[i, :n], typ[i, :n], cur[i, :n], mask[i, :n] = st["ent"], st["type"], st["cur"], True
         t = lambda a: torch.from_numpy(a).to(self.device, non_blocking=True)  # noqa: E731
         out = act(net, t(ent), t(typ), t(cur), t(mask), t(glob), t(n_own))
+        if self.device.type == "cuda":  # wait sleeping: CUDA's default sync spins a core the games need
+            done = torch.cuda.Event(blocking=True)
+            done.record()
+            done.synchronize()
         cpu = {k: v.cpu().numpy() for k, v in out.items()}
         res = []
         for i in range(B):
@@ -544,13 +548,16 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
     advs = np.array([s["adv"] for s in steps], np.float32)
     mean, std = float(advs.mean()), float(advs.std()) + 1e-8
     stats: dict[str, list[float]] = {}
+    autocast = torch.autocast("cuda", dtype=torch.bfloat16, enabled=bool(device.type == "cuda" and args.bf16))
     net.train()
     for _ in range(args.epochs):
         order = np.random.permutation(len(steps))
         for a in range(0, len(order), args.minibatch):
             mb = collate([steps[i] for i in order[a:a + args.minibatch]], device)
-            ev = evaluate(net, mb["ent"], mb["type"], mb["cur"], mb["mask"], mb["glob"], mb["n_own"],
-                          mb["order"], mb["tgt"], mb["bx"], mb["by"])
+            with autocast:  # bf16 matmuls (the losses and log-probabilities in fp32)
+                ev = evaluate(net, mb["ent"], mb["type"], mb["cur"], mb["mask"], mb["glob"], mb["n_own"],
+                              mb["order"], mb["tgt"], mb["bx"], mb["by"])
+            ev["value"] = ev["value"].float()
             own = mb["own"].float()
             n_units = own.sum().clamp(min=1)
             adv = ((mb["adv"] - mean) / std)[:, None]
@@ -564,7 +571,7 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
                 loss = loss + pg
             ref_kl = torch.zeros((), device=device)
             if ref is not None and args.ref_kl > 0:
-                with torch.no_grad():
+                with torch.no_grad(), autocast:
                     ev_ref = evaluate(ref, mb["ent"], mb["type"], mb["cur"], mb["mask"], mb["glob"], mb["n_own"],
                                       mb["order"], mb["tgt"], mb["bx"], mb["by"])
                 lp, lp_ref = torch.log_softmax(ev["logits"].float(), -1), torch.log_softmax(ev_ref["logits"].float(), -1)
@@ -643,6 +650,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--ref-kl", type=float, default=0.05, help="the KL term towards the initial (cloned) policy")
     ap.add_argument("--value-warmup", type=int, default=10, help="first updates: the value head only")
     ap.add_argument("--max-grad-norm", type=float, default=1.0)
+    ap.add_argument("--bf16", type=int, default=1, help="the updates' matmuls in bfloat16")
     ap.add_argument("--chunk", type=int, default=64, help="steps per trajectory piece an actor sends")
     ap.add_argument("--checkpoint-every", type=int, default=20)
     ap.add_argument("--video-every", type=float, default=4.0, help="minutes between game videos (0: none; the actors take turns)")

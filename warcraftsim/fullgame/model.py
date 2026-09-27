@@ -97,6 +97,13 @@ def _logp(logits, x):
     return torch.log_softmax(logits.float(), -1).gather(-1, x.long().unsqueeze(-1)).squeeze(-1)
 
 
+def _gumbel_argmax(logits):
+    """A sample from softmax(logits): the argmax of logits plus Gumbel noise (fewer kernels and no
+    Python bookkeeping, unlike torch.distributions; the network calls are latency-bound)."""
+    u = torch.rand(logits.shape, device=logits.device).clamp_(1e-10, 1.0 - 1e-7)
+    return (logits.float() - torch.log(-torch.log(u))).argmax(-1)
+
+
 def _entropy(logits):
     lp = torch.log_softmax(logits.float(), -1)
     return -(lp.exp() * lp).sum(-1)
@@ -110,7 +117,7 @@ def act(net: FullGameNet, ent, typ, cur, mask, glob, n_own) -> dict:
     g, u = net.encode(ent, typ, cur, mask, glob)
     O = min(fx.MAX_OWN, u.shape[1])
     logits = net.order_logits(g, u[:, :O], typ, n_own)
-    sample = lambda lg: torch.distributions.Categorical(logits=lg.float()).sample()  # noqa: E731
+    sample = _gumbel_argmax
     order = sample(logits)
     ptr, xl, z = net.target_logits(g, u, mask, order)
     tgt, bx = sample(ptr), sample(xl)
