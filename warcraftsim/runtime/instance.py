@@ -149,6 +149,10 @@ class GameSetup:
     record_ai_orders: bool = False  # melee: observations carry the built-in AI's orders (Observation.issued)
     victory: str = "melee"  # melee games: "melee", or "decisive" (also over with no town hall and no units)
     melee_reset: bool = False  # duel maps without built-in AI players: restarts reset the game in the running process (0.1 s instead of a 6-10 s launch)
+    # melee: restarts reload the map in the running game (the engine's RestartGame, as the menu's
+    # Restart: the loading screen and everything anew, built-in AI included; duelrush 5 s, duel
+    # 2.8 s, instead of launching the game again: 9-10 s and 6 s); no warm spare is needed then
+    engine_restart: bool = True
     max_game_seconds: float = 0.0  # 0 = unlimited; otherwise a tie when reached
     fog: bool | None = None  # None: on for melee, off for scenarios
     wgc_speed: int = 1
@@ -708,8 +712,8 @@ class GameInstance:
         top of the scenario's units, in the same in-game restart when there is one.
 
         Scenario maps reset inside the running game (units are removed and respawned). Melee
-        games are relaunched: RestartGame/ChangeLevel/LoadGame all return a .wgc game to the
-        main menu, and the .wgc is what sets exact slots and AI difficulty. relaunch=True always
+        games reload the map in the running game (setup.engine_restart: the engine's RestartGame),
+        or, with setup.melee_reset, reset it by script (no built-in AI). relaunch=True always
         starts a fresh process (e.g. so a saved replay holds exactly one episode).
         """
         jitter = 0.7 + 0.6 * random.Random(self.base_name).random()  # fixed per game
@@ -717,8 +721,9 @@ class GameInstance:
         # a parked game (see scenario_spare) means this process only ran a fresh-process episode:
         # the next normal episode continues the parked game, even if that episode was cut short
         parked = self._spare is not None and self._spare._parked
-        if ((self.setup.scenario is not None or self.setup.melee_reset) and not self._ended
-                and self._playback is None and not relaunch and not recycle and not parked):
+        in_game = (self.setup.scenario is not None or self.setup.melee_reset or self.setup.engine_restart)
+        if (in_game and not self._ended and self._playback is None and not relaunch and not recycle and not parked
+                and self.proc is not None and self.proc.poll() is None):
             ints = encode_commands([*spawns, Restart()])
             key = f"{self._proc_episode}:{self._last_seq}"
             self._cmd_log[key] = self._cmd_log.get(key, []) + ints
@@ -772,6 +777,7 @@ class GameInstance:
 
     def _wants_spare(self) -> bool:
         return (self.setup.warm_spare and (self.setup.scenario is None or self.setup.scenario_spare)
+                and not (self.setup.scenario is None and self.setup.engine_restart)  # restarts in the game
                 and not self.warm_spare_child and not self._display_shared())
 
     def _display_shared(self) -> bool:

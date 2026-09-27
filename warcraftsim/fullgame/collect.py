@@ -27,9 +27,11 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 
+from ..protocol import Observation
 from ..runtime.instance import BuiltinAI, GameInstance, GameSetup
 
 RACES = ("human", "orc", "undead", "nightelf")
@@ -41,41 +43,60 @@ PLAYER_COLS = ("step", "player", "gold", "lumber", "food_used", "food_cap", "upk
                "lumber_gathered", "structures", "result")
 
 
-def play_game(setup: GameSetup, name: str, max_steps: int = 4000) -> dict:
-    """One game; returns the arrays of the .npz."""
+def play_game(g: GameInstance, obs, max_steps: int = 4000) -> dict:
+    """One game from its first observation `obs`; returns the arrays of the .npz."""
     units, heroes, players, events, orders = [], [], [], [], []
-    with GameInstance(setup, name=name, timeout=180) as g:
-        obs = g.start()
-        trees = [(d.id, d.type_id, d.x, d.y, d.life) for d in (obs.destructables or [])]
-        order_names = dict(obs.orders or {})
-        t = 0
-        while True:
-            for u in obs.units:
-                units.append((t, u.id, u.type_id, u.owner, u.x, u.y, u.facing, u.hp, u.max_hp, u.mana, u.max_mana,
-                              u.order, int(u.flags), u.visible_to, u.resource, u.hero_level, u.hero_xp,
-                              u.skill_points))
-                if u.is_hero:
-                    items = (tuple(u.items) + (0,) * 6)[:6]
-                    ab = (tuple(u.abilities) + ((0, 0.0),) * 4)[:4]
-                    heroes.append((t, u.id, *items, *(a[0] for a in ab), *(int(round(a[1] * 10)) for a in ab)))
-            for p, s in obs.players.items():
-                players.append((t, p, s.gold, s.lumber, s.food_used, s.food_cap, s.upkeep, s.gold_gathered,
-                                s.lumber_gathered, s.structures, int(s.result)))
-            for e in obs.events:
-                events.append((t, int(e.kind), e.a, e.b, e.c))
-            if obs.game_over or t >= max_steps:
-                break
-            obs = g.step()
-            for o in obs.issued:  # given during step t, in the state of observation t
-                orders.append((t, o.unit, o.order, o.kind, o.x, o.y, o.target))
-            t += 1
-        result = {p: s.result.name for p, s in obs.players.items()}
+    trees = [(d.id, d.type_id, d.x, d.y, d.life) for d in (obs.destructables or [])]
+    order_names = dict(obs.orders or {})
+    t = 0
+    while True:
+        for u in obs.units:
+            units.append((t, u.id, u.type_id, u.owner, u.x, u.y, u.facing, u.hp, u.max_hp, u.mana, u.max_mana,
+                          u.order, int(u.flags), u.visible_to, u.resource, u.hero_level, u.hero_xp,
+                          u.skill_points))
+            if u.is_hero:
+                items = (tuple(u.items) + (0,) * 6)[:6]
+                ab = (tuple(u.abilities) + ((0, 0.0),) * 4)[:4]
+                heroes.append((t, u.id, *items, *(a[0] for a in ab), *(int(round(a[1] * 10)) for a in ab)))
+        for p, s in obs.players.items():
+            players.append((t, p, s.gold, s.lumber, s.food_used, s.food_cap, s.upkeep, s.gold_gathered,
+                            s.lumber_gathered, s.structures, int(s.result)))
+        for e in obs.events:
+            events.append((t, int(e.kind), e.a, e.b, e.c))
+        if obs.game_over or t >= max_steps:
+            break
+        obs = g.step()
+        for o in obs.issued:  # given during step t, in the state of observation t
+            orders.append((t, o.unit, o.order, o.kind, o.x, o.y, o.target))
+        t += 1
+    result = {p: s.result.name for p, s in obs.players.items()}
     as_array = lambda rows, n: np.asarray(rows, np.int32).reshape(-1, n)  # noqa: E731
     return {"units": as_array(units, len(UNIT_COLS)), "heroes": as_array(heroes, len(HERO_COLS)),
             "players": as_array(players, len(PLAYER_COLS)), "events": as_array(events, 5),
             "orders": as_array(orders, 7), "trees": as_array(trees, 5),
             "meta_extra": {"order_names": order_names, "result": result, "steps": t,
                            "game_seconds": obs.game_time}}
+
+
+def series(setup: GameSetup, name: str, n: int, play: Callable[[GameInstance, Observation, int], None],
+           timeout: float = 180) -> None:
+    """play(game instance, first observation, k) for k < n: games of one setup in one running
+    game. Each after the first reloads the map in the process (GameInstance.restart: the
+    engine's RestartGame, ~6 s on duelrush instead of a ~10 s launch). A failed game is lost;
+    the rest go on in a new process."""
+    k = 0
+    while k < n:
+        try:
+            with GameInstance(setup, name=name, timeout=timeout) as g:
+                obs = g.start()
+                while True:
+                    k += 1
+                    play(g, obs, k - 1)
+                    if k >= n:
+                        break
+                    obs = g.restart()
+        except Exception as e:  # noqa: BLE001
+            print(f"{name}: game {k - 1} failed: {type(e).__name__}: {e}", flush=True)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -91,6 +112,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-minutes", type=float, default=4.0, help="a tie after this much game time")
     ap.add_argument("--victory", default="decisive", help="melee, or decisive (also lost with no town hall and "
                                                           "no units: no minutes of waiting for a last building)")
+    ap.add_argument("--games-per-process", type=int, default=8,
+                    help="games of one matchup in one running game (restarts reload the map in it)")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args(argv)
     races = RACES if args.races == "all" else tuple(args.races.split(","))
@@ -106,26 +129,19 @@ def main(argv: list[str] | None = None) -> int:
     names = queue.Queue()  # one game instance name per worker: games reuse their names' prefixes
     for k in range(args.parallel):
         names.put(f"demo{k}")
+    # games of one matchup run one after the other in one process (a restart reloads the map but
+    # keeps the slots), in chunks so that every matchup is played from the start
+    todo = [p for p in plans if not (args.out / f"game{p[0]:05d}.npz").exists()]
+    by_matchup: dict[tuple, list] = {}
+    for p in todo:
+        by_matchup.setdefault(p[1:], []).append(p)
+    chunks = [ps[s:s + args.games_per_process] for ps in by_matchup.values()
+              for s in range(0, len(ps), args.games_per_process)]
+    chunks.sort(key=lambda c: c[0][0])
 
-    def one(plan) -> None:
+    def save(plan, data: dict, seconds: float) -> None:
         i, r0, r1, d0, d1 = plan
         path = args.out / f"game{i:05d}.npz"
-        if path.exists():
-            return
-        setup = GameSetup(map=args.map, slots=[BuiltinAI(r0, d0, handicap=args.handicap),
-                                               BuiltinAI(r1, d1, handicap=args.handicap)],
-                          step_seconds=args.step_seconds, max_game_seconds=args.max_minutes * 60,
-                          record_ai_orders=True, victory=args.victory,
-                          warm_spare=False)  # one game per instance: a spare would load for nothing
-        t0 = time.time()
-        name = names.get()
-        try:
-            data = play_game(setup, name)
-        except Exception as e:  # noqa: BLE001 (one game fewer)
-            print(f"game {i}: failed: {e}", flush=True)
-            return
-        finally:
-            names.put(name)
         extra = data.pop("meta_extra")
         meta = {"races": [r0, r1], "difficulties": [d0, d1], "handicap": args.handicap, "map": args.map,
                 "victory": args.victory,
@@ -137,11 +153,28 @@ def main(argv: list[str] | None = None) -> int:
             done["n"] += 1
             rate = done["n"] / (time.time() - done["t0"]) * 3600
             print(f"game {i}: {r0}/{d0} vs {r1}/{d1}: {extra['result']} after {extra['game_seconds'] / 60:.1f} min "
-                  f"({len(data['orders'])} orders, {time.time() - t0:.0f}s; {done['n']} done, {rate:.0f}/h)",
-                  flush=True)
+                  f"({len(data['orders'])} orders, {seconds:.0f}s; {done['n']} done, {rate:.0f}/h)", flush=True)
+
+    def run(chunk) -> None:
+        _, r0, r1, d0, d1 = chunk[0]
+        setup = GameSetup(map=args.map, slots=[BuiltinAI(r0, d0, handicap=args.handicap),
+                                               BuiltinAI(r1, d1, handicap=args.handicap)],
+                          step_seconds=args.step_seconds, max_game_seconds=args.max_minutes * 60,
+                          record_ai_orders=True, victory=args.victory)
+        name = names.get()
+        t0 = [time.time()]
+
+        def play(g, obs, k) -> None:
+            save(chunk[k], play_game(g, obs), time.time() - t0[0])
+            t0[0] = time.time()
+
+        try:
+            series(setup, name, len(chunk), play)
+        finally:
+            names.put(name)
 
     with ThreadPoolExecutor(args.parallel) as ex:
-        list(ex.map(one, plans))
+        list(ex.map(run, chunks))
     return 0
 
 

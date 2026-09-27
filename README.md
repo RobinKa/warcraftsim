@@ -306,6 +306,25 @@ Compared runs share the charts: one colour and line style per run. The tab, the 
 
 Example: `nav` with 16 games went from a 3% to a 62% success rate within 100k steps (about 3 minutes, at about 550 env steps/s).
 
+### Whole games: duel maps and behavior cloning of the built-in AI (`warcraftsim/fullgame`)
+
+After micro, the whole melee game (economy, building, tech, armies, heroes), starting from the built-in AI's play. The plan: small, fast games first, cloning the built-in AI, then RL; the speedups come out once that works.
+* **Duel maps** (`data/duelmap.py`, generated on first use):
+  * `duel`: 48×48 tiles, two bases 4600 apart (the smallest stock two-player maps are 80×80). The bases copy Echo Isles' main bases (mine distance, a tree wall behind, creep camps away from the bases), so the built-in AI plays as it does there.
+  * `duelfast`: hit points and costs halved, build, train and research times cut to a third.
+  * `duelrush`: a faster version of the whole game, games of about 2 minutes. Everything that takes time runs 7× faster: attacks, casts, cooldowns, production, day and night, the gameplay constants that are times, and the waits in the built-in AI's scripts (overriding copies in the map). Movement can't: the engine stops units at 522, so units move 1.3× faster and the map is smaller (40 tiles, bases 3000 apart). Hit points, costs and production times are halved, players start with twice the gold and lumber, and the AI attacks main bases from force level 20 and by night.
+  * The rules (`duelmap.Rules`) go into the map's object data, gameplay constants and AI scripts, so they can be dialed back one by one.
+* **Demonstrations** (`fullgame/collect.py`): built-in AI against built-in AI, with every step's state and the orders the AI gave (`GameSetup.record_ai_orders`: the harness records its units' order events). One `.npz` per game. Games of one matchup run in one process: each restart reloads the map in the running game (the engine's `RestartGame`), which is faster than a new launch.
+* **Features** (`fullgame/features.py`): what the player saw (its own units first, the enemy's and neutral units it could see), mirrored so its base is on the left, plus resources, supply, time, races, upgrades and each building's production. The labels are the orders each own unit got. The engine's own orders (resume harvesting, autocasts) and harvest orders to workers that already harvest are no decisions and are dropped.
+* **Model** (`fullgame/model.py`): a transformer over the units. Per own unit: an order (or none), then its target: a pointer at a unit, or a point (an x bin, then a y bin given x).
+* **Fit and play**: `fullgame/bc.py` keeps the epoch with the lowest validation loss; `fullgame/play.py` lets the policy play the built-in AI.
+
+```bash
+python -m warcraftsim.fullgame.collect --out runs/fullgame/demos-1 --games 800 --parallel 24 --races all
+python3 -m warcraftsim.fullgame.bc --data runs/fullgame/demos-1 --name fullgame-1        # the torch Python
+python3 -m warcraftsim.fullgame.play runs/bc/fullgame-1/policy.pt --games 16 --race all --ai-race all
+```
+
 ## Performance (Ryzen 5950X, 32 threads, WSL2, llvmpipe)
 
 | workload | throughput |
@@ -316,8 +335,9 @@ Example: `nav` with 16 games went from a 3% to a 62% success rate within 100k st
 | **Scenario skirmish (4 v 4), 0.25 s steps** | ≈160x per game (1.5 ms per step); reset in 11 ms |
 | **24 skirmish games in parallel (training setup: 320x240 screens)** | ≈4600 env steps/s (≈1160x real time) |
 | **PufferLib training, 24 games (micro_mirror)** | ≈3000 agent steps/s (was ≈620 before this round of work) |
+| **Demonstrations: built-in AI vs built-in AI on `duelrush`, 24 games in parallel** | ≈2800 games/h with 8 games per process (≈1300/h with a launch per game) |
 | **Game start** | ≈8 s (map load); 16 games ≈2 min (4 load at a time) |
-| **Melee reset** | ≈1 s with the warm spare (≈8 s relaunch without one, or if the episode was shorter than a load) |
+| **Melee reset** | the map reloads in the running game: ≈3 s (`duel`), ≈5 s (`duelrush`), vs ≈10 s for a launch; with `engine_restart=False`, ≈1 s from a warm spare (a second process that loads in the background) |
 
 Where the time went, and what fixed it (`scripts/bench_env.py` measures env steps/s and the CPU per process
 and thread kind; `W3SIM_PROFILE=1..3` adds the shim's per-second profile to each game's `shim.log`):

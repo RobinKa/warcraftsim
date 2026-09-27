@@ -193,16 +193,19 @@ def rules_files(rules: Rules) -> dict[str, bytes]:
         weapons = {r.get("serpent"): r for r in  # (the ID column's header in 1.29)
                     parse_slk(g.read("Units\\UnitWeapons.slk").decode("latin-1"))}
         unitdata = {r.get("unitID"): r for r in parse_slk(g.read("Units\\UnitData.slk").decode("latin-1"))}
+        campaign = {r.get("unitUIID") for r in parse_slk(g.read("Units\\UnitUI.slk").decode("latin-1"))
+                    if r.get("campaign") == "1"}
         abilities = {r.get("alias"): r for r in parse_slk(g.read("Units\\AbilityData.slk").decode("latin-1"))}
         misc = g.read("Units\\MiscGame.txt").decode("latin-1")
     k = rules.speed
     # only what these games can have: the four races' units (and "other": summons, some buildings)
-    # and this map's creeps, and their abilities (every unit and ability of the game made the map
-    # load slower)
+    # but campaign-only ones, the Dreadlord's infernal and this map's creeps, and their abilities
+    # (the map (re)loads slower with every modified unit and ability: a restart took 5.8 s with
+    # every unit of the races, 5.2 s without the campaign's, 2.8 s without speed rules)
     races = {"human", "orc", "undead", "nightelf", "other"}
     creeps = {t for camp in (KOBOLDS, OGRES, GNOLLS) for t in camp}
-    used = {r["unitID"] for r in unitdata.values() if r.get("race") in races or r.get("unitID") in creeps}
-    used |= creeps | {"ngol"}
+    used = {u for u, r in unitdata.items() if r.get("race") in races and u not in campaign}
+    used |= creeps | {"ngol", "ninf"}
     used_abilities = set()
     for r in unit_abilities:
         if r.get("unitAbilID") in used:
@@ -424,7 +427,7 @@ def duel_map_path(name: str) -> Path:
 
     size, rules, base_x = parse_duel_name(name)
     src = stock_map_path("(2)EchoIsles")
-    out = paths.CACHE_DIR / "maps" / f"duel{size}_b{base_x:g}{rules.tag}_v9.w3x"
+    out = paths.CACHE_DIR / "maps" / f"duel{size}_b{base_x:g}{rules.tag}_v10.w3x"
     with _lock:
         if not out.exists():
             make_duel_map(src, out, size, rules, base_x)

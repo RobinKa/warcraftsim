@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
+import queue
 import random
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -28,6 +29,7 @@ from ..protocol import (Build, Command, EventKind, ImmediateOrder, LearnSkill, O
                         TargetDestructable, TargetOrder)
 from ..runtime.instance import Agent, BuiltinAI, GameInstance, GameSetup
 from . import features as fx
+from .collect import series
 from .model import load
 
 TYPE_CODE = fx.TYPE_CODE  # orders at or above this are unit / building / upgrade / ability codes
@@ -129,45 +131,49 @@ class BCAgent:
         return out
 
 
-def play_game(net, vocab: dict, device, name: str, map_name: str, race: str, ai_race: str, difficulty: str,
-              agent_side: int, handicap: int, max_minutes: float, step_seconds: float,
-              temperature: float, order_temperature: float = 1.0) -> dict:
+def matchup_setup(map_name: str, race: str, ai_race: str, difficulty: str, agent_side: int, handicap: int,
+                  max_minutes: float, step_seconds: float) -> GameSetup:
     agent = Agent(race, handicap=handicap)
     ai = BuiltinAI(ai_race, difficulty, handicap=handicap)
     slots = [agent, ai] if agent_side == 0 else [ai, agent]
-    setup = GameSetup(map=map_name, slots=slots, step_seconds=step_seconds, max_game_seconds=max_minutes * 60,
-                      victory="decisive", warm_spare=False)  # one game per instance
+    return GameSetup(map=map_name, slots=slots, step_seconds=step_seconds, max_game_seconds=max_minutes * 60,
+                     victory="decisive")
+
+
+def play_game(g: GameInstance, obs: Observation, net, vocab: dict, device, agent_side: int,
+              temperature: float, order_temperature: float = 1.0) -> dict:
+    """One game from its first observation `obs` (the game's setup: matchup_setup)."""
+    slots = g.setup.slots
     races = [fx.RACES.index(s.race) if s.race in fx.RACES else 0 for s in slots]
     bot = BCAgent(net, vocab, agent_side, device, temperature, order_temperature)
     t0 = time.time()
-    with GameInstance(setup, name=name, timeout=180) as g:
-        obs = g.start()
-        order_names = {v: k for k, v in (obs.orders or {}).items()}
-        bot.begin(obs, races)
-        t = 0
-        sent = failed = 0
-        by_kind: dict[str, list[int]] = {}  # command kind -> [sent, failed]
-        while not obs.game_over:
-            cmds = bot.act(obs, t)
-            obs = g.step(cmds)
-            bot.accepted(cmds, obs.command_results)
-            for c, ok in zip(cmds, obs.command_results):  # the game refused the order
-                name = order_names.get(getattr(c, "order", None), None) or rawcode_or(getattr(c, "order", 0))
-                k = by_kind.setdefault(f"{type(c).__name__}:{name}", [0, 0])
-                k[0] += 1
-                k[1] += not ok
-            sent += len(cmds)
-            failed += sum(not ok for ok in obs.command_results[:len(cmds)])
-            t += 1
-        results = {p: s.result.name for p, s in obs.players.items()}
-        sides = {("agent" if p == agent_side else "ai"): {"gold": s.gold_gathered, "lumber": s.lumber_gathered,
-                                                            "food": f"{s.food_used}/{s.food_cap}",
-                                                            "structures": s.structures}
-                 for p, s in obs.players.items() if p in (0, 1)}
+    order_names = {v: k for k, v in (obs.orders or {}).items()}
+    bot.begin(obs, races)
+    t = 0
+    sent = failed = 0
+    by_kind: dict[str, list[int]] = {}  # command kind -> [sent, failed]
+    while not obs.game_over:
+        cmds = bot.act(obs, t)
+        obs = g.step(cmds)
+        bot.accepted(cmds, obs.command_results)
+        for c, ok in zip(cmds, obs.command_results):  # the game refused the order
+            name = order_names.get(getattr(c, "order", None), None) or rawcode_or(getattr(c, "order", 0))
+            k = by_kind.setdefault(f"{type(c).__name__}:{name}", [0, 0])
+            k[0] += 1
+            k[1] += not ok
+        sent += len(cmds)
+        failed += sum(not ok for ok in obs.command_results[:len(cmds)])
+        t += 1
+    results = {p: s.result.name for p, s in obs.players.items()}
+    sides = {("agent" if p == agent_side else "ai"): {"gold": s.gold_gathered, "lumber": s.lumber_gathered,
+                                                        "food": f"{s.food_used}/{s.food_cap}",
+                                                        "structures": s.structures}
+             for p, s in obs.players.items() if p in (0, 1)}
     outcome = results.get(agent_side, "?")
+    ai = slots[1 - agent_side]
     return {"outcome": outcome, "minutes": round(obs.game_time / 60, 2), "orders": bot.issued, "steps": t,
             "failed": failed, "by_kind": by_kind, "sides": sides,
-            "race": race, "ai_race": ai_race, "difficulty": difficulty, "side": agent_side,
+            "race": slots[agent_side].race, "ai_race": ai.race, "difficulty": ai.difficulty, "side": agent_side,
             "seconds": round(time.time() - t0, 1)}
 
 
@@ -186,6 +192,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--temperature", type=float, default=1.0)
     ap.add_argument("--order-temperature", type=float, default=1.0,
                     help="sharpens which order a unit gets, not whether it gets one")
+    ap.add_argument("--games-per-process", type=int, default=4,
+                    help="games of one matchup in one running game (restarts reload the map in it)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", type=Path, help="results (.jsonl; default: next to the checkpoint, play.jsonl)")
     args = ap.parse_args(argv)
@@ -196,30 +204,44 @@ def main(argv: list[str] | None = None) -> int:
     plans = [(i, rng.choice(fx.RACES) if args.race == "all" else args.race,
               rng.choice(fx.RACES) if args.ai_race == "all" else args.ai_race, i % 2) for i in range(args.games)]
     out = args.out or args.checkpoint.with_name("play.jsonl")
-    names = [f"bcplay{k}" for k in range(args.parallel)]
-    free = list(names)
+    names = queue.Queue()
+    for k in range(args.parallel):
+        names.put(f"bcplay{k}")
+    # games of one matchup run one after the other in one process (restarts reload the map)
+    by_matchup: dict[tuple, list] = {}
+    for p in plans:
+        by_matchup.setdefault(p[1:], []).append(p)
+    chunks = [ps[s:s + args.games_per_process] for ps in by_matchup.values()
+              for s in range(0, len(ps), args.games_per_process)]
+    chunks.sort(key=lambda c: c[0][0])
+    results: list[dict] = []
+    lock = threading.Lock()
 
-    def one(plan):
-        i, race, ai_race, side = plan
-        name = free.pop()
+    def run(chunk) -> None:
+        _, race, ai_race, side = chunk[0]
+        setup = matchup_setup(args.map, race, ai_race, args.difficulty, side, args.handicap, args.max_minutes,
+                              args.step_seconds)
+
+        def play(g, obs, k) -> None:
+            i = chunk[k][0]
+            r = play_game(g, obs, net, vocab, device, side, args.temperature, args.order_temperature)
+            r.update({"game": i, "checkpoint": str(args.checkpoint), "time": time.time(), "map": args.map})
+            with lock:
+                results.append(r)
+                with open(out, "a") as f:
+                    f.write(json.dumps(r) + "\n")
+            print(f"game {i}: {race} (side {side}) vs {ai_race} {args.difficulty}: {r['outcome']} after "
+                  f"{r['minutes']} min ({r['orders']} orders, {r['failed']} refused {r['by_kind']}; {r['sides']})",
+                  flush=True)
+
+        name = names.get()
         try:
-            r = play_game(net, vocab, device, name, args.map, race, ai_race, args.difficulty, side, args.handicap,
-                          args.max_minutes, args.step_seconds, args.temperature, args.order_temperature)
-        except Exception as e:  # noqa: BLE001 (one game fewer)
-            print(f"game {i}: failed: {e}", flush=True)
-            return None
+            series(setup, name, len(chunk), play)
         finally:
-            free.append(name)
-        r.update({"game": i, "checkpoint": str(args.checkpoint), "time": time.time(), "map": args.map})
-        with open(out, "a") as f:
-            f.write(json.dumps(r) + "\n")
-        print(f"game {i}: {race} (side {side}) vs {ai_race} {args.difficulty}: {r['outcome']} after "
-              f"{r['minutes']} min ({r['orders']} orders, {r['failed']} refused {r['by_kind']}; {r['sides']})",
-              flush=True)
-        return r
+            names.put(name)
 
     with ThreadPoolExecutor(args.parallel) as ex:
-        results = [r for r in ex.map(one, plans) if r is not None]
+        list(ex.map(run, chunks))
     wins = sum(r["outcome"] == "VICTORY" for r in results)
     ties = sum(r["outcome"] == "TIE" for r in results)
     print(f"{args.checkpoint}: {wins} wins, {ties} ties, {len(results) - wins - ties} losses in {len(results)} games "

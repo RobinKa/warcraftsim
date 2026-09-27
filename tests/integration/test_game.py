@@ -61,10 +61,26 @@ def test_navigate_env(game_dir):
         env.close()
 
 
+def test_melee_engine_restart(game_dir):
+    """restart() reloads the map in the running game: same process, a new game, the AI plays again."""
+    setup = GameSetup(slots=[Agent("human"), BuiltinAI("orc", "easy")], step_seconds=0.5)
+    with GameInstance(setup, name="it_reload") as g:
+        obs = g.start()
+        proc = g.proc
+        for _ in range(60):
+            obs = g.step()
+        obs = g.restart()
+        assert g.proc is proc and obs.seq == 0 and obs.game_time < 0.5
+        assert len(obs.units_of(0)) == 6 and obs.players[1].gold_gathered == 0
+        for _ in range(120):
+            obs = g.step()
+        assert obs.players[1].food_used > 5, "the built-in AI trains workers after the reload"
+
+
 def test_melee_restart_uses_warm_spare(game_dir):
     import time
 
-    setup = GameSetup(slots=[Agent("human"), BuiltinAI("orc", "easy")], step_seconds=0.5)
+    setup = GameSetup(slots=[Agent("human"), BuiltinAI("orc", "easy")], step_seconds=0.5, engine_restart=False)
     with GameInstance(setup, name="it_spare") as g:
         g.start()
         first = g.name
