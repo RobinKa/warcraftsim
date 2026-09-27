@@ -166,7 +166,8 @@ def play_game(g: GameInstance, obs: Observation, net, vocab: dict, device, agent
         obs = g.step(cmds)
         bot.accepted(cmds, obs.command_results)
         for c, ok in zip(cmds, obs.command_results):  # the game refused the order
-            name = order_names.get(getattr(c, "order", None), None) or rawcode_or(getattr(c, "order", 0))
+            order = getattr(c, "order", None) or getattr(c, "building", None) or 0  # (Build: the building's type)
+            name = order_names.get(order, None) or rawcode_or(order)
             k = by_kind.setdefault(f"{type(c).__name__}:{name}", [0, 0])
             k[0] += 1
             k[1] += not ok

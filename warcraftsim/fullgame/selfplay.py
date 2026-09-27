@@ -230,7 +230,7 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop) -> Non
     vocab = json.loads(Path(cfg["vocab"]).read_text())
     spec_path = Path(cfg["run_dir"]) / "league_spec.json"
     name = f"fgsp{cfg['slot']}_{wid}_{k}"
-    while not stop.is_set():
+    while not stop.is_set() and os.getppid() == cfg["learner_pid"]:
         try:
             spec = json.loads(spec_path.read_text())
         except (FileNotFoundError, json.JSONDecodeError):
@@ -255,7 +255,7 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop) -> Non
             with GameInstance(setup, name=name, timeout=120) as g:
                 obs = g.start()
                 for n in range(per_launch):
-                    if stop.is_set():
+                    if stop.is_set() or os.getppid() != cfg["learner_pid"]:
                         return
                     try:
                         spec = json.loads(spec_path.read_text())
@@ -362,11 +362,16 @@ def _exit(*_):
     raise SystemExit(0)
 
 
+def _interrupt(*_):
+    raise KeyboardInterrupt
+
+
 def actor_main(wid: int, cfg: dict, out_q, stop) -> None:
     import signal
 
     from ..runtime import reaper
     signal.signal(signal.SIGTERM, _exit)
+    out_q.cancel_join_thread()  # exiting must not wait to flush trajectories nobody reads any more
     torch.set_num_threads(1)
     try:
         device = torch.device(cfg["device"])
@@ -504,8 +509,9 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
                 lp, lp_ref = torch.log_softmax(ev["logits"].float(), -1), torch.log_softmax(ev_ref["logits"].float(), -1)
                 kl = (lp.exp() * (lp - lp_ref)).sum(-1)
                 ref_kl = (kl * own).sum() / n_units
-                if not warmup:
-                    loss = loss + args.ref_kl * ref_kl
+                # also while the value warms up: it shares the network's trunk, so training it alone
+                # moved the policy too (the KL to the clone doubled in the first five updates)
+                loss = loss + args.ref_kl * ref_kl
             opt.zero_grad(set_to_none=True)
             loss.backward()
             gn = torch.nn.utils.clip_grad_norm_(net.parameters(), args.max_grad_norm)
@@ -584,6 +590,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--note", default="")
     args = ap.parse_args(argv)
     args.device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    import signal
+    signal.signal(signal.SIGTERM, _interrupt)  # kill: a clean stop (status, a checkpoint, the actors)
 
     run_dir = args.runs / args.name
     for sub_dir in ("checkpoints", "replays", "videos"):
