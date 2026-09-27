@@ -9,11 +9,13 @@ Throne (Legacy 1.29). The tools read its archives and build the maps they use lo
 videos of your runs stay in `runs/`, which is not committed. warcraftsim is not affiliated with or
 endorsed by Blizzard Entertainment.
 
-https://github.com/user-attachments/assets/361127c0-82ad-462d-8edb-e0c7d6de9482
+https://github.com/user-attachments/assets/0ba228f2-3a16-411d-b0e8-685246f05764
 
-*A policy trained with PPO (run `rejoin-1`) in a 3 v 3 mirror match (a Crypt Lord and two units a side) against the scripted
-opponent: the hurt unit A2 pulls back while A0 and A1 keep fighting, rejoins, and the agent wins. The panel on the right shows what
-the policy saw and thought: its value estimate, rewards, team hit points and every unit's action probabilities.*
+*The league policy `genleague5d` (A, green rings), trained by self-play with hero abilities, against its predecessor `genleague3`
+(B, orange rings), which never learned to cast, in a 5 v 5 mirror match: a Lich and four units a side. Both sides focus their attacks
+on the enemy Lich, and A kills B's first. A's Lich casts Frost Armor and Frost Nova until its mana runs out, and A wins with three
+units left. Over 120 games `genleague5d` beat `genleague3` 81–31. The panel on the right shows what each policy saw and thought:
+value estimates, rewards, team hit points, the Liches' mana and spells, and every unit's action probabilities.*
 
 ```python
 from warcraftsim import Wc3Game, GameSetup, Agent, BuiltinAI
