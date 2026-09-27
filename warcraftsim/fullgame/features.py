@@ -175,6 +175,25 @@ def describe_spaces(vocab: dict, order_names: dict[int, str] | None = None, agen
             "reward_scale": 1}
 
 
+_FLAG_BITS = np.array(FLAG_BITS, np.int64)
+
+
+def _sorted_map(d: dict) -> tuple[np.ndarray, np.ndarray]:
+    keys = np.fromiter(d.keys(), np.int64, len(d))
+    vals = np.fromiter(d.values(), np.int64, len(d))
+    order = np.argsort(keys)
+    return keys[order], vals[order]
+
+
+def _lookup(x: np.ndarray, keys: np.ndarray, vals: np.ndarray) -> np.ndarray:
+    """d.get(v, 0) for every v in x, with d as sorted (keys, vals)."""
+    if len(keys) == 0:
+        return np.zeros(len(x), np.int64)
+    i = np.searchsorted(keys, x)
+    i = np.minimum(i, len(keys) - 1)
+    return np.where(keys[i] == x, vals[i], 0)
+
+
 def _bin(v: np.ndarray) -> np.ndarray:
     return np.clip(((v + MAP_EXTENT) / (2 * MAP_EXTENT) * BINS).astype(np.int64), 0, BINS - 1)
 
@@ -194,6 +213,9 @@ class Encoder:
         self.n_orders = len(self.order_index) + 1
         self.order_kind = np.array([IMMEDIATE] + [k[1] for k in vocab["orders"]], np.int64)
         self.G = 6 + 2 * len(RACES) + len(self.upgrade_index)
+        # the lookups as sorted arrays (vectorized; per-entity dict lookups were most of a step's cost)
+        self._type_keys, self._type_vals = _sorted_map(self.type_index)
+        self._cur_keys, self._cur_vals = _sorted_map(self.cur_index)
 
     @staticmethod
     def side(units_step0: np.ndarray, player: int) -> float:
@@ -220,8 +242,7 @@ class Encoder:
         f[:, 6] = sel[:, C_MAXHP] / 1000.0
         f[:, 7] = np.where(sel[:, C_MAXMANA] > 0, sel[:, C_MANA] / np.maximum(sel[:, C_MAXMANA], 1), 0)
         f[:, 8] = sel[:, C_MAXMANA] / 1000.0
-        for k, bit in enumerate(FLAG_BITS):
-            f[:, 9 + k] = (sel[:, C_FLAGS] & bit) > 0
+        f[:, 9:9 + len(FLAG_BITS)] = (sel[:, C_FLAGS][:, None] & _FLAG_BITS) > 0
         a = 9 + len(FLAG_BITS)
         f[:, a] = sel[:, C_HLEVEL] / 10.0
         f[:, a + 1] = sel[:, C_RESOURCE] / 12500.0
@@ -234,10 +255,13 @@ class Encoder:
         # whether something is being made (View keeps both from its orders and the events)
         if production is not None:
             queued, busy = production
-            f[:, a + 6] = [min(queued.get(int(i), 0), 5) / 5.0 for i in sel[:, C_ID]]
-            f[:, a + 7] = [float(int(i) in busy) for i in sel[:, C_ID]]
-        types = np.array([self.type_index.get(int(t), 0) for t in sel[:, C_TYPE]], np.int64)
-        cur = np.array([self.cur_index.get(int(o), 0) for o in sel[:, C_ORDER]], np.int64)
+            ids = sel[:, C_ID]
+            if queued:
+                f[:, a + 6] = np.minimum(_lookup(ids, *_sorted_map(queued)), 5) / 5.0
+            if busy:
+                f[:, a + 7] = np.isin(ids, np.fromiter(busy, np.int64, len(busy)))
+        types = _lookup(sel[:, C_TYPE], self._type_keys, self._type_vals)
+        cur = _lookup(sel[:, C_ORDER], self._cur_keys, self._cur_vals)
         return sel, n_own, f, types, cur
 
     def view(self, player: int, sign: float, races: list[int]) -> "View":

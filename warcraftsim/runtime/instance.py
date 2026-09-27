@@ -154,6 +154,9 @@ class GameSetup:
     # Restart: the loading screen and everything anew, built-in AI included; duelrush 5 s, duel
     # 2.8 s, instead of launching the game again: 9-10 s and 6 s); no warm spare is needed then
     engine_restart: bool = True
+    # observations parsed and merged in C (warcraftsim.native): Observation.unit_array, lazy units;
+    # no GIL while parsing (the game threads of one process parse at the same time)
+    native_obs: bool = False
     max_game_seconds: float = 0.0  # 0 = unlimited; otherwise a tie when reached
     fog: bool | None = None  # None: on for melee, off for scenarios
     wgc_speed: int = 1
@@ -364,6 +367,10 @@ class GameInstance:
         self.steps = 0
         self.damaged_records = 0
         self._units: dict[int, Unit] = {}
+        self._native = None
+        if setup.native_obs:
+            from ..native import NativeObs
+            self._native = NativeObs()
         self._need_snapshot = False
         self.order_names = setup.harness_config().resolved_order_names()
         self._speed = setup.speed or 32.0
@@ -599,8 +606,11 @@ class GameInstance:
             parts = line.split()
             if len(parts) >= 3:  # the observation follows in memory (w3shim obs capture)
                 payload = self._rfile.read(int(parts[2]))
-                obs = parse_token_lines(payload, self.order_names)
+                obs = (self._native.parse(payload, self.order_names) if self._native is not None
+                       else parse_token_lines(payload, self.order_names))
             else:
+                if self._native is not None:
+                    raise GameError("native_obs needs the in-memory observation capture (w3shim)")
                 obs = self._read_obs_file()
             if new_episode:
                 if obs.seq != 0:
@@ -616,7 +626,7 @@ class GameInstance:
                 # a unit delta may be lost: ask for a full snapshot with the next commands
                 self.damaged_records += obs.damaged_records
                 self._need_snapshot = True
-            obs = merge_observation(self._units, obs)
+            obs = self._native.merge(obs) if self._native is not None else merge_observation(self._units, obs)
             self.last_obs = obs
             return obs
 

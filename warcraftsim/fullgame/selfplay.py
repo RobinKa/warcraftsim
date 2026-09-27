@@ -161,29 +161,43 @@ class Inference:
     def _forward(self, net: FullGameNet, sts: list[dict]) -> list[dict]:
         fixed = self.compiled is not None and net is self.nets.current and len(sts) <= self.max_batch
         B, E = (self.max_batch, fx.MAX_ENT) if fixed else (len(sts), max(st["n"] for st in sts))
-        ent = np.zeros((B, E, fx.F), np.float32)
-        typ, cur = np.zeros((B, E), np.int64), np.zeros((B, E), np.int64)
-        mask = np.zeros((B, E), bool)
+        G = len(sts[0]["glob"])
+        cuda = self.device.type == "cuda"
+        if fixed and cuda:  # the same shapes every call: pinned host buffers, reused
+            if getattr(self, "_host", None) is None:
+                self._host = [torch.zeros(B, E, fx.F).pin_memory(), torch.zeros(B, E, dtype=torch.long).pin_memory(),
+                              torch.zeros(B, E, dtype=torch.long).pin_memory(), torch.zeros(B, E, dtype=torch.bool).pin_memory(),
+                              torch.zeros(B, G).pin_memory(), torch.zeros(B, dtype=torch.long).pin_memory()]
+            host = self._host
+            for h in host:
+                h.zero_()
+        else:
+            host = [torch.zeros(B, E, fx.F), torch.zeros(B, E, dtype=torch.long), torch.zeros(B, E, dtype=torch.long),
+                    torch.zeros(B, E, dtype=torch.bool), torch.zeros(B, G), torch.zeros(B, dtype=torch.long)]
+        ent, typ, cur, mask, glob, n_own = (h.numpy() for h in host)
         mask[:, 0] = True  # (padding rows: one entity, or attention over nothing gives NaNs)
-        glob = np.zeros((B, len(sts[0]["glob"])), np.float32)
-        n_own = np.zeros(B, np.int64)
         for i, st in enumerate(sts):
             n = st["n"]
             ent[i, :n], typ[i, :n], cur[i, :n], mask[i, :n] = st["ent"], st["type"], st["cur"], True
             glob[i], n_own[i] = st["glob"], min(st["n_own"], fx.MAX_OWN)
-        t = lambda a: torch.from_numpy(a).to(self.device, non_blocking=True)  # noqa: E731
-        out = (self.compiled if fixed else lambda *a: act(net, *a))(t(ent), t(typ), t(cur), t(mask), t(glob), t(n_own))
-        if self.device.type == "cuda":  # wait sleeping: CUDA's default sync spins a core the games need
+        x = [h.to(self.device, non_blocking=True) for h in host]
+        out = (self.compiled if fixed else lambda *a: act(net, *a))(*x)
+        O = out["order"].shape[1]
+        # everything back in one copy (seven were seven waits)
+        packed = torch.cat([out["order"].float(), out["tgt"].float(), out["bx"].float(), out["by"].float(), out["logp"].float(),
+                            out["value"].float()[:, None], out["entropy"].float()[:, None]], 1)
+        if cuda:  # wait sleeping: CUDA's default sync spins a core the games need
             done = torch.cuda.Event(blocking=True)
             done.record()
             done.synchronize()
-        cpu = {k: v.cpu().numpy() for k, v in out.items()}
+        p = packed.cpu().numpy()
+        order, tgt, bx, by = (p[:, k * O:(k + 1) * O].astype(np.int64) for k in range(4))
+        logp, value, entropy = p[:, 4 * O:5 * O], p[:, 5 * O], p[:, 5 * O + 1]
         res = []
-        for i in range(B):
+        for i in range(len(sts)):
             o = n_own[i]
-            res.append({"order": cpu["order"][i, :o], "tgt": cpu["tgt"][i, :o], "bx": cpu["bx"][i, :o],
-                        "by": cpu["by"][i, :o], "logp": cpu["logp"][i, :o], "value": float(cpu["value"][i]),
-                        "entropy": float(cpu["entropy"][i])})
+            res.append({"order": order[i, :o], "tgt": tgt[i, :o], "bx": bx[i, :o], "by": by[i, :o],
+                        "logp": logp[i, :o].copy(), "value": float(value[i]), "entropy": float(entropy[i])})
         return res
 
 
@@ -279,7 +293,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop) -> Non
         # that, so games against it reload the map: ~5 s)
         setup = GameSetup(map=cfg["map"], slots=slots, step_seconds=cfg["step_seconds"],
                           max_game_seconds=cfg["max_minutes"] * 60, victory="decisive", window=(320, 240),
-                          wait_floor_ms=cfg["wait_floor_ms"], melee_reset=agents_only and cfg["scripted_reset"])
+                          wait_floor_ms=cfg["wait_floor_ms"], melee_reset=agents_only and cfg["scripted_reset"],
+                          native_obs=cfg["native_obs"])
         per_launch = cfg["games_per_process"] * (cfg["agent_games_factor"] if agents_only and cfg["scripted_reset"] else 1)
         try:
             with GameInstance(setup, name=name, timeout=120) as g:
@@ -687,6 +702,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-grad-norm", type=float, default=1.0)
     ap.add_argument("--bf16", type=int, default=1, help="the updates' matmuls in bfloat16")
     ap.add_argument("--compile", type=int, default=1, help="the actors' network calls compiled (CUDA graphs)")
+    ap.add_argument("--native-obs", type=int, default=1, help="observations parsed in C (warcraftsim.native)")
     ap.add_argument("--chunk", type=int, default=64, help="steps per trajectory piece an actor sends")
     ap.add_argument("--checkpoint-every", type=int, default=20)
     ap.add_argument("--video-every", type=float, default=4.0, help="minutes between game videos (0: none; the actors take turns)")
@@ -772,7 +788,7 @@ def main(argv: list[str] | None = None) -> int:
            "seed": args.seed, "slot": slot, "video_every": args.video_every, "scripted_reset": bool(args.scripted_reset),
            "agent_games_factor": args.agent_games_factor, "mirror": bool(args.mirror), "learner_pid": os.getpid(),
            "actors": args.actors, "values": unit_values(), "shaping": args.shaping, "shaping_scale": args.shaping_scale,
-           "tie_break": args.tie_break, "compile": bool(args.compile),
+           "tie_break": args.tie_break, "compile": bool(args.compile), "native_obs": bool(args.native_obs),
            "order_names": vocab.get("order_names") or {str(k): v for k, v in fx.demo_order_names(args.runs).items()}}
     # the actors compile their network calls: without this each starts a pool of ~32 compile workers
     # (~100 processes, several GB, idle after the first seconds)

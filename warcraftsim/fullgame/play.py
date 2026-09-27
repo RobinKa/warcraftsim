@@ -43,6 +43,12 @@ def rawcode_or(order: int) -> str:
 
 def unit_rows(obs: Observation, t: int) -> np.ndarray:
     """The observation's units as rows of collect.UNIT_COLS."""
+    ua = getattr(obs, "unit_array", None)
+    if ua is not None:  # (native observations: the table's first 17 columns are these, after the step)
+        out = np.empty((len(ua), 18), np.int64)
+        out[:, 0] = t
+        out[:, 1:] = ua[:, :17]
+        return out
     return np.asarray([(t, u.id, u.type_id, u.owner, u.x, u.y, u.facing, u.hp, u.max_hp, u.mana, u.max_mana,
                         u.order, int(u.flags), u.visible_to, u.resource, u.hero_level, u.hero_xp, u.skill_points)
                        for u in obs.units], np.int64).reshape(-1, 18)

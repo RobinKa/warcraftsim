@@ -22,6 +22,17 @@ def trace_step(t: int, obs: Observation, material: dict, orders: dict, **policy)
 def material(obs, values: dict) -> dict[int, float]:
     """What each player's living units and buildings cost, times their hit points left: {0: .., 1: ..}."""
     out = {0: 0.0, 1: 0.0}
+    ua = getattr(obs, "unit_array", None)
+    if ua is not None and len(ua):  # native observations: vectorized
+        import numpy as np
+        live = ((ua[:, 11] & DEAD_FLAG) == 0) & ((ua[:, 2] == 0) | (ua[:, 2] == 1))
+        a = ua[live]
+        types, inv = np.unique(a[:, 1], return_inverse=True)
+        v = np.array([values.get(str(t), 0) for t in types.tolist()], float)[inv]
+        hp = np.where(a[:, 7] > 0, a[:, 6] / np.maximum(a[:, 7], 1), 1.0)
+        for p in (0, 1):
+            out[p] = float((v * hp)[a[:, 2] == p].sum())
+        return out
     for u in obs.units:
         if u.owner in (0, 1) and not int(u.flags) & DEAD_FLAG:
             out[u.owner] += values.get(str(u.type_id), 0) * (u.hp / u.max_hp if u.max_hp > 0 else 1.0)
