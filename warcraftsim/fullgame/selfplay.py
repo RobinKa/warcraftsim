@@ -226,7 +226,7 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop) -> Non
 
     rng = random.Random(cfg["seed"] * 1000 + wid * 16 + k)
     films = wid == 0 and k == 0 and cfg["video_every"] > 0  # this game slot records the videos
-    next_video = time.time() + 120
+    next_video = time.time()  # the first game at once: something to watch early
     vocab = json.loads(Path(cfg["vocab"]).read_text())
     spec_path = Path(cfg["run_dir"]) / "league_spec.json"
     name = f"fgsp{cfg['slot']}_{wid}_{k}"
