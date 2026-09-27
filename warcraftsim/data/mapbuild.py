@@ -61,6 +61,7 @@ class HarnessConfig:
     resources: tuple[tuple[int, int, int], ...] = ()  # (player, gold, lumber)
     clear_area: tuple[float, float, float] | None = None  # (x, y, radius): remove trees there
     order_names: tuple[str, ...] | None = None  # order strings resolved in the first observation
+    record_orders: bool = False  # observations carry the built-in AI players' orders (Observation.issued)
 
     hero_abilities: dict[str, tuple[str, ...]] | None = None  # hero type -> ability per slot
 
@@ -138,6 +139,7 @@ def _split_harness(src: str, cfg: HarnessConfig) -> tuple[str, str]:
         "W3S_CFG_CLEAR_X": f"constant real W3S_CFG_CLEAR_X = {cx:.1f}",
         "W3S_CFG_CLEAR_Y": f"constant real W3S_CFG_CLEAR_Y = {cy:.1f}",
         "W3S_CFG_CLEAR_R": f"constant real W3S_CFG_CLEAR_R = {cr:.1f}",
+        "W3S_CFG_RECORD_ORDERS": f"constant boolean W3S_CFG_RECORD_ORDERS = {jbool(cfg.record_orders)}",
     }
     for name, decl in replacements.items():
         glob, n = re.subn(rf"^\s*constant \w+ {name} = .*$", "    " + decl, glob, flags=re.M)

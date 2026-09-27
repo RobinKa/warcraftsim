@@ -226,6 +226,20 @@ class Event:
     c: int
 
 
+@dataclass(frozen=True)
+class IssuedOrder:
+    """An order a built-in AI player gave (GameSetup.record_ai_orders): kind 0 immediate (also
+    train / research, order = the type's id), 1 at a point (also build: order = the building's
+    type), 2 on a target (unit, tree or item id; x, y where it was), 3 a hero skill learned
+    (order = the ability's id)."""
+    unit: int
+    order: int
+    kind: int
+    x: int
+    y: int
+    target: int
+
+
 @dataclass
 class Observation:
     seq: int
@@ -242,6 +256,7 @@ class Observation:
     full: bool = True  # False: `units` holds only the units that changed (see merge_observation)
     removed: list[int] = field(default_factory=list)  # units that left the game since the last observation
     camera: tuple[float, float] | None = None  # the local camera's target (videos), if the harness reports it
+    issued: list[IssuedOrder] = field(default_factory=list)  # the built-in AI's orders (record_ai_orders)
 
     @property
     def game_time(self) -> float:
@@ -284,7 +299,7 @@ def tokens_from_text(text: str) -> list[str]:
     return [t for t in _TOKEN_RE.findall(text) if _KEEP_RE.fullmatch(t)]
 
 
-_FIELDS = {"T": 4, "P": 14, "O": 1, "D": 5, "E": 4, "C": 1, "U": 14, "R": 1, "K": 2}
+_FIELDS = {"T": 4, "P": 14, "O": 1, "D": 5, "E": 4, "C": 1, "U": 14, "R": 1, "K": 2, "I": 6}
 HERO_ABILITY_SLOTS = 4
 # heroes: level, xp, skill points, 6 items, then per ability slot its level and cooldown left (0.1 s)
 _HERO_EXTRA = 9 + 2 * HERO_ABILITY_SLOTS
@@ -355,6 +370,7 @@ def parse_tokens(toks: list[str], order_names: Sequence[str] = ORDER_NAMES) -> O
     camera = None
     full = True
     removed: list[int] = []
+    issued: list[IssuedOrder] = []
 
     while i < n:
         tag = toks[i]
@@ -395,6 +411,8 @@ def parse_tokens(toks: list[str], order_names: Sequence[str] = ORDER_NAMES) -> O
             events.append(Event(kind, v[1], v[2], v[3]))
         elif tag == "C":
             results.append(bool(v[0]))
+        elif tag == "I":
+            issued.append(IssuedOrder(*v[:6]))
         elif tag == "R":
             removed.append(v[0])
         elif tag == "P":
@@ -420,6 +438,7 @@ def parse_tokens(toks: list[str], order_names: Sequence[str] = ORDER_NAMES) -> O
     obs.damaged_records = damaged
     obs.full = full
     obs.removed = removed
+    obs.issued = issued  # the built-in AI's orders since the last observation (record_ai_orders)
     obs.camera = camera  # the local camera's target (x, y), or None
     return obs
 

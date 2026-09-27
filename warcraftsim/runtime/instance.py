@@ -146,6 +146,7 @@ class GameSetup:
     music_volume: int = 50  # with audio: 0-100 (0: no music); sound effects play at full volume
     health_bars: bool = False  # the game's own health bars over every unit (Gameplay option; videos)
     mouse_scroll: bool = True  # the camera scrolls with the pointer at a screen edge (off for videos)
+    record_ai_orders: bool = False  # melee: observations carry the built-in AI's orders (Observation.issued)
     max_game_seconds: float = 0.0  # 0 = unlimited; otherwise a tie when reached
     fog: bool | None = None  # None: on for melee, off for scenarios
     wgc_speed: int = 1
@@ -191,7 +192,8 @@ class GameSetup:
 
     def harness_config(self) -> HarnessConfig:
         if self.scenario is None:
-            return HarnessConfig(self.step_seconds, self.agent_players, self.max_game_seconds)
+            return HarnessConfig(self.step_seconds, self.agent_players, self.max_game_seconds,
+                                 record_orders=self.record_ai_orders)
         sc = self.scenario
         cx, cy = sc.resolved_center()
         return HarnessConfig(
@@ -229,7 +231,10 @@ class GameSetup:
         cfg = self.harness_config()
         # the tables generated from game data are part of the built script too
         tables = json.dumps([cfg.resolved_order_names(), cfg.resolved_hero_abilities()], sort_keys=True)
-        key = {"map": self.map, "harness": asdict(cfg),
+        harness = asdict(cfg)
+        if not harness["record_orders"]:  # keys from before the option stay the same
+            del harness["record_orders"]
+        key = {"map": self.map, "harness": harness,
                "source": hashlib.sha1((source or harness_source()).encode()).hexdigest(),
                "tables": hashlib.sha1(tables.encode()).hexdigest()}
         from ..data.duelmap import duel_map_path, parse_duel_name

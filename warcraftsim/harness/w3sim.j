@@ -28,6 +28,7 @@ globals
     constant real W3S_CFG_CLEAR_X = 0.0
     constant real W3S_CFG_CLEAR_Y = 0.0
     constant real W3S_CFG_CLEAR_R = 0.0
+    constant boolean W3S_CFG_RECORD_ORDERS = false
     constant integer W3S_VERSION = 4
     constant integer W3S_QS_SKILLS = 8
     constant integer W3S_ABIL_SLOTS = 4  // warcraftsim.protocol.HERO_ABILITY_SLOTS
@@ -78,6 +79,11 @@ globals
     boolean array w3s_scripted
     integer array w3s_alive
     boolean array w3s_participant
+    // orders the built-in AI players gave since the last observation (W3S_CFG_RECORD_ORDERS; the
+    // labels for learning from them): unit, order, kind (0 immediate, 1 point, 2 target, 3 hero
+    // skill learned), x, y, target id
+    integer array w3s_iss
+    integer w3s_niss = 0
     // Replay videos: markers drawn in the game (ops 80-83). They are all made at init, the same in a
     // recorded game and in its playback, and are only moved, shown and hidden later: a handle made
     // only during playback would shift the handle ids (the unit ids of the commands) of later units.
@@ -531,6 +537,20 @@ function W3S_WriteObs takes nothing returns nothing
         set i = i + 4
     endloop
     set w3s_nev = 0
+    set i = 0
+    loop
+        exitwhen i >= w3s_niss * 6
+        call W3S_Rec("I")
+        call W3S_Tok(w3s_iss[i])
+        call W3S_Tok(w3s_iss[i + 1])
+        call W3S_Tok(w3s_iss[i + 2])
+        call W3S_Tok(w3s_iss[i + 3])
+        call W3S_Tok(w3s_iss[i + 4])
+        call W3S_Tok(w3s_iss[i + 5])
+        call W3S_End()
+        set i = i + 6
+    endloop
+    set w3s_niss = 0
     // results of the previous commands
     set i = 0
     loop
@@ -1477,6 +1497,55 @@ function W3S_OnItemPickup takes nothing returns boolean
     return false
 endfunction
 
+// an order (or hero skill) of a built-in AI player, recorded for the next observation
+function W3S_Issued takes unit u, integer order, integer kind, real x, real y, integer target returns nothing
+    local integer p = GetPlayerId(GetOwningPlayer(u))
+    local integer k = w3s_niss * 6
+    if p >= bj_MAX_PLAYERS or w3s_agent[p] or w3s_scripted[p] or w3s_niss >= 1300 then
+        return
+    endif
+    if GetPlayerController(Player(p)) != MAP_CONTROL_COMPUTER then
+        return
+    endif
+    set w3s_iss[k] = GetHandleId(u)
+    set w3s_iss[k + 1] = order
+    set w3s_iss[k + 2] = kind
+    set w3s_iss[k + 3] = R2I(x)
+    set w3s_iss[k + 4] = R2I(y)
+    set w3s_iss[k + 5] = target
+    set w3s_niss = w3s_niss + 1
+endfunction
+
+function W3S_OnIssuedOrder takes nothing returns boolean
+    call W3S_Issued(GetTriggerUnit(), GetIssuedOrderId(), 0, 0.0, 0.0, 0)
+    return false
+endfunction
+
+function W3S_OnIssuedPoint takes nothing returns boolean
+    call W3S_Issued(GetTriggerUnit(), GetIssuedOrderId(), 1, GetOrderPointX(), GetOrderPointY(), 0)
+    return false
+endfunction
+
+function W3S_OnIssuedTarget takes nothing returns boolean
+    local widget w = GetOrderTarget()
+    local integer id = 0
+    if GetOrderTargetUnit() != null then
+        set id = GetHandleId(GetOrderTargetUnit())
+    elseif GetOrderTargetDestructable() != null then
+        set id = GetHandleId(GetOrderTargetDestructable())
+    elseif GetOrderTargetItem() != null then
+        set id = GetHandleId(GetOrderTargetItem())
+    endif
+    call W3S_Issued(GetTriggerUnit(), GetIssuedOrderId(), 2, GetWidgetX(w), GetWidgetY(w), id)
+    set w = null
+    return false
+endfunction
+
+function W3S_OnHeroSkill takes nothing returns boolean
+    call W3S_Issued(GetTriggerUnit(), GetLearnedSkill(), 3, 0.0, 0.0, 0)
+    return false
+endfunction
+
 function W3S_Reg takes playerunitevent e, code c returns nothing
     local trigger t = CreateTrigger()
     local integer i = 0
@@ -1599,6 +1668,12 @@ function W3S_Init takes nothing returns nothing
     call W3S_Reg(EVENT_PLAYER_UNIT_SPELL_EFFECT, function W3S_OnSpell)
     call W3S_Reg(EVENT_PLAYER_UNIT_SUMMON, function W3S_OnSummon)
     call W3S_Reg(EVENT_PLAYER_UNIT_PICKUP_ITEM, function W3S_OnItemPickup)
+    if W3S_CFG_RECORD_ORDERS then
+        call W3S_Reg(EVENT_PLAYER_UNIT_ISSUED_ORDER, function W3S_OnIssuedOrder)
+        call W3S_Reg(EVENT_PLAYER_UNIT_ISSUED_POINT_ORDER, function W3S_OnIssuedPoint)
+        call W3S_Reg(EVENT_PLAYER_UNIT_ISSUED_TARGET_ORDER, function W3S_OnIssuedTarget)
+        call W3S_Reg(EVENT_PLAYER_HERO_SKILL, function W3S_OnHeroSkill)
+    endif
     if W3S_CFG_SCENARIO then
         if W3S_CFG_CLEAR_R > 0.0 then
             call EnumDestructablesInRect(bj_mapInitialPlayableArea, null, function W3S_ClearTree)
