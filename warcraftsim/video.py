@@ -17,9 +17,9 @@ import os
 import subprocess
 from pathlib import Path
 
-from .protocol import Camera, Observation, decode_commands
+from .protocol import Camera, CameraZoom, Observation, decode_commands
 from .runtime.display import Xvfb
-from .runtime.instance import GameError, GameInstance, GameSetup, replay_markers
+from .runtime.instance import GameError, GameInstance, GameSetup, replay_script
 
 
 class _XImage(ctypes.Structure):
@@ -103,6 +103,23 @@ def _park_pointer(display: str) -> None:
 
 
 FOLLOW_GAIN = 0.35  # of the way to the fight's centre per step: smooth, and it keeps up with a chase
+# Zooming out to keep every unit in view (split groups): at the default camera distance the view
+# above the bottom UI panel spans about +-1000 x and -450..+850 y around the camera's target
+# (GROUND_TO_SCREEN in overlay.py), and it scales with the distance.
+ZOOM_DEFAULT, ZOOM_MAX = 1650.0, 3300.0
+ZOOM_HALF_W, ZOOM_HALF_H, ZOOM_Y_OFFSET, ZOOM_MARGIN = 1000.0, 600.0, 200.0, 250.0
+ZOOM_OUT_GAIN = 0.6  # zooming out keeps up faster than zooming back in
+
+
+def _fit_view(obs: Observation) -> tuple[tuple[float, float], float] | None:
+    """The centre of all living units and the camera distance that shows them all."""
+    units = [u for u in obs.units if u.alive and not u.is_structure and u.owner in obs.players]
+    if not units:
+        return None
+    xs, ys = [u.x for u in units], [u.y for u in units]
+    half_w, half_h = (max(xs) - min(xs)) / 2 + ZOOM_MARGIN, (max(ys) - min(ys)) / 2 + ZOOM_MARGIN
+    want = ZOOM_DEFAULT * max(1.0, half_w / ZOOM_HALF_W, half_h / ZOOM_HALF_H)
+    return ((max(xs) + min(xs)) / 2, (max(ys) + min(ys)) / 2), min(want, ZOOM_MAX)
 
 
 def _follow_target(obs: Observation, player: int | None) -> tuple[float, float] | None:
@@ -127,6 +144,7 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
     `overlay` (overlay.EpisodeOverlay) shows the agent's orders and what the policy thought: the
     game draws the marks on the units (rings, labels, orders; with its own health bars) when the
     replay's map can (runtime.instance.replay_markers), else they are drawn onto the footage.
+    Scenarios: the camera follows the fight, zooming out to keep every unit in view.
     With `audio`, the game's sound comes from the w3shim virtual sound card, one frame's worth per
     frame; the render then runs at no more than real time (the game's mixer needs that)."""
     out = Path(out)
@@ -136,7 +154,9 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
     # replays count the map load (one ~6 s engine update) as elapsed time and then race through that
     # much game time without drawing (videos started ~4 s in): load on an almost stopped clock
     # (0.03x: starts ~0.5 s in; 0.01x: the load never finishes)
-    in_game = overlay is not None and replay_markers(setup, replay)
+    script = replay_script(setup, replay)
+    in_game = overlay is not None and "function W3S_VisClear" in script
+    zoom = "call SetCameraField(CAMERA_FIELD_FARZ, 10000.0" in script  # the camera can zoom out (op 84)
     setup = GameSetup(**{**setup.__dict__, "warm_spare": False, "speed": 1.0, "launch_speed": 0.03,
                          "window": (1024, 768), "audio": audio, "music_volume": music_volume,
                          "health_bars": in_game or setup.health_bars, "mouse_scroll": False})
@@ -193,10 +213,12 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
         inst.set_frame_capture(1000.0 * speed / fps, on_frame, on_audio if audio else None)
         follow = follow_player is not None or setup.scenario is None
         # scenarios: the camera follows the fight (the centre of all units, smoothed so that a death
-        # or a unit breaking away doesn't jerk it), panned over each step; the overlay is told where
-        # it is on every frame (it projects positions relative to the camera)
+        # or a unit breaking away doesn't jerk it), panned over each step, and zooms out as far as
+        # needed to show every unit (harnesses with op 84); a drawn overlay is told where it is on
+        # every frame (it projects positions relative to the camera, at the default zoom)
         follow_fight = follow_player is None and setup.scenario is not None
         cam = setup.scenario.resolved_center() if setup.scenario is not None else None
+        dist = ZOOM_DEFAULT
         last = None
         for t in range(max_steps):
             if obs.game_over:
@@ -204,10 +226,17 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
             commands = decode_commands((inst._playback or {}).get(f"{inst._proc_episode}:{obs.seq}", []))
             target = _follow_target(obs, follow_player) if follow else None
             cam_from = cam
-            if follow_fight and (c := _follow_target(obs, None)) is not None:
+            if follow_fight and zoom and (fit := _fit_view(obs)) is not None:
+                (cx, cy), want = fit
+                dist += (ZOOM_OUT_GAIN if want > dist else FOLLOW_GAIN) * (want - dist)
+                cy -= ZOOM_Y_OFFSET * dist / ZOOM_DEFAULT
+                target = cam = (cam[0] + FOLLOW_GAIN * (cx - cam[0]), cam[1] + FOLLOW_GAIN * (cy - cam[1]))
+            elif follow_fight and (c := _follow_target(obs, None)) is not None:
                 target = cam = (cam[0] + FOLLOW_GAIN * (c[0] - cam[0]), cam[1] + FOLLOW_GAIN * (c[1] - cam[1]))
             before = obs
             extra = [Camera(*target)] if target else []
+            if follow_fight and zoom:
+                extra.append(CameraZoom(dist))
             if in_game:
                 extra += overlay.markers(obs, commands)
             try:

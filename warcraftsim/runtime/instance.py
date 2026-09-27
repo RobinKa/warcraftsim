@@ -270,21 +270,26 @@ def recorded_map(setup: "GameSetup", replay: Path, key: str | None) -> Path | No
         return None
 
 
-def replay_markers(setup: "GameSetup", replay: str | os.PathLike) -> bool:
-    """Whether the map `replay` plays back on draws video markers (protocol.VisMark etc.; harnesses
-    from before them ignore the commands, and the overlay then draws the marks itself)."""
+def replay_script(setup: "GameSetup", replay: str | os.PathLike) -> str:
+    """The map script `replay` plays back with (the harness it was recorded with)."""
     log_file = commands_path(Path(replay))
     key = json.loads(log_file.read_text()).get("map_key") if log_file.exists() else None
     recorded = recorded_map(setup, Path(replay), key)
     if recorded is None:
         from ..data.mapbuild import harness_source
-        return "function W3S_VisClear" in harness_source()
+        return harness_source()
     from ..data.mpq import MpqArchive
     try:
         with MpqArchive(recorded) as m:
-            return b"function W3S_VisClear" in m.read("war3map.j")
+            return m.read("war3map.j").decode("latin-1")
     except OSError:
-        return False
+        return ""
+
+
+def replay_markers(setup: "GameSetup", replay: str | os.PathLike) -> bool:
+    """Whether the map `replay` plays back on draws video markers (protocol.VisMark etc.; harnesses
+    from before them ignore the commands, and the overlay then draws the marks itself)."""
+    return "function W3S_VisClear" in replay_script(setup, replay)
 
 
 def commands_path(replay: Path) -> Path:

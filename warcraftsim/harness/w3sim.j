@@ -938,6 +938,7 @@ endfunction
 // 81 video: mark     hid rgb ring letter number
 // 82 video: order    hid rgb shape x y target_hid ability radius
 // 83 video: area     x y radius rgb
+// 84 video: camera distance (zoom), over one step
 // 91 spawn unit      player unittype x y  (debug)
 // 99 restart game
 function W3S_ApplyOne takes integer at returns integer
@@ -1032,6 +1033,14 @@ function W3S_ApplyOne takes integer at returns integer
     elseif op == 83 then
         set n = 5
         set ok = W3S_VisArea(I2R(w3s_cmd[at + 1] - 65536), I2R(w3s_cmd[at + 2] - 65536), w3s_cmd[at + 3], w3s_cmd[at + 4])
+    elseif op == 84 then
+        set n = 2
+        // local camera only (videos): zoom out to keep split groups in view; far clipping pushed out,
+        // and the camera may go past the map's edge (fights there stay in the middle of the view)
+        call SetCameraField(CAMERA_FIELD_FARZ, 10000.0, 0.0)
+        call SetCameraBounds(GetRectMinX(bj_mapInitialPlayableArea) - 1500.0, GetRectMinY(bj_mapInitialPlayableArea) - 1500.0, GetRectMaxX(bj_mapInitialPlayableArea) + 1500.0, GetRectMaxY(bj_mapInitialPlayableArea) + 1500.0, GetRectMinX(bj_mapInitialPlayableArea) - 1500.0, GetRectMaxY(bj_mapInitialPlayableArea) + 1500.0, GetRectMaxX(bj_mapInitialPlayableArea) + 1500.0, GetRectMinY(bj_mapInitialPlayableArea) - 1500.0)
+        call SetCameraField(CAMERA_FIELD_TARGET_DISTANCE, I2R(w3s_cmd[at + 1]), W3S_CFG_STEP_S)
+        set ok = true
     elseif op == 96 then
         set n = 3
         // local camera only: watching / videos, no effect on the simulation; a pan over one step
