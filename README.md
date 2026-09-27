@@ -352,6 +352,14 @@ Training throughput (`mirror_mix_abil_hp400`, 24 games): the games alone step 3,
 
 The limit is PufferLib's synchronous rollout. Each buffer thread runs its horizon step by step (inference, then its games), and training waits until every buffer is done. So each epoch lasts as long as the slowest buffer: steps take 6.8 ms (p90 9.6), and an episode reset takes 28 ms (max 52).
 
+The torch trainer (`--trainer torch`, league self-play on `mirror_mix_gen_abil_nodraw_self_hp400`, 24 games) went from 160-180 to about 800 agent steps/s after profiling it with py-spy:
+* **The league's opponents** took 62% of the trainer's time: every past snapshot ran its own eager forward (six snapshots: 128 ms per step). They now share one network, compiled once, with each snapshot's weights swapped in by one fused copy on the GPU (5 ms).
+* **The compiled policy step** was split into small graphs with eager code between them. Three operators torch.compile can't trace caused this: `nn.GRUCell`'s fused kernel, the transformer's inference fast path, and `torch.distributions.Categorical`. Now the GRU cell runs as plain ops, the fast path is off, and actions come from Gumbel-max sampling. A step takes 0.6 ms instead of 10+.
+* **GPU round trips:** each seat copied its observations to the GPU and its actions back on its own, and every copy waits for the GPU. Now there is one pinned upload and one download per step.
+* **The PPO update** runs in a thread while the next rollout is collected: the games waited for it, a third of each epoch. Its forward is compiled too (2.3× faster). After two inline updates, compiled code runs "run-only", because torch.compile can't trace in one thread while the other runs compiled code.
+
+What's left, per epoch of 1,664 steps: about 1 s waiting for the games and 0.9 s of inference, with the CPU 57% idle. More games per trainer would use it. The games themselves cost about 19 ms of CPU per step, 40% of it in each game's wineserver.
+
 ## Tests
 
 ```bash
