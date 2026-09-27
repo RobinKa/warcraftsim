@@ -336,6 +336,21 @@ What mattered, in the order it was found:
 * **Overfitting:** at 250 games the validation loss rose after 9 of 20 epochs. Dropout 0.1 and keeping the best epoch fix that. A global temperature below 1 made the policy issue fewer orders; `--order-temperature` sharpens only which order a unit gets.
 * `fullgame-263` (263 games, before the production features): 2 wins in 16 against the normal AI. Its economy works; it under-spends, often builds no barracks, and now and then gives rare orders (battle stations, board).
 
+### Race balance on `duelrush`
+
+In 3389 demonstration games night elf won 96% of its games against the other races, undead 68%, orc 26%, human 5%. The cause is the economy: the speed rules make mining and chopping 7 times faster, but walking only 1.3 times (the engine's movement limit). Human and orc workers walk every load of gold to the town hall, so their gold income rose 1.6 times; night elf and undead gold comes from the mine with no walking and rose 7 times. Gold mined in the first minute: human 571, orc 588, undead 3230, night elf 4005 (all four within 10% of each other at normal speed).
+
+| rules | human | orc | undead | night elf | game minutes |
+|---|---|---|---|---|---|
+| `duelrush` | 3% | 30% | 64% | 96% | 2.1 |
+| `duelrush`, handicap 100 (units at half hit points, not a quarter) | 13% | 27% | 76% | 100% | 1.7 |
+| `duelrush`, buildings at full hit points | 0% | 0% | 86% | 100% | 1.9 (24 games) |
+| `duelrush`, walking workers carry gold ×4.4, lumber ×2.5 | 25% | 50% | 29% | 89% | 2.1 |
+| `duelrush`, gold ×6.5, lumber ×4 (now the default) | 37% | 57% | 29% | 78% | 2.1 |
+| `duel` (normal rules on the small map; 42% ties at 15 minutes) | 31% | 52% | 16% | 9% | 12.4 |
+
+Win rates against the other races, 96 games each unless noted. What a walking worker carries per trip is now a rule (`Rules.gold_carry`, `lumber_carry`), and `duelrush` has gold ×6.5 and lumber ×4 (map version v11; collections record the map file). Even normal rules on the small map are not balanced, so this is where tuning stopped. Self-play starts on mirror matchups, which are balanced by construction.
+
 ## Other findings
 
 * lr 0.01 (tuned on `footmen2`) is far too high with 15 action heads: the KL per update was 1.0-1.5 (clip fraction 0.9) and the win rate peaked at 29%. The KL at a given lr grows with the number of heads (≈0.15 with 6, 0.3 with 9, 1.0+ with 15); lr 0.003 keeps it at 0.03-0.14.

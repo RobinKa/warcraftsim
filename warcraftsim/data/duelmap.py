@@ -114,7 +114,10 @@ class Rules:
 
 FAST = Rules(hp=0.5, time=1 / 3, cost=0.5)
 # the game three times as fast (Rules.speed), and cheaper and faster production on top
-RUSH = Rules(hp=0.5, time=0.5, cost=0.5, start=2.0, speed=7.0, ai_siege_level=20, ai_by_night=True)
+# walking workers carry more (gold_carry, lumber_carry): without it night elf beat the other races 96%
+# and human won 5%; with it (96 games, all races) human 37%, orc 57%, undead 29%, night elf 78%
+RUSH = Rules(hp=0.5, time=0.5, cost=0.5, start=2.0, speed=7.0, ai_siege_level=20, ai_by_night=True,
+             gold_carry=6.5, lumber_carry=4.0)
 FASTEST_UNIT = 400  # the base movement speed of the fastest melee units (gyrocopter, hippogryph)
 # harvest abilities' integer fields: gold per trip (Har3, Bgm1, Egm1), lumber per trip (Har2),
 # lumber per chop (Har1; wisps: Wha2), with the data column they are in
@@ -448,7 +451,7 @@ def duel_map_path(name: str) -> Path:
 
     size, rules, base_x = parse_duel_name(name)
     src = stock_map_path("(2)EchoIsles")
-    out = paths.CACHE_DIR / "maps" / f"duel{size}_b{base_x:g}{rules.tag}_v10.w3x"
+    out = paths.CACHE_DIR / "maps" / f"duel{size}_b{base_x:g}{rules.tag}_v11.w3x"
     with _lock:
         if not out.exists():
             make_duel_map(src, out, size, rules, base_x)

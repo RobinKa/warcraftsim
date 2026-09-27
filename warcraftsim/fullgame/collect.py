@@ -190,6 +190,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     races = RACES if args.races == "all" else tuple(args.races.split(","))
     screen = tuple(int(v) for v in args.screen.split("x"))
+    from ..data.duelmap import duel_map_path, parse_duel_name
+    map_file = duel_map_path(args.map).name if parse_duel_name(args.map) else args.map  # the rules' version
     diffs = tuple(args.difficulty.split(","))
     args.out.mkdir(parents=True, exist_ok=True)
     info = {**vars(args), "out": str(args.out), "time": time.time(), "status": "collecting", "pid": os.getpid(),
@@ -222,6 +224,7 @@ def main(argv: list[str] | None = None) -> int:
         path = args.out / f"game{i:05d}.npz"
         extra = data.pop("meta_extra")
         meta = {"races": [r0, r1], "difficulties": [d0, d1], "handicap": args.handicap, "map": args.map,
+                "map_file": map_file,
                 "victory": args.victory,
                 "step_seconds": args.step_seconds, **extra}
         tmp = path.with_suffix(".tmp.npz")
