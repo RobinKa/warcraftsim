@@ -327,8 +327,8 @@ After micro, the whole melee game (economy, building, tech, armies, heroes), sta
   * A KL term keeps the policy near the clone (as AlphaStar keeps near its supervised policy); the value head starts untrained, so the first updates train only it.
   * Every 15 minutes one game is recorded and rendered to a video, with a camera that zooms out to keep every unit in view.
 * **On the dashboard**:
-  * collections (`DEMOS`): games, rate, game lengths, ties, and win rates by matchup;
-  * fits (`BC`): loss, accuracy, order rate and point error per epoch, the collections used, and each `play.py` evaluation (win–tie–loss by race and matchup, gold mined, refused orders);
+  * collections (`DEMOS`): games, rate, game lengths, ties, win rates by matchup, and videos of a game every 10 minutes (`--video-every`) to check what was recorded;
+  * fits (`BC`): loss, accuracy, order rate and point error per epoch, the collections used, each `play.py` evaluation (win–tie–loss by race and matchup, gold mined, refused orders), and videos of the clone's games (`play.py --videos`, 2 by default);
   * self-play runs: the usual run page (outcomes, losses, KL to the clone), the League tab (the win rate against the built-in AI is "script:ai-normal"), and the videos.
 
 ```bash

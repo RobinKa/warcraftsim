@@ -29,7 +29,7 @@ from ..protocol import (Build, Command, EventKind, ImmediateOrder, LearnSkill, O
                         TargetDestructable, TargetOrder)
 from ..runtime.instance import Agent, BuiltinAI, GameInstance, GameSetup
 from . import features as fx
-from .collect import series
+from .collect import Films, series
 from .model import load
 
 TYPE_CODE = fx.TYPE_CODE  # orders at or above this are unit / building / upgrade / ability codes
@@ -204,6 +204,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--games-per-process", type=int, default=4,
                     help="games of one matchup in one running game (restarts reload the map in it)")
     ap.add_argument("--label", help="the evaluation's name on the dashboard")
+    ap.add_argument("--videos", type=int, default=2, help="games to film (the first of a launch each)")
     ap.add_argument("--mirror", action="store_true", help="the AI plays the agent's race")
     ap.add_argument("--device", help="default: cuda if available")
     ap.add_argument("--seed", type=int, default=0)
@@ -241,8 +242,9 @@ def main(argv: list[str] | None = None) -> int:
         setup = matchup_setup(args.map, race, ai_race, args.difficulty, side, args.handicap, args.max_minutes,
                               args.step_seconds)
 
-        def play(g, obs, k) -> None:
+        def play(g, obs, k, fresh) -> None:
             i = chunk[k][0]
+            film = fresh and films.due()
             r = play_game(g, obs, net, vocab, device, side, args.temperature, args.order_temperature)
             r.update({"game": i, "checkpoint": str(args.checkpoint), "time": time.time(), "map": args.map,
                       "eval": eval_id, "label": label, "epoch": ck.get("epoch"), "temperature": args.temperature,
@@ -251,6 +253,13 @@ def main(argv: list[str] | None = None) -> int:
                 results.append(r)
                 with open(out, "a") as f:
                     f.write(json.dumps(r) + "\n")
+            if film:
+                films.film(g, f"{eval_id.replace('@', '-')}-game{i:03d}", {
+                    "episode": i, "eval": eval_id, "label": label,
+                    "title": f"game {i}: the clone ({race}) vs the built-in AI ({ai_race}, {args.difficulty})",
+                    "outcome": {"VICTORY": 1.0, "DEFEAT": -1.0}.get(r["outcome"], 0.0),
+                    "sub": f"{r['outcome'].lower()} after {r['minutes']:.1f} game minutes · {r['orders']} orders, "
+                           f"{r['failed']} refused"})
             print(f"game {i}: {race} (side {side}) vs {ai_race} {args.difficulty}: {r['outcome']} after "
                   f"{r['minutes']} min ({r['orders']} orders, {r['failed']} refused {r['by_kind']}; {r['sides']})",
                   flush=True)
@@ -261,8 +270,12 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             names.put(name)
 
+    films = Films(out.parent, 0.0, args.videos, "bcplay_video")  # videos: the fit's Replays on the dashboard
     with ThreadPoolExecutor(args.parallel) as ex:
         list(ex.map(run, chunks))
+    if films.count:
+        print(f"rendering {films.count} videos", flush=True)
+    films.wait()
     wins = sum(r["outcome"] == "VICTORY" for r in results)
     ties = sum(r["outcome"] == "TIE" for r in results)
     print(f"{args.checkpoint}: {wins} wins, {ties} ties, {len(results) - wins - ties} losses in {len(results)} games "

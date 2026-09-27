@@ -482,8 +482,10 @@ class Dashboard:
             info["children"] = sorted(r["name"] for r in self._runs_from(name))
             info["datasets"] = [f"fullgame/{Path(x).name}" for x in str(info.get("data", "")).split()
                                 if (self.runs_dir / "fullgame" / Path(x).name / "collect.json").exists()]
+            media = self.cache.read(d / "media.jsonl") if (d / "media.jsonl").exists() else []
             return {"kind": "bc", "info": info, "fit": self.cache.read(d / "fit.jsonl"), "plays": self._plays(d),
-                    "summary": self._bc_summary(d)}
+                    "summary": self._bc_summary(d), "media": _latest_media(d, media),
+                    "replay_hint": "the clone against the built-in AI (fullgame/play.py --videos)"}
         info["notes"] = self.notes(d)
         info["spaces"] = _spaces({**info, "obs_size": info.get("obs_size") or info["meta"].get("obs_size"),
                                   "act_sizes": info.get("act_sizes") or info["meta"].get("act_sizes")})
@@ -580,7 +582,11 @@ class Dashboard:
                 a, b = rc[side], rc[1 - side]
                 matrix[a][b][0 if w == side else 1 if w is None else 2] += 1
                 lengths[a].append(r.get("minutes", 0.0))
+        media = self.cache.read(d / "media.jsonl") if (d / "media.jsonl").exists() else []
         return {"kind": "collect", "info": info, "summary": self._collect_summary(d),
+                "media": _latest_media(d, media),
+                "replay_hint": "the built-in AI against itself: the first game of a launch, at most every "
+                               f"{(_read_json(d / 'collect.json') or {}).get('video_every', 10)} minutes",
                 "games": _binned([float(i + 1) for i in range(len(per_game))], per_game), "rate": rate,
                 "matrix": matrix, "recent": rows[-15:][::-1]}
 

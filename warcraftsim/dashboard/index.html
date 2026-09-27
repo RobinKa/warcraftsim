@@ -892,7 +892,7 @@ function renderReplays(d) {
   el.querySelectorAll("#rp-kind button").forEach(b => {
     const n = count(b.dataset.k); b.querySelector(".n").textContent = n; b.disabled = !n; b.classList.toggle("on", b.dataset.k === ui.replay.kind); });
   el.querySelectorAll("#rp-out button").forEach(b => b.classList.toggle("on", b.dataset.o === ui.replay.outcome));
-  document.getElementById("rp-hint").textContent = ui.replay.kind === "video"
+  document.getElementById("rp-hint").textContent = d.replay_hint ? d.replay_hint : ui.replay.kind === "video"
     ? `game footage of game 0, every ${d.info.args?.video_every || "N"} episodes: the policy's view beside it`
     : `the units' positions and hit points, every ${d.info.args?.record_every || "N"} episodes of game 0`;
   const cur = list.find(m => m.file === ui.replay.file) || list[0];
@@ -901,8 +901,8 @@ function renderReplays(d) {
   if (el.dataset.list !== listKey) {  // rebuilt only when the episodes change (keeps the scroll)
     el.dataset.list = listKey;
     box.innerHTML = list.map(m => `<div class="it" data-file="${esc(m.file)}">
-        <span class="ep">episode ${m.episode}</span><span class="${m.outcome > 0 ? "win" : m.outcome < 0 ? "loss" : ""}">${outcomeText(m.outcome)}</span>
-        <span class="sub">return ${fmt(m.return, 2)}${m.value0 != null ? ` · V(s₀) ${fmt(m.value0, 2)}` : ""}</span><span class="sub">${m.time ? ago(m.time) : ""}</span></div>`).join("")
+        <span class="ep">${m.title ? esc(m.title) : `episode ${m.episode}`}</span><span class="${m.result ? "" : m.outcome > 0 ? "win" : m.outcome < 0 ? "loss" : ""}">${m.result ? esc(m.result) : outcomeText(m.outcome)}</span>
+        <span class="sub">${m.sub ? esc(m.sub) : `return ${fmt(m.return, 2)}${m.value0 != null ? ` · V(s₀) ${fmt(m.value0, 2)}` : ""}`}</span><span class="sub">${m.time ? ago(m.time) : ""}</span></div>`).join("")
       || `<div class="none" style="padding:20px;color:var(--muted)">none${ui.replay.outcome !== "all" ? " with this outcome" : ""}</div>`;
     box.querySelectorAll(".it").forEach(it => it.onclick = () => { ui.replay.file = it.dataset.file; renderReplays(d); });
   }
@@ -922,7 +922,7 @@ function renderReplays(d) {
   viewer.innerHTML = (cur.kind === "video"
       ? `<video src="${src}" controls muted autoplay loop playsinline></video>`
       : `<iframe src="${src}#autoplay" title="trajectory"></iframe>`) +
-    `<div class="cap"><span>episode ${cur.episode} · <span class="${cur.outcome > 0 ? "win" : cur.outcome < 0 ? "loss" : ""}">${outcomeText(cur.outcome)}</span> · return ${fmt(cur.return, 2)}${cal}${cur.time ? ` · ${ago(cur.time)}` : ""}</span>
+    `<div class="cap"><span>${cur.title ? esc(cur.title) : `episode ${cur.episode}`} · <span class="${cur.result ? "" : cur.outcome > 0 ? "win" : cur.outcome < 0 ? "loss" : ""}">${cur.result ? esc(cur.result) : outcomeText(cur.outcome)}</span> · ${cur.sub ? esc(cur.sub) : `return ${fmt(cur.return, 2)}`}${cal}${cur.time ? ` · ${ago(cur.time)}` : ""}</span>
       <a href="${src}" target="_blank">open ↗</a></div>`;
 }
 
@@ -1120,6 +1120,7 @@ function renderCollect(d) {
         ["overview", "Overview", overviewHtml(info, `what this collection is for (${info.dir}/notes.md)`)],
         ["charts", "Charts", `<div class="grid">${charts.map(chartBox).join("")}</div>`, true],
         ["matchups", "Matchups", `<div id="matrix"></div>`],
+        ["replays", "Replays", `<div id="media"></div>`],
         ["recent", "Recent games", `<div id="recent"></div>`],
         ["launch", "Command", `<div id="launch"></div>`],
       ]);
@@ -1152,6 +1153,7 @@ function renderCollect(d) {
   ui.xranges = { game: [0, Math.max(1, s.games || 1)], wall: [0, Math.max(5, rate.length ? rate[rate.length - 1].steps : 5)] };
   setCharts(charts, (id, key) => (id === "c-rate" ? rate : games).filter(p => p[key] !== undefined).map(p => [p.steps, p[key]]));
   document.getElementById("matrix").innerHTML = matrixHtml(d.matrix, "How often the row's race won against the column's (built-in AI against built-in AI; the number of games under it)");
+  renderReplays(d);
   const rec = d.recent || [];
   document.getElementById("recent").innerHTML = rec.length ? `<table class="runs"><tr><th>game</th><th>races</th><th>difficulty</th><th>winner</th><th>minutes</th><th>orders</th><th>wall s</th><th>finished</th></tr>` +
     rec.map(r => `<tr><td>${r.game}</td><td>${esc((r.races || []).join(" vs "))}</td><td>${esc((r.difficulties || []).join(" / "))}</td>
@@ -1187,6 +1189,7 @@ function renderFullBC(d) {
         ["fit", "Fit", `<div style="color:var(--muted);margin-bottom:8px">per epoch; validation: held-out games</div><div class="grid">${charts.map(chartBox).join("")}</div>`, true],
         ["play", "Play", `<div style="color:var(--muted);margin-bottom:8px">fullgame/play.py: the clone playing the built-in AI (every row: one launch)</div><div id="plays"></div>
           <div class="grid" style="margin-top:12px">${playCharts.map(chartBox).join("")}</div><div id="playmatrix" style="margin-top:12px"></div>`, true],
+        ["replays", "Replays", `<div id="media"></div>`],
         ["children", "Runs from it", `<div id="bcchildren"></div>`],
         ["launch", "Command", `<div id="launch"></div>`],
       ]);
@@ -1230,6 +1233,7 @@ function renderFullBC(d) {
     const m = {}; for (const r of RACES) { m[r] = {}; for (const o of RACES) m[r][o] = ((lp.matrix || {})[r] || {})[o] || [0, 0, 0]; }
     document.getElementById("playmatrix").innerHTML = matrixHtml(m, `The latest evaluation by matchup: the clone's race (rows) against the AI's (columns)`);
   } else document.getElementById("playmatrix").innerHTML = "";
+  renderReplays(d);
   const kids = (info.children || []).map(n => state.runs.find(r => r.name === n)).filter(Boolean);
   setTabCount("children", kids.length, true);
   const ch = document.getElementById("bcchildren");

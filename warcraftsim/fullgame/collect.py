@@ -80,12 +80,13 @@ def play_game(g: GameInstance, obs, max_steps: int = 4000) -> dict:
                            "game_seconds": obs.game_time}}
 
 
-def series(setup: GameSetup, name: str, n: int, play: Callable[[GameInstance, Observation, int], None],
+def series(setup: GameSetup, name: str, n: int, play: Callable[[GameInstance, Observation, int, bool], None],
            timeout: float = 180) -> None:
-    """play(game instance, first observation, k) for k < n: games of one setup in one running
-    game. Each after the first reloads the map in the process (GameInstance.restart: the
-    engine's RestartGame, ~6 s on duelrush instead of a ~10 s launch). A failed game is lost;
-    the rest go on in a new process."""
+    """play(game instance, first observation, k, fresh) for k < n: games of one setup in one
+    running game. Each after the first reloads the map in the process (GameInstance.restart: the
+    engine's RestartGame, ~6 s on duelrush instead of a ~10 s launch). `fresh`: the first game of
+    a launch (its replay holds just that game: one to film). A failed game is lost; the rest go
+    on in a new process."""
     k = failures = 0
     while k < n:
         if failures:
@@ -93,11 +94,13 @@ def series(setup: GameSetup, name: str, n: int, play: Callable[[GameInstance, Ob
         try:
             with GameInstance(setup, name=name, timeout=timeout) as g:
                 obs = g.start()
+                fresh = True
                 while True:
                     k += 1
-                    play(g, obs, k - 1)
+                    play(g, obs, k - 1, fresh)
                     if k >= n:
                         break
+                    fresh = g._ended  # filmed (save_replay ended it): the restart launches anew
                     obs = g.restart()
         except Exception as e:  # noqa: BLE001
             print(f"{name}: game {k - 1} failed: {type(e).__name__}: {e}", flush=True)
@@ -121,6 +124,52 @@ def claim_slot(runs: Path, kind: str = "fullgame") -> tuple[int, object]:
         except OSError:
             f.close()
     raise RuntimeError("no free slot")
+
+
+class Films:
+    """Game videos rendered in the background: the first game of a launch (its replay holds just
+    that game) at most every `every` minutes (0: whenever one is fresh) and at most `limit`
+    (None: no limit), in <out>/videos, listed in <out>/media.jsonl (the dashboard's Replays)."""
+
+    def __init__(self, out: Path, every: float, limit: int | None, name: str):
+        self.out, self.every, self.limit, self.name = out, every * 60, limit, name
+        self.next = time.time()  # the first one at once: something to look at early
+        self.count = 0
+        self.lock = threading.Lock()
+        self.pool = ThreadPoolExecutor(1)  # one at a time: a render plays the game in real time
+
+    def due(self) -> bool:
+        """Whether to film the next fresh game (claims it)."""
+        with self.lock:
+            if (self.limit is not None and self.count >= self.limit) or (self.every > 0 and time.time() < self.next) \
+                    or (self.every <= 0 and self.limit is None):
+                return False
+            self.next = time.time() + self.every
+            self.count += 1
+            return True
+
+    def film(self, g: GameInstance, stem: str, row: dict) -> None:
+        """Save the game's replay (ends it) and render it; `row`: the media row's fields."""
+        try:
+            replay = g.save_replay(self.out / "replays" / f"{stem}.w3g")
+        except Exception as e:  # noqa: BLE001 (one video fewer)
+            print(f"video {stem}: replay not saved: {e}", flush=True)
+            return
+        self.pool.submit(self._render, g.setup, replay, stem, row)
+
+    def _render(self, setup: GameSetup, replay: Path, stem: str, row: dict) -> None:
+        from ..video import render_replay
+        try:
+            out = render_replay(setup, replay, self.out / "videos" / f"{stem}.mp4", name=self.name, fit_all=True, crf=28,
+                                max_steps=int(setup.max_game_seconds / setup.step_seconds) + 40)
+            with self.lock, open(self.out / "media.jsonl", "a") as f:
+                f.write(json.dumps({"time": time.time(), "kind": "video", "file": str(out.relative_to(self.out)),
+                                    **row}) + "\n")
+        except Exception as e:  # noqa: BLE001
+            print(f"video {stem}: not rendered: {e}", flush=True)
+
+    def wait(self) -> None:
+        self.pool.shutdown(wait=True)
 
 
 def write_info(out: Path, info: dict) -> None:
@@ -181,6 +230,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--screen", default="320x240", help="the games' virtual screen (nothing looks at the pixels: "
                                                         "a small one saves ~15%% of the CPU)")
     ap.add_argument("--wait-floor-ms", type=int, default=5, help="GameSetup.wait_floor_ms")
+    ap.add_argument("--video-every", type=float, default=10.0, help="minutes between game videos (0: none)")
     ap.add_argument("--games-per-process", type=int, default=8,
                     help="games of one matchup in one running game (restarts reload the map in it)")
     ap.add_argument("--seed", type=int, default=0)
@@ -239,6 +289,7 @@ def main(argv: list[str] | None = None) -> int:
             rate = done["n"] / (time.time() - done["t0"]) * 3600
             print(f"game {i}: {r0}/{d0} vs {r1}/{d1}: {extra['result']} after {extra['game_seconds'] / 60:.1f} min "
                   f"({len(data['orders'])} orders, {seconds:.0f}s; {done['n']} done, {rate:.0f}/h)", flush=True)
+        return row["winner"], extra["game_seconds"] / 60
 
     def run(chunk) -> None:
         _, r0, r1, d0, d1 = chunk[0]
@@ -249,8 +300,17 @@ def main(argv: list[str] | None = None) -> int:
         name = names.get()
         t0 = [time.time()]
 
-        def play(g, obs, k) -> None:
-            save(chunk[k], play_game(g, obs), time.time() - t0[0])
+        def play(g, obs, k, fresh) -> None:
+            film = fresh and films.due()
+            data = play_game(g, obs)
+            winner, minutes = save(chunk[k], data, time.time() - t0[0])
+            if film:
+                i = chunk[k][0]
+                films.film(g, f"game{i:05d}", {
+                    "episode": i, "title": f"game {i}: {r0} ({d0}) vs {r1} ({d1})",
+                    "outcome": 0.0 if winner is None else 1.0 if winner == 0 else -1.0,
+                    "result": "tie" if winner is None else f"{(r0, r1)[winner]} won",
+                    "sub": f"after {minutes:.1f} game minutes"})
             t0[0] = time.time()
 
         try:
@@ -258,9 +318,11 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             names.put(name)
 
+    films = Films(args.out, args.video_every, None, f"demo{slot}_video")
     try:
         with ThreadPoolExecutor(args.parallel) as ex:
             list(ex.map(run, chunks))
+        films.wait()
         info["status"] = "finished"
     except BaseException:
         info["status"] = "stopped"
