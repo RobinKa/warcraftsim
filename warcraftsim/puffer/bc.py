@@ -247,16 +247,19 @@ def evaluate(task_name: str, checkpoint: Path, episodes: int, games: int, step_s
     entity = Path(checkpoint).suffix in (".pt", ".npz")  # the torch trainer's EntityNet (numpy here)
     if entity:
         from ..rl.numpy_model import load as load_entity
-        pol = load_entity(checkpoint)
+        from .tasks import task_spec
+        pol = load_entity(checkpoint).adapt(task_spec(task))  # a policy without some features plays on
     else:
         pol = PufferPolicy(checkpoint, task.obs_size, task.act_sizes, hidden=hidden, layers=layers)
     per_game = [episodes // games + (i < episodes % games) for i in range(games)]
+    from .train import claim_slot
+    slot, _slot_lock = claim_slot("eval")  # evaluations at the same time get their own game names
 
     by_type: dict[str, Counter] = {}  # unit type in the (mirror) composition -> outcomes
 
     def run(i: int) -> Counter:
         rng = np.random.default_rng(i)
-        env = _make_env(task, f"bceval{i}", step_seconds)
+        env = _make_env(task, f"bceval{i}" if slot == 0 else f"bceval{slot}_{i}", step_seconds)
         results: Counter = Counter()
         try:
             for _ in range(per_game[i]):

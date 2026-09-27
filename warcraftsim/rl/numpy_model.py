@@ -68,6 +68,18 @@ class NumpyEntityNet:
                            if f"ability {s + 1}: for enemies" in self.feat]
         self.abil_instant = [self.feat.index(f"ability {s + 1}: cast instantly") for s in range(n_abil)
                              if f"ability {s + 1}: cast instantly" in self.feat]
+        self.in_F, self.cols = self.F, None  # the observation's unit features (adapt)
+
+    def adapt(self, task_spec: dict) -> "NumpyEntityNet":
+        """Play a task whose unit features include this network's (e.g. a policy trained without
+        abilities on a task with them): its columns are taken from the task's by name."""
+        feat = task_spec["spaces"]["observation"]["blocks"][0]["features"]
+        if list(feat) != list(self.feat):
+            missing = [f for f in self.feat if f not in feat]
+            if missing:
+                raise ValueError(f"the task lacks features this network uses: {missing[:4]}")
+            self.in_F, self.cols = len(feat), np.array([feat.index(f) for f in self.feat])
+        return self
 
     def _lin(self, name, x):
         y = x @ self.w[name + ".weight"].T
@@ -99,7 +111,7 @@ class NumpyEntityNet:
         return o @ self.w[p + ".out_proj.weight"].T + self.w[p + ".out_proj.bias"]
 
     def encode(self, obs: np.ndarray):
-        k, F = self.k, self.F
+        k, F = self.k, self.in_F
         obs = np.asarray(obs, np.float64)
         N = obs.shape[0]
         own = obs[:, :k * F].reshape(N, k, F)
@@ -108,6 +120,8 @@ class NumpyEntityNet:
         enemy = obs[:, at:at + k * F].reshape(N, k, F)
         enemy_alive = obs[:, at + k * F:at + k * F + k] > 0.5
         time = obs[:, at + k * F + k:at + k * F + k + 1]
+        if self.cols is not None:  # the task's features -> this network's
+            own, enemy = own[..., self.cols], enemy[..., self.cols]
         alive = np.concatenate([own_alive, enemy_alive], 1)
         x = np.concatenate([self._mlp("time_mlp", time, 3)[:, None], self._mlp("unit_mlp", np.concatenate([own, enemy], 1), 3)], 1)
         pad = np.concatenate([np.zeros((N, 1), bool), ~alive], 1)

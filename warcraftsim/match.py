@@ -69,7 +69,7 @@ class Player:
             self.scripts = Scripts(task_spec(task))
         elif self.kind in ("pt", "npz"):
             from .rl.numpy_model import load
-            self.net = load(self.path)
+            self.net = load(self.path).adapt(task_spec(task))
         elif self.kind == "bin":  # the network's size from its run (checkpoints sit below runs/<run>/)
             run_json = next((d / "run.json" for d in self.path.parents if (d / "run.json").exists()), None)
             args = json.loads(run_json.read_text()).get("args", {}) if run_json else {}

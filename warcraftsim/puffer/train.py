@@ -42,12 +42,12 @@ from .tasks import describe_spaces, get_task, task_spec
 RUNS_DIR = Path(os.environ.get("WARCRAFTSIM_RUNS", paths.REPO_ROOT / "runs"))
 
 
-def claim_slot():
-    """A machine-wide training slot (held until exit): its game names (and Wine prefixes) are
-    reused by later runs, while concurrent runs get their own."""
+def claim_slot(kind: str = "train"):
+    """A machine-wide slot of a kind of job (held until exit): its game names (and Wine prefixes)
+    are reused by later jobs, while concurrent ones get their own."""
     import fcntl
 
-    lock_dir = Path("/dev/shm/warcraftsim/train-slots")
+    lock_dir = Path(f"/dev/shm/warcraftsim/{kind}-slots")
     lock_dir.mkdir(parents=True, exist_ok=True)
     for k in range(64):
         f = open(lock_dir / f"{k}.lock", "w")
