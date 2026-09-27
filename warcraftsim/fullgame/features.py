@@ -27,7 +27,11 @@ MAP_EXTENT = 3072.0  # half the duel map's width
 BINS = 128  # point targets: 48 units per bin
 MAX_ENT, MAX_OWN = 160, 96
 MOVE, AIMOVE = 851986, 851988  # the AI's own move order is played back as a move
-DROPPED_ORDERS = {851974, 852660}  # internal orders the AI gives to most units (not decisions)
+# orders that are not decisions: internal ones the AI gives to most units (851974, 852660), and
+# the engine's own: resumeharvesting (a worker going back after dropping off: 7.7% of recorded
+# orders; a policy that learned it interrupted working harvesters, the game refused two thirds),
+# returnresources, and autocasts (recharge: moon wells; ambush: archers at night)
+DROPPED_ORDERS = {851974, 852660, 852017, 852020, 852157, 852131}
 IMMEDIATE, POINT, UNIT, SKILL, TREE = range(5)
 KIND_NAMES = ("immediate", "point", "unit", "skill", "tree")
 RACES = ("human", "orc", "undead", "nightelf")

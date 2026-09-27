@@ -33,6 +33,11 @@ from .model import load
 TYPE_CODE = 0x1000000  # orders at or above this are unit / building / upgrade / ability codes
 
 
+def rawcode_or(order: int) -> str:
+    from ..protocol import rawcode
+    return rawcode(order) if order and order >= TYPE_CODE else str(order)
+
+
 def unit_rows(obs: Observation, t: int) -> np.ndarray:
     """The observation's units as rows of collect.UNIT_COLS."""
     return np.asarray([(t, u.id, u.type_id, u.owner, u.x, u.y, u.facing, u.hp, u.max_hp, u.mana, u.max_mana,
@@ -124,14 +129,30 @@ def play_game(net, vocab: dict, device, name: str, map_name: str, race: str, ai_
     t0 = time.time()
     with GameInstance(setup, name=name, timeout=180) as g:
         obs = g.start()
+        order_names = {v: k for k, v in (obs.orders or {}).items()}
         bot.begin(obs, races)
         t = 0
+        sent = failed = 0
+        by_kind: dict[str, list[int]] = {}  # command kind -> [sent, failed]
         while not obs.game_over:
-            obs = g.step(bot.act(obs, t))
+            cmds = bot.act(obs, t)
+            obs = g.step(cmds)
+            for c, ok in zip(cmds, obs.command_results):  # the game refused the order
+                name = order_names.get(getattr(c, "order", None), None) or rawcode_or(getattr(c, "order", 0))
+                k = by_kind.setdefault(f"{type(c).__name__}:{name}", [0, 0])
+                k[0] += 1
+                k[1] += not ok
+            sent += len(cmds)
+            failed += sum(not ok for ok in obs.command_results[:len(cmds)])
             t += 1
         results = {p: s.result.name for p, s in obs.players.items()}
+        sides = {("agent" if p == agent_side else "ai"): {"gold": s.gold_gathered, "lumber": s.lumber_gathered,
+                                                            "food": f"{s.food_used}/{s.food_cap}",
+                                                            "structures": s.structures}
+                 for p, s in obs.players.items() if p in (0, 1)}
     outcome = results.get(agent_side, "?")
     return {"outcome": outcome, "minutes": round(obs.game_time / 60, 2), "orders": bot.issued, "steps": t,
+            "failed": failed, "by_kind": by_kind, "sides": sides,
             "race": race, "ai_race": ai_race, "difficulty": difficulty, "side": agent_side,
             "seconds": round(time.time() - t0, 1)}
 
@@ -177,7 +198,8 @@ def main(argv: list[str] | None = None) -> int:
         with open(out, "a") as f:
             f.write(json.dumps(r) + "\n")
         print(f"game {i}: {race} (side {side}) vs {ai_race} {args.difficulty}: {r['outcome']} after "
-              f"{r['minutes']} min ({r['orders']} orders)", flush=True)
+              f"{r['minutes']} min ({r['orders']} orders, {r['failed']} refused {r['by_kind']}; {r['sides']})",
+              flush=True)
         return r
 
     with ThreadPoolExecutor(args.parallel) as ex:
