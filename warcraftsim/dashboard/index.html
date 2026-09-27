@@ -40,6 +40,11 @@ aside h2 { font-size:11px; text-transform:uppercase; letter-spacing:1px; color:v
   padding:3px 8px; font:inherit; font-size:12px; cursor:pointer; }
 .runtools button:hover { background:var(--panel2); }
 .runtools label { display:flex; align-items:center; gap:5px; cursor:pointer; }
+.runtools .types { display:flex; flex-wrap:wrap; gap:4px; }
+.runtools .types button { padding:2px 7px; font-size:11.5px; color:var(--muted); }
+.runtools .types button.on { background:var(--panel2); color:var(--text); border-color:var(--accent); }
+.runtools .types button:disabled { opacity:.4; cursor:default; }
+.runtools .types button .n { margin-left:4px; opacity:.7; }
 .runtools label input { margin:0; accent-color:var(--accent); }
 .badge { font-size:10px; padding:1px 6px; border-radius:9px; background:#2d3743; color:var(--muted); white-space:nowrap; }
 .badge.training { background:#1e3a2c; color:var(--good); }
@@ -177,6 +182,7 @@ a.go:hover { text-decoration:underline; }
   <aside><h2>Runs <span style="float:right;text-transform:none;letter-spacing:0">☑ compare</span></h2>
     <div class="runtools">
       <input type="search" id="runfilter" placeholder="filter: name, task, sweep options, notes, parent" autocomplete="off">
+      <div class="types" id="runtypes" title="list only these kinds (none selected: all)"></div>
       <div class="row"><button id="selall" title="compare every run listed">select all</button>
         <button id="selnone" title="compare none">clear</button><span id="selcount"></span></div>
       <div class="row"><label title="list only the compared runs (and the one shown)"><input type="checkbox" id="selonly"> show selected only</label></div>
@@ -413,15 +419,47 @@ function selectionChanged() {
 function openRun(name) { state.view = "run"; state.selected = name; state.mediaKey = ""; selectionChanged(); }
 function openSweep(group) { state.view = "sweep"; state.sweep = group; ui.expanded.add(group); keepExpanded(); selectionChanged(); }
 
-// run list controls: a text filter, and "selected only" (the compared runs and the one shown)
-const runUI = { filter: "", only: false };
-try { runUI.filter = localStorage.getItem("runFilter") || ""; runUI.only = localStorage.getItem("runOnly") === "1"; } catch (e) {}
+// run list controls: a text filter, the kinds of runs listed, and "selected only" (the compared
+// runs and the one shown)
+const RUN_TYPES = [["training", "training", "reinforcement learning on the micro tasks"],
+                   ["selfplay", "self-play", "reinforcement learning on whole games (fullgame/selfplay.py)"],
+                   ["match", "matches", "two policies against each other (warcraftsim.match)"],
+                   ["bc", "BC micro", "behavior cloning of the micro scripts"],
+                   ["fullbc", "BC whole game", "behavior cloning of the built-in AI (fullgame/bc.py)"],
+                   ["collect", "demos", "demonstration collections: the built-in AI against itself (fullgame/collect.py)"]];
+function runType(r) {
+  if (r.kind === "collect") return "collect";
+  if (r.kind === "bc") return r.task === "fullgame" ? "fullbc" : "bc";
+  if (r.kind === "match") return "match";
+  return String(r.task || "").startsWith("fullgame") || r.trainer === "fullgame" ? "selfplay" : "training";
+}
+const runUI = { filter: "", only: false, types: new Set() };
+try {
+  runUI.filter = localStorage.getItem("runFilter") || ""; runUI.only = localStorage.getItem("runOnly") === "1";
+  runUI.types = new Set(JSON.parse(localStorage.getItem("runTypes") || "[]"));
+} catch (e) {}
+const typeShown = r => !runUI.types.size || runUI.types.has(runType(r));
 function listedRuns() {
   const words = runUI.filter.trim().toLowerCase().split(/\s+/).filter(Boolean);  // every word must match
   const text = r => [r.name, r.task, r.sweep ? r.sweep.options || "base" : "", r.notes || "",
                      r.parent ? `${r.parent.name} ${parentShort(r.parent)}` : ""].join(" ").toLowerCase();
-  return state.runs.filter(r => (!words.length || words.every(w => text(r).includes(w)))
+  return state.runs.filter(r => typeShown(r) && (!words.length || words.every(w => text(r).includes(w)))
     && (!runUI.only || state.compare.has(r.name) || r.name === state.selected));
+}
+function renderRunTypes() {  // the kind toggles, with how many runs of each kind there are
+  const box = document.getElementById("runtypes"); if (!box) return;
+  const counts = {};
+  for (const r of state.runs) counts[runType(r)] = (counts[runType(r)] || 0) + 1;
+  const html = RUN_TYPES.map(([k, label, tip]) => `<button data-type="${k}" class="${runUI.types.has(k) ? "on" : ""}" title="${esc(tip)}"
+      ${counts[k] || runUI.types.has(k) ? "" : "disabled"}>${label}<span class="n">${counts[k] || 0}</span></button>`).join("");
+  if (box.dataset.html === html) return;
+  box.dataset.html = html; box.innerHTML = html;
+  box.querySelectorAll("button").forEach(b => b.onclick = () => {
+    const k = b.dataset.type;
+    runUI.types.has(k) ? runUI.types.delete(k) : runUI.types.add(k);
+    try { localStorage.setItem("runTypes", JSON.stringify([...runUI.types])); } catch (e) {}
+    renderRuns();
+  });
 }
 function setupRunTools() {
   const filter = document.getElementById("runfilter"), only = document.getElementById("selonly");
@@ -484,6 +522,7 @@ function sweepHeader(g, runs, expanded, shown) {
     <div class="note" title="${esc(g.notes.trim())}">${esc(g.notes.trim().split("\n")[0])}</div>` : ""}</div>`;
 }
 function renderRuns() {
+  renderRunTypes();
   const n = state.compare.size;
   document.getElementById("selcount").textContent = n ? `${n} selected` : "";
   const listed = new Set(listedRuns().map(r => r.name));
@@ -499,7 +538,7 @@ function renderRuns() {
     // a sweep whose name or description matches the filter lists all its runs
     const text = [g.group, g.notes || "", g.task || ""].join(" ").toLowerCase();
     const whole = words.length && words.every(w => text.includes(w));
-    let members = all.filter(x => listed.has(x.name) || (whole && (!runUI.only || state.compare.has(x.name) || x.name === state.selected)));
+    let members = all.filter(x => listed.has(x.name) || (whole && typeShown(x) && (!runUI.only || state.compare.has(x.name) || x.name === state.selected)));
     if (!members.length) continue;
     const auto = words.length > 0 || runUI.only;  // searching or "selected only": show what matched
     const expanded = ui.expanded.has(g.group) || (auto && !whole);

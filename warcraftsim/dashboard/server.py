@@ -519,7 +519,7 @@ class Dashboard:
             status = "stopped"
         return {"kind": "collect", "name": f"fullgame/{d.name}", "task": "fullgame", "status": status,
                 "created": info.get("time") or (d / "collect.json").stat().st_mtime, "finished": info.get("finished"),
-                "map": info.get("map", "duelrush"), "planned": info.get("games"), "parallel": info.get("parallel"),
+                "map": Path(str(info.get("map", "duelrush"))).name, "planned": info.get("games"), "parallel": info.get("parallel"),
                 "races": info.get("races"), "difficulty": info.get("difficulty"), "handicap": info.get("handicap"),
                 "step_seconds": info.get("step_seconds"), "max_minutes": info.get("max_minutes"),
                 "command": info.get("command"), "dir": f"runs/fullgame/{d.name}",
