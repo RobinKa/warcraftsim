@@ -241,7 +241,10 @@ Masks rule out only what is impossible, and the game handles the rest (a target 
 PufferLib 5's native trainer fixes the network to encoder → MinGRU → decoder, so pointing at units needs our own trainer, `warcraftsim/rl` (PyTorch; it runs with the torch Python, like the behavior cloning fit):
 * **EntityNet** (`rl/model.py`): each unit is a token (a shared MLP, then a transformer over all units), a GRU core carries memory, and each own unit's orders are sampled autoregressively: kind → ability → target (the unit's query against every unit's key) → direction and distance. A head counts in the action's probability only when the chosen kind uses it.
 * **PPO** (`rl/ppo.py`): normalized advantages, updates on sequence chunks, the rollout step compiled with CUDA graphs (20 → 2 ms), a KL term to a reference policy (`--torch.ref=... --torch.ref_kl=0.1`, as AlphaStar keeps near its supervised policy), value warmup and a KL target for fine-tuning a clone, an evaluation-only mode.
-* **League** (`rl/league.py`) for self-play tasks (`mirror_mix_gen_self*`): the learner plays side 0 of every game; side 1 is itself (both sides' experience trains it), a past snapshot chosen by prioritized fictitious self-play (the ones it beats less, more often), or a scripted anchor (noop, focus, pull35) that doesn't drift with the league. Win rates by opponent go to the dashboard's League tab.
+* **League** (`rl/league.py`) for self-play tasks (`mirror_mix_gen_self*`): the learner plays side 0 of every game; side 1 is itself (both sides' experience trains it), a past snapshot chosen by prioritized fictitious self-play (the ones it beats less, more often), or a scripted anchor (noop, focus, pull35, amove) that doesn't drift with the league. Win rates by opponent go to the dashboard's League tab.
+  * `--torch.exploiters=1` adds an AlphaStar main exploiter: a quarter of the games are its games against the main learner's current policy; its snapshots join the league, and it starts over from the initial policy once it wins 70%.
+* **Match runs** pit two policies against each other and record every episode as a replay and a video, e.g. to watch trained policies:
+  `python -m warcraftsim.match genleague3 genft-1 --episodes 20` (players: a run's latest checkpoint, a checkpoint file, `bc/<dataset>`, or a script such as `script:amove`). They swap sides every episode; the dashboard shows the score and the videos.
 
 ```bash
 python -m warcraftsim.puffer.bc collect mirror_mix_gen_hp400 --policy pull35 --episodes 2000 --games 12
@@ -268,8 +271,9 @@ Each run writes `runs/<name>/`, which the dashboard shows live:
 * `episodes.jsonl`: every finished episode.
 * `renders/`: trajectory animations.
 * `replays/` and `videos/`: single-episode replays rendered to real game footage in the background (40 fps).
-  * The footage shows which units are the agent's (rings and slot labels A0, A1, ...; enemies E0, ...) and each step's orders: move arrows, attack lines with a crosshair on the target, stop markers, and casts (the ability's name, a line to its target and its area).
-  * Every unit has a hit point bar, and a mana bar if it has mana. Under a hero there is a square per learned ability: green when ready, grey filling up during the cooldown, a blue outline when mana is short, a dot for passives.
+  * The game itself draws which units are the agent's (rings and slot labels A0, A1, ...; enemies E0, ...) and each step's orders: dotted lines to where a unit moves or whom it attacks, a ring at the end, stop markers, and casts (the ability's name, a line to its target and its area). The harness keeps the markers on the units, so they stay aligned wherever the camera goes; the game's own health and mana bars show every unit's state.
+    * The markers come from a pool the harness makes at map init (images and texttags), the same in the recorded game and in its playback: an object made only during playback would take a handle id, and later units' ids (which the replayed orders refer to) would no longer match.
+    * Replays recorded before this (harnesses without the markers) get the older overlay drawn onto the footage, with drawn bars and a square per learned hero ability.
   * A side panel shows what the policy thought. It evaluates the latest checkpoint before the episode (`puffer/policy.py`, numpy) on the observations the agent saw, and plots:
     * the value V(s) against the discounted return that actually followed;
     * reward and TD error per step;
