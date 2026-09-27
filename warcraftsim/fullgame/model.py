@@ -36,8 +36,9 @@ class FullGameNet(nn.Module):
         self.query = nn.Linear(d, d)
         self.key = nn.Linear(d, d)
         self.point = nn.Linear(d, 2 * fx.BINS)
-        # which orders each unit type may get (from the demonstrations; row 0: unknown types, any)
-        self.register_buffer("allowed", torch.ones(n_types, n_orders, dtype=torch.bool))
+        # which orders each unit type got in the demonstrations (filled while training; row 0:
+        # unknown types, any)
+        self.register_buffer("allowed", torch.zeros(n_types, n_orders, dtype=torch.bool))
 
     def encode(self, ent, typ, cur, mask, glob):
         """-> global token [N, d], entity tokens [N, E, d]."""
@@ -47,14 +48,17 @@ class FullGameNet(nn.Module):
         out = self.transformer(tok, src_key_padding_mask=pad)
         return out[:, 0], out[:, 1:]
 
-    def order_logits(self, g, u, typ, n_own):
-        """[N, O, n_orders] for the first O entities (own units first; others masked to none)."""
+    def order_logits(self, g, u, typ, n_own, by_type: bool = True):
+        """[N, O, n_orders] for the first O entities (own units first; others can only get none).
+        `by_type`: only the orders each unit type got in the demonstrations (playing; training
+        learns it: a mask there made unseen pairs, e.g. of upgraded buildings, infinitely wrong)."""
         O = u.shape[1]
         own = u[:, :O]
         logits = self.order(torch.cat([own, g.unsqueeze(1).expand_as(own)], -1))
-        allowed = self.allowed[typ[:, :O].long()]
         is_own = torch.arange(O, device=u.device)[None] < n_own[:, None]
-        allowed = allowed & is_own.unsqueeze(-1)
+        allowed = is_own.unsqueeze(-1).expand_as(logits).clone()
+        if by_type:
+            allowed &= self.allowed[typ[:, :O].long()]
         allowed[..., 0] = True  # no order: always
         return logits.masked_fill(~allowed, NEG)
 

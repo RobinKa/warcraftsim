@@ -83,20 +83,24 @@ def losses(net: FullGameNet, b: dict, device) -> tuple[torch.Tensor, dict]:
     y_x, y_y = b["y_x"][:, :O].long(), b["y_y"][:, :O].long()
     n_own = b["n_own"].long()
     g, u = net.encode(ent, typ, cur, mask, b["glob"].float())
-    logits = net.order_logits(g, u, typ, n_own)
+    logits = net.order_logits(g, u, typ, n_own, by_type=False)
     own = torch.arange(O, device=device)[None] < n_own[:, None]
     l_order = F_.cross_entropy(logits[own], y_order[own])
+    if net.training:  # the orders each unit type gets (the mask for playing)
+        issued_ = own & (y_order > 0)
+        net.allowed[typ[:, :O][issued_], y_order[issued_]] = True
     ptr, xl, yl = net.target_logits(g, u, mask, y_order)
     has_ptr, has_pt = (y_ptr >= 0) & own, (y_x >= 0) & own
     l_ptr = F_.cross_entropy(ptr[has_ptr], y_ptr[has_ptr]) if has_ptr.any() else logits.sum() * 0
     l_pt = (F_.cross_entropy(xl[has_pt], y_x[has_pt]) + F_.cross_entropy(yl[has_pt], y_y[has_pt])
             if has_pt.any() else logits.sum() * 0)
     with torch.no_grad():
-        pred = logits.argmax(-1)
         issued = own & (y_order > 0)
-        stats = {"n": int(own.sum()), "issued": int(issued.sum()), "pred_issued": int((own & (pred > 0)).sum()),
+        p_order = 1 - logits.softmax(-1)[..., 0]  # the chance of any order
+        pred = logits[..., 1:].argmax(-1) + 1  # the most likely order, given one
+        stats = {"n": int(own.sum()), "issued": int(issued.sum()), "p_issued": float(p_order[own].sum()),
                  "issued_hit": int((issued & (pred == y_order)).sum()),
-                 "none_hit": int((own & (y_order == 0) & (pred == 0)).sum()),
+                 "none_hit": 0,
                  "ptr_n": int(has_ptr.sum()), "ptr_hit": int((has_ptr & (ptr.argmax(-1) == y_ptr)).sum()),
                  "pt_n": int(has_pt.sum()),
                  "pt_err": float(((xl.argmax(-1) - y_x).abs() + (yl.argmax(-1) - y_y).abs())[has_pt].float().sum()),
@@ -108,9 +112,8 @@ def summarize(stats: list[dict]) -> dict:
     s = {k: sum(x[k] for x in stats) for k in stats[0]}
     n_b = len(stats)
     return {"loss_order": s["l_order"] / n_b, "loss_target": s["l_ptr"] / n_b, "loss_point": s["l_pt"] / n_b,
-            "issued_recall": s["issued_hit"] / max(s["issued"], 1),
-            "issued_precision": s["issued_hit"] / max(s["pred_issued"], 1),
-            "none_acc": s["none_hit"] / max(s["n"] - s["issued"], 1),
+            "order_acc": s["issued_hit"] / max(s["issued"], 1),  # which order, among the units that got one
+            "order_rate_pred": s["p_issued"] / max(s["n"], 1),  # vs orders_per_unit_step: calibration
             "target_acc": s["ptr_hit"] / max(s["ptr_n"], 1),
             "point_error_bins": s["pt_err"] / max(s["pt_n"], 1) / 2,
             "orders_per_unit_step": s["issued"] / max(s["n"], 1)}
@@ -151,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
         (out / "notes.md").write_text(args.note + "\n")
     device = torch.device(args.device)
     net = FullGameNet(enc.n_types, enc.n_cur, enc.n_orders, enc.G, d=args.d, layers=args.layers).to(device)
-    net.allowed.copy_(torch.from_numpy(allowed_orders(train, vocab)))
+    net.allowed[0] = True  # unknown unit types: any order
     opt = torch.optim.AdamW(net.parameters(), lr=args.lr, weight_decay=1e-4)
     data = Steps(train, vocab, args.batch)
     val_batches = list(Steps(val, vocab, args.batch))
@@ -186,14 +189,14 @@ def main(argv: list[str] | None = None) -> int:
         row = {"epoch": epoch, "time": time.time(), "seconds": round(time.time() - t0, 1),
                "lr": opt.param_groups[0]["lr"], "train_loss": tr["loss_order"] + tr["loss_target"] + 0.5 * tr["loss_point"],
                "val_loss": va["loss_order"] + va["loss_target"] + 0.5 * va["loss_point"],
-               "acc": {"issued recall": va["issued_recall"], "issued precision": va["issued_precision"],
-                       "no order": va["none_acc"], "target": va["target_acc"]},
+               "acc": {"order (given one)": va["order_acc"], "target": va["target_acc"]},
                "val": va, "train": tr}
         with open(out / "fit.jsonl", "a") as f:
             f.write(json.dumps(row) + "\n")
-        print(f"epoch {epoch}: train {row['train_loss']:.3f} val {row['val_loss']:.3f} | issued recall "
-              f"{va['issued_recall']:.3f} precision {va['issued_precision']:.3f} target {va['target_acc']:.3f} "
-              f"point err {va['point_error_bins']:.1f} bins ({n} batches, {time.time() - t0:.0f}s)", flush=True)
+        print(f"epoch {epoch}: train {row['train_loss']:.3f} val {row['val_loss']:.3f} | order acc "
+              f"{va['order_acc']:.3f} rate {va['order_rate_pred']:.3f} (actual {va['orders_per_unit_step']:.3f}) "
+              f"target {va['target_acc']:.3f} point err {va['point_error_bins']:.1f} bins ({n} batches, "
+              f"{time.time() - t0:.0f}s)", flush=True)
         torch.save({"model": net.state_dict(), "config": net.config, "vocab": vocab, "epoch": epoch}, out / "policy.pt")
     info["status"] = "fitted"
     (out / "bc.json").write_text(json.dumps(info, indent=1))

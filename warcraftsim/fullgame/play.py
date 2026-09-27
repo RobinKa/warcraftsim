@@ -1,0 +1,193 @@
+"""Play a behavior-cloned whole-game policy (fullgame/bc.py) against the built-in AI.
+
+    python3 -m warcraftsim.fullgame.play runs/bc/fullgame-1/policy.pt --games 20 --race human --ai-race orc
+
+(the torch Python). The agent takes a computer slot without an AI: every order its units get
+comes from the policy. Each step it sees what the demonstrations' players saw (fullgame/features:
+its own units, the enemy's and neutral units it can see, resources, supply, time, races,
+upgrades), and each own unit gets the order the policy samples (or none): an order at once
+(train, research, stop, ...), at a point (move, build: the order is the building's type), on a unit
+(attack, harvest, repair, ...), on a tree (harvest: the tree nearest the chosen point) or a hero
+skill to learn.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import random
+import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+import numpy as np
+import torch
+
+from ..protocol import (Build, Command, EventKind, ImmediateOrder, LearnSkill, Observation, PointOrder,
+                        TargetDestructable, TargetOrder)
+from ..runtime.instance import Agent, BuiltinAI, GameInstance, GameSetup
+from . import features as fx
+from .model import load
+
+TYPE_CODE = 0x1000000  # orders at or above this are unit / building / upgrade / ability codes
+
+
+def unit_rows(obs: Observation, t: int) -> np.ndarray:
+    """The observation's units as rows of collect.UNIT_COLS."""
+    return np.asarray([(t, u.id, u.type_id, u.owner, u.x, u.y, u.facing, u.hp, u.max_hp, u.mana, u.max_mana,
+                        u.order, int(u.flags), u.visible_to, u.resource, u.hero_level, u.hero_xp, u.skill_points)
+                       for u in obs.units], np.int64).reshape(-1, 18)
+
+
+class BCAgent:
+    """The policy playing one player of a live game."""
+
+    def __init__(self, net, vocab: dict, player: int, device, temperature: float = 1.0):
+        self.net, self.enc, self.player, self.device = net, fx.Encoder(vocab), player, device
+        self.temperature = temperature
+        self.orders = [(0, 0)] + [tuple(o) for o in vocab["orders"]]  # class -> (order id, kind)
+        self.view = None
+        self.trees: dict[int, tuple[int, int]] = {}
+        self.issued = 0
+
+    def begin(self, obs: Observation, races: list[int]) -> None:
+        rows = unit_rows(obs, 0)
+        sign = self.enc.side(rows, self.player)
+        self.view = self.enc.view(self.player, sign, races)
+        self.trees = {d.id: (d.x, d.y) for d in (obs.destructables or [])}
+
+    def _sample(self, logits: torch.Tensor) -> torch.Tensor:
+        return torch.distributions.Categorical(logits=logits / self.temperature).sample()
+
+    def act(self, obs: Observation, t: int) -> list[Command]:
+        for e in obs.events:
+            if int(e.kind) == int(EventKind.TREE_DEATH):
+                self.trees.pop(e.a, None)
+        rows = unit_rows(obs, t)
+        p = obs.players.get(self.player)
+        me = (np.asarray([t, self.player, p.gold, p.lumber, p.food_used, p.food_cap, p.upkeep, p.gold_gathered,
+                          p.lumber_gathered, p.structures, int(p.result)]) if p is not None else None)
+        events = np.asarray([(t, int(e.kind), e.a, e.b, e.c) for e in obs.events], np.int64).reshape(-1, 5)
+        st = self.view.step(rows, me, events, t)
+        n, n_own = st["n"], st["n_own"]
+        if n_own == 0:
+            return []
+        dev = self.device
+        with torch.no_grad():
+            ent = torch.as_tensor(st["ent"], device=dev).unsqueeze(0).float()
+            typ = torch.as_tensor(st["type"], device=dev).unsqueeze(0).long()
+            cur = torch.as_tensor(st["cur"], device=dev).unsqueeze(0).long()
+            mask = torch.ones(1, n, dtype=torch.bool, device=dev)
+            glob = torch.as_tensor(st["glob"], device=dev).unsqueeze(0)
+            g, u = self.net.encode(ent, typ, cur, mask, glob)
+            O = min(n_own, fx.MAX_OWN)
+            logits = self.net.order_logits(g, u[:, :O], typ, torch.tensor([O], device=dev))
+            order = self._sample(logits)  # [1, O]
+            ptr, xl, yl = self.net.target_logits(g, u, mask, order)
+            tgt, bx, by = self._sample(ptr)[0], self._sample(xl)[0], self._sample(yl)[0]
+        out: list[Command] = []
+        sel = st["sel"]
+        for i in range(O):
+            c = int(order[0, i])
+            if c == 0:
+                continue
+            oid, kind = self.orders[c]
+            unit = int(sel[i, fx.C_ID])
+            x = float(self.view.sign * fx.bin_center(int(bx[i])))
+            y = float(fx.bin_center(int(by[i])))
+            if kind == fx.IMMEDIATE:
+                out.append(ImmediateOrder(unit, oid))
+            elif kind == fx.SKILL:
+                out.append(LearnSkill(unit, oid))
+            elif kind == fx.POINT:
+                out.append(Build(unit, oid, x, y) if oid >= TYPE_CODE else PointOrder(unit, oid, x, y))
+            elif kind == fx.UNIT:
+                out.append(TargetOrder(unit, oid, int(sel[int(tgt[i]), fx.C_ID])))
+            elif kind == fx.TREE and self.trees:
+                tree = min(self.trees, key=lambda k: (self.trees[k][0] - x) ** 2 + (self.trees[k][1] - y) ** 2)
+                out.append(TargetDestructable(unit, oid, tree))
+        self.issued += len(out)
+        return out
+
+
+def play_game(net, vocab: dict, device, name: str, map_name: str, race: str, ai_race: str, difficulty: str,
+              agent_side: int, handicap: int, max_minutes: float, step_seconds: float,
+              temperature: float) -> dict:
+    agent = Agent(race, handicap=handicap)
+    ai = BuiltinAI(ai_race, difficulty, handicap=handicap)
+    slots = [agent, ai] if agent_side == 0 else [ai, agent]
+    setup = GameSetup(map=map_name, slots=slots, step_seconds=step_seconds, max_game_seconds=max_minutes * 60,
+                      victory="decisive")
+    races = [fx.RACES.index(s.race) if s.race in fx.RACES else 0 for s in slots]
+    bot = BCAgent(net, vocab, agent_side, device, temperature)
+    t0 = time.time()
+    with GameInstance(setup, name=name, timeout=180) as g:
+        obs = g.start()
+        bot.begin(obs, races)
+        t = 0
+        while not obs.game_over:
+            obs = g.step(bot.act(obs, t))
+            t += 1
+        results = {p: s.result.name for p, s in obs.players.items()}
+    outcome = results.get(agent_side, "?")
+    return {"outcome": outcome, "minutes": round(obs.game_time / 60, 2), "orders": bot.issued, "steps": t,
+            "race": race, "ai_race": ai_race, "difficulty": difficulty, "side": agent_side,
+            "seconds": round(time.time() - t0, 1)}
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("checkpoint", type=Path)
+    ap.add_argument("--games", type=int, default=8)
+    ap.add_argument("--parallel", type=int, default=8)
+    ap.add_argument("--map", default="duelrush")
+    ap.add_argument("--race", default="human", help="the agent's race, or 'all' (random each game)")
+    ap.add_argument("--ai-race", default="orc", help="the built-in AI's race, or 'all'")
+    ap.add_argument("--difficulty", default="normal")
+    ap.add_argument("--handicap", type=int, default=50)
+    ap.add_argument("--max-minutes", type=float, default=4.0)
+    ap.add_argument("--step-seconds", type=float, default=0.5)
+    ap.add_argument("--temperature", type=float, default=1.0)
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--out", type=Path, help="results (.jsonl; default: next to the checkpoint, play.jsonl)")
+    args = ap.parse_args(argv)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    net, ck = load(args.checkpoint, device)
+    vocab = ck["vocab"]
+    rng = random.Random(args.seed)
+    plans = [(i, rng.choice(fx.RACES) if args.race == "all" else args.race,
+              rng.choice(fx.RACES) if args.ai_race == "all" else args.ai_race, i % 2) for i in range(args.games)]
+    out = args.out or args.checkpoint.with_name("play.jsonl")
+    names = [f"bcplay{k}" for k in range(args.parallel)]
+    free = list(names)
+
+    def one(plan):
+        i, race, ai_race, side = plan
+        name = free.pop()
+        try:
+            r = play_game(net, vocab, device, name, args.map, race, ai_race, args.difficulty, side, args.handicap,
+                          args.max_minutes, args.step_seconds, args.temperature)
+        except Exception as e:  # noqa: BLE001 (one game fewer)
+            print(f"game {i}: failed: {e}", flush=True)
+            return None
+        finally:
+            free.append(name)
+        r.update({"game": i, "checkpoint": str(args.checkpoint), "time": time.time(), "map": args.map})
+        with open(out, "a") as f:
+            f.write(json.dumps(r) + "\n")
+        print(f"game {i}: {race} (side {side}) vs {ai_race} {args.difficulty}: {r['outcome']} after "
+              f"{r['minutes']} min ({r['orders']} orders)", flush=True)
+        return r
+
+    with ThreadPoolExecutor(args.parallel) as ex:
+        results = [r for r in ex.map(one, plans) if r is not None]
+    wins = sum(r["outcome"] == "VICTORY" for r in results)
+    ties = sum(r["outcome"] == "TIE" for r in results)
+    print(f"{args.checkpoint}: {wins} wins, {ties} ties, {len(results) - wins - ties} losses in {len(results)} games "
+          f"against the built-in AI ({args.difficulty})", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

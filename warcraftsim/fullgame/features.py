@@ -149,6 +149,9 @@ class Encoder:
         cur = np.array([self.cur_index.get(int(o), 0) for o in sel[:, C_ORDER]], np.int64)
         return sel, n_own, f, types, cur
 
+    def view(self, player: int, sign: float, races: list[int]) -> "View":
+        return View(self, player, sign, races)
+
     def encode(self, game: dict, player: int) -> dict:
         """The whole game from `player`'s side: arrays over its steps (padded to MAX_ENT)."""
         meta = game["meta"]
@@ -163,33 +166,21 @@ class Encoder:
                "n_own": np.zeros(T, np.int16), "glob": np.zeros((T, self.G), np.float32),
                "y_order": np.zeros((T, MAX_OWN), np.int16), "y_ptr": np.full((T, MAX_OWN), -1, np.int16),
                "y_x": np.full((T, MAX_OWN), -1, np.int16), "y_y": np.full((T, MAX_OWN), -1, np.int16)}
-        upgrades = np.zeros(len(self.upgrade_index), np.float32)
-        own_buildings = set()
+        view = self.view(player, sign, races)
         for t in range(T):
-            rows = u[us[t]:us[t + 1]]
-            own_buildings.update(rows[(rows[:, C_OWNER] == player) & (rows[:, C_FLAGS] & STRUCTURE > 0), C_ID].tolist())
-            sel, n_own, f, types, cur = self.entities(rows, player, sign)
-            n = len(sel)
-            out["ent"][t, :n], out["type"][t, :n], out["cur"][t, :n] = f, types, cur
-            out["mask"][t, :n] = True
-            out["n_own"][t] = n_own
-            for r in ev[es[t]:es[t + 1]]:  # research done (by one of the player's buildings)
-                if r[1] == RESEARCH_FINISH and int(r[2]) in own_buildings and int(r[3]) in self.upgrade_index:
-                    upgrades[self.upgrade_index[int(r[3])]] = r[4] / 3.0
             prow = pl[ps[t]:ps[t + 1]]
             me = prow[prow[:, 1] == player]
-            g = out["glob"][t]
-            if len(me):
-                _, _, gold, lumber, fu, fc, upkeep = me[0][:7]
-                g[:6] = gold / 1000.0, lumber / 1000.0, fu / 100.0, fc / 100.0, upkeep / 2.0, t / 1800.0
-            g[6 + races[player]] = 1
-            g[6 + len(RACES) + races[1 - player]] = 1
-            g[6 + 2 * len(RACES):] = upgrades
+            st = view.step(u[us[t]:us[t + 1]], me[0] if len(me) else None, ev[es[t]:es[t + 1]], t)
+            n = st["n"]
+            out["ent"][t, :n], out["type"][t, :n], out["cur"][t, :n] = st["ent"], st["type"], st["cur"]
+            out["mask"][t, :n] = True
+            out["n_own"][t] = st["n_own"]
+            out["glob"][t] = st["glob"]
             # labels: each own unit's last order in the step
-            index = {int(i): k for k, i in enumerate(sel[:, C_ID])}
+            index = st["index"]
             for r in od[os_[t]:os_[t + 1]]:
                 k = index.get(int(r[1]))
-                if k is None or k >= n_own:
+                if k is None or k >= st["n_own"]:
                     continue
                 target = int(r[6])
                 lab = relabel(int(r[2]), int(r[3]), target in index, target in trees)
@@ -206,3 +197,32 @@ class Encoder:
                     out["y_x"][t, k] = _bin(np.array(sign * x))
                     out["y_y"][t, k] = _bin(np.array(y))
         return out
+
+
+class View:
+    """What one player sees, step by step (demonstrations, or a live game): the entities, the
+    global features, and the upgrades it has researched so far."""
+
+    def __init__(self, enc: Encoder, player: int, sign: float, races: list[int]):
+        self.enc, self.player, self.sign, self.races = enc, player, sign, races
+        self.upgrades = np.zeros(len(enc.upgrade_index), np.float32)
+        self.own_buildings: set[int] = set()
+
+    def step(self, rows: np.ndarray, me: np.ndarray | None, events: np.ndarray, t: int) -> dict:
+        """rows: this step's units (UNIT_COLS), me: the player's row (PLAYER_COLS) or None, events:
+        this step's (step, kind, a, b, c)."""
+        enc, player = self.enc, self.player
+        self.own_buildings.update(rows[(rows[:, C_OWNER] == player) & (rows[:, C_FLAGS] & STRUCTURE > 0), C_ID].tolist())
+        sel, n_own, f, types, cur = enc.entities(rows, player, self.sign)
+        for r in events:  # research done (by one of the player's buildings)
+            if r[1] == RESEARCH_FINISH and int(r[2]) in self.own_buildings and int(r[3]) in enc.upgrade_index:
+                self.upgrades[enc.upgrade_index[int(r[3])]] = r[4] / 3.0
+        g = np.zeros(enc.G, np.float32)
+        if me is not None:
+            _, _, gold, lumber, fu, fc, upkeep = me[:7]
+            g[:6] = gold / 1000.0, lumber / 1000.0, fu / 100.0, fc / 100.0, upkeep / 2.0, t / 1800.0
+        g[6 + self.races[player]] = 1
+        g[6 + len(RACES) + self.races[1 - player]] = 1
+        g[6 + 2 * len(RACES):] = self.upgrades
+        return {"n": len(sel), "sel": sel, "n_own": n_own, "ent": f, "type": types, "cur": cur, "glob": g,
+                "index": {int(i): k for k, i in enumerate(sel[:, C_ID])}}
