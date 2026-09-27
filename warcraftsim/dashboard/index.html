@@ -443,8 +443,8 @@ function runCard(r, inSweep) {
     <div class="n"><span><input type="checkbox" data-cmp="${esc(r.name)}" ${state.compare.has(r.name) ? "checked" : ""}>${esc(r.name)}</span>${badge(r.status)}</div>${inSweep ? `
     <div class="m"><span title="${esc(r.sweep.options || "base")}" style="font-family:ui-monospace,monospace;font-size:11.5px">${esc(r.sweep.options || "base options")}</span><span>win ${winText(s)}</span></div>
     <div class="m"><span>${fmt(s.agent_steps || 0, 0)} steps</span><span>${ago(s.updated)}</span></div>` : `
-    <div class="m"><span title="${esc(r.task)} · ${r.envs} games">${esc(r.task)} · ${r.envs} games</span><span>win ${winText(s)}</span></div>
-    <div class="m"><span>${fmt(s.agent_steps || 0, 0)} steps</span><span>${ago(s.updated)}</span></div>`}${r.parent && !(inSweep && inSweep.sameParent) ? `
+    <div class="m"><span title="${esc(r.task)} · ${r.envs} games">${r.kind === "match" && r.players ? `<span class="badge bc" style="background:#1f3a44;color:#39c5cf">MATCH</span> ${esc(r.players.A.name)} vs ${esc(r.players.B.name)}` : `${esc(r.task)} · ${r.envs} games`}</span><span>${r.kind === "match" ? "A " : "win "}${winText(s)}</span></div>
+    <div class="m"><span>${r.kind === "match" ? `${fmt(s.episodes || 0, 0)} episodes` : `${fmt(s.agent_steps || 0, 0)} steps`}</span><span>${ago(s.updated)}</span></div>`}${r.parent && !(inSweep && inSweep.sameParent) ? `
     <div class="from" title="started from ${esc(parentText(r.parent))}">← ${esc(parentShort(r.parent))}</div>` : ""}${r.notes && r.notes.trim() ? `
     <div class="note" title="${esc(r.notes.trim())}">${esc(r.notes.trim().split("\n")[0])}</div>` : ""}</div>`;
 }
@@ -612,7 +612,10 @@ const SECTIONS = [
       [TR("league/script:noop", "noop", "#8795a3"), TR("league/script:focus", "focus", "#e0a33a"),
        TR("league/script:pull35", "pull35", "#b083f0"), TR("league/script:amove", "attack-move", "#e5534b")], { ymin: 0, ymax: 1, empty: "no league (a self-play run with --trainer torch)" }],
     ["c-lg-past", "Against its past", "win rate against past snapshots (PFSP) and against itself",
-      [TR("league/past", "past snapshots", "#539bf5"), TR("league/self", "itself", "#4cc38a")], { ymin: 0, ymax: 1, empty: "no league" }],
+      [TR("league/past", "past snapshots", "#539bf5"), TR("league/exploiter", "exploiter snapshots", "#e5534b"),
+       TR("league/self", "itself", "#4cc38a")], { ymin: 0, ymax: 1, empty: "no league" }],
+    ["c-lg-exploit", "The main exploiter", "its win rate against the main learner's current policy (it restarts from the initial policy above --exploiter-reset)",
+      [TR("league/exploiter_vs_main", "exploiter vs main", "#f47067"), TR("league/exploiter_resets", "resets", "#8795a3")], { ymin: 0, empty: "no exploiter (--torch.exploiters=1)" }],
     ["c-lg-members", "League size", "past snapshots", [TR("league/members", "snapshots", "#39c5cf")], { ymin: 0, empty: "no league" }],
   ]],
   ["System", [
@@ -672,6 +675,24 @@ function renderMain() {
     document.getElementById("notes").value = info.notes || "";  // edited elsewhere meanwhile
   }
   renderLineage(d);
+  const match = info.kind === "match";
+  if (match) {  // two players against each other: the score
+    const eps = d.recent_episodes || [];
+    const sc = info.score || {};
+    const played = s.episodes || 0;
+    document.getElementById("cards").innerHTML = [
+      ["Status", `${esc(info.status)}`, `<div class="progress"><div style="width:${(100 * Math.min(1, played / Math.max(1, info.timesteps))).toFixed(1)}%"></div></div>`],
+      ["A", `${esc(info.players.A.name)}`], ["B", `${esc(info.players.B.name)}`],
+      ["Episodes", `${fmt(played, 0)} <small>/ ${fmt(info.timesteps, 0)}</small>`],
+      ["A wins", s.win_rate_100 == null ? "–" : `${(100 * s.win_rate_100).toFixed(0)}% <small>last 100</small>`],
+      ["Score", info.score ? `${sc.a} – ${sc.b} <small>${sc.draw} draws</small>` : "–"],
+      ["Elapsed", dur(elapsed)],
+    ].map(([k, v, x = ""]) => `<div class="card"><div class="k">${k}</div><div class="v" style="font-size:${k === "A" || k === "B" ? 14 : 20}px">${v}</div>${x}</div>`).join("");
+    for (const id of ["learning", "system", "league", "leaguetable", "behaviour"]) {
+      const b = document.getElementById("tab-" + id);
+      if (b) { b.style.display = "none"; if (b.classList.contains("on")) showTab("run", "overview"); }
+    }
+  } else
   document.getElementById("cards").innerHTML = [
     ["Status", `${info.status}`, `<div class="progress"><div style="width:${(100 * progress).toFixed(1)}%"></div></div>`],
     ["Env steps", `${fmt(last.agent_steps || 0, 0)} <small>/ ${fmt(info.timesteps, 0)}</small>`],
@@ -1029,6 +1050,16 @@ function setupNotes(info, url, onSaved) {
 }
 function renderLineage(d) {
   const info = d.info, p = info.parent, rows = [];
+  if (info.kind === "match" && info.players) {  // who played: links to their runs
+    const link = pl => { const run = pl.name.split("@")[0];
+      return state.runs.some(r => r.name === run) ? `${go(run)}${pl.name.includes("@") ? " @ " + esc(pl.name.split("@")[1]) : ""}` : esc(pl.name); };
+    rows.push(["Player A", link(info.players.A)], ["Player B", link(info.players.B)],
+              ["Sides", "swapped every episode; outcomes are A's"], ["Task", esc(info.task)]);
+    const el = document.getElementById("lineage");
+    el.innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+    bindGo(el);
+    return;
+  }
   if (!p) rows.push(["Started from", "scratch (random weights)"]);
   else if (p.kind === "run") rows.push(["Started from", `${go(p.name)}${p.steps != null ? ` at ${fmt(p.steps, 0)} steps` : ""}`]);
   else if (p.kind === "bc") rows.push(["Started from", `behavior cloning of <b>${esc(p.policy || "?")}</b> on ${esc(p.task || "?")}` +

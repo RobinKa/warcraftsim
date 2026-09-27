@@ -140,6 +140,8 @@ class GameSetup:
     # clock, delivered with captured video frames (set_frame_capture). Off for training.
     audio: bool = False
     music_volume: int = 50  # with audio: 0-100 (0: no music); sound effects play at full volume
+    health_bars: bool = False  # the game's own health bars over every unit (Gameplay option; videos)
+    mouse_scroll: bool = True  # the camera scrolls with the pointer at a screen edge (off for videos)
     max_game_seconds: float = 0.0  # 0 = unlimited; otherwise a tie when reached
     fog: bool | None = None  # None: on for melee, off for scenarios
     wgc_speed: int = 1
@@ -237,6 +239,8 @@ def _shim_files() -> tuple[Path, Path]:
 
 def _set_reg_values(text: str, key: str, values: dict[str, int]) -> str:
     """Set DWORD values of one key in a Wine .reg file's text (the key must exist)."""
+    if f"[{key}]" not in text:  # a key the template prefix doesn't have: added
+        text = text.rstrip("\n") + f"\n\n[{key}] {int(time.time())}\n"
     lines = text.split("\n")
     start = next(i for i, line in enumerate(lines) if line.startswith(f"[{key}]"))
     end = next((i for i in range(start + 1, len(lines)) if not lines[i].strip()), len(lines))
@@ -264,6 +268,23 @@ def recorded_map(setup: "GameSetup", replay: Path, key: str | None) -> Path | No
         return path if src and path.exists() else None
     except (OSError, subprocess.SubprocessError):
         return None
+
+
+def replay_markers(setup: "GameSetup", replay: str | os.PathLike) -> bool:
+    """Whether the map `replay` plays back on draws video markers (protocol.VisMark etc.; harnesses
+    from before them ignore the commands, and the overlay then draws the marks itself)."""
+    log_file = commands_path(Path(replay))
+    key = json.loads(log_file.read_text()).get("map_key") if log_file.exists() else None
+    recorded = recorded_map(setup, Path(replay), key)
+    if recorded is None:
+        from ..data.mapbuild import harness_source
+        return "function W3S_VisClear" in harness_source()
+    from ..data.mpq import MpqArchive
+    try:
+        with MpqArchive(recorded) as m:
+            return b"function W3S_VisClear" in m.read("war3map.j")
+    except OSError:
+        return False
 
 
 def commands_path(replay: Path) -> Path:
@@ -388,6 +409,8 @@ class GameInstance:
             text = _set_reg_values(text, r"Software\\Blizzard Entertainment\\Warcraft III\\Sound", {
                 "sfx": 1, "sfxvolume": 100, "ambient": 1, "movement": 1, "unit": 1, "positional": 0,
                 "music": int(music), "musicvolume": max(self.setup.music_volume, 0)})
+        gameplay = {"healthbars": int(self.setup.health_bars), "mousescrolldisable": int(not self.setup.mouse_scroll)}
+        text = _set_reg_values(text, r"Software\\Blizzard Entertainment\\Warcraft III\\Gameplay", gameplay)
         user_reg.write_text(text, encoding="latin-1")
 
     warm_spare_child = False  # a spare never starts its own spare
@@ -419,7 +442,8 @@ class GameInstance:
     def play_replay(self, replay: str | os.PathLike) -> Observation:
         """Play a replay saved by save_replay() of a game with this setup, stepping it like a live
         game: the harness runs again, receives the recorded agent orders at the same steps and
-        writes observations. Commands passed to step() are ignored (except Camera and Snapshot)."""
+        writes observations. Commands passed to step() are ignored, except those for watching
+        (Command.playback: Camera, Snapshot, the video markers)."""
         log_file = commands_path(Path(replay))
         saved = json.loads(log_file.read_text()) if log_file.exists() else {}
         self._playback = saved.get("commands", {})
@@ -599,8 +623,8 @@ class GameInstance:
         key = f"{self._proc_episode}:{self._last_seq}"
         ints = encode_commands(commands)
         if self._playback is not None:
-            # replay playback: the recorded orders; only observation/camera commands are added
-            extra = [c for c in commands if type(c).__name__ in ("Snapshot", "Camera")]
+            # replay playback: the recorded orders; only commands for watching are added
+            extra = [c for c in commands if c.playback]
             ints = self._playback.get(key, []) + encode_commands(extra)
         elif ints:
             self._cmd_log[key] = ints

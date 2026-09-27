@@ -98,6 +98,21 @@ def test_bridge_protocol(tmp_path):
         bridge.close()
 
 
+def test_dashboard_jsonl_cache_rereads_replaced_files(tmp_path):
+    import json
+    from warcraftsim.dashboard.server import _JsonlCache
+    f = tmp_path / "media.jsonl"
+    cache = _JsonlCache()
+    f.write_text(json.dumps({"episode": 1, "time": 1}) + "\n")
+    assert cache.read(f) == [{"episode": 1, "time": 1}]
+    f.unlink()  # a run deleted and started again under its name: a longer new file
+    f.write_text(json.dumps({"episode": 2, "time": 2}) + "\n" + json.dumps({"episode": 1, "time": 3}) + "\n")
+    assert [r["episode"] for r in cache.read(f)] == [2, 1]
+    with open(f, "a") as out:
+        out.write(json.dumps({"episode": 3, "time": 4}) + "\n")
+    assert [r["episode"] for r in cache.read(f)] == [2, 1, 3]
+
+
 def test_dashboard_api(tmp_path):
     import urllib.request
 

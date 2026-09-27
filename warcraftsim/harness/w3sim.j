@@ -78,6 +78,49 @@ globals
     boolean array w3s_scripted
     integer array w3s_alive
     boolean array w3s_participant
+    // Replay videos: markers drawn in the game (ops 80-83). They are all made at init, the same in a
+    // recorded game and in its playback, and are only moved, shown and hidden later: a handle made
+    // only during playback would shift the handle ids (the unit ids of the commands) of later units.
+    // For the same reason they refer to units by id only (a unit kept in a variable keeps its id
+    // from being reused).
+    constant integer W3S_VIS_MARKS = 16
+    constant integer W3S_VIS_RINGS = 3  // per mark: rings of radius 36, 54, 72 (images can't be resized)
+    // the game has ~100 texttags in all (its own floating texts included): 16 + 10 * (1 + 5) here
+    constant integer W3S_VIS_LINES = 10
+    constant integer W3S_VIS_DOTS = 5  // per line: a dotted line (texttags: crisp at any zoom)
+    constant integer W3S_VIS_AREAS = 18  // 3 each of 6 radii
+    constant string W3S_VIS_RING_FILE = "ReplaceableTextures\\Selection\\SelectionCircleMed.blp"
+    constant string W3S_VIS_AREA_FILE = "ReplaceableTextures\\Selection\\SpellAreaOfEffect_basic.blp"
+    constant real W3S_VIS_RING_FRAC = 0.8  // the ring's radius / half the texture's width
+    constant real W3S_VIS_END_R = 24.0
+    constant real W3S_VIS_TEXT_DX = -30.0  // a texttag's text starts ~30 right of its position
+    constant real W3S_VIS_CHAR_W = 17.0  // a character's width on the ground (to centre texts)
+    image array w3s_vis_ring  // marks: a ring under a unit (sized by its collision size), a label
+    integer array w3s_vis_rk  // the ring shown, -1: none
+    texttag array w3s_vis_label
+    integer array w3s_vis_mark  // the unit's id
+    real array w3s_vis_ldx
+    real array w3s_vis_ldy
+    integer w3s_vis_nmark = 0
+    texttag array w3s_vis_dot  // lines: from a unit to a point, to a unit, or at the unit itself
+    real array w3s_vis_dotdx
+    integer array w3s_vis_ndot  // dots shown
+    image array w3s_vis_end  // their end: a small ring (a point), a larger one (a unit), or an area ring
+    integer array w3s_vis_endk  // which end ring: line * 2 + (0 point, 1 unit)
+    texttag array w3s_vis_name  // a spell's name over the caster
+    integer array w3s_vis_src
+    integer array w3s_vis_dst  // 0: the point
+    integer array w3s_vis_shape  // 0 point, 1 unit, 2 self
+    integer array w3s_vis_larea  // -1: none
+    real array w3s_vis_ndx
+    real array w3s_vis_x
+    real array w3s_vis_y
+    integer w3s_vis_nline = 0
+    image array w3s_vis_area
+    real array w3s_vis_arear
+    boolean array w3s_vis_areaused
+    timer w3s_vis_timer = null
+    boolean w3s_vis_on = false
 endglobals
 
 //===========================================================================
@@ -430,6 +473,7 @@ function W3S_WriteObs takes nothing returns nothing
     call W3S_Rec("K") // the local camera's target (watching / videos: what the footage is centred on)
     call W3S_Tok(R2I(GetCameraTargetPositionX()))
     call W3S_Tok(R2I(GetCameraTargetPositionY()))
+    call W3S_End()
     call W3S_Rec("T")
     call W3S_Tok(w3s_seq)
     call W3S_Tok(R2I(TimerGetElapsed(w3s_clock) * 1000.0 + 0.5))
@@ -537,6 +581,350 @@ function W3S_CountAlive takes nothing returns nothing
     call ForGroup(w3s_all, function W3S_CountAliveEnum)
 endfunction
 
+//===========================================================================
+// replay video markers (see the globals): rings, labels, order lines, spell areas
+
+function W3S_VisRingR takes integer k returns real
+    return 36.0 + 18.0 * I2R(k)
+endfunction
+
+function W3S_VisNewImage takes string file, real r, integer kind returns image
+    local real s = 2.0 * r / W3S_VIS_RING_FRAC
+    local image i = CreateImage(file, s, s, 0.0, 0.0, 0.0, 0.0, s * 0.5, s * 0.5, 0.0, kind)
+    call SetImageRenderAlways(i, false)
+    call ShowImage(i, false)
+    return i
+endfunction
+
+function W3S_VisNewText takes nothing returns texttag
+    local texttag t = CreateTextTag()
+    call SetTextTagPermanent(t, true)
+    call SetTextTagVisibility(t, false)
+    return t
+endfunction
+
+function W3S_VisShow takes image i, boolean flag returns nothing
+    call SetImageRenderAlways(i, flag)
+    call ShowImage(i, flag)
+endfunction
+
+function W3S_VisColor takes image i, integer rgb returns nothing
+    call SetImageColor(i, rgb / 65536, rgb / 256 - (rgb / 65536) * 256, rgb - (rgb / 256) * 256, 255)
+endfunction
+
+// a text's x offset to centre it on a point
+function W3S_VisTextSized takes texttag t, string s, integer rgb, real size returns real
+    call SetTextTagText(t, s, size)
+    call SetTextTagColor(t, rgb / 65536, rgb / 256 - (rgb / 65536) * 256, rgb - (rgb / 256) * 256, 255)
+    call SetTextTagVisibility(t, true)
+    return (W3S_VIS_TEXT_DX - 0.5 * W3S_VIS_CHAR_W * I2R(StringLength(s))) * size / 0.026
+endfunction
+
+function W3S_VisText takes texttag t, string s, integer rgb returns real
+    return W3S_VisTextSized(t, s, rgb, 0.026)
+endfunction
+
+function W3S_VisInit takes nothing returns nothing
+    local integer i = 0
+    set w3s_vis_timer = CreateTimer()
+    loop
+        exitwhen i >= W3S_VIS_MARKS * W3S_VIS_RINGS
+        set w3s_vis_ring[i] = W3S_VisNewImage(W3S_VIS_RING_FILE, W3S_VisRingR(i - (i / W3S_VIS_RINGS) * W3S_VIS_RINGS), 1)
+        set i = i + 1
+    endloop
+    set i = 0
+    loop
+        exitwhen i >= W3S_VIS_MARKS
+        set w3s_vis_label[i] = W3S_VisNewText()
+        set w3s_vis_rk[i] = -1
+        set i = i + 1
+    endloop
+    set i = 0
+    loop
+        exitwhen i >= W3S_VIS_LINES * W3S_VIS_DOTS
+        set w3s_vis_dot[i] = W3S_VisNewText()
+        set i = i + 1
+    endloop
+    set i = 0
+    loop
+        exitwhen i >= W3S_VIS_LINES
+        set w3s_vis_end[2 * i] = W3S_VisNewImage(W3S_VIS_RING_FILE, W3S_VIS_END_R, 1)
+        set w3s_vis_end[2 * i + 1] = W3S_VisNewImage(W3S_VIS_RING_FILE, 2.0 * W3S_VIS_END_R, 1)
+        set w3s_vis_name[i] = W3S_VisNewText()
+        set w3s_vis_larea[i] = -1
+        set i = i + 1
+    endloop
+    set i = 0
+    loop
+        exitwhen i >= W3S_VIS_AREAS
+        set w3s_vis_arear[i] = 75.0 + 50.0 * I2R(i / 3)  // 75, 125, ... 325
+        set w3s_vis_area[i] = W3S_VisNewImage(W3S_VIS_AREA_FILE, w3s_vis_arear[i], 2)
+        set i = i + 1
+    endloop
+endfunction
+
+function W3S_VisAlive takes unit u returns boolean
+    return u != null and GetUnitTypeId(u) != 0 and not IsUnitType(u, UNIT_TYPE_DEAD)
+endfunction
+
+function W3S_VisHideMark takes integer k returns nothing
+    if w3s_vis_rk[k] >= 0 then
+        call W3S_VisShow(w3s_vis_ring[k * W3S_VIS_RINGS + w3s_vis_rk[k]], false)
+        set w3s_vis_rk[k] = -1
+    endif
+    call SetTextTagVisibility(w3s_vis_label[k], false)
+    set w3s_vis_mark[k] = 0
+endfunction
+
+function W3S_VisHideLine takes integer k returns nothing
+    local integer j = 0
+    loop
+        exitwhen j >= w3s_vis_ndot[k]
+        call SetTextTagVisibility(w3s_vis_dot[k * W3S_VIS_DOTS + j], false)
+        set j = j + 1
+    endloop
+    set w3s_vis_ndot[k] = 0
+    call W3S_VisShow(w3s_vis_end[w3s_vis_endk[k]], false)
+    call SetTextTagVisibility(w3s_vis_name[k], false)
+    if w3s_vis_larea[k] >= 0 then
+        call W3S_VisShow(w3s_vis_area[w3s_vis_larea[k]], false)
+        set w3s_vis_areaused[w3s_vis_larea[k]] = false
+        set w3s_vis_larea[k] = -1
+    endif
+    set w3s_vis_src[k] = 0
+endfunction
+
+// the dots of line k from (x, y) to (tx, ty): one per ~60 of length, up to W3S_VIS_DOTS
+function W3S_VisDots takes integer k, real x, real y, real tx, real ty returns nothing
+    local real dx = tx - x
+    local real dy = ty - y
+    local integer n = R2I(SquareRoot(dx * dx + dy * dy) / 60.0)
+    local integer j = 0
+    local real f
+    if n > W3S_VIS_DOTS then
+        set n = W3S_VIS_DOTS
+    endif
+    loop
+        exitwhen j >= W3S_VIS_DOTS
+        if j < n then
+            set f = I2R(j + 1) / I2R(n + 1)
+            call SetTextTagPos(w3s_vis_dot[k * W3S_VIS_DOTS + j], x + dx * f + w3s_vis_dotdx[k], y + dy * f, 0.0)
+            if j >= w3s_vis_ndot[k] then
+                call SetTextTagVisibility(w3s_vis_dot[k * W3S_VIS_DOTS + j], true)
+            endif
+        elseif j < w3s_vis_ndot[k] then
+            call SetTextTagVisibility(w3s_vis_dot[k * W3S_VIS_DOTS + j], false)
+        endif
+        set j = j + 1
+    endloop
+    set w3s_vis_ndot[k] = n
+endfunction
+
+// every 10 ms of game time while markers are shown: keep them on their units
+function W3S_VisTick takes nothing returns nothing
+    local integer i = 0
+    local unit u
+    local unit v
+    local real x
+    local real y
+    local real tx
+    local real ty
+    loop
+        exitwhen i >= w3s_vis_nmark
+        if w3s_vis_mark[i] != 0 then
+            set u = W3S_Unit(w3s_vis_mark[i])
+            if W3S_VisAlive(u) then
+                set x = GetUnitX(u)
+                set y = GetUnitY(u)
+                if w3s_vis_rk[i] >= 0 then
+                    call SetImagePosition(w3s_vis_ring[i * W3S_VIS_RINGS + w3s_vis_rk[i]], x, y, 0.0)
+                endif
+                call SetTextTagPos(w3s_vis_label[i], x + w3s_vis_ldx[i], y + w3s_vis_ldy[i], 0.0)
+            else
+                call W3S_VisHideMark(i)
+            endif
+        endif
+        set i = i + 1
+    endloop
+    set i = 0
+    loop
+        exitwhen i >= w3s_vis_nline
+        if w3s_vis_src[i] != 0 then
+            set u = W3S_Unit(w3s_vis_src[i])
+            if W3S_VisAlive(u) then
+                set x = GetUnitX(u)
+                set y = GetUnitY(u)
+                set tx = w3s_vis_x[i]
+                set ty = w3s_vis_y[i]
+                if w3s_vis_shape[i] == 1 then
+                    set v = W3S_Unit(w3s_vis_dst[i])
+                    if W3S_VisAlive(v) then
+                        set tx = GetUnitX(v)
+                        set ty = GetUnitY(v)
+                        set w3s_vis_x[i] = tx
+                        set w3s_vis_y[i] = ty
+                    endif
+                elseif w3s_vis_shape[i] == 2 then
+                    set tx = x
+                    set ty = y
+                endif
+                if w3s_vis_shape[i] != 2 then
+                    call W3S_VisDots(i, x, y, tx, ty)
+                endif
+                if w3s_vis_larea[i] >= 0 then
+                    call SetImagePosition(w3s_vis_area[w3s_vis_larea[i]], tx, ty, 0.0)
+                else
+                    call SetImagePosition(w3s_vis_end[w3s_vis_endk[i]], tx, ty, 0.0)
+                endif
+                call SetTextTagPos(w3s_vis_name[i], x + w3s_vis_ndx[i], y + 60.0, 150.0)
+            else
+                call W3S_VisHideLine(i)
+            endif
+        endif
+        set i = i + 1
+    endloop
+    set u = null
+    set v = null
+endfunction
+
+function W3S_VisStart takes nothing returns nothing
+    if not w3s_vis_on then
+        set w3s_vis_on = true
+        call TimerStart(w3s_vis_timer, 0.01, true, function W3S_VisTick)
+    endif
+endfunction
+
+// op 80: hide every marker (the video sends the markers of each step anew)
+function W3S_VisClear takes nothing returns nothing
+    local integer i = 0
+    loop
+        exitwhen i >= w3s_vis_nmark
+        call W3S_VisHideMark(i)
+        set i = i + 1
+    endloop
+    set i = 0
+    loop
+        exitwhen i >= w3s_vis_nline
+        call W3S_VisHideLine(i)
+        set i = i + 1
+    endloop
+    set i = 0
+    loop
+        exitwhen i >= W3S_VIS_AREAS
+        if w3s_vis_areaused[i] then
+            call W3S_VisShow(w3s_vis_area[i], false)
+            set w3s_vis_areaused[i] = false
+        endif
+        set i = i + 1
+    endloop
+    set w3s_vis_nmark = 0
+    set w3s_vis_nline = 0
+    call W3S_VisStart()
+endfunction
+
+// op 81: a ring (if ring != 0) and a label (letter "ABE"[letter], number) under a unit
+function W3S_VisMark takes integer hid, integer rgb, integer ring, integer letter, integer number returns boolean
+    local integer k = w3s_vis_nmark
+    local unit u = W3S_Unit(hid)
+    local real c
+    local integer rk = 0
+    if k >= W3S_VIS_MARKS or not W3S_VisAlive(u) then
+        set u = null
+        return false
+    endif
+    set c = BlzGetUnitCollisionSize(u)
+    set u = null
+    if c >= 40.0 then
+        set rk = 2
+    elseif c >= 24.0 then
+        set rk = 1
+    endif
+    set w3s_vis_nmark = k + 1
+    set w3s_vis_mark[k] = hid
+    set w3s_vis_rk[k] = -1
+    if ring != 0 then
+        set w3s_vis_rk[k] = rk
+        call W3S_VisColor(w3s_vis_ring[k * W3S_VIS_RINGS + rk], rgb)
+        call W3S_VisShow(w3s_vis_ring[k * W3S_VIS_RINGS + rk], true)
+    endif
+    set w3s_vis_ldy[k] = -50.0 - W3S_VisRingR(rk)
+    set w3s_vis_ldx[k] = W3S_VisText(w3s_vis_label[k], SubString("ABE", letter, letter + 1) + I2S(number), rgb)
+    return true
+endfunction
+
+// the free area ring closest in size to r (-1: none left)
+function W3S_VisTakeArea takes real r returns integer
+    local integer i = 0
+    local integer best = -1
+    loop
+        exitwhen i >= W3S_VIS_AREAS
+        if not w3s_vis_areaused[i] then
+            if best < 0 or RAbsBJ(w3s_vis_arear[i] - r) < RAbsBJ(w3s_vis_arear[best] - r) then
+                set best = i
+            endif
+        endif
+        set i = i + 1
+    endloop
+    if best >= 0 then
+        set w3s_vis_areaused[best] = true
+    endif
+    return best
+endfunction
+
+// op 82: an order: a dotted line from a unit to a point (shape 0) or a unit (1), or a mark at the
+// unit (2); a small ring at the end, or a ring of radius r (a spell's area); a spell's name
+function W3S_VisLine takes integer hid, integer rgb, integer shape, real x, real y, integer dst, integer abil, integer r returns boolean
+    local integer k = w3s_vis_nline
+    local integer j = 0
+    if k >= W3S_VIS_LINES or hid == 0 then
+        return false
+    endif
+    set w3s_vis_nline = k + 1
+    set w3s_vis_src[k] = hid
+    set w3s_vis_shape[k] = shape
+    set w3s_vis_dst[k] = dst
+    set w3s_vis_x[k] = x
+    set w3s_vis_y[k] = y
+    set w3s_vis_ndot[k] = 0
+    set w3s_vis_endk[k] = 2 * k
+    if shape == 1 then
+        set w3s_vis_endk[k] = 2 * k + 1
+    endif
+    loop
+        exitwhen j >= W3S_VIS_DOTS
+        set w3s_vis_dotdx[k] = W3S_VisTextSized(w3s_vis_dot[k * W3S_VIS_DOTS + j], ".", rgb, 0.05)
+        call SetTextTagVisibility(w3s_vis_dot[k * W3S_VIS_DOTS + j], false)
+        set j = j + 1
+    endloop
+    set w3s_vis_larea[k] = -1
+    if r > 0 then
+        set w3s_vis_larea[k] = W3S_VisTakeArea(I2R(r))
+    endif
+    if w3s_vis_larea[k] >= 0 then
+        call W3S_VisColor(w3s_vis_area[w3s_vis_larea[k]], rgb)
+        call W3S_VisShow(w3s_vis_area[w3s_vis_larea[k]], true)
+    else
+        call W3S_VisColor(w3s_vis_end[w3s_vis_endk[k]], rgb)
+        call W3S_VisShow(w3s_vis_end[w3s_vis_endk[k]], true)
+    endif
+    if abil != 0 then
+        set w3s_vis_ndx[k] = W3S_VisText(w3s_vis_name[k], GetObjectName(abil), rgb)
+    endif
+    return true
+endfunction
+
+// op 83: a ring of radius r at a point (e.g. a scenario's target area)
+function W3S_VisArea takes real x, real y, integer r, integer rgb returns boolean
+    local integer k = W3S_VisTakeArea(I2R(r))
+    if k < 0 then
+        return false
+    endif
+    call SetImagePosition(w3s_vis_area[k], x, y, 0.0)
+    call W3S_VisColor(w3s_vis_area[k], rgb)
+    call W3S_VisShow(w3s_vis_area[k], true)
+    return true
+endfunction
+
 // Command layout (integers): op, then op-specific arguments. Coordinates are sent + 65536.
 //  1 point order     hid order x y
 //  2 target order    hid order target_hid
@@ -546,6 +934,10 @@ endfunction
 //  6 target tree     hid order dest_hid
 //  7 item order      hid order item_slot x y target_hid
 // 90 set resources   player gold lumber   (debug)
+// 80 video: clear markers
+// 81 video: mark     hid rgb ring letter number
+// 82 video: order    hid rgb shape x y target_hid ability radius
+// 83 video: area     x y radius rgb
 // 91 spawn unit      player unittype x y  (debug)
 // 99 restart game
 function W3S_ApplyOne takes integer at returns integer
@@ -627,6 +1019,19 @@ function W3S_ApplyOne takes integer at returns integer
         set n = 5
         set u = CreateUnit(Player(w3s_cmd[at + 1]), w3s_cmd[at + 2], I2R(w3s_cmd[at + 3] - 65536), I2R(w3s_cmd[at + 4] - 65536), 270.0)
         set ok = u != null
+    elseif op == 80 then
+        set n = 1
+        call W3S_VisClear()
+        set ok = true
+    elseif op == 81 then
+        set n = 6
+        set ok = W3S_VisMark(w3s_cmd[at + 1], w3s_cmd[at + 2], w3s_cmd[at + 3], w3s_cmd[at + 4], w3s_cmd[at + 5])
+    elseif op == 82 then
+        set n = 9
+        set ok = W3S_VisLine(w3s_cmd[at + 1], w3s_cmd[at + 2], w3s_cmd[at + 3], I2R(w3s_cmd[at + 4] - 65536), I2R(w3s_cmd[at + 5] - 65536), w3s_cmd[at + 6], w3s_cmd[at + 7], w3s_cmd[at + 8])
+    elseif op == 83 then
+        set n = 5
+        set ok = W3S_VisArea(I2R(w3s_cmd[at + 1] - 65536), I2R(w3s_cmd[at + 2] - 65536), w3s_cmd[at + 3], w3s_cmd[at + 4])
     elseif op == 96 then
         set n = 3
         // local camera only: watching / videos, no effect on the simulation; a pan over one step
@@ -937,6 +1342,9 @@ function W3S_Step takes nothing returns nothing
     set w3s_first = false
     set w3s_seq = w3s_seq + 1
     call W3S_ReadCommands()
+    if w3s_vis_on then
+        call W3S_VisTick()  // new markers: in place before the next frame is drawn
+    endif
     if w3s_end then
         // end the game normally so the engine finalises the replay (LastReplay.w3g)
         set w3s_end = false
@@ -1148,6 +1556,7 @@ function W3S_Init takes nothing returns nothing
     call W3S_InitHeroAbilities()
     set w3s_group = CreateGroup()
     set w3s_all = CreateGroup()
+    call W3S_VisInit()
     call W3S_Configure()
     call GroupEnumUnitsInRect(w3s_group, GetWorldBounds(), null)
     call ForGroup(w3s_group, function W3S_AddUnit)

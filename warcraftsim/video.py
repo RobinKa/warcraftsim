@@ -19,7 +19,7 @@ from pathlib import Path
 
 from .protocol import Camera, Observation, decode_commands
 from .runtime.display import Xvfb
-from .runtime.instance import GameError, GameInstance, GameSetup
+from .runtime.instance import GameError, GameInstance, GameSetup, replay_markers
 
 
 class _XImage(ctypes.Structure):
@@ -91,11 +91,15 @@ def _window_geometry(display: str) -> tuple[int, int, int, int] | None:
 
 
 def _park_pointer(display: str) -> None:
-    """Move the mouse pointer to the screen's bottom right corner, off the game window."""
+    """Move the mouse pointer below the game window (centred on the screen), where the game puts
+    its cursor on the bottom UI panel: over the world, replays label the unit under it. (Outside
+    the window counts as a screen edge: videos turn mouse scrolling off, else the camera scrolls
+    away, and with health bars on the game then draws a stray bar.)"""
     env = dict(os.environ, DISPLAY=display)
     out = subprocess.run(["xdotool", "getdisplaygeometry"], capture_output=True, text=True, env=env).stdout.split()
     if len(out) == 2:
-        subprocess.run(["xdotool", "mousemove", str(int(out[0]) - 1), str(int(out[1]) - 1)], env=env, check=False)
+        subprocess.run(["xdotool", "mousemove", str(int(out[0]) // 2), str(int(out[1]) - 28)], env=env,
+                       check=False)
 
 
 FOLLOW_GAIN = 0.35  # of the way to the fight's centre per step: smooth, and it keeps up with a chase
@@ -120,7 +124,9 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
     """Play `replay` (saved by GameInstance.save_replay with the same setup) and write an MP4 at
     `fps`, `speed` times real time. Each frame advances the game by exactly 1000*speed/fps ms,
     ideally a multiple of the engine's 25 ms turn (40 fps at 1x, 40 fps at 2x, 60 fps at 1.5x).
-    `overlay` (overlay.EpisodeOverlay) draws the agent's orders and what the policy thought.
+    `overlay` (overlay.EpisodeOverlay) shows the agent's orders and what the policy thought: the
+    game draws the marks on the units (rings, labels, orders; with its own health bars) when the
+    replay's map can (runtime.instance.replay_markers), else they are drawn onto the footage.
     With `audio`, the game's sound comes from the w3shim virtual sound card, one frame's worth per
     frame; the render then runs at no more than real time (the game's mixer needs that)."""
     out = Path(out)
@@ -130,8 +136,10 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
     # replays count the map load (one ~6 s engine update) as elapsed time and then race through that
     # much game time without drawing (videos started ~4 s in): load on an almost stopped clock
     # (0.03x: starts ~0.5 s in; 0.01x: the load never finishes)
+    in_game = overlay is not None and replay_markers(setup, replay)
     setup = GameSetup(**{**setup.__dict__, "warm_spare": False, "speed": 1.0, "launch_speed": 0.03,
-                         "window": (1024, 768), "audio": audio, "music_volume": music_volume})
+                         "window": (1024, 768), "audio": audio, "music_volume": music_volume,
+                         "health_bars": in_game or setup.health_bars, "mouse_scroll": False})
     # the pointer must be off the game window from the start: replays show a label on the unit under it
     xvfb = Xvfb(*setup.window)
     _park_pointer(xvfb.display)
@@ -151,6 +159,7 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
         size, pix = (geo[2], geo[3]), "bgr0"
         if overlay is not None:
             overlay.begin(setup, obs.orders or {}, geo[2], geo[3])
+            overlay.in_game = in_game
             size, pix = overlay.size, "rgb24"
         scale = f"scale={width}:-2" if width else "scale=trunc(iw/2)*2:trunc(ih/2)*2"
         ffmpeg = subprocess.Popen(
@@ -198,8 +207,11 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
             if follow_fight and (c := _follow_target(obs, None)) is not None:
                 target = cam = (cam[0] + FOLLOW_GAIN * (c[0] - cam[0]), cam[1] + FOLLOW_GAIN * (c[1] - cam[1]))
             before = obs
+            extra = [Camera(*target)] if target else []
+            if in_game:
+                extra += overlay.markers(obs, commands)
             try:
-                obs = inst.step([Camera(*target)] if target else [])
+                obs = inst.step(extra)
             except GameError:
                 obs = None  # the replay ended
             except _ReplayStalled:

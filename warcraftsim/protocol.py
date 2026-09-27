@@ -36,7 +36,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from enum import IntEnum, IntFlag
-from typing import Iterable, Sequence
+from typing import ClassVar, Iterable, Sequence
 
 PROTOCOL_VERSION = 4
 MAILBOX_BASE = 1048576
@@ -455,6 +455,10 @@ class Op(IntEnum):
     LEARN = 5
     TARGET_DESTRUCTABLE = 6
     ITEM = 7
+    VIS_CLEAR = 80
+    VIS_MARK = 81
+    VIS_LINE = 82
+    VIS_AREA = 83
     SET_RESOURCES = 90
     SPAWN = 91
     QUEUE_SPAWN = 92
@@ -475,6 +479,8 @@ def _coord(v: float) -> int:
 @dataclass(frozen=True)
 class Command:
     """Base class: every command encodes to a list of integers."""
+    # sent during replay playback too (only for watching: no effect on the game)
+    playback: ClassVar[bool] = False
 
     def encode(self) -> list[int]:  # pragma: no cover - abstract
         raise NotImplementedError
@@ -612,11 +618,74 @@ class QueueSkill(Command):
 @dataclass(frozen=True)
 class Camera(Command):
     """Move the local camera (watching / screenshots only; no effect on the game state)."""
+    playback: ClassVar[bool] = True
     x: float
     y: float
 
     def encode(self) -> list[int]:
         return [Op.CAMERA, _coord(self.x), _coord(self.y)]
+
+
+def _rgb(color: tuple[int, int, int]) -> int:
+    return (int(color[0]) << 16) | (int(color[1]) << 8) | int(color[2])
+
+
+@dataclass(frozen=True)
+class VisClear(Command):
+    """Videos: hide all markers drawn in the game (the markers of a step are sent anew each step)."""
+    playback: ClassVar[bool] = True
+
+    def encode(self) -> list[int]:
+        return [Op.VIS_CLEAR]
+
+
+@dataclass(frozen=True)
+class VisMark(Command):
+    """Videos: a label ("A0", "B3", "E1": a letter of A/B/E and a number) under a unit, and a ring
+    in `color` around it; the harness keeps them on the unit until it dies or VisClear."""
+    playback: ClassVar[bool] = True
+    unit: int
+    color: tuple[int, int, int]
+    label: str
+    ring: bool = True
+
+    def encode(self) -> list[int]:
+        return [Op.VIS_MARK, self.unit, _rgb(self.color), int(self.ring), "ABE".index(self.label[0]),
+                int(self.label[1:])]
+
+
+@dataclass(frozen=True)
+class VisLine(Command):
+    """Videos: an order of `unit`: a line to the point (x, y) or to `target` (a unit), or with
+    neither a mark at the unit itself; a small ring at the end, or a ring of `radius` (a spell's
+    area); the name of `ability` (a spell) over the unit."""
+    playback: ClassVar[bool] = True
+    unit: int
+    color: tuple[int, int, int]
+    x: float | None = None
+    y: float | None = None
+    target: int = 0
+    ability: str | None = None
+    radius: float = 0.0
+
+    def encode(self) -> list[int]:
+        shape = 1 if self.target else 0 if self.x is not None else 2
+        x, y = (self.x, self.y) if self.x is not None else (0.0, 0.0)
+        return [Op.VIS_LINE, self.unit, _rgb(self.color), shape, _coord(x), _coord(y), self.target,
+                fourcc(self.ability) if self.ability else 0, int(round(self.radius))]
+
+
+@dataclass(frozen=True)
+class VisArea(Command):
+    """Videos: a ring of `radius` on the ground at (x, y)."""
+    playback: ClassVar[bool] = True
+    x: float
+    y: float
+    radius: float
+    color: tuple[int, int, int]
+
+    def encode(self) -> list[int]:
+        return [Op.VIS_AREA, _coord(self.x), _coord(self.y), int(round(self.radius)), _rgb(self.color)]
 
 
 @dataclass(frozen=True)
@@ -630,6 +699,7 @@ class EndGame(Command):
 @dataclass(frozen=True)
 class Snapshot(Command):
     """Make the next observation a full snapshot of all units."""
+    playback: ClassVar[bool] = True
 
     def encode(self) -> list[int]:
         return [Op.SNAPSHOT]
@@ -653,7 +723,8 @@ def encode_commands(commands: Iterable[Command]) -> list[int]:
 
 
 _OP_LENGTHS = {Op.POINT: 5, Op.TARGET: 4, Op.IMMEDIATE: 3, Op.BUILD: 5, Op.LEARN: 3, Op.TARGET_DESTRUCTABLE: 4,
-               Op.ITEM: 7, Op.SET_RESOURCES: 4, Op.SPAWN: 5, Op.QUEUE_SPAWN: 8, Op.QUEUE_SKILL: 2, Op.CAMERA: 3,
+               Op.ITEM: 7, Op.VIS_CLEAR: 1, Op.VIS_MARK: 6, Op.VIS_LINE: 9, Op.VIS_AREA: 5,
+               Op.SET_RESOURCES: 4, Op.SPAWN: 5, Op.QUEUE_SPAWN: 8, Op.QUEUE_SKILL: 2, Op.CAMERA: 3,
                Op.END_GAME: 1, Op.SNAPSHOT: 1, Op.RESTART: 1}
 
 

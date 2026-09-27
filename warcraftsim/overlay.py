@@ -25,7 +25,8 @@ from typing import Sequence
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from .protocol import Command, ImmediateOrder, Observation, PointOrder, TargetOrder, Unit
+from .protocol import (Command, ImmediateOrder, Observation, PointOrder, TargetOrder, Unit, VisArea, VisClear,
+                       VisLine, VisMark)
 
 # Ground plane (relative to the camera target) -> normalized window coordinates, for the default
 # game camera in a 16:9 window (scripts/calibrate_camera.py; reprojection error < 0.2 px).
@@ -42,11 +43,11 @@ KIND_COLORS = {"noop": (125, 125, 135), "stop": (235, 205, 60), "retreat": (176,
                "attack": (245, 80, 60), "cast": (245, 110, 210)}
 
 
-def _ability_orders() -> dict[str, tuple[str, float]]:
-    """Order string -> (ability name, area) of the hero abilities (empty without the game data)."""
+def _ability_orders() -> dict[str, tuple[str, float, str]]:
+    """Order string -> (ability name, area, code) of the hero abilities (empty without the game data)."""
     try:
         from .data.abilities import ability_info
-        return {i.order: (i.name, max(i.area, default=0.0)) for i in ability_info().values() if i.order}
+        return {i.order: (i.name, max(i.area, default=0.0), code) for code, i in ability_info().items() if i.order}
     except Exception:
         return {}
 
@@ -135,7 +136,7 @@ class EpisodeOverlay:
     END_SECONDS = 2.0
 
     def __init__(self, task, trace: dict, outputs: list | None = None, gamma: float = 0.99, title: str = "",
-                 policy_step: int | None = None):
+                 policy_step: int | None = None, agent_names: list[str] | None = None):
         self.task = task
         self.actions = np.asarray(trace["actions"])  # [T, A, heads]
         self.rewards = np.asarray(trace["rewards"], np.float64)  # [T, A]
@@ -144,6 +145,7 @@ class EpisodeOverlay:
         self.outputs = outputs  # per agent: policy.PolicyOutput or None
         self.title = title
         self.policy_step = policy_step
+        self.agent_names = agent_names  # who plays each agent (matches between different players)
         self.returns = np.zeros_like(self.rewards)  # discounted return-to-go G_t
         acc = np.zeros(self.A)
         for t in reversed(range(self.T)):
@@ -160,6 +162,7 @@ class EpisodeOverlay:
         self.f_label, self.f_big = _font(12, True), _font(30, True)
         self.w = self.h = 0
         self.world = False
+        self.in_game = False  # the game draws the marks (markers()): only the panel is drawn here
         self._max_hp: dict[str, float] = {}  # per side, from the first observation
         self._slot_ids: dict = {}  # per agent player: unit ids by slot
 
@@ -182,6 +185,8 @@ class EpisodeOverlay:
             if i in self.agent_players:
                 a = self.agent_players.index(i)
                 who = "AGENT" if self.A == 1 else f"AGENT {'AB'[a]}"
+                if self.agent_names and a < len(self.agent_names):
+                    who = f"{'AB'[a]}: {self.agent_names[a]}"
                 ring = "green" if a == 0 else "orange"
                 self.sides.append((color, f"{who} ({cname}, {ring} rings)", AGENT_COLORS[a]))
             else:
@@ -208,19 +213,7 @@ class EpisodeOverlay:
         panel = self._panel(t, obs_a)
         self.canvas.paste(panel, (self.w, 0))
         self._last_panel = panel
-        labels: dict[int, tuple[str, tuple, bool]] = {}
-        for a, p in enumerate(self.agent_players):
-            own, enemy = _slots(obs_a, p, self._slot_ids)
-            for i, u in enumerate(own):
-                if u is not None:
-                    labels[u.id] = (f"{'AB'[a]}{i}", AGENT_COLORS[a], True)
-            if self.A == 1:
-                for i, u in enumerate(enemy):
-                    if u is not None:
-                        labels.setdefault(u.id, (f"E{i}", (215, 215, 220), False))
-        owners = {u.id: u.owner for u in obs_a.units}
-        orders = [c for c in commands if isinstance(c, (PointOrder, TargetOrder, ImmediateOrder))
-                  and owners.get(c.unit) in self.agent_players]
+        labels, owners, orders = self._marks(obs_a, commands)
         pos_a = {u.id: (u.x, u.y) for u in obs_a.units if u.alive}
         pos_b = {u.id: (u.x, u.y) for u in obs_b.units if u.alive} if obs_b is not None else {}
         units_a = {u.id: u for u in obs_a.units if u.alive}
@@ -232,11 +225,59 @@ class EpisodeOverlay:
                 f = (k + 1) / len(frames)
                 self.camera = (camera[0][0] + f * (camera[1][0] - camera[0][0]),
                                camera[0][1] + f * (camera[1][1] - camera[0][1]))
-            if self.world:
+            if self.world and not self.in_game:
                 self._draw_world(img, (k + 1) / len(frames), pos_a, pos_b, labels, orders, owners,
                                  units_a, units_b)
             self.canvas.paste(img, (0, 0))
             out.append(self.canvas.tobytes())
+        return out
+
+    def _marks(self, obs: Observation, commands: Sequence[Command]) -> tuple[dict, dict, list]:
+        """The step's unit labels (id -> (label, color, agent's own)), unit owners, and the agent
+        orders among `commands`."""
+        labels: dict[int, tuple[str, tuple, bool]] = {}
+        for a, p in enumerate(self.agent_players):
+            own, enemy = _slots(obs, p, self._slot_ids)
+            for i, u in enumerate(own):
+                if u is not None:
+                    labels[u.id] = (f"{'AB'[a]}{i}", AGENT_COLORS[a], True)
+            if self.A == 1:
+                for i, u in enumerate(enemy):
+                    if u is not None:
+                        labels.setdefault(u.id, (f"E{i}", (215, 215, 220), False))
+        owners = {u.id: u.owner for u in obs.units}
+        orders = [c for c in commands if isinstance(c, (PointOrder, TargetOrder, ImmediateOrder))
+                  and owners.get(c.unit) in self.agent_players]
+        return labels, owners, orders
+
+    def markers(self, obs: Observation, commands: Sequence[Command]) -> list[Command]:
+        """The same marks as drawn on the footage, as commands for the game to draw them itself
+        (the harness keeps them on the units, and the game's own health bars replace the drawn
+        ones): sent with every step of the replay's playback, with `in_game` set."""
+        labels, owners, orders = self._marks(obs, commands)
+        out: list[Command] = [VisClear()]
+        if self.target is not None:
+            out.append(VisArea(self.target[0], self.target[1], self.target[2], (255, 215, 0)))
+        out += [VisMark(uid, color, label, ring=mine) for uid, (label, color, mine) in labels.items()]
+        for c in orders:
+            name = self.order_names.get(c.order, "?")
+            cast = self._casts.get(name)
+            if cast is not None:
+                _, area, code = cast
+                color = KIND_COLORS["cast"]
+                if isinstance(c, PointOrder):
+                    out.append(VisLine(c.unit, color, x=c.x, y=c.y, ability=code, radius=area))
+                elif isinstance(c, TargetOrder):
+                    out.append(VisLine(c.unit, color, target=c.target, ability=code, radius=area))
+                else:
+                    out.append(VisLine(c.unit, color, ability=code, radius=max(area, 60.0)))
+            elif isinstance(c, PointOrder):
+                out.append(VisLine(c.unit, KIND_COLORS["attack" if name == "attack" else "move"], x=c.x, y=c.y))
+            elif isinstance(c, TargetOrder):
+                color = KIND_COLORS["attack"] if owners.get(c.target) != owners.get(c.unit) else (150, 255, 150)
+                out.append(VisLine(c.unit, color, target=c.target))
+            elif isinstance(c, ImmediateOrder) and name in ("stop", "holdposition"):
+                out.append(VisLine(c.unit, KIND_COLORS["stop"]))
         return out
 
     def render_end(self, last_frame: bytes, fps: int) -> list[bytes]:
@@ -250,6 +291,8 @@ class EpisodeOverlay:
         else:
             text, color = {1: ("AGENT A WINS", AGENT_COLORS[0]), -1: ("AGENT B WINS", AGENT_COLORS[1])}.get(
                 int(o), ("DRAW (time limit)", (235, 205, 60)))
+            if self.agent_names and int(o) in (1, -1):  # a match: who won
+                text = f"{self.agent_names[0 if int(o) == 1 else 1]} WINS"[:26]
         box = (self.w // 2 - 190, self.h // 2 - 60, self.w // 2 + 190, self.h // 2 + 40)
         d.rectangle(box, fill=(0, 0, 0, 170))
         d.text((self.w // 2, self.h // 2 - 30), text, font=self.f_big, fill=color, anchor="mm")
@@ -291,7 +334,7 @@ class EpisodeOverlay:
             cast = self._casts.get(name)
             if cast is not None:  # a hero ability: its name, and where it goes (its area if any)
                 color = KIND_COLORS["cast"]
-                spell, area = cast
+                spell, area, _ = cast
                 if isinstance(c, PointOrder):
                     dst = (c.x, c.y)
                 elif isinstance(c, TargetOrder):
@@ -317,7 +360,7 @@ class EpisodeOverlay:
                 dst = at(c.target)
                 if dst is None:
                     continue
-                color = KIND_COLORS["attack"] if owners.get(c.target) not in self.agent_players else (150, 255, 150)
+                color = KIND_COLORS["attack"] if owners.get(c.target) != owners.get(c.unit) else (150, 255, 150)
                 ex, ey = self._screen(*dst)
                 d.line([(sx, sy), (ex, ey)], fill=color, width=2)
                 d.ellipse([ex - 7, ey - 5, ex + 7, ey + 5], outline=color, width=2)
@@ -428,7 +471,8 @@ class EpisodeOverlay:
         y0 += 14
         d.rectangle([x0, y0, x1, y1], outline=(45, 48, 58))
         vals = np.concatenate([np.asarray(s[0], float) for s in series])
-        lo, hi = min(vals.min(), 0.0), max(vals.max(), 0.0)
+        vals = vals[np.isfinite(vals)]  # a scripted player has no value estimate (NaN)
+        lo, hi = (min(vals.min(), 0.0), max(vals.max(), 0.0)) if len(vals) else (0.0, 1.0)
         if hi - lo < 1e-6:
             hi = lo + 1.0
         n = len(series[0][0])
@@ -444,7 +488,9 @@ class EpisodeOverlay:
                         c = tuple(int(ci * 0.35) for ci in c)
                     d.line([(xs(i), ys(0)), (xs(i), ys(v))], fill=c)
                 continue
-            pts = [(xs(i), ys(v)) for i, v in enumerate(values)]
+            if not np.isfinite(values).any():
+                continue
+            pts = [(xs(i), ys(v)) for i, v in enumerate(values) if np.isfinite(v)]
             if style:  # dashed
                 for i in range(0, len(pts) - 1, 2):
                     d.line(pts[i:i + 2], fill=color, width=1)

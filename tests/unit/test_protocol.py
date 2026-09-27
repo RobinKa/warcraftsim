@@ -2,9 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from warcraftsim.protocol import (MAILBOX_BASE, PROTOCOL_VERSION, Build, ImmediateOrder, PointOrder, ProtocolError,
-                                  Restart, Result, UnitFlags, action_file_text, encode_commands, fourcc,
-                                  parse_observation, rawcode)
+from warcraftsim.protocol import (MAILBOX_BASE, PROTOCOL_VERSION, Build, Camera, ImmediateOrder, PointOrder,
+                                  ProtocolError, Restart, Result, UnitFlags, VisArea, VisClear, VisLine, VisMark,
+                                  action_file_text, command_ops, encode_commands, fourcc, parse_observation, rawcode)
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "obs_echoisles.txt"
 V = str(PROTOCOL_VERSION)
@@ -76,6 +76,22 @@ def test_command_encoding_and_action_file():
     assert f"Player(PLAYER_NEUTRAL_PASSIVE), {MAILBOX_BASE}, {len(ints)})" in text
     assert "PreloadEnd" not in text  # PreloadEnd would wait for every recorded preload
     assert text.count("SetPlayerTechMaxAllowed") == len(ints) + 1
+
+
+def test_video_marker_commands():
+    marks = [VisClear(), VisMark(7, (70, 255, 120), "A3"), VisMark(8, (215, 215, 220), "E12", ring=False),
+             VisLine(7, (80, 190, 245), x=-10, y=20), VisLine(7, (245, 80, 60), target=8),
+             VisLine(7, (245, 110, 210), ability="AOws", radius=250.4), VisArea(0, 5, 150, (255, 215, 0))]
+    ints = encode_commands(marks)
+    assert ints[1:7] == [81, 7, (70 << 16) | (255 << 8) | 120, 1, 0, 3]
+    assert ints[7:13] == [81, 8, (215 << 16) | (215 << 8) | 220, 0, 2, 12]
+    assert ints[13:22] == [82, 7, (80 << 16) | (190 << 8) | 245, 0, 65536 - 10, 65536 + 20, 0, 0, 0]
+    assert ints[22:31][3] == 1 and ints[22:31][6] == 8  # to a unit
+    assert ints[31:40][3] == 2 and ints[31:40][7:] == [fourcc("AOws"), 250]  # at the caster
+    assert command_ops(ints) == [80, 81, 81, 82, 82, 82, 83]
+    # only commands for watching are sent during replay playback
+    assert all(c.playback for c in marks + [Camera(0, 0)])
+    assert not PointOrder(1, 2, 3, 4).playback and not Restart().playback
 
 
 def test_rawcode_roundtrip():

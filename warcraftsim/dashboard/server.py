@@ -59,25 +59,28 @@ _ARG_ORDER = ("task", "envs", "workers", "timesteps", "step_seconds", "horizon",
 
 
 class _JsonlCache:
-    """Incrementally read JSON-lines files (they only grow). Keeps the `max_files` most recently
+    """Incrementally read JSON-lines files (they only grow; a file that is replaced, e.g. a run
+    deleted and started again under its name, is read anew). Keeps the `max_files` most recently
     read files: the runs being looked at, not every run ever."""
 
     def __init__(self, max_files: int = 64):
-        self._files: "OrderedDict[Path, tuple[int, list[dict]]]" = OrderedDict()
+        self._files: "OrderedDict[Path, tuple[int, list[dict], bytes]]" = OrderedDict()
         self._lock = threading.Lock()
         self.max_files = max_files
 
     def read(self, path: Path) -> list[dict]:
         with self._lock:
-            offset, rows = self._files.get(path, (0, []))
+            offset, rows, head = self._files.get(path, (0, [], b""))
             if path in self._files:
                 self._files.move_to_end(path)
             try:
-                size = path.stat().st_size
+                st = path.stat()
             except FileNotFoundError:
+                self._files.pop(path, None)
                 return []
-            if size < offset:  # rewritten
-                offset, rows = 0, []
+            size = st.st_size
+            if size < offset or (head and _head(path, len(head)) != head):  # rewritten, or another file now
+                offset, rows, head = 0, [], b""
             if size > offset:
                 with open(path, "rb") as f:
                     f.seek(offset)
@@ -89,10 +92,17 @@ class _JsonlCache:
                     except json.JSONDecodeError:
                         pass
                 offset += end
-                self._files[path] = (offset, rows)
-                while len(self._files) > self.max_files:
-                    self._files.popitem(last=False)
+                if len(head) < 256:
+                    head = _head(path, min(offset, 256))
+            self._files[path] = (offset, rows, head)
+            while len(self._files) > self.max_files:
+                self._files.popitem(last=False)
             return rows
+
+
+def _head(path: Path, n: int) -> bytes:
+    with open(path, "rb") as f:
+        return f.read(n)
 
 
 def _tail_rows(path: Path, n: int, max_bytes: int = 48 * 1024) -> list[dict]:
@@ -551,6 +561,8 @@ class Dashboard:
         train = [{k: v for k, v in r.items() if k in TRAIN_KEYS or k.startswith("league/")} for r in train_rows]
         episodes = self._merged(d, "episodes")
         steps = _interp_steps([e["time"] for e in episodes], train_rows)
+        if info.get("kind") == "match":  # no trainer: episodes in order
+            steps = [float(i + 1) for i in range(len(episodes))]
         ep_rows = []
         for e in episodes:
             row = {}
@@ -580,10 +592,25 @@ class Dashboard:
             "episodes": ep_series,
             "recent_episodes": [dict(e, episode=len(episodes) - k) for k, e in enumerate(episodes[-15:][::-1])],
             "bridge": _downsample(bridge),
-            "media": [m for m in media if (d / m["file"]).exists()][-40:][::-1],
+            "media": _latest_media(d, media),
             "evals": self.cache.read(d / "evals.jsonl"),
             "league": _read_json(d / "league.json"),
         }
+
+
+def _latest_media(d: Path, media: list[dict], n: int = 40) -> list[dict]:
+    """The last n media rows whose file exists, newest first; one per file (a re-rendered video
+    appends another row for its file: the latest counts)."""
+    seen: set[str] = set()
+    out = []
+    for m in reversed(media):
+        if m["file"] in seen or not (d / m["file"]).exists():
+            continue
+        seen.add(m["file"])
+        out.append(m)
+        if len(out) >= n:
+            break
+    return out
 
 
 def _page() -> bytes:
