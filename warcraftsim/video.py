@@ -137,14 +137,15 @@ class _ReplayStalled(Exception):
 def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.PathLike, fps: int = 40,
                   speed: float = 1.0, width: int | None = None, follow_player: int | None = None,
                   max_steps: int = 20000, name: str = "render", crf: int = 23, overlay=None, audio: bool = True,
-                  music_volume: int = 40) -> Path:
+                  music_volume: int = 40, fit_all: bool = False) -> Path:
     """Play `replay` (saved by GameInstance.save_replay with the same setup) and write an MP4 at
     `fps`, `speed` times real time. Each frame advances the game by exactly 1000*speed/fps ms,
     ideally a multiple of the engine's 25 ms turn (40 fps at 1x, 40 fps at 2x, 60 fps at 1.5x).
     `overlay` (overlay.EpisodeOverlay) shows the agent's orders and what the policy thought: the
     game draws the marks on the units (rings, labels, orders; with its own health bars) when the
     replay's map can (runtime.instance.replay_markers), else they are drawn onto the footage.
-    Scenarios: the camera follows the fight, zooming out to keep every unit in view.
+    Scenarios (and with `fit_all`, whole games): the camera follows the fight, zooming out to keep
+    every unit in view.
     With `audio`, the game's sound comes from the w3shim virtual sound card, one frame's worth per
     frame; the render then runs at no more than real time (the game's mixer needs that)."""
     out = Path(out)
@@ -158,6 +159,7 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
     in_game = overlay is not None and "function W3S_VisClear" in script
     zoom = "call SetCameraField(CAMERA_FIELD_FARZ, 10000.0" in script  # the camera can zoom out (op 84)
     setup = GameSetup(**{**setup.__dict__, "warm_spare": False, "speed": 1.0, "launch_speed": 0.03,
+                         "launch_timeout": 600.0,  # loading on the slow clock
                          "window": (1024, 768), "audio": audio, "music_volume": music_volume,
                          "health_bars": in_game or setup.health_bars, "mouse_scroll": False})
     # the pointer must be off the game window from the start: replays show a label on the unit under it
@@ -216,8 +218,8 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
         # or a unit breaking away doesn't jerk it), panned over each step, and zooms out as far as
         # needed to show every unit (harnesses with op 84); a drawn overlay is told where it is on
         # every frame (it projects positions relative to the camera, at the default zoom)
-        follow_fight = follow_player is None and setup.scenario is not None
-        cam = setup.scenario.resolved_center() if setup.scenario is not None else None
+        follow_fight = follow_player is None and (setup.scenario is not None or fit_all)
+        cam = setup.scenario.resolved_center() if setup.scenario is not None else (0.0, 0.0)
         dist = ZOOM_DEFAULT
         last = None
         for t in range(max_steps):

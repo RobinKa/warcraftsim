@@ -318,11 +318,22 @@ After micro, the whole melee game (economy, building, tech, armies, heroes), sta
 * **Features** (`fullgame/features.py`): what the player saw (its own units first, the enemy's and neutral units it could see), mirrored so its base is on the left, plus resources, supply, time, races, upgrades and each building's production. The labels are the orders each own unit got. The engine's own orders (resume harvesting, autocasts) and harvest orders to workers that already harvest are no decisions and are dropped.
 * **Model** (`fullgame/model.py`): a transformer over the units. Per own unit: an order (or none), then its target: a pointer at a unit, or a point (an x bin, then a y bin given x).
 * **Fit and play**: `fullgame/bc.py` keeps the epoch with the lowest validation loss; `fullgame/play.py` lets the policy play the built-in AI.
+* **Self-play** (`fullgame/selfplay.py`, after AlphaStar): PPO from the cloned policy.
+  * Actor processes play the games (4 per process by default); each batches its agents' network calls on the GPU. Games of one setup (races, built-in AI or not) run in one process, restarted in place.
+  * A league: the learner against itself (both sides train), past snapshots (prioritized fictitious self-play) and the built-in AI, a fixed anchor whose win rate is the run's yardstick.
+  * Reward +1 / -1 / 0 (win, loss, tie at the time limit). Each own unit's decision has its own clipped PPO ratio, and they share the step's advantage.
+  * A KL term keeps the policy near the clone (as AlphaStar keeps near its supervised policy); the value head starts untrained, so the first updates train only it.
+  * Every 15 minutes one game is recorded and rendered to a video, with a camera that zooms out to keep every unit in view.
+* **On the dashboard**:
+  * collections (`DEMOS`): games, rate, game lengths, ties, and win rates by matchup;
+  * fits (`BC`): loss, accuracy, order rate and point error per epoch, the collections used, and each `play.py` evaluation (win–tie–loss by race and matchup, gold mined, refused orders);
+  * self-play runs: the usual run page (outcomes, losses, KL to the clone), the League tab (the win rate against the built-in AI is "script:ai-normal"), and the videos.
 
 ```bash
 python -m warcraftsim.fullgame.collect --out runs/fullgame/demos-1 --games 800 --parallel 24 --races all
 python3 -m warcraftsim.fullgame.bc --data runs/fullgame/demos-1 --name fullgame-1        # the torch Python
 python3 -m warcraftsim.fullgame.play runs/bc/fullgame-1/policy.pt --games 16 --race all --ai-race all
+python3 -m warcraftsim.fullgame.selfplay --name fgself-1 --init runs/bc/fullgame-1/policy.pt
 ```
 
 ## Performance (Ryzen 5950X, 32 threads, WSL2, llvmpipe)

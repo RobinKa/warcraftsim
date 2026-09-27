@@ -73,7 +73,8 @@ class BCAgent:
     def _sample(self, logits: torch.Tensor) -> torch.Tensor:
         return torch.distributions.Categorical(logits=logits / self.temperature).sample()
 
-    def act(self, obs: Observation, t: int) -> list[Command]:
+    def observe(self, obs: Observation, t: int) -> dict | None:
+        """This step's view (features.View.step), or None when the player has no units."""
         for e in obs.events:
             if int(e.kind) == int(EventKind.TREE_DEATH):
                 self.trees.pop(e.a, None)
@@ -83,31 +84,15 @@ class BCAgent:
                           p.lumber_gathered, p.structures, int(p.result)]) if p is not None else None)
         events = np.asarray([(t, int(e.kind), e.a, e.b, e.c) for e in obs.events], np.int64).reshape(-1, 5)
         st = self.view.step(rows, me, events, t)
-        n, n_own = st["n"], st["n_own"]
-        if n_own == 0:
-            return []
-        dev = self.device
-        with torch.no_grad():
-            ent = torch.as_tensor(st["ent"], device=dev).unsqueeze(0).float()
-            typ = torch.as_tensor(st["type"], device=dev).unsqueeze(0).long()
-            cur = torch.as_tensor(st["cur"], device=dev).unsqueeze(0).long()
-            mask = torch.ones(1, n, dtype=torch.bool, device=dev)
-            glob = torch.as_tensor(st["glob"], device=dev).unsqueeze(0)
-            g, u = self.net.encode(ent, typ, cur, mask, glob)
-            O = min(n_own, fx.MAX_OWN)
-            logits = self.net.order_logits(g, u[:, :O], typ, torch.tensor([O], device=dev))
-            order = self._sample(logits)  # [1, O]
-            if self.order_temperature != 1.0:  # whether a unit gets an order stays as learned; which one sharpens
-                again = self._sample(logits[..., 1:] / self.order_temperature) + 1
-                order = torch.where(order > 0, again, order)
-            ptr, xl, z = self.net.target_logits(g, u, mask, order)
-            tgt, bx_ = self._sample(ptr)[0], self._sample(xl)
-            by = self._sample(self.net.y_logits(z, bx_))[0]
-            bx = bx_[0]
+        return st if st["n_own"] > 0 else None
+
+    def commands(self, st: dict, order, tgt, bx, by) -> list[Command]:
+        """The orders sampled for the view's own units (order class, pointer, x and y bins per unit;
+        sequences over the first min(n_own, MAX_OWN) units) as game commands."""
         out: list[Command] = []
         sel = st["sel"]
-        for i in range(O):
-            c = int(order[0, i])
+        for i in range(min(st["n_own"], fx.MAX_OWN, len(order))):
+            c = int(order[i])
             if c == 0:
                 continue
             oid, kind = self.orders[c]
@@ -130,14 +115,38 @@ class BCAgent:
         self.issued += len(out)
         return out
 
+    def act(self, obs: Observation, t: int) -> list[Command]:
+        st = self.observe(obs, t)
+        if st is None:
+            return []
+        n, n_own = st["n"], st["n_own"]
+        dev = self.device
+        with torch.no_grad():
+            ent = torch.as_tensor(st["ent"], device=dev).unsqueeze(0).float()
+            typ = torch.as_tensor(st["type"], device=dev).unsqueeze(0).long()
+            cur = torch.as_tensor(st["cur"], device=dev).unsqueeze(0).long()
+            mask = torch.ones(1, n, dtype=torch.bool, device=dev)
+            glob = torch.as_tensor(st["glob"], device=dev).unsqueeze(0)
+            g, u = self.net.encode(ent, typ, cur, mask, glob)
+            O = min(n_own, fx.MAX_OWN)
+            logits = self.net.order_logits(g, u[:, :O], typ, torch.tensor([O], device=dev))
+            order = self._sample(logits)  # [1, O]
+            if self.order_temperature != 1.0:  # whether a unit gets an order stays as learned; which one sharpens
+                again = self._sample(logits[..., 1:] / self.order_temperature) + 1
+                order = torch.where(order > 0, again, order)
+            ptr, xl, z = self.net.target_logits(g, u, mask, order)
+            tgt, bx_ = self._sample(ptr)[0], self._sample(xl)
+            by = self._sample(self.net.y_logits(z, bx_))[0]
+        return self.commands(st, order[0].tolist(), tgt.tolist(), bx_[0].tolist(), by.tolist())
+
 
 def matchup_setup(map_name: str, race: str, ai_race: str, difficulty: str, agent_side: int, handicap: int,
-                  max_minutes: float, step_seconds: float) -> GameSetup:
+                  max_minutes: float, step_seconds: float, screen: tuple[int, int] = (320, 240)) -> GameSetup:
     agent = Agent(race, handicap=handicap)
     ai = BuiltinAI(ai_race, difficulty, handicap=handicap)
     slots = [agent, ai] if agent_side == 0 else [ai, agent]
     return GameSetup(map=map_name, slots=slots, step_seconds=step_seconds, max_game_seconds=max_minutes * 60,
-                     victory="decisive")
+                     victory="decisive", window=screen)  # a small screen: nothing looks at the pixels
 
 
 def play_game(g: GameInstance, obs: Observation, net, vocab: dict, device, agent_side: int,
@@ -194,6 +203,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="sharpens which order a unit gets, not whether it gets one")
     ap.add_argument("--games-per-process", type=int, default=4,
                     help="games of one matchup in one running game (restarts reload the map in it)")
+    ap.add_argument("--label", help="the evaluation's name on the dashboard")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", type=Path, help="results (.jsonl; default: next to the checkpoint, play.jsonl)")
     args = ap.parse_args(argv)
@@ -204,6 +214,10 @@ def main(argv: list[str] | None = None) -> int:
     plans = [(i, rng.choice(fx.RACES) if args.race == "all" else args.race,
               rng.choice(fx.RACES) if args.ai_race == "all" else args.ai_race, i % 2) for i in range(args.games)]
     out = args.out or args.checkpoint.with_name("play.jsonl")
+    eval_id = f"{args.checkpoint.stem}@{int(time.time())}"  # this launch's games (the dashboard groups by it)
+    label = args.label or (f"{args.checkpoint.name} (epoch {ck.get('epoch')}) vs {args.difficulty} AI"
+                           + (f", temperature {args.temperature:g}" if args.temperature != 1.0 else "")
+                           + (f", order temperature {args.order_temperature:g}" if args.order_temperature != 1.0 else ""))
     names = queue.Queue()
     for k in range(args.parallel):
         names.put(f"bcplay{k}")
@@ -225,7 +239,9 @@ def main(argv: list[str] | None = None) -> int:
         def play(g, obs, k) -> None:
             i = chunk[k][0]
             r = play_game(g, obs, net, vocab, device, side, args.temperature, args.order_temperature)
-            r.update({"game": i, "checkpoint": str(args.checkpoint), "time": time.time(), "map": args.map})
+            r.update({"game": i, "checkpoint": str(args.checkpoint), "time": time.time(), "map": args.map,
+                      "eval": eval_id, "label": label, "epoch": ck.get("epoch"), "temperature": args.temperature,
+                      "order_temperature": args.order_temperature})
             with lock:
                 results.append(r)
                 with open(out, "a") as f:

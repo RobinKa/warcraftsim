@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import queue
 import random
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -99,9 +101,51 @@ def series(setup: GameSetup, name: str, n: int, play: Callable[[GameInstance, Ob
             print(f"{name}: game {k - 1} failed: {type(e).__name__}: {e}", flush=True)
 
 
+def write_info(out: Path, info: dict) -> None:
+    tmp = out / "collect.json.tmp"
+    tmp.write_text(json.dumps(info, indent=1))
+    tmp.replace(out / "collect.json")
+
+
+def game_row(i: int, meta: dict, data: dict | None = None) -> dict:
+    """A game's line in games.jsonl (the dashboard's view of a collection)."""
+    result = {int(k): v for k, v in meta.get("result", {}).items()}
+    winner = next((p for p, r in result.items() if r == "VICTORY"), None)
+    return {"time": time.time(), "game": i, "races": meta.get("races"), "difficulties": meta.get("difficulties"),
+            "winner": winner, "result": {str(k): v for k, v in result.items()},
+            "minutes": round(meta.get("game_seconds", 0) / 60, 2), "steps": meta.get("steps"),
+            "orders": int(len(data["orders"])) if data is not None else meta.get("orders")}
+
+
+def index(out: Path) -> int:
+    """games.jsonl rebuilt from a collection's .npz files (collections from before it)."""
+    rows = []
+    for path in sorted(out.glob("game*.npz")):
+        if ".tmp" in path.name:
+            continue
+        with np.load(path) as z:
+            meta = json.loads(str(z["meta"]))
+            n_orders = int(z["orders"].shape[0])
+        row = game_row(int(path.stem[4:]), meta)
+        row.update(time=path.stat().st_mtime, orders=n_orders)
+        rows.append(row)
+    rows.sort(key=lambda r: r["time"])
+    tmp = out / "games.jsonl.tmp"
+    tmp.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    tmp.replace(out / "games.jsonl")
+    info_path = out / "collect.json"
+    info = json.loads(info_path.read_text()) if info_path.exists() else {"out": str(out)}
+    info.setdefault("status", "finished")
+    if rows:
+        info.setdefault("finished", rows[-1]["time"])
+    write_info(out, info)
+    return len(rows)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--index", action="store_true", help="only rebuild --out's games.jsonl from its games")
     ap.add_argument("--games", type=int, default=20)
     ap.add_argument("--parallel", type=int, default=4)
     ap.add_argument("--map", default="duelrush")
@@ -112,15 +156,23 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-minutes", type=float, default=4.0, help="a tie after this much game time")
     ap.add_argument("--victory", default="decisive", help="melee, or decisive (also lost with no town hall and "
                                                           "no units: no minutes of waiting for a last building)")
+    ap.add_argument("--screen", default="320x240", help="the games' virtual screen (nothing looks at the pixels: "
+                                                        "a small one saves ~15%% of the CPU)")
+    ap.add_argument("--wait-floor-ms", type=int, default=5, help="GameSetup.wait_floor_ms")
     ap.add_argument("--games-per-process", type=int, default=8,
                     help="games of one matchup in one running game (restarts reload the map in it)")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args(argv)
+    if args.index:
+        print(f"{args.out}: {index(args.out)} games")
+        return 0
     races = RACES if args.races == "all" else tuple(args.races.split(","))
+    screen = tuple(int(v) for v in args.screen.split("x"))
     diffs = tuple(args.difficulty.split(","))
     args.out.mkdir(parents=True, exist_ok=True)
-    (args.out / "collect.json").write_text(json.dumps({**vars(args), "out": str(args.out), "time": time.time()},
-                                                      indent=1))
+    info = {**vars(args), "out": str(args.out), "time": time.time(), "status": "collecting", "pid": os.getpid(),
+            "command": "python -m warcraftsim.fullgame.collect " + " ".join(sys.argv[1:] if argv is None else argv)}
+    write_info(args.out, info)
     rng = random.Random(args.seed)
     plans = [(i, rng.choice(races), rng.choice(races), rng.choice(diffs), rng.choice(diffs))
              for i in range(args.games)]
@@ -149,7 +201,11 @@ def main(argv: list[str] | None = None) -> int:
         tmp = path.with_suffix(".tmp.npz")
         np.savez_compressed(tmp, meta=json.dumps(meta), **data)
         tmp.replace(path)
+        row = game_row(i, meta, data)
+        row["seconds"] = round(seconds, 1)
         with lock:
+            with open(args.out / "games.jsonl", "a") as f:  # the dashboard's view of the collection
+                f.write(json.dumps(row) + "\n")
             done["n"] += 1
             rate = done["n"] / (time.time() - done["t0"]) * 3600
             print(f"game {i}: {r0}/{d0} vs {r1}/{d1}: {extra['result']} after {extra['game_seconds'] / 60:.1f} min "
@@ -160,7 +216,7 @@ def main(argv: list[str] | None = None) -> int:
         setup = GameSetup(map=args.map, slots=[BuiltinAI(r0, d0, handicap=args.handicap),
                                                BuiltinAI(r1, d1, handicap=args.handicap)],
                           step_seconds=args.step_seconds, max_game_seconds=args.max_minutes * 60,
-                          record_ai_orders=True, victory=args.victory)
+                          record_ai_orders=True, victory=args.victory, window=screen, wait_floor_ms=args.wait_floor_ms)
         name = names.get()
         t0 = [time.time()]
 
@@ -173,8 +229,16 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             names.put(name)
 
-    with ThreadPoolExecutor(args.parallel) as ex:
-        list(ex.map(run, chunks))
+    try:
+        with ThreadPoolExecutor(args.parallel) as ex:
+            list(ex.map(run, chunks))
+        info["status"] = "finished"
+    except BaseException:
+        info["status"] = "stopped"
+        raise
+    finally:
+        info["finished"] = time.time()
+        write_info(args.out, info)
     return 0
 
 

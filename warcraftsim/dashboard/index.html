@@ -136,6 +136,10 @@ table.runs td, table.runs th { font-size:12px; padding:4px 8px; }
 .chips span { background:var(--panel2); border:1px solid var(--line); border-radius:4px; padding:0 5px; font-size:11.5px; }
 .warn { color:var(--accent); }
 .badge.bc { background:#2d2440; color:#b083f0; }
+.badge.demos { background:#1f3a44; color:#39c5cf; }
+.badge.collecting { background:#1e3a2c; color:var(--good); }
+table.matrix td, table.matrix th { text-align:center; padding:3px 8px; }
+table.matrix td.w { font-variant-numeric: tabular-nums; }
 table.runs td.opts { font-family:ui-monospace, monospace; font-size:11.5px; }
 table.runs tr.shown td { background:var(--panel2); }
 .run .from, .run .note { font-size:11.5px; margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -203,7 +207,8 @@ function saveHash() {
   if (state.view === "sweep" && state.sweep) h.set("sweep", state.sweep);
   else if (state.selected) h.set("run", state.selected);
   if (state.compare.size) h.set("compare", [...state.compare].join(","));
-  const kind = state.view === "run" && state.data[state.selected] && state.data[state.selected].kind === "bc" ? "bc" : "run";
+  const dk = state.view === "run" && state.data[state.selected] ? state.data[state.selected].kind : "run";
+  const kind = dk === "bc" && state.data[state.selected].info.task === "fullgame" ? "fullbc" : dk === "bc" || dk === "collect" ? dk : "run";
   if (state.view === "run" && ui.tabs && ui.tabs[kind] && ui.tabs[kind] !== "overview") h.set("tab", ui.tabs[kind]);
   history.replaceState(null, "", "#" + h.toString());
 }
@@ -434,6 +439,16 @@ function keepExpanded() { try { localStorage.setItem("expanded", JSON.stringify(
 function winText(s) { return s && s.win_rate_100 != null ? (100 * s.win_rate_100).toFixed(0) + "%" : "–"; }
 function runCard(r, inSweep) {
   const s = r.summary || {};
+  if (r.kind === "collect") return `<div class="run ${state.view === "run" && r.name === state.selected ? "sel" : ""}" data-run="${esc(r.name)}">
+    <div class="n"><span><span class="badge demos" style="margin-right:6px">DEMOS</span>${esc(r.name.slice(9))}</span>${badge(r.status)}</div>
+    <div class="m"><span>${esc(r.map || "")} · built-in AI (${esc(r.difficulty || "?")})</span><span>${s.rate_per_hour != null && r.status === "collecting" ? fmt(s.rate_per_hour, 0) + "/h" : ""}</span></div>
+    <div class="m"><span>${fmt(s.games || 0, 0)}${r.planned ? " / " + fmt(r.planned, 0) : ""} games</span><span>${ago(s.updated)}</span></div>${r.notes && r.notes.trim() ? `
+    <div class="note" title="${esc(r.notes.trim())}">${esc(r.notes.trim().split("\n")[0])}</div>` : ""}</div>`;
+  if (r.kind === "bc" && r.task === "fullgame") return `<div class="run ${state.view === "run" && r.name === state.selected ? "sel" : ""}" data-run="${esc(r.name)}">
+    <div class="n"><span><span class="badge bc" style="margin-right:6px">BC</span>${esc(r.dataset)}</span>${badge(r.status)}</div>
+    <div class="m"><span>whole game · ${fmt(s.episodes || 0, 0)} games</span><span>vs AI ${winText(s)}</span></div>
+    <div class="m"><span>${s.fit_epochs ? `${s.fit_epochs} epochs · order acc ${(100 * (s.fit_acc || 0)).toFixed(0)}%` : "not fitted yet"}</span><span>${(r.children || []).length} runs</span></div>${r.notes && r.notes.trim() ? `
+    <div class="note" title="${esc(r.notes.trim())}">${esc(r.notes.trim().split("\n")[0])}</div>` : ""}</div>`;
   if (r.kind === "bc") return `<div class="run ${state.view === "run" && r.name === state.selected ? "sel" : ""}" data-run="${esc(r.name)}">
     <div class="n"><span><span class="badge bc" style="margin-right:6px">BC</span>${esc(r.policy || r.dataset)}</span>${badge(r.status)}</div>
     <div class="m"><span title="${esc(r.task)}">${esc(r.task)}</span><span>clone ${winText(s)}</span></div>
@@ -650,7 +665,8 @@ function seriesPoints(d, src, key) {
 
 function renderMain() {
   const d = state.data[state.selected]; if (!d) return;
-  if (d.kind === "bc") return renderBC(d);
+  if (d.kind === "bc") return d.info.task === "fullgame" ? renderFullBC(d) : renderBC(d);
+  if (d.kind === "collect") return renderCollect(d);
   const info = d.info, tr = d.train, last = tr[tr.length - 1] || {};
   const run = state.runs.find(r => r.name === state.selected) || {}, s = run.summary || {};
   const bridge = d.bridge[d.bridge.length - 1] || {};
@@ -774,7 +790,7 @@ function renderLeague(d) {
 
 // ---- tabs of a run's (or a dataset's) page: the one shown stays when another run is opened ---------
 try { ui.tabs = JSON.parse(localStorage.getItem("tabs") || "{}"); } catch (e) { ui.tabs = {}; }
-(() => { const t = new URLSearchParams(location.hash.slice(1)).get("tab"); if (t) ui.tabs.run = ui.tabs.bc = t; })();
+(() => { const t = new URLSearchParams(location.hash.slice(1)).get("tab"); if (t) ui.tabs.run = ui.tabs.bc = ui.tabs.collect = ui.tabs.fullbc = t; })();
 const slug = t => t.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 function tabsHtml(kind, tabs) {
   const cur = tabs.some(t => t[0] === ui.tabs[kind]) ? ui.tabs[kind] : tabs[0][0];
@@ -1020,6 +1036,171 @@ function renderBC(d) {
   const g = col.git || fi.git;
   if (g && g.commit) parts.push(`<dl class="facts"><dt>Code</dt><dd><code>${esc(g.commit)}</code> ${esc(g.subject || "")}${g.dirty ? ` <span class="loss">(uncommitted changes)</span>` : ""}</dd></dl>`);
   finishLaunch(document.getElementById("launch"), parts.length ? parts : [`<div style="color:var(--muted)">not recorded</div>`]);
+}
+
+// ---- whole-game demonstrations (runs/fullgame/<name>; fullgame/collect.py) ------------------------
+const RACES = ["human", "orc", "undead", "nightelf"];
+function chartBox([id, title, sub]) {
+  return `<div class="chart"><h3>${title}<span>${sub}</span></h3><div class="plot"><canvas id="${id}"></canvas><canvas class="overlay" id="${id}-ov"></canvas><div class="tip" id="${id}-tip"></div></div></div>`;
+}
+function overviewHtml(info, what) {
+  return `<div class="cards" id="cards"></div>
+    <div class="about">
+      <div class="panel"><h3>Notes<span id="notestate"></span></h3>
+        <textarea id="notes" placeholder="${esc(what)}"></textarea>
+        <div class="row"><button id="savenotes">save</button><span>Ctrl+Enter saves</span></div></div>
+      <div class="panel"><h3>Details</h3><dl class="facts" id="lineage"></dl></div>
+    </div>`;
+}
+function setCharts(defs, pointsOf) {
+  for (const [id, , , series] of defs) {
+    const c = ui.charts[id]; if (!c) continue;
+    c.series = series.map(([key, name, color]) => ({ name, color, run: 0, runName: "", dash: [], points: pointsOf(id, key),
+                                                      raw: !!c.opts.raw, dots: !!c.opts.dots }));
+    drawChart(id);
+  }
+}
+function matrixHtml(m, caption) {
+  const cell = ([w, t, l]) => { const n = w + t + l; return n ? `<td class="w" title="${w} wins, ${t} ties, ${l} losses">${(100 * w / n).toFixed(0)}% <small style="color:var(--muted)">${n}</small></td>` : `<td style="color:var(--muted)">–</td>`; };
+  const total = a => RACES.reduce((acc, b) => b === a ? acc : acc.map((v, i) => v + m[a][b][i]), [0, 0, 0]);
+  return `<div style="color:var(--muted);margin-bottom:8px">${caption}</div><table class="runs matrix"><tr><th></th>${RACES.map(r => `<th>vs ${r}</th>`).join("")}<th>vs other races</th></tr>` +
+    RACES.map(a => `<tr><th>${a}</th>${RACES.map(b => cell(m[a][b])).join("")}${cell(total(a))}</tr>`).join("") + `</table>`;
+}
+function renderCollect(d) {
+  const info = d.info, s = d.summary || {}, main = document.getElementById("main");
+  const charts = [
+    ["c-rate", "Collection rate", "games per hour (5-minute buckets of wall time)", [["rate", "games/h", "#4cc38a"]], { axis: "wall", ymin: 0 }],
+    ["c-len", "Game length", "game minutes, by game", [["minutes", "minutes", "#539bf5"]], { axis: "game", ymin: 0 }],
+    ["c-tie", "Ties", "share of games that reached the time limit", [["tie", "ties", "#e0a33a"]], { axis: "game", ymin: 0, ymax: 1 }],
+    ["c-ord", "Orders", "the AI's orders per game (both players)", [["orders", "orders", "#b083f0"]], { axis: "game", ymin: 0 }],
+  ];
+  if (main.dataset.run !== info.name) {
+    main.dataset.run = info.name; ui.charts = {};
+    main.innerHTML = `<div class="title"><h2>${esc(info.name)}</h2><span class="badge demos">DEMOS</span>${badge(info.status)}<span class="desc">${esc(info.description || "")}</span></div>` +
+      tabsHtml("collect", [
+        ["overview", "Overview", overviewHtml(info, `what this collection is for (${info.dir}/notes.md)`)],
+        ["charts", "Charts", `<div class="grid">${charts.map(chartBox).join("")}</div>`, true],
+        ["matchups", "Matchups", `<div id="matrix"></div>`],
+        ["recent", "Recent games", `<div id="recent"></div>`],
+        ["launch", "Command", `<div id="launch"></div>`],
+      ]);
+    for (const [id, , , , opts] of charts) registerChart(id, opts);
+    setupNotes(info);
+    setupTabs("collect");
+  } else if (!ui.notesDirty && document.activeElement !== document.getElementById("notes")) {
+    document.getElementById("notes").value = info.notes || "";
+  }
+  const pct = v => v == null ? "–" : (100 * v).toFixed(0) + "%";
+  const prog = info.planned ? Math.min(1, (s.games || 0) / info.planned) : 0;
+  document.getElementById("cards").innerHTML = [
+    ["Status", esc(info.status || ""), info.planned ? `<div class="progress"><div style="width:${(100 * prog).toFixed(1)}%"></div></div>` : ""],
+    ["Games", `${fmt(s.games || 0, 0)}${info.planned ? ` <small>/ ${fmt(info.planned, 0)}</small>` : ""}`],
+    ["Rate", s.rate_per_hour != null ? `${fmt(s.rate_per_hour, 0)} <small>games/h</small>` : "–"],
+    ["Game length", s.minutes != null ? `${s.minutes.toFixed(1)} <small>game minutes (mean)</small>` : "–"],
+    ["Ties", pct(s.ties)],
+    ["Used by", (info.used_by || []).length ? info.used_by.map(go).join(", ") : "–"],
+  ].map(([k, v, x]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div>${x || ""}</div>`).join("");
+  const rows = [["Map", `${esc(info.map)}${info.handicap ? ` · ${info.handicap}% handicap` : ""}`],
+    ["Players", `built-in AI (${esc(info.difficulty || "?")}) against itself · races ${esc(info.races || "?")}`],
+    ["Steps", `${info.step_seconds || "?"} s · a tie after ${info.max_minutes || "?"} game minutes`],
+    ["Parallel games", info.parallel || "–"], ["Directory", `<code>${esc(info.dir)}</code>`],
+    ["Started", info.created ? new Date(info.created * 1000).toLocaleString() : "–"],
+    ["Finished", info.finished ? new Date(info.finished * 1000).toLocaleString() : "–"]];
+  const lin = document.getElementById("lineage");
+  lin.innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+  bindGo(document.getElementById("cards"));
+  const games = d.games || [], rate = d.rate || [];
+  ui.xranges = { game: [0, Math.max(1, s.games || 1)], wall: [0, Math.max(5, rate.length ? rate[rate.length - 1].steps : 5)] };
+  setCharts(charts, (id, key) => (id === "c-rate" ? rate : games).filter(p => p[key] !== undefined).map(p => [p.steps, p[key]]));
+  document.getElementById("matrix").innerHTML = matrixHtml(d.matrix, "How often the row's race won against the column's (built-in AI against built-in AI; the number of games under it)");
+  const rec = d.recent || [];
+  document.getElementById("recent").innerHTML = rec.length ? `<table class="runs"><tr><th>game</th><th>races</th><th>difficulty</th><th>winner</th><th>minutes</th><th>orders</th><th>wall s</th><th>finished</th></tr>` +
+    rec.map(r => `<tr><td>${r.game}</td><td>${esc((r.races || []).join(" vs "))}</td><td>${esc((r.difficulties || []).join(" / "))}</td>
+      <td>${r.winner == null ? "tie" : esc((r.races || [])[r.winner] || r.winner)}</td><td>${fmt(r.minutes, 1)}</td><td>${fmt(r.orders || 0, 0)}</td><td>${r.seconds != null ? fmt(r.seconds, 0) : "–"}</td><td>${ago(r.time)}</td></tr>`).join("") + `</table>`
+    : `<div style="color:var(--muted)">no games yet</div>`;
+  const cmd = info.command;
+  finishLaunch(document.getElementById("launch"), cmd ? [`<div class="cmdhead"><span>Collected with</span><button class="copy" data-copy="${esc(cmd)}">copy</button></div><pre class="cmd">${esc(cmd)}</pre>`]
+    : [`<div style="color:var(--muted)">not recorded</div>`]);
+}
+
+// ---- a whole-game behavior cloning fit (runs/bc/<name>, task fullgame; fullgame/bc.py, play.py) ----
+function renderFullBC(d) {
+  const info = d.info, fit = d.fit || [], last = fit[fit.length - 1] || {}, plays = d.plays || [], main = document.getElementById("main");
+  const F = (key, name, color) => [key, name, color];
+  const noFit = (info.status || "").startsWith("fitting") ? "fitting: the first epoch is on its way" : "no epochs recorded";
+  const charts = [
+    ["f-loss", "Loss", "order + target + ½ point", [F("train_loss", "train", "#e0a33a"), F("val_loss", "validation", "#539bf5")]],
+    ["f-parts", "Validation loss parts", "cross-entropy", [F("val.loss_order", "order", "#4cc38a"), F("val.loss_target", "target unit", "#e5534b"), F("val.loss_point", "point (x + y)", "#b083f0")]],
+    ["f-acc", "Accuracy (validation)", "the most likely choice is the AI's", [F("val.order_acc", "order (given one)", "#4cc38a"), F("val.target_acc", "target unit", "#e5534b"), F("train.order_acc", "order, train", "#8795a3")], { ymin: 0, ymax: 1 }],
+    ["f-rate", "Orders per unit and step", "predicted chance vs the AI's rate", [F("val.order_rate_pred", "predicted", "#539bf5"), F("val.orders_per_unit_step", "the AI", "#e0a33a")], { ymin: 0 }],
+    ["f-pt", "Point error", "bins off (x and y, 48 world units each)", [F("val.point_error_bins", "validation", "#b083f0"), F("train.point_error_bins", "train", "#8795a3")], { ymin: 0 }],
+  ];
+  const playCharts = [
+    ["p-win", "Wins against the built-in AI", "per evaluation", [["win_rate", "wins", "#4cc38a"], ["tie_rate", "ties", "#e0a33a"]], { ymin: 0, ymax: 1 }],
+    ["p-gold", "Gold mined per game", "the clone vs the AI", [["gold", "clone", "#4cc38a"], ["ai_gold", "built-in AI", "#e5534b"]], { ymin: 0 }],
+    ["p-ref", "Refused orders", "share the game did not accept", [["refused", "refused", "#e5534b"]], { ymin: 0, ymax: 1 }],
+  ];
+  if (main.dataset.run !== info.name) {
+    main.dataset.run = info.name; ui.charts = {};
+    main.innerHTML = `<div class="title"><h2>${esc(info.name)}</h2><span class="badge bc">BC</span>${badge(info.status)}<span class="desc">${esc(info.description || "")}</span></div>` +
+      tabsHtml("fullbc", [
+        ["overview", "Overview", overviewHtml(info, `what this fit is for (runs/bc/${info.dataset}/notes.md)`)],
+        ["fit", "Fit", `<div style="color:var(--muted);margin-bottom:8px">per epoch; validation: held-out games</div><div class="grid">${charts.map(chartBox).join("")}</div>`, true],
+        ["play", "Play", `<div style="color:var(--muted);margin-bottom:8px">fullgame/play.py: the clone playing the built-in AI (every row: one launch)</div><div id="plays"></div>
+          <div class="grid" style="margin-top:12px">${playCharts.map(chartBox).join("")}</div><div id="playmatrix" style="margin-top:12px"></div>`, true],
+        ["children", "Runs from it", `<div id="bcchildren"></div>`],
+        ["launch", "Command", `<div id="launch"></div>`],
+      ]);
+    for (const [id, , , , opts] of [...charts, ...playCharts]) registerChart(id, { axis: id.startsWith("p-") ? "eval" : "epoch", empty: id.startsWith("p-") ? "no evaluations yet" : noFit, raw: true, ...(opts || {}) });
+    setupNotes(info);
+    setupTabs("fullbc");
+  } else if (!ui.notesDirty && document.activeElement !== document.getElementById("notes")) {
+    document.getElementById("notes").value = info.notes || "";
+  }
+  const pct = v => v == null ? "–" : (100 * v).toFixed(0) + "%";
+  const games = info.games || {}, voc = info.vocab || {}, lp = plays[plays.length - 1];
+  const best = fit.reduce((b, r) => (r.val_loss != null && (!b || r.val_loss < b.val_loss)) ? r : b, null);
+  document.getElementById("cards").innerHTML = [
+    ["Status", esc(info.status || "")],
+    ["Games", `${fmt(games.train || 0, 0)} <small>train · ${fmt(games.val || 0, 0)} validation</small>`],
+    ["Epochs", fit.length ? `${last.epoch}${info.args && info.args.epochs ? ` <small>/ ${esc(info.args.epochs)} · ${fmt(last.seconds || 0, 0)} s</small>` : ""}` : "–"],
+    ["Best epoch", best ? `${best.epoch} <small>validation loss ${fmt(best.val_loss, 3)}</small>` : "–"],
+    ["Order accuracy", best && best.val ? `${pct(best.val.order_acc)} <small>given an order · target ${pct(best.val.target_acc)}</small>` : "–"],
+    ["Against the AI", lp ? `${pct(lp.win_rate)} <small>${lp.wins}–${lp.ties}–${lp.losses} (${esc(lp.difficulty || "")})</small>` : "–"],
+    ["Runs from it", `${(info.children || []).length}`],
+  ].map(([k, v]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+  const a = info.args || {};
+  const rows = [["Demonstrations", (info.datasets || []).length ? info.datasets.map(go).join(", ") : esc(info.data || "–")],
+    ["Vocabulary", `${voc.types || "?"} unit types · ${voc.orders || "?"} order classes · ${voc.upgrades || "?"} upgrades`],
+    ["Network", `transformer, d ${esc(a.d || "?")}, ${esc(a.layers || "?")} layers, dropout ${esc(a.dropout || "?")}`],
+    ["Training", `lr ${esc(a.lr || "?")}, batch ${esc(a.batch || "?")}; the epoch with the lowest validation loss is policy.pt`],
+    ["Started", info.created ? new Date(info.created * 1000).toLocaleString() : "–"]];
+  const lin = document.getElementById("lineage");
+  lin.innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+  bindGo(lin);
+  ui.xranges = { epoch: [1, Math.max(2, fit.length ? last.epoch : 2)], eval: [1, Math.max(2, plays.length)] };
+  setCharts(charts, (id, key) => fitPoints(d, key));
+  const pts = plays.map((p, i) => ({ ...p, steps: i + 1, tie_rate: p.ties / p.games }));
+  setCharts(playCharts, (id, key) => pts.map(p => [p.steps, p[key]]));
+  document.getElementById("plays").innerHTML = plays.length ? `<table class="runs"><tr><th>#</th><th>evaluation</th><th>games</th><th>win–tie–loss</th><th>wins</th><th>minutes</th><th>gold (clone / AI)</th><th>orders per game</th><th>refused</th><th>by race (wins)</th><th>when</th></tr>` +
+    plays.map((p, i) => `<tr><td>${i + 1}</td><td>${esc(p.label)}</td><td>${p.games}</td><td>${p.wins}–${p.ties}–${p.losses}</td><td>${pct(p.win_rate)}</td><td>${fmt(p.minutes, 1)}</td>
+      <td>${fmt(p.gold, 0)} / ${fmt(p.ai_gold, 0)}</td><td>${fmt(p.orders, 0)}</td><td>${pct(p.refused)}</td>
+      <td>${Object.entries(p.by_race || {}).map(([r, [w, t, l]]) => `${esc(r)} ${w}/${w + t + l}`).join(" · ")}</td><td>${ago(p.time)}</td></tr>`).join("") + `</table>`
+    : `<div style="color:var(--muted)">not evaluated yet: <code>python3 -m warcraftsim.fullgame.play runs/bc/${esc(info.dataset)}/policy.pt</code></div>`;
+  if (lp) {
+    const m = {}; for (const r of RACES) { m[r] = {}; for (const o of RACES) m[r][o] = ((lp.matrix || {})[r] || {})[o] || [0, 0, 0]; }
+    document.getElementById("playmatrix").innerHTML = matrixHtml(m, `The latest evaluation by matchup: the clone's race (rows) against the AI's (columns)`);
+  } else document.getElementById("playmatrix").innerHTML = "";
+  const kids = (info.children || []).map(n => state.runs.find(r => r.name === n)).filter(Boolean);
+  setTabCount("children", kids.length, true);
+  const ch = document.getElementById("bcchildren");
+  ch.innerHTML = kids.length ? `<table class="runs"><tr><th>run</th><th>task</th><th>status</th><th>steps</th><th>win (last 100)</th></tr>` +
+    kids.map(r => `<tr><td>${go(r.name)}</td><td>${esc(r.task)}</td><td>${badge(r.status)}</td><td>${fmt((r.summary || {}).agent_steps || 0, 0)}</td><td>${winText(r.summary)}</td></tr>`).join("") + `</table>`
+    : `<div style="color:var(--muted)">none yet</div>`;
+  bindGo(ch);
+  const cmd = info.command || `python3 -m warcraftsim.fullgame.bc ` + Object.entries(a).filter(([k, v]) => v !== "" && v !== "None" && v !== "False" && k !== "runs" && k !== "device")
+    .map(([k, v]) => `--${k.replace(/_/g, "-")} ${String(v).replace(/^\[|\]$/g, "").replace(/PosixPath\('([^']*)'\)/g, "$1").replace(/,/g, "")}`).join(" ");
+  finishLaunch(document.getElementById("launch"), [`<div class="cmdhead"><span>Fitted with${info.command ? "" : " (rebuilt from its settings)"}</span><button class="copy" data-copy="${esc(cmd)}">copy</button></div><pre class="cmd">${esc(cmd)}</pre>`]);
 }
 
 // ---- notes, lineage, launch ---------------------------------------------------------------------

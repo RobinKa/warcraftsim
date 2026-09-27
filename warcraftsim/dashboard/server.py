@@ -233,6 +233,16 @@ def _spaces(info: dict) -> dict | None:
     return {**d, "from_current_code": True, "sizes_match": same}
 
 
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def _read_json(path: Path) -> dict | None:
     try:
         return json.loads(path.read_text())
@@ -342,9 +352,11 @@ class Dashboard:
             return ""
 
     def set_notes(self, name: str, text: str) -> bool:
-        d = self._bc_dir(name) if name.startswith("bc/") else self.runs_dir / name
+        d = (self._bc_dir(name) if name.startswith("bc/") else self._collect_dir(name) if name.startswith("fullgame/")
+             else self.runs_dir / name)
         if d is None or len(text) > MAX_NOTES or not (
-                d.parent == self.runs_dir / "bc" or (d.parent == self.runs_dir and (d / "run.json").exists())):
+                d.parent in (self.runs_dir / "bc", self.runs_dir / "fullgame")
+                or (d.parent == self.runs_dir and (d / "run.json").exists())):
             return False
         tmp = d / "notes.md.tmp"
         tmp.write_text(text)
@@ -375,16 +387,30 @@ class Dashboard:
                 "task": info.get("task") or meta.get("task"), "policy": info.get("policy") or meta.get("policy"),
                 "status": status, "created": info.get("created") or (d / "meta.json").stat().st_mtime,
                 "envs": collect.get("games"), "meta": meta,
-                "description": f"Behavior cloning: the {info.get('policy') or meta.get('policy')} script's "
-                               f"demonstrations, and PufferLib's network fitted to them."}
+                "description": ("Behavior cloning of the built-in AI's whole games (fullgame/bc.py): a transformer "
+                                "over what a player sees, an order for each of its units"
+                                if (info.get("task") or meta.get("task")) == "fullgame" else
+                                f"Behavior cloning: the {info.get('policy') or meta.get('policy')} script's "
+                                f"demonstrations, and PufferLib's network fitted to them.")}
 
     def _bc_summary(self, d: Path) -> dict:
         files = [f for f in [d / "bc.json", d / "meta.json", d / "fit.jsonl", d / "evals.jsonl",
-                             *sorted(d.glob("episodes-*.jsonl"))] if f.exists()]
+                             *sorted(d.glob("episodes-*.jsonl")), *sorted(d.glob("play*.jsonl"))] if f.exists()]
         stamp = tuple((f.name, f.stat().st_mtime) for f in files)
         cached = self._summaries.get(d)
         if cached and cached[0] == stamp:
             return cached[1]
+        if (_read_json(d / "bc.json") or {}).get("task") == "fullgame":
+            fit = self.cache.read(d / "fit.jsonl")
+            plays = self._plays(d)
+            games = (_read_json(d / "bc.json") or {}).get("games") or {}
+            summary = {"episodes": sum(games.values()) if isinstance(games, dict) else 0, "agent_steps": 0,
+                       "win_rate_100": plays[-1]["win_rate"] if plays else None, "script_win_rate": None,
+                       "fit_epochs": fit[-1]["epoch"] if fit else None,
+                       "fit_acc": (fit[-1].get("val") or {}).get("order_acc") if fit else None,
+                       "updated": max(f.stat().st_mtime for f in files) if files else None}
+            self._summaries[d] = (stamp, summary)
+            return summary
         eps = [r for f in d.glob("episodes-*.jsonl") for r in self.cache.read(f)]
         fit = self.cache.read(d / "fit.jsonl")
         evals = self.cache.read(d / "evals.jsonl")
@@ -413,11 +439,51 @@ class Dashboard:
                     out.append(info)
         return out
 
+    def _plays(self, d: Path) -> list[dict]:
+        """A whole-game fit's play*.jsonl (fullgame/play.py: one row per game against the built-in
+        AI), grouped into evaluations: one per play.py launch (its `eval`, or the file for older ones)."""
+        groups: dict[str, list[dict]] = {}
+        for f in sorted(d.glob("play*.jsonl")):
+            for r in self.cache.read(f):
+                groups.setdefault(r.get("eval") or f.stem, []).append(r)
+        out = []
+        for key, rows in groups.items():
+            n = len(rows)
+            res = lambda r: 0 if r.get("outcome") == "VICTORY" else 1 if r.get("outcome") == "TIE" else 2  # noqa: E731
+            by_race: dict[str, list[int]] = {}
+            matrix: dict[str, dict[str, list[int]]] = {}
+            for r in rows:
+                by_race.setdefault(r.get("race", "?"), [0, 0, 0])[res(r)] += 1
+                matrix.setdefault(r.get("race", "?"), {}).setdefault(r.get("ai_race", "?"), [0, 0, 0])[res(r)] += 1
+            sent = sum(r.get("orders", 0) + r.get("failed", 0) for r in rows)
+            first = rows[0]
+            out.append({"eval": key, "label": first.get("label") or key, "checkpoint": first.get("checkpoint"),
+                        "epoch": first.get("epoch"), "difficulty": first.get("difficulty"), "map": first.get("map"),
+                        "time": max(r.get("time", 0) for r in rows), "games": n,
+                        "wins": sum(res(r) == 0 for r in rows), "ties": sum(res(r) == 1 for r in rows),
+                        "losses": sum(res(r) == 2 for r in rows),
+                        "win_rate": sum(res(r) == 0 for r in rows) / n,
+                        "minutes": sum(r.get("minutes", 0) for r in rows) / n,
+                        "gold": sum(((r.get("sides") or {}).get("agent") or {}).get("gold", 0) for r in rows) / n,
+                        "ai_gold": sum(((r.get("sides") or {}).get("ai") or {}).get("gold", 0) for r in rows) / n,
+                        "refused": sum(r.get("failed", 0) for r in rows) / max(sent, 1),
+                        "orders": sum(r.get("orders", 0) for r in rows) / n,
+                        "temperature": first.get("temperature"), "order_temperature": first.get("order_temperature"),
+                        "by_race": by_race, "matrix": matrix})
+        return sorted(out, key=lambda e: e["time"])
+
     def bc_run(self, name: str) -> dict | None:
         d = self._bc_dir(name)
         if d is None:
             return None
         info = self._bc_info(d)
+        if info.get("task") == "fullgame":  # a whole-game fit (fullgame/bc.py)
+            info["notes"] = self.notes(d)
+            info["children"] = sorted(r["name"] for r in self._runs_from(name))
+            info["datasets"] = [f"fullgame/{Path(x).name}" for x in str(info.get("data", "")).split()
+                                if (self.runs_dir / "fullgame" / Path(x).name / "collect.json").exists()]
+            return {"kind": "bc", "info": info, "fit": self.cache.read(d / "fit.jsonl"), "plays": self._plays(d),
+                    "summary": self._bc_summary(d)}
         info["notes"] = self.notes(d)
         info["spaces"] = _spaces({**info, "obs_size": info.get("obs_size") or info["meta"].get("obs_size"),
                                   "act_sizes": info.get("act_sizes") or info["meta"].get("act_sizes")})
@@ -436,6 +502,88 @@ class Dashboard:
                 "episodes": _binned(list(range(1, len(rows) + 1)), rows), "evals": self.cache.read(d / "evals.jsonl"),
                 "summary": self._bc_summary(d)}
 
+    # ---- whole-game demonstrations: runs/fullgame/<name> (collect.json, games.jsonl; fullgame/collect.py)
+    def _collect_dir(self, name: str) -> Path | None:
+        if not name.startswith("fullgame/"):
+            return None
+        n = name[len("fullgame/"):]
+        if not n or n.startswith(".") or "/" in n or "\\" in n:
+            return None
+        d = self.runs_dir / "fullgame" / n
+        return d if (d / "collect.json").exists() else None
+
+    def _collect_info(self, d: Path) -> dict:
+        info = _read_json(d / "collect.json") or {}
+        status = info.get("status") or "finished"
+        if status == "collecting" and info.get("pid") and not _pid_alive(int(info["pid"])):
+            status = "stopped"
+        return {"kind": "collect", "name": f"fullgame/{d.name}", "task": "fullgame", "status": status,
+                "created": info.get("time") or (d / "collect.json").stat().st_mtime, "finished": info.get("finished"),
+                "map": info.get("map", "duelrush"), "planned": info.get("games"), "parallel": info.get("parallel"),
+                "races": info.get("races"), "difficulty": info.get("difficulty"), "handicap": info.get("handicap"),
+                "step_seconds": info.get("step_seconds"), "max_minutes": info.get("max_minutes"),
+                "command": info.get("command"), "dir": f"runs/fullgame/{d.name}",
+                "description": "Demonstrations: the built-in AI against itself, every step's state and the orders "
+                               "it gave (fullgame/collect.py)"}
+
+    def _collect_summary(self, d: Path) -> dict:
+        f = d / "games.jsonl"
+        stamp = (f.stat().st_mtime if f.exists() else 0, (d / "collect.json").stat().st_mtime)
+        cached = self._summaries.get(d)
+        if cached and cached[0] == stamp:
+            return cached[1]
+        rows = self.cache.read(f) if f.exists() else []
+        recent = [r for r in rows if r["time"] > rows[-1]["time"] - 1800] if rows else []
+        span = recent[-1]["time"] - recent[0]["time"] if len(recent) > 1 else 0
+        summary = {"games": len(rows), "rate_per_hour": (len(recent) - 1) / span * 3600 if span > 0 else None,
+                   "minutes": sum(r.get("minutes", 0) for r in rows) / len(rows) if rows else None,
+                   "ties": sum(r.get("winner") is None for r in rows) / len(rows) if rows else None,
+                   "updated": rows[-1]["time"] if rows else None}
+        self._summaries[d] = (stamp, summary)
+        return summary
+
+    def collections(self) -> list[dict]:
+        root = self.runs_dir / "fullgame"
+        out = []
+        if root.is_dir():
+            for d in sorted(root.iterdir()):
+                if (d / "collect.json").exists():
+                    out.append({**self._collect_info(d), "summary": self._collect_summary(d)})
+        return out
+
+    def collection(self, name: str) -> dict | None:
+        d = self._collect_dir(name)
+        if d is None:
+            return None
+        info = self._collect_info(d)
+        info["notes"] = self.notes(d)
+        info["used_by"] = sorted(b["name"] for b in self.bc_runs()
+                                 if any(Path(x).name == d.name for x in str(b.get("data", "")).split()))
+        rows = self.cache.read(d / "games.jsonl") if (d / "games.jsonl").exists() else []
+        per_game = [{"minutes": r.get("minutes", 0.0), "orders": r.get("orders") or 0,
+                     "tie": 1.0 if r.get("winner") is None else 0.0} for r in rows]
+        # games per hour, in 5-minute buckets of wall time
+        buckets: dict[int, int] = {}
+        for r in rows:
+            buckets[int(r["time"] // 300)] = buckets.get(int(r["time"] // 300), 0) + 1
+        rate = [{"steps": (b - min(buckets)) * 5.0 + 2.5, "rate": n * 12.0} for b, n in sorted(buckets.items())]
+        # results by race: [race][other race] = [wins, ties, losses] of the first against the second
+        races = ("human", "orc", "undead", "nightelf")
+        matrix = {a: {b: [0, 0, 0] for b in races} for a in races}
+        lengths = {a: [] for a in races}
+        for r in rows:
+            rc = r.get("races") or []
+            if len(rc) != 2 or rc[0] not in matrix or rc[1] not in matrix:
+                continue
+            w = r.get("winner")
+            for side in (0, 1):
+                a, b = rc[side], rc[1 - side]
+                matrix[a][b][0 if w == side else 1 if w is None else 2] += 1
+                lengths[a].append(r.get("minutes", 0.0))
+        return {"kind": "collect", "info": info, "summary": self._collect_summary(d),
+                "games": _binned([float(i + 1) for i in range(len(per_game))], per_game), "rate": rate,
+                "matrix": matrix, "recent": rows[-15:][::-1]}
+
     def parent(self, info: dict) -> dict | None:
         """Where a run started from: {"kind": "run", "name", "steps"} for another run's checkpoint,
         {"kind": "bc", "name", "policy", "task", "episodes", "win_rate"} for a fitted script."""
@@ -453,6 +601,8 @@ class Dashboard:
             return {"kind": "file", "name": init}
         if parts[0] == "bc" and len(parts) > 1:
             meta_file = self.runs_dir / "bc" / parts[1] / "meta.json"
+            if not meta_file.exists():  # a whole-game fit (fullgame/bc.py): its bc.json
+                meta_file = self.runs_dir / "bc" / parts[1] / "bc.json"
             out = {"kind": "bc", "name": parts[1]}
             try:
                 mtime = meta_file.stat().st_mtime
@@ -523,6 +673,7 @@ class Dashboard:
             self._summaries[d] = (stamp, info["summary"])
             out.append(info)
         out += self.bc_runs()
+        out += self.collections()
         for info in out:
             info["notes"] = self.notes(self.runs_dir / info.get("name", ""))
             for k in ("description", "command", "spaces"):  # the list doesn't show these: less to send
@@ -547,6 +698,8 @@ class Dashboard:
     def run(self, name: str) -> dict | None:
         if name.startswith("bc/"):
             return self.bc_run(name)
+        if name.startswith("fullgame/"):
+            return self.collection(name)
         d = self.runs_dir / name
         if not (d / "run.json").exists() or d.parent != self.runs_dir:
             return None

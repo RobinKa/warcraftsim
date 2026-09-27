@@ -42,6 +42,11 @@ class FullGameNet(nn.Module):
         # which orders each unit type got in the demonstrations (filled while training; row 0:
         # unknown types, any)
         self.register_buffer("allowed", torch.zeros(n_types, n_orders, dtype=torch.bool))
+        # the value of the state for reinforcement learning (fullgame/selfplay.py; behavior cloning
+        # leaves it untrained)
+        self.value_head = nn.Sequential(nn.Linear(d, d), nn.ReLU(), nn.Linear(d, 1))
+        # each order class's kind (features.IMMEDIATE, POINT, ...: which target it takes)
+        self.register_buffer("order_kind", torch.zeros(n_orders, dtype=torch.long))
 
     def encode(self, ent, typ, cur, mask, glob):
         """-> global token [N, d], entity tokens [N, E, d]."""
@@ -79,9 +84,63 @@ class FullGameNet(nn.Module):
         """The point's y logits [N, O, BINS] given its x bins [N, O]."""
         return self.point_y(z + self.x_emb(x.clamp(min=0).long()))
 
+    def value(self, g):
+        return self.value_head(g).squeeze(-1)
+
+    def uses(self, order):
+        """Which targets each order uses: (pointer [N, O], point [N, O]) booleans."""
+        kind = self.order_kind[order.long()]
+        return kind == fx.UNIT, (kind == fx.POINT) | (kind == fx.TREE)
+
+
+def _logp(logits, x):
+    return torch.log_softmax(logits.float(), -1).gather(-1, x.long().unsqueeze(-1)).squeeze(-1)
+
+
+def _entropy(logits):
+    lp = torch.log_softmax(logits.float(), -1)
+    return -(lp.exp() * lp).sum(-1)
+
+
+def act(net: FullGameNet, ent, typ, cur, mask, glob, n_own) -> dict:
+    """Sample every own unit's order and targets (the first O = min(MAX_OWN, E) entities; the
+    orders each unit type got in the demonstrations). -> order, tgt, bx, by, logp [N, O] (the
+    action's log-probability per unit: order, plus the targets that order uses; 0 for padding)
+    and value [N]."""
+    g, u = net.encode(ent, typ, cur, mask, glob)
+    O = min(fx.MAX_OWN, u.shape[1])
+    logits = net.order_logits(g, u[:, :O], typ, n_own)
+    sample = lambda lg: torch.distributions.Categorical(logits=lg.float()).sample()  # noqa: E731
+    order = sample(logits)
+    ptr, xl, z = net.target_logits(g, u, mask, order)
+    tgt, bx = sample(ptr), sample(xl)
+    yl = net.y_logits(z, bx)
+    by = sample(yl)
+    uses_ptr, uses_pt = net.uses(order)
+    own = torch.arange(O, device=ent.device)[None] < n_own[:, None]
+    logp = _logp(logits, order) + uses_ptr * _logp(ptr, tgt) + uses_pt * (_logp(xl, bx) + _logp(yl, by))
+    return {"order": order, "tgt": tgt, "bx": bx, "by": by, "logp": logp * own, "value": net.value(g)}
+
+
+def evaluate(net: FullGameNet, ent, typ, cur, mask, glob, n_own, order, tgt, bx, by) -> dict:
+    """Given actions [N, O]: logp [N, O] (as act()), the order distribution's entropy [N, O],
+    order logits [N, O, C] and value [N]."""
+    g, u = net.encode(ent, typ, cur, mask, glob)
+    O = order.shape[1]
+    logits = net.order_logits(g, u[:, :O], typ, n_own)
+    ptr, xl, z = net.target_logits(g, u, mask, order)
+    yl = net.y_logits(z, bx)
+    uses_ptr, uses_pt = net.uses(order)
+    logp = _logp(logits, order) + uses_ptr * _logp(ptr, tgt) + uses_pt * (_logp(xl, bx) + _logp(yl, by))
+    return {"logp": logp, "entropy": _entropy(logits), "logits": logits, "value": net.value(g)}
+
 
 def load(path, device="cpu") -> tuple[FullGameNet, dict]:
     ck = torch.load(path, map_location=device, weights_only=False)
     net = FullGameNet(**ck["config"]).to(device)
-    net.load_state_dict(ck["model"])
+    missing, unexpected = net.load_state_dict(ck["model"], strict=False)
+    if unexpected or any(not (k.startswith("value_head.") or k == "order_kind") for k in missing):
+        raise RuntimeError(f"{path}: missing {missing}, unexpected {unexpected}")
+    if "order_kind" in missing and "vocab" in ck:  # fits from before it: from the vocabulary
+        net.order_kind.copy_(torch.as_tensor([0] + [k[1] for k in ck["vocab"]["orders"]], device=net.order_kind.device))
     return net.eval(), ck

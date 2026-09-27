@@ -134,6 +134,7 @@ class GameSetup:
     speed: float | None = None
     # clock speed until the first observation (map loading); see _launch_once
     launch_speed: float = 1.0
+    launch_timeout: float = 45.0  # seconds from launch until the harness connects (then a retry)
     turbo_ms: int = 0  # >0: simulate up to this much game time per frame, bypassing turn pacing
     # Shortest real wait (ms) the virtual clock turns a timed wait into. Game threads that poll with
     # 100-1000 ms timeouts would otherwise spin (timeouts / clock speed round to 0), each wait a
@@ -465,7 +466,7 @@ class GameInstance:
         self._start_spare()
         return obs
 
-    def _launch(self, attempts: int = 2) -> Observation:
+    def _launch(self, attempts: int = 3) -> Observation:
         for attempt in range(attempts):
             with _LaunchSlot():
                 try:
@@ -531,7 +532,9 @@ class GameInstance:
         )
         proc, prefix = self.proc, self.prefix
         reaper.track(proc, lambda: (prefix and wine.kill_prefix(prefix), proc.kill()))
-        self._server.settimeout(self.timeout)
+        # 10-20% of launches hang at a black screen before the map loads (any screen size; not
+        # understood yet): a load reaches the harness within ~10-20 s even with every core busy
+        self._server.settimeout(min(self.timeout, self.setup.launch_timeout))
         try:
             self._conn, _ = self._server.accept()
         except socket.timeout:
@@ -544,7 +547,8 @@ class GameInstance:
             for log in ("shim.log", "wine.log"):  # the retry would overwrite them
                 if (self.inst_dir / log).exists():
                     shutil.copyfile(self.inst_dir / log, self.inst_dir / f"launch-timeout-{log}")
-            raise GameError(f"game did not reach the harness within {self.timeout:.0f}s (see {self.inst_dir})")
+            raise GameError(f"game did not reach the harness within {min(self.timeout, self.setup.launch_timeout):.0f}s "
+                            f"(see {self.inst_dir})")
         self._conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self._conn.settimeout(self.timeout)
         self._rfile = self._conn.makefile("rb")

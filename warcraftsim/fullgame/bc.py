@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import sys
 import time
 from pathlib import Path
 
@@ -151,7 +152,8 @@ def main(argv: list[str] | None = None) -> int:
     info = {"kind": "bc", "name": args.name, "created": time.time(), "task": "fullgame", "policy": "built-in AI",
             "status": "fitting", "data": " ".join(map(str, args.data)), "games": {"train": len(train), "val": len(val)},
             "vocab": {"types": enc.n_types, "orders": enc.n_orders, "upgrades": len(enc.upgrade_index)},
-            "args": {k: str(v) for k, v in vars(args).items()}}
+            "args": {k: " ".join(map(str, v)) if isinstance(v, list) else str(v) for k, v in vars(args).items()},
+            "command": "python3 -m warcraftsim.fullgame.bc " + " ".join(sys.argv[1:] if argv is None else argv)}
     (out / "bc.json").write_text(json.dumps(info, indent=1))
     if args.note:
         (out / "notes.md").write_text(args.note + "\n")
@@ -159,6 +161,7 @@ def main(argv: list[str] | None = None) -> int:
     net = FullGameNet(enc.n_types, enc.n_cur, enc.n_orders, enc.G, d=args.d, layers=args.layers,
                       dropout=args.dropout).to(device)
     net.allowed[0] = True  # unknown unit types: any order
+    net.order_kind.copy_(torch.as_tensor(enc.order_kind, device=device))
     opt = torch.optim.AdamW(net.parameters(), lr=args.lr, weight_decay=1e-4)
     data = Steps(train, vocab, args.batch)
     val_batches = list(Steps(val, vocab, args.batch))
