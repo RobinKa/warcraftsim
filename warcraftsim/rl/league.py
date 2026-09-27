@@ -66,6 +66,14 @@ def pfsp_weight(p: float | None, mode: str = "hard") -> float:
     return 1.0
 
 
+def _recent_like(win_rate: float | None, n: int = 50) -> list[float]:
+    """A list of recent results with this win rate (league.json files without the results)."""
+    if win_rate is None:
+        return []
+    k = round(win_rate * n)
+    return [1.0] * k + [0.0] * (n - k)
+
+
 class League:
     def __init__(self, run_dir: Path, scripts: list[str], pfsp: str = "hard", max_past: int = 50):
         self.run_dir = Path(run_dir)
@@ -98,9 +106,40 @@ class League:
         def row(m: Member) -> dict:
             p = m.win_rate()
             return {"name": m.name, "steps": m.steps, "games": m.games, "wins": m.wins, "losses": m.losses,
-                    "draws": m.draws, "win_rate": p, "weight": pfsp_weight(p, self.pfsp) if m.path else None}
+                    "draws": m.draws, "win_rate": p, "weight": pfsp_weight(p, self.pfsp) if m.path else None,
+                    "path": m.path, "recent": m.recent}
         return {"pfsp": self.pfsp, "members": [row(m) for m in [*self.scripts.values(), *self.past]],
                 "self": row(self.self_member)}
+
+    def restore(self, summary: dict, ck_dir: Path) -> int:
+        """Members and their records from another run's league.json (resuming it): its snapshots
+        (checkpoints in ck_dir), and the records of the scripts this league has. -> members restored."""
+        n = 0
+        for row in summary.get("members", []):
+            name = row["name"]
+            if name.startswith("script:"):
+                m = self.scripts.get(name.split(":", 1)[1])
+                if m is None:
+                    continue
+            else:
+                steps = int(row.get("steps", 0))
+                path = row.get("path") or str(Path(ck_dir) / (f"exploiter-{steps:016d}.pt" if name.startswith("exploiter:")
+                                                              else f"{steps:016d}.pt"))
+                if not Path(path).exists():
+                    continue
+                m = Member(name, path=path, steps=steps)
+                self.past.append(m)
+            m.wins, m.losses, m.draws = row.get("wins", 0.0), row.get("losses", 0.0), row.get("draws", 0.0)
+            m.recent = list(row.get("recent") or _recent_like(row.get("win_rate")))
+            n += 1
+        me = summary.get("self")
+        if me:
+            m = self.self_member
+            m.wins, m.losses, m.draws = me.get("wins", 0.0), me.get("losses", 0.0), me.get("draws", 0.0)
+            m.recent = list(me.get("recent") or _recent_like(me.get("win_rate")))
+        if len(self.past) > self.max_past:  # keep the first and the newest, as add_snapshot does
+            del self.past[1:len(self.past) - self.max_past + 1]
+        return n
 
     def save(self) -> None:
         tmp = self.run_dir / "league.json.tmp"

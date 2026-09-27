@@ -71,6 +71,43 @@ def load_checkpoint(path: str | Path, spec: dict, device) -> tuple[EntityNet, di
     return net, ck
 
 
+class OpponentPool:
+    """The networks of the other seat (league snapshots, and the main learner in exploiter games),
+    run through one network whose weights are swapped in per snapshot (one fused copy on the GPU)
+    and whose step is compiled once (CUDA graphs) for a fixed batch. An eager forward per snapshot
+    cost ~20 ms: 128 ms per step with six past snapshots in play, now ~5 ms."""
+
+    def __init__(self, spec: dict, config: dict, device, batch: int, compile_: bool):
+        self.net = EntityNet(spec, **config).to(device).eval()
+        for p_ in self.net.parameters():
+            p_.requires_grad_(False)
+        self.params = list(self.net.state_dict().values())
+        self.batch = max(2, batch)  # (a batch of one hit a Triton compiler bug)
+        self.step = torch.compile(self.net.step, mode="reduce-overhead") if compile_ else self.net.step
+        self.weights: dict[str, list[torch.Tensor]] = {}
+        self.spec, self.device = spec, device
+
+    def load(self, name: str, path: str) -> list[torch.Tensor]:
+        if name not in self.weights:
+            net = load_checkpoint(path, self.spec, self.device)[0]
+            self.weights[name] = [t.detach().clone() for t in net.state_dict().values()]
+        return self.weights[name]
+
+    def run(self, weights: list[torch.Tensor], obs: torch.Tensor, h: torch.Tensor,
+            masks: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:  # all on the device
+        """Actions [n, ...] and new core states [n, core] of the rows (n <= batch)."""
+        n = obs.shape[0]
+        pad = self.batch - n
+        if pad:
+            obs = torch.cat([obs, obs[:1].expand(pad, -1)])
+            h = torch.cat([h, h[:1].expand(pad, -1)])
+            masks = torch.cat([masks, masks[:1].expand(pad, -1)])
+        torch._foreach_copy_(self.params, weights)
+        with torch.no_grad():
+            a, _, _, _, h_new = self.step(obs, h, masks)
+            return a[:n].clone(), h_new[:n].clone()
+
+
 def _finished() -> dict:
     return {"n": 0, "wins": 0, "losses": 0, "ret": 0.0, "len": 0.0}
 
@@ -81,6 +118,7 @@ class Learner:
 
     def __init__(self, name: str, net: EntityNet, rows: np.ndarray, args, device, ref: EntityNet | None = None):
         self.name, self.net, self.rows, self.args, self.device, self.ref = name, net, rows, args, device, ref
+        self.rows_t = torch.as_tensor(rows, device=device)
         self.B = len(rows)
         self.opt = torch.optim.Adam(net.parameters(), lr=args.lr, eps=1e-5)
         # launch overhead dominates a step: CUDA graphs (~2 ms instead of ~20)
@@ -92,9 +130,10 @@ class Learner:
         self.epoch = 0
         self.finished = _finished()
 
-    def observe(self, obs: np.ndarray, masks: np.ndarray) -> None:
-        self.obs_t = torch.as_tensor(obs[self.rows], device=self.device)
-        self.masks_t = torch.as_tensor(masks[self.rows], device=self.device)
+    def observe(self, obs: torch.Tensor, masks: torch.Tensor) -> None:
+        """This learner's rows of the step's observations and masks (all rows, on the device)."""
+        self.obs_t = obs[self.rows_t]
+        self.masks_t = masks[self.rows_t]
 
     def begin(self, T: int) -> None:
         B, dev, k = self.B, self.device, self.net.k
@@ -105,7 +144,9 @@ class Learner:
             torch.zeros(T, B, device=dev) for _ in range(6))
         self.b_h = torch.zeros(T, B, self.net.core_size, device=dev)
 
-    def act(self, t: int) -> np.ndarray:
+    def act(self, t: int) -> torch.Tensor:
+        """Actions [B, heads] on the device (the caller collects every seat's and copies them back
+        once: each copy waits for the GPU)."""
         with torch.no_grad():
             self.h = self.h * (1 - self.start).unsqueeze(-1)
             self.b_h[t] = self.h
@@ -119,12 +160,13 @@ class Learner:
                 self.b_ref[t] = self.ref.heads(self.obs_t, u_r, self.ref_h, self.masks_t, actions=acts)[1]
         self.b_obs[t], self.b_masks[t], self.b_act[t] = self.obs_t, self.masks_t, acts
         self.b_logp[t], self.b_val[t], self.b_start[t] = logp, v, self.start
-        return acts.view(self.B, -1).cpu().numpy()
+        return acts.view(self.B, -1)
 
     def after_step(self, t: int, obs, masks, rew, term, reward_scale: float) -> None:
+        """The step's results (all rows, on the device)."""
         self.observe(obs, masks)
-        self.b_rew[t] = torch.as_tensor(rew[self.rows], device=self.device) * reward_scale
-        self.b_done[t] = torch.as_tensor(term[self.rows], device=self.device)
+        self.b_rew[t] = rew[self.rows_t] * reward_scale
+        self.b_done[t] = term[self.rows_t]
         self.start = self.b_done[t].clone()
 
     def update(self, T: int, progress: float) -> dict:
@@ -234,6 +276,9 @@ def main() -> int:
     ap.add_argument("--layers", type=int, default=2)
     ap.add_argument("--core", type=int, default=256)
     ap.add_argument("--init-from", help="a checkpoint (.pt) to start from")
+    ap.add_argument("--resume", help="a run directory to continue: its newest checkpoints (the main learner's "
+                                     "and the exploiter's), its league (snapshots and records) and the point of "
+                                     "its learning-rate schedule (--timesteps: the steps still to go)")
     ap.add_argument("--cast-bias", type=float, default=0.0,
                     help="added to the cast order's logit at the start: a checkpoint trained without "
                          "abilities never had cast possible, and would almost never try it")
@@ -249,8 +294,14 @@ def main() -> int:
     ap.add_argument("--exploiters", type=int, default=0, help="self-play: 1 = a main exploiter (AlphaStar)")
     ap.add_argument("--exploit-share", type=float, default=0.25, help="self-play: the exploiter's share of games")
     ap.add_argument("--exploiter-reset", type=float, default=0.7,
-                    help="the exploiter restarts from the initial policy once it wins this often against the "
-                         "main learner (its last 100 games; it joins the league first)")
+                    help="the exploiter restarts once it wins this often against the main learner (its last "
+                         "100 games; it joins the league first): it has found a weakness, look for the next")
+    ap.add_argument("--exploiter-reset-low", type=float, default=0.2,
+                    help="the exploiter restarts when it wins less than this against the main learner (its "
+                         "last 100 games): the main learner has outgrown it (0: never)")
+    ap.add_argument("--exploiter-reset-to", choices=("main", "init"), default="main",
+                    help="where the exploiter restarts: the main learner's current policy (it starts even and "
+                         "searches from where the main learner is now), or the initial policy (AlphaStar)")
     ap.add_argument("--ref", help="a reference policy (.pt, e.g. a fitted script) to stay near: as AlphaStar's KL "
                                   "to its supervised policy, which keeps what the demonstrations knew while RL explores")
     ap.add_argument("--ref-kl", type=float, default=0.0, help="weight of the KL to --ref")
@@ -263,6 +314,21 @@ def main() -> int:
     ap.add_argument("--no-compile", type=int, default=0,
                     help="skip torch.compile of the rollout step (CUDA graphs: ~2 ms instead of ~20 per step)")
     args = ap.parse_args()
+    resumed = None
+    if args.resume:
+        rdir = Path(args.resume)
+        cks = sorted((rdir / "checkpoints").glob("[0-9]*.pt"))
+        if not cks:
+            raise SystemExit(f"--resume: no checkpoints in {rdir}")
+        info = json.loads((rdir / "run.json").read_text()) if (rdir / "run.json").exists() else {}
+        done = torch.load(cks[-1], map_location="cpu", weights_only=False).get("steps", 0)
+        planned = int(info.get("timesteps") or done + args.timesteps)
+        exploiters = sorted((rdir / "checkpoints").glob("exploiter-*.pt"))
+        resumed = {"dir": rdir, "main": cks[-1], "exploiter": exploiters[-1] if exploiters else None,
+                   "progress": min(done / max(planned, 1), 0.99), "steps": done}
+        args.init_from = str(cks[-1])
+        print(f"resuming {rdir}: {cks[-1].name} ({done} steps of {planned}), exploiter "
+              f"{resumed['exploiter'].name if resumed['exploiter'] else 'none'}", flush=True)
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
@@ -311,9 +377,15 @@ def main() -> int:
             raise SystemExit(f"league: no games left against past snapshots ({n_self} self, {n_script} script, "
                              f"{n_exp} exploiter of {n_env}): lower --self-share / --script-share / --exploit-share")
         groups = ["self"] * n_self + ["past"] * n_past + ["script"] * n_script + ["exploit"] * n_exp
-        first = ck_dir / f"{0:016d}.pt"  # the start is the league's first member
-        torch.save({"model": net.state_dict(), "config": net.config, "steps": 0, "spec": spec, "args": vars(args)}, first)
-        league.add_snapshot(str(first), 0)
+        if resumed is not None and (resumed["dir"] / "league.json").exists():
+            n_restored = league.restore(json.loads((resumed["dir"] / "league.json").read_text()),
+                                        resumed["dir"] / "checkpoints")
+            print(f"league: {n_restored} members restored from {resumed['dir']}", flush=True)
+        else:
+            first = ck_dir / f"{0:016d}.pt"  # the start is the league's first member
+            torch.save({"model": net.state_dict(), "config": net.config, "steps": 0, "spec": spec,
+                        "args": vars(args)}, first)
+            league.add_snapshot(str(first), 0)
         print("league: " + ", ".join(f"{g} {groups.count(g)}" for g in ("self", "past", "script", "exploit")) + " games",
               flush=True)
     elif A != 1:
@@ -326,6 +398,8 @@ def main() -> int:
     if "exploit" in groups:
         exploiter = Learner("exploiter", new_net(), np.array([e * A for e in range(n_env) if groups[e] == "exploit"]),
                             args, device)
+        if resumed is not None and resumed["exploiter"] is not None:
+            exploiter.net.load_state_dict(load_checkpoint(resumed["exploiter"], spec, device)[0].state_dict())
         learners.append(exploiter)
     init_state = {k_: v_.clone() for k_, v_ in net.state_dict().items()}
     exploiter_member = Member("exploiter")  # the current exploiter's record against the main learner
@@ -334,7 +408,9 @@ def main() -> int:
     opp_rows = np.array([e * A + 1 for e in range(n_env) if groups[e] in ("past", "script", "exploit")], dtype=np.int64)
     opponent = {e: (league.sample_past() if g == "past" else league.sample_script() if g == "script" else None)
                 for e, g in enumerate(groups) if g in ("past", "script", "exploit")}
-    opp_nets: dict[str, EntityNet] = {}
+    n_net_opp = sum(1 for e, g in enumerate(groups) if g in ("past", "exploit"))  # rows that need a network
+    pool = OpponentPool(spec, net.config, device, n_net_opp,
+                        device.type == "cuda" and not args.no_compile) if n_net_opp else None
 
     def publish_seats() -> None:
         """Who plays side 1 of game 0, the one the bridge records (its videos name both sides)."""
@@ -353,38 +429,64 @@ def main() -> int:
     opp_h = net.initial_state(len(opp_rows), device)
     opp_start = torch.ones(len(opp_rows), device=device)
 
-    def opponent_actions(obs, masks) -> np.ndarray:
+    opp_rows_t = torch.as_tensor(opp_rows, device=device)
+    main_weights = list(main.net.state_dict().values())  # the live parameters (updated in place)
+    index_cache: dict[tuple, torch.Tensor] = {}
+
+    def on_device(idx: list[int]) -> torch.Tensor:
+        """A cached device index (making one waits for the GPU; the groups change only between episodes)."""
+        key = tuple(idx)
+        if key not in index_cache:
+            if len(index_cache) > 4096:
+                index_cache.clear()
+            index_cache[key] = torch.as_tensor(idx, device=device)
+        return index_cache[key]
+
+    def opponent_actions(obs_np: np.ndarray, obs_g: torch.Tensor, masks_g: torch.Tensor,
+                         act_g: torch.Tensor) -> list[tuple[np.ndarray, np.ndarray]]:
+        """The other seat's actions: networks' into act_g (on the device); returns the scripts'
+        (rows, actions), computed on the CPU."""
         nonlocal opp_h
-        out = np.zeros((len(opp_rows), spec["num_atns"]), np.int64)
-        if not len(opp_rows):
-            return out
         opp_h = opp_h * (1 - opp_start).unsqueeze(-1)
         by: dict[str, list[int]] = {}
         for i, r in enumerate(opp_rows):
             m = opponent[int(r) // A]
             by.setdefault(m.name if m is not None else "main", []).append(i)
+        scripted = []
         for name, idx in by.items():
             rows = opp_rows[idx]
             m = opponent[int(rows[0]) // A]
             if m is not None and m.path is None:  # a script
-                out[idx] = scripts.act(name.split(":", 1)[1], obs[rows])
+                scripted.append((rows, scripts.act(name.split(":", 1)[1], obs_np[rows])))
                 continue
-            if m is None:
-                player = main.net  # exploiter games: the main learner's current policy
-            else:
-                if name not in opp_nets:
-                    opp_nets[name] = load_checkpoint(m.path, spec, device)[0].eval()
-                player = opp_nets[name]
-            with torch.no_grad():
-                a, _, _, _, h_new = player.step(torch.as_tensor(obs[rows], device=device), opp_h[idx],
-                                                torch.as_tensor(masks[rows], device=device))
-            opp_h[idx] = h_new
-            out[idx] = a.view(len(idx), -1).cpu().numpy()
-        return out
+            # exploiter games: the main learner's current policy; else a league snapshot
+            weights = main_weights if m is None else pool.load(name, m.path)
+            idx_t = on_device(idx)
+            rows_t = opp_rows_t[idx_t]
+            a, h_new = pool.run(weights, obs_g[rows_t], opp_h[idx_t], masks_g[rows_t])
+            opp_h[idx_t] = h_new
+            act_g[rows_t] = a.view(len(idx), -1)
+        return scripted
+
+    # every step: one copy of all observations to the device (pinned memory, asynchronous) and one
+    # copy of all actions back; each copy from the device waits for the GPU's queue
+    N_rows, pin = envs.n, device.type == "cuda"
+    per_mask = int(sum(spec["act_sizes"]))
+    host = {k: torch.empty(shape, dtype=dt, pin_memory=pin) for k, shape, dt in (
+        ("obs", (N_rows, spec["obs_size"]), torch.float32), ("masks", (N_rows, per_mask), torch.uint8),
+        ("rew", (N_rows,), torch.float32), ("term", (N_rows,), torch.float32))}
+    dev_ = {k: torch.empty(v.shape, dtype=v.dtype, device=device) for k, v in host.items()}
+    act_g = torch.zeros(N_rows, spec["num_atns"], dtype=torch.long, device=device)
+
+    def upload(**arrays) -> None:
+        for k, v in arrays.items():
+            host[k].numpy()[:] = v
+            dev_[k].copy_(host[k], non_blocking=True)
 
     obs, masks = envs.reset()
+    upload(obs=obs, masks=masks)
     for L_ in learners:
-        L_.observe(obs, masks)
+        L_.observe(dev_["obs"], dev_["masks"])
     T = args.horizon
     total = int(args.timesteps)
     steps, epoch, t_begin = 0, 0, time.time()
@@ -397,19 +499,21 @@ def main() -> int:
         t_env = t_model = 0.0
         for t in range(T):
             tm = time.time()
-            flat = np.zeros((envs.n, spec["num_atns"]), np.int64)
             for L_ in learners:
-                flat[L_.rows] = L_.act(t)
-            if len(opp_rows):
-                flat[opp_rows] = opponent_actions(obs, masks)
+                act_g[L_.rows_t] = L_.act(t)
+            scripted = opponent_actions(obs, dev_["obs"], dev_["masks"], act_g) if len(opp_rows) else []
+            flat = act_g.cpu().numpy()  # the step's one wait for the GPU
+            for rows, a_ in scripted:
+                flat[rows] = a_
             te = time.time()
             t_model += te - tm
             obs, masks, rew, term, stats = envs.step(flat)
             t_env += time.time() - te
+            upload(obs=obs, masks=masks, rew=rew, term=term)
             for L_ in learners:
-                L_.after_step(t, obs, masks, rew, term, reward_scale)
+                L_.after_step(t, dev_["obs"], dev_["masks"], dev_["rew"], dev_["term"], reward_scale)
             if len(opp_rows):
-                opp_start = torch.as_tensor(term[opp_rows], device=device)
+                opp_start = dev_["term"][opp_rows_t]
             for e in range(n_env):
                 s_ = stats[e * A]
                 if s_[0] < 0.5:
@@ -442,6 +546,8 @@ def main() -> int:
 
         row = {"agent_steps": steps, "epoch": epoch + 1, "uptime": time.time() - t_begin}
         progress = epoch / max(1, total // (main.B * T))
+        if resumed is not None:  # the learning-rate schedule goes on from where the run was
+            progress = resumed["progress"] + (1 - resumed["progress"]) * progress
         for L_ in learners:
             stats_ = L_.update(T, progress)
             if L_ is main:
@@ -478,14 +584,18 @@ def main() -> int:
             exploiter.save(path, spec, steps)
             league.add_snapshot(str(path), steps).name = f"exploiter:{steps}"
             p = exploiter_member.win_rate(100)
-            if p is not None and len(exploiter_member.recent) >= 100 and p >= args.exploiter_reset:
-                # it has found what it can: back to the start, to look for the next weakness
-                exploiter.net.load_state_dict(init_state)
+            high = p is not None and p >= args.exploiter_reset
+            low = p is not None and p < args.exploiter_reset_low
+            if len(exploiter_member.recent) >= 100 and (high or low):
+                # won: it has found a weakness, look for the next; lost: the main learner has outgrown it
+                start = init_state if args.exploiter_reset_to == "init" else main.net.state_dict()
+                exploiter.net.load_state_dict(start)
                 exploiter.opt = torch.optim.Adam(exploiter.net.parameters(), lr=args.lr, eps=1e-5)
                 exploiter.epoch = 0
                 exploiter_member.recent.clear()
                 exploiter_resets += 1
-                print(f"exploiter reset ({exploiter_resets}) after winning {p:.0%} against the main learner", flush=True)
+                print(f"exploiter reset ({exploiter_resets}) to the {args.exploiter_reset_to} policy after winning "
+                      f"{p:.0%} against the main learner", flush=True)
         if league is not None:
             league.save()
     envs.close()
