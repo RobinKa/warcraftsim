@@ -51,7 +51,12 @@ C_STEP, C_ID, C_TYPE, C_OWNER, C_X, C_Y, C_FACING, C_HP, C_MAXHP, C_MANA, C_MAXM
     C_VIS, C_RESOURCE, C_HLEVEL, C_HXP, C_SKILLPTS = range(18)
 DEAD, STRUCTURE = 1024, 2
 FLAG_BITS = (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 2048)  # UnitFlags but DEAD
-F = 3 + 2 + 4 + len(FLAG_BITS) + 3 + 2 + 1  # 26
+F = 3 + 2 + 4 + len(FLAG_BITS) + 3 + 2 + 1 + 2  # 28: ... and production (queued, busy)
+TYPE_CODE = 0x1000000  # order ids at or above this are unit / building / upgrade codes
+# events: a building's production (a = the building)
+TRAIN_START, TRAIN_FINISH, TRAIN_CANCEL = 5, 6, 7
+PRODUCTION_START = {5, 8, 11}  # train, research, upgrade started
+PRODUCTION_END = {6, 7, 9, 10, 12, 13}  # finished or cancelled
 
 
 def load_game(path: str | Path) -> dict:
@@ -129,7 +134,7 @@ class Encoder:
         own = units_step0[(units_step0[:, C_OWNER] == player) & (units_step0[:, C_FLAGS] & STRUCTURE > 0)]
         return -1.0 if len(own) and own[:, C_X].mean() > 0 else 1.0
 
-    def entities(self, rows: np.ndarray, player: int, sign: float) -> tuple[np.ndarray, ...]:
+    def entities(self, rows: np.ndarray, player: int, sign: float, production=None) -> tuple[np.ndarray, ...]:
         """One step's units -> (rows in entity order, n own, float features, types, current orders)."""
         alive = rows[:, C_FLAGS] & DEAD == 0
         vis = (rows[:, C_VIS] >> player) & 1 == 1
@@ -158,6 +163,12 @@ class Encoder:
         f[:, a + 3] = np.sin(rad)
         f[:, a + 4] = sign * np.cos(rad)
         f[:, a + 5] = sel[:, C_ORDER] != 0
+        # production (buildings' current order stays 0 while they train): what the player queued, and
+        # whether something is being made (View keeps both from its orders and the events)
+        if production is not None:
+            queued, busy = production
+            f[:, a + 6] = [min(queued.get(int(i), 0), 5) / 5.0 for i in sel[:, C_ID]]
+            f[:, a + 7] = [float(int(i) in busy) for i in sel[:, C_ID]]
         types = np.array([self.type_index.get(int(t), 0) for t in sel[:, C_TYPE]], np.int64)
         cur = np.array([self.cur_index.get(int(o), 0) for o in sel[:, C_ORDER]], np.int64)
         return sel, n_own, f, types, cur
@@ -191,6 +202,7 @@ class Encoder:
             out["glob"][t] = st["glob"]
             # labels: each own unit's last order in the step
             index = st["index"]
+            view.record_orders((int(r[1]), int(r[2]), int(r[3])) for r in od[os_[t]:os_[t + 1]])
             for r in od[os_[t]:os_[t + 1]]:
                 k = index.get(int(r[1]))
                 if k is None or k >= st["n_own"]:
@@ -220,13 +232,30 @@ class View:
         self.enc, self.player, self.sign, self.races = enc, player, sign, races
         self.upgrades = np.zeros(len(enc.upgrade_index), np.float32)
         self.own_buildings: set[int] = set()
+        self.queued: dict[int, int] = {}  # building -> units / research ordered and not yet done
+        self.busy: set[int] = set()  # buildings making something
+
+    def record_orders(self, orders) -> None:
+        """The player's orders of the last step (unit, order id, kind): train / research orders
+        queue at their building (called after step(): they count from the next step on)."""
+        for unit, order, kind in orders:
+            if kind == 0 and order >= TYPE_CODE and unit in self.own_buildings:
+                self.queued[unit] = self.queued.get(unit, 0) + 1
 
     def step(self, rows: np.ndarray, me: np.ndarray | None, events: np.ndarray, t: int) -> dict:
         """rows: this step's units (UNIT_COLS), me: the player's row (PLAYER_COLS) or None, events:
         this step's (step, kind, a, b, c)."""
         enc, player = self.enc, self.player
         self.own_buildings.update(rows[(rows[:, C_OWNER] == player) & (rows[:, C_FLAGS] & STRUCTURE > 0), C_ID].tolist())
-        sel, n_own, f, types, cur = enc.entities(rows, player, self.sign)
+        for r in events:  # production started / ended at a building
+            kind, a = int(r[1]), int(r[2])
+            if kind in PRODUCTION_START:
+                self.busy.add(a)
+            elif kind in PRODUCTION_END:
+                self.busy.discard(a)
+                if self.queued.get(a, 0) > 0:
+                    self.queued[a] -= 1
+        sel, n_own, f, types, cur = enc.entities(rows, player, self.sign, (self.queued, self.busy))
         for r in events:  # research done (by one of the player's buildings)
             if r[1] == RESEARCH_FINISH and int(r[2]) in self.own_buildings and int(r[3]) in enc.upgrade_index:
                 self.upgrades[enc.upgrade_index[int(r[3])]] = r[4] / 3.0

@@ -30,7 +30,7 @@ from ..runtime.instance import Agent, BuiltinAI, GameInstance, GameSetup
 from . import features as fx
 from .model import load
 
-TYPE_CODE = 0x1000000  # orders at or above this are unit / building / upgrade / ability codes
+TYPE_CODE = fx.TYPE_CODE  # orders at or above this are unit / building / upgrade / ability codes
 
 
 def rawcode_or(order: int) -> str:
@@ -62,6 +62,11 @@ class BCAgent:
         sign = self.enc.side(rows, self.player)
         self.view = self.enc.view(self.player, sign, races)
         self.trees = {d.id: (d.x, d.y) for d in (obs.destructables or [])}
+
+    def accepted(self, cmds: list[Command], results: list[bool]) -> None:
+        """The game's answer to the last step's orders: accepted train / research orders queue."""
+        self.view.record_orders((c.unit, c.order, 0) for c, ok in zip(cmds, results)
+                                if ok and isinstance(c, ImmediateOrder))
 
     def _sample(self, logits: torch.Tensor) -> torch.Tensor:
         return torch.distributions.Categorical(logits=logits / self.temperature).sample()
@@ -145,6 +150,7 @@ def play_game(net, vocab: dict, device, name: str, map_name: str, race: str, ai_
         while not obs.game_over:
             cmds = bot.act(obs, t)
             obs = g.step(cmds)
+            bot.accepted(cmds, obs.command_results)
             for c, ok in zip(cmds, obs.command_results):  # the game refused the order
                 name = order_names.get(getattr(c, "order", None), None) or rawcode_or(getattr(c, "order", 0))
                 k = by_kind.setdefault(f"{type(c).__name__}:{name}", [0, 0])
