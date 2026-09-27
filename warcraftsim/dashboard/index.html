@@ -943,7 +943,7 @@ function spacesHtml(sp) {
     const feats = b.features.length > 1
       ? `<details><summary>${b.features.length} features per row</summary><ol start="0">${b.features.map(f => `<li>${esc(f)}</li>`).join("")}</ol></details>`
       : esc(b.features[0] || "");
-    return `<tr><td>${esc(b.name)}</td><td>${b.rows} × ${b.features.length}</td><td>${from}–${from + n - 1}</td><td>${feats}</td></tr>`;
+    return `<tr><td>${esc(b.name)}</td><td>${b.rows} × ${b.features.length}</td><td>${typeof o.size === "string" ? "–" : `${from}–${from + n - 1}`}</td><td>${feats}</td></tr>`;
   }).join("");
   const heads = (a.heads || []).map(h => `<tr><td><b>${esc(h.name)}</b></td><td>${h.size}</td>
       <td><div class="chips">${h.options.map(x => `<span>${esc(x)}</span>`).join("")}</div></td>
@@ -951,9 +951,9 @@ function spacesHtml(sp) {
   const warn = sp.from_current_code ? `<div class="${sp.sizes_match ? "" : "warn"}" style="margin-bottom:8px;font-size:12px;color:var(--muted)">
       Not recorded with this run (it predates that): described by the current code for its task${sp.sizes_match ? "; the sizes match the run's" : ". <span class='warn'>The sizes differ from the run's: the task changed since.</span>"}</div>` : "";
   return `${warn}<div class="spaces">
-    <div class="panel"><h3>Observation<span>${o.size} floats per agent${sp.agents > 1 ? ` · ${sp.agents} agents per game` : ""}</span></h3>
+    <div class="panel"><h3>Observation<span>${typeof o.size === "string" ? `${esc(o.size)} values (a set of entities)` : `${o.size} floats per agent`}${typeof sp.agents === "string" && sp.agents ? ` · agents: ${esc(sp.agents)}` : sp.agents > 1 ? ` · ${sp.agents} agents per game` : ""}</span></h3>
       ${blocks ? `<table><tr><th>block</th><th>shape</th><th>index</th><th>features</th></tr>${blocks}</table>` : `<div style="color:var(--muted)">a flat vector (no layout recorded)</div>`}</div>
-    <div class="panel"><h3>Actions<span>${a.units > 1 ? `${a.units} units × ` : ""}${(a.heads || []).length} heads = ${(a.sizes || []).length} discrete heads</span></h3>
+    <div class="panel"><h3>Actions<span>${typeof a.units === "string" ? `per own unit (${esc(a.units)}): ${(a.heads || []).length} heads` : `${a.units > 1 ? `${a.units} units × ` : ""}${(a.heads || []).length} heads = ${(a.sizes || []).length} discrete heads`}</span></h3>
       <table><tr><th>head (per unit)</th><th>size</th><th>choices</th><th>counts</th></tr>${heads}</table>
       <dl class="facts" style="margin-top:10px"><dt>Masks</dt><dd>${esc(a.masks || "None.")}</dd>
         <dt>Reward</dt><dd>${esc(sp.reward || "")}${sp.reward_scale && sp.reward_scale !== 1 ? ` <span style="color:var(--muted)">(× ${sp.reward_scale} for the trainer)</span>` : ""}</dd></dl></div>
@@ -1201,8 +1201,10 @@ function renderFullBC(d) {
         ["replays", "Replays", `<div id="media"></div>`],
         ["checkpoints", "Checkpoints", `<div id="checkpoints"></div>`],
         ["children", "Runs from it", `<div id="bcchildren"></div>`],
+        ["spaces", "Spaces", `<div id="spaces"></div>`],
         ["launch", "Command", `<div id="launch"></div>`],
       ]);
+    document.getElementById("spaces").innerHTML = spacesHtml(info.spaces);
     for (const [id, , , , opts] of [...charts, ...playCharts]) registerChart(id, { axis: id.startsWith("p-") ? "eval" : "epoch", empty: id.startsWith("p-") ? "no evaluations yet" : noFit, raw: true, ...(opts || {}) });
     setupNotes(info);
     setupTabs("fullbc");

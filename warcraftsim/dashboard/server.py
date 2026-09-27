@@ -211,7 +211,20 @@ def _rebuilt_sweep_command(infos: list[dict], group: str) -> str:
 _SPACES: dict[str, dict | None] = {}
 
 
-def _spaces(info: dict) -> dict | None:
+def _fullgame_spaces(d: Path, runs_dir: Path) -> dict | None:
+    """Whole games (self-play runs, fits): described from the run's vocabulary (vocab.json)."""
+    vocab = _read_json(d / "vocab.json")
+    if not vocab:
+        return None
+    try:
+        from ..fullgame import features as fx
+        names = None if vocab.get("order_names") else fx.demo_order_names(runs_dir)
+        return {**fx.describe_spaces(vocab, names), "from_current_code": True, "sizes_match": True}
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _spaces(info: dict, d: Path | None = None, runs_dir: Path | None = None) -> dict | None:
     """A run's observation and action spaces: recorded at launch, else described by the current
     code (flagged, and whether its sizes match the run's)."""
     if info.get("spaces"):
@@ -219,6 +232,8 @@ def _spaces(info: dict) -> dict | None:
     task = info.get("task")
     if not task:
         return None
+    if str(task).startswith("fullgame") and d is not None:
+        return _fullgame_spaces(d, runs_dir)
     if task not in _SPACES:
         try:
             from ..puffer.tasks import describe_spaces, get_task
@@ -523,6 +538,10 @@ class Dashboard:
         info = self._bc_info(d)
         if info.get("task") == "fullgame":  # a whole-game fit (fullgame/bc.py)
             info["notes"] = self.notes(d)
+            info["spaces"] = _fullgame_spaces(d, self.runs_dir)
+            if info["spaces"]:
+                info["spaces"] = {**info["spaces"], "from_current_code": False,
+                                  "reward": "none: behavior cloning (labels: the built-in AI's orders)"}
             info["children"] = sorted(r["name"] for r in self._runs_from(name))
             info["datasets"] = [f"fullgame/{Path(x).name}" for x in str(info.get("data", "")).split()
                                 if (self.runs_dir / "fullgame" / Path(x).name / "collect.json").exists()]
@@ -768,7 +787,7 @@ class Dashboard:
             return None
         info = json.loads((d / "run.json").read_text())
         info["notes"] = self.notes(d)
-        info["spaces"] = _spaces(info)
+        info["spaces"] = _spaces(info, d, self.runs_dir)
         info["parent"] = self.parent(info)
         info["children"] = sorted(r["name"] for r in self._runs_from(name))
         if "launch" not in info:

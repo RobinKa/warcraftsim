@@ -89,8 +89,11 @@ def relabel(order: int, kind: int, target_known: bool, target_is_tree: bool) -> 
 def build_vocab(paths: list[str | Path], min_count: int = 5) -> dict:
     """Unit types, current orders, order classes and upgrades seen in the games."""
     types, cur, orders, upgrades = Counter(), Counter(), Counter(), Counter()
+    names: dict[int, str] = {}
     for p in paths:
         g = load_game(p)
+        if not names:  # the game's order ids by name (the same in every game)
+            names = {int(v): k for k, v in (g["meta"].get("order_names") or {}).items()}
         u = g["units"]
         types.update(u[:, C_TYPE].tolist())
         cur.update(u[u[:, C_ORDER] != 0, C_ORDER].tolist())
@@ -105,7 +108,71 @@ def build_vocab(paths: list[str | Path], min_count: int = 5) -> dict:
     keep = lambda c: [k for k, n in c.most_common() if n >= min_count]  # noqa: E731
     return {"types": keep(types), "current_orders": keep(cur)[:255],
             "orders": [list(k) for k in keep(orders)], "upgrades": keep(upgrades),
-            "counts": {"orders": [orders[tuple(k)] for k in keep(orders)]}}
+            "counts": {"orders": [orders[tuple(k)] for k in keep(orders)]},
+            "order_names": {str(k): v for k, v in names.items()}}
+
+
+def rawcode(v: int) -> str:
+    return int(v).to_bytes(4, "big").decode("latin-1")
+
+
+def order_label(order: int, kind: int, names: dict[int, str]) -> str:
+    """An order class for people: "attack (unit)", "train hpea", "build hbar (point)", ..."""
+    if order >= TYPE_CODE:  # a unit, building or upgrade code: train / build / research / learn
+        code = rawcode(order)
+        verb = {IMMEDIATE: "research" if code.startswith("R") else "train", POINT: "build",
+                SKILL: "learn"}.get(kind, "")  # (upgrade codes start with R)
+        return f"{verb} {code}".strip()
+    name = names.get(order, str(order))
+    return name if kind == IMMEDIATE else f"{name} ({KIND_NAMES[kind]})"
+
+
+def demo_order_names(runs_dir: str | Path) -> dict[int, str]:
+    """The game's order names by id, from a recorded game's meta (runs/fullgame/*/game*.npz)."""
+    for p in sorted(Path(runs_dir).glob("fullgame/*/game*.npz"))[:1]:
+        try:
+            with np.load(p) as z:
+                return {int(v): k for k, v in (json.loads(str(z["meta"])).get("order_names") or {}).items()}
+        except (OSError, ValueError, KeyError):
+            pass
+    return {}
+
+
+def describe_spaces(vocab: dict, order_names: dict[int, str] | None = None, agents: str = "") -> dict:
+    """The observation and action spaces for people, in the format the dashboard shows
+    (puffer.tasks.describe_spaces): run.json "spaces" of a self-play run."""
+    names = order_names or {int(k): v for k, v in (vocab.get("order_names") or {}).items()}
+    enc = Encoder(vocab)
+    ent = (["own", "enemy", "neutral", "x (mirrored: own base left)", "y", "hp / max hp", "max hp / 1000",
+            "mana / max mana", "max mana / 1000"] + [f"flag {b}" for b in FLAG_BITS]
+           + ["hero level / 10", "resource / 12500 (mines)", "skill points / 3", "sin facing", "cos facing (mirrored)",
+              "has an order", "queued production / 5", "producing"])
+    glob = (["gold / 1000", "lumber / 1000", "food used / 100", "food cap / 100", "upkeep / 2", "time (steps / 1800)"]
+            + [f"own race: {r}" for r in RACES] + [f"enemy race: {r}" for r in RACES]
+            + [f"upgrade {rawcode(u)} (level / 3)" for u in vocab["upgrades"]])
+    orders = ["none"] + [order_label(int(o), int(k), names) for o, k in vocab["orders"]]
+    return {"observation": {"size": f"{enc.G} + up to {MAX_ENT} × {F}", "blocks": [
+                {"name": "global token", "rows": 1, "features": glob},
+                {"name": f"entities: own units first (up to {MAX_OWN}), then the enemy's and neutral ones it sees",
+                 "rows": MAX_ENT, "features": ent},
+                {"name": f"each entity's unit type (one of {enc.n_types}, embedded)", "rows": MAX_ENT,
+                 "features": ["type"]},
+                {"name": f"each entity's current order (one of {enc.n_cur}, embedded)", "rows": MAX_ENT,
+                 "features": ["current order"]}]},
+            "actions": {"units": f"up to {MAX_OWN}", "sizes": [enc.n_orders, MAX_ENT, BINS, BINS],
+                        "heads": [
+                            {"name": "order", "size": enc.n_orders, "options": orders, "used_by": []},
+                            {"name": "target unit (pointer)", "size": f"≤ {MAX_ENT}", "options": ["any entity it sees"],
+                             "used_by": ["an order on a unit"]},
+                            {"name": "point x", "size": BINS, "options": [f"{BINS} bins of {2 * MAP_EXTENT / BINS:.0f}"],
+                             "used_by": ["an order at a point or on a tree (the nearest)"]},
+                            {"name": "point y (given x)", "size": BINS, "options": [f"{BINS} bins"],
+                             "used_by": ["an order at a point or on a tree"]}],
+                        "masks": "Orders: those the unit's type got in the demonstrations (none always); "
+                                 "the pointer: the entities in view. Harvest orders to workers already harvesting "
+                                 "are not sent (the demonstrations' AI re-issued them without effect)."},
+            "agents": agents, "reward": "+1 for a win, -1 for a loss, 0 for a tie (the time limit), at the end.",
+            "reward_scale": 1}
 
 
 def _bin(v: np.ndarray) -> np.ndarray:

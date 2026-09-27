@@ -610,6 +610,8 @@ def main(argv: list[str] | None = None) -> int:
             "description": (f"Self-play on whole games ({args.map}) from a behavior-cloned policy: PPO per unit, "
                             f"a league of itself, past snapshots and the built-in AI ({', '.join(ai) or 'none'})"),
             "config": {k: str(v) for k, v in vars(args).items()},
+            "spaces": fx.describe_spaces(vocab, None if vocab.get("order_names") else fx.demo_order_names(args.runs),
+                                         "two per game against itself or a past snapshot, one against the built-in AI"),
             "launch": {"command": "python3 -m warcraftsim.fullgame.selfplay " + " ".join(sys.argv[1:] if argv is None else argv),
                        "git": git_info()}}
 
