@@ -204,20 +204,25 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--games-per-process", type=int, default=4,
                     help="games of one matchup in one running game (restarts reload the map in it)")
     ap.add_argument("--label", help="the evaluation's name on the dashboard")
+    ap.add_argument("--mirror", action="store_true", help="the AI plays the agent's race")
+    ap.add_argument("--device", help="default: cuda if available")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", type=Path, help="results (.jsonl; default: next to the checkpoint, play.jsonl)")
     args = ap.parse_args(argv)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     net, ck = load(args.checkpoint, device)
     vocab = ck["vocab"]
     rng = random.Random(args.seed)
     plans = [(i, rng.choice(fx.RACES) if args.race == "all" else args.race,
               rng.choice(fx.RACES) if args.ai_race == "all" else args.ai_race, i % 2) for i in range(args.games)]
+    if args.mirror:
+        plans = [(i, race, race, side) for i, race, _, side in plans]
     out = args.out or args.checkpoint.with_name("play.jsonl")
     eval_id = f"{args.checkpoint.stem}@{int(time.time())}"  # this launch's games (the dashboard groups by it)
     label = args.label or (f"{args.checkpoint.name} (epoch {ck.get('epoch')}) vs {args.difficulty} AI"
                            + (f", temperature {args.temperature:g}" if args.temperature != 1.0 else "")
-                           + (f", order temperature {args.order_temperature:g}" if args.order_temperature != 1.0 else ""))
+                           + (f", order temperature {args.order_temperature:g}" if args.order_temperature != 1.0 else "")
+                           + (", mirror matchups" if args.mirror else ""))
     names = queue.Queue()
     for k in range(args.parallel):
         names.put(f"bcplay{k}")
