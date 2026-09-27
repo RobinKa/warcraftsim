@@ -536,6 +536,17 @@ def main() -> int:
             update_job["thread"] = threading.Thread(target=lambda: None)
         update_job["thread"].start()
 
+    def freeze_compiled() -> None:
+        """From the first threaded update on, compiled functions only run what is compiled (a new
+        shape runs eagerly): torch.compile tracing in either thread while the other runs compiled
+        code stops the run ("FX to symbolically trace a dynamo-optimized function"), and the flag
+        it checks is global."""
+        for L_ in learners:
+            L_.step_fn = torch._dynamo.run(L_.net.step)
+            L_.evaluate_fn = torch._dynamo.run(L_.net.evaluate)
+        if pool is not None:
+            pool.step = torch._dynamo.run(pool.net.step)
+
     def finish_update() -> dict:
         th = update_job.get("thread")
         if th is None:
@@ -658,6 +669,8 @@ def main() -> int:
                       f"{p:.0%} against the main learner", flush=True)
         if league is not None:
             league.save()
+        if epoch == 3 and device.type == "cuda" and not args.no_compile:
+            freeze_compiled()
         start_update(batches, progress, inline=epoch <= 2)
     finish_update()
     path = ck_dir / f"{steps:016d}.pt"  # the last update's weights
