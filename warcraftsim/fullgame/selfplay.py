@@ -371,7 +371,7 @@ def actor_main(wid: int, cfg: dict, out_q, stop) -> None:
     try:
         device = torch.device(cfg["device"])
         nets = Nets(cfg, device)
-        while nets.current is None and not stop.is_set():
+        while nets.current is None and not stop.is_set() and os.getppid() == cfg["learner_pid"]:
             time.sleep(1)
             nets.reload()
         infer = Inference(nets, device)
@@ -380,7 +380,7 @@ def actor_main(wid: int, cfg: dict, out_q, stop) -> None:
         for th in threads:
             th.start()
             time.sleep(2)  # launches spread out
-        while not stop.is_set():
+        while not stop.is_set() and os.getppid() == cfg["learner_pid"]:  # the learner gone (killed): stop too
             time.sleep(1)
     finally:
         reaper.reap()  # the games (multiprocessing children skip atexit)
@@ -634,7 +634,7 @@ def main(argv: list[str] | None = None) -> int:
            "wait_floor_ms": args.wait_floor_ms, "games_per_actor": args.games_per_actor,
            "games_per_process": args.games_per_process, "chunk": args.chunk, "gamma": args.gamma, "lam": args.lam,
            "seed": args.seed, "slot": slot, "video_every": args.video_every, "scripted_reset": bool(args.scripted_reset),
-           "agent_games_factor": args.agent_games_factor, "mirror": bool(args.mirror)}
+           "agent_games_factor": args.agent_games_factor, "mirror": bool(args.mirror), "learner_pid": os.getpid()}
     ctx = torch.multiprocessing.get_context("spawn")
     out_q, stop = ctx.Queue(maxsize=4096), ctx.Event()
     actors = [ctx.Process(target=actor_main, args=(w, cfg, out_q, stop), daemon=True) for w in range(args.actors)]
