@@ -84,6 +84,8 @@ globals
     // skill learned), x, y, target id
     integer array w3s_iss
     integer w3s_niss = 0
+    boolean array w3s_seer  // players whose view the units' visibility bits report: agents (and
+                            // with W3S_CFG_RECORD_ORDERS every player, to see what the AI saw)
     // Replay videos: markers drawn in the game (ops 80-83). They are all made at init, the same in a
     // recorded game and in its playback, and are only moved, shown and hidden later: a handle made
     // only during playback would shift the handle ids (the unit ids of the commands) of later units.
@@ -267,7 +269,7 @@ function W3S_Visibility takes unit u returns integer
     local integer bit = 1
     loop
         exitwhen i >= bj_MAX_PLAYERS
-        if w3s_agent[i] and IsUnitVisible(u, Player(i)) then
+        if w3s_seer[i] and IsUnitVisible(u, Player(i)) then
             set bits = bits + bit
         endif
         set bit = bit * 2
@@ -1581,6 +1583,7 @@ function W3S_Configure takes nothing returns nothing
         exitwhen i >= bj_MAX_PLAYERS
         set w3s_agent[i] = ModuloInteger(W3S_CFG_AGENT_MASK / W3S_Pow2(i), 2) == 1
         set w3s_scripted[i] = ModuloInteger(W3S_CFG_SCRIPTED_MASK / W3S_Pow2(i), 2) == 1
+        set w3s_seer[i] = w3s_agent[i] or (W3S_CFG_RECORD_ORDERS and GetPlayerSlotState(Player(i)) == PLAYER_SLOT_STATE_PLAYING)
         set i = i + 1
     endloop
 endfunction

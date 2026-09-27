@@ -147,7 +147,7 @@ class Unit:
     max_mana: int
     order: int
     flags: UnitFlags
-    visible_to: int  # bitmask over agent players
+    visible_to: int  # bitmask over players (bit p): agents, or every player with record_ai_orders
     resource: int  # gold left in a mine
     hero_level: int = 0
     hero_xp: int = 0
