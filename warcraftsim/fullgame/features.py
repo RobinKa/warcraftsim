@@ -32,6 +32,15 @@ MOVE, AIMOVE = 851986, 851988  # the AI's own move order is played back as a mov
 # orders; a policy that learned it interrupted working harvesters, the game refused two thirds),
 # returnresources, and autocasts (recharge: moon wells; ambush: archers at night)
 DROPPED_ORDERS = {851974, 852660, 852017, 852020, 852157, 852131}
+HARVEST, SMART = 852018, 851971
+HARVESTING = {852018, 852017, 852020}  # current orders of a worker in its harvest cycle
+
+
+def redundant(order: int, kind: int, current: int) -> bool:
+    """A harvest order (harvest, or smart on a tree or unit) for a worker already harvesting: the
+    AI re-issues these without effect; learned as decisions, a policy re-ordered its workers every
+    few seconds to other trees and reset their work (240 gold from 27 peasants in 80 s)."""
+    return current in HARVESTING and order in (HARVEST, SMART) and kind in (UNIT, TREE)
 IMMEDIATE, POINT, UNIT, SKILL, TREE = range(5)
 KIND_NAMES = ("immediate", "point", "unit", "skill", "tree")
 RACES = ("human", "orc", "undead", "nightelf")
@@ -189,7 +198,7 @@ class Encoder:
                 target = int(r[6])
                 lab = relabel(int(r[2]), int(r[3]), target in index, target in trees)
                 c = self.order_index.get(lab) if lab is not None else None
-                if c is None:
+                if c is None or redundant(lab[0], lab[1], int(st["sel"][k, C_ORDER])):
                     continue
                 out["y_order"][t, k] = c
                 out["y_ptr"][t, k] = -1

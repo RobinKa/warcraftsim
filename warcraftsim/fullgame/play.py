@@ -100,6 +100,8 @@ class BCAgent:
             if c == 0:
                 continue
             oid, kind = self.orders[c]
+            if fx.redundant(oid, kind, int(sel[i, fx.C_ORDER])):  # it is harvesting already
+                continue
             unit = int(sel[i, fx.C_ID])
             x = float(self.view.sign * fx.bin_center(int(bx[i])))
             y = float(fx.bin_center(int(by[i])))

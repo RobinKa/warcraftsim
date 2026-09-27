@@ -83,7 +83,7 @@ def losses(net: FullGameNet, b: dict, device) -> tuple[torch.Tensor, dict]:
     y_x, y_y = b["y_x"][:, :O].long(), b["y_y"][:, :O].long()
     n_own = b["n_own"].long()
     g, u = net.encode(ent, typ, cur, mask, b["glob"].float())
-    logits = net.order_logits(g, u, typ, n_own, by_type=False)
+    logits = net.order_logits(g, u[:, :O], typ, n_own, by_type=False)  # own units come first
     own = torch.arange(O, device=device)[None] < n_own[:, None]
     l_order = F_.cross_entropy(logits[own], y_order[own])
     if net.training:  # the orders each unit type gets (the mask for playing)
