@@ -675,10 +675,12 @@ const SECTIONS = [
     ["c-lg-exploit", "The main exploiter", "its win rate against the main learner's current policy (it restarts from the main learner above --exploiter-reset or below --exploiter-reset-low)",
       [TR("league/exploiter_vs_main", "exploiter vs main", "#f47067"), TR("league/exploiter_resets", "resets", "#8795a3")], { ymin: 0, empty: "no exploiter (--torch.exploiters=1)" }],
     ["c-lg-members", "League size", "past snapshots", [TR("league/members", "snapshots", "#39c5cf")], { ymin: 0, empty: "no league" }],
-    ["c-lg-level", "Curriculum against the built-in AI", "level: 0 the real game; to 0.5 the learner's hit points up to twice the AI's; to 1 also the AI starting late (moved towards a 50% score)",
+    ["c-lg-level", "Curriculum against the built-in AI", "level: 0 the real game, 1 the easiest (by --curriculum-mode: the learner's hit points and the AI's late start, the late start alone, or a tax on the AI's income); moved towards a 50% score",
       [["trp", "curriculum/", " level"]], { ymin: 0, ymax: 1, empty: "no curriculum (--curriculum)" }],
     ["c-lg-delay", "The AI's late start", "seconds its units idle at the start of a game (the learner's hit points: the handicap)",
       [["trp", "curriculum/", " delay"]], { ymin: 0, empty: "no curriculum (--curriculum)" }],
+    ["c-lg-tax", "The tax on the AI's income", "the share of what it gathers taken away (--curriculum-mode tax)",
+      [["trp", "curriculum/", " tax"]], { ymin: 0, ymax: 1, empty: "no tax (--curriculum-mode tax)" }],
   ]],
   ["System", [
     ["c-sps", "Throughput", "trainer SPS · game time vs real time",

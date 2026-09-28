@@ -569,6 +569,20 @@ It learned to gather, not to spend. With twice the hit points a small army wins 
 
 With even hit points the levels fell fast from 90 s. `fgself-4`'s learner beat the AI starting 30–45 s late, where the clone had lost 10 of 13 such games. Over its first 2.8M steps the late start needed for 50% was 25–80 s (normal) and 30–75 s (easy), per half million steps. A 0.02 level step (3.6 s a game) makes it a random walk of about ±36 s over 100 games, so from there on the step is 0.01. 10% of the AI launches now play the real game (`--real-share`), and those results are charted as the yardstick.
 
+### The late start is exploitable too: a tax on the AI's income (`fgself-6`)
+
+`fgself-5` held 50% with the AI starting 30–50 s late, but the real game stayed at about 4% (5 wins, 12 ties, 168 losses). Its videos showed why: it attacked the idle AI. 65% of its curriculum wins came before the AI had started.
+
+Two knobs have now been gamed:
+* **Twice the hit points** let a small army win, so the learner never had to spend.
+* **A late start** left an opponent that doesn't defend itself.
+
+The third knob is a tax (`--curriculum-mode tax`). The built-in AI plays from the start, but each step `play_one` takes a share of what it gathered (and of its starting gold and lumber) with `SetResources`. That makes a poorer opponent that still defends, builds and attacks.
+
+Smoke test against the easy AI at a 45–61% tax: 6 wins, 1 tie, 15 losses in 22 games. In several losses the learner had gathered 2–3 times the AI's gold (22,295 vs 7,845), so this curriculum presses on the skill it lacks: turning gold into an army.
+
+`fgself-6` continues from `fgself-5` at 6.9M steps. It starts at level 0.6 (a 54% tax, up to 90%) with a controller step of 0.01, and 10% of its AI launches play the real game.
+
 ### Memory and a value head in BC
 
 Two additions to cloning:
