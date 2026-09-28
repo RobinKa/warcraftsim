@@ -594,6 +594,24 @@ After 1.5M steps the learner's race decided most curriculum games. Mirror matchu
 
 One level per difficulty settled where night elf wins balanced human and orc losses. Every race's games were then nearly decided and taught little: the easy AI's level sat at the 90% maximum while human and orc still lost. The curriculum now keeps a level per difficulty and learner's race.
 
+### Human and orc had no lumber: harvest switches were dropped as "redundant"
+
+Per race, human and orc stayed pinned at the 90% maximum tax. Against an AI that kept a tenth of its income, the learner scored:
+* **As human:** 1 win, 19 ties, 20 losses, gathering 29,183 gold.
+* **As orc:** 3 wins, 24 ties, 13 losses, gathering 44,561 gold.
+
+The videos show the cause: in one human game it held 8225 gold and 187 lumber at 72 s, and 18,731 gold, 445 lumber and 24/24 food at 143 s. Human and orc farms and barracks cost lumber, so it could only hoard gold.
+
+The bug: the rule that drops the AI's re-issued harvest orders (they reset the workers' work) dropped every harvest order to a harvesting worker. A worker's current order doesn't say gold or lumber. So a miner sent to the trees was dropped too, from the labels and at play time, and the clone learned that harvesting workers never switch. In the AI's games, 50% of human harvesting workers are on lumber, 36% of orc and 35% of night elf.
+
+The fix:
+* `features.harvest_resource` says what an order harvests.
+* The encoder and `BCAgent` track what each worker was last sent to.
+* `redundant()` only drops orders to the resource a worker already harvests.
+* A new entity feature marks workers on lumber (F 28 → 29; older checkpoints get a zero column).
+
+In 60 games this recovers 148 (human) and 238 (orc) switch labels. `fullgame-rush4` fine-tunes `fullgame-rush3-tk` on the fixed labels: 8000 AI games plus both takeover collections, 2 epochs.
+
 ### Memory and a value head in BC
 
 Two additions to cloning:
