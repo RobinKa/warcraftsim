@@ -1189,6 +1189,8 @@ function renderFullBC(d) {
   const playCharts = [
     ["p-win", "Wins against the built-in AI", "per evaluation", [["win_rate", "wins", "#4cc38a"], ["tie_rate", "ties", "#e0a33a"]], { ymin: 0, ymax: 1 }],
     ["p-gold", "Gold mined per game", "the clone vs the AI", [["gold", "clone", "#4cc38a"], ["ai_gold", "built-in AI", "#e5534b"]], { ymin: 0 }],
+    ["p-held", "Resources on hand", "gold + lumber held, mean over the game: gathered and not spent", [["held", "clone", "#4cc38a"], ["ai_held", "built-in AI", "#e5534b"]], { ymin: 0 }],
+    ["p-food", "Food used at 1 minute", "what the gold became: workers and army", [["food_1min", "clone", "#4cc38a"], ["ai_food_1min", "built-in AI", "#e5534b"]], { ymin: 0 }],
     ["p-ref", "Refused orders", "share the game did not accept", [["refused", "refused", "#e5534b"]], { ymin: 0, ymax: 1 }],
   ];
   if (main.dataset.run !== info.name) {

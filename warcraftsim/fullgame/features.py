@@ -42,6 +42,17 @@ def redundant(order: int, kind: int, current: int) -> bool:
     AI re-issues these without effect; learned as decisions, a policy re-ordered its workers every
     few seconds to other trees and reset their work (240 gold from 27 peasants in 80 s)."""
     return current in HARVESTING and order in (HARVEST, SMART) and kind in (UNIT, TREE)
+
+
+WORKER = 4  # UnitFlags.WORKER
+BUILD_COMMIT_STEPS = 60  # (a worker's building order that lasts longer: let it be re-ordered)
+
+
+def building(flags: int, current: int) -> bool:
+    """A worker whose current order is a building: on its way to the site or constructing. The
+    policy picks every unit's order every step; another order cancels the build, and the clone did
+    that to 47% of its builds (the AI to almost none), so it built too few farms and hoarded."""
+    return bool(flags & WORKER) and current >= TYPE_CODE
 IMMEDIATE, POINT, UNIT, SKILL, TREE = range(5)
 KIND_NAMES = ("immediate", "point", "unit", "skill", "tree")
 RACES = ("human", "orc", "undead", "nightelf")

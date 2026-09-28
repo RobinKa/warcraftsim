@@ -393,6 +393,39 @@ The fix (`Encoder.encode` with costs):
 
 52% of the AI's train labels go. The share of building steps with 5+ queued falls from 23% to 2%, and with a queue but not busy from 22% to 3%.
 
+### The clone cancels its own builds, so it is supply-blocked
+
+The label fix alone didn't stop the hoarding. The ablation below compares two fits on the same 1000 games (3 epochs each), each playing 16 mirror games against the normal AI:
+
+| labels | wins, ties, losses | gold + lumber held (clone vs AI) | food at 1 minute (clone vs AI) |
+|---|---|---|---|
+| old (refused retries kept) | 0, 1, 15 | not recorded | not recorded |
+| new (`Encoder` with costs) | 0, 0, 16 | 4074 vs 1746 | 19 vs 46 |
+
+Composition at 60 s showed why: the clone is supply-blocked.
+* Undead: 10/10 food with no ziggurat, against the AI's 50/50 with 3–4.
+* Human: 1 farm, against the AI's 7.
+* Night elf: 1–2 moon wells, against the AI's 5 (+3 building).
+
+With no free food the availability mask blocks all training, and the gold piles up.
+
+Over 8 games, the clone had 80 accepted build orders and 50 constructions started (62%). The AI had 128 and 122 (95%).
+
+Following each build showed the cause. Of 102 accepted builds, 48 never started, and in every one of those the worker got another order before reaching the site. All 45 builds that started were left alone. The policy picks every unit's order every half second, so a worker on its way to build keeps getting a chance of another order, which cancels the build. The AI leaves its builders alone until the building stands.
+
+The fix: `BCAgent` keeps a worker whose current order is a building (on its way, or constructing) from getting other orders. This is `features.building`, with a 30 s timeout, and it applies in play and self-play.
+
+In the same 8 games (seed 7), the fix changed:
+
+| | builds started | held (clone vs AI) | food at 1 minute (clone vs AI) |
+|---|---|---|---|
+| before | 44% | 4760 vs 1942 | 15.6 vs 47.9 |
+| after | 68% | 3847 vs 1760 | 18.6 vs 37.0 |
+
+The builds that still fail lost their order in the game, probably at placement, not to another order from the clone.
+
+Evaluations now record each side's gold and lumber on hand (mean over the game) and its food at one minute. The dashboard charts both.
+
 ### Memory and a value head in BC
 
 Two additions to cloning:

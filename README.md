@@ -326,7 +326,7 @@ After micro, the whole melee game (economy, building, tech, armies, heroes), sta
   * `fullgame/bc.py` keeps the epoch with the lowest validation loss.
   * With memory it trains on chunks of consecutive steps. Each lane walks through whole game sides and carries its state from chunk to chunk.
   * The value head learns each step's return under self-play's rewards, computed from the recorded games, so self-play doesn't start from an untrained value.
-  * `fullgame/play.py` lets the policy play the built-in AI.
+  * `fullgame/play.py` lets the policy play the built-in AI. A worker on its way to build, or building, gets no other orders: picked every step, they cancelled half the clone's builds.
 * **Self-play** (`fullgame/selfplay.py`, after AlphaStar): PPO from the cloned policy.
   * Actor processes play the games (8 per process by default); each batches its agents' network calls on the GPU. Games of one setup (races, built-in AI or not) run in one process, restarted in place.
   * A league: the learner against itself (both sides train), past snapshots (prioritized fictitious self-play) and the built-in AI, a fixed anchor whose win rate is the run's yardstick.

@@ -58,6 +58,13 @@ _ARG_ORDER = ("task", "envs", "workers", "timesteps", "step_seconds", "horizon",
               "video_every", "init_from")
 
 
+
+def _mean_side(rows: list[dict], side: str, key: str) -> float | None:
+    """The mean of a play result's sides[side][key] over the games that record it (None: none do)."""
+    v = [((r.get("sides") or {}).get(side) or {}).get(key) for r in rows]
+    v = [x for x in v if x is not None]
+    return sum(v) / len(v) if v else None
+
 class _JsonlCache:
     """Incrementally read JSON-lines files (they only grow; a file that is replaced, e.g. a run
     deleted and started again under its name, is read anew). Keeps the `max_files` most recently
@@ -526,6 +533,8 @@ class Dashboard:
                         "gold": sum(((r.get("sides") or {}).get("agent") or {}).get("gold", 0) for r in rows) / n,
                         "ai_gold": sum(((r.get("sides") or {}).get("ai") or {}).get("gold", 0) for r in rows) / n,
                         "refused": sum(r.get("failed", 0) for r in rows) / max(sent, 1),
+                        **{f"{pre}{k}": _mean_side(rows, side, k) for pre, side in (("", "agent"), ("ai_", "ai"))
+                           for k in ("held", "food_1min")},
                         "orders": sum(r.get("orders", 0) for r in rows) / n,
                         "temperature": first.get("temperature"), "order_temperature": first.get("order_temperature"),
                         "by_race": by_race, "matrix": matrix})

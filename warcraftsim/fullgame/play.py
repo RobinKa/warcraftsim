@@ -74,6 +74,8 @@ class BCAgent:
         self.view = self.enc.view(self.player, sign, races)
         self.trees = {d.id: (d.x, d.y) for d in (obs.destructables or [])}
         self.h = None  # the memory core's state (FullGameNet.memory)
+        self.building_since: dict[int, int] = {}  # worker -> the step it started its building order
+        self.t = 0
 
     def accepted(self, cmds: list[Command], results: list[bool]) -> None:
         """The game's answer to the last step's orders: accepted train / research orders queue."""
@@ -90,11 +92,15 @@ class BCAgent:
             if int(e.kind) == int(EventKind.TREE_DEATH):
                 self.trees.pop(e.a, None)
         rows = unit_rows(obs, t) if rows is None else rows
+        self.t = t
         p = obs.players.get(self.player)
         me = (np.asarray([t, self.player, p.gold, p.lumber, p.food_used, p.food_cap, p.upkeep, p.gold_gathered,
                           p.lumber_gathered, p.structures, int(p.result)]) if p is not None else None)
         events = np.asarray([(t, int(e.kind), e.a, e.b, e.c) for e in obs.events], np.int64).reshape(-1, 5)
         st = self.view.step(rows, me, events, t)
+        sel = st["sel"][:st["n_own"]]  # the workers busy with a building order, and since when
+        busy = {int(u) for u, f, o in zip(sel[:, fx.C_ID], sel[:, fx.C_FLAGS], sel[:, fx.C_ORDER]) if fx.building(int(f), int(o))}
+        self.building_since = {u: self.building_since.get(u, t) for u in busy}
         return st if st["n_own"] > 0 else None
 
     def commands(self, st: dict, order, tgt, bx, by) -> list[Command]:
@@ -110,6 +116,8 @@ class BCAgent:
             oid, kind = self.orders[c]
             if fx.redundant(oid, kind, int(sel[i, fx.C_ORDER])):  # it is harvesting already
                 continue
+            if self.committed(int(sel[i, fx.C_ID])):
+                continue  # on its way to build, or building: another order would cancel it
             self.last_sent.append((oid, kind))
             unit = int(sel[i, fx.C_ID])
             x = float(self.view.sign * fx.bin_center(int(bx[i])))
@@ -136,6 +144,11 @@ class BCAgent:
                 out.append(TargetDestructable(unit, oid, tree))
         self.issued += len(out)
         return out
+
+    def committed(self, unit: int) -> bool:
+        """A worker busy with a building order (features.building) for less than BUILD_COMMIT_STEPS."""
+        since = self.building_since.get(unit)
+        return since is not None and self.t - since < fx.BUILD_COMMIT_STEPS
 
     def act(self, obs: Observation, t: int) -> list[Command]:
         st = self.observe(obs, t)
@@ -191,7 +204,15 @@ def play_game(g: GameInstance, obs: Observation, net, vocab: dict, device, agent
     names = {v: k for k, v in (obs.orders or {}).items()}
     kinds = {0: fx.IMMEDIATE, 1: fx.POINT, 2: fx.UNIT, 3: fx.SKILL}
     trace: list[dict] = []
+    held = {0: [], 1: []}  # gold + lumber on hand each step (hoarding: gathered and not spent)
+    food_1min: dict[int, int] = {}
     while not obs.game_over:
+        for p in (0, 1):
+            s_ = obs.players.get(p)
+            if s_ is not None:
+                held[p].append(s_.gold + s_.lumber)
+                if obs.game_time >= 60 and p not in food_1min:
+                    food_1min[p] = s_.food_used
         cmds = bot.act(obs, t)
         if values is not None:
             mine = Counter(fx.order_label(o, k, names) for o, k in getattr(bot, "last_sent", []))
@@ -215,7 +236,9 @@ def play_game(g: GameInstance, obs: Observation, net, vocab: dict, device, agent
     results = {p: s.result.name for p, s in obs.players.items()}
     sides = {("agent" if p == agent_side else "ai"): {"gold": s.gold_gathered, "lumber": s.lumber_gathered,
                                                         "food": f"{s.food_used}/{s.food_cap}",
-                                                        "structures": s.structures}
+                                                        "structures": s.structures,
+                                                        "held": round(sum(held[p]) / max(len(held[p]), 1)),
+                                                        "food_1min": food_1min.get(p)}
              for p, s in obs.players.items() if p in (0, 1)}
     outcome = results.get(agent_side, "?")
     ai = slots[1 - agent_side]
