@@ -300,9 +300,9 @@ def test_curriculum_against_the_builtin_ai(tmp_path):
     lg = League(tmp_path, ["easy"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard",
                 curriculum=(0.75, 0.25, 120.0, 50))
     n = "script:ai-easy"
-    hd = lambda: tuple(lg.knobs(n)[k] for k in ("handicap", "delay"))  # noqa: E731
+    hd = lambda: tuple(lg.knobs(n, "")[k] for k in ("handicap", "delay"))  # noqa: E731
     assert hd() == (100, 60.0)
-    launch = [x for x in lg.spec()["launch"] if x["kind"] == "ai"][0]
+    launch = [x for x in lg.spec()["launch"] if x["kind"] == "ai"][0]["by_race"][""]
     assert (launch["handicap"], launch["delay"], launch["level"]) == (100, 60.0, 0.75)
     lg.curriculum(n, 1.0)  # a win: harder
     assert hd() == (100, 0.0)
@@ -311,15 +311,15 @@ def test_curriculum_against_the_builtin_ai(tmp_path):
     assert hd() == (80, 0.0)  # (handicaps in steps of 10)
     for _ in range(5):
         lg.curriculum(n, 1.0)
-    assert lg.level[n] == 0.0 and hd() == (50, 0.0)  # the real game
+    assert lg.level[(n, "")] == 0.0 and hd() == (50, 0.0)  # the real game
     for _ in range(9):
         lg.curriculum(n, -1.0)
-    assert lg.level[n] == 1.0 and hd() == (100, 120.0)
+    assert lg.level[(n, "")] == 1.0 and hd() == (100, 120.0)
     lg.write()
     again = League(tmp_path, ["easy"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard",
                    curriculum=(0.75, 0.25, 120.0, 50))
     again.restore(json.loads((tmp_path / "league.json").read_text()))
-    assert again.level[n] == 1.0  # (resumed runs keep their levels)
+    assert again.level[(n, "")] == 1.0  # (resumed runs keep their levels)
 
 
 def test_curriculum_late_start_only(tmp_path):
@@ -347,3 +347,17 @@ def test_curriculum_real_game_yardstick(tmp_path):
                    curriculum=(0.5, 0.1, 180.0, 50), mode="delay")
     again.restore(json.loads((tmp_path / "league.json").read_text()))
     assert again.member("script:ai-normal (real)").wins == 1
+
+
+def test_curriculum_by_race(tmp_path):
+    """A level per difficulty and learner's race; levels from before races go to every race."""
+    lg = League(tmp_path, ["normal"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard",
+                curriculum=(0.5, 0.1, 0.9, 50), mode="tax", races=("human", "nightelf"))
+    lg.curriculum("script:ai-normal", -1.0, "human")
+    lg.curriculum("script:ai-normal", 1.0, "nightelf")
+    by = [x for x in lg.spec()["launch"] if x["kind"] == "ai"][0]["by_race"]
+    assert by["human"]["tax"] == 0.54 and by["nightelf"]["tax"] == 0.36
+    assert "curriculum/ai-normal human tax" in lg.train_keys()
+    old = {"level": {"script:ai-normal": 0.7}}
+    lg.restore(old)
+    assert lg.level[("script:ai-normal", "human")] == lg.level[("script:ai-normal", "nightelf")] == 0.7

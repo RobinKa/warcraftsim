@@ -323,7 +323,9 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
         side = rng.randrange(2)  # the learner's
         ai = _choose(rng, spec["launch"])  # {"kind": "agents"} or {"kind": "ai", "difficulty"[, "delay"]}
         slots = [Agent(races[0], handicap=cfg["handicap"]), Agent(races[1], handicap=cfg["handicap"])]
-        curr = ai["kind"] == "ai" and "level" in ai  # a curriculum game (League.knobs)
+        curr = ai["kind"] == "ai" and "by_race" in ai  # a curriculum game (League.knobs, by the learner's race)
+        if curr:
+            ai = {**ai, **ai["by_race"].get(races[side], {})}
         real = curr and rng.random() < cfg["real_share"]  # the real game instead: the yardstick, no curriculum
         curr = curr and not real
         late = curr and ai.get("delay", 0.0) > 0  # the AI starts late: an agent slot till then
@@ -354,7 +356,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                     opp = ({"name": f"script:ai-{ai['difficulty']}" + (" (real)" if real else ""), "kind": "ai"}
                            if ai["kind"] == "ai" else _choose(rng, spec["agents"]))
                     if curr:  # the curriculum's current knobs for this AI
-                        now = next((x for x in spec["launch"] if x.get("difficulty") == ai["difficulty"]), ai)
+                        now = next((x.get("by_race", {}).get(races[side], ai) for x in spec["launch"]
+                                    if x.get("difficulty") == ai["difficulty"]), ai)
                         opp["curriculum"] = now.get("level", 0.0)
                         if late:
                             opp["start"] = int(round(now.get("delay", 0.0) / cfg["step_seconds"]))
@@ -582,7 +585,8 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q) -> None:
 
 class League:
     def __init__(self, run_dir: Path, ai: list[str], shares: dict, max_past: int, pfsp: str,
-                 curriculum: tuple[float, float, float, int] | None = None, mode: str = "hp"):
+                 curriculum: tuple[float, float, float, int] | None = None, mode: str = "hp",
+                 races: tuple[str, ...] = ("",)):
         """`curriculum`: (start level, step, the knob at level 1, base handicap): games against the
         built-in AI get easier or harder towards a 50% score, a level per difficulty in [0, 1] that
         a loss raises by `step`, a win lowers (a tie leaves it). At 0 the game is the real one; None:
@@ -594,21 +598,23 @@ class League:
         * "delay": the late start alone. The learner learned to rush the idle AI: 65% of its wins
           came before the AI started.
         * "tax": the AI plays from the start, but loses this share of what it gathers (and of its
-          starting gold and lumber), up to the knob (e.g. 0.9): a poorer opponent, nothing idle."""
+          starting gold and lumber), up to the knob (e.g. 0.9): a poorer opponent, nothing idle.
+        A level per difficulty and learner's race (`races`): one per difficulty settled where night
+        elf games (96% won) balanced human and orc ones (7-14%), and neither end taught anything."""
         self.run_dir, self.shares, self.max_past, self.pfsp = run_dir, shares, max_past, pfsp
         self.scripts = {f"script:ai-{d}": Member(f"script:ai-{d}") for d in ai}
-        self.rule, self.mode = curriculum, mode
-        self.level = {n: curriculum[0] for n in self.scripts} if curriculum else {}
+        self.rule, self.mode, self.races = curriculum, mode, tuple(races)
+        self.level = {(n, r): curriculum[0] for n in self.scripts for r in self.races} if curriculum else {}
         # with a curriculum some launches play the real game (the yardstick: "script:ai-X (real)")
         self.real = {f"{n} (real)": Member(f"{n} (real)") for n in self.scripts} if curriculum else {}
         self.past: list[Member] = []
         self.self_member = Member("self")
 
-    def knobs(self, name: str) -> dict:
-        """At `name`'s level: the learner's handicap (hit points in percent), the AI's late start
-        (seconds) and the share of the AI's income taken."""
+    def knobs(self, name: str, race: str = "") -> dict:
+        """At the level of AI `name` and the learner's `race`: the learner's handicap (hit points in
+        percent), the AI's late start (seconds) and the share of the AI's income taken."""
         _, _, top, base = self.rule
-        lv = self.level[name]
+        lv = self.level[(name, race)]
         if self.mode == "tax":
             return {"handicap": base, "delay": 0.0, "tax": round(lv * top, 3)}
         if self.mode == "delay":
@@ -616,10 +622,12 @@ class League:
         hp = base + int(min(1.0, 2 * lv) * (100 - base) / 10.0 + 0.5) * 10  # (handicaps in steps of 10)
         return {"handicap": hp, "delay": round(max(0.0, 2 * lv - 1) * top, 1), "tax": 0.0}
 
-    def curriculum(self, name: str, outcome: float) -> None:
-        """A game against the built-in AI `name` ended (+1 / 0 / -1 for the learner): its level moves."""
-        if name in self.level:
-            self.level[name] = min(1.0, max(0.0, self.level[name] - self.rule[1] * outcome))
+    def curriculum(self, name: str, outcome: float, race: str = "") -> None:
+        """A game against the built-in AI `name` with the learner playing `race` ended (+1 / 0 / -1
+        for the learner): that level moves."""
+        key = (name, race)
+        if key in self.level:
+            self.level[key] = min(1.0, max(0.0, self.level[key] - self.rule[1] * outcome))
 
     def member(self, name: str) -> Member | None:
         if name == "self":
@@ -643,9 +651,11 @@ class League:
                 continue
             m.wins, m.losses, m.draws = row.get("wins", 0.0), row.get("losses", 0.0), row.get("draws", 0.0)
             m.recent = list(row.get("recent") or [])
-        for n, v in (summary.get("level") or {}).items():
-            if n in self.level:
-                self.level[n] = v
+        for n, v in (summary.get("level") or {}).items():  # "script:ai-X|race" (runs from before races: every race)
+            name, _, race = n.partition("|")
+            for key in ([(name, race)] if race else [(name, r) for r in self.races]):
+                if key in self.level:
+                    self.level[key] = v
         me = summary.get("self") or {}
         self.self_member.wins, self.self_member.losses = me.get("wins", 0.0), me.get("losses", 0.0)
         self.self_member.draws, self.self_member.recent = me.get("draws", 0.0), list(me.get("recent") or [])
@@ -655,7 +665,8 @@ class League:
         ai_share = self.shares["ai"] if self.scripts else 0.0
         launch = [{"kind": "agents", "p": 1.0 - ai_share}]
         launch += [{"kind": "ai", "difficulty": n.split("-", 1)[1], "p": ai_share / len(self.scripts),
-                    **(dict(self.knobs(n), level=self.level[n]) if n in self.level else {})}
+                    **({"by_race": {r: dict(self.knobs(n, r), level=self.level[(n, r)]) for r in self.races}}
+                       if self.level else {})}
                    for n in self.scripts]
         agents = [{"name": "self", "kind": "self", "p": self.shares["self"] if self.past else 1.0}]
         if self.past:
@@ -677,7 +688,7 @@ class League:
                     "draws": m.draws, "win_rate": p, "weight": pfsp_weight(p, self.pfsp) if m.path else None,
                     "path": m.path, "recent": m.recent}
         summary = {"pfsp": self.pfsp, "members": [row(m) for m in [*self.scripts.values(), *self.real.values(), *self.past]],
-                   "self": row(self.self_member), "level": dict(self.level)}
+                   "self": row(self.self_member), "level": {f"{n}|{r}": v for (n, r), v in self.level.items()}}
         tmp = self.run_dir / "league.json.tmp"
         tmp.write_text(json.dumps(summary))
         tmp.replace(self.run_dir / "league.json")
@@ -690,10 +701,10 @@ class League:
         if self.self_member.win_rate() is not None:
             out["league/self"] = self.self_member.win_rate()
         out["league/members"] = len(self.past)
-        for n in self.level:  # the curriculum: its level and knobs
-            short = n.split(":", 1)[1]
-            out[f"curriculum/{short} level"] = self.level[n]
-            out.update({f"curriculum/{short} {k}": v for k, v in self.knobs(n).items()})
+        for (n, r), lv in self.level.items():  # the curriculum: its levels and knobs
+            short = f"{n.split(':', 1)[1]} {r}".strip()
+            out[f"curriculum/{short} level"] = lv
+            out.update({f"curriculum/{short} {k}": v for k, v in self.knobs(n, r).items()})
         return out
 
 
@@ -975,7 +986,7 @@ def main(argv: list[str] | None = None) -> int:
     league = League(run_dir, ai, {"ai": args.ai_share, "self": args.self_share, "past": 1.0 - args.self_share},
                     args.max_past, args.pfsp,
                     curriculum=((args.curriculum, args.curriculum_step, args.curriculum_delay, args.handicap)
-                                if args.curriculum >= 0 else None), mode=args.curriculum_mode)
+                                if args.curriculum >= 0 else None), mode=args.curriculum_mode, races=tuple(races))
     if resumed is not None and (run_dir / "league.json").exists():
         league.restore(json.loads((run_dir / "league.json").read_text()))
     else:
@@ -1031,7 +1042,7 @@ def main(argv: list[str] | None = None) -> int:
                     if m is not None:
                         m.record(e["outcome"])
                     if "curriculum" in e:
-                        league.curriculum(e["opponent"], e["outcome"])
+                        league.curriculum(e["opponent"], e["outcome"], e["race"])
                     with open(run_dir / "episodes.jsonl", "a") as f:
                         f.write(json.dumps(e) + "\n")
                     continue
