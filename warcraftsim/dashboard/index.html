@@ -1164,8 +1164,9 @@ function renderCollect(d) {
   document.getElementById("matrix").innerHTML = matrixHtml(d.matrix, "How often the row's race won against the column's (built-in AI against built-in AI; the number of games under it)");
   renderReplays(d);
   const rec = d.recent || [];
-  document.getElementById("recent").innerHTML = rec.length ? `<table class="runs"><tr><th>game</th><th>races</th><th>difficulty</th><th>winner</th><th>minutes</th><th>orders</th><th>wall s</th><th>finished</th></tr>` +
-    rec.map(r => `<tr><td>${r.game}</td><td>${esc((r.races || []).join(" vs "))}</td><td>${esc((r.difficulties || []).join(" / "))}</td>
+  const tk = rec.some(r => r.takeover);  // takeover games (collect.py --policy): a clone played a side until the AI took over
+  document.getElementById("recent").innerHTML = rec.length ? `<table class="runs"><tr><th>game</th><th>races</th><th>difficulty</th>${tk ? "<th>clone until</th>" : ""}<th>winner</th><th>minutes</th><th>orders</th><th>wall s</th><th>finished</th></tr>` +
+    rec.map(r => `<tr><td>${r.game}</td><td>${esc((r.races || []).join(" vs "))}</td><td>${esc((r.difficulties || []).join(" / "))}</td>${tk ? `<td>${r.takeover ? `${esc((r.races || [])[r.takeover.player] || r.takeover.player)}, ${fmt(r.takeover.step / 2, 0)} s` : "–"}</td>` : ""}
       <td>${r.winner == null ? "tie" : esc((r.races || [])[r.winner] || r.winner)}</td><td>${fmt(r.minutes, 1)}</td><td>${fmt(r.orders || 0, 0)}</td><td>${r.seconds != null ? fmt(r.seconds, 0) : "–"}</td><td>${ago(r.time)}</td></tr>`).join("") + `</table>`
     : `<div style="color:var(--muted)">no games yet</div>`;
   const cmd = info.command;

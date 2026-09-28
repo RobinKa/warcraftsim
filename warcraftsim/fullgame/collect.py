@@ -236,7 +236,8 @@ def game_row(i: int, meta: dict, data: dict | None = None) -> dict:
     return {"time": time.time(), "game": i, "races": meta.get("races"), "difficulties": meta.get("difficulties"),
             "winner": winner, "result": {str(k): v for k, v in result.items()},
             "minutes": round(meta.get("game_seconds", 0) / 60, 2), "steps": meta.get("steps"),
-            "orders": int(len(data["orders"])) if data is not None else meta.get("orders")}
+            "orders": int(len(data["orders"])) if data is not None else meta.get("orders"),
+            **({"takeover": {k: meta["takeover"][k] for k in ("player", "step")}} if meta.get("takeover") else {})}
 
 
 def index(out: Path) -> int:
