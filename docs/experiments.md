@@ -480,6 +480,36 @@ More data and the new labels alone don't fix the opening. `fullgame-rush3` is fi
 
 Refused orders fell, but the spending gap stayed. The model is calibrated on the AI's states and still fails on its own, which is why the takeover games are the next step.
 
+### Where the clone's army goes missing (`fullgame-rush3-tk`)
+
+`fullgame-rush3-tk` is `fullgame-rush3` (epoch 5) fine-tuned on its 8000 games plus the 4000 takeover games. After epoch 2 it played 32 mirror games against the normal AI:
+
+| | result | gold + lumber held | food at 1 minute | refused orders |
+|---|---|---|---|---|
+| `fullgame-rush3-tk`, epoch 2 | 1 win, 31 losses | 3951 | 24.1 | 13% |
+| the AI | | 1965 | 43.3 | |
+
+The first minute, per game, over 8 of those mirror games:
+
+| | clone | AI |
+|---|---|---|
+| train orders | 24.8 accepted (+6.8 refused) | 251 (mostly retries) |
+| training started | 22.9 | 27.5 |
+| units trained: workers | ~14 | ~11 |
+| units trained: army | ~4 | ~14.5 |
+| units trained: heroes | ~0.4 | ~1.2 |
+| constructions started | 9.3 | 11.4 |
+
+The types are much the same: moon wells 2.9 vs 3.4, burrows 2.1 vs 2.6, altars and barracks about equal. The Ancient of War is 0.2 vs 0.5.
+
+Two suspects are ruled out:
+* **Placement.** The clone builds slightly closer to its hall than the AI (median 703 vs 816 units).
+* **Training decisions.** At idle, finished production buildings that can afford a unit, the clone trains at the AI's rate or above: Ancient of War 0.22 vs 0.06 per step, orc barracks 0.25 vs 0.10, Tree of Life 0.22 vs 0.21, Great Hall 0.07 vs 0.07.
+
+Every local decision is roughly calibrated. The army gap comes from compounding small deficits: army buildings come later, occasional supply blocks, and a unit mix that leans toward workers. What's left is timing, which cloning can't pin down: the AI's script runs on timers the model doesn't see. Self-play's material shaping rewards every unit and building made, which is the signal this needs.
+
+Right after a takeover, even the AI orders modestly: 0.13 train orders and 0.11 build orders per step in the first 10 s. The model on those states: 0.19 and 0.09.
+
 ### Memory and a value head in BC
 
 Two additions to cloning:
