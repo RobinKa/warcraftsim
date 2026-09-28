@@ -361,3 +361,37 @@ def test_curriculum_by_race(tmp_path):
     old = {"level": {"script:ai-normal": 0.7}}
     lg.restore(old)
     assert lg.level[("script:ai-normal", "human")] == lg.level[("script:ai-normal", "nightelf")] == 0.7
+
+
+def test_harvest_switch_is_a_decision():
+    """A harvest order is redundant only for a worker already harvesting that resource: a miner
+    sent to the trees is a decision (the clone had learned that harvesting workers never switch)."""
+    tree, mine = fx.harvest_resource(fx.SMART, fx.TREE, None), fx.harvest_resource(fx.HARVEST, fx.UNIT, None)
+    assert (tree, mine) == ("lumber", "gold")
+    assert fx.harvest_resource(fx.SMART, fx.UNIT, fx.GOLD_MINES[0]) == "gold"
+    assert fx.harvest_resource(fx.SMART, fx.UNIT, 12345) is None  # smart on something else: no harvest
+    h = fx.HARVEST
+    assert fx.redundant(fx.SMART, fx.TREE, h, "lumber", "lumber")
+    assert not fx.redundant(fx.SMART, fx.TREE, h, "lumber", "gold")  # the switch
+    assert fx.redundant(fx.HARVEST, fx.UNIT, h, "gold", None)  # (unknown: as before)
+    assert not fx.redundant(fx.SMART, fx.TREE, 0, "lumber", "gold")  # not harvesting
+
+
+def test_view_tracks_workers_on_lumber():
+    code = lambda s: int.from_bytes(s.encode(), "big")  # noqa: E731
+    peon, B = code("opeo"), 1048576
+    vocab = {"types": [peon], "current_orders": [fx.HARVEST], "upgrades": [], "orders": [[fx.SMART, fx.TREE], [fx.HARVEST, fx.UNIT]]}
+    enc = fx.Encoder(vocab)
+    view = enc.view(0, 1.0, [1, 1])
+    rows = np.zeros((1, 18), np.int64)
+    rows[0, fx.C_ID], rows[0, fx.C_TYPE], rows[0, fx.C_MAXHP], rows[0, fx.C_HP] = B, peon, 220, 220
+    rows[0, fx.C_ORDER], rows[0, fx.C_FLAGS], rows[0, fx.C_VIS] = fx.HARVEST, 4, 3
+    me = np.array([0, 0, 50, 10, 1, 10, 0, 0, 0, 0, 0])
+    st = view.step(rows, me, np.zeros((0, 5), np.int64), 0)
+    assert st["ent"][0, fx.F - 1] == 0
+    view.track_harvest(np.array([[0, B, fx.SMART, 2, 0, 0, 777]]), st, {777: (100, 100)})  # smart on tree 777
+    assert view.assign[B] == "lumber"
+    st = view.step(rows, me, np.zeros((0, 5), np.int64), 1)
+    assert st["ent"][0, fx.F - 1] == 1  # the lumber feature
+    view.track_harvest(np.array([[1, B, 851986, 1, 0, 0, 0]]), st, {777: (100, 100)})  # a move: no longer harvesting
+    assert B not in view.assign

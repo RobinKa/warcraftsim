@@ -37,11 +37,29 @@ GOLD_MINES = (1852272492, 1969713004, 1701277548)  # ngol, ugol (haunted), egol 
 HARVESTING = {852018, 852017, 852020}  # current orders of a worker in its harvest cycle
 
 
-def redundant(order: int, kind: int, current: int) -> bool:
-    """A harvest order (harvest, or smart on a tree or unit) for a worker already harvesting: the
-    AI re-issues these without effect; learned as decisions, a policy re-ordered its workers every
-    few seconds to other trees and reset their work (240 gold from 27 peasants in 80 s)."""
-    return current in HARVESTING and order in (HARVEST, SMART) and kind in (UNIT, TREE)
+def harvest_resource(order: int, kind: int, target_type: int | None) -> str | None:
+    """What a harvest-like order sends a worker to: "lumber" (harvest or smart on a tree), "gold"
+    (harvest on a unit, smart on a gold mine), None: no harvest (smart on anything else)."""
+    if order not in (HARVEST, SMART):
+        return None
+    if kind == TREE:
+        return "lumber"
+    if kind == UNIT and (order == HARVEST or target_type in GOLD_MINES):
+        return "gold"
+    return None
+
+
+def redundant(order: int, kind: int, current: int, resource: str | None = None, assigned: str | None = None) -> bool:
+    """A harvest order for a worker already harvesting that resource: the AI re-issues these without
+    effect; learned as decisions, a policy re-ordered its workers every few seconds to other trees
+    and reset their work (240 gold from 27 peasants in 80 s). `resource`: what the order harvests
+    (harvest_resource), `assigned`: what the worker harvests (View.assign; None: unknown, taken as
+    the same). A miner sent to the trees is a decision: dropping those too (both show the same
+    current order) left the clone with almost no lumber as human and orc, hoarding gold it could not
+    spend on farms and barracks."""
+    if current not in HARVESTING or order not in (HARVEST, SMART) or kind not in (UNIT, TREE):
+        return False
+    return assigned is None or resource is None or resource == assigned
 
 
 WORKER = 4  # UnitFlags.WORKER
@@ -63,7 +81,7 @@ C_STEP, C_ID, C_TYPE, C_OWNER, C_X, C_Y, C_FACING, C_HP, C_MAXHP, C_MANA, C_MAXM
     C_VIS, C_RESOURCE, C_HLEVEL, C_HXP, C_SKILLPTS = range(18)
 DEAD, STRUCTURE = 1024, 2
 FLAG_BITS = (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 2048)  # UnitFlags but DEAD
-F = 3 + 2 + 4 + len(FLAG_BITS) + 3 + 2 + 1 + 2  # 28: ... and production (queued, busy)
+F = 3 + 2 + 4 + len(FLAG_BITS) + 3 + 2 + 1 + 2 + 1  # 29: ... production (queued, busy), and a worker on lumber
 TYPE_CODE = 0x1000000  # order ids at or above this are unit / building / upgrade codes
 # events: a building's production (a = the building)
 TRAIN_START, TRAIN_FINISH, TRAIN_CANCEL = 5, 6, 7
@@ -158,7 +176,7 @@ def describe_spaces(vocab: dict, order_names: dict[int, str] | None = None, agen
     ent = (["own", "enemy", "neutral", "x (mirrored: own base left)", "y", "hp / max hp", "max hp / 1000",
             "mana / max mana", "max mana / 1000"] + [f"flag {b}" for b in FLAG_BITS]
            + ["hero level / 10", "resource / 12500 (mines)", "skill points / 3", "sin facing", "cos facing (mirrored)",
-              "has an order", "queued production / 5", "producing"])
+              "has an order", "queued production / 5", "producing", "a worker on lumber"])
     glob = (["gold / 1000", "lumber / 1000", "food used / 100", "food cap / 100", "upkeep / 2", "time (steps / 1800)"]
             + [f"own race: {r}" for r in RACES] + [f"enemy race: {r}" for r in RACES]
             + [f"upgrade {rawcode(u)} (level / 3)" for u in vocab["upgrades"]])
@@ -238,7 +256,8 @@ class Encoder:
         own = units_step0[(units_step0[:, C_OWNER] == player) & (units_step0[:, C_FLAGS] & STRUCTURE > 0)]
         return -1.0 if len(own) and own[:, C_X].mean() > 0 else 1.0
 
-    def entities(self, rows: np.ndarray, player: int, sign: float, production=None) -> tuple[np.ndarray, ...]:
+    def entities(self, rows: np.ndarray, player: int, sign: float, production=None,
+                 lumber: set[int] | None = None) -> tuple[np.ndarray, ...]:
         """One step's units -> (rows in entity order, n own, float features, types, current orders)."""
         alive = rows[:, C_FLAGS] & DEAD == 0
         vis = (rows[:, C_VIS] >> player) & 1 == 1
@@ -273,6 +292,8 @@ class Encoder:
             ids = sel[:, C_ID]
             if queued:
                 f[:, a + 6] = np.minimum(_lookup(ids, *_sorted_map(queued)), 5) / 5.0
+        if lumber:  # own workers the player sent to the trees (their current order is the same as gold miners')
+            f[:n_own, a + 8] = np.isin(sel[:n_own, C_ID], np.fromiter(lumber, np.int64, len(lumber)))
             if busy:
                 f[:, a + 7] = np.isin(ids, np.fromiter(busy, np.int64, len(busy)))
         types = _lookup(sel[:, C_TYPE], self._type_keys, self._type_vals)
@@ -332,7 +353,9 @@ class Encoder:
                 target = int(r[6])
                 lab = relabel(int(r[2]), int(r[3]), target in index, target in trees)
                 c = self.order_index.get(lab) if lab is not None else None
-                if c is None or redundant(lab[0], lab[1], int(st["sel"][k, C_ORDER])):
+                ttype = int(st["sel"][index[target], C_TYPE]) if target in index else None
+                res = harvest_resource(lab[0], lab[1], ttype) if lab is not None else None
+                if c is None or redundant(lab[0], lab[1], int(st["sel"][k, C_ORDER]), res, view.assign.get(int(r[1]))):
                     continue
                 out["y_order"][t, k] = c
                 out["y_ptr"][t, k] = -1
@@ -343,6 +366,7 @@ class Encoder:
                     x, y = (trees[target] if lab[1] == TREE else (int(r[4]), int(r[5])))
                     out["y_x"][t, k] = _bin(np.array(sign * x))
                     out["y_y"][t, k] = _bin(np.array(y))
+            view.track_harvest(rows_t, st, trees)
         return out
 
 
@@ -385,6 +409,24 @@ class View:
         self.own_buildings: set[int] = set()
         self.queued: dict[int, int] = {}  # building -> units / research ordered and not yet done
         self.busy: set[int] = set()  # buildings making something
+        self.assign: dict[int, str] = {}  # own worker -> "gold" / "lumber": what its last orders sent it to
+
+    def track_harvest(self, orders, st: dict, trees) -> None:
+        """What each own worker harvests, from the step's recorded orders (step, unit, order, kind,
+        x, y, target): a harvest order sets it, any other order (but the engine's own) clears it."""
+        index, n_own = st["index"], st["n_own"]
+        for r in orders:
+            unit, order, kind, target = int(r[1]), int(r[2]), int(r[3]), int(r[6])
+            k = index.get(unit)
+            if k is None or k >= n_own or order in DROPPED_ORDERS:
+                continue
+            lab = relabel(order, kind, target in index, target in trees)
+            ttype = int(st["sel"][index[target], C_TYPE]) if target in index else None
+            res = harvest_resource(lab[0], lab[1], ttype) if lab is not None else None
+            if res is None:
+                self.assign.pop(unit, None)
+            else:
+                self.assign[unit] = res
 
     def record_orders(self, orders) -> None:
         """The player's orders of the last step (unit, order id, kind): train / research orders
@@ -406,7 +448,8 @@ class View:
                 self.busy.discard(a)
                 if self.queued.get(a, 0) > 0:
                     self.queued[a] -= 1
-        sel, n_own, f, types, cur = enc.entities(rows, player, self.sign, (self.queued, self.busy))
+        sel, n_own, f, types, cur = enc.entities(rows, player, self.sign, (self.queued, self.busy),
+                                                 {u for u, r in self.assign.items() if r == "lumber"})
         for r in events:  # research done (by one of the player's buildings)
             if r[1] == RESEARCH_FINISH and int(r[2]) in self.own_buildings and int(r[3]) in enc.upgrade_index:
                 self.upgrades[enc.upgrade_index[int(r[3])]] = r[4] / 3.0

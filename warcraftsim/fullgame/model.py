@@ -201,6 +201,9 @@ def load(path, device="cpu", memory: bool | None = None) -> tuple[FullGameNet, d
         config["memory"] = memory
     net = FullGameNet(**config).to(device)
     state = ck["model"] if net.memory else {k: v for k, v in ck["model"].items() if not k.startswith("mem_")}
+    w = state.get("ent.weight")
+    if w is not None and w.shape[1] < fx.F:  # features added since (at the end): their weights start at 0
+        state = {**state, "ent.weight": torch.cat([w, w.new_zeros(w.shape[0], fx.F - w.shape[1])], 1)}
     missing, unexpected = net.load_state_dict(state, strict=False)
     if unexpected or any(not (k.startswith(("value_head.", "mem_")) or k == "order_kind") for k in missing):
         raise RuntimeError(f"{path}: missing {missing}, unexpected {unexpected}")

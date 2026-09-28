@@ -78,9 +78,17 @@ class BCAgent:
         self.t = 0
 
     def accepted(self, cmds: list[Command], results: list[bool]) -> None:
-        """The game's answer to the last step's orders: accepted train / research orders queue."""
+        """The game's answer to the last step's orders: accepted train / research orders queue, and
+        accepted orders set what the workers harvest (View.assign)."""
         self.view.record_orders((c.unit, c.order, 0) for c, ok in zip(cmds, results)
                                 if ok and isinstance(c, ImmediateOrder))
+        for c, ok, res in zip(cmds, results, getattr(self, "sent_resources", [])):
+            unit = getattr(c, "unit", None)
+            if ok and unit is not None:
+                if res is None:
+                    self.view.assign.pop(unit, None)
+                else:
+                    self.view.assign[unit] = res
 
     def _sample(self, logits: torch.Tensor) -> torch.Tensor:
         return torch.distributions.Categorical(logits=logits / self.temperature).sample()
@@ -108,18 +116,24 @@ class BCAgent:
         sequences over the first min(n_own, MAX_OWN) units) as game commands."""
         out: list[Command] = []
         self.last_sent: list[tuple[int, int]] = []  # (order id, kind) of what it sent: the video's panel
+        self.sent_resources: list[str | None] = []  # per command: what it sends the worker to harvest (accepted())
         sel = st["sel"]
         for i in range(min(st["n_own"], fx.MAX_OWN, len(order))):
             c = int(order[i])
             if c == 0:
                 continue
             oid, kind = self.orders[c]
-            if fx.redundant(oid, kind, int(sel[i, fx.C_ORDER])):  # it is harvesting already
-                continue
-            if self.committed(int(sel[i, fx.C_ID])):
+            if kind == fx.UNIT:
+                ttype = int(sel[int(tgt[i]), fx.C_TYPE])
+                res = fx.harvest_resource(oid, kind, fx.GOLD_MINES[0] if oid == fx.HARVEST else ttype)
+            else:
+                res = fx.harvest_resource(oid, kind, None)
+            unit = int(sel[i, fx.C_ID])
+            if fx.redundant(oid, kind, int(sel[i, fx.C_ORDER]), res, self.view.assign.get(unit)):
+                continue  # it harvests that already
+            if self.committed(unit):
                 continue  # on its way to build, or building: another order would cancel it
             self.last_sent.append((oid, kind))
-            unit = int(sel[i, fx.C_ID])
             x = float(self.view.sign * fx.bin_center(int(bx[i])))
             y = float(fx.bin_center(int(by[i])))
             if kind == fx.IMMEDIATE:
@@ -142,6 +156,8 @@ class BCAgent:
             elif kind == fx.TREE and self.trees:
                 tree = min(self.trees, key=lambda k: (self.trees[k][0] - x) ** 2 + (self.trees[k][1] - y) ** 2)
                 out.append(TargetDestructable(unit, oid, tree))
+            if len(out) > len(self.sent_resources):  # (aligned with out: accepted() pairs them)
+                self.sent_resources.append(res)
         self.issued += len(out)
         return out
 
