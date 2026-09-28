@@ -998,6 +998,35 @@ function W3S_Build takes unit u, integer t, real x, real y returns boolean
     return false
 endfunction
 
+// the built-in AI takes over an agent's player mid-game (demonstrations from states a policy
+// reached: the AI's melee scripts build toward target counts, so they carry on from any state).
+// Its orders are recorded from then on (W3S_CFG_RECORD_ORDERS), and agent commands to it refused.
+function W3S_StartAI takes integer i returns boolean
+    local player p
+    local race r
+    if i < 0 or i >= bj_MAX_PLAYERS or not w3s_agent[i] then
+        return false
+    endif
+    set p = Player(i)
+    if GetPlayerController(p) != MAP_CONTROL_COMPUTER then
+        return false
+    endif
+    set w3s_agent[i] = false
+    set r = GetPlayerRace(p)
+    if r == RACE_HUMAN then
+        call PickMeleeAI(p, "human.ai", null, null)
+    elseif r == RACE_ORC then
+        call PickMeleeAI(p, "orc.ai", null, null)
+    elseif r == RACE_UNDEAD then
+        call PickMeleeAI(p, "undead.ai", null, null)
+    elseif r == RACE_NIGHTELF then
+        call PickMeleeAI(p, "elf.ai", null, null)
+    endif
+    call ShareEverythingWithTeamAI(p)
+    set p = null
+    return true
+endfunction
+
 function W3S_ApplyOne takes integer at returns integer
     local integer op = w3s_cmd[at]
     local unit u = W3S_Unit(w3s_cmd[at + 1])
@@ -1073,6 +1102,9 @@ function W3S_ApplyOne takes integer at returns integer
             set w3s_qs_nskill[w3s_nqs - 1] = w3s_qs_nskill[w3s_nqs - 1] + 1
             set ok = true
         endif
+    elseif op == 94 then
+        set n = 2
+        set ok = W3S_StartAI(w3s_cmd[at + 1])
     elseif op == 91 then
         set n = 5
         set u = CreateUnit(Player(w3s_cmd[at + 1]), w3s_cmd[at + 2], I2R(w3s_cmd[at + 3] - 65536), I2R(w3s_cmd[at + 4] - 65536), 270.0)

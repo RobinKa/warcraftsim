@@ -35,7 +35,7 @@ from typing import Callable
 import numpy as np
 
 from ..protocol import Observation
-from ..runtime.instance import BuiltinAI, GameInstance, GameSetup
+from ..runtime.instance import Agent, BuiltinAI, GameInstance, GameSetup
 
 RACES = ("human", "orc", "undead", "nightelf")
 UNIT_COLS = ("step", "id", "type", "owner", "x", "y", "facing", "hp", "max_hp", "mana", "max_mana", "order",
@@ -46,9 +46,31 @@ PLAYER_COLS = ("step", "player", "gold", "lumber", "food_used", "food_cap", "upk
                "lumber_gathered", "structures", "result")
 
 
-def play_game(g: GameInstance, obs, max_steps: int = 4000, values: dict | None = None) -> dict:
+class Takeover:
+    """A policy (play.BCAgent) plays `player` until step `at`; then the built-in AI takes it over
+    (protocol.StartAI) and its orders are recorded from there: demonstrations from states the
+    policy reached (DAgger's idea, with the built-in AI as the expert). The clone fell behind from
+    its first seconds (a farm late, a barracks twice) into states the AI's games never show."""
+
+    def __init__(self, bot, player: int, at: int):
+        self.bot, self.player, self.at = bot, player, at
+        self.sent: list = []
+
+    def act(self, obs, t: int) -> list:
+        from ..protocol import StartAI
+        self.sent = self.bot.act(obs, t) if t < self.at else [StartAI(self.player)] if t == self.at else []
+        return self.sent
+
+    def after(self, obs) -> None:
+        """The game's answers to the policy's orders (its production features count the accepted)."""
+        if self.sent and type(self.sent[0]).__name__ != "StartAI":
+            self.bot.accepted(self.sent, obs.command_results[:len(self.sent)])
+
+
+def play_game(g: GameInstance, obs, max_steps: int = 4000, values: dict | None = None, driver: Takeover | None = None) -> dict:
     """One game from its first observation `obs`; returns the arrays of the .npz. `values` (unit
-    type values, fullgame.trace.unit_values): also a trace for the video's panel ("trace")."""
+    type values, fullgame.trace.unit_values): also a trace for the video's panel ("trace").
+    `driver`: a policy plays a side until the built-in AI takes it over (Takeover)."""
     from . import features as fx
     from .trace import material, trace_step
     units, heroes, players, events, orders = [], [], [], [], []
@@ -76,7 +98,9 @@ def play_game(g: GameInstance, obs, max_steps: int = 4000, values: dict | None =
             events.append((t, int(e.kind), e.a, e.b, e.c))
         if obs.game_over or t >= max_steps:
             break
-        obs = g.step()
+        obs = g.step(driver.act(obs, t) if driver is not None else [])
+        if driver is not None:
+            driver.after(obs)
         chose: dict[str, Counter] = {}
         owner = {u.id: u.owner for u in obs.units}
         for o in obs.issued:  # given during step t, in the state of observation t
@@ -261,6 +285,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--games-per-process", type=int, default=8,
                     help="games of one matchup in one running game (restarts reload the map in it)")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--policy", type=Path, help="takeover games (the torch Python): this policy (a fullgame/bc.py "
+                                                "policy.pt) plays one side until the built-in AI takes it over")
+    ap.add_argument("--takeover", default="10-180", help="with --policy: the step the AI takes over at, drawn from this range")
+    ap.add_argument("--device", default="cpu", help="with --policy: where the policy runs")
     args = ap.parse_args(argv)
     if args.index:
         print(f"{args.out}: {index(args.out)} games")
@@ -271,12 +299,25 @@ def main(argv: list[str] | None = None) -> int:
     map_file = duel_map_path(args.map).name if parse_duel_name(args.map) else args.map  # the rules' version
     diffs = tuple(args.difficulty.split(","))
     args.out.mkdir(parents=True, exist_ok=True)
-    info = {**vars(args), "out": str(args.out), "time": time.time(), "status": "collecting", "pid": os.getpid(),
+    info = {**{k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()}, "time": time.time(),
+            "status": "collecting", "pid": os.getpid(),
             "command": "python -m warcraftsim.fullgame.collect " + " ".join(sys.argv[1:] if argv is None else argv)}
     write_info(args.out, info)
     rng = random.Random(args.seed)
-    plans = [(i, rng.choice(races), rng.choice(races), rng.choice(diffs), rng.choice(diffs))
-             for i in range(args.games)]
+    lo, hi = (int(v) for v in args.takeover.split("-"))
+    # (game, races, difficulties, the side the policy plays until the takeover step: -1 none)
+    plans = [(i, rng.choice(races), rng.choice(races), rng.choice(diffs), rng.choice(diffs),
+              i % 2 if args.policy else -1, rng.randint(lo, hi) if args.policy else 0) for i in range(args.games)]
+    policy = None
+    if args.policy:
+        import torch
+
+        from .costs import order_costs
+        from .model import load
+        torch.set_num_threads(2)  # (the games' threads call it at once; the games need the cores)
+        net, ck = load(args.policy, args.device)
+        policy = {"net": net, "vocab": ck["vocab"], "device": torch.device(args.device),
+                  "costs": order_costs(ck["vocab"], args.map)}
     lock = threading.Lock()
     done = {"n": 0, "t0": time.time()}
     # one game instance name per worker (games reuse their names' Wine prefixes); a machine-wide
@@ -291,19 +332,21 @@ def main(argv: list[str] | None = None) -> int:
     todo = [p for p in plans if not (args.out / f"game{p[0]:05d}.npz").exists()]
     by_matchup: dict[tuple, list] = {}
     for p in todo:
-        by_matchup.setdefault(p[1:], []).append(p)
+        by_matchup.setdefault(p[1:6], []).append(p)
     chunks = [ps[s:s + args.games_per_process] for ps in by_matchup.values()
               for s in range(0, len(ps), args.games_per_process)]
     chunks.sort(key=lambda c: c[0][0])
 
     def save(plan, data: dict, seconds: float) -> None:
-        i, r0, r1, d0, d1 = plan
+        i, r0, r1, d0, d1, side, at = plan
         path = args.out / f"game{i:05d}.npz"
         extra = data.pop("meta_extra")
         meta = {"races": [r0, r1], "difficulties": [d0, d1], "handicap": args.handicap, "map": args.map,
                 "map_file": map_file,
                 "victory": args.victory,
                 "step_seconds": args.step_seconds, **extra}
+        if side >= 0:  # the policy played `side` until step `at` (bc.py: no labels there before it)
+            meta["takeover"] = {"player": side, "step": at, "policy": str(args.policy)}
         tmp = path.with_suffix(".tmp.npz")
         np.savez_compressed(tmp, meta=json.dumps(meta), **data)
         tmp.replace(path)
@@ -319,9 +362,11 @@ def main(argv: list[str] | None = None) -> int:
         return row["winner"], extra["game_seconds"] / 60
 
     def run(chunk) -> None:
-        _, r0, r1, d0, d1 = chunk[0]
-        setup = GameSetup(map=args.map, slots=[BuiltinAI(r0, d0, handicap=args.handicap),
-                                               BuiltinAI(r1, d1, handicap=args.handicap)],
+        _, r0, r1, d0, d1, side, _ = chunk[0]
+        slots = [BuiltinAI(r0, d0, handicap=args.handicap), BuiltinAI(r1, d1, handicap=args.handicap)]
+        if side >= 0:  # the policy's side: an agent until the built-in AI (its difficulty) takes over
+            slots[side] = Agent((r0, r1)[side], handicap=args.handicap, difficulty=(d0, d1)[side])
+        setup = GameSetup(map=args.map, slots=slots,
                           step_seconds=args.step_seconds, max_game_seconds=args.max_minutes * 60,
                           record_ai_orders=True, victory=args.victory, window=screen, wait_floor_ms=args.wait_floor_ms)
         name = names.get()
@@ -329,15 +374,24 @@ def main(argv: list[str] | None = None) -> int:
 
         def play(g, obs, k, fresh) -> None:
             film = fresh and films.due()
-            data = play_game(g, obs, values=values if film else None)
+            driver = None
+            if side >= 0:
+                from .play import BCAgent
+                bot = BCAgent(policy["net"], policy["vocab"], side, policy["device"], costs=policy["costs"])
+                bot.begin(obs, [RACES.index(r) for r in (r0, r1)])
+                driver = Takeover(bot, side, chunk[k][6])
+            data = play_game(g, obs, values=values if film else None, driver=driver)
             trace = data.pop("trace", None)
             winner, minutes = save(chunk[k], data, time.time() - t0[0])
             if film:
                 i = chunk[k][0]
                 if trace is not None:
-                    trace.update(title=f"{args.out.name} · game {i}",
-                                 sides=[{"player": 0, "name": f"built-in AI {d0} ({r0})", "kind": "ai"},
-                                        {"player": 1, "name": f"built-in AI {d1} ({r1})", "kind": "ai"}])
+                    sides = [{"player": 0, "name": f"built-in AI {d0} ({r0})", "kind": "ai"},
+                             {"player": 1, "name": f"built-in AI {d1} ({r1})", "kind": "ai"}]
+                    if side >= 0:
+                        sides[side] = {"player": side, "kind": "agent", "name": f"the clone, the AI ({(d0, d1)[side]}) from "
+                                                                                f"{chunk[k][6] * args.step_seconds:.0f} s ({(r0, r1)[side]})"}
+                    trace.update(title=f"{args.out.name} · game {i}", sides=sides)
                 films.film(g, f"game{i:05d}", trace=trace, row={
                     "episode": i, "title": f"game {i}: {r0} ({d0}) vs {r1} ({d1})",
                     "outcome": 0.0 if winner is None else 1.0 if winner == 0 else -1.0,

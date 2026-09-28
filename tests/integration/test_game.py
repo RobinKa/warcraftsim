@@ -357,3 +357,29 @@ def test_mirror_selfplay_env(game_dir):
         assert abs(total[0] + total[1]) < 1e-6 and outcomes[0] == -outcomes[1]
     finally:
         env.close()
+
+
+def test_builtin_ai_takes_over_an_agent(game_dir):
+    """StartAI: the built-in AI takes over an agent's player mid-game and carries on from its state;
+    its orders are recorded like any AI player's, and agent commands to it are refused."""
+    from warcraftsim.protocol import ImmediateOrder, StartAI
+    setup = GameSetup(map="duelrush", slots=[Agent("human", handicap=50), BuiltinAI("orc", "normal", handicap=50)],
+                      step_seconds=0.5, record_ai_orders=True)
+    with GameInstance(setup, name="it_takeover") as g:
+        obs = g.start()
+        for _ in range(20):  # the agent does nothing for 10 s
+            obs = g.step()
+        food = obs.players[0].food_used
+        assert not any(o.unit in {u.id for u in obs.units_of(0)} for o in obs.issued)
+        obs = g.step([StartAI(0)])
+        assert obs.command_results == [True] and not obs.players[0].is_agent
+        mine, issued = {u.id for u in obs.units_of(0)}, 0
+        for _ in range(60):
+            obs = g.step()
+            mine |= {u.id for u in obs.units_of(0)}
+            issued += sum(o.unit in mine for o in obs.issued)
+        assert issued > 10, "the AI's orders for the player it took over are recorded"
+        assert obs.players[0].food_used > food, "it trains"
+        hall = next(u for u in obs.units_of(0) if u.type_id == int.from_bytes(b"htow", "big"))
+        obs = g.step([ImmediateOrder(hall.id, int.from_bytes(b"hpea", "big"))])
+        assert obs.command_results == [False], "agent commands to a player the AI plays are refused"

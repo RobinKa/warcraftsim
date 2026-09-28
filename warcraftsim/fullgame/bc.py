@@ -58,6 +58,19 @@ def returns(game: dict, player: int, values: dict, reward: dict = REWARD) -> np.
     return out
 
 
+def side_data(enc: fx.Encoder, game: dict, player: int, values: dict) -> dict:
+    """A game from `player`'s side: the encoded steps and their returns. In a takeover game
+    (collect.py --policy) the side a policy played until the built-in AI took it over starts at
+    the takeover: the steps before it have the policy's orders, not the AI's (the encoder still runs
+    through them, for what the player queued and researched)."""
+    out = enc.encode(game, player)
+    out["ret"] = returns(game, player, values)
+    tk = game["meta"].get("takeover")
+    if tk and tk["player"] == player and tk["step"] > 0:
+        out = {k: v[tk["step"]:] for k, v in out.items()}
+    return out
+
+
 class Steps(torch.utils.data.IterableDataset):
     """Shuffled batches of steps from the games (both sides), encoded by the loader workers."""
 
@@ -78,8 +91,7 @@ class Steps(torch.utils.data.IterableDataset):
         for i, p in enumerate(paths):
             game = fx.load_game(p)
             for player in (0, 1):
-                out = enc.encode(game, player)
-                out["ret"] = returns(game, player, self.values)
+                out = side_data(enc, game, player, self.values)
                 for k in KEYS:
                     buf[k].append(out[k])
             if len(buf["n_own"]) >= 2 * self.buffer_games or i == len(paths) - 1:
@@ -118,7 +130,7 @@ class Sequences(torch.utils.data.IterableDataset):
                     return None
                 g = fx.load_game(p)
                 for player in (0, 1):
-                    pending.append({**enc.encode(g, player), "ret": returns(g, player, self.values)})
+                    pending.append(side_data(enc, g, player, self.values))
             return pending.pop(0)
 
         L, T = self.lanes, self.seq_len
@@ -155,7 +167,7 @@ def whole_sides(paths: list[Path], vocab: dict, values: dict, costs=None, sides:
     todo = []
     for p in paths:
         g = fx.load_game(p)
-        todo += [{**enc.encode(g, player), "ret": returns(g, player, values)} for player in (0, 1)]
+        todo += [side_data(enc, g, player, values) for player in (0, 1)]
     for a in range(0, len(todo), sides):
         group = todo[a:a + sides]
         T = max(len(x["n_own"]) for x in group)

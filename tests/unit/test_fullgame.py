@@ -272,3 +272,23 @@ def test_demo_orders_the_player_could_not_pay_for_are_dropped():
     # the queue after the peon is done: without costs the refused order stays queued (stale)
     assert plain["ent"][1, 0, 26] == pytest.approx(1 / 5) and paid["ent"][1, 0, 26] == 0
     assert paid["avail"][0].tolist() == [True, True] and plain["avail"].all()
+
+
+def test_takeover_side_starts_at_the_takeover():
+    """bc.side_data: in a takeover game the side a policy played until the built-in AI took over
+    starts at the takeover step (the steps before have the policy's orders, not the AI's)."""
+    from warcraftsim.fullgame.bc import side_data
+    code = lambda s: int.from_bytes(s.encode(), "big")  # noqa: E731
+    hall = code("ogre")
+    vocab = {"types": [hall], "current_orders": [], "upgrades": [], "orders": [[code("opeo"), fx.IMMEDIATE]]}
+    units = [[t, 1048576 + p, hall, p, -1000 + 2000 * p, 0, 0, 100, 100, 0, 0, 0, fx.STRUCTURE, 3] + [0] * 4
+             for t in range(4) for p in (0, 1)]
+    players = [[t, p, 100, 0, 1, 10, 0, 0, 0, 1, 0] for t in range(4) for p in (0, 1)]
+    game = {"units": np.array(units, np.int64), "players": np.array(players, np.int64),
+            "events": np.zeros((0, 5), np.int64), "orders": np.zeros((0, 7), np.int64), "trees": np.zeros((0, 5), np.int64),
+            "meta": {"steps": 3, "races": ["orc", "orc"], "result": {"0": "VICTORY", "1": "DEFEAT"},
+                     "takeover": {"player": 0, "step": 2, "policy": "p.pt"}}}
+    enc = fx.Encoder(vocab)
+    a, b = side_data(enc, game, 0, {}), side_data(enc, game, 1, {})
+    assert len(a["n_own"]) == len(a["ret"]) == 2 and len(b["n_own"]) == len(b["ret"]) == 4
+    assert a["ret"][-1] == pytest.approx(1.0) and b["ret"][-1] == pytest.approx(-1.0)

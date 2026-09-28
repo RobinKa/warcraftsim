@@ -106,8 +106,10 @@ class Slot:
         Difficulty.parse(self.difficulty)
 
 
-def Agent(race: str = "human", team: int | None = None, handicap: int = 100) -> Slot:  # noqa: N802 - reads like a type
-    return Slot("agent", race, team=team, handicap=handicap)
+def Agent(race: str = "human", team: int | None = None, handicap: int = 100,  # noqa: N802 - reads like a type
+          difficulty: str = "normal") -> Slot:
+    """`difficulty`: the built-in AI's if it takes over the player (protocol.StartAI)."""
+    return Slot("agent", race, difficulty, team=team, handicap=handicap)
 
 
 def BuiltinAI(race: str = "orc", difficulty: str = "normal", team: int | None = None,  # noqa: N802
@@ -239,7 +241,7 @@ class GameSetup:
                 slots.append(WgcSlot.user(i, s.race, team=team))
             else:
                 # agents use computer slots too; the harness does not start an AI for them
-                slots.append(WgcSlot.computer(i, s.race, s.difficulty if s.kind == "ai" else "normal", team=team))
+                slots.append(WgcSlot.computer(i, s.race, s.difficulty if s.kind in ("ai", "agent") else "normal", team=team))
             slots[-1].handicap = s.handicap
         if user is None:
             slots.append(WgcSlot.observer(len(self.slots)))

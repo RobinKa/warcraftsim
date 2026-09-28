@@ -426,6 +426,40 @@ The builds that still fail lost their order in the game, probably at placement, 
 
 Evaluations now record each side's gold and lumber on hand (mean over the game) and its food at one minute. The dashboard charts both.
 
+### The opening, and demonstrations from the clone's own states
+
+Timelines of 8 mirror games (`fullgame-rush2` with builder commitment) against the normal AI:
+
+| time | clone food | AI food | clone gold on hand | AI gold on hand | clone army | AI army |
+|---|---|---|---|---|---|---|
+| 20 s | 15 | 23 | 2154 | 1248 | 0.4 | 3.2 |
+| 30 s | 16 | 29 | 3280 | 1349 | 0.5 | 5.0 |
+| 60 s | 16 | 52 | 6043 | 1681 | 1.4 | 11.8 |
+
+Workers are on par, so the economy works. The clone is behind within 20 s, before any gold piles up.
+
+Checks on the cause:
+* **Calibration on the AI's states:** fine. In the first 10 s the model expects 3.6 build orders per side against the AI's 3.1, and 8.6 train orders against 8.4.
+* **Clipping gold and lumber at play time:** a little better (army at 60 s: 2.9 instead of 1.4).
+* **Several train orders to one building in one step:** 93% of the kept train orders are the only one to their building in that step, so one label per step loses little.
+* **Timing:** at the steps where the AI builds something, the model expects only 0.28 workers to build it (median 0.07). The rest of its build probability sits on steps where the AI builds nothing. The totals match, but the AI's script runs on timers and conditions the model can't see.
+
+One human game step by step:
+
+| step | the AI | the clone |
+|---|---|---|
+| 1 | trains a peasant, builds an altar | trains a peasant, builds an altar |
+| 2–4 | builds its first farm at 7/12 food | builds a barracks |
+| 11–12 | builds a barracks | builds a second barracks |
+| 20 | trains a Paladin, builds another farm | builds its first farm, already at 12/12 |
+| 21–28 | trains footmen | stuck at 12/12 food |
+
+After an early mistake the clone is in a state the AI's games never show, and cloning has nothing to learn from there. The answer is DAgger with the built-in AI as the expert:
+* **Takeover games** (`collect.py --policy`): the clone plays one side for 5–90 s, then the built-in AI takes it over (`protocol.StartAI`) and its orders are recorded.
+* BC skips the taken-over side's steps before the takeover.
+
+`demos-takeover-1`: 4000 such games with `fullgame-rush2` as the clone.
+
 ### Memory and a value head in BC
 
 Two additions to cloning:
