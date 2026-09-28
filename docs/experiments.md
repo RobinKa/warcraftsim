@@ -567,6 +567,8 @@ The decline went on slowly, about 0.03 a million steps: 0.57 (easy) and 0.60 (no
 
 It learned to gather, not to spend. With twice the hit points a small army wins fights, so nothing in the curriculum pushed it to build a bigger one, and that is the skill it lacks. `fgself-5` goes on from that checkpoint with the late start alone (`--curriculum-hp 0`, up to 180 s, starting at 90 s) and even hit points, so the fights stay as they are.
 
+With even hit points the levels fell fast from 90 s. `fgself-4`'s learner beat the AI starting 30–45 s late, where the clone had lost 10 of 13 such games. Over its first 2.8M steps the late start needed for 50% was 25–80 s (normal) and 30–75 s (easy), per half million steps. A 0.02 level step (3.6 s a game) makes it a random walk of about ±36 s over 100 games, so from there on the step is 0.01. 10% of the AI launches now play the real game (`--real-share`), and those results are charted as the yardstick.
+
 ### Memory and a value head in BC
 
 Two additions to cloning:
