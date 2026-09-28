@@ -324,6 +324,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
         ai = _choose(rng, spec["launch"])  # {"kind": "agents"} or {"kind": "ai", "difficulty"[, "delay"]}
         slots = [Agent(races[0], handicap=cfg["handicap"]), Agent(races[1], handicap=cfg["handicap"])]
         late = ai["kind"] == "ai" and "delay" in ai  # the curriculum: the AI may start late (an agent slot till then)
+        real = late and rng.random() < cfg["real_share"]  # the real game instead: the yardstick, no curriculum
+        late = late and not real
         if ai["kind"] == "ai":
             slots[1 - side] = (Agent(races[1 - side], handicap=cfg["handicap"], difficulty=ai["difficulty"]) if late
                                else BuiltinAI(races[1 - side], ai["difficulty"], handicap=cfg["handicap"]))
@@ -348,8 +350,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                         spec = json.loads(spec_path.read_text())
                     except (FileNotFoundError, json.JSONDecodeError):
                         pass
-                    opp = ({"name": f"script:ai-{ai['difficulty']}", "kind": "ai"} if ai["kind"] == "ai"
-                           else _choose(rng, spec["agents"]))
+                    opp = ({"name": f"script:ai-{ai['difficulty']}" + (" (real)" if real else ""), "kind": "ai"}
+                           if ai["kind"] == "ai" else _choose(rng, spec["agents"]))
                     if late:  # the curriculum's current delay for this AI
                         delay = next((x.get("delay", 0.0) for x in spec["launch"] if x.get("difficulty") == ai["difficulty"]), 0.0)
                         opp["start"] = int(round(delay / cfg["step_seconds"]))
@@ -578,6 +580,8 @@ class League:
         self.scripts = {f"script:ai-{d}": Member(f"script:ai-{d}") for d in ai}
         self.rule, self.hp = curriculum, hp
         self.level = {n: curriculum[0] for n in self.scripts} if curriculum else {}
+        # with a curriculum some launches play the real game (the yardstick: "script:ai-X (real)")
+        self.real = {f"{n} (real)": Member(f"{n} (real)") for n in self.scripts} if curriculum else {}
         self.past: list[Member] = []
         self.self_member = Member("self")
 
@@ -598,7 +602,7 @@ class League:
     def member(self, name: str) -> Member | None:
         if name == "self":
             return self.self_member
-        return self.scripts.get(name) or next((m for m in self.past if m.name == name), None)
+        return self.scripts.get(name) or self.real.get(name) or next((m for m in self.past if m.name == name), None)
 
     def add_snapshot(self, path: Path, steps: int) -> None:
         self.past.append(Member(f"past:{steps}", path=str(path), steps=steps))
@@ -608,8 +612,8 @@ class League:
     def restore(self, summary: dict) -> None:
         """Members and records from a league.json (resuming a run)."""
         for row in summary.get("members", []):
-            if row["name"] in self.scripts:
-                m = self.scripts[row["name"]]
+            if row["name"] in self.scripts or row["name"] in self.real:
+                m = self.scripts.get(row["name"]) or self.real[row["name"]]
             elif row.get("path") and Path(row["path"]).exists():
                 m = Member(row["name"], path=row["path"], steps=row.get("steps", 0))
                 self.past.append(m)
@@ -650,14 +654,14 @@ class League:
             return {"name": m.name, "steps": m.steps, "games": m.games, "wins": m.wins, "losses": m.losses,
                     "draws": m.draws, "win_rate": p, "weight": pfsp_weight(p, self.pfsp) if m.path else None,
                     "path": m.path, "recent": m.recent}
-        summary = {"pfsp": self.pfsp, "members": [row(m) for m in [*self.scripts.values(), *self.past]],
+        summary = {"pfsp": self.pfsp, "members": [row(m) for m in [*self.scripts.values(), *self.real.values(), *self.past]],
                    "self": row(self.self_member), "level": dict(self.level)}
         tmp = self.run_dir / "league.json.tmp"
         tmp.write_text(json.dumps(summary))
         tmp.replace(self.run_dir / "league.json")
 
     def train_keys(self) -> dict:
-        out = {f"league/{n}": m.win_rate() for n, m in self.scripts.items() if m.win_rate() is not None}
+        out = {f"league/{n}": m.win_rate() for n, m in [*self.scripts.items(), *self.real.items()] if m.win_rate() is not None}
         past = [x for m in self.past for x in m.recent[-50:]]
         if past:
             out["league/past"] = sum(past) / len(past)
@@ -844,6 +848,8 @@ def main(argv: list[str] | None = None) -> int:
                          "-1: none, the real game")
     ap.add_argument("--curriculum-step", type=float, default=0.02, help="how much a loss raises the level (a win lowers it)")
     ap.add_argument("--curriculum-delay", type=float, default=120.0, help="the AI's late start at level 1 (seconds)")
+    ap.add_argument("--real-share", type=float, default=0.1, help="with a curriculum: the share of launches against "
+                                                                   "the built-in AI that play the real game (the yardstick)")
     ap.add_argument("--curriculum-hp", type=int, default=1, help="0: the level is the AI's late start alone, the hit "
                                                                  "points even (1: up to twice the learner's first)")
     ap.add_argument("--self-share", type=float, default=0.5, help="of the agent games: against itself")
@@ -963,6 +969,7 @@ def main(argv: list[str] | None = None) -> int:
            "agent_games_factor": args.agent_games_factor, "mirror": bool(args.mirror), "learner_pid": os.getpid(),
            "actors": args.actors, "values": unit_values(), "shaping": args.shaping, "shaping_scale": args.shaping_scale,
            "tie_break": args.tie_break, "compile": bool(args.compile), "native_obs": bool(args.native_obs),
+           "real_share": args.real_share,
            "avail_mask": bool(args.avail_mask),
            "costs": order_costs(vocab, args.map).tolist() if args.avail_mask else None, "max_past": args.max_past,
            "order_names": vocab.get("order_names") or {str(k): v for k, v in fx.demo_order_names(args.runs).items()}}

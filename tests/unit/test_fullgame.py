@@ -327,3 +327,19 @@ def test_curriculum_late_start_only(tmp_path):
     assert lg.handicap_delay("script:ai-normal") == (50, 90.0)  # even hit points, the AI 90 s late
     lg.curriculum("script:ai-normal", 1.0)
     assert lg.handicap_delay("script:ai-normal") == (50, 72.0)
+
+
+def test_curriculum_real_game_yardstick(tmp_path):
+    """With a curriculum some launches play the real game: their results go to "script:ai-X (real)"
+    (charted with the others) and leave the curriculum alone."""
+    lg = League(tmp_path, ["normal"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard",
+                curriculum=(0.5, 0.1, 180.0, 50), hp=False)
+    m = lg.member("script:ai-normal (real)")
+    m.record(1.0)
+    assert lg.train_keys()["league/script:ai-normal (real)"] == 1.0
+    assert all(x["kind"] != "ai" or "(real)" not in x["difficulty"] for x in lg.spec()["launch"])
+    lg.write()
+    again = League(tmp_path, ["normal"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard",
+                   curriculum=(0.5, 0.1, 180.0, 50), hp=False)
+    again.restore(json.loads((tmp_path / "league.json").read_text()))
+    assert again.member("script:ai-normal (real)").wins == 1
