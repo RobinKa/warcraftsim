@@ -556,6 +556,17 @@ The mean level per 0.5M steps. A single level moves by 0.02 a game, a random wal
 
 In its first million steps the learner needed nearly the most help: twice the hit points and the AI 110–115 s late. From 2M steps it held 50% at about 0.7 (twice the hit points, the AI ~50 s late). It improved against the AI, which `fgself-3` never did, and then held level.
 
+The decline went on slowly, about 0.03 a million steps: 0.57 (easy) and 0.60 (normal) by 8–9M steps. The real game (even hit points, the AI on time) doesn't show it yet. The checkpoint at 8.4M steps in 32 mirror games against the normal AI:
+
+| | clone (BC v3) | `fgself-4` at 8.4M | the AI |
+|---|---|---|---|
+| wins, ties, losses | 1, 0, 31 | 0, 2, 30 | |
+| gold gathered | 6577 | 11353 | ~7400 |
+| gold + lumber held | 3951 | 5969 | ~2170 |
+| food at 1 minute | 24.1 | 27.8 | ~44 |
+
+It learned to gather, not to spend. With twice the hit points a small army wins fights, so nothing in the curriculum pushed it to build a bigger one, and that is the skill it lacks. `fgself-5` goes on from that checkpoint with the late start alone (`--curriculum-hp 0`, up to 180 s, starting at 90 s) and even hit points, so the fights stay as they are.
+
 ### Memory and a value head in BC
 
 Two additions to cloning:
