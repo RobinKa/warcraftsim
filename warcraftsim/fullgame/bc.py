@@ -6,7 +6,7 @@
 shown by the dashboard) and policy.pt. Games are encoded on the fly by loader workers (both
 players' sides of every game; ~0.1 s per side), a few games are held out for validation.
 
-With --memory (the network's GRU core) batches are chunks of consecutive steps instead: lanes each
+With --memory (the network's minGRU core) batches are chunks of consecutive steps instead: lanes each
 walk through whole game sides, --seq-len steps at a time, and each lane's state carries over from
 its last chunk (not differentiated through: truncated backpropagation through time), so the core
 learns from states like those it has when playing, built up from the game's start.
@@ -288,7 +288,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--val-games", type=int, default=8)
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--max-games", type=int, default=0)
-    ap.add_argument("--memory", action="store_true", help="the GRU core (trained on chunks of consecutive steps)")
+    ap.add_argument("--memory", action="store_true", help="the minGRU core (trained on chunks of consecutive steps)")
+    ap.add_argument("--init", type=Path, help="start from this fit's policy (its network and vocabulary; e.g. to add "
+                                             "takeover games to a fit)")
     ap.add_argument("--seq-len", type=int, default=32, help="with --memory: steps per chunk")
     ap.add_argument("--value-coef", type=float, default=0.5, help="weight of the value head's loss (0: untrained)")
     ap.add_argument("--avail-mask", type=int, default=1,
@@ -304,7 +306,8 @@ def main(argv: list[str] | None = None) -> int:
     val, train = paths[:args.val_games], paths[args.val_games:]
     out = args.runs / "bc" / args.name
     out.mkdir(parents=True, exist_ok=True)
-    vocab = fx.build_vocab(train)
+    init = torch.load(args.init, map_location="cpu", weights_only=False) if args.init else None
+    vocab = init["vocab"] if init else fx.build_vocab(train)  # (from --init: its vocabulary, unknown types -> 0)
     (out / "vocab.json").write_text(json.dumps(vocab))
     enc = fx.Encoder(vocab)
     from .trace import unit_values
@@ -318,15 +321,21 @@ def main(argv: list[str] | None = None) -> int:
             "vocab": {"types": enc.n_types, "orders": enc.n_orders, "upgrades": len(enc.upgrade_index)},
             "args": {k: " ".join(map(str, v)) if isinstance(v, list) else str(v) for k, v in vars(args).items()},
             "command": "python3 -m warcraftsim.fullgame.bc " + " ".join(sys.argv[1:] if argv is None else argv),
-            "value_reward": REWARD if args.value_coef > 0 else None}
+            "value_reward": REWARD if args.value_coef > 0 else None,
+            **({"init_from": str(args.init)} if args.init else {})}
     (out / "bc.json").write_text(json.dumps(info, indent=1))
     if args.note:
         (out / "notes.md").write_text(args.note + "\n")
     device = torch.device(args.device)
-    net = FullGameNet(enc.n_types, enc.n_cur, enc.n_orders, enc.G, d=args.d, layers=args.layers,
-                      dropout=args.dropout, memory=args.memory).to(device)
-    net.allowed[0] = True  # unknown unit types: any order
-    net.order_kind.copy_(torch.as_tensor(enc.order_kind, device=device))
+    if init:
+        from .model import load
+        net, _ = load(args.init, device)
+        args.d, args.memory = net.config["d"], net.memory
+    else:
+        net = FullGameNet(enc.n_types, enc.n_cur, enc.n_orders, enc.G, d=args.d, layers=args.layers,
+                          dropout=args.dropout, memory=args.memory).to(device)
+        net.allowed[0] = True  # unknown unit types: any order
+        net.order_kind.copy_(torch.as_tensor(enc.order_kind, device=device))
     opt = torch.optim.AdamW(net.parameters(), lr=args.lr, weight_decay=1e-4)
     if args.memory:  # args.batch steps: lanes of seq_len steps
         lanes = max(1, args.batch // args.seq_len)
