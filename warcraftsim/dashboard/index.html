@@ -1227,7 +1227,10 @@ function renderFullBC(d) {
   const a = info.args || {};
   const rows = [["Demonstrations", (info.datasets || []).length ? info.datasets.map(go).join(", ") : esc(info.data || "–")],
     ["Vocabulary", `${voc.types || "?"} unit types · ${voc.orders || "?"} order classes · ${voc.upgrades || "?"} upgrades`],
-    ["Network", `transformer, d ${esc(a.d || "?")}, ${esc(a.layers || "?")} layers, dropout ${esc(a.dropout || "?")}`],
+    ["Network", `transformer, d ${esc(a.d || "?")}, ${esc(a.layers || "?")} layers, dropout ${esc(a.dropout || "?")}`
+      + (a.memory === "True" ? `, minGRU memory (chunks of ${esc(a.seq_len || "?")} steps)` : "")
+      + (a.value_coef !== undefined ? (parseFloat(a.value_coef) > 0 ? `; value head trained (×${esc(a.value_coef)})` : "; value head untrained") : "")
+      + (a.avail_mask !== undefined ? (a.avail_mask === "1" ? "; orders masked to what the player can pay for" : "") : "")],
     ["Training", `lr ${esc(a.lr || "?")}, batch ${esc(a.batch || "?")}; the epoch with the lowest validation loss is policy.pt`],
     ["Started", info.created ? new Date(info.created * 1000).toLocaleString() : "–"]];
   const lin = document.getElementById("lineage");
