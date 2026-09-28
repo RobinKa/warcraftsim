@@ -319,3 +319,11 @@ def test_curriculum_against_the_builtin_ai(tmp_path):
                    curriculum=(0.75, 0.25, 120.0, 50))
     again.restore(json.loads((tmp_path / "league.json").read_text()))
     assert again.level[n] == 1.0  # (resumed runs keep their levels)
+
+
+def test_curriculum_late_start_only(tmp_path):
+    lg = League(tmp_path, ["normal"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard",
+                curriculum=(0.5, 0.1, 180.0, 50), hp=False)
+    assert lg.handicap_delay("script:ai-normal") == (50, 90.0)  # even hit points, the AI 90 s late
+    lg.curriculum("script:ai-normal", 1.0)
+    assert lg.handicap_delay("script:ai-normal") == (50, 72.0)

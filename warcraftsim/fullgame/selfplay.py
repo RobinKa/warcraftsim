@@ -565,16 +565,18 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q) -> None:
 
 class League:
     def __init__(self, run_dir: Path, ai: list[str], shares: dict, max_past: int, pfsp: str,
-                 curriculum: tuple[float, float, float, int] | None = None):
+                 curriculum: tuple[float, float, float, int] | None = None, hp: bool = True):
         """`curriculum`: (start level, step, max delay in seconds, base handicap): games against the
         built-in AI get easier or harder towards a 50% score, a level per difficulty in [0, 1] that
         a loss raises by `step`, a win lowers (a tie leaves it). From 0 to 0.5 the learner's units
         get more hit points (its handicap from the base to 100, the AI's staying at the base); from
         0.5 to 1 also the AI starts late (its units idle till then; protocol.StartAI), up to the max
-        delay. At 0 the game is the real one. None: no curriculum."""
+        delay. At 0 the game is the real one. None: no curriculum. `hp` False: the level is the late
+        start alone (0 to the max delay), the hit points stay even (twice the hit points let a small
+        army win fights: the learner stopped needing to spend, which it needs in the real game)."""
         self.run_dir, self.shares, self.max_past, self.pfsp = run_dir, shares, max_past, pfsp
         self.scripts = {f"script:ai-{d}": Member(f"script:ai-{d}") for d in ai}
-        self.rule = curriculum
+        self.rule, self.hp = curriculum, hp
         self.level = {n: curriculum[0] for n in self.scripts} if curriculum else {}
         self.past: list[Member] = []
         self.self_member = Member("self")
@@ -583,6 +585,8 @@ class League:
         """The learner's handicap (hit points in percent) and the AI's delay (seconds) at `name`'s level."""
         _, _, top, base = self.rule
         lv = self.level[name]
+        if not self.hp:
+            return base, round(lv * top, 1)
         hp = base + int(min(1.0, 2 * lv) * (100 - base) / 10.0 + 0.5) * 10  # (handicaps in steps of 10)
         return hp, round(max(0.0, 2 * lv - 1) * top, 1)
 
@@ -840,6 +844,8 @@ def main(argv: list[str] | None = None) -> int:
                          "-1: none, the real game")
     ap.add_argument("--curriculum-step", type=float, default=0.02, help="how much a loss raises the level (a win lowers it)")
     ap.add_argument("--curriculum-delay", type=float, default=120.0, help="the AI's late start at level 1 (seconds)")
+    ap.add_argument("--curriculum-hp", type=int, default=1, help="0: the level is the AI's late start alone, the hit "
+                                                                 "points even (1: up to twice the learner's first)")
     ap.add_argument("--self-share", type=float, default=0.5, help="of the agent games: against itself")
     ap.add_argument("--snapshot-every", type=int, default=20, help="updates between league snapshots")
     ap.add_argument("--max-past", type=int, default=12)
@@ -939,7 +945,7 @@ def main(argv: list[str] | None = None) -> int:
     league = League(run_dir, ai, {"ai": args.ai_share, "self": args.self_share, "past": 1.0 - args.self_share},
                     args.max_past, args.pfsp,
                     curriculum=((args.curriculum, args.curriculum_step, args.curriculum_delay, args.handicap)
-                                if args.curriculum >= 0 else None))
+                                if args.curriculum >= 0 else None), hp=bool(args.curriculum_hp))
     if resumed is not None and (run_dir / "league.json").exists():
         league.restore(json.loads((run_dir / "league.json").read_text()))
     else:
