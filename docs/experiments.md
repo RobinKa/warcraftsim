@@ -510,6 +510,21 @@ Every local decision is roughly calibrated. The army gap comes from compounding 
 
 Right after a takeover, even the AI orders modestly: 0.13 train orders and 0.11 build orders per step in the first 10 s. The model on those states: 0.19 and 0.09.
 
+### Self-play from the new clone (`fgself-3`)
+
+`fgself-3` is PPO self-play from `fullgame-rush3-tk`, with the value head trained in BC (a 2-update warm-up), builder commitment and the fixed labels. It runs at 850–980 agent steps/s. Against the built-in AI it still loses almost everything: over its last 100 such games at 1.49M steps, 1 win, 2 ties, 72 losses against normal and 25 losses against easy.
+
+The same spending evaluation as for the clones shows what changed. Mirror games against the normal AI:
+
+| | BC v3 (the start) | `fgself-3` at 1.48M steps | the AI |
+|---|---|---|---|
+| wins, ties, losses | 1, 0, 31 | 0, 1, 15 | |
+| gold gathered | 6577 | 10230 | ~7500 |
+| food at 1 minute | 24.1 | 31.9 | ~47 |
+| gold + lumber held | 3951 | 5292 | ~2150 |
+
+It grew its economy, most likely with workers: cheap, safe material that the shaping rewards. It still hoards. Army takes production buildings first, which RL hasn't found yet.
+
 ### Memory and a value head in BC
 
 Two additions to cloning:
