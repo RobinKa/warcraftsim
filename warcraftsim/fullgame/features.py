@@ -53,13 +53,13 @@ def redundant(order: int, kind: int, current: int, resource: str | None = None, 
     """A harvest order for a worker already harvesting that resource: the AI re-issues these without
     effect; learned as decisions, a policy re-ordered its workers every few seconds to other trees
     and reset their work (240 gold from 27 peasants in 80 s). `resource`: what the order harvests
-    (harvest_resource), `assigned`: what the worker harvests (View.assign; None: unknown, taken as
-    the same). A miner sent to the trees is a decision: dropping those too (both show the same
-    current order) left the clone with almost no lumber as human and orc, hoarding gold it could not
-    spend on farms and barracks."""
+    (harvest_resource), `assigned`: what the worker harvests (View.assign; None: no order of the
+    player's sent it, so the map's melee start or a rally point: gold). A miner sent to the trees is
+    a decision: dropping those too (both show the same current order) left the clone with almost no
+    lumber as human and orc, hoarding gold it could not spend on farms and barracks."""
     if current not in HARVESTING or order not in (HARVEST, SMART) or kind not in (UNIT, TREE):
         return False
-    return assigned is None or resource is None or resource == assigned
+    return resource is None or resource == (assigned or "gold")
 
 
 WORKER = 4  # UnitFlags.WORKER

@@ -373,7 +373,8 @@ def test_harvest_switch_is_a_decision():
     h = fx.HARVEST
     assert fx.redundant(fx.SMART, fx.TREE, h, "lumber", "lumber")
     assert not fx.redundant(fx.SMART, fx.TREE, h, "lumber", "gold")  # the switch
-    assert fx.redundant(fx.HARVEST, fx.UNIT, h, "gold", None)  # (unknown: as before)
+    assert fx.redundant(fx.HARVEST, fx.UNIT, h, "gold", None)  # unknown: mining gold (melee start, rally point)
+    assert not fx.redundant(fx.SMART, fx.TREE, h, "lumber", None)  # so to the trees: a switch
     assert not fx.redundant(fx.SMART, fx.TREE, 0, "lumber", "gold")  # not harvesting
 
 
