@@ -544,6 +544,18 @@ The curriculum (`League`, `--curriculum`) is a level per AI difficulty that a lo
 
 `fgself-4` starts at 0.75 and sends half its launches against the AI. After its first 45 such games it had 9 wins, 5 ties and 13 losses against normal, and 6 wins, 8 ties and 4 losses against easy. The levels settled near 0.71 (easy) and 0.83 (normal). The progress to watch is the levels falling toward 0.
 
+The mean level per 0.5M steps. A single level moves by 0.02 a game, a random walk around the 50% point (±0.2 over ~100 games), so only the averages show the trend:
+
+| steps | easy | normal |
+|---|---|---|
+| 0–1M | 0.92–0.95 | 0.95–0.97 |
+| 1.0–1.5M | 0.89 | 0.89 |
+| 1.5–2.0M | 0.74 | 0.72 |
+| 2.0–3.5M | 0.65–0.67 | 0.67–0.76 |
+| 3.5–4.0M | 0.77 | 0.54 |
+
+In its first million steps the learner needed nearly the most help: twice the hit points and the AI 110–115 s late. From 2M steps it held 50% at about 0.7 (twice the hit points, the AI ~50 s late). It improved against the AI, which `fgself-3` never did, and then held level.
+
 ### Memory and a value head in BC
 
 Two additions to cloning:
