@@ -583,6 +583,17 @@ Smoke test against the easy AI at a 45–61% tax: 6 wins, 1 tie, 15 losses in 22
 
 `fgself-6` continues from `fgself-5` at 6.9M steps. It starts at level 0.6 (a 54% tax, up to 90%) with a controller step of 0.01, and 10% of its AI launches play the real game.
 
+After 1.5M steps the learner's race decided most curriculum games. Mirror matchups, the learner's score:
+
+| race | vs the taxed easy AI | vs the taxed normal AI | real game |
+|---|---|---|---|
+| night elf | 0.94 | 0.96 | 1 win, 2 ties, 3 losses (normal) |
+| undead | 0.69 | 0.74 | 0 wins in 32 |
+| human | 0.14 | 0.07 | 0 wins in 18 |
+| orc | 0.08 | 0.13 | 0 wins in 12 |
+
+One level per difficulty settled where night elf wins balanced human and orc losses. Every race's games were then nearly decided and taught little: the easy AI's level sat at the 90% maximum while human and orc still lost. The curriculum now keeps a level per difficulty and learner's race.
+
 ### Memory and a value head in BC
 
 Two additions to cloning:
