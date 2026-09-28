@@ -292,3 +292,30 @@ def test_takeover_side_starts_at_the_takeover():
     a, b = side_data(enc, game, 0, {}), side_data(enc, game, 1, {})
     assert len(a["n_own"]) == len(a["ret"]) == 2 and len(b["n_own"]) == len(b["ret"]) == 4
     assert a["ret"][-1] == pytest.approx(1.0) and b["ret"][-1] == pytest.approx(-1.0)
+
+
+def test_curriculum_against_the_builtin_ai(tmp_path):
+    """The curriculum: a level per built-in AI that a loss raises and a win lowers (towards a 50%
+    score); from 0 to 0.5 the learner's hit points rise to twice the AI's, then the AI starts late."""
+    lg = League(tmp_path, ["easy"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard",
+                curriculum=(0.75, 0.25, 120.0, 50))
+    n = "script:ai-easy"
+    assert lg.handicap_delay(n) == (100, 60.0)
+    launch = [x for x in lg.spec()["launch"] if x["kind"] == "ai"][0]
+    assert (launch["handicap"], launch["delay"], launch["level"]) == (100, 60.0, 0.75)
+    lg.curriculum(n, 1.0)  # a win: harder
+    assert lg.handicap_delay(n) == (100, 0.0)
+    lg.curriculum(n, 0.0)  # a tie: unchanged
+    lg.curriculum(n, 1.0)
+    assert lg.handicap_delay(n) == (80, 0.0)  # (handicaps in steps of 10)
+    for _ in range(5):
+        lg.curriculum(n, 1.0)
+    assert lg.level[n] == 0.0 and lg.handicap_delay(n) == (50, 0.0)  # the real game
+    for _ in range(9):
+        lg.curriculum(n, -1.0)
+    assert lg.level[n] == 1.0 and lg.handicap_delay(n) == (100, 120.0)
+    lg.write()
+    again = League(tmp_path, ["easy"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard",
+                   curriculum=(0.75, 0.25, 120.0, 50))
+    again.restore(json.loads((tmp_path / "league.json").read_text()))
+    assert again.level[n] == 1.0  # (resumed runs keep their levels)
