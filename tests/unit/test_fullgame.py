@@ -300,20 +300,21 @@ def test_curriculum_against_the_builtin_ai(tmp_path):
     lg = League(tmp_path, ["easy"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard",
                 curriculum=(0.75, 0.25, 120.0, 50))
     n = "script:ai-easy"
-    assert lg.handicap_delay(n) == (100, 60.0)
+    hd = lambda: tuple(lg.knobs(n)[k] for k in ("handicap", "delay"))  # noqa: E731
+    assert hd() == (100, 60.0)
     launch = [x for x in lg.spec()["launch"] if x["kind"] == "ai"][0]
     assert (launch["handicap"], launch["delay"], launch["level"]) == (100, 60.0, 0.75)
     lg.curriculum(n, 1.0)  # a win: harder
-    assert lg.handicap_delay(n) == (100, 0.0)
+    assert hd() == (100, 0.0)
     lg.curriculum(n, 0.0)  # a tie: unchanged
     lg.curriculum(n, 1.0)
-    assert lg.handicap_delay(n) == (80, 0.0)  # (handicaps in steps of 10)
+    assert hd() == (80, 0.0)  # (handicaps in steps of 10)
     for _ in range(5):
         lg.curriculum(n, 1.0)
-    assert lg.level[n] == 0.0 and lg.handicap_delay(n) == (50, 0.0)  # the real game
+    assert lg.level[n] == 0.0 and hd() == (50, 0.0)  # the real game
     for _ in range(9):
         lg.curriculum(n, -1.0)
-    assert lg.level[n] == 1.0 and lg.handicap_delay(n) == (100, 120.0)
+    assert lg.level[n] == 1.0 and hd() == (100, 120.0)
     lg.write()
     again = League(tmp_path, ["easy"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard",
                    curriculum=(0.75, 0.25, 120.0, 50))
@@ -323,23 +324,26 @@ def test_curriculum_against_the_builtin_ai(tmp_path):
 
 def test_curriculum_late_start_only(tmp_path):
     lg = League(tmp_path, ["normal"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard",
-                curriculum=(0.5, 0.1, 180.0, 50), hp=False)
-    assert lg.handicap_delay("script:ai-normal") == (50, 90.0)  # even hit points, the AI 90 s late
+                curriculum=(0.5, 0.1, 180.0, 50), mode="delay")
+    assert lg.knobs("script:ai-normal") == {"handicap": 50, "delay": 90.0, "tax": 0.0}  # the AI 90 s late
     lg.curriculum("script:ai-normal", 1.0)
-    assert lg.handicap_delay("script:ai-normal") == (50, 72.0)
+    assert lg.knobs("script:ai-normal")["delay"] == 72.0
+    tax = League(tmp_path, ["normal"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard",
+                 curriculum=(0.5, 0.1, 0.9, 50), mode="tax")
+    assert tax.knobs("script:ai-normal") == {"handicap": 50, "delay": 0.0, "tax": 0.45}  # the AI keeps 55% of its income
 
 
 def test_curriculum_real_game_yardstick(tmp_path):
     """With a curriculum some launches play the real game: their results go to "script:ai-X (real)"
     (charted with the others) and leave the curriculum alone."""
     lg = League(tmp_path, ["normal"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard",
-                curriculum=(0.5, 0.1, 180.0, 50), hp=False)
+                curriculum=(0.5, 0.1, 180.0, 50), mode="delay")
     m = lg.member("script:ai-normal (real)")
     m.record(1.0)
     assert lg.train_keys()["league/script:ai-normal (real)"] == 1.0
     assert all(x["kind"] != "ai" or "(real)" not in x["difficulty"] for x in lg.spec()["launch"])
     lg.write()
     again = League(tmp_path, ["normal"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard",
-                   curriculum=(0.5, 0.1, 180.0, 50), hp=False)
+                   curriculum=(0.5, 0.1, 180.0, 50), mode="delay")
     again.restore(json.loads((tmp_path / "league.json").read_text()))
     assert again.member("script:ai-normal (real)").wins == 1

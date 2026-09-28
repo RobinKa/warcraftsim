@@ -323,13 +323,14 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
         side = rng.randrange(2)  # the learner's
         ai = _choose(rng, spec["launch"])  # {"kind": "agents"} or {"kind": "ai", "difficulty"[, "delay"]}
         slots = [Agent(races[0], handicap=cfg["handicap"]), Agent(races[1], handicap=cfg["handicap"])]
-        late = ai["kind"] == "ai" and "delay" in ai  # the curriculum: the AI may start late (an agent slot till then)
-        real = late and rng.random() < cfg["real_share"]  # the real game instead: the yardstick, no curriculum
-        late = late and not real
+        curr = ai["kind"] == "ai" and "level" in ai  # a curriculum game (League.knobs)
+        real = curr and rng.random() < cfg["real_share"]  # the real game instead: the yardstick, no curriculum
+        curr = curr and not real
+        late = curr and ai.get("delay", 0.0) > 0  # the AI starts late: an agent slot till then
         if ai["kind"] == "ai":
             slots[1 - side] = (Agent(races[1 - side], handicap=cfg["handicap"], difficulty=ai["difficulty"]) if late
                                else BuiltinAI(races[1 - side], ai["difficulty"], handicap=cfg["handicap"]))
-            if late:  # (the handicap is the launch's: the level when it started)
+            if curr:  # (the handicap is the launch's: the level when it started)
                 slots[side] = Agent(races[side], handicap=int(ai.get("handicap", cfg["handicap"])))
         agents_only = ai["kind"] != "ai"
         # without the built-in AI a restart resets the game by script (0.1 s; the AI does not survive
@@ -352,9 +353,13 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                         pass
                     opp = ({"name": f"script:ai-{ai['difficulty']}" + (" (real)" if real else ""), "kind": "ai"}
                            if ai["kind"] == "ai" else _choose(rng, spec["agents"]))
-                    if late:  # the curriculum's current delay for this AI
-                        delay = next((x.get("delay", 0.0) for x in spec["launch"] if x.get("difficulty") == ai["difficulty"]), 0.0)
-                        opp["start"] = int(round(delay / cfg["step_seconds"]))
+                    if curr:  # the curriculum's current knobs for this AI
+                        now = next((x for x in spec["launch"] if x.get("difficulty") == ai["difficulty"]), ai)
+                        opp["curriculum"] = now.get("level", 0.0)
+                        if late:
+                            opp["start"] = int(round(now.get("delay", 0.0) / cfg["step_seconds"]))
+                        if now.get("tax", 0.0) > 0:
+                            opp["tax"] = now["tax"]
                     # a video: the first game of a launch (its replay then holds just this game)
                     film = films and fresh and time.time() >= next_video
                     ep = play_one(g, obs, cfg, vocab, races, side, opp, infer, out_q, wid, record=film)
@@ -376,12 +381,14 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     (fullgame.overlay), in the returned episode row's "trace"."""
     from .play import BCAgent
 
-    from ..protocol import StartAI
+    from ..protocol import SetResources, StartAI
     race_ix = [fx.RACES.index(r) if r in fx.RACES else 0 for r in races]
     bots: dict[int, BCAgent] = {}
     keys: dict[int, str] = {}
     trajs: dict[int, Trajectory] = {}
     late = 1 - side if opp.get("start") is not None else None  # the built-in AI's side, idle until opp["start"]
+    taxed = 1 - side if opp.get("tax") else None  # the AI's side losing opp["tax"] of what it gathers
+    gathered = None
     for s in (0, 1):
         if g.setup.slots[s].kind != "agent" or s == late:
             continue
@@ -423,6 +430,13 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                                     entropy={s: r["entropy"] for s, r in zip(live, results) if r}))
         if late is not None and t == opp["start"]:  # the built-in AI takes over its side (after the bots' orders)
             cmds.append(StartAI(late))
+        if taxed is not None and obs.players.get(taxed) is not None:  # (applied before the game goes on)
+            p = obs.players[taxed]
+            now = (p.gold_gathered, p.lumber_gathered)
+            dg, dl = (p.gold, p.lumber) if gathered is None else (now[0] - gathered[0], now[1] - gathered[1])
+            if dg > 0 or dl > 0:  # (at the start: its starting gold and lumber)
+                cmds.append(SetResources(taxed, max(0, p.gold - int(opp["tax"] * dg)), max(0, p.lumber - int(opp["tax"] * dl))))
+            gathered = now
         obs = g.step(cmds)
         for s, (a, b) in spans.items():
             bots[s].accepted(cmds[a:b], obs.command_results[a:b])
@@ -460,8 +474,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         "races": races, "side": side, "race": races[side], "opponent_race": races[1 - side],
         "gold": me.gold_gathered if me else 0, "opponent_gold": other.gold_gathered if other else 0,
         "orders": bots[side].issued if side in bots else 0,
-        **({"ai_delay": opp["start"] * cfg["step_seconds"], "handicap": g.setup.slots[side].handicap}
-           if late is not None else {})}
+        **({"curriculum": opp["curriculum"], "handicap": g.setup.slots[side].handicap,
+            "ai_delay": opp.get("start", 0) * cfg["step_seconds"], "ai_tax": opp.get("tax", 0.0)}
+           if "curriculum" in opp else {})}
     out_q.put({"episode": ep})
     if record:  # the video's panel: A = the learner's side
         who = {"self": "itself", "ai": "built-in AI"}.get(opp["kind"], opp["name"])
@@ -567,32 +582,39 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q) -> None:
 
 class League:
     def __init__(self, run_dir: Path, ai: list[str], shares: dict, max_past: int, pfsp: str,
-                 curriculum: tuple[float, float, float, int] | None = None, hp: bool = True):
-        """`curriculum`: (start level, step, max delay in seconds, base handicap): games against the
+                 curriculum: tuple[float, float, float, int] | None = None, mode: str = "hp"):
+        """`curriculum`: (start level, step, the knob at level 1, base handicap): games against the
         built-in AI get easier or harder towards a 50% score, a level per difficulty in [0, 1] that
-        a loss raises by `step`, a win lowers (a tie leaves it). From 0 to 0.5 the learner's units
-        get more hit points (its handicap from the base to 100, the AI's staying at the base); from
-        0.5 to 1 also the AI starts late (its units idle till then; protocol.StartAI), up to the max
-        delay. At 0 the game is the real one. None: no curriculum. `hp` False: the level is the late
-        start alone (0 to the max delay), the hit points stay even (twice the hit points let a small
-        army win fights: the learner stopped needing to spend, which it needs in the real game)."""
+        a loss raises by `step`, a win lowers (a tie leaves it). At 0 the game is the real one; None:
+        no curriculum. The level's knobs (knobs()), by `mode`:
+        * "hp": from 0 to 0.5 the learner's units get more hit points (its handicap from the base to
+          100, the AI's staying at the base); from 0.5 to 1 also the AI starts late (its units idle
+          till then; protocol.StartAI), up to the knob in seconds. Twice the hit points let a small
+          army win fights: the learner stopped needing to spend, which it needs in the real game.
+        * "delay": the late start alone. The learner learned to rush the idle AI: 65% of its wins
+          came before the AI started.
+        * "tax": the AI plays from the start, but loses this share of what it gathers (and of its
+          starting gold and lumber), up to the knob (e.g. 0.9): a poorer opponent, nothing idle."""
         self.run_dir, self.shares, self.max_past, self.pfsp = run_dir, shares, max_past, pfsp
         self.scripts = {f"script:ai-{d}": Member(f"script:ai-{d}") for d in ai}
-        self.rule, self.hp = curriculum, hp
+        self.rule, self.mode = curriculum, mode
         self.level = {n: curriculum[0] for n in self.scripts} if curriculum else {}
         # with a curriculum some launches play the real game (the yardstick: "script:ai-X (real)")
         self.real = {f"{n} (real)": Member(f"{n} (real)") for n in self.scripts} if curriculum else {}
         self.past: list[Member] = []
         self.self_member = Member("self")
 
-    def handicap_delay(self, name: str) -> tuple[int, float]:
-        """The learner's handicap (hit points in percent) and the AI's delay (seconds) at `name`'s level."""
+    def knobs(self, name: str) -> dict:
+        """At `name`'s level: the learner's handicap (hit points in percent), the AI's late start
+        (seconds) and the share of the AI's income taken."""
         _, _, top, base = self.rule
         lv = self.level[name]
-        if not self.hp:
-            return base, round(lv * top, 1)
+        if self.mode == "tax":
+            return {"handicap": base, "delay": 0.0, "tax": round(lv * top, 3)}
+        if self.mode == "delay":
+            return {"handicap": base, "delay": round(lv * top, 1), "tax": 0.0}
         hp = base + int(min(1.0, 2 * lv) * (100 - base) / 10.0 + 0.5) * 10  # (handicaps in steps of 10)
-        return hp, round(max(0.0, 2 * lv - 1) * top, 1)
+        return {"handicap": hp, "delay": round(max(0.0, 2 * lv - 1) * top, 1), "tax": 0.0}
 
     def curriculum(self, name: str, outcome: float) -> None:
         """A game against the built-in AI `name` ended (+1 / 0 / -1 for the learner): its level moves."""
@@ -633,7 +655,7 @@ class League:
         ai_share = self.shares["ai"] if self.scripts else 0.0
         launch = [{"kind": "agents", "p": 1.0 - ai_share}]
         launch += [{"kind": "ai", "difficulty": n.split("-", 1)[1], "p": ai_share / len(self.scripts),
-                    **(dict(zip(("handicap", "delay"), self.handicap_delay(n)), level=self.level[n]) if n in self.level else {})}
+                    **(dict(self.knobs(n), level=self.level[n]) if n in self.level else {})}
                    for n in self.scripts]
         agents = [{"name": "self", "kind": "self", "p": self.shares["self"] if self.past else 1.0}]
         if self.past:
@@ -668,11 +690,10 @@ class League:
         if self.self_member.win_rate() is not None:
             out["league/self"] = self.self_member.win_rate()
         out["league/members"] = len(self.past)
-        for n in self.level:  # the curriculum: its level, the learner's hit points, the AI's late start
-            hp, delay = self.handicap_delay(n)
+        for n in self.level:  # the curriculum: its level and knobs
             short = n.split(":", 1)[1]
-            out.update({f"curriculum/{short} level": self.level[n], f"curriculum/{short} handicap": hp,
-                        f"curriculum/{short} delay": delay})
+            out[f"curriculum/{short} level"] = self.level[n]
+            out.update({f"curriculum/{short} {k}": v for k, v in self.knobs(n).items()})
         return out
 
 
@@ -847,11 +868,14 @@ def main(argv: list[str] | None = None) -> int:
                          "points up to twice the AI's, then the AI starting late), moved towards a 50%% score; "
                          "-1: none, the real game")
     ap.add_argument("--curriculum-step", type=float, default=0.02, help="how much a loss raises the level (a win lowers it)")
-    ap.add_argument("--curriculum-delay", type=float, default=120.0, help="the AI's late start at level 1 (seconds)")
+    ap.add_argument("--curriculum-delay", type=float, default=120.0,
+                    help="the knob at level 1: the AI's late start (seconds; modes hp and delay) or the share of "
+                         "its income taken (mode tax, e.g. 0.9)")
     ap.add_argument("--real-share", type=float, default=0.1, help="with a curriculum: the share of launches against "
                                                                    "the built-in AI that play the real game (the yardstick)")
-    ap.add_argument("--curriculum-hp", type=int, default=1, help="0: the level is the AI's late start alone, the hit "
-                                                                 "points even (1: up to twice the learner's first)")
+    ap.add_argument("--curriculum-mode", default="hp", choices=("hp", "delay", "tax"),
+                    help="the curriculum's knobs (League): the learner's hit points then the AI's late start, the "
+                         "late start alone, or a tax on the AI's income")
     ap.add_argument("--self-share", type=float, default=0.5, help="of the agent games: against itself")
     ap.add_argument("--snapshot-every", type=int, default=20, help="updates between league snapshots")
     ap.add_argument("--max-past", type=int, default=12)
@@ -951,7 +975,7 @@ def main(argv: list[str] | None = None) -> int:
     league = League(run_dir, ai, {"ai": args.ai_share, "self": args.self_share, "past": 1.0 - args.self_share},
                     args.max_past, args.pfsp,
                     curriculum=((args.curriculum, args.curriculum_step, args.curriculum_delay, args.handicap)
-                                if args.curriculum >= 0 else None), hp=bool(args.curriculum_hp))
+                                if args.curriculum >= 0 else None), mode=args.curriculum_mode)
     if resumed is not None and (run_dir / "league.json").exists():
         league.restore(json.loads((run_dir / "league.json").read_text()))
     else:
@@ -1006,7 +1030,7 @@ def main(argv: list[str] | None = None) -> int:
                     m = league.member(e["opponent"])
                     if m is not None:
                         m.record(e["outcome"])
-                    if "ai_delay" in e:
+                    if "curriculum" in e:
                         league.curriculum(e["opponent"], e["outcome"])
                     with open(run_dir / "episodes.jsonl", "a") as f:
                         f.write(json.dumps(e) + "\n")
