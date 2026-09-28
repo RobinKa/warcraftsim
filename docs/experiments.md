@@ -458,7 +458,27 @@ After an early mistake the clone is in a state the AI's games never show, and cl
 * **Takeover games** (`collect.py --policy`): the clone plays one side for 5–90 s, then the built-in AI takes it over (`protocol.StartAI`) and its orders are recorded.
 * BC skips the taken-over side's steps before the takeover.
 
-`demos-takeover-1`: 4000 such games with `fullgame-rush2` as the clone.
+`demos-takeover-1`: 4000 such games with `fullgame-rush2` as the clone. They also measure how fast the clone loses a game. Evenly matched AIs would win about 50%.
+
+| the clone plays until | its side wins, the AI playing on | games |
+|---|---|---|
+| 5–20 s | 35% | 725 |
+| 20–40 s | 23% | 925 |
+| 40–60 s | 9% | 999 |
+| 60–90 s | 6% | 1351 |
+
+Even the first 20 seconds cost about 15 points, and after a minute the game is mostly lost.
+
+More data and the new labels alone don't fix the opening. `fullgame-rush3` is fitted on the 8000 `demos-rush2-1` games with the new labels. After epoch 4 (validation loss 2.93, order accuracy 70%) it played 32 mirror games against the normal AI:
+
+| | `fullgame-rush2` | `fullgame-rush3`, epoch 4 | the AI |
+|---|---|---|---|
+| wins, ties, losses | 1, 2, 29 | 1, 1, 30 | |
+| gold + lumber held (mean) | 4563 | 4178 | ~1900 |
+| food at 1 minute | 20.6 | 21.8 | 46–49 |
+| refused orders | ~25% | 16% | |
+
+Refused orders fell, but the spending gap stayed. The model is calibrated on the AI's states and still fails on its own, which is why the takeover games are the next step.
 
 ### Memory and a value head in BC
 
