@@ -525,6 +525,25 @@ The same spending evaluation as for the clones shows what changed. Mirror games 
 
 It grew its economy, most likely with workers: cheap, safe material that the shaping rewards. It still hoards. Army takes production buildings first, which RL hasn't found yet.
 
+### A curriculum against the built-in AI (`fgself-4`)
+
+`fgself-3` won 2 of its last 100 games against the AI after 3.3M steps (1 tie, 33 losses against normal; 11 ties, 53 losses against easy). From games it always loses, it learns little about beating the AI. Self-play already sits at 50% against itself, but that doesn't carry over.
+
+Neither knob alone brought the clone near 50% against the easy AI:
+
+| setting | wins, ties, losses |
+|---|---|
+| the clone's units at twice the AI's hit points | 1, 1, 6 |
+| the AI starting 30–48 s late | 0, 3, 10, while the clone gathered 2–3× the gold |
+| both: twice the hit points, the AI 55–60 s late | 2, 5, 3 |
+
+The curriculum (`League`, `--curriculum`) is a level per AI difficulty that a loss raises by 0.02 and a win lowers:
+* From 0 to 0.5 the learner's hit points rise to twice the AI's.
+* From 0.5 to 1 the AI also starts late, up to 120 s.
+* At 0 it's the real game.
+
+`fgself-4` starts at 0.75 and sends half its launches against the AI. After its first 45 such games it had 9 wins, 5 ties and 13 losses against normal, and 6 wins, 8 ties and 4 losses against easy. The levels settled near 0.71 (easy) and 0.83 (normal). The progress to watch is the levels falling toward 0.
+
 ### Memory and a value head in BC
 
 Two additions to cloning:
