@@ -396,3 +396,15 @@ def test_view_tracks_workers_on_lumber():
     assert st["ent"][0, fx.F - 1] == 1  # the lumber feature
     view.track_harvest(np.array([[1, B, 851986, 1, 0, 0, 0]]), st, {777: (100, 100)})  # a move: no longer harvesting
     assert B not in view.assign
+
+
+def test_real_game_launches_in_the_spec(tmp_path):
+    """With a curriculum the real game is a launch kind of its own (an extra draw after the races'
+    had made night elf rare among the real games)."""
+    lg = League(tmp_path, ["easy", "normal"], {"ai": 0.8, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard",
+                curriculum=(0.5, 0.1, 0.9, 50), mode="tax", races=("human", "nightelf"))
+    launch = lg.spec(0.1)["launch"]
+    real = [x for x in launch if x.get("real")]
+    curr = [x for x in launch if x["kind"] == "ai" and not x.get("real")]
+    assert len(real) == 2 and all("by_race" not in x for x in real)
+    assert abs(sum(x["p"] for x in real) - 0.08) < 1e-9 and abs(sum(x["p"] for x in curr) - 0.72) < 1e-9

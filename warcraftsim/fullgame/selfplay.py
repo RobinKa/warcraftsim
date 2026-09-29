@@ -323,11 +323,10 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
         side = rng.randrange(2)  # the learner's
         ai = _choose(rng, spec["launch"])  # {"kind": "agents"} or {"kind": "ai", "difficulty"[, "delay"]}
         slots = [Agent(races[0], handicap=cfg["handicap"]), Agent(races[1], handicap=cfg["handicap"])]
+        real = bool(ai.get("real"))  # the real game (the yardstick, no curriculum)
         curr = ai["kind"] == "ai" and "by_race" in ai  # a curriculum game (League.knobs, by the learner's race)
         if curr:
             ai = {**ai, **ai["by_race"].get(races[side], {})}
-        real = curr and rng.random() < cfg["real_share"]  # the real game instead: the yardstick, no curriculum
-        curr = curr and not real
         late = curr and ai.get("delay", 0.0) > 0  # the AI starts late: an agent slot till then
         if ai["kind"] == "ai":
             slots[1 - side] = (Agent(races[1 - side], handicap=cfg["handicap"], difficulty=ai["difficulty"]) if late
@@ -357,7 +356,7 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                            if ai["kind"] == "ai" else _choose(rng, spec["agents"]))
                     if curr:  # the curriculum's current knobs for this AI
                         now = next((x.get("by_race", {}).get(races[side], ai) for x in spec["launch"]
-                                    if x.get("difficulty") == ai["difficulty"]), ai)
+                                    if x.get("difficulty") == ai["difficulty"] and not x.get("real")), ai)
                         opp["curriculum"] = now.get("level", 0.0)
                         if late:
                             opp["start"] = int(round(now.get("delay", 0.0) / cfg["step_seconds"]))
@@ -607,6 +606,7 @@ class League:
         self.level = {(n, r): curriculum[0] for n in self.scripts for r in self.races} if curriculum else {}
         # with a curriculum some launches play the real game (the yardstick: "script:ai-X (real)")
         self.real = {f"{n} (real)": Member(f"{n} (real)") for n in self.scripts} if curriculum else {}
+        self.real_share = 0.0  # (set by the learner: --real-share)
         self.past: list[Member] = []
         self.self_member = Member("self")
 
@@ -660,10 +660,16 @@ class League:
         self.self_member.wins, self.self_member.losses = me.get("wins", 0.0), me.get("losses", 0.0)
         self.self_member.draws, self.self_member.recent = me.get("draws", 0.0), list(me.get("recent") or [])
 
-    def spec(self) -> dict:
-        """What the actors draw from: per launch built-in AI or agents; per agent game an opponent."""
+    def spec(self, real_share: float = 0.0) -> dict:
+        """What the actors draw from: per launch built-in AI or agents; per agent game an opponent.
+        With a curriculum, `real_share` of the AI launches play the real game ("real": its own launch
+        kind; an extra draw after the races' made night elf rare: 1 of 38 real launches)."""
         ai_share = self.shares["ai"] if self.scripts else 0.0
         launch = [{"kind": "agents", "p": 1.0 - ai_share}]
+        if self.level and real_share > 0:
+            launch += [{"kind": "ai", "difficulty": n.split("-", 1)[1], "real": True,
+                        "p": ai_share * real_share / len(self.scripts)} for n in self.scripts]
+            ai_share *= 1.0 - real_share
         launch += [{"kind": "ai", "difficulty": n.split("-", 1)[1], "p": ai_share / len(self.scripts),
                     **({"by_race": {r: dict(self.knobs(n, r), level=self.level[(n, r)]) for r in self.races}}
                        if self.level else {})}
@@ -679,7 +685,7 @@ class League:
     def write(self) -> None:
         spec = self.run_dir / "league_spec.json"
         tmp = spec.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.spec()))
+        tmp.write_text(json.dumps(self.spec(self.real_share)))
         tmp.replace(spec)
 
         def row(m: Member) -> dict:
@@ -987,6 +993,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.max_past, args.pfsp,
                     curriculum=((args.curriculum, args.curriculum_step, args.curriculum_delay, args.handicap)
                                 if args.curriculum >= 0 else None), mode=args.curriculum_mode, races=tuple(races))
+    league.real_share = args.real_share
     if resumed is not None and (run_dir / "league.json").exists():
         league.restore(json.loads((run_dir / "league.json").read_text()))
     else:
