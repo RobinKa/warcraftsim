@@ -66,6 +66,9 @@ main { padding:14px 18px 40px; overflow:auto; min-height:0; }
 .chart h3 { margin:0 0 6px; font-size:12px; font-weight:600; color:var(--muted); display:flex; justify-content:space-between; }
 .chart .plot { position:relative; }
 .chart canvas { width:100%; height:210px; display:block; }
+.chart .legend { font-size:11px; color:var(--muted); margin:4px 0 2px; line-height:1.6; }
+.chart .legend span { margin-right:10px; white-space:nowrap; }
+.chart .legend i { display:inline-block; width:10px; height:3px; margin:0 4px 2px 0; vertical-align:middle; border-radius:1px; }
 .chart canvas.overlay { position:absolute; left:0; top:0; pointer-events:none; }
 .legend { display:flex; flex-wrap:wrap; gap:16px; align-items:center; margin:2px 0 10px; color:var(--muted); font-size:12px; }
 .legend svg { vertical-align:middle; margin-right:5px; }
@@ -274,10 +277,15 @@ function drawChart(id) {
   const pad = { l: 46, r: 10, t: 8, b: 22 };
   const series = c.series.map(s => ({ ...s, pts: s.dots || s.raw ? s.points : smooth(s.points, ui.smooth) }));
   const pts = series.flatMap(s => s.pts);
+  // a legend when a chart has many lines (names otherwise only on hover)
+  const withData = series.filter(s => s.pts.length), box = canvas.closest(".chart");
+  let lg = box && box.querySelector(".legend");
+  if (box && !lg && withData.length >= 3) { lg = document.createElement("div"); lg.className = "legend"; box.appendChild(lg); }
+  if (lg) lg.innerHTML = withData.length >= 3 ? withData.map(s => `<span><i style="background:${s.color}"></i>${esc(s.name)}${s.runName ? ` <small>${esc(s.runName)}</small>` : ""}</span>`).join("") : "";
   c.geo = null;
   if (!pts.length) { g.fillStyle = "#8795a3"; g.font = "11px system-ui"; g.fillText(c.opts.empty || "no data yet", 12, H / 2); return; }
   // one x range for all charts of an axis (0 .. the latest step of the shown runs), so they line up
-  const xr = (ui.xranges || {})[c.opts.axis || "steps"];
+  const xr = c.opts.xfit ? null : (ui.xranges || {})[c.opts.axis || "steps"];  // (xfit: data recorded only lately)
   let x0 = xr ? xr[0] : Math.min(...pts.map(p => p[0]));
   let x1 = xr ? xr[1] : Math.max(...pts.map(p => p[0]));
   // y range without the most extreme 0.5% on either side (a partial last epoch reports huge SPS)
@@ -645,27 +653,31 @@ const SECTIONS = [
   ["Behaviour", [
     ["c-act", "Action mix", "share of unit-steps", [EP("act_noop", "noop", "#8795a3"), EP("act_stop", "stop", "#e0c33a"),
       EP("act_hold", "hold", "#c69026"), EP("act_retreat", "retreat", "#b083f0"), EP("act_move", "move", "#539bf5"),
-      EP("act_attack_move", "attack-move", "#39c5cf"), EP("act_cast", "cast", "#f56ed2"), EP("act_attack", "attack", "#e5534b")], { ymin: 0, ymax: 1, empty: "no action statistics for this task/run" }],
+      EP("act_attack_move", "attack-move", "#39c5cf"), EP("act_cast", "cast", "#f56ed2"), EP("act_attack", "attack", "#e5534b")], { ymin: 0, ymax: 1, empty: "no action statistics for this task/run", only: "micro" }],
     ["c-tgt", "Targeting", "damage concentration: share hitting one unit per step",
       [EP("combat_focus_dealt", "damage dealt on one enemy", "#e0a33a"), EP("combat_focus_taken", "damage taken on one unit", "#e5534b"),
        EP("act_attack_weakest", "attack orders on the weakest", "#4cc38a"), EP("act_attack_invalid", "invalid attack orders", "#8795a3"),
        EP("act_cast_invalid", "casts not possible", "#f56ed2")],
-      { ymin: 0, ymax: 1, empty: "no combat statistics yet" }],
+      { ymin: 0, ymax: 1, empty: "no combat statistics yet", only: "micro" }],
     ["c-cmb", "Combat", "per episode, agent side", [EP("combat_dealt", "damage dealt (share of enemy HP)", "#4cc38a"),
-      EP("combat_taken", "damage taken (share of own HP)", "#e5534b")], { ymin: 0, ymax: 1, empty: "no combat statistics yet" }],
+      EP("combat_taken", "damage taken (share of own HP)", "#e5534b")], { ymin: 0, ymax: 1, empty: "no combat statistics yet", only: "micro" }],
     ["c-kill", "Kills · losses", "units per episode", [EP("combat_kills", "kills", "#4cc38a"), EP("combat_losses", "losses", "#e5534b")],
-      { ymin: 0, empty: "no combat statistics yet" }],
+      { ymin: 0, empty: "no combat statistics yet", only: "micro" }],
+    ["c-fkill", "Kills · losses", "units per game, all games (buildings too)", [EP("f_kills", "kills", "#4cc38a"), EP("f_lost", "losses", "#e5534b")],
+      { ymin: 0, xfit: true, only: "fullgame", empty: "recorded by games since the Production tab (older ones don't have it)" }],
+    ["c-forders", "Orders per game", "the learner's orders sent to the game", [EP("orders", "orders", "#539bf5")],
+      { ymin: 0, xfit: true, only: "fullgame", empty: "recorded by games since the Production tab (older ones don't have it)" }],
   ]],
   ["Learning", [
     ["c-val", "Value calibration", "video episodes: V(s₀) vs discounted return",
       [["cal", "value0", "predicted V(s₀)", "#e0a33a"], ["cal", "return0", "actual discounted return", "#539bf5"]],
-      { empty: "appears with the first replay video rendered after a checkpoint" }],
+      { empty: "appears with the first replay video rendered (whole games: videos since the value calibration was recorded)" }],
     ["c-lpol", "Policy loss", "", [TR("loss/policy", "policy loss", "#e0a33a")], {}],
     ["c-lval", "Value loss", "", [TR("loss/value", "value loss", "#539bf5")], {}],
-    ["c-lent", "Entropy", "sum over action heads", [TR("loss/entropy", "entropy", "#b083f0")], {}],
+    ["c-lent", "Entropy", "the policy's (micro: summed over action heads; whole game: the order's, per unit)", [TR("loss/entropy", "entropy", "#b083f0")], {}],
     ["c-lkl", "Approx. KL", "per update", [TR("loss/kl", "kl", "#4cc38a")], { ymin: 0 }],
     ["c-lclip", "Clip fraction", "", [TR("loss/clipfrac", "clip fraction", "#39c5cf")], { ymin: 0 }],
-    ["c-lref", "KL to the reference", "torch trainer --ref: how far the policy moved from the fitted script", [TR("loss/ref_kl", "KL", "#f56ed2")], { ymin: 0, empty: "no reference policy" }],
+    ["c-lref", "KL to the reference", "how far the policy moved from its reference (the fitted script, the clone)", [TR("loss/ref_kl", "KL", "#f56ed2")], { ymin: 0, empty: "no reference policy" }],
   ]],
   ["League", [
     ["c-lg-script", "Against the scripts", "the learner's win rate per epoch (draws count half)",
@@ -674,30 +686,30 @@ const SECTIONS = [
       [TR("league/past", "past snapshots", "#539bf5"), TR("league/exploiter", "exploiter snapshots", "#e5534b"),
        TR("league/self", "itself", "#4cc38a")], { ymin: 0, ymax: 1, empty: "no league" }],
     ["c-lg-exploit", "The main exploiter", "its win rate against the main learner's current policy (it restarts from the main learner above --exploiter-reset or below --exploiter-reset-low)",
-      [TR("league/exploiter_vs_main", "exploiter vs main", "#f47067"), TR("league/exploiter_resets", "resets", "#8795a3")], { ymin: 0, empty: "no exploiter (--torch.exploiters=1)" }],
+      [TR("league/exploiter_vs_main", "exploiter vs main", "#f47067"), TR("league/exploiter_resets", "resets", "#8795a3")], { ymin: 0, empty: "no exploiter (--torch.exploiters=1)", only: "micro" }],
     ["c-lg-members", "League size", "past snapshots", [TR("league/members", "snapshots", "#39c5cf")], { ymin: 0, empty: "no league" }],
-    ["c-lg-level", "Curriculum against the built-in AI", "level: 0 the real game, 1 the easiest (by --curriculum-mode: the learner's hit points and the AI's late start, the late start alone, or a tax on the AI's income); moved towards a 50% score",
-      [["trp", "curriculum/", " level"]], { ymin: 0, ymax: 1, empty: "no curriculum (--curriculum)" }],
+    ["c-lg-level", "Curriculum against the built-in AI", "per AI and race: 0 the real game, 1 the easiest; moved towards a 50% score",
+      [["trp", "curriculum/", " level"]], { ymin: 0, ymax: 1, empty: "no curriculum (--curriculum)", hideEmpty: true }],
     ["c-lg-delay", "The AI's late start", "seconds its units idle at the start of a game (the learner's hit points: the handicap)",
-      [["trp", "curriculum/", " delay"]], { ymin: 0, empty: "no curriculum (--curriculum)" }],
+      [["trp", "curriculum/", " delay", "nonzero"]], { ymin: 0, empty: "the AI starts on time (no curriculum, or one without a late start: --curriculum-mode)", hideEmpty: true }],
     ["c-lg-tax", "The tax on the AI's income", "the share of what it gathers taken away (--curriculum-mode tax)",
-      [["trp", "curriculum/", " tax"]], { ymin: 0, ymax: 1, empty: "no tax (--curriculum-mode tax)" }],
+      [["trp", "curriculum/", " tax", "nonzero"]], { ymin: 0, ymax: 1, empty: "the AI keeps its income (no curriculum, or one without a tax: --curriculum-mode tax)", hideEmpty: true }],
   ]],
   ["Production", [
     ["c-pr-army", "Army trained per game", "games against the built-in AI (in curriculum games it is taxed)",
-      [EP("p_army", "learner", "#4cc38a"), EP("o_army", "built-in AI", "#e5534b")], { ymin: 0, empty: "no production stats (whole-game self-play)" }],
+      [EP("p_army", "learner", "#4cc38a"), EP("o_army", "built-in AI", "#e5534b")], { ymin: 0, xfit: true, only: "fullgame", empty: "recorded by games since the Production tab (older ones don't have it)" }],
     ["c-pr-heroes", "Heroes and workers trained per game", "games against the built-in AI",
       [EP("p_heroes", "learner heroes", "#4cc38a"), EP("o_heroes", "AI heroes", "#e5534b"), EP("p_workers", "learner workers", "#539bf5"),
-       EP("o_workers", "AI workers", "#e0a33a")], { ymin: 0, empty: "no production stats (whole-game self-play)" }],
+       EP("o_workers", "AI workers", "#e0a33a")], { ymin: 0, xfit: true, only: "fullgame", empty: "recorded by games since the Production tab (older ones don't have it)" }],
     ["c-pr-food", "Food at one minute", "what the gold had become by then",
-      [EP("p_food_1min", "learner", "#4cc38a"), EP("o_food_1min", "built-in AI", "#e5534b")], { ymin: 0, empty: "no production stats (whole-game self-play)" }],
+      [EP("p_food_1min", "learner", "#4cc38a"), EP("o_food_1min", "built-in AI", "#e5534b")], { ymin: 0, xfit: true, only: "fullgame", empty: "recorded by games since the Production tab (older ones don't have it)" }],
     ["c-pr-held", "Resources on hand", "gold + lumber held, mean over a game: gathered and not spent",
-      [EP("p_held", "learner", "#4cc38a"), EP("o_held", "built-in AI", "#e5534b")], { ymin: 0, empty: "no production stats (whole-game self-play)" }],
+      [EP("p_held", "learner", "#4cc38a"), EP("o_held", "built-in AI", "#e5534b")], { ymin: 0, xfit: true, only: "fullgame", empty: "recorded by games since the Production tab (older ones don't have it)" }],
     ["c-pr-gather", "Gathered per game", "gold and lumber",
       [EP("p_gold", "learner gold", "#e0a33a"), EP("o_gold", "AI gold", "#b0833a"), EP("p_lumber", "learner lumber", "#4cc38a"),
-       EP("o_lumber", "AI lumber", "#2f8a5f")], { ymin: 0, empty: "no production stats (whole-game self-play)" }],
+       EP("o_lumber", "AI lumber", "#2f8a5f")], { ymin: 0, xfit: true, only: "fullgame", empty: "recorded by games since the Production tab (older ones don't have it)" }],
     ["c-pr-kills", "Kills and losses per game", "the learner's, in games against the built-in AI",
-      [EP("p_kills", "kills", "#4cc38a"), EP("p_lost", "losses", "#e5534b")], { ymin: 0, empty: "no production stats (whole-game self-play)" }],
+      [EP("p_kills", "kills", "#4cc38a"), EP("p_lost", "losses", "#e5534b")], { ymin: 0, xfit: true, only: "fullgame", empty: "recorded by games since the Production tab (older ones don't have it)" }],
   ]],
   ["System", [
     ["c-sps", "Throughput", "trainer SPS · game time vs real time",
@@ -715,8 +727,12 @@ function expandDefs(defs, d) {
   for (const def of defs) {
     if (def[0] !== "trp") { out.push(def); continue; }
     const keys = new Set();
-    const suffix = def[2] || "";
-    for (const r of (d && d.train) || []) for (const k in r) if (k.startsWith(def[1]) && k.endsWith(suffix) && !k.endsWith("_n")) keys.add(k);
+    const suffix = def[2] || "", nonzero = new Set();
+    for (const r of (d && d.train) || []) for (const k in r) if (k.startsWith(def[1]) && k.endsWith(suffix) && !k.endsWith("_n")) {
+      keys.add(k);
+      if (r[k]) nonzero.add(k);
+    }
+    if (def[3] === "nonzero") for (const k of [...keys]) if (!nonzero.has(k)) keys.delete(k);  // (e.g. no late start in a tax curriculum)
     [...keys].sort().forEach((k, i) => out.push(["tr", k, k.slice(def[1].length, k.length - suffix.length).trim(), PREFIX_COLORS[i % PREFIX_COLORS.length]]));
   }
   return out;
@@ -775,6 +791,7 @@ function renderMain() {
   renderLineage(d);
   renderCheckpoints(d);
   renderProduction(d);
+  chartVisibility(d);
   const match = info.kind === "match";
   if (match) {  // two players against each other: the score
     const eps = d.recent_episodes || [];
@@ -796,14 +813,20 @@ function renderMain() {
   document.getElementById("cards").innerHTML = [
     ["Status", `${info.status}`, `<div class="progress"><div style="width:${(100 * progress).toFixed(1)}%"></div></div>`],
     ["Env steps", `${fmt(last.agent_steps || 0, 0)} <small>/ ${fmt(info.timesteps, 0)}</small>`],
-    ["Win rate", s.win_rate_100 === null || s.win_rate_100 === undefined ? "–" : `${(100 * s.win_rate_100).toFixed(1)}% <small>last 100</small>`],
+    ["Win rate", s.win_rate_100 === null || s.win_rate_100 === undefined ? "–" : `${(100 * s.win_rate_100).toFixed(1)}% <small>last 100${info.trainer === "fullgame" ? " games of all kinds" : ""}</small>`],
     ["Return", `${fmt(s.return_100, 3)} <small>last 100</small>`],
     ["Episodes", fmt(s.episodes || 0, 0)],
     ["Trainer SPS", fmt(last.SPS || 0, 0)],
-    ["Game speed", bridge.game_x_realtime ? `${fmt(bridge.game_x_realtime, 0)}× <small>realtime, all games</small>` : "–"],
-    ["Games", `${info.envs}`],
-    ["Elapsed", dur(elapsed)],
-    ["GPU", last["util/gpu_percent"] !== undefined ? `${fmt(last["util/gpu_percent"], 0)}% <small>${fmt(last["util/vram_used_gb"], 1)} GB</small>` : "–"],
+    ...(info.trainer === "fullgame" ? [
+      ["Real game", info.real_game ? `${(100 * info.real_game.wins).toFixed(0)}% <small>won · ${(100 * info.real_game.ties).toFixed(0)}% tied · last ${info.real_game.games} vs the built-in AI</small>` : "–"],
+      ["Games", `${info.envs} <small>at once</small>`],
+      ["Trained", dur(info.trained_seconds || elapsed) + (info.resumes ? ` <small>${info.resumes.length + 1} sessions</small>` : "")],
+    ] : [
+      ["Game speed", bridge.game_x_realtime ? `${fmt(bridge.game_x_realtime, 0)}× <small>realtime, all games</small>` : "–"],
+      ["Games", `${info.envs}`],
+      ["Elapsed", dur(elapsed)],
+      ["GPU", last["util/gpu_percent"] !== undefined ? `${fmt(last["util/gpu_percent"], 0)}% <small>${fmt(last["util/vram_used_gb"], 1)} GB</small>` : "–"],
+    ]),
   ].map(([k, v, x = ""]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div>${x}</div>`).join("");
 
   // runs shown: the selected one (solid) and the compared ones (other line styles)
@@ -835,6 +858,17 @@ function renderMain() {
   renderReplays(d);
   const pct = v => v === undefined ? "–" : (100 * v).toFixed(0) + "%";
   const mix = a => a ? ["noop", "stop", "retreat", "move", "attack", "cast"].filter(k => a[k] !== undefined).map(k => `${k} ${pct(a[k])}`).join(" · ") : "–";
+  const outc = e => `<td class="${e.outcome > 0 ? "win" : e.outcome < 0 ? "loss" : ""}">${e.outcome > 0 ? "win" : e.outcome < 0 ? "loss" : "draw"}</td>`;
+  if (info.trainer === "fullgame") {  // whole games: who against whom, and what each side made
+    const two = (a, b, dg = 0) => `${a == null ? "–" : fmt(a, dg)} / ${b == null ? "–" : fmt(b, dg)}`;
+    document.getElementById("episodes").innerHTML = d.recent_episodes.length ? `<table><tr><th>#</th><th>opponent</th><th>race</th><th>outcome</th><th>return</th><th>game time</th>
+        <th>material lead</th><th>army (learner / opponent)</th><th>heroes</th><th>kills / losses</th><th>gold / lumber</th><th>when</th></tr>` +
+      d.recent_episodes.map(e => { const p = e.prod || {}, o = e.opp_prod || {};
+        const opp = esc(e.opponent) + (e.ai_tax ? ` <small>taxed ${(100 * e.ai_tax).toFixed(0)}%</small>` : e.ai_delay ? ` <small>${fmt(e.ai_delay, 0)} s late</small>` : "");
+        return `<tr><td>${e.episode}</td><td>${opp}</td><td>${esc(e.race || "")}</td>${outc(e)}<td>${fmt(e.return, 3)}</td><td>${e.game_time ? e.game_time.toFixed(1) + "s" : "–"}</td>
+          <td>${fmt(e.material_lead, 2)}</td><td>${two(p.army, o.army)}</td><td>${two(p.heroes, o.heroes)}</td><td>${two(p.kills, p.lost)}</td><td>${two(e.gold, p.lumber)}</td><td>${ago(e.time)}</td></tr>`; }).join("") +
+      `</table>` : `<div class="empty">no episodes yet</div>`;
+  } else
   document.getElementById("episodes").innerHTML = d.recent_episodes.length ? `<table><tr><th>#</th><th>game</th><th>outcome</th><th>return</th><th>length</th><th>game time</th><th>dealt / taken</th><th>kills / losses</th><th>actions</th><th>focus dealt / taken</th><th>when</th></tr>` +
     d.recent_episodes.map(e => { const c = e.combat || {};
       return `<tr><td>${e.episode}</td><td>${e.env}</td><td class="${e.outcome > 0 ? "win" : e.outcome < 0 ? "loss" : ""}">${e.outcome > 0 ? "win" : e.outcome < 0 ? "loss" : "draw"}</td><td>${fmt(e.return, 3)}</td><td>${e.length}</td><td>${e.game_time ? e.game_time.toFixed(1) + "s" : "–"}</td><td>${pct(c.dealt)} / ${pct(c.taken)}</td><td>${c.kills ?? "–"} / ${c.losses ?? "–"}</td><td>${mix(e.act)}</td><td>${pct(c.focus_dealt)} / ${pct(c.focus_taken)}</td><td>${ago(e.time)}</td></tr>`; }).join("") + `</table>` : `<div class="empty">no episodes yet</div>`;
@@ -1298,6 +1332,28 @@ function ckCommand(d, c) {  // how to use one: play it (whole games) or pit it a
   if (full) return `python3 -m warcraftsim.fullgame.play ${c.path} --games 16 --mirror`;
   return `python -m warcraftsim.match ${c.path} script:amove --episodes 20`;
 }
+// charts that don't apply to a run are hidden (opts.only: "micro" / "fullgame"; opts.hideEmpty: a
+// curriculum chart of a run without one), and so is a tab left without charts
+function chartVisibility(d) {
+  const kind = d.info.trainer === "fullgame" ? "fullgame" : "micro";
+  for (const [name, charts] of SECTIONS) {
+    let shown = 0;
+    for (const [id, , , series, opts] of charts) {
+      const el = document.getElementById(id), box = el && el.closest(".chart");
+      if (!box) continue;
+      let show = !opts.only || opts.only === kind;
+      if (show && opts.hideEmpty) show = expandDefs(series, d).length > 0;
+      box.style.display = show ? "" : "none";
+      shown += show ? 1 : 0;
+    }
+    const tab = document.getElementById("tab-" + slug(name));
+    if (tab) {
+      tab.style.display = shown ? "" : "none";
+      if (!shown && tab.classList.contains("on")) showTab("run", "overview");
+    }
+  }
+}
+
 // whole-game self-play: what the learner and its opponent make per game, by kind of game and race
 function renderProduction(d) {
   const tab = document.getElementById("tab-production"), box = document.getElementById("production");

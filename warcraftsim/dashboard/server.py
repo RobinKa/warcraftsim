@@ -56,7 +56,34 @@ EPISODE_SERIES = {
        for pre, side in (("p", "prod"), ("o", "opp_prod"))
        for k in ("army", "workers", "heroes", "food_1min", "held", "lumber", "gold", "kills", "lost", "max_food")},
 }
+EPISODE_SERIES.update({  # whole-game self-play, over all its games (the Behaviour tab)
+    "orders": lambda e: e.get("orders") if e.get("prod") is not None else None,
+    "f_kills": lambda e: (e.get("prod") or {}).get("kills"),
+    "f_lost": lambda e: (e.get("prod") or {}).get("lost"),
+})
 PROD_SCALARS = ("army", "workers", "heroes", "food_1min", "max_food", "held", "gold", "lumber", "kills", "lost")
+
+
+def _trained_seconds(rows: list[dict]) -> float:
+    """The learner's time over all its sessions: its uptime restarts when a run is resumed."""
+    total, last = 0.0, 0.0
+    for r in rows:
+        u = r.get("uptime")
+        if u is None:
+            continue
+        if u < last:  # a new session
+            total += last
+        last = u
+    return total + last
+
+
+def _real_game(episodes: list[dict], n: int = 100) -> dict | None:
+    """Whole-game self-play: the last `n` real games against the built-in AI (no curriculum)."""
+    real = [e for e in episodes if "(real)" in str(e.get("opponent", ""))][-n:]
+    if not real:
+        return None
+    return {"games": len(real), "wins": sum(e.get("outcome", 0) > 0 for e in real) / len(real),
+            "ties": sum(e.get("outcome", 0) == 0 for e in real) / len(real)}
 MAX_POINTS = 600
 MAX_NOTES = 64 * 1024
 # train.py options in the order its command line gives them (a command rebuilt for older runs)
@@ -859,7 +886,7 @@ class Dashboard:
         if "launch" not in info:
             info["launch"] = {"run_command": _rebuilt_command(info), "rebuilt": True}
         train_rows = self.cache.read(d / "train.jsonl")
-        train = [{k: v for k, v in r.items() if k in TRAIN_KEYS or k.startswith("league/")} for r in train_rows]
+        train = [{k: v for k, v in r.items() if k in TRAIN_KEYS or k.startswith(("league/", "curriculum/"))} for r in train_rows]
         episodes = self._merged(d, "episodes")
         steps = _interp_steps([e["time"] for e in episodes], train_rows)
         if info.get("kind") == "match":  # no trainer: episodes in order
@@ -888,7 +915,11 @@ class Dashboard:
                        for st, m in zip(calib_steps, calib)]
         league = _read_json(d / "league.json")
         evals = self.cache.read(d / "evals.jsonl")
-        production = _production(episodes[-800:]) if info.get("trainer") == "fullgame" else None
+        fullgame = info.get("trainer") == "fullgame"
+        production = _production(episodes[-800:]) if fullgame else None
+        if fullgame:
+            info["trained_seconds"] = _trained_seconds(train_rows)
+            info["real_game"] = _real_game(episodes)
         return {
             "production": production,
             "checkpoints": _checkpoints(d, self.runs_dir.parent, evals, league,

@@ -477,7 +477,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         "time": time.time(), "worker": wid, "opponent": opp["name"], "outcome": outcome[side],
         "return": round(ret.get(side, outcome[side]), 4), "material_lead": round(lead[side], 3), "length": t, "game_time": obs.game_time, "wall_seconds": round(time.time() - t0, 1),
         "races": races, "side": side, "race": races[side], "opponent_race": races[1 - side],
-        "gold": me.gold_gathered if me else 0, "opponent_gold": other.gold_gathered if other else 0,
+        "gold": prod.row(side, obs)["gold"], "opponent_gold": prod.row(1 - side, obs)["gold"],  # (this game's)
         "orders": bots[side].issued if side in bots else 0,
         **({"curriculum": opp["curriculum"], "handicap": g.setup.slots[side].handicap,
             "ai_delay": opp.get("start", 0) * cfg["step_seconds"], "ai_tax": opp.get("tax", 0.0)}
@@ -507,10 +507,21 @@ def film_game(g, ep: dict, cfg: dict, wid: int, render_q) -> None:
         print(f"video: replay not saved: {e}", flush=True)
         return
     trace = ep.pop("trace", None)
+    calib = {}
     if trace is not None:
         replay.with_suffix(".trace.json").write_text(json.dumps(trace))
+        # value calibration (the dashboard's Learning tab): the learner's first value and the
+        # discounted return that followed it
+        steps, me = trace.get("steps") or [], str(ep["side"])
+        v0 = (steps[0].get("value") or {}).get(me) if steps else None
+        if v0 is not None:
+            g = trace.get("gamma", cfg["gamma"])
+            ret = 0.0
+            for st in reversed(steps):
+                ret = (st.get("reward") or {}).get(me, 0.0) + g * ret
+            calib = {"value0": v0, "return0": round(ret, 4)}
     row = {"episode": ep.get("episode_id", ""), "title": f"{ep['race']} vs {ep['opponent_race']} ({ep['opponent']})",
-           "outcome": ep["outcome"], "return": ep["return"],
+           "outcome": ep["outcome"], "return": ep["return"], **calib,
            "sub": f"{ep['game_time'] / 60:.1f} game minutes · material lead {ep['material_lead']:+.2f} · return {ep['return']:+.2f}",
            "opponent": ep["opponent"], "game_time": ep["game_time"]}
     render_q.put((g.setup, str(replay), stem, trace, row, time.time()))

@@ -87,6 +87,9 @@ class Production:
         self.kills, self.lost = {0: 0, 1: 0}, {0: 0, 1: 0}
         self.held, self.food_1min, self.max_food = {0: 0.0, 1: 0.0}, {}, {0: 0, 1: 0}
         self.steps = 0
+        # gathered so far at the game's start: a scripted reset (games without the built-in AI) keeps
+        # the game's counters, so without this they added up over a launch's games (185k gold)
+        self.base: dict[int, tuple[int, int]] = {}
 
     def step(self, obs) -> None:
         from .features import rawcode
@@ -95,6 +98,7 @@ class Production:
             s = obs.players.get(p)
             if s is None:
                 continue
+            self.base.setdefault(p, (s.gold_gathered, s.lumber_gathered))
             self.held[p] += s.gold + s.lumber
             self.max_food[p] = max(self.max_food[p], s.food_used)
             if obs.game_time >= 60 and p not in self.food_1min:
@@ -136,4 +140,5 @@ class Production:
                 "army": sum(v for k, v in t.items() if k not in WORKERS and not k[:1].isupper()),
                 "kills": self.kills[p], "lost": self.lost[p], "food_1min": self.food_1min.get(p),
                 "max_food": self.max_food[p], "held": round(self.held[p] / max(self.steps, 1)),
-                "gold": s.gold_gathered if s else 0, "lumber": s.lumber_gathered if s else 0}
+                "gold": s.gold_gathered - self.base.get(p, (0, 0))[0] if s else 0,
+                "lumber": s.lumber_gathered - self.base.get(p, (0, 0))[1] if s else 0}
