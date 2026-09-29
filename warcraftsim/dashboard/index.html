@@ -677,6 +677,8 @@ const SECTIONS = [
     ["c-lent", "Entropy", "the policy's (micro: summed over action heads; whole game: the order's, per unit)", [TR("loss/entropy", "entropy", "#b083f0")], {}],
     ["c-lkl", "Approx. KL", "per update", [TR("loss/kl", "kl", "#4cc38a")], { ymin: 0 }],
     ["c-lclip", "Clip fraction", "", [TR("loss/clipfrac", "clip fraction", "#39c5cf")], { ymin: 0 }],
+    ["c-lbc", "Cloning loss", "the auxiliary loss on demonstrations (--bc-data: e.g. takeover games from the policy's own states)",
+      [TR("loss/bc", "cloning loss", "#e0a33a")], { hideEmpty: true }],
     ["c-lref", "KL to the reference", "how far the policy moved from its reference (the fitted script, the clone)", [TR("loss/ref_kl", "KL", "#f56ed2")], { ymin: 0, empty: "no reference policy" }],
   ]],
   ["League", [
@@ -1342,7 +1344,8 @@ function chartVisibility(d) {
       const el = document.getElementById(id), box = el && el.closest(".chart");
       if (!box) continue;
       let show = !opts.only || opts.only === kind;
-      if (show && opts.hideEmpty) show = expandDefs(series, d).length > 0;
+      if (show && opts.hideEmpty)  // (data in the run: a trainer key some row has)
+        show = expandDefs(series, d).some(def => def[0] !== "tr" || (d.train || []).some(r => r[def[1]] !== undefined));
       box.style.display = show ? "" : "none";
       shown += show ? 1 : 0;
     }

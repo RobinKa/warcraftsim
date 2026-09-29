@@ -788,9 +788,10 @@ def collate_seq(seqs: list[list[dict]], device) -> dict:
 
 
 def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict], args, warmup: bool, device,
-               chunks: list[list[dict]] | None = None) -> dict:
+               chunks: list[list[dict]] | None = None, bc_iter=None) -> dict:
     """PPO epochs over the steps; for a network with memory over sequences cut from `chunks` (the
-    actors' pieces of trajectories, in order), from the states the actors had."""
+    actors' pieces of trajectories, in order), from the states the actors had. `bc_iter`: batches
+    of demonstrations (bc.Steps) whose cloning loss joins each minibatch's, times args.bc_coef."""
     advs = np.array([s["adv"] for s in steps], np.float32)
     mean, std = float(advs.mean()), float(advs.std()) + 1e-8
     stats: dict[str, list[float]] = {}
@@ -839,6 +840,12 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
                 # also while the value warms up: it shares the network's trunk, so training it alone
                 # moved the policy too (the KL to the clone doubled in the first five updates)
                 loss = loss + args.ref_kl * ref_kl
+            if bc_iter is not None and args.bc_coef > 0:  # DAgger's labels as an auxiliary loss (not a fine-tune:
+                from .bc import losses as bc_losses  # cloning afterwards overwrote what RL had learned)
+                with autocast:
+                    l_bc, _ = bc_losses(net, next(bc_iter), device, None, value_coef=0.0)
+                loss = loss + args.bc_coef * l_bc
+                stats.setdefault("loss/bc", []).append(float(l_bc))
             opt.zero_grad(set_to_none=True)
             loss.backward()
             gn = torch.nn.utils.clip_grad_norm_(net.parameters(), args.max_grad_norm)
@@ -903,6 +910,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--curriculum-delay", type=float, default=120.0,
                     help="the knob at level 1: the AI's late start (seconds; modes hp and delay) or the share of "
                          "its income taken (mode tax, e.g. 0.9)")
+    ap.add_argument("--bc-data", type=Path, nargs="*", default=[],
+                    help="demonstration collections (e.g. takeover games from the policy's own states) whose cloning "
+                         "loss joins each PPO minibatch, times --bc-coef")
+    ap.add_argument("--bc-coef", type=float, default=0.02)
+    ap.add_argument("--bc-batch", type=int, default=256)
+    ap.add_argument("--bc-workers", type=int, default=2)
     ap.add_argument("--real-share", type=float, default=0.1, help="with a curriculum: the share of launches against "
                                                                    "the built-in AI that play the real game (the yardstick)")
     ap.add_argument("--curriculum-mode", default="hp", choices=("hp", "delay", "tax"),
@@ -1045,6 +1058,19 @@ def main(argv: list[str] | None = None) -> int:
     t0 = time.time()
     agent_steps, update, episodes = ((resumed["steps"], resumed["update"], resumed["episodes"]) if resumed
                                      else (0, 0, 0))
+    bc_iter = None
+    if args.bc_data:  # demonstrations for the auxiliary cloning loss, encoded by loader workers, epoch after epoch
+        from .bc import Steps
+        bc_paths = sorted(p for d in args.bc_data for p in d.glob("game*.npz"))
+        bc_set = Steps(bc_paths, vocab, args.bc_batch, cfg["values"], order_costs(vocab, args.map))
+
+        def bc_cycle():
+            epoch = 0
+            while True:
+                bc_set.epoch, epoch = epoch, epoch + 1
+                yield from torch.utils.data.DataLoader(bc_set, batch_size=None, num_workers=args.bc_workers)
+        bc_iter = bc_cycle()
+        print(f"auxiliary cloning loss: {len(bc_paths)} games, x{args.bc_coef}", flush=True)
     buf: list[dict] = []
     chunks: list[list[dict]] = []
     stale = []
@@ -1074,7 +1100,7 @@ def main(argv: list[str] | None = None) -> int:
             t_train = time.time()
             steps, buf, batch_chunks, chunks = buf, [], chunks, []
             warmup = update < args.value_warmup
-            stats = ppo_update(net, ref, opt, steps, args, warmup, device, batch_chunks)
+            stats = ppo_update(net, ref, opt, steps, args, warmup, device, batch_chunks, bc_iter)
             update += 1
             agent_steps += len(steps)
             publish(net, update, run_dir)

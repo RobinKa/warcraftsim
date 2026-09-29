@@ -155,9 +155,12 @@ def series(setup: GameSetup, name: str, n: int, play: Callable[[GameInstance, Ob
 
 def claim_slot(runs: Path, kind: str = "fullgame") -> tuple[int, object]:
     """A machine-wide slot number for the games' names (their Wine prefixes); held while the
-    returned file stays open."""
+    returned file stays open. The locks live in the cache, not under `runs`: runs elsewhere (a
+    smoke test's) claimed the same slot and collided with the running games' names."""
     import fcntl
-    lock_dir = runs / ".slots"
+
+    from .. import paths
+    lock_dir = paths.CACHE_DIR / "slots"
     lock_dir.mkdir(parents=True, exist_ok=True)
     for slot in range(64):
         f = open(lock_dir / f"{kind}-{slot}.lock", "w")

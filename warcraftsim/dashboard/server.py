@@ -33,7 +33,7 @@ from pathlib import Path
 
 TRAIN_KEYS = ("agent_steps", "SPS", "epoch", "uptime", "env/win_rate", "env/loss_rate", "env/episode_return",
               "env/episode_length", "env/n", "loss/policy", "loss/value", "loss/entropy", "loss/kl",
-              "loss/old_kl", "loss/clipfrac", "importance", "perf/rollout", "perf/eval_env", "perf/eval_model",
+              "loss/old_kl", "loss/clipfrac", "loss/bc", "importance", "perf/rollout", "perf/eval_env", "perf/eval_model",
               "perf/eval_copy", "perf/train", "util/gpu_percent", "util/vram_used_gb", "util/cpu_mem_gb", "time",
               "loss/ref_kl", "lr")
 # per-episode series (rolling means): name -> value of an episode row (None: not recorded)
