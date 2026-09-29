@@ -1484,7 +1484,7 @@ function renderLineage(d) {
 function renderLaunch(info) { renderLaunchInto(document.getElementById("launch"), info.launch || {}, info, false); }
 // launch commands, code version and (for a run) its configuration; a sweep's page shows its launch
 function renderLaunchInto(el, l, info, sweep) {
-  const a = (info && info.args) || {}, parts = [];
+  const a = (info && (info.args || info.config)) || {}, parts = [];  // (whole-game runs: config)
   const cmdBlock = (title, text) => `<div class="cmdhead"><span>${title}</span><button class="copy" data-copy="${esc(text)}">copy</button></div><pre class="cmd">${esc(text)}</pre>`;
   if (sweep) {
     if (l.command) parts.push(cmdBlock(l.rebuilt ? "Equivalent command (rebuilt from its runs' options: the sweep predates recorded launches)"
