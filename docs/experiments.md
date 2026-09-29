@@ -654,6 +654,20 @@ That's the share of wins; the rest are ties and losses. The last fifth, for exam
 
 The taxes fell to match. By 7.2M steps undead needs no tax against normal: the curriculum game is the real game. Night elf needs 25% (normal) and 45% (easy), orc 43–49%, human 47–74%.
 
+From 7M to 11M steps undead and night elf held at about 40–50% real-game wins, and human and orc at about 5%. The Production tab (per game, the last 800 games) shows why human loses in the real game:
+
+| | learner | the AI |
+|---|---|---|
+| footmen trained | 40.6 | 19.2 |
+| peasants trained | 33.8 | 12.0 |
+| heroes trained | 0.3 | 1.3 |
+| lumber gathered | 696 | 2513 |
+| kills | 12.9 | 84.8 |
+| losses | 87.6 | 21.1 |
+
+It spends now, but on workers (cheap, safe material that the shaping rewards) and footmen that trade 1:7. The AI fields footmen, riflemen, knights, mortar teams, gryphon riders and heroes, with its upgrades. The learner builds an Altar of Kings in only 0.6 games out of 1. Orc is similar (grunts 30 vs 19, peons 21 vs 12, kills 31.8 vs losses 50.5, in curriculum games). A likely cause is piecemeal attacks: each unit picks its own attack order, so the reinforcements trickle into the enemy army.
+
+
 Night elf had almost no real games at first (6 against 46–96 for the other races). The real-or-curriculum draw came right after the race choice, and the actors' seeded random streams correlated them. A replay of those streams gave night elf 12 of 91 real launches. The real game is now a launch kind of its own, and the replay gives 17–24 per race.
 
 ### Memory and a value head in BC
