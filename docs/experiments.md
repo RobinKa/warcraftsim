@@ -625,6 +625,22 @@ The first version still missed most switches. The starting workers mine by the m
 
 That's 6 wins in 32 (19%), where every clone before won 0 or 1. Orc lumber tripled. Human is still broken: little gold (3551) and 11.8 food at one minute. `fgself-7` starts self-play from `fullgame-rush5` with the per-race tax curriculum.
 
+In a human game's video the problem is the army, not supply: 21/36 food and 2860 gold at 39 s, food barely rising, no footmen from the barracks. The human AI's early army kills it at about 70 s (human games last 0.9–1.3 minutes).
+
+`fgself-7` got worse against the AI from its first updates:
+* After 1.4M steps all the taxes had risen to 65–90%, night elf included.
+* The real game went 0 wins in 60.
+* In its first 477 games the curriculum score was 0.14 at a mean 56% tax. The KL to the clone jumped to 0.096 by 250k steps.
+
+The harness plays the same policy as `play.py`: with a learning rate of 0 it won 6 of 64 real games against normal. By race: night elf 3 of 8, undead 3 of 14, human 0 of 20, orc 0 of 22. That matches `play.py` race by race, so RL did the damage.
+
+The likely causes: BC's value head learned the AI's returns, much higher than the clone's, so the first advantages were large and wrong; and half the games were mirror self-play. `fgself-8` starts from `rush5` with:
+* 20 value-only updates first
+* the KL to the clone at 0.2 (was 0.05)
+* a learning rate of 3e-5 (was 5e-5)
+* 75% of launches against the AI
+* the curriculum starting at level 0.3 (a 27% tax)
+
 ### Memory and a value head in BC
 
 Two additions to cloning:
