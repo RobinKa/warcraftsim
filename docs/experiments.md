@@ -612,6 +612,19 @@ The fix:
 
 In 60 games this recovers 148 (human) and 238 (orc) switch labels. `fullgame-rush4` fine-tunes `fullgame-rush3-tk` on the fixed labels: 8000 AI games plus both takeover collections, 2 epochs.
 
+The first version still missed most switches. The starting workers mine by the map's melee setup and new ones by the town hall's rally point, so no recorded order sent them and their assignment was "unknown", which counted as the same resource. `fullgame-rush4` gathered 514 lumber as human (the AI 1880) and 398 as orc (1408). Unknown now counts as gold. That recovers 358 (human) and 365 (orc) switch labels in the same 60 games, and `fullgame-rush5` fine-tunes `rush4` on them for 2 epochs.
+
+`fullgame-rush5` in 32 mirror games against the normal AI, the real game:
+
+| race | wins | lumber (clone vs AI) | food at 1 minute (clone vs AI) |
+|---|---|---|---|
+| night elf | 4 of 9 | 2853 vs 3215 | 35.8 vs 44.4 |
+| undead | 2 of 10 | 3862 vs 1387 | 34.9 vs 39.3 |
+| orc | 0 of 5 | 1195 vs 2269 | 25.0 vs 48.2 |
+| human | 0 of 8 | 555 vs 1290 | 11.8 vs 36.2 |
+
+That's 6 wins in 32 (19%), where every clone before won 0 or 1. Orc lumber tripled. Human is still broken: little gold (3551) and 11.8 food at one minute. `fgself-7` starts self-play from `fullgame-rush5` with the per-race tax curriculum.
+
 ### Memory and a value head in BC
 
 Two additions to cloning:
