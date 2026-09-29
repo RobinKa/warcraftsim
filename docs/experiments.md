@@ -696,6 +696,19 @@ Fine-tuning the checkpoint on these games did not work. The fine-tune ran 1 epoc
 
 Cloning the AI's orders overwrote what RL had learned. Self-play goes on from the checkpoint; the takeover games would have to come in as an auxiliary loss during RL, as AlphaStar's KL to its supervised policy, rather than as a fine-tune. The 30% is also the cleanest measure of `fgself-8`, up from the clone's 19% (`fullgame-rush5`).
 
+### DAgger as an auxiliary loss (`fgself-9`)
+
+`fgself-9` goes on from `fgself-8` at 17.3M steps. It adds the cloning loss on the 4000 takeover games from its own states to each PPO minibatch, times 0.005 (`--bc-data`, `--bc-coef`). The cloning loss fell from 6.7 to about 3.8 in the first 70 updates. After a jump in the first few updates (0.02), the per-update KL settled at `fgself-8`'s level (0.004–0.005). The real game after 1.2M steps:
+
+| race | `fgself-9` | `fgself-8` (in its last millions of steps) |
+|---|---|---|
+| human | 18W 31L (37%) | ~5% |
+| night elf | 17W 5T 9L (55%) | ~44% |
+| orc | 6W 1T 15L (27%) | ~7% |
+| undead | 8W 9T 26L (19%) | ~35% |
+
+Human and orc, which RL alone never moved, win a quarter to a third of their real games. The takeover games show the AI's decisions from the learner's own states, such as building an altar, training heroes and gathering lumber. The cost is throughput (357 steps/s): the loader workers encode the demonstrations next to the games.
+
 
 Night elf had almost no real games at first (6 against 46–96 for the other races). The real-or-curriculum draw came right after the race choice, and the actors' seeded random streams correlated them. A replay of those streams gave night elf 12 of 91 real launches. The real game is now a launch kind of its own, and the replay gives 17–24 per race.
 
