@@ -344,7 +344,7 @@ After micro, the whole melee game (economy, building, tech, armies, heroes), sta
 * **On the dashboard**:
   * collections (`DEMOS`): games, rate, game lengths, ties, win rates by matchup, and videos of a game every 10 minutes (`--video-every`) to check what was recorded;
   * fits (`BC`): loss, accuracy, order rate and point error per epoch, the collections used, each `play.py` evaluation (win–tie–loss by race and matchup, gold mined, refused orders), and videos of the clone's games (`play.py --videos`, 2 by default);
-  * self-play runs: the usual run page (outcomes, losses, KL to the clone), the League tab (the win rate against the built-in AI is "script:ai-normal"), and the videos.
+  * self-play runs: the usual run page (outcomes, losses, KL to the clone), the League tab (the win rate against the built-in AI is "script:ai-normal"; the curriculum's levels and taxes), the videos, and a Production tab: what the learner and the built-in AI train, build and research per game by race, food at one minute, resources on hand, gold and lumber gathered, kills and losses, over training and in tables by kind of game (the real game, curriculum, self-play) and race.
 
 ```bash
 python -m warcraftsim.fullgame.collect --out runs/fullgame/demos-1 --games 800 --parallel 24 --races all
