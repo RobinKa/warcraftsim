@@ -667,6 +667,13 @@ From 7M to 11M steps undead and night elf held at about 40–50% real-game wins,
 
 It spends now, but on workers (cheap, safe material that the shaping rewards) and footmen that trade 1:7. The AI fields footmen, riflemen, knights, mortar teams, gryphon riders and heroes, with its upgrades. The learner builds an Altar of Kings in only 0.6 games out of 1. Orc is similar (grunts 30 vs 19, peons 21 vs 12, kills 31.8 vs losses 50.5, in curriculum games). A likely cause is piecemeal attacks: each unit picks its own attack order, so the reinforcements trickle into the enemy army.
 
+An orc loss against the easy AI (at 12M steps) shows it:
+* **53 s:** the learner is ahead in material (5722 vs 5172) at 42/50 food, but holds 4093 unspent gold, and its units are spread around its base.
+* **76 s:** the AI attacks as one group, with a Far Seer's chain lightning, and wins the fight in the learner's base.
+* **100 s:** the learner is down to 8/10 food (2458 vs 6561 material), still with 4529 gold.
+
+Two coordination problems: spending while fighting, and gathering an army when an attack comes. Both are hard for a policy that decides every unit's order separately. At 13M steps night elf reached 0% tax against normal, as undead had at 7M. Both then held about 35–45% real-game wins.
+
 
 Night elf had almost no real games at first (6 against 46–96 for the other races). The real-or-curriculum draw came right after the race choice, and the actors' seeded random streams correlated them. A replay of those streams gave night elf 12 of 91 real launches. The real game is now a launch kind of its own, and the replay gives 17–24 per race.
 
