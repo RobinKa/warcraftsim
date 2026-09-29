@@ -674,6 +674,19 @@ An orc loss against the easy AI (at 12M steps) shows it:
 
 Two coordination problems: spending while fighting, and gathering an army when an attack comes. Both are hard for a policy that decides every unit's order separately. At 13M steps night elf reached 0% tax against normal, as undead had at 7M. Both then held about 35–45% real-game wins.
 
+`fgself-8` stopped at 16M steps. Its real games in total:
+
+| race | wins | ties | losses |
+|---|---|---|---|
+| night elf | 173 | 64 | 205 |
+| undead | 166 | 89 | 251 |
+| orc | 25 | 27 | 310 |
+| human | 19 | 9 | 395 |
+
+Its last few million steps held about 44% (night elf) and 20–40% (undead), and undead's tax crept back up to 25%.
+
+Next is a second DAgger round from its states. `demos-takeover-3` holds 4000 takeover games with `fgself-8`'s last checkpoint as the policy, handing over after 10–60 s: the AI's orders from the states the learner reaches (unspent gold, a scattered army, no altar). The checkpoint is then fine-tuned on those and the earlier demonstrations, and self-play goes on from it.
+
 
 Night elf had almost no real games at first (6 against 46–96 for the other races). The real-or-curriculum draw came right after the race choice, and the actors' seeded random streams correlated them. A replay of those streams gave night elf 12 of 91 real launches. The real game is now a launch kind of its own, and the replay gives 17–24 per race.
 
