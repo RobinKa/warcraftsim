@@ -641,16 +641,18 @@ The likely causes: BC's value head learned the AI's returns, much higher than th
 * 75% of launches against the AI
 * the curriculum starting at level 0.3 (a 27% tax)
 
-`fgself-8` improves in the real game, the first run that does. Its 10% real-game games by race, in thirds of its first 9500 games:
+`fgself-8` improves in the real game, the first run that does. Its 10% real-game games by race, in fifths of its first 17,400 games (7.2M steps):
 
-| race | first third | second third | last third |
-|---|---|---|---|
-| undead | 8W 7T 45L (13%) | 10W 9T 23L (24%) | 8W 7T 9L (33%) |
-| night elf | – | 3W 8T 19L (10%) | 9W 6T 21L (25%) |
-| orc | 2W 2T 69L | 3W 0T 33L | 1W 0T 16L |
-| human | 1W 0T 39L | 0W 0T 42L | 2W 0T 22L |
+| race | 1st | 2nd | 3rd | 4th | 5th |
+|---|---|---|---|---|---|
+| undead | 13% | 26% | 33% | 53% | 45% |
+| night elf | – | 10% | 26% | 28% | 50% |
+| orc | 3% | 8% | 11% | 0% | 11% |
+| human | 2% | 2% | 4% | 0% | 4% |
 
-The taxes fell to match. At 4.3M steps undead needs a 2% tax against normal (a real game, practically) and 9% against easy, and night elf 36–43%. Human and orc still need about 50–60%.
+That's the share of wins; the rest are ties and losses. The last fifth, for example: undead 27W 1T 32L, night elf 24W 8T 16L. The clone won about 21% (undead) and 38% (night elf).
+
+The taxes fell to match. By 7.2M steps undead needs no tax against normal: the curriculum game is the real game. Night elf needs 25% (normal) and 45% (easy), orc 43–49%, human 47–74%.
 
 Night elf had almost no real games at first (6 against 46–96 for the other races). The real-or-curriculum draw came right after the race choice, and the actors' seeded random streams correlated them. A replay of those streams gave night elf 12 of 91 real launches. The real game is now a launch kind of its own, and the replay gives 17–24 per race.
 
