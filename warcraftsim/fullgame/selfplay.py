@@ -515,10 +515,10 @@ def film_game(g, ep: dict, cfg: dict, wid: int, render_q) -> None:
         steps, me = trace.get("steps") or [], str(ep["side"])
         v0 = (steps[0].get("value") or {}).get(me) if steps else None
         if v0 is not None:
-            g = trace.get("gamma", cfg["gamma"])
+            gamma = trace.get("gamma", cfg["gamma"])  # (not g: that's the game)
             ret = 0.0
             for st in reversed(steps):
-                ret = (st.get("reward") or {}).get(me, 0.0) + g * ret
+                ret = (st.get("reward") or {}).get(me, 0.0) + gamma * ret
             calib = {"value0": v0, "return0": round(ret, 4)}
     row = {"episode": ep.get("episode_id", ""), "title": f"{ep['race']} vs {ep['opponent_race']} ({ep['opponent']})",
            "outcome": ep["outcome"], "return": ep["return"], **calib,
