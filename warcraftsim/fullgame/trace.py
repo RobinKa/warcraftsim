@@ -69,3 +69,71 @@ def material_steps(units, steps: int, values: dict) -> "np.ndarray":
     v = np.array([values.get(str(t), 0) for t in types.tolist()], float)[inv]
     hp = np.where(a[:, 8] > 0, a[:, 7] / np.maximum(a[:, 8], 1), 1.0)
     return np.bincount(a[:, 0] * 2 + a[:, 3], weights=v * hp, minlength=2 * steps)[:2 * steps].reshape(steps, 2)
+
+
+WORKERS = {"hpea", "opeo", "uaco", "ewsp"}
+
+
+class Production:
+    """What each player makes, loses and holds over a game, from the observations' events: units
+    trained and buildings finished by type, research, kills and losses, food at one minute,
+    resources on hand. The episode rows' "prod" / "opp_prod" (the dashboard's Production tab)."""
+
+    def __init__(self):
+        from collections import Counter
+        self.trained = {0: Counter(), 1: Counter()}
+        self.built = {0: Counter(), 1: Counter()}
+        self.research: dict[int, dict[str, int]] = {0: {}, 1: {}}
+        self.kills, self.lost = {0: 0, 1: 0}, {0: 0, 1: 0}
+        self.held, self.food_1min, self.max_food = {0: 0.0, 1: 0.0}, {}, {0: 0, 1: 0}
+        self.steps = 0
+
+    def step(self, obs) -> None:
+        from .features import rawcode
+        self.steps += 1
+        for p in (0, 1):
+            s = obs.players.get(p)
+            if s is None:
+                continue
+            self.held[p] += s.gold + s.lumber
+            self.max_food[p] = max(self.max_food[p], s.food_used)
+            if obs.game_time >= 60 and p not in self.food_1min:
+                self.food_1min[p] = s.food_used
+        events = [e for e in obs.events if int(e.kind) in (1, 3, 6, 9, 12)]
+        if not events:
+            return
+        ua = getattr(obs, "unit_array", None)
+        owner = (dict(zip(ua[:, 0].tolist(), ua[:, 2].tolist())) if ua is not None and len(ua)
+                 else {u.id: u.owner for u in obs.units})
+        for e in events:
+            k = int(e.kind)
+            if k == 6:  # a unit trained: a=building, b=the unit, c=its type
+                p = owner.get(e.a)
+                if p in (0, 1):
+                    self.trained[p][rawcode(e.c)] += 1
+            elif k in (3, 12):  # a building finished (b=type), or upgraded (b=the new type)
+                p = owner.get(e.a)
+                if p in (0, 1):
+                    self.built[p][rawcode(e.b)] += 1
+            elif k == 9:  # research done: b=tech, c=level
+                p = owner.get(e.a)
+                if p in (0, 1):
+                    code = rawcode(e.b)
+                    self.research[p][code] = max(self.research[p].get(code, 0), e.c)
+            elif k == 1:  # a death: a=the unit, b=its killer
+                dead, killer = owner.get(e.a), owner.get(e.b)
+                if dead in (0, 1):
+                    self.lost[dead] += 1
+                    if killer in (0, 1) and killer != dead:
+                        self.kills[killer] += 1
+
+    def row(self, p: int, obs) -> dict:
+        s = obs.players.get(p)
+        t = self.trained[p]
+        return {"trained": dict(t), "built": dict(self.built[p]), "research": self.research[p],
+                "workers": sum(v for k, v in t.items() if k in WORKERS),
+                "heroes": sum(v for k, v in t.items() if k[:1].isupper()),
+                "army": sum(v for k, v in t.items() if k not in WORKERS and not k[:1].isupper()),
+                "kills": self.kills[p], "lost": self.lost[p], "food_1min": self.food_1min.get(p),
+                "max_food": self.max_food[p], "held": round(self.held[p] / max(self.steps, 1)),
+                "gold": s.gold_gathered if s else 0, "lumber": s.lumber_gathered if s else 0}

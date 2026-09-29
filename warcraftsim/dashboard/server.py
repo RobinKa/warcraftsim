@@ -49,7 +49,14 @@ EPISODE_SERIES = {
                  "focus_fire", "cast_invalid")},
     **{f"combat_{k}": (lambda k: lambda e: e.get("combat", {}).get(k))(k)
        for k in ("dealt", "taken", "kills", "losses", "focus_dealt", "focus_taken")},
+    # whole-game self-play (fullgame/selfplay.py): what the learner (p_) and the built-in AI (o_) make,
+    # in the games against the AI
+    **{f"{pre}_{k}": (lambda side, k: lambda e: ((e.get(side) or {}).get(k)
+                                                  if str(e.get("opponent", "")).startswith("script:") else None))(side, k)
+       for pre, side in (("p", "prod"), ("o", "opp_prod"))
+       for k in ("army", "workers", "heroes", "food_1min", "held", "lumber", "gold", "kills", "lost", "max_food")},
 }
+PROD_SCALARS = ("army", "workers", "heroes", "food_1min", "max_food", "held", "gold", "lumber", "kills", "lost")
 MAX_POINTS = 600
 MAX_NOTES = 64 * 1024
 # train.py options in the order its command line gives them (a command rebuilt for older runs)
@@ -57,6 +64,56 @@ _ARG_ORDER = ("task", "envs", "workers", "timesteps", "step_seconds", "horizon",
               "buffers", "lr", "ent_coef", "gamma", "hidden", "layers", "checkpoint_interval", "record_every",
               "video_every", "init_from")
 
+
+
+def _production(episodes: list[dict]) -> dict | None:
+    """Whole-game self-play: what the learner and its opponent make per game, by kind of game (the
+    real game against the built-in AI, a curriculum game, self-play) and the learner's race."""
+    rows = [e for e in episodes if e.get("prod")]
+    if not rows:
+        return None
+    try:
+        from ..data.objects import unit_names, upgrade_names
+        names = {**unit_names(), **upgrade_names()}
+    except Exception:  # noqa: BLE001 (no game data: codes only)
+        names = {}
+
+    def kind(e: dict) -> str:
+        o = str(e.get("opponent", ""))
+        return "real game" if "(real)" in o else "curriculum" if o.startswith("script:") else "self-play"
+
+    groups: dict[tuple, list] = {}
+    for e in rows:
+        groups.setdefault((kind(e), e.get("race", "?")), []).append(e)
+    order = {"real game": 0, "curriculum": 1, "self-play": 2}
+    out, used = [], set()
+    for (k, race), es in sorted(groups.items(), key=lambda kv: (order[kv[0][0]], kv[0][1])):
+        n = len(es)
+
+        def side(key: str) -> dict:
+            per = [e.get(key) or {} for e in es]
+            res = {x: (sum(p.get(x) or 0 for p in per) / n) for x in PROD_SCALARS}
+            f1 = [p["food_1min"] for p in per if p.get("food_1min") is not None]
+            res["food_1min"] = sum(f1) / len(f1) if f1 else None
+            for field in ("trained", "built"):
+                tot: dict[str, float] = {}
+                for p in per:
+                    for code, c in (p.get(field) or {}).items():
+                        tot[code] = tot.get(code, 0) + c / n
+                res[field] = dict(sorted(tot.items(), key=lambda kv: -kv[1])[:14])
+                used.update(res[field])
+            res["research"] = {}
+            for p in per:
+                for code in p.get("research") or {}:
+                    res["research"][code] = res["research"].get(code, 0) + 1 / n
+            res["research"] = dict(sorted(res["research"].items(), key=lambda kv: -kv[1])[:10])
+            used.update(res["research"])
+            return res
+        out.append({"kind": k, "race": race, "games": n,
+                    "wins": sum(e.get("outcome", 0) > 0 for e in es) / n, "ties": sum(e.get("outcome", 0) == 0 for e in es) / n,
+                    "tax": (sum(e.get("ai_tax", 0) for e in es) / n) if k == "curriculum" else None,
+                    "learner": side("prod"), "opponent": side("opp_prod")})
+    return {"groups": out, "names": {c: names[c] for c in used if c in names}, "games": len(rows)}
 
 
 def _mean_side(rows: list[dict], side: str, key: str) -> float | None:
@@ -831,7 +888,9 @@ class Dashboard:
                        for st, m in zip(calib_steps, calib)]
         league = _read_json(d / "league.json")
         evals = self.cache.read(d / "evals.jsonl")
+        production = _production(episodes[-800:]) if info.get("trainer") == "fullgame" else None
         return {
+            "production": production,
             "checkpoints": _checkpoints(d, self.runs_dir.parent, evals, league,
                                         {"current.pt": "the weights the actors play with"}),
             "calibration": calibration,

@@ -47,7 +47,7 @@ import torch
 from . import features as fx
 from .collect import claim_slot
 from .costs import order_costs
-from .trace import DEAD_FLAG, material, trace_step, unit_values  # noqa: F401
+from .trace import DEAD_FLAG, Production, material, trace_step, unit_values  # noqa: F401
 from .play import unit_rows
 from .model import FullGameNet, act, evaluate, load
 from ..rl.league import Member, pfsp_weight
@@ -391,6 +391,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     late = 1 - side if opp.get("start") is not None else None  # the built-in AI's side, idle until opp["start"]
     taxed = 1 - side if opp.get("tax") else None  # the AI's side losing opp["tax"] of what it gathers
     gathered = None
+    prod = Production()  # what both sides make (the episode row: the dashboard's Production tab)
+    prod.step(obs)
     for s in (0, 1):
         if g.setup.slots[s].kind != "agent" or s == late:
             continue
@@ -443,6 +445,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         for s, (a, b) in spans.items():
             bots[s].accepted(cmds[a:b], obs.command_results[a:b])
         t += 1
+        prod.step(obs)
         mat = material(obs, values)
         if obs.game_over or t >= cfg["max_steps"]:
             break
@@ -478,7 +481,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         "orders": bots[side].issued if side in bots else 0,
         **({"curriculum": opp["curriculum"], "handicap": g.setup.slots[side].handicap,
             "ai_delay": opp.get("start", 0) * cfg["step_seconds"], "ai_tax": opp.get("tax", 0.0)}
-           if "curriculum" in opp else {})}
+           if "curriculum" in opp else {}),
+        "prod": prod.row(side, obs), "opp_prod": prod.row(1 - side, obs)}
     out_q.put({"episode": ep})
     if record:  # the video's panel: A = the learner's side
         who = {"self": "itself", "ai": "built-in AI"}.get(opp["kind"], opp["name"])

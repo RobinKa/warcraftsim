@@ -151,6 +151,7 @@ table.matrix td.w { font-variant-numeric: tabular-nums; }
 .cks button, .cks a.dl { background:var(--panel); border:1px solid var(--line); border-radius:5px; color:var(--text);
   padding:1px 7px; font:inherit; font-size:11.5px; cursor:pointer; text-decoration:none; margin-right:4px; }
 table.runs td.opts { font-family:ui-monospace, monospace; font-size:11.5px; }
+.pr-item { display:inline-block; margin:1px 8px 1px 0; white-space:nowrap; }
 table.runs tr.shown td { background:var(--panel2); }
 .run .from, .run .note { font-size:11.5px; margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .run .from { color:var(--muted); }
@@ -682,6 +683,22 @@ const SECTIONS = [
     ["c-lg-tax", "The tax on the AI's income", "the share of what it gathers taken away (--curriculum-mode tax)",
       [["trp", "curriculum/", " tax"]], { ymin: 0, ymax: 1, empty: "no tax (--curriculum-mode tax)" }],
   ]],
+  ["Production", [
+    ["c-pr-army", "Army trained per game", "games against the built-in AI (in curriculum games it is taxed)",
+      [EP("p_army", "learner", "#4cc38a"), EP("o_army", "built-in AI", "#e5534b")], { ymin: 0, empty: "no production stats (whole-game self-play)" }],
+    ["c-pr-heroes", "Heroes and workers trained per game", "games against the built-in AI",
+      [EP("p_heroes", "learner heroes", "#4cc38a"), EP("o_heroes", "AI heroes", "#e5534b"), EP("p_workers", "learner workers", "#539bf5"),
+       EP("o_workers", "AI workers", "#e0a33a")], { ymin: 0, empty: "no production stats (whole-game self-play)" }],
+    ["c-pr-food", "Food at one minute", "what the gold had become by then",
+      [EP("p_food_1min", "learner", "#4cc38a"), EP("o_food_1min", "built-in AI", "#e5534b")], { ymin: 0, empty: "no production stats (whole-game self-play)" }],
+    ["c-pr-held", "Resources on hand", "gold + lumber held, mean over a game: gathered and not spent",
+      [EP("p_held", "learner", "#4cc38a"), EP("o_held", "built-in AI", "#e5534b")], { ymin: 0, empty: "no production stats (whole-game self-play)" }],
+    ["c-pr-gather", "Gathered per game", "gold and lumber",
+      [EP("p_gold", "learner gold", "#e0a33a"), EP("o_gold", "AI gold", "#b0833a"), EP("p_lumber", "learner lumber", "#4cc38a"),
+       EP("o_lumber", "AI lumber", "#2f8a5f")], { ymin: 0, empty: "no production stats (whole-game self-play)" }],
+    ["c-pr-kills", "Kills and losses per game", "the learner's, in games against the built-in AI",
+      [EP("p_kills", "kills", "#4cc38a"), EP("p_lost", "losses", "#e5534b")], { ymin: 0, empty: "no production stats (whole-game self-play)" }],
+  ]],
   ["System", [
     ["c-sps", "Throughput", "trainer SPS · game time vs real time",
       [TR("SPS", "trainer SPS", "#e0a33a"), ["br", "game_x_realtime", "game × realtime", "#4cc38a"]], { ymin: 0 }],
@@ -738,7 +755,8 @@ function renderMain() {
               <div class="row"><button id="savenotes">save</button><span>Ctrl+Enter saves</span></div></div>
             <div class="panel"><h3>Lineage</h3><dl class="facts" id="lineage"></dl></div>
           </div>`],
-        ...SECTIONS.map(([name, charts]) => [slug(name), name, `<div class="grid">${charts.map(box).join("")}</div>`, true]),
+        ...SECTIONS.map(([name, charts]) => [slug(name), name, `<div class="grid">${charts.map(box).join("")}</div>`
+          + (name === "Production" ? `<div id="production"></div>` : ""), true]),
         ["leaguetable", "League table", `<div id="leaguetable"></div>`],
         ["replays", "Replays", `<div id="media"></div>`],
         ["episodes", "Episodes", `<div id="episodes"></div>`],
@@ -756,6 +774,7 @@ function renderMain() {
   }
   renderLineage(d);
   renderCheckpoints(d);
+  renderProduction(d);
   const match = info.kind === "match";
   if (match) {  // two players against each other: the score
     const eps = d.recent_episodes || [];
@@ -1279,6 +1298,31 @@ function ckCommand(d, c) {  // how to use one: play it (whole games) or pit it a
   if (full) return `python3 -m warcraftsim.fullgame.play ${c.path} --games 16 --mirror`;
   return `python -m warcraftsim.match ${c.path} script:amove --episodes 20`;
 }
+// whole-game self-play: what the learner and its opponent make per game, by kind of game and race
+function renderProduction(d) {
+  const tab = document.getElementById("tab-production"), box = document.getElementById("production");
+  if (tab) tab.style.display = d.production ? "" : "none";
+  if (!box || !d.production) return;
+  const P = d.production, name = c => esc(P.names[c] || c);
+  const num = (v, dgt = 1) => v == null ? "–" : fmt(v, dgt);
+  const list = (o, pct) => Object.entries(o || {}).map(([c, v]) => `<span class="pr-item">${name(c)} <b>${pct ? (100 * v).toFixed(0) + "%" : v.toFixed(1)}</b></span>`).join(" ") || "–";
+  const scal = [["army", "army units trained"], ["workers", "workers trained"], ["heroes", "heroes trained"], ["food_1min", "food at 1 minute"],
+                ["max_food", "most food"], ["held", "gold + lumber on hand"], ["gold", "gold gathered", 0], ["lumber", "lumber gathered", 0],
+                ["kills", "kills"], ["lost", "units lost"]];
+  box.innerHTML = `<div style="color:var(--muted);margin:10px 0">per game, over the last ${P.games} games that recorded it
+      (games against the built-in AI: the real game, or a curriculum game where it is taxed; self-play: against itself or a past snapshot)</div>` +
+    P.groups.map(g => {
+      const opp = g.kind === "self-play" ? "opponent" : "built-in AI";
+      return `<div class="panel" style="margin-bottom:12px"><h3>${esc(g.kind)} · ${esc(g.race)}<span>${g.games} games · ${(100 * g.wins).toFixed(0)}% won,
+          ${(100 * g.ties).toFixed(0)}% tied${g.tax != null ? ` · the AI taxed ${(100 * g.tax).toFixed(0)}%` : ""}</span></h3>
+        <table class="runs"><tr><th></th><th>learner</th><th>${opp}</th></tr>` +
+        scal.map(([k, label, dg]) => `<tr><td>${label}</td><td>${num(g.learner[k], dg ?? 1)}</td><td>${num(g.opponent[k], dg ?? 1)}</td></tr>`).join("") +
+        [["trained", "trains"], ["built", "builds"], ["research", "researches (share of games)"]].map(([k, label]) =>
+          `<tr><td>${label}</td><td>${list(g.learner[k], k === "research")}</td><td>${list(g.opponent[k], k === "research")}</td></tr>`).join("") +
+        `</table></div>`;
+    }).join("");
+}
+
 function renderCheckpoints(d) {
   const el = document.getElementById("checkpoints"); if (!el) return;
   const cks = d.checkpoints || [];
