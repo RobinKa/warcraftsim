@@ -685,7 +685,16 @@ Two coordination problems: spending while fighting, and gathering an army when a
 
 Its last few million steps held about 44% (night elf) and 20–40% (undead), and undead's tax crept back up to 25%.
 
-Next is a second DAgger round from its states. `demos-takeover-3` holds 4000 takeover games with `fgself-8`'s last checkpoint as the policy, handing over after 10–60 s: the AI's orders from the states the learner reaches (unspent gold, a scattered army, no altar). The checkpoint is then fine-tuned on those and the earlier demonstrations, and self-play goes on from it.
+Next is a second DAgger round from its states. `demos-takeover-3` holds 4000 takeover games with `fgself-8`'s last checkpoint as the policy, handing over after 10–60 s: the AI's orders from the states the learner reaches (unspent gold, a scattered army, no altar). With the RL policy playing the first 10–60 s, its side then won about 31% under the AI, whenever the AI took over (10–25 s: 32%, 25–40 s: 31%, 40–60 s: 31%). The clone's side had dropped from 34% to 13% over the same window. So the RL policy no longer loses ground in the opening.
+
+Fine-tuning the checkpoint on these games did not work. The fine-tune ran 1 epoch at learning rate 3e-5 with the value head left alone (`fullgame-rl8-dagger`). 64 mirror games against the normal AI, the real game, same seed:
+
+| | human | night elf | orc | undead | total |
+|---|---|---|---|---|---|
+| fine-tuned | 0/16 | 4/21 | 0/17 | 2/10 | 6 wins (9%) |
+| `fgself-8`, 16M steps | 3/16 | 10/21 (1 tie) | 4/17 | 2/10 (3 ties) | 19 wins, 4 ties (30%) |
+
+Cloning the AI's orders overwrote what RL had learned. Self-play goes on from the checkpoint; the takeover games would have to come in as an auxiliary loss during RL, as AlphaStar's KL to its supervised policy, rather than as a fine-tune. The 30% is also the cleanest measure of `fgself-8`, up from the clone's 19% (`fullgame-rush5`).
 
 
 Night elf had almost no real games at first (6 against 46–96 for the other races). The real-or-curriculum draw came right after the race choice, and the actors' seeded random streams correlated them. A replay of those streams gave night elf 12 of 91 real launches. The real game is now a launch kind of its own, and the replay gives 17–24 per race.
