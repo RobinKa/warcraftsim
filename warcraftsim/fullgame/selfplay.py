@@ -372,6 +372,7 @@ def inference_main(cfg: dict, conns: list, stop) -> None:
     import signal
     from multiprocessing.connection import wait
     signal.signal(signal.SIGTERM, _exit)
+    _pin(cfg, "server")
     torch.set_num_threads(2)
     device = torch.device(cfg["device"])
     nets = Nets(cfg, device)
@@ -389,6 +390,7 @@ def inference_main(cfg: dict, conns: list, stop) -> None:
     stats = fresh()  # -> inference.jsonl
     stats_path = Path(cfg["run_dir"]) / "inference.jsonl"
     live = list(conns)
+    t_round = 0.0
     while not stop.is_set() and os.getppid() == cfg["learner_pid"]:
         if time.time() - stats["t"] >= 10.0 and stats["calls"]:
             dt = time.time() - stats["t"]
@@ -405,7 +407,13 @@ def inference_main(cfg: dict, conns: list, stop) -> None:
         ready = wait(live, timeout=1.0)
         if not ready:
             continue
-        t_busy = time.time()
+        # a round at most every cfg["infer_period"] seconds: every round takes the GPU from the learner
+        # for a turn (260 rounds a second left it half of it), and what arrives meanwhile shares the round
+        pause = t_round + cfg.get("infer_period", 0.0) - time.time()
+        if pause > 0:
+            time.sleep(pause)
+            ready = wait(live, timeout=0)
+        t_busy = t_round = time.time()
         asked: dict = {}  # game pipe -> (its request's id, the answers)
         groups: dict[str, list] = {}  # network -> [(pipe, item, view step)]
         for c in ready:
@@ -559,13 +567,14 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
             if curr:  # (the handicap is the launch's: the level when it started)
                 slots[side] = Agent(races[side], handicap=int(ai.get("handicap", cfg["handicap"])))
         agents_only = ai["kind"] != "ai"
-        # a restart reloads the map (1 s). (--scripted-reset: games without the built-in AI reset by
-        # script instead, 0.1 s, but not to a new game: see GameSetup.melee_reset)
+        # a restart goes on to the next pair of players (--pairs), or reloads the map (1 s).
+        # (--scripted-reset: games without the built-in AI reset by script for the same players instead,
+        # 0.1 s, but not to a new game: see GameSetup.melee_reset)
         setup = GameSetup(map=cfg["map"], slots=slots, step_seconds=cfg["step_seconds"],
                           max_game_seconds=cfg["max_minutes"] * 60, victory="decisive", window=(320, 240),
                           wait_floor_ms=cfg["wait_floor_ms"], melee_reset=agents_only and cfg["scripted_reset"],
                           native_obs=cfg["native_obs"], nice=cfg.get("game_nice", 0), d3d_thread=False,
-                          render_threads=0)
+                          render_threads=0, pairs=cfg.get("pairs", 1))
         per_launch = cfg["games_per_process"] * (cfg["agent_games_factor"] if agents_only else 1)
         try:
             with GameInstance(setup, name=name, timeout=120) as g:
@@ -762,6 +771,7 @@ def render_main(cfg: dict, render_q, stop) -> None:
     from ..video import render_replay
     from .overlay import FullGameOverlay
     signal.signal(signal.SIGTERM, _exit)
+    _pin(cfg, "games")
     run_dir = Path(cfg["run_dir"])
     try:
         while not stop.is_set() and os.getppid() == cfg["learner_pid"]:
@@ -796,11 +806,20 @@ def _interrupt(*_):
     raise KeyboardInterrupt
 
 
+def _pin(cfg: dict, who: str) -> None:
+    """The calling process on its CPUs (--pin): the learner and the inference server a core each of
+    their own, the actors and their games (which inherit it) on the rest."""
+    cpus = (cfg.get("cpus") or {}).get(who)
+    if cpus:
+        os.sched_setaffinity(0, cpus)
+
+
 def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = None) -> None:
     import signal
 
     from ..runtime import reaper
     signal.signal(signal.SIGTERM, _exit)
+    _pin(cfg, "games")
     out_q.cancel_join_thread()  # exiting must not wait to flush trajectories nobody reads any more
     torch.set_num_threads(1)
     try:
@@ -1137,6 +1156,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--actors", type=int, default=4, help="actor processes (each a GPU context: few, with many games)")
     ap.add_argument("--games-per-actor", type=int, default=8)
     ap.add_argument("--games-per-process", type=int, default=6, help="games of one setup per launch")
+    ap.add_argument("--pairs", type=int, default=5,
+                    help="games per load of the map, each with two players of its own (GameSetup.pairs): the next "
+                         "game starts in 0.1 s, and one in this many reloads the map (1: every game does)")
     ap.add_argument("--scripted-reset", type=int, default=0,
                     help="1: games without the built-in AI restart by script (0.1 s) instead of reloading the map (1 s). "
                          "Not the same game: a player's heroes stay counted through it (after the first game's hero the "
@@ -1195,6 +1217,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-grad-norm", type=float, default=1.0)
     ap.add_argument("--bf16", type=int, default=1, help="the updates' matmuls in bfloat16")
     ap.add_argument("--compile", type=int, default=1, help="the actors' network calls as CUDA graphs")
+    ap.add_argument("--infer-period-ms", type=float, default=4.0,
+                    help="the inference server makes a round of calls at most this often (0: whenever requests wait)")
+    ap.add_argument("--pin", type=int, default=0,
+                    help="1: the learner and the inference server on a core each of their own, the games on the rest")
     ap.add_argument("--game-nice", type=int, default=10,
                     help="the games' niceness: they yield the CPU to the inference server, the actors and the learner")
     ap.add_argument("--central-inference", type=int, default=1,
@@ -1301,12 +1327,20 @@ def main(argv: list[str] | None = None) -> int:
            "agent_games_factor": args.agent_games_factor, "mirror": bool(args.mirror), "learner_pid": os.getpid(),
            "actors": args.actors, "values": unit_values(), "shaping": args.shaping, "shaping_scale": args.shaping_scale,
            "tie_break": args.tie_break, "compile": bool(args.compile), "native_obs": bool(args.native_obs),
-           "real_share": args.real_share, "infer_batch": 64, "game_nice": args.game_nice,
+           "real_share": args.real_share, "infer_batch": 64, "game_nice": args.game_nice, "pairs": args.pairs,
+           "infer_period": args.infer_period_ms / 1000.0,
            "avail_mask": bool(args.avail_mask),
            "costs": order_costs(vocab, args.map).tolist() if args.avail_mask else None, "max_past": args.max_past,
            "order_names": vocab.get("order_names") or {str(k): v for k, v in fx.demo_order_names(args.runs).items()}}
+    if args.pin and (os.cpu_count() or 0) >= 16:
+        # the learner's Python is what bounds an update, and the inference server what the games wait
+        # for: each gets a core (both of its threads) that no game runs on. (CPUs 2k and 2k + 1 are a core.)
+        every = sorted(os.sched_getaffinity(0))
+        cfg["cpus"] = {"learner": every[:2], "server": every[2:4], "games": every[4:]}
     ctx = torch.multiprocessing.get_context("spawn")
-    out_q, stop, render_q = ctx.Queue(maxsize=4096), ctx.Event(), ctx.Queue()
+    # the actors wait when the learner is a batch behind (unbounded, faster actors piled up steps the
+    # learner then trained on several updates late: 3 after ten minutes, and growing)
+    out_q, stop, render_q = ctx.Queue(maxsize=max(32, args.batch_steps // args.chunk)), ctx.Event(), ctx.Queue()
     # a pipe per game to the inference server: [actor][game] -> (the game's end, the server's)
     pipes = [[ctx.Pipe() for _ in range(args.games_per_actor)] if args.central_inference else None
              for _ in range(args.actors)]
@@ -1318,6 +1352,7 @@ def main(argv: list[str] | None = None) -> int:
         actors.append(ctx.Process(target=render_main, args=(cfg, render_q, stop), daemon=True))
     for p in actors:
         p.start()
+    _pin(cfg, "learner")  # (after the others started: they would inherit it)
     info.update(status="training", started=time.time())
     save_info()
     t0 = time.time()
@@ -1333,7 +1368,8 @@ def main(argv: list[str] | None = None) -> int:
             epoch = 0
             while True:
                 bc_set.epoch, epoch = epoch, epoch + 1
-                for b in torch.utils.data.DataLoader(bc_set, batch_size=None, num_workers=args.bc_workers, collate_fn=as_is):
+                for b in torch.utils.data.DataLoader(bc_set, batch_size=None, num_workers=args.bc_workers, collate_fn=as_is,
+                                                     worker_init_fn=lambda _i: _pin(cfg, "games")):
                     yield {k: torch.from_numpy(v) for k, v in b.items()}
         bc_iter = bc_cycle()
         print(f"auxiliary cloning loss: {len(bc_paths)} games, x{args.bc_coef}", flush=True)

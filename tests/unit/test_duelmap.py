@@ -1,6 +1,8 @@
 import math
 import struct
 
+import pytest
+
 from warcraftsim.data.duelmap import FAST, Rules, _object_mods, duel_layout, parse_duel_name
 
 
@@ -85,3 +87,29 @@ def test_rules_as_tables_match_the_object_data(game_dir):
         assert abs(float(new[table][oid][col]) - v) <= 1e-4 * max(1.0, abs(v)), (table, oid, col)
     changed = {(t, c, o) for t in old for o in old[t] for c in old[t][o] if old[t][o][c] != new[t][o].get(c)}
     assert changed <= set(want) and all(old[t].keys() == new[t].keys() for t in old)
+
+
+def test_setup_with_pairs_of_players(game_dir):
+    """GameSetup.pairs: the game's slots are the two slots again for every pair, the harness knows
+    every agent player, and the map has a start location per player (two places)."""
+    import re
+
+    from warcraftsim.data.duelmap import duel_map_path
+    from warcraftsim.data.mpq import MpqArchive
+    from warcraftsim.data.w3i import parse_w3i
+    from warcraftsim.runtime.instance import Agent, BuiltinAI, GameSetup
+    setup = GameSetup(map="duelrush", slots=[Agent("orc", handicap=50), BuiltinAI("undead", "easy", handicap=70)], pairs=3)
+    cfg = setup.harness_config()
+    assert (cfg.pairs, cfg.agent_players, cfg.melee_reset) == (3, (0, 2, 4), "W3S_DuelCreeps") and setup.agent_players == (0,)
+    slots = setup.wgc("map.w3x").slots
+    assert len(slots) == 7 and [s.team for s in slots[:6]] == [0, 1, 2, 3, 4, 5]
+    assert [s.handicap for s in slots[:6]] == [50, 70] * 3 and len({(s.race, s.ai_difficulty) for s in slots[1:6:2]}) == 1
+    assert setup.map_key() != GameSetup(map="duelrush", slots=setup.slots).map_key()
+    with pytest.raises(ValueError):
+        GameSetup(map="duelrush", slots=setup.slots, pairs=7).harness_config()
+    with MpqArchive(duel_map_path("duelrush", 3)) as m:
+        players = parse_w3i(m.read("war3map.w3i")).players
+        script = m.read("war3map.j").decode("latin-1")
+    assert [p.id for p in players] == list(range(6)) and [(p.start_x, p.start_y) for p in players] == [(-1500.0, 0.0), (1500.0, 0.0)] * 3
+    assert "call SetPlayers( 6 )" in script and "MAP_PLACEMENT_USE_MAP_SETTINGS" in script
+    assert re.findall(r"call DefineStartLocation\( (\d), (-?[\d.]+), ", script) == [(str(i), ("-1500.0", "1500.0")[i % 2]) for i in range(6)]

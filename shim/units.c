@@ -14,6 +14,8 @@
  *   MBOX - 8, then -(index + 1)  a seer (a player whose view the visibility bits report)
  *   MBOX - 13, then -(handle id) the group of all units (w3s_all)
  *   MBOX - 14, then -(n)         bj_MAX_PLAYERS
+ *   MBOX - 16, then -(2 k + 1)   the game's players are 2k and 2k + 1: reported as players 0 and 1
+ *   MBOX - 17, then -(n)         of n players in such pairs (the others are reported as 100 + their id)
  *   MBOX - 9 / MBOX - 10         a pass begins: the records are deltas / a full snapshot
  *   -(unit handle id)            the unit, once per pass: gone or reported dead (dropped from the
  *                                group), counted, its record kept if it changed
@@ -74,8 +76,9 @@ enum { TYPE_HERO = 0, TYPE_DEAD = 1, TYPE_STRUCTURE = 2, TYPE_FLYING = 3, TYPE_S
 
 static int g_ht, g_abil, g_all; /* the harness's hashtables and its group of all units (handle ids) */
 static int g_max_players = 12;  /* bj_MAX_PLAYERS */
+static int g_pair_first, g_paired; /* the current game's first player, of this many in pairs (0: no pairs) */
 static int g_full;
-static int g_pending; /* what the next negative argument is: 0 a unit, else the register (5, 6, 8, 13, 14) */
+static int g_pending; /* what the next negative argument is: 0 a unit, else the register (5, 6, 8, 13, 14, 16, 17) */
 static int g_nseer, g_seer_player[MAX_PLAYERS], g_seer_bit[MAX_PLAYERS];
 static int g_pass;                                                            /* in a pass */
 static int g_halls[MAX_PLAYERS], g_mobile[MAX_PLAYERS], g_alive[MAX_PLAYERS]; /* the pass's counts */
@@ -104,6 +107,15 @@ static float r2(int k, int a, int b) {
     float f;
     memcpy(&f, &bits, 4);
     return f;
+}
+
+/* a player's id as the controller sees it (the harness's W3S_Pid) */
+static int pid(int i) {
+    if (!g_paired || i >= g_paired)
+        return i;
+    if (i >= g_pair_first && i < g_pair_first + 2)
+        return i - g_pair_first;
+    return i + 100;
 }
 
 /* W3SIM_UNITS=2: the record made here is kept and compared with the tokens the harness then sends,
@@ -219,7 +231,7 @@ static void unit_record(int u) {
     if (n2(IsUnitType, u, TYPE_FLYING))
         flags += 2048;
     int typ = n1(GetUnitTypeId, u);
-    int owner = n1(GetPlayerId, n1(GetOwningPlayer, u));
+    int owner = pid(n1(GetPlayerId, n1(GetOwningPlayer, u)));
     int x = (int)r1(GetUnitX, u), y = (int)r1(GetUnitY, u), facing = (int)r1(GetUnitFacing, u);
     int hp = (int)(r1(GetWidgetLife, u) + 0.5f);
     int maxhp = (int)(r2(GetUnitState, u, STATE_MAX_LIFE) + 0.5f);
@@ -365,7 +377,7 @@ int units_call(int key, int mbox, int *result) {
     *result = 0;
     if (key == mbox - 2) { /* a game's first step (after a reload the last game's tables are gone) */
         g_v_unit = 0;
-        g_ht = g_abil = g_all = g_nseer = g_pending = g_pass = g_nremoved = g_rec_len = 0;
+        g_ht = g_abil = g_all = g_nseer = g_pending = g_pass = g_nremoved = g_rec_len = g_pair_first = g_paired = 0;
         *result = obs_capture_on() ? g_ok : 0;
         return 1;
     }
@@ -384,10 +396,14 @@ int units_call(int key, int mbox, int *result) {
             g_all = v;
         else if (reg == 14)
             g_max_players = v;
+        else if (reg == 16)
+            g_pair_first = v - 1;
+        else if (reg == 17)
+            g_paired = v;
         else if (reg == 8) {
             if (g_nseer < MAX_PLAYERS && v >= 1 && v <= MAX_PLAYERS) {
                 g_seer_player[g_nseer] = n1(Player, v - 1);
-                g_seer_bit[g_nseer++] = 1 << (v - 1);
+                g_seer_bit[g_nseer++] = 1 << pid(v - 1);
             }
         } else if (g_ht && g_abil) {
             if (g_pass && g_all)
@@ -440,7 +456,8 @@ int units_call(int key, int mbox, int *result) {
         *result = (i % 3 == 0 ? g_halls : i % 3 == 1 ? g_mobile : g_alive)[i / 3];
         return 1;
     }
-    if (key == mbox - 5 || key == mbox - 6 || key == mbox - 8 || key == mbox - 13 || key == mbox - 14) {
+    if (key == mbox - 5 || key == mbox - 6 || key == mbox - 8 || key == mbox - 13 || key == mbox - 14 || key == mbox - 16 ||
+        key == mbox - 17) {
         g_pending = mbox - key;
         return 1;
     }

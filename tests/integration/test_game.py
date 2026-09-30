@@ -421,3 +421,42 @@ def test_shim_unit_pass_matches_the_harness(game_dir, tmp_path, monkeypatch):
         assert "written by the shim" in (g.inst_dir / "shim.log").read_text()
     assert len(live) > 100 and sum(len(s[0]) for s in live.values()) > 5000
     assert [s for s in live if live[s] != played.get(s)] == []
+
+
+def test_games_with_a_pair_of_players_each(game_dir):
+    """GameSetup.pairs: a restart goes on to the next two players by script and the last game's
+    reloads the map. Every game is a new one from its first observation on: the agent gets its
+    (free) hero again, the built-in AI builds up, and the controller sees players 0 and 1 only."""
+    import time
+
+    from warcraftsim.protocol import ImmediateOrder, SetResources, Spawn, fourcc
+    from warcraftsim.runtime.instance import BuiltinAI, GameInstance
+    setup = GameSetup(map="duelrush", slots=[Agent("orc", handicap=50), BuiltinAI("undead", "normal", handicap=50)],
+                      step_seconds=0.5, max_game_seconds=240, victory="decisive", window=(320, 240), wait_floor_ms=5, pairs=2)
+    restarts, starts = [], []
+    with GameInstance(setup, name="it_pairs") as g:
+        obs = g.start()
+        for game in range(3):
+            assert sorted(obs.players) == [0, 1] and [obs.players[i].food_used for i in (0, 1)] == [5, 5 if game != 1 else obs.players[1].food_used]
+            assert {u.owner for u in obs.units} <= {0, 1, 12, 13, 14, 15} and sum(u.owner == 0 for u in obs.units) == 6
+            # the first observation is the game's first moment, the same after a load and for a later pair:
+            # the AI has not spent anything, the undead's mine is haunted, nothing is left of the last game
+            first = sorted((u.type, u.owner, u.hp, int(u.flags)) for u in obs.units)
+            starts.append(first)
+            assert obs.game_time < 0.3 and obs.players[1].gold == obs.players[0].gold and first == starts[0]
+            assert sorted(u.type for u in obs.units if u.type in ("ngol", "ugol")) == ["ngol", "ugol"]
+            me = obs.players[0]
+            obs = g.step([SetResources(0, 900, 900), Spawn(0, "oalt", me.start_x + (500 if me.start_x < 0 else -500), me.start_y + 300)])
+            obs = g.step([])
+            altar = next(u for u in obs.units if u.owner == 0 and u.type == "oalt")
+            obs = g.step([ImmediateOrder(altar.id, fourcc("Obla"))])
+            assert obs.command_results == [True]
+            for _ in range(70):
+                obs = g.step([])
+            assert obs.players[0].gold >= 900  # (the first hero is free)
+            assert any(u.type == "Obla" and u.owner == 0 for u in obs.units)
+            assert obs.players[1].food_used >= 12 and obs.players[1].structures >= 4  # the AI plays
+            t = time.time()
+            obs = g.restart()
+            restarts.append(time.time() - t)
+    assert restarts[0] < 0.6 * restarts[1]  # (the next pair by script, then a reload)

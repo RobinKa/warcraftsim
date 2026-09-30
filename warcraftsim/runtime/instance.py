@@ -175,6 +175,11 @@ class GameSetup:
     # reloaded), and the food count drifted (a third of those games had less than 5 food used at one
     # minute, down to -345). Tech counts, the hero limits and hero tokens all read right after it.
     melee_reset: bool = False
+    # duel maps with two slots: this many games per load of the map, each with two players of its own
+    # (players 2k and 2k + 1 of the game, reported as 0 and 1). A restart goes on to the next two by
+    # script (0.1 s) and only the last game's reloads the map: for new players the engine has no
+    # state left over (its count of their heroes, the built-in AI's towns). At most 6.
+    pairs: int = 1
     # melee: restarts reload the map in the running game (the engine's RestartGame, as the menu's
     # Restart: the loading screen and everything anew, built-in AI included; duelrush and duel 1 s
     # (3 and 1.9 s with "Allow Local Files", duelrush 5 s with its rules as object data), instead of
@@ -227,6 +232,13 @@ class GameSetup:
         return self.fog if self.fog is not None else self.scenario is None
 
     def harness_config(self) -> HarnessConfig:
+        if self.scenario is None and self.pairs > 1:
+            from ..data.duelmap import parse_duel_name
+            if parse_duel_name(self.map) is None or len(self.slots) != 2 or not 1 < self.pairs <= 6:
+                raise ValueError("pairs needs a duel map, two slots and at most 6 pairs")
+            agents = tuple(i for i in range(2 * self.pairs) if self.slots[i % 2].kind == "agent")
+            return HarnessConfig(self.step_seconds, agents, self.max_game_seconds, victory=self.victory,
+                                 record_orders=self.record_ai_orders, melee_reset="W3S_DuelCreeps", pairs=self.pairs)
         if self.scenario is None:
             reset = ""
             if self.melee_reset:
@@ -259,8 +271,8 @@ class GameSetup:
     def wgc(self, map_path: str) -> Wgc:
         slots = []
         user = self.agent_players[0] if self.agent_is_user and self.agent_players else None
-        for i, s in enumerate(self.slots):
-            team = s.team if s.team is not None else i
+        for i, s in enumerate(self.slots * self.pairs):  # (pairs: every game's two players, as the two slots)
+            team = s.team if s.team is not None and self.pairs == 1 else i
             if i == user:
                 slots.append(WgcSlot.user(i, s.race, team=team))
             else:
@@ -268,7 +280,7 @@ class GameSetup:
                 slots.append(WgcSlot.computer(i, s.race, s.difficulty if s.kind in ("ai", "agent") else "normal", team=team))
             slots[-1].handicap = s.handicap
         if user is None:
-            slots.append(WgcSlot.observer(len(self.slots)))
+            slots.append(WgcSlot.observer(len(slots)))
         flags = 0 if self.fog_enabled else 1
         return Wgc(map_path, slots, game_speed=self.wgc_speed, flags=flags)
 
@@ -279,7 +291,7 @@ class GameSetup:
         # the tables generated from game data are part of the built script too
         tables = json.dumps([cfg.resolved_order_names(), cfg.resolved_hero_abilities()], sort_keys=True)
         harness = asdict(cfg)
-        for k_, default in (("record_orders", False), ("melee_reset", "")):  # keys from before them stay the same
+        for k_, default in (("record_orders", False), ("melee_reset", ""), ("pairs", 1)):  # keys from before them stay the same
             if harness[k_] == default:
                 del harness[k_]
         key = {"map": self.map, "harness": harness,
@@ -287,7 +299,7 @@ class GameSetup:
                "tables": hashlib.sha1(tables.encode()).hexdigest()}
         from ..data.duelmap import duel_map_path, parse_duel_name
         if parse_duel_name(self.map) is not None:  # a generated map: its version (the file's name) too
-            key["generated"] = duel_map_path(self.map).name
+            key["generated"] = duel_map_path(self.map, self.pairs).name
         blob = json.dumps(key, sort_keys=True)
         return hashlib.sha1(blob.encode()).hexdigest()[:12]
 
@@ -463,7 +475,11 @@ class GameInstance:
         cached = maps_cache / f"{self._map_key}.w3x"
         with _map_lock:
             if not cached.exists():
-                build_map(self.setup.map, cached, self.setup.harness_config())
+                source = self.setup.map
+                if self.setup.pairs > 1:
+                    from ..data.duelmap import duel_map_path
+                    source = duel_map_path(self.setup.map, self.setup.pairs)
+                build_map(source, cached, self.setup.harness_config())
         shutil.copyfile(cached, work / "map.w3x")
         # .wgc map paths are relative to the game directory (C:\Warcraft III)
         self.setup.wgc(f"..\\{wine.WORK_DIR}\\map.w3x").write(work / "game.wgc")

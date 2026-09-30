@@ -61,3 +61,16 @@ def test_hero_ability_table_in_the_harness():
     cfg = HarnessConfig(hero_abilities={"Hmkg": ("AHtc", "AHtb", "AHbh", "AHav")}, order_names=("stop",))
     _, body = _split_harness(harness_source(), cfg)
     assert "call SaveInteger(w3s_abil, 'Hmkg', 1, 'AHtb')" in body
+
+
+def test_pairs_of_players_per_game(echo_script):
+    """Games with two players of their own each (HarnessConfig.pairs): the map's main makes only
+    the first game's starting units (the harness's own call of MeleeStartingUnits stays)."""
+    _pjass_available()
+    out = inject_harness(echo_script, HarnessConfig(step_seconds=0.5, agent_players=(0, 2, 4), melee_reset="W3S_DuelCreeps", pairs=3))
+    assert "constant integer W3S_CFG_PAIRS = 3" in out and "constant integer W3S_CFG_AGENT_MASK = 21" in out
+    main = out[out.index("function Trig_Melee_Initialization_Actions"):]
+    assert "call W3S_StartingUnits()" in main and "call MeleeStartingUnits(" not in main
+    assert out.count("call MeleeStartingUnits()") == 1  # (the harness's reset of the same players)
+    one = inject_harness(echo_script, HarnessConfig(step_seconds=0.5, agent_players=(0,)))
+    assert "constant integer W3S_CFG_PAIRS = 1" in one and "call W3S_StartingUnits()" not in one[one.index("function Trig_Melee_Initialization_Actions"):]

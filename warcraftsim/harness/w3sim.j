@@ -32,6 +32,12 @@ globals
     // melee maps: the map's function that makes its units (mines, creeps), to restart a game in the
     // running process; "": a restart relaunches the game (RestartGame returns a .wgc game to the menu)
     constant string W3S_CFG_MELEE_RESET = ""
+    // games in one load of the map, each with two players of its own (players 2k and 2k + 1 play
+    // game k; the controller sees them as players 0 and 1). A restart then goes on to the next two
+    // by script, and only the last game's reloads the map. (For the same players a reset by script
+    // is not a new game: the engine keeps its own count of their heroes, and the built-in AI's
+    // state.)
+    constant integer W3S_CFG_PAIRS = 1
     constant integer W3S_VERSION = 4
     constant integer W3S_QS_SKILLS = 8
     constant integer W3S_ABIL_SLOTS = 4  // warcraftsim.protocol.HERO_ABILITY_SLOTS
@@ -93,6 +99,7 @@ globals
     // skill learned), x, y, target id
     integer array w3s_iss
     integer w3s_niss = 0
+    integer w3s_pair = 0  // the game of this load (W3S_CFG_PAIRS)
     integer w3s_cser = 0  // the shim makes the pass over the units (1; 2: it checks its records against the harness's)
     player w3s_np = null  // the neutral passive player (the mailbox's)
     integer w3s_nseer = 0  // the seers, as a list: their players and their bits in the visibility mask
@@ -180,6 +187,54 @@ function W3S_Hid takes handle h returns integer
         return 0
     endif
     return GetHandleId(h)
+endfunction
+
+// player ids: the game's, and as the controller sees them (W3S_CFG_PAIRS: the players of the
+// current game are its players 0 and 1; the others never have units)
+function W3S_Active takes integer i returns boolean
+    return W3S_CFG_PAIRS <= 1 or (i >= 2 * w3s_pair and i < 2 * w3s_pair + 2)
+endfunction
+
+function W3S_Pid takes integer i returns integer
+    if W3S_CFG_PAIRS <= 1 or i >= 2 * W3S_CFG_PAIRS then
+        return i
+    elseif i >= 2 * w3s_pair and i < 2 * w3s_pair + 2 then
+        return i - 2 * w3s_pair
+    endif
+    return i + 100
+endfunction
+
+function W3S_Real takes integer v returns integer
+    if W3S_CFG_PAIRS > 1 and v >= 0 and v < 2 then
+        return v + 2 * w3s_pair
+    endif
+    return v
+endfunction
+
+function W3S_Pow2 takes integer i returns integer
+    local integer v = 1
+    loop
+        exitwhen i <= 0
+        set v = v * 2
+        set i = i - 1
+    endloop
+    return v
+endfunction
+
+// the players whose view the units' visibility bits report (of the current game)
+function W3S_Seers takes nothing returns nothing
+    local integer i = 0
+    set w3s_nseer = 0
+    loop
+        exitwhen i >= bj_MAX_PLAYERS
+        set w3s_seer[i] = W3S_Active(i) and (w3s_agent[i] or (W3S_CFG_RECORD_ORDERS and GetPlayerSlotState(Player(i)) == PLAYER_SLOT_STATE_PLAYING))
+        if w3s_seer[i] then
+            set w3s_seer_p[w3s_nseer] = Player(i)
+            set w3s_seer_bit[w3s_nseer] = W3S_Pow2(W3S_Pid(i))
+            set w3s_nseer = w3s_nseer + 1
+        endif
+        set i = i + 1
+    endloop
 endfunction
 
 //===========================================================================
@@ -297,7 +352,7 @@ function W3S_SerUnit takes unit u returns nothing
     local integer hid = GetHandleId(u)
     local integer flags = W3S_UnitFlags(u)
     local integer typ = GetUnitTypeId(u)
-    local integer owner = GetPlayerId(GetOwningPlayer(u))
+    local integer owner = W3S_Pid(GetPlayerId(GetOwningPlayer(u)))
     local integer x = R2I(GetUnitX(u))
     local integer y = R2I(GetUnitY(u))
     local integer facing = R2I(GetUnitFacing(u))
@@ -418,9 +473,9 @@ function W3S_SerPlayers takes nothing returns nothing
     loop
         exitwhen i >= bj_MAX_PLAYERS
         set p = Player(i)
-        if GetPlayerSlotState(p) != PLAYER_SLOT_STATE_EMPTY and not IsPlayerObserver(p) then
+        if GetPlayerSlotState(p) != PLAYER_SLOT_STATE_EMPTY and not IsPlayerObserver(p) and W3S_Active(i) then
             call W3S_Rec("P")
-            call W3S_Tok(i)
+            call W3S_Tok(W3S_Pid(i))
             call W3S_Tok(W3S_RaceId(GetPlayerRace(p)))
             if w3s_agent[i] then
                 call W3S_Tok(1)
@@ -510,6 +565,12 @@ function W3S_CSerInit takes nothing returns nothing
     call GetPlayerTechMaxAllowed(w3s_np, 0 - GetHandleId(w3s_all))
     call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 14)
     call GetPlayerTechMaxAllowed(w3s_np, 0 - bj_MAX_PLAYERS)
+    if W3S_CFG_PAIRS > 1 then  // (the players it reports as 0 and 1)
+        call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 16)
+        call GetPlayerTechMaxAllowed(w3s_np, 0 - (2 * w3s_pair + 1))
+        call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 17)
+        call GetPlayerTechMaxAllowed(w3s_np, 0 - 2 * W3S_CFG_PAIRS)
+    endif
     call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 7)
     loop
         exitwhen i >= bj_MAX_PLAYERS
@@ -1155,8 +1216,8 @@ function W3S_ApplyOne takes integer at returns integer
         endif
     elseif op == 90 then
         set n = 4
-        call SetPlayerState(Player(w3s_cmd[at + 1]), PLAYER_STATE_RESOURCE_GOLD, w3s_cmd[at + 2])
-        call SetPlayerState(Player(w3s_cmd[at + 1]), PLAYER_STATE_RESOURCE_LUMBER, w3s_cmd[at + 3])
+        call SetPlayerState(Player(W3S_Real(w3s_cmd[at + 1])), PLAYER_STATE_RESOURCE_GOLD, w3s_cmd[at + 2])
+        call SetPlayerState(Player(W3S_Real(w3s_cmd[at + 1])), PLAYER_STATE_RESOURCE_LUMBER, w3s_cmd[at + 3])
         set ok = true
     elseif op == 92 then
         // queue a spawn for the next restart: player, type, x, y, facing, hp per mille, hero level
@@ -1183,10 +1244,10 @@ function W3S_ApplyOne takes integer at returns integer
         endif
     elseif op == 94 then
         set n = 2
-        set ok = W3S_StartAI(w3s_cmd[at + 1])
+        set ok = W3S_StartAI(W3S_Real(w3s_cmd[at + 1]))
     elseif op == 91 then
         set n = 5
-        set u = CreateUnit(Player(w3s_cmd[at + 1]), w3s_cmd[at + 2], I2R(w3s_cmd[at + 3] - 65536), I2R(w3s_cmd[at + 4] - 65536), 270.0)
+        set u = CreateUnit(Player(W3S_Real(w3s_cmd[at + 1])), w3s_cmd[at + 2], I2R(w3s_cmd[at + 3] - 65536), I2R(w3s_cmd[at + 4] - 65536), 270.0)
         set ok = u != null
     elseif op == 80 then
         set n = 1
@@ -1317,7 +1378,7 @@ function W3S_CheckResult takes nothing returns nothing
     loop
         exitwhen i >= bj_MAX_PLAYERS or W3S_CFG_VICTORY == 2
         set p = Player(i)
-        if w3s_result[i] == 0 and GetPlayerSlotState(p) == PLAYER_SLOT_STATE_PLAYING and not IsPlayerObserver(p) then
+        if w3s_result[i] == 0 and GetPlayerSlotState(p) == PLAYER_SLOT_STATE_PLAYING and not IsPlayerObserver(p) and W3S_Active(i) then
             if W3S_CFG_VICTORY == 0 and MeleeGetAllyStructureCount(p) <= 0 then
                 set w3s_result[i] = 2
             elseif W3S_CFG_VICTORY == 3 and (MeleeGetAllyStructureCount(p) <= 0 or (w3s_halls[i] <= 0 and w3s_mobile[i] <= 0)) then
@@ -1333,12 +1394,12 @@ function W3S_CheckResult takes nothing returns nothing
     set i = 0
     loop
         exitwhen i >= bj_MAX_PLAYERS
-        if w3s_result[i] == 0 and GetPlayerSlotState(Player(i)) == PLAYER_SLOT_STATE_PLAYING and not IsPlayerObserver(Player(i)) then
+        if w3s_result[i] == 0 and GetPlayerSlotState(Player(i)) == PLAYER_SLOT_STATE_PLAYING and not IsPlayerObserver(Player(i)) and W3S_Active(i) then
             set alive = alive + 1
             set j = 0
             loop
                 exitwhen j >= bj_MAX_PLAYERS
-                if j != i and w3s_result[j] == 0 and GetPlayerSlotState(Player(j)) == PLAYER_SLOT_STATE_PLAYING and not IsPlayerObserver(Player(j)) then
+                if j != i and w3s_result[j] == 0 and GetPlayerSlotState(Player(j)) == PLAYER_SLOT_STATE_PLAYING and not IsPlayerObserver(Player(j)) and W3S_Active(j) then
                     if not PlayersAreCoAllied(Player(i), Player(j)) then
                         set allied = false
                     endif
@@ -1353,7 +1414,7 @@ function W3S_CheckResult takes nothing returns nothing
         set i = 0
         loop
             exitwhen i >= bj_MAX_PLAYERS
-            if w3s_result[i] == 0 and GetPlayerSlotState(Player(i)) == PLAYER_SLOT_STATE_PLAYING and not IsPlayerObserver(Player(i)) then
+            if w3s_result[i] == 0 and GetPlayerSlotState(Player(i)) == PLAYER_SLOT_STATE_PLAYING and not IsPlayerObserver(Player(i)) and W3S_Active(i) then
                 set w3s_result[i] = 1
             endif
             set i = i + 1
@@ -1364,7 +1425,7 @@ function W3S_CheckResult takes nothing returns nothing
         set i = 0
         loop
             exitwhen i >= bj_MAX_PLAYERS
-            if w3s_result[i] == 0 and GetPlayerSlotState(Player(i)) == PLAYER_SLOT_STATE_PLAYING and not IsPlayerObserver(Player(i)) then
+            if w3s_result[i] == 0 and GetPlayerSlotState(Player(i)) == PLAYER_SLOT_STATE_PLAYING and not IsPlayerObserver(Player(i)) and W3S_Active(i) then
                 set w3s_result[i] = 3
             endif
             set i = i + 1
@@ -1556,25 +1617,93 @@ function W3S_KeepEnum takes nothing returns nothing
     call GroupAddUnit(w3s_all, GetEnumUnit())
 endfunction
 
-function W3S_MeleeReset takes nothing returns nothing
-    local integer i = 0
-    call GroupClear(w3s_group)
-    call ForGroup(w3s_all, function W3S_MeleeResetEnum)
-    call GroupClear(w3s_all)
-    call ForGroup(w3s_group, function W3S_KeepEnum)
-    call GroupClear(w3s_group)
-    call EnumDestructablesInRect(bj_mapInitialPlayableArea, null, function W3S_RestoreTree)
-    call ExecuteFunc(W3S_CFG_MELEE_RESET)  // the map's creeps
+// the starting units of the current game's players (W3S_CFG_PAIRS; the map's main calls it in
+// place of MeleeStartingUnits, which makes every player's)
+function W3S_StartingUnits takes nothing returns nothing
+    local integer i = 2 * w3s_pair
+    local player p
     loop
-        exitwhen i >= bj_MAX_PLAYERS
-        call W3S_MeleeResetPlayer(i)
+        exitwhen i >= 2 * w3s_pair + 2
+        set p = Player(i)
+        if GetPlayerSlotState(p) == PLAYER_SLOT_STATE_PLAYING then
+            call MeleeStartingUnitsForPlayer(GetPlayerRace(p), p, GetStartLocationLoc(GetPlayerStartLocation(p)), true)
+        endif
         set i = i + 1
     endloop
-    call MeleeStartingUnits()  // town halls and workers (undead: the haunted mine on the new mine)
-    call SetFloatGameState(GAME_STATE_TIME_OF_DAY, bj_MELEE_STARTING_TOD)
-    // the built-in AI anew: kept running, its engine state still held the old game's towns and
-    // attack groups (an army that never left its base, an AI building 39 buildings at 14 supply)
-    call ExecuteFunc("W3S_StartingAI")
+    set p = null
+endfunction
+
+function W3S_SweepEnum takes nothing returns nothing
+    call RemoveUnit(GetEnumUnit())
+endfunction
+
+function W3S_SweepItem takes nothing returns nothing
+    call RemoveItem(GetEnumItem())
+endfunction
+
+function W3S_RegrowTree takes nothing returns nothing  // (also the ones half cut: a tree's life is its lumber)
+    local destructable d = GetEnumDestructable()
+    if GetDestructableLife(d) <= 0.0 then
+        call DestructableRestoreLife(d, GetDestructableMaxLife(d), false)
+    else
+        call SetDestructableLife(d, GetDestructableMaxLife(d))
+    endif
+    set d = null
+endfunction
+
+// The next game of this load, for the next two players (W3S_CFG_PAIRS), in three ticks of the game
+// as a load has them: (1) nothing of the last game stays (its units, corpses and items; the trees
+// regrow, the blight goes); (2) a tick later, when the engine has put back the gold mines from under
+// the haunted and entangled ones it removed, those go too, and the map makes its mines and creeps
+// and the new players' starting units, and the built-in AI starts; (3) another tick later, when the
+// starting units have settled (the undead's mine haunted, the night elves' entangled), the first
+// step. No game time passes between them.
+function W3S_PairClear takes nothing returns nothing
+    local integer i = 2 * w3s_pair
+    call PauseTimer(w3s_timer)
+    loop
+        exitwhen i >= 2 * w3s_pair + 2
+        if not w3s_agent[i] then
+            call PauseCompAI(Player(i), true)  // (its script goes on without units otherwise)
+        endif
+        set i = i + 1
+    endloop
+    call ForGroup(w3s_all, function W3S_SweepEnum)
+    call GroupClear(w3s_all)
+    call GroupClear(w3s_group)
+    call GroupEnumUnitsInRect(w3s_group, GetWorldBounds(), null)  // (what was no longer tracked: corpses)
+    call ForGroup(w3s_group, function W3S_SweepEnum)
+    call GroupClear(w3s_group)
+    call EnumItemsInRect(bj_mapInitialPlayableArea, null, function W3S_SweepItem)
+    call EnumDestructablesInRect(bj_mapInitialPlayableArea, null, function W3S_RegrowTree)
+    call SetBlightRect(Player(2 * w3s_pair), bj_mapInitialPlayableArea, false)  // (the undead's blight outlives its buildings)
+    call SetBlightRect(Player(2 * w3s_pair + 1), bj_mapInitialPlayableArea, false)
+endfunction
+
+function W3S_MeleeReset takes nothing returns nothing
+    local integer i = 0
+    if W3S_CFG_PAIRS > 1 then
+        call W3S_PairClear()
+        return  // (W3S_PairMake and the first step follow, a tick apart: see W3S_PairClear)
+    else
+        call GroupClear(w3s_group)
+        call ForGroup(w3s_all, function W3S_MeleeResetEnum)
+        call GroupClear(w3s_all)
+        call ForGroup(w3s_group, function W3S_KeepEnum)
+        call GroupClear(w3s_group)
+        call EnumDestructablesInRect(bj_mapInitialPlayableArea, null, function W3S_RestoreTree)
+        call ExecuteFunc(W3S_CFG_MELEE_RESET)  // the map's creeps
+        loop
+            exitwhen i >= bj_MAX_PLAYERS
+            call W3S_MeleeResetPlayer(i)
+            set i = i + 1
+        endloop
+        call MeleeStartingUnits()  // town halls and workers (undead: the haunted mine on the new mine)
+        call SetFloatGameState(GAME_STATE_TIME_OF_DAY, bj_MELEE_STARTING_TOD)
+        // the built-in AI anew: kept running, its engine state still held the old game's towns and
+        // attack groups (an army that never left its base, an AI building 39 buildings at 14 supply)
+        call ExecuteFunc("W3S_StartingAI")
+    endif
     set w3s_nev = 0
     set w3s_niss = 0
     set w3s_full = true
@@ -1681,8 +1810,12 @@ function W3S_Step takes nothing returns nothing
         set w3s_restart = false
         if W3S_CFG_SCENARIO then
             call W3S_ScenarioReset()
-        elseif W3S_CFG_MELEE_RESET != "" then
+        elseif W3S_CFG_MELEE_RESET != "" and (W3S_CFG_PAIRS <= 1 or w3s_pair + 1 < W3S_CFG_PAIRS) then
             call W3S_MeleeReset()
+            // the new game's first observation right away, as after a load: a step later the workers
+            // were on their way, the built-in AI had spent its first gold, and the agent had lost its
+            // first orders (a policy that opens with an altar then never built one)
+            call ExecuteFunc("W3S_StepNow")
         else
             call PauseTimer(w3s_timer)
             call RestartGame(false)
@@ -1690,11 +1823,71 @@ function W3S_Step takes nothing returns nothing
     endif
 endfunction
 
+// W3S_CFG_PAIRS: a game's units as its first step finds them, the same after a load and for a later
+// pair of players: what an enumeration gives (not the hidden ones: the gold mine under an entangled
+// one; not one being removed: the mine the undead's haunted one replaced), with nothing recorded of
+// how they were made (the entangled mine's "construction")
+function W3S_Retrack takes nothing returns nothing
+    if W3S_CFG_PAIRS <= 1 then
+        return
+    endif
+    call GroupClear(w3s_all)
+    call FlushParentHashtable(w3s_ht)
+    set w3s_ht = InitHashtable()
+    call GroupClear(w3s_group)
+    call GroupEnumUnitsInRect(w3s_group, GetWorldBounds(), null)
+    call ForGroup(w3s_group, function W3S_AddUnit)
+    call GroupClear(w3s_group)
+    set w3s_nev = 0
+    set w3s_niss = 0
+endfunction
+
 function W3S_FirstStep takes nothing returns nothing
     call W3S_RememberStart()
     call W3S_InitUpgrades()
+    call W3S_Retrack()
     call W3S_Step()
     call TimerStart(w3s_timer, W3S_CFG_STEP_S, true, function W3S_Step)
+endfunction
+
+function W3S_StepAgain takes nothing returns nothing
+    call W3S_Retrack()
+    call W3S_Step()
+    call TimerStart(w3s_timer, W3S_CFG_STEP_S, true, function W3S_Step)
+endfunction
+
+// (2) of W3S_PairClear
+function W3S_PairMake takes nothing returns nothing
+    call GroupClear(w3s_group)
+    call GroupEnumUnitsInRect(w3s_group, GetWorldBounds(), null)
+    call ForGroup(w3s_group, function W3S_SweepEnum)
+    call GroupClear(w3s_group)
+    set w3s_pair = w3s_pair + 1
+    call ExecuteFunc("W3S_DuelMines")
+    call ExecuteFunc(W3S_CFG_MELEE_RESET)  // the map's creeps
+    call W3S_StartingUnits()
+    call SetFloatGameState(GAME_STATE_TIME_OF_DAY, bj_MELEE_STARTING_TOD)
+    call W3S_Seers()
+    call ExecuteFunc("W3S_StartingAI")
+    set w3s_nev = 0
+    set w3s_niss = 0
+    set w3s_full = true
+    set w3s_nremoved = 0
+    set w3s_seq = 0
+    set w3s_first = true
+    set w3s_over = false
+    set w3s_ncres = 0
+    call TimerStart(w3s_clock, 1000000.0, false, null)
+    call TimerStart(w3s_timer, 0.0, false, function W3S_StepAgain)
+endfunction
+
+function W3S_StepNow takes nothing returns nothing
+    call PauseTimer(w3s_timer)
+    if W3S_CFG_PAIRS > 1 then
+        call TimerStart(w3s_timer, 0.0, false, function W3S_PairMake)
+    else
+        call TimerStart(w3s_timer, 0.0, false, function W3S_StepAgain)
+    endif
 endfunction
 
 //===========================================================================
@@ -1861,16 +2054,6 @@ endfunction
 //===========================================================================
 // setup
 
-function W3S_Pow2 takes integer i returns integer
-    local integer v = 1
-    loop
-        exitwhen i <= 0
-        set v = v * 2
-        set i = i - 1
-    endloop
-    return v
-endfunction
-
 function W3S_Configure takes nothing returns nothing
     local integer i = 0
     if w3s_configured then
@@ -1881,14 +2064,9 @@ function W3S_Configure takes nothing returns nothing
         exitwhen i >= bj_MAX_PLAYERS
         set w3s_agent[i] = ModuloInteger(W3S_CFG_AGENT_MASK / W3S_Pow2(i), 2) == 1
         set w3s_scripted[i] = ModuloInteger(W3S_CFG_SCRIPTED_MASK / W3S_Pow2(i), 2) == 1
-        set w3s_seer[i] = w3s_agent[i] or (W3S_CFG_RECORD_ORDERS and GetPlayerSlotState(Player(i)) == PLAYER_SLOT_STATE_PLAYING)
-        if w3s_seer[i] then
-            set w3s_seer_p[w3s_nseer] = Player(i)
-            set w3s_seer_bit[w3s_nseer] = W3S_Pow2(i)
-            set w3s_nseer = w3s_nseer + 1
-        endif
         set i = i + 1
     endloop
+    call W3S_Seers()
 endfunction
 
 // Melee AI for computer players that are not controlled by an agent. Agent and scripted
@@ -1909,7 +2087,7 @@ function W3S_StartingAI takes nothing returns nothing
     set index = 0
     loop
         set p = Player(index)
-        if GetPlayerSlotState(p) == PLAYER_SLOT_STATE_PLAYING and GetPlayerController(p) == MAP_CONTROL_COMPUTER and not w3s_agent[index] and not w3s_scripted[index] then
+        if GetPlayerSlotState(p) == PLAYER_SLOT_STATE_PLAYING and GetPlayerController(p) == MAP_CONTROL_COMPUTER and not w3s_agent[index] and not w3s_scripted[index] and W3S_Active(index) then
             set r = GetPlayerRace(p)
             if r == RACE_HUMAN then
                 call PickMeleeAI(p, "human.ai", null, null)

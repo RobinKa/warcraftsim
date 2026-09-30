@@ -430,8 +430,43 @@ def _script_rules(rules: Rules) -> str:
         "endfunction", "", ""])
 
 
+def _paired(files: dict[str, bytes], pairs: int, starts: list[tuple[float, float]]) -> None:
+    """The map for 2 * `pairs` players: player 2k at the first start location and player 2k + 1 at the
+    second, for the harness's games with a fresh pair of players each (W3S_CFG_PAIRS)."""
+    from .w3i import parse_w3i
+    info = parse_w3i(files["war3map.w3i"])
+    a, b = info.players[:2]
+    info.players = [replace(a if i % 2 == 0 else b, id=i) for i in range(2 * pairs)]
+    files["war3map.w3i"] = info.pack()
+    n = 2 * pairs
+    script = files["war3map.j"].decode("latin-1").replace("\r\n", "\n")
+
+    def function(name: str, body: list[str]) -> None:
+        nonlocal script
+        script, count = re.subn(rf"(?ms)^function {name} takes nothing returns nothing\n.*?^endfunction\n",
+                                lambda _m: f"function {name} takes nothing returns nothing\n" + "".join(f"    {line}\n" for line in body)
+                                + "endfunction\n", script, count=1)
+        if count != 1:
+            raise ValueError(f"the map script has no function {name}")
+
+    races = ("RACE_PREF_HUMAN", "RACE_PREF_ORC")
+    function("InitCustomPlayerSlots", [line for i in range(n) for line in (
+        f"call SetPlayerStartLocation( Player({i}), {i} )", f"call SetPlayerColor( Player({i}), ConvertPlayerColor({i}) )",
+        f"call SetPlayerRacePreference( Player({i}), {races[i % 2]} )", f"call SetPlayerRaceSelectable( Player({i}), true )",
+        f"call SetPlayerController( Player({i}), MAP_CONTROL_USER )")])
+    function("InitCustomTeams", [f"call SetPlayerTeam( Player({i}), 0 )" for i in range(n)])
+    function("InitAllyPriorities", [f"call SetStartLocPrioCount( {i}, 0 )" for i in range(n)])
+    config = ['call SetMapName( "TRIGSTR_004" )', 'call SetMapDescription( "TRIGSTR_006" )', f"call SetPlayers( {n} )",
+              f"call SetTeams( {n} )", "call SetGamePlacement( MAP_PLACEMENT_USE_MAP_SETTINGS )"]
+    config += [f"call DefineStartLocation( {i}, {starts[i % 2][0]:.1f}, {starts[i % 2][1]:.1f} )" for i in range(n)]
+    config += ["call InitCustomPlayerSlots(  )"] + [f"call SetPlayerSlotAvailable( Player({i}), MAP_CONTROL_USER )" for i in range(n)]
+    config += ["call InitGenericPlayerSlots(  )", "call InitAllyPriorities(  )"]
+    function("config", config)
+    files["war3map.j"] = script.encode("latin-1")
+
+
 def make_duel_map(source: str | Path, dest: str | Path, size: int = DEFAULT_SIZE, rules: Rules = Rules(),
-                  base_x: float = BASE_X) -> Path:
+                  base_x: float = BASE_X, pairs: int = 1) -> Path:
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     layout = duel_layout(size, base_x=base_x)
@@ -454,7 +489,10 @@ def make_duel_map(source: str | Path, dest: str | Path, size: int = DEFAULT_SIZE
                     raise ValueError("the map script has no RunInitializationTriggers call")
                 main = script.index("function main takes nothing returns nothing")
                 script = script[:main] + _script_rules(rules) + script[main:]
-            files["war3map.j"] = script.replace("\r\n", "\n").replace("\n", "\r\n").encode("latin-1")
+            files["war3map.j"] = script.replace("\r\n", "\n").encode("latin-1")
+            if pairs > 1:
+                _paired(files, pairs, layout["starts"])
+            files["war3map.j"] = files["war3map.j"].decode("latin-1").replace("\n", "\r\n").encode("latin-1")
             files.update(rules_files(rules, TABLES_IN_MAP))
             for name, data in files.items():
                 m.write(name, data)
@@ -488,14 +526,16 @@ def parse_duel_name(name: str) -> tuple[int, Rules, float] | None:
     return size, rules, RUSH_BASE_X if rush else BASE_X
 
 
-def duel_map_path(name: str) -> Path:
-    """The cached duel map for a "duel..." name (built on first use)."""
+def duel_map_path(name: str, pairs: int = 1) -> Path:
+    """The cached duel map for a "duel..." name (built on first use); `pairs` > 1: for that many
+    pairs of players (make_duel_map)."""
     from .mapbuild import stock_map_path
 
     size, rules, base_x = parse_duel_name(name)
     src = stock_map_path("(2)EchoIsles")
-    out = paths.CACHE_DIR / "maps" / f"duel{size}_b{base_x:g}{rules.tag}_{'v13' if TABLES_IN_MAP else 'v12'}.w3x"
+    version = ("v13" if TABLES_IN_MAP else "v12") + (f"_p{pairs}" if pairs > 1 else "")
+    out = paths.CACHE_DIR / "maps" / f"duel{size}_b{base_x:g}{rules.tag}_{version}.w3x"
     with _lock:
         if not out.exists():
-            make_duel_map(src, out, size, rules, base_x)
+            make_duel_map(src, out, size, rules, base_x, pairs)
     return out

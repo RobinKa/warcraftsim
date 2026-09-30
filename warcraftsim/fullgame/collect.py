@@ -289,6 +289,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--games-per-process", type=int, default=8,
                     help="games of one matchup in one running game (restarts reload the map in it)")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--pairs", type=int, default=5,
+                    help="games per load of the map, each with two players of its own (GameSetup.pairs; 1: every "
+                         "restart reloads the map)")
     ap.add_argument("--policy", type=Path, help="takeover games (the torch Python): this policy (a fullgame/bc.py "
                                                 "policy.pt) plays one side until the built-in AI takes it over")
     ap.add_argument("--takeover", default="10-180", help="with --policy: the step the AI takes over at, drawn from this range")
@@ -373,7 +376,8 @@ def main(argv: list[str] | None = None) -> int:
         setup = GameSetup(map=args.map, slots=slots,
                           step_seconds=args.step_seconds, max_game_seconds=args.max_minutes * 60,
                           record_ai_orders=True, victory=args.victory, window=screen, wait_floor_ms=args.wait_floor_ms,
-                          d3d_thread=False, render_threads=0)  # (nobody watches: drawn in the game's thread)
+                          d3d_thread=False, render_threads=0,  # (nobody watches: drawn in the game's thread)
+                          pairs=args.pairs)
         name = names.get()
         t0 = [time.time()]
 

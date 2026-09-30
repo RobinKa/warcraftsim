@@ -65,6 +65,7 @@ class HarnessConfig:
     order_names: tuple[str, ...] | None = None  # order strings resolved in the first observation
     record_orders: bool = False  # observations carry the built-in AI players' orders (Observation.issued)
     melee_reset: str = ""  # melee: the map's function that makes its units; restarts then stay in the game
+    pairs: int = 1  # games per load of the map, each with two players of its own (see the harness's W3S_CFG_PAIRS)
 
     hero_abilities: dict[str, tuple[str, ...]] | None = None  # hero type -> ability per slot
 
@@ -155,6 +156,7 @@ def _split_harness(src: str, cfg: HarnessConfig) -> tuple[str, str]:
         "W3S_CFG_CLEAR_R": f"constant real W3S_CFG_CLEAR_R = {cr:.1f}",
         "W3S_CFG_RECORD_ORDERS": f"constant boolean W3S_CFG_RECORD_ORDERS = {jbool(cfg.record_orders)}",
         "W3S_CFG_MELEE_RESET": f'constant string W3S_CFG_MELEE_RESET = "{cfg.melee_reset}"',
+        "W3S_CFG_PAIRS": f"constant integer W3S_CFG_PAIRS = {cfg.pairs}",
     }
     for name, decl in replacements.items():
         glob, n = re.subn(rf"^\s*constant \w+ {name} = .*$", "    " + decl, glob, flags=re.M)
@@ -190,6 +192,8 @@ def inject_harness(script: str, cfg: HarnessConfig, harness: str | None = None) 
             raise MapBuildError(f"map script: {what} not found")
         return out
 
+    if cfg.pairs > 1:  # only the first game's players start with units (before the harness goes in: it calls it too)
+        j = sub_once(r"call MeleeStartingUnits\(\s*\)", "call W3S_StartingUnits()", j, "MeleeStartingUnits call")
     # the harness only depends on common.j/Blizzard.j, so it goes before every map function
     j = sub_once(r"^endglobals\s*$", lambda_repl(glob + "endglobals\n" + body), j, "globals block")
     if not re.search(r"^function main takes nothing returns nothing\s*$", j, re.M):
