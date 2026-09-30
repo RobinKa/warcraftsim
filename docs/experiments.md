@@ -733,7 +733,7 @@ Every game now reloads the map (`--scripted-reset 0`, the default), in `fgself-9
 
 ### Where a self-play step's time goes (speed, 2026-09-30)
 
-`fgself-9` ran at 560 agent steps/s with 32 games. A game thread spent 55% of its time waiting for the policy and 36% for the game. After this round: 12% and 72%, the machine's CPU is the limit, and it runs at 644 steps/s with every game reloading the map (607 before the reset fix, when half the games were the cheap broken ones).
+`fgself-9` ran at 560 agent steps/s with 32 games. A game thread spent 55% of its time waiting for the policy and 36% for the game. After this round: 15% and 50% (and 24% reloading the map), the machine's CPU is the limit, and it runs at about 800 steps/s with every game reloading the map (607 before the reset fix, when half the games were the cheap broken ones).
 
 | change | agent steps/s | what it showed |
 |---|---|---|
@@ -744,6 +744,8 @@ Every game now reloads the map (`--scripted-reset 0`, the default), in `fgself-9
 | CUDA graphs captured by hand | 607 | 0.4 s a shape instead of torch.compile's 10-20 s (the games waited); a new league member no longer stalls everything for 25-50 s |
 | every game reloads the map (the fix above) | 540 | the games between agents are real games now (47 ms a step, not 32) |
 | the loading screen drawn in the game's thread, a video every 10 minutes | 644 | a reload's CPU 2.1 → 1.4 s |
+| the pass over the units made by the shim (C) instead of the harness (JASS) | 719 | a step 41 → 36 ms; the learner is the limit again (an update 10.5 s, the actors waiting 1 s) |
+| minibatches of similar entity counts, no GPU waits for the statistics | ≈800 | an update 8.9 s; the learner is bound by its own Python (the GPU is 36% busy) |
 
 * **The cloning batches.** The loader takes its workers' batches in turn, and a worker reading 16 games before it emptied them gave nothing for seconds: the learner waited 26% of an update. `bc.Steps` is now a shuffle buffer kept full (9%).
 * **Only 58% of the games' time was play.** A reload took 13 s with 32 games running (5 s alone), as long as the game before it.
@@ -752,7 +754,10 @@ Every game now reloads the map (`--scripted-reset 0`, the default), in `fgself-9
 * **The machine is full.** A game alone steps 68 times a second at 14.6 ms of CPU a step. With 32 games running, the same step costs 35-40 ms (two threads a core, the all-core clock, contention), and 16, 32 and 48 games step 418, 638 and 618 times a second in all. A reload per game is a quarter of the games' CPU.
 * **Dead ends.** The inference call as a thread of the learner (one GPU context): capturing a CUDA graph fails while another thread draws random numbers. Emptying melee's preload lists: the shim's `Preload` hook already drops them. A slower clock while reloading: the loading screen waits about two game seconds drawing frames, so it costs more.
 
-What is left, largest first: the map reload per game (fresh player slots per game would avoid it), the video renderer (3.4 cores while it renders), the observations serialized in JASS (about a fifth of a step), and wineserver (a tenth: the engine's threads signal each other ~500 times a step).
+* **The units, in C.** Every step the harness went over every unit three times in JASS (collect them, count them for the result, write the records of those that changed): ~35 native calls and a few hundred JASS instructions per unit, 9-13 ms of a step with 150 units (4 ms on an idle machine). The natives are plain functions in the executable, found by name from the code that registers them, so the shim now makes the same calls itself: 4 ms (1.5). A game played with the harness's pass and its replay with the shim's agree in every field of every unit on every step (six games, both directions).
+* **The learner's minibatches.** A minibatch pads to its widest step: 91 entities at random for a mean of 41, and attention costs the square. Cut from groups of 8 minibatches sorted by entity count they pad to 49. The update's KL, clip fraction and value loss stayed the same (0.0033, 0.024, 0.018); the gradient norm rose from 0.15 to 0.19.
+
+What is left, largest first: the map reload per game (a quarter of a game thread's time; fresh player slots per game would avoid it), the learner's Python (a compiled update, or fewer passes: the clone's logits once per update), the video renderer (3.4 cores while it renders), and wineserver (a tenth of a step: the engine's threads signal each other ~500 times a step).
 
 ### Memory and a value head in BC
 

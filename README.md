@@ -343,7 +343,8 @@ After micro, the whole melee game (economy, building, tech, armies, heroes), sta
   * Speed:
     * One inference server process makes every actor's network calls (a pipe per game): whatever arrived while the last round ran goes into the next, each network's call a CUDA graph captured from the eager network, all of a round's calls waited for once. Past snapshots run through one network whose weights are swapped.
     * The games run niced, so the Python that answers them gets the CPU first; nobody watches them, so they draw in the game's own thread (`GameSetup.render_threads`, `d3d_thread`).
-    * Observations are parsed in C (`native/w3obs.c`, `GameSetup.native_obs`: no Python object per unit, no GIL).
+    * The harness's pass over the units runs in the shim (`shim/units.c`: the game's natives called from C, not from JASS), and observations are parsed in C (`native/w3obs.c`, `GameSetup.native_obs`: no Python object per unit, no GIL).
+    * The learner's minibatches hold steps of similar entity counts (`--pad-groups`), so they pad little.
     * Every game reloads the map (1 s alone). A reset by script (`--scripted-reset`) is faster but not a new game: the engine keeps counting removed heroes.
     * `--resume` continues a run.
 * **On the dashboard**:
@@ -369,7 +370,7 @@ python3 -m warcraftsim.fullgame.selfplay --name fgself-1 --init runs/bc/fullgame
 | **24 skirmish games in parallel (training setup: 320x240 screens)** | ≈4600 env steps/s (≈1160x real time) |
 | **PufferLib training, 24 games (micro_mirror)** | ≈3000 agent steps/s (was ≈620 before this round of work) |
 | **Demonstrations: built-in AI vs built-in AI on `duelrush`, 24 games in parallel** | ≈2800 games/h with 8 games per process (≈1300/h with a launch per game) |
-| **Whole-game self-play (`duelrush`, 32 games, 4 actor processes, a cloning loss next to PPO)** | ≈640 agent steps/s, every game a new map load (the CPU is the limit: a game alone steps 68 times a second, 32 together 640; see the self-play notes and `docs/experiments.md`) |
+| **Whole-game self-play (`duelrush`, 32 games, 4 actor processes, a cloning loss next to PPO)** | ≈800 agent steps/s, every game a new map load (the CPU is the limit; see the self-play notes and `docs/experiments.md`) |
 | **Game start** | ≈4 s on the duel maps (≈8 s on Echo Isles); 16 games ≈2 min (4 load at a time) |
 | **Melee reset** | the map reloads in the running game: ≈1 s on the duel maps (≈5 s with 32 games running), vs ≈4 s for a launch; with `engine_restart=False`, ≈1 s from a warm spare (a second process that loads in the background) |
 
@@ -382,6 +383,9 @@ and thread kind; `W3SIM_PROFILE=1..3` adds the shim's per-second profile to each
 * **Observations** used to be written by `PreloadGenEnd` to a file, with file-system calls for every
   token (each a wineserver round trip under Wine, plus a registry lookup of the Documents folder). The
   shim now hooks `Preload`/`PreloadGenEnd` and sends the tokens with the step sync.
+* **The units' records** were written by the harness in JASS: ~35 native calls and a few hundred
+  instructions per unit, every step. The shim now calls the natives itself (`shim/units.c`; they are
+  found by name from the code that registers them): 4.0 → 1.5 ms a step with 140 units.
 * **Polling threads**: the virtual clock divides wait timeouts by its speed, so game threads that poll
   with 100–1000 ms timeouts spun at 5,000–11,000 wakeups per second, each a wineserver call.
   `GameSetup.wait_floor_ms` (1 ms) stops that.
