@@ -408,3 +408,136 @@ def test_real_game_launches_in_the_spec(tmp_path):
     curr = [x for x in launch if x["kind"] == "ai" and not x.get("real")]
     assert len(real) == 2 and all("by_race" not in x for x in real)
     assert abs(sum(x["p"] for x in real) - 0.08) < 1e-9 and abs(sum(x["p"] for x in curr) - 0.72) < 1e-9
+
+
+def test_steps_shuffle_buffer_pays_out_every_step_once(monkeypatch):
+    """The cloning batches come from a buffer kept full (a side read pays out what it brings): every
+    step of every side once, the last partial batch aside, and batches mix sides."""
+    from warcraftsim.fullgame import bc
+    sides = {}
+
+    def side(enc, game, player, values):
+        n = 30 + 7 * ((game + player) % 3)
+        out = {k: np.zeros((n, 2), np.float32) for k in bc.KEYS}
+        out["n_own"] = (1000 * (2 * game + player) + np.arange(n)).astype(np.int64)  # (which step of which side)
+        sides[2 * game + player] = n
+        return out
+
+    monkeypatch.setattr(bc.fx, "load_game", lambda p: p)
+    monkeypatch.setattr(bc.fx, "Encoder", lambda vocab, costs: None)
+    monkeypatch.setattr(bc, "side_data", side)
+    batches = list(bc.Steps(list(range(9)), {}, 8, {}, buffer_steps=64))
+    seen = np.concatenate([b["n_own"].numpy() for b in batches])
+    total = sum(sides.values())
+    assert all(len(b["n_own"]) == 8 for b in batches) and len(seen) == total - total % 8
+    assert len(set(seen.tolist())) == len(seen)  # no step twice
+    assert np.mean([len(set((b["n_own"].numpy() // 1000).tolist())) for b in batches]) > 1.5
+
+
+def test_past_snapshots_share_one_network_object():
+    """The inference server's past snapshots: one network whose weights are swapped (no compiling
+    per league member), giving each snapshot's own outputs."""
+    from warcraftsim.fullgame.model import FullGameNet
+    from warcraftsim.fullgame.selfplay import PastNet
+    torch.manual_seed(0)
+    a, b = (FullGameNet(n_types=20, n_cur=10, n_orders=30, G=30, d=64, layers=1).eval() for _ in range(2))
+    b.order_kind.fill_(2)
+    x = [torch.randn(3, 12, fx.F), torch.randint(0, 20, (3, 12)), torch.randint(0, 10, (3, 12)),
+         torch.ones(3, 12, dtype=torch.bool), torch.randn(3, 30)]
+    swap = PastNet(torch.device("cpu"))
+    with torch.no_grad():
+        want = {"a": a.encode(*x)[0], "b": b.encode(*x)[0]}
+        assert float((want["a"] - want["b"]).abs().max()) > 1e-3
+        hosts = []
+        for key in ("a", "b", "b", "a"):
+            host = swap.get(key, {"a": a, "b": b}[key])
+            hosts.append(host)
+            assert float((host.encode(*x)[0] - want[key]).abs().max()) < 1e-6
+            assert int(host.order_kind[0]) == (2 if key == "b" else 0)
+    assert all(h is hosts[0] for h in hosts) and hosts[0] is not a
+
+
+def test_inference_server_answers_each_game_over_its_pipe(tmp_path):
+    """The inference server (its own process) and an actor's side of it: a game's request for the
+    current network and a past snapshot comes back on the game's own pipe, one answer per side."""
+    import os
+    import torch.multiprocessing as mp
+    from warcraftsim.fullgame.model import FullGameNet
+    from warcraftsim.fullgame.selfplay import RemoteInference, inference_main, publish
+    net = FullGameNet(n_types=20, n_cur=10, n_orders=30, G=30, d=64, layers=1).eval()
+    net.allowed[:] = True
+    publish(net, 3, tmp_path)
+    past = tmp_path / "past.pt"
+    torch.save({"model": net.state_dict(), "config": net.config}, past)
+    ctx = mp.get_context("spawn")
+    pipes = [ctx.Pipe() for _ in range(2)]
+    stop = ctx.Event()
+    cfg = {"run_dir": str(tmp_path), "device": "cpu", "learner_pid": os.getpid(), "infer_batch": 8, "compile": False,
+           "max_past": 2}
+    server = ctx.Process(target=inference_main, args=(cfg, [b for _, b in pipes], stop), daemon=True)
+    server.start()
+    try:
+        infer = RemoteInference([a for a, _ in pipes])
+        rng = np.random.default_rng(0)
+
+        def st(n, own):
+            return {"n": n, "n_own": own, "ent": rng.normal(size=(n, fx.F)).astype(np.float32),
+                    "type": rng.integers(0, 20, n), "cur": rng.integers(0, 10, n),
+                    "glob": rng.normal(size=30).astype(np.float32), "avail": None, "h": None}
+        for _ in range(3):
+            out = infer.request([("current", st(9, 4)), (str(past), st(5, 2))])
+            assert [len(r["order"]) for r in out] == [4, 2] and [r["version"] for r in out] == [3, -1]
+            assert all(len(r["logp"]) == len(r["order"]) and np.isfinite(r["value"]) for r in out)
+        assert infer.nets.version == 3
+    finally:
+        stop.set()
+        server.join(timeout=20)
+        if server.is_alive():
+            server.terminate()
+
+
+@pytest.mark.parametrize("memory", [False, True])
+def test_packed_network_call_matches_evaluate(memory):
+    """The actors' network call packs a batch into one tensor (and its outputs into one): the
+    orders it samples have the log-probabilities and values evaluate() gives for the same steps."""
+    from warcraftsim.fullgame.model import evaluate
+    from warcraftsim.fullgame.selfplay import Inference
+    net = _net(memory)
+    if memory:
+        torch.nn.init.normal_(net.mem_out.weight, std=0.3)
+    rng = np.random.default_rng(1)
+    sts = []
+    for n, own in ((9, 4), (5, 5), (12, 1)):
+        avail = rng.random(30) < 0.5
+        avail[0] = True
+        sts.append({"n": n, "n_own": own, "ent": rng.normal(size=(n, fx.F)).astype(np.float32),
+                    "type": rng.integers(0, 20, n), "cur": rng.integers(0, 10, n),
+                    "glob": rng.normal(size=30).astype(np.float32), "avail": avail,
+                    "h": rng.normal(size=64).astype(np.float32) if memory and n != 5 else None})
+    infer = Inference(None, torch.device("cpu"), 8, compile_=False, thread=False)
+    calls = [infer._launch(net, sts[:2]), infer._launch(net, sts[2:])]  # (two calls, then one wait)
+    infer.wait()
+    res = infer._finish(calls[0]) + infer._finish(calls[1])
+    assert [len(r["order"]) for r in res] == [4, 5, 1]
+    E = 12
+    ent, typ, cur = torch.zeros(3, E, fx.F), torch.zeros(3, E, dtype=torch.long), torch.zeros(3, E, dtype=torch.long)
+    mask, order = torch.zeros(3, E, dtype=torch.bool), torch.zeros(4, 3, E, dtype=torch.long)
+    for i, (st, r) in enumerate(zip(sts, res)):
+        n, o = st["n"], st["n_own"]
+        ent[i, :n], typ[i, :n], cur[i, :n], mask[i, :n] = (torch.from_numpy(st["ent"]), torch.from_numpy(st["type"]),
+                                                          torch.from_numpy(st["cur"]), True)
+        for k, f in enumerate(("order", "tgt", "bx", "by")):
+            order[k, i, :o] = torch.from_numpy(r[f])
+        assert bool(st["avail"][r["order"]].all())  # only orders it could pay for
+    glob = torch.from_numpy(np.stack([st["glob"] for st in sts]))
+    avail = torch.from_numpy(np.stack([st["avail"] for st in sts]))
+    n_own = torch.tensor([st["n_own"] for st in sts])
+    h0 = torch.from_numpy(np.stack([st["h"] if st["h"] is not None else np.zeros(64, np.float32) for st in sts]))
+    with torch.no_grad():
+        ev = evaluate(net, ent, typ, cur, mask, glob, n_own, *order[:, :, :fx.MAX_OWN], avail,
+                      seq=(3, 1, h0, torch.zeros(3, 1, dtype=torch.bool)) if memory else None)
+    for i, r in enumerate(res):
+        o = sts[i]["n_own"]
+        assert np.abs(ev["logp"][i, :o].numpy() - r["logp"]).max() < 1e-4
+        assert abs(float(ev["value"][i]) - r["value"]) < 1e-4
+        assert ("h" in r) == memory

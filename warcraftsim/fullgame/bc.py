@@ -74,33 +74,51 @@ def side_data(enc: fx.Encoder, game: dict, player: int, values: dict) -> dict:
 class Steps(torch.utils.data.IterableDataset):
     """Shuffled batches of steps from the games (both sides), encoded by the loader workers."""
 
-    def __init__(self, paths: list[Path], vocab: dict, batch: int, values: dict, costs=None, buffer_games: int = 16,
+    def __init__(self, paths: list[Path], vocab: dict, batch: int, values: dict, costs=None, buffer_steps: int = 8192,
                  seed: int = 0):
-        self.paths, self.vocab, self.batch, self.buffer_games, self.seed = paths, vocab, batch, buffer_games, seed
+        self.paths, self.vocab, self.batch, self.buffer_steps, self.seed = paths, vocab, batch, buffer_steps, seed
         self.values, self.costs = values, costs
         self.epoch = 0
 
     def __iter__(self):
+        """A shuffle buffer of `buffer_steps` steps (~18 games), kept full: a side read pays out as many
+        steps as it brings, each step once. (Filling a buffer of 16 games and then emptying it made no
+        batch for seconds at a time, and the loader takes its workers' batches in turn: self-play's
+        learner waited for them 26% of its update.)"""
         info = torch.utils.data.get_worker_info()
         wid, nw = (info.id, info.num_workers) if info else (0, 1)
         rng = random.Random(self.seed * 1000 + self.epoch * 100 + wid)
         paths = self.paths[wid::nw]
         rng.shuffle(paths)
         enc = fx.Encoder(self.vocab, self.costs)
-        buf: dict[str, list] = {k: [] for k in KEYS}
-        for i, p in enumerate(paths):
+        pick = np.random.default_rng(rng.randrange(1 << 30))
+        cap = max(self.buffer_steps, self.batch)
+        buf: dict[str, np.ndarray] = {}
+        used = np.zeros(cap, bool)
+
+        def batch():
+            idx = pick.choice(np.flatnonzero(used), self.batch, replace=False)
+            used[idx] = False
+            return {k: torch.from_numpy(buf[k][idx]) for k in KEYS}
+
+        for p in paths:
             game = fx.load_game(p)
             for player in (0, 1):
                 out = side_data(enc, game, player, self.values)
-                for k in KEYS:
-                    buf[k].append(out[k])
-            if len(buf["n_own"]) >= 2 * self.buffer_games or i == len(paths) - 1:
-                cat = {k: np.concatenate(v) for k, v in buf.items()}
-                order = np.random.default_rng(rng.randrange(1 << 30)).permutation(len(cat["n_own"]))
-                for s in range(0, len(order) - self.batch + 1, self.batch):
-                    idx = order[s:s + self.batch]
-                    yield {k: torch.from_numpy(cat[k][idx]) for k in KEYS}
-                buf = {k: [] for k in KEYS}
+                if not buf:
+                    buf = {k: np.zeros((cap,) + out[k].shape[1:], out[k].dtype) for k in KEYS}
+                n, at = len(out["n_own"]), 0
+                while at < n:
+                    free = np.flatnonzero(~used)[:n - at]
+                    if not len(free):
+                        yield batch()
+                        continue
+                    for k in KEYS:
+                        buf[k][free] = out[k][at:at + len(free)]
+                    used[free] = True
+                    at += len(free)
+        while used.sum() >= self.batch:
+            yield batch()
 
 
 class Sequences(torch.utils.data.IterableDataset):

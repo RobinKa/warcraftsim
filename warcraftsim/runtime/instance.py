@@ -143,6 +143,15 @@ class GameSetup:
     # wineserver round trip. 24 skirmish games: 0 ms ~2600, 1 ms 4180, 3 ms 4450, 5 ms 4640,
     # 10 ms 3260 env steps/s (longer floors start delaying waits the game's progress depends on).
     wait_floor_ms: int = 5
+    # "Allow Local Files": the game looks for every file it opens in its folder before its archives
+    # (a failed lookup under Wine: a scan of the directory). Nothing here needs it since the harness
+    # stopped reading its actions from a file; off, a map reload took 9.9 instead of 13.2 s and a
+    # launch 19.8 instead of 25.2 s (32 other games running), and steps no longer make file calls.
+    local_files: bool = False
+    # The game's niceness (its wine processes and wineserver). With as many games as cores, the
+    # Python that answers them (an inference server, actors, a learner) waited for the CPU behind
+    # them; games that yield to it get their answers sooner.
+    nice: int = 0
     # A virtual sound card (w3shim) instead of none: the game's audio, in step with the virtual
     # clock, delivered with captured video frames (set_frame_capture). Off for training.
     audio: bool = False
@@ -456,6 +465,8 @@ class GameInstance:
             text = _set_reg_values(text, r"Software\\Blizzard Entertainment\\Warcraft III\\Sound", {
                 "sfx": 1, "sfxvolume": 100, "ambient": 1, "movement": 1, "unit": 1, "positional": 0,
                 "music": int(music), "musicvolume": max(self.setup.music_volume, 0)})
+        text = _set_reg_values(text, r"Software\\Blizzard Entertainment\\Warcraft III",
+                               {"Allow Local Files": int(self.setup.local_files)})
         gameplay = {"healthbars": int(self.setup.health_bars), "mousescrolldisable": int(not self.setup.mouse_scroll)}
         text = _set_reg_values(text, r"Software\\Blizzard Entertainment\\Warcraft III\\Gameplay", gameplay)
         user_reg.write_text(text, encoding="latin-1")
@@ -535,8 +546,9 @@ class GameInstance:
                             W3SIM_LOG=_winpath(log_path))
         out = open(self.inst_dir / "wine.log", "wb") if self.keep_logs else subprocess.DEVNULL
         self.proc = subprocess.Popen(
-            ["wine", _winpath(launcher), _winpath(dll), f"C:\\{wine.GAME_LINK}\\Warcraft III.exe", "-window",
-             "-loadfile", self._loadfile or f"C:\\{wine.WORK_DIR}\\game.wgc"],
+            (["nice", "-n", str(self.setup.nice)] if self.setup.nice else [])
+            + ["wine", _winpath(launcher), _winpath(dll), f"C:\\{wine.GAME_LINK}\\Warcraft III.exe", "-window",
+               "-loadfile", self._loadfile or f"C:\\{wine.WORK_DIR}\\game.wgc"],
             env=env, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True,
         )
         proc, prefix = self.proc, self.prefix

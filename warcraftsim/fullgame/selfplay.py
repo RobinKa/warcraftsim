@@ -37,6 +37,7 @@ import sys
 import threading
 import time
 import traceback
+import types
 import weakref
 from collections import Counter
 from pathlib import Path
@@ -111,20 +112,27 @@ class Nets:
 class Inference:
     """Batches the network calls of an actor's agents (one per game side) on the GPU."""
 
-    def __init__(self, nets: Nets, device, max_batch: int, compile_: bool = True):
+    def __init__(self, nets: Nets, device, max_batch: int, compile_: bool = True, buckets: tuple[int, ...] | None = None,
+                 thread: bool = True, entities: tuple[int, ...] = (fx.MAX_ENT,)):
+        """`buckets`: the batch sizes its compiled calls pad to (the smallest that fits; default: just
+        max_batch); `entities`: likewise the entity counts (a call padded 4 rows of ~47 entities to
+        16 x 160: ~50 times the attention). `thread` False: no batching thread of its own (the
+        inference server calls _forward)."""
         self.nets, self.device, self.max_batch = nets, device, max_batch
-        # the current policy's calls compiled with CUDA graphs: the network is small, its calls
-        # latency-bound (~150 kernels): 4.6 instead of 9.2 ms. Graphs need fixed shapes: the batch
-        # padded to max_batch, the entities to MAX_ENT. Past snapshots (fewer calls) run eagerly.
-        # every network's calls compiled (past snapshots too: eager ones took ~10 ms each, and a batch
-        # with several snapshots made several; the inference thread is what the games wait for)
+        self.buckets = tuple(sorted(buckets or (max_batch,)))
+        self.entities = tuple(sorted(set(entities) | {fx.MAX_ENT}))
+        self._hosts: dict[tuple, torch.Tensor] = {}
+        self._used: dict[tuple, int] = {}  # the host buffers taken since the last wait()
+        # the calls as CUDA graphs (one launch instead of ~150 kernels: the network is small, its calls
+        # latency-bound). Graphs need fixed shapes: the batch and the entities padded to a bucket.
+        # Captured from the eager network, per network and shape, in well under a second. (torch.compile's
+        # "reduce-overhead" graphs took 10-20 s a shape, the games waiting, and its guards 0.3 ms a call.)
         self.compile = compile_ and device.type == "cuda"
-        if self.compile:  # one compiled variant per network (the same code): more than dynamo's default 8
-            torch._dynamo.config.cache_size_limit = max(torch._dynamo.config.cache_size_limit, 64)
-            torch._dynamo.config.accumulated_cache_size_limit = max(torch._dynamo.config.accumulated_cache_size_limit, 256)
-        self._compiled = weakref.WeakKeyDictionary()  # net -> its compiled act (dropped with the net)
+        self._fns = weakref.WeakKeyDictionary()  # net -> its packed act
+        self._graphs = weakref.WeakKeyDictionary()  # net -> {(batch, width): (input, graph, output)}
         self.q: queue.Queue = queue.Queue()
-        threading.Thread(target=self._run, daemon=True).start()
+        if thread:
+            threading.Thread(target=self._run, daemon=True).start()
 
     def request(self, items: list[tuple[str, dict]]) -> list[dict]:
         """[(net key, a view step)] -> [{order, tgt, bx, by, logp (per own unit), value, version}]
@@ -165,73 +173,290 @@ class Inference:
                         del pending[id(out)]
                         done.set()
 
-    @torch.no_grad()
     def _forward(self, net: FullGameNet, sts: list[dict]) -> list[dict]:
-        fixed = self.compile and len(sts) <= self.max_batch
-        B, E = (self.max_batch, fx.MAX_ENT) if fixed else (len(sts), max(st["n"] for st in sts))
-        G = len(sts[0]["glob"])
-        cuda = self.device.type == "cuda"
-        if fixed and cuda:  # the same shapes every call: pinned host buffers, reused
-            if getattr(self, "_host", None) is None:
-                self._host = [torch.zeros(B, E, fx.F).pin_memory(), torch.zeros(B, E, dtype=torch.long).pin_memory(),
-                              torch.zeros(B, E, dtype=torch.long).pin_memory(), torch.zeros(B, E, dtype=torch.bool).pin_memory(),
-                              torch.zeros(B, G).pin_memory(), torch.zeros(B, dtype=torch.long).pin_memory(),
-                              torch.ones(B, net.config["n_orders"], dtype=torch.bool).pin_memory()]
-            host = self._host
-            for h in host:
-                h.zero_()
+        handle = self._launch(net, sts)
+        self.wait()
+        return self._finish(handle)
+
+    def _fn(self, net: FullGameNet):
+        """The network's act() from one packed input to one packed output."""
+        if net not in self._fns:
+            G, NO, d = net.config["G"], net.config["n_orders"], net.config["d"] if net.memory else 0
+            ref = weakref.ref(net)  # (not the network itself: the entry would keep it alive)
+
+            def packed_act(x):
+                # one tensor in and one out: each copy to or from the GPU is a driver call of its own
+                # (seven inputs were seven, seven outputs seven waits)
+                B = x.shape[0]
+                E = (x.shape[1] - G - 1 - NO - d) // (fx.F + 3)
+                a = E * fx.F
+                ent, glob = x[:, :a].reshape(B, E, fx.F), x[:, a:a + G]
+                a += G
+                typ, cur, mask = x[:, a:a + E].long(), x[:, a + E:a + 2 * E].long(), x[:, a + 2 * E:a + 3 * E] > 0.5
+                a += 3 * E
+                n_own, avail = x[:, a].long(), x[:, a + 1:a + 1 + NO] > 0.5
+                out = act(ref(), ent, typ, cur, mask, glob, n_own, avail, *([x[:, a + 1 + NO:]] if d else []))
+                return torch.cat([out["order"].float(), out["tgt"].float(), out["bx"].float(), out["by"].float(),
+                                  out["logp"].float(), out["value"].float()[:, None], out["entropy"].float()[:, None]]
+                                 + ([out["h"].float()] if d else []), 1)
+            self._fns[net] = packed_act
+        return self._fns[net]
+
+    def _graph(self, net: FullGameNet, host: torch.Tensor) -> tuple:
+        """The call's CUDA graph at the host batch's shape: (its input, the graph, its output). The
+        graph reads the network's weights where they are: new ones copied into them are used."""
+        per = self._graphs.setdefault(net, {})
+        if host.shape not in per:
+            fn = self._fn(net)
+            x = host.to(self.device)
+            for _ in range(2):  # (outside the capture: what the first calls set up)
+                fn(x)
+            torch.cuda.synchronize()
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph):
+                out = fn(x)
+            per[host.shape] = (x, graph, out)
+        return per[host.shape]
+
+    @torch.no_grad()
+    def _launch(self, net: FullGameNet, sts: list[dict]) -> tuple:
+        """Start a call without waiting for it (-> what _finish needs, after wait()). The server
+        starts a round's calls (the current network's and each past snapshot's) one after the other
+        and waits once: next to the learner every wait cost a turn of the GPU (a call 2.5 ms, 0.8 alone)."""
+        bucket = next((b for b in self.buckets if len(sts) <= b), None)
+        fixed = self.compile and bucket is not None
+        widest = max(st["n"] for st in sts)
+        B, E = (bucket, next(e for e in self.entities if widest <= e)) if fixed else (len(sts), widest)
+        G, NO, d = len(sts[0]["glob"]), net.config["n_orders"], net.config["d"] if net.memory else 0
+        W = E * (fx.F + 3) + G + 1 + NO + d
+        pinned = fixed and self.device.type == "cuda"
+        if pinned:  # the same shapes every call: pinned host buffers, reused (a round's calls each their own)
+            slot = self._used[(B, W)] = self._used.get((B, W), -1) + 1
+            if (B, W, slot) not in self._hosts:
+                self._hosts[(B, W, slot)] = torch.zeros(B, W).pin_memory()
+            host = self._hosts[(B, W, slot)]
+            host.zero_()
         else:
-            host = [torch.zeros(B, E, fx.F), torch.zeros(B, E, dtype=torch.long), torch.zeros(B, E, dtype=torch.long),
-                    torch.zeros(B, E, dtype=torch.bool), torch.zeros(B, G), torch.zeros(B, dtype=torch.long),
-                    torch.ones(B, net.config["n_orders"], dtype=torch.bool)]
-        if net.memory:  # the states in: a buffer of their own (the league's networks may differ in size)
-            d = net.config["d"]
-            if fixed and cuda:
-                self._host_h = getattr(self, "_host_h", {})
-                if d not in self._host_h:
-                    self._host_h[d] = torch.zeros(B, d).pin_memory()
-                host_h = self._host_h[d]
-                host_h.zero_()
-            else:
-                host_h = torch.zeros(B, d)
-            hs = host_h.numpy()
-            for i, st in enumerate(sts):
-                if st.get("h") is not None:
-                    hs[i] = st["h"]
-            host = host + [host_h]
-        ent, typ, cur, mask, glob, n_own, avail = (h.numpy() for h in host[:7])
-        avail[:] = True
-        mask[:, 0] = True  # (padding rows: one entity, or attention over nothing gives NaNs)
+            host = torch.zeros(B, W)
+        hb = host.numpy()
+        a = E * fx.F
+        ent = hb[:, :a]
+        ent.shape = (B, E, fx.F)  # (a view)
+        glob = hb[:, a:a + G]
+        a += G
+        typ, cur, mask = (hb[:, a + k * E:a + (k + 1) * E] for k in range(3))
+        a += 3 * E
+        n_own, avail, hs = hb[:, a], hb[:, a + 1:a + 1 + NO], hb[:, a + 1 + NO:]
+        avail[:] = 1.0
+        mask[:, 0] = 1.0  # (padding rows: one entity, or attention over nothing gives NaNs)
         for i, st in enumerate(sts):
             n = st["n"]
-            ent[i, :n], typ[i, :n], cur[i, :n], mask[i, :n] = st["ent"], st["type"], st["cur"], True
+            ent[i, :n], typ[i, :n], cur[i, :n], mask[i, :n] = st["ent"], st["type"], st["cur"], 1.0
             glob[i], n_own[i] = st["glob"], min(st["n_own"], fx.MAX_OWN)
             if st.get("avail") is not None:
                 avail[i] = st["avail"]
-        x = [h.to(self.device, non_blocking=True) for h in host]
-        if fixed and net not in self._compiled:
-            self._compiled[net] = torch.compile(lambda *a, net=net: act(net, *a), mode="reduce-overhead", dynamic=False)
-        out = (self._compiled[net] if fixed else lambda *a: act(net, *a))(*x)
-        O = out["order"].shape[1]
-        # everything back in one copy (seven were seven waits)
-        packed = torch.cat([out["order"].float(), out["tgt"].float(), out["bx"].float(), out["by"].float(), out["logp"].float(),
-                            out["value"].float()[:, None], out["entropy"].float()[:, None]]
-                           + ([out["h"].float()] if net.memory else []), 1)
-        if cuda:  # wait sleeping: CUDA's default sync spins a core the games need
+            if d and st.get("h") is not None:  # (none: the game's start, zeros)
+                hs[i] = st["h"]
+        own = n_own[:len(sts)].astype(np.int64)
+        if pinned:  # queued one behind the other: the input in, the graph, its output out (before it runs again)
+            x, graph, packed = self._graph(net, host)
+            x.copy_(host, non_blocking=True)
+            graph.replay()
+            key = ("out", B, packed.shape[1], slot)
+            if key not in self._hosts:
+                self._hosts[key] = torch.zeros(B, packed.shape[1]).pin_memory()
+            out = self._hosts[key]
+            out.copy_(packed, non_blocking=True)
+        else:
+            out = self._fn(net)(host.to(self.device))
+        return out, own, min(fx.MAX_OWN, E), bool(d)
+
+    def wait(self) -> None:
+        """Until the calls launched are done (sleeping: CUDA's default sync spins a core the games need)."""
+        if self.device.type == "cuda":
             done = torch.cuda.Event(blocking=True)
             done.record()
             done.synchronize()
-        p = packed.cpu().numpy()
+        self._used.clear()
+
+    def _finish(self, handle: tuple) -> list[dict]:
+        out, own, O, memory = handle
+        p = out.cpu().numpy()
         order, tgt, bx, by = (p[:, k * O:(k + 1) * O].astype(np.int64) for k in range(4))
         logp, value, entropy = p[:, 4 * O:5 * O], p[:, 5 * O], p[:, 5 * O + 1]
         res = []
-        for i in range(len(sts)):
-            o = n_own[i]
+        for i, o in enumerate(own):
             res.append({"order": order[i, :o], "tgt": tgt[i, :o], "bx": bx[i, :o], "by": by[i, :o],
                         "logp": logp[i, :o].copy(), "value": float(value[i]), "entropy": float(entropy[i])})
-            if net.memory:
+            if memory:
                 res[-1]["h"] = p[i, 5 * O + 2:].copy()
         return res
+
+
+ST_FIELDS = ("ent", "type", "cur", "glob", "n", "n_own", "avail", "h")  # what a network call needs of a view step
+
+
+class RemoteInference:
+    """An actor's side of the inference server (inference_main): the same request() as Inference, the
+    calls made in one process for all the actors' games. Every game thread has a pipe of its own to
+    the server and waits on it itself. (Through queues a request took ~32 ms of a 59 ms step, the
+    server's call 4.5 of them: a feeder thread and a shared lock on the way in, a feeder, a reader
+    thread and an event on the way back, each a wait for some process's GIL.)"""
+
+    def __init__(self, conns: list):
+        self.free = list(conns)
+        self.lock = threading.Lock()
+        self.local = threading.local()
+        self.nets = types.SimpleNamespace(version=-1)  # (the version the server answered with last)
+
+    def request(self, items: list[tuple[str, dict]]) -> list[dict]:
+        loc = self.local
+        if not hasattr(loc, "conn"):
+            with self.lock:
+                loc.conn, loc.rid = self.free.pop(), 0
+        loc.rid += 1
+        loc.conn.send((loc.rid, [(key, {f: st.get(f) for f in ST_FIELDS}) for key, st in items]))
+        while True:
+            if not loc.conn.poll(300):
+                raise RuntimeError("no answer from the inference server for 5 minutes")
+            rid, out = loc.conn.recv()
+            if rid == loc.rid:  # (not the answer to a request this thread gave up on)
+                break
+        for res in out:
+            if res is not None and res.get("version", -1) >= 0:
+                self.nets.version = res["version"]
+        return out
+
+
+class PastNet:
+    """The past snapshots' calls through one network object (per architecture): a snapshot's weights
+    are copied into it before its calls. Its parameters are views of one flat tensor, so that is one
+    copy. (Compiled per snapshot, every new league member stalled all the games for 25-50 s: four
+    shapes to compile, every 20 updates.)"""
+
+    def __init__(self, device):
+        self.device = device
+        self.hosts: dict[str, list] = {}  # architecture -> [network, its flat weights, its buffers, the snapshot loaded]
+        self.flats = weakref.WeakKeyDictionary()  # snapshot network -> (its weights, flat; its buffers)
+
+    @torch.no_grad()
+    def get(self, key: str, src: FullGameNet) -> FullGameNet:
+        if src not in self.flats:
+            self.flats[src] = (torch.cat([p.data.reshape(-1) for p in src.parameters()]), list(src.buffers()),
+                               json.dumps(src.config, sort_keys=True, default=str))
+        flat, buffers, arch = self.flats[src]
+        host = self.hosts.get(arch)
+        if host is None:
+            net = FullGameNet(**src.config).to(self.device).eval()
+            net.load_state_dict(src.state_dict())
+            mine = torch.cat([p.data.reshape(-1) for p in net.parameters()])
+            at = 0
+            for p in net.parameters():
+                p.data = mine[at:at + p.numel()].view(p.shape)
+                at += p.numel()
+            host = self.hosts[arch] = [net, mine, list(net.buffers()), key]
+        if host[3] != key:
+            host[1].copy_(flat)
+            for mine, theirs in zip(host[2], buffers):
+                mine.copy_(theirs)
+            host[3] = key
+        return host[0]
+
+
+def inference_main(cfg: dict, conns: list, stop) -> None:
+    """The inference server: every actor's network calls in one process. The games spent 53% of
+    their time waiting for their actor's calls: four actors and the learner took turns on the GPU
+    (a context each), and an actor's batches were mostly padding (its 8 games rarely ask at once).
+    Here the games' requests batch together, in one context: whatever has arrived while the last
+    call ran goes into the next one (no waiting for more)."""
+    import signal
+    from multiprocessing.connection import wait
+    signal.signal(signal.SIGTERM, _exit)
+    torch.set_num_threads(2)
+    device = torch.device(cfg["device"])
+    nets = Nets(cfg, device)
+    while nets.current is None and not stop.is_set() and os.getppid() == cfg["learner_pid"]:
+        time.sleep(1)
+        nets.reload()
+    top = cfg["infer_batch"]
+    infer = Inference(nets, device, top, cfg["compile"], buckets=tuple(b for b in (8, 24, 64) if b <= top) or (top,),
+                      thread=False, entities=(48, 96))
+    past = Inference(nets, device, 16, cfg["compile"], buckets=(4, 16), thread=False, entities=(64,))  # past snapshots: few calls
+    swap = PastNet(device)
+    def fresh():
+        return {"calls": 0, "past": 0, "rows": 0, "busy": 0.0, "wait": 0.0, "ents": 0, "ents_max": 0, "rounds": 0,
+                "t": time.time()}
+    stats = fresh()  # -> inference.jsonl
+    stats_path = Path(cfg["run_dir"]) / "inference.jsonl"
+    live = list(conns)
+    while not stop.is_set() and os.getppid() == cfg["learner_pid"]:
+        if time.time() - stats["t"] >= 10.0 and stats["calls"]:
+            dt = time.time() - stats["t"]
+            with open(stats_path, "a") as f:
+                f.write(json.dumps({"time": time.time(), "calls_per_s": round(stats["calls"] / dt, 1),
+                                    "rows_per_s": round(stats["rows"] / dt, 1), "rows_per_call": round(stats["rows"] / stats["calls"], 2),
+                                    "rounds_per_s": round(stats["rounds"] / dt, 1),
+                                    "past_calls_per_s": round(stats["past"] / dt, 1),
+                                    "round_ms": round(1000 * stats["busy"] / max(stats["rounds"], 1), 2),  # requests in to answers out
+                                    "wait_ms": round(1000 * stats["wait"] / max(stats["rounds"], 1), 2),  # of it: for the GPU
+                                    "busy": round(stats["busy"] / dt, 3), "entities": round(stats["ents"] / stats["rows"], 1),
+                                    "entities_max_mean": round(stats["ents_max"] / stats["calls"], 1)}) + "\n")
+            stats = fresh()
+        ready = wait(live, timeout=1.0)
+        if not ready:
+            continue
+        t_busy = time.time()
+        asked: dict = {}  # game pipe -> (its request's id, the answers)
+        groups: dict[str, list] = {}  # network -> [(pipe, item, view step)]
+        for c in ready:
+            try:
+                rid, items = c.recv()
+            except (EOFError, OSError):  # its actor is gone
+                live.remove(c)
+                continue
+            asked[c] = (rid, [None] * len(items))
+            for k, (key, st) in enumerate(items):
+                groups.setdefault(key, []).append((c, k, st))
+        calls = []  # the round's calls, all started before the one wait for them
+        for key, items in groups.items():
+            fwd, size = (infer, top) if key == "current" else (past, 16)
+            for a in range(0, len(items), size):
+                part = items[a:a + size]
+                try:
+                    net = nets.get(key)
+                    handle = fwd._launch(net if key == "current" else swap.get(key, net), [it[2] for it in part])
+                except Exception:  # noqa: BLE001 (the games must not hang on it)
+                    traceback.print_exc()
+                    handle = None
+                calls.append((fwd, handle, part, nets.version if key == "current" else -1))
+                ns = [it[2]["n"] for it in part]
+                stats["calls"] += 1
+                stats["past"] += key != "current"
+                stats["rows"] += len(part)
+                stats["ents"] += sum(ns)
+                stats["ents_max"] += max(ns)
+        t_wait = time.time()
+        infer.wait()
+        past.wait()
+        stats["wait"] += time.time() - t_wait
+        for fwd, handle, part, version in calls:
+            try:
+                results = fwd._finish(handle) if handle is not None else [None] * len(part)
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
+                results = [None] * len(part)
+            for (c, k, _), res in zip(part, results):
+                if res is not None:
+                    res["version"] = version
+                asked[c][1][k] = res
+        for c, answer in asked.items():
+            try:
+                c.send(answer)
+            except OSError:
+                if c in live:
+                    live.remove(c)
+        stats["rounds"] += 1
+        stats["busy"] += time.time() - t_busy
 
 
 class Trajectory:
@@ -339,7 +564,7 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
         setup = GameSetup(map=cfg["map"], slots=slots, step_seconds=cfg["step_seconds"],
                           max_game_seconds=cfg["max_minutes"] * 60, victory="decisive", window=(320, 240),
                           wait_floor_ms=cfg["wait_floor_ms"], melee_reset=agents_only and cfg["scripted_reset"],
-                          native_obs=cfg["native_obs"])
+                          native_obs=cfg["native_obs"], nice=cfg.get("game_nice", 0))
         per_launch = cfg["games_per_process"] * (cfg["agent_games_factor"] if agents_only and cfg["scripted_reset"] else 1)
         try:
             with GameInstance(setup, name=name, timeout=120) as g:
@@ -570,7 +795,7 @@ def _interrupt(*_):
     raise KeyboardInterrupt
 
 
-def actor_main(wid: int, cfg: dict, out_q, stop, render_q) -> None:
+def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = None) -> None:
     import signal
 
     from ..runtime import reaper
@@ -578,12 +803,16 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q) -> None:
     out_q.cancel_join_thread()  # exiting must not wait to flush trajectories nobody reads any more
     torch.set_num_threads(1)
     try:
-        device = torch.device(cfg["device"])
-        nets = Nets(cfg, device)
-        while nets.current is None and not stop.is_set() and os.getppid() == cfg["learner_pid"]:
-            time.sleep(1)
-            nets.reload()
-        infer = Inference(nets, device, 2 * cfg["games_per_actor"], cfg["compile"])
+        if conns is not None:  # the inference server makes the network calls (no GPU context here)
+            sys.setswitchinterval(0.001)  # (a game thread woken by its answer waits for the GIL: 5 ms by default)
+            infer = RemoteInference(conns)
+        else:
+            device = torch.device(cfg["device"])
+            nets = Nets(cfg, device)
+            while nets.current is None and not stop.is_set() and os.getppid() == cfg["learner_pid"]:
+                time.sleep(1)
+                nets.reload()
+            infer = Inference(nets, device, 2 * cfg["games_per_actor"], cfg["compile"])
         threads = [threading.Thread(target=game_loop, args=(wid, k, cfg, infer, out_q, stop, render_q), daemon=True)
                    for k in range(cfg["games_per_actor"])]
         for th in threads:
@@ -939,7 +1168,12 @@ def main(argv: list[str] | None = None) -> int:
                                                                   "2 when BC trained the value head)")
     ap.add_argument("--max-grad-norm", type=float, default=1.0)
     ap.add_argument("--bf16", type=int, default=1, help="the updates' matmuls in bfloat16")
-    ap.add_argument("--compile", type=int, default=1, help="the actors' network calls compiled (CUDA graphs)")
+    ap.add_argument("--compile", type=int, default=1, help="the actors' network calls as CUDA graphs")
+    ap.add_argument("--game-nice", type=int, default=10,
+                    help="the games' niceness: they yield the CPU to the inference server, the actors and the learner")
+    ap.add_argument("--central-inference", type=int, default=1,
+                    help="1: one inference server makes every actor's network calls (one GPU context, batches over all "
+                         "games); 0: each actor its own")
     ap.add_argument("--native-obs", type=int, default=1, help="observations parsed in C (warcraftsim.native)")
     ap.add_argument("--avail-mask", type=int, default=1, help="mask the orders the player can't pay for yet")
     ap.add_argument("--chunk", type=int, default=64, help="steps per trajectory piece an actor sends")
@@ -1039,16 +1273,19 @@ def main(argv: list[str] | None = None) -> int:
            "agent_games_factor": args.agent_games_factor, "mirror": bool(args.mirror), "learner_pid": os.getpid(),
            "actors": args.actors, "values": unit_values(), "shaping": args.shaping, "shaping_scale": args.shaping_scale,
            "tie_break": args.tie_break, "compile": bool(args.compile), "native_obs": bool(args.native_obs),
-           "real_share": args.real_share,
+           "real_share": args.real_share, "infer_batch": 64, "game_nice": args.game_nice,
            "avail_mask": bool(args.avail_mask),
            "costs": order_costs(vocab, args.map).tolist() if args.avail_mask else None, "max_past": args.max_past,
            "order_names": vocab.get("order_names") or {str(k): v for k, v in fx.demo_order_names(args.runs).items()}}
-    # the actors compile their network calls: without this each starts a pool of ~32 compile workers
-    # (~100 processes, several GB, idle after the first seconds)
-    os.environ.setdefault("TORCHINDUCTOR_COMPILE_THREADS", "1")
     ctx = torch.multiprocessing.get_context("spawn")
     out_q, stop, render_q = ctx.Queue(maxsize=4096), ctx.Event(), ctx.Queue()
-    actors = [ctx.Process(target=actor_main, args=(w, cfg, out_q, stop, render_q), daemon=True) for w in range(args.actors)]
+    # a pipe per game to the inference server: [actor][game] -> (the game's end, the server's)
+    pipes = [[ctx.Pipe() for _ in range(args.games_per_actor)] if args.central_inference else None
+             for _ in range(args.actors)]
+    actors = [ctx.Process(target=actor_main, args=(w, cfg, out_q, stop, render_q, pipes[w] and [a for a, _ in pipes[w]]),
+                          daemon=True) for w in range(args.actors)]
+    if args.central_inference:
+        actors.append(ctx.Process(target=inference_main, args=(cfg, [b for ps in pipes for _, b in ps], stop), daemon=True))
     if args.video_every > 0:
         actors.append(ctx.Process(target=render_main, args=(cfg, render_q, stop), daemon=True))
     for p in actors:
