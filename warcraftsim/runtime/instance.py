@@ -148,6 +148,14 @@ class GameSetup:
     # stopped reading its actions from a file; off, a map reload took 9.9 instead of 13.2 s and a
     # launch 19.8 instead of 25.2 s (32 other games running), and steps no longer make file calls.
     local_files: bool = False
+    # Wine's Direct3D command stream in a thread of its own (its default). Games nobody watches draw
+    # 3 frames a second: off, the draw calls run in the game's thread and the stream's thread (2-3%
+    # of a training machine's CPU, most of it waiting for work) is gone.
+    d3d_thread: bool = True
+    # The software renderer's threads (LP_NUM_THREADS; None: one per core, 0: it draws in the calling
+    # thread). A reload's loading screen cost 0.75 s of CPU on 32 threads and the stream's, 0.2 s in
+    # the game's own thread (of 2.1 and 1.4 s for the reload; 32 games: 592 -> 638 game steps/s).
+    render_threads: int | None = None
     # The game's niceness (its wine processes and wineserver). With as many games as cores, the
     # Python that answers them (an inference server, actors, a learner) waited for the CPU behind
     # them; games that yield to it get their answers sooner.
@@ -160,10 +168,17 @@ class GameSetup:
     mouse_scroll: bool = True  # the camera scrolls with the pointer at a screen edge (off for videos)
     record_ai_orders: bool = False  # melee: observations carry the built-in AI's orders (Observation.issued)
     victory: str = "melee"  # melee games: "melee", or "decisive" (also over with no town hall and no units)
-    melee_reset: bool = False  # duel maps without built-in AI players: restarts reset the game in the running process (0.1 s instead of a 6-10 s launch)
+    # duel maps without built-in AI players: restarts reset the game by script in the running process
+    # (0.1 s). NOT a new game for the players: the engine keeps counting a removed hero (the type
+    # cannot be trained again, the next hero needs the second tier, and after three none can be
+    # trained: self-play's games between agents had 0.1 heroes a game against 1.3 in games that
+    # reloaded), and the food count drifted (a third of those games had less than 5 food used at one
+    # minute, down to -345). Tech counts, the hero limits and hero tokens all read right after it.
+    melee_reset: bool = False
     # melee: restarts reload the map in the running game (the engine's RestartGame, as the menu's
-    # Restart: the loading screen and everything anew, built-in AI included; duelrush 5 s, duel
-    # 2.8 s, instead of launching the game again: 9-10 s and 6 s); no warm spare is needed then
+    # Restart: the loading screen and everything anew, built-in AI included; duelrush and duel 1 s
+    # (3 and 1.9 s with "Allow Local Files", duelrush 5 s with its rules as object data), instead of
+    # launching the game again: 4 s); no warm spare is needed then
     engine_restart: bool = True
     # observations parsed and merged in C (warcraftsim.native): Observation.unit_array, lazy units;
     # no GIL while parsing (the game threads of one process parse at the same time)
@@ -467,6 +482,7 @@ class GameInstance:
                 "music": int(music), "musicvolume": max(self.setup.music_volume, 0)})
         text = _set_reg_values(text, r"Software\\Blizzard Entertainment\\Warcraft III",
                                {"Allow Local Files": int(self.setup.local_files)})
+        text = _set_reg_values(text, r"Software\\Wine\\Direct3D", {"csmt": int(self.setup.d3d_thread)})
         gameplay = {"healthbars": int(self.setup.health_bars), "mousescrolldisable": int(not self.setup.mouse_scroll)}
         text = _set_reg_values(text, r"Software\\Blizzard Entertainment\\Warcraft III\\Gameplay", gameplay)
         user_reg.write_text(text, encoding="latin-1")
@@ -544,6 +560,8 @@ class GameInstance:
                             W3SIM_WAIT_FLOOR=str(self.setup.wait_floor_ms),
                             W3SIM_AUDIO="1" if self.setup.audio else "0",
                             W3SIM_LOG=_winpath(log_path))
+        if self.setup.render_threads is not None:
+            env["LP_NUM_THREADS"] = str(self.setup.render_threads)
         out = open(self.inst_dir / "wine.log", "wb") if self.keep_logs else subprocess.DEVNULL
         self.proc = subprocess.Popen(
             (["nice", "-n", str(self.setup.nice)] if self.setup.nice else [])

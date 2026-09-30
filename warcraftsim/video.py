@@ -158,7 +158,7 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
     script = replay_script(setup, replay)
     in_game = overlay is not None and "function W3S_VisClear" in script
     zoom = "call SetCameraField(CAMERA_FIELD_FARZ, 10000.0" in script  # the camera can zoom out (op 84)
-    setup = GameSetup(**{**setup.__dict__, "warm_spare": False, "speed": 1.0, "launch_speed": 0.03, "nice": 0,
+    setup = GameSetup(**{**setup.__dict__, "warm_spare": False, "speed": 1.0, "launch_speed": 0.03, "nice": 0, "d3d_thread": True, "render_threads": None,
                          "launch_timeout": 600.0,  # loading on the slow clock
                          "window": (1024, 768), "audio": audio, "music_volume": music_volume,
                          "health_bars": in_game or setup.health_bars, "mouse_scroll": False})

@@ -1,4 +1,6 @@
-from warcraftsim.data.objects import parse_slk, unit_table
+import pytest
+
+from warcraftsim.data.objects import parse_slk, patch_slk, unit_table
 from warcraftsim.data.terrain import PATH_NO_WALK, load_terrain, open_area_center
 
 SLK = """ID;PWXL;N;E
@@ -15,6 +17,17 @@ E
 
 def test_parse_slk():
     assert parse_slk(SLK) == [{"unitID": "hfoo", "goldcost": "135"}, {"unitID": "hpea", "goldcost": "75"}]
+
+
+def test_patch_slk():
+    """Cells replaced in a table's text (the duel maps' rules: the game's tables, changed, in the map)."""
+    out = patch_slk(SLK.replace("\n", "\r\n"), {"hpea": {"goldcost": 38}, "hfoo": {"goldcost": 67.5}})
+    assert out.count("\r\n") == SLK.count("\n")  # the same lines, the same line ends
+    assert parse_slk(out) == [{"unitID": "hfoo", "goldcost": "67.5"}, {"unitID": "hpea", "goldcost": "38"}]
+    assert patch_slk(SLK, {}) == SLK
+    for missing in ({"hkni": {"goldcost": 1}}, {"hfoo": {"lumbercost": 1}}):
+        with pytest.raises(KeyError):
+            patch_slk(SLK, missing)
 
 
 def test_unit_table(game_dir):

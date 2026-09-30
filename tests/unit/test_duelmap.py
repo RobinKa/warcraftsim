@@ -38,3 +38,50 @@ def test_duel_names_and_object_data():
     leveled = _object_mods([("Rhme", [("gtib", 20)])], levels=True)
     assert leveled[20:24] == b"gtib" and struct.unpack_from("<iiiii", leveled, 24) == (0, 0, 0, 20, 0)
     assert struct.unpack_from("<i", data, len(data) - 4)[0] == 0  # no new objects
+
+
+def test_rules_as_tables_match_the_object_data(game_dir):
+    """The rush rules written as the game's tables say what the object data said: every change of
+    the object files is the value in its table's cell, and nothing else in the tables changed."""
+    from warcraftsim.data.duelmap import ABILITY_FIELDS, RUSH, UNIT_FIELDS, UPGRADE_FIELDS, rules_files
+    from warcraftsim.data.mpq import GameArchives
+    from warcraftsim.data.objects import parse_slk
+    tables, objects = rules_files(RUSH, True), rules_files(RUSH, False)
+    assert not any(name.startswith("war3map.w3") for name in tables)
+    assert {k: v for k, v in objects.items() if not k.startswith("war3map.w3")} == \
+        {k: v for k, v in tables.items() if not k.startswith("Units\\")}  # the constants and AI scripts: the same
+
+    def read(data: bytes, levels: bool) -> dict:
+        """{(object, field[, level, column]): value} of an object data file."""
+        n, at, out = struct.unpack_from("<i", data, 4)[0], 8, {}
+        for _ in range(n):
+            oid, count = data[at:at + 4].decode(), struct.unpack_from("<i", data, at + 8)[0]
+            at += 12
+            for _ in range(count):
+                field, kind = data[at:at + 4].decode(), struct.unpack_from("<i", data, at + 4)[0]
+                at += 8
+                where = ()
+                if levels:
+                    where = struct.unpack_from("<ii", data, at)
+                    at += 8
+                out[(oid, field) + where] = struct.unpack_from("<f" if kind == 2 else "<i", data, at)[0]
+                at += 8
+        return out
+
+    ids = {"UnitBalance": "unitBalanceID", "UnitWeapons": "serpent", "UnitData": "unitID", "UpgradeData": "upgradeid",
+           "AbilityData": "alias"}
+    new = {n: {r[c]: r for r in parse_slk(tables[f"Units\\{n}.slk"].decode("latin-1")) if c in r} for n, c in ids.items()}
+    with GameArchives() as g:
+        old = {n: {r[c]: r for r in parse_slk(g.read(f"Units\\{n}.slk").decode("latin-1")) if c in r} for n, c in ids.items()}
+    want: dict[tuple, float] = {}
+    for (oid, field), v in read(objects["war3map.w3u"], False).items():
+        want[(*UNIT_FIELDS[field], oid)] = v
+    for (oid, field, _, _), v in read(objects["war3map.w3q"], True).items():
+        want[("UpgradeData", UPGRADE_FIELDS[field], oid)] = v
+    for (oid, field, level, col), v in read(objects["war3map.w3a"], True).items():
+        want[("AbilityData", f"{ABILITY_FIELDS[field]}{level}" if col == 0 else f"Data{'ABCD'[col - 1]}{level}", oid)] = v
+    assert len(want) > 2500
+    for (table, col, oid), v in want.items():
+        assert abs(float(new[table][oid][col]) - v) <= 1e-4 * max(1.0, abs(v)), (table, oid, col)
+    changed = {(t, c, o) for t in old for o in old[t] for c in old[t][o] if old[t][o][c] != new[t][o].get(c)}
+    assert changed <= set(want) and all(old[t].keys() == new[t].keys() for t in old)

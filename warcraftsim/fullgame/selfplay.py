@@ -559,13 +559,14 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
             if curr:  # (the handicap is the launch's: the level when it started)
                 slots[side] = Agent(races[side], handicap=int(ai.get("handicap", cfg["handicap"])))
         agents_only = ai["kind"] != "ai"
-        # without the built-in AI a restart resets the game by script (0.1 s; the AI does not survive
-        # that, so games against it reload the map: ~5 s)
+        # a restart reloads the map (1 s). (--scripted-reset: games without the built-in AI reset by
+        # script instead, 0.1 s, but not to a new game: see GameSetup.melee_reset)
         setup = GameSetup(map=cfg["map"], slots=slots, step_seconds=cfg["step_seconds"],
                           max_game_seconds=cfg["max_minutes"] * 60, victory="decisive", window=(320, 240),
                           wait_floor_ms=cfg["wait_floor_ms"], melee_reset=agents_only and cfg["scripted_reset"],
-                          native_obs=cfg["native_obs"], nice=cfg.get("game_nice", 0))
-        per_launch = cfg["games_per_process"] * (cfg["agent_games_factor"] if agents_only and cfg["scripted_reset"] else 1)
+                          native_obs=cfg["native_obs"], nice=cfg.get("game_nice", 0), d3d_thread=False,
+                          render_threads=0)
+        per_launch = cfg["games_per_process"] * (cfg["agent_games_factor"] if agents_only else 1)
         try:
             with GameInstance(setup, name=name, timeout=120) as g:
                 obs = g.start()
@@ -1119,8 +1120,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--actors", type=int, default=4, help="actor processes (each a GPU context: few, with many games)")
     ap.add_argument("--games-per-actor", type=int, default=8)
     ap.add_argument("--games-per-process", type=int, default=6, help="games of one setup per launch")
-    ap.add_argument("--scripted-reset", type=int, default=1, help="games without the built-in AI restart by script")
-    ap.add_argument("--agent-games-factor", type=int, default=4, help="those run this many times as many games per launch")
+    ap.add_argument("--scripted-reset", type=int, default=0,
+                    help="1: games without the built-in AI restart by script (0.1 s) instead of reloading the map (1 s). "
+                         "Not the same game: a player's heroes stay counted through it (after the first game's hero the "
+                         "next one needed the second tier, a third was refused), and its food count drifted")
+    ap.add_argument("--agent-games-factor", type=int, default=4,
+                    help="games without the built-in AI: this many times as many per launch (--ai-share is a share of "
+                         "launches; with 0.75 and 4, 43%% of the games are against the AI)")
     ap.add_argument("--map", default="duelrush")
     ap.add_argument("--races", default="all")
     ap.add_argument("--mirror", type=int, default=1, help="both sides play the same race (on duelrush the races "
@@ -1180,7 +1186,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--seq-len", type=int, default=16, help="a network with memory: steps per training sequence "
                                                             "(from the state the actor had at its first)")
     ap.add_argument("--checkpoint-every", type=int, default=20)
-    ap.add_argument("--video-every", type=float, default=4.0, help="minutes between game videos (0: none; the actors take turns)")
+    ap.add_argument("--video-every", type=float, default=10.0,
+                    help="minutes between game videos (0: none; the actors take turns). Rendering one takes ~6 minutes of "
+                         "3.4 cores (the game at 960x540 on a software renderer, in real time)")
     ap.add_argument("--shaping", type=float, default=1.0, help="weight of the material-lead reward shaping (0: none)")
     ap.add_argument("--shaping-scale", type=float, default=2000.0, help="material (gold + lumber cost) worth 1 of potential")
     ap.add_argument("--tie-break", type=float, default=0.5, help="a tie's reward: this times tanh(2 x material lead)")

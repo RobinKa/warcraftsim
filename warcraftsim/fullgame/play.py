@@ -200,6 +200,7 @@ def matchup_setup(map_name: str, race: str, ai_race: str, difficulty: str, agent
     slots = [agent, ai] if agent_side == 0 else [ai, agent]
     return GameSetup(map=map_name, slots=slots, step_seconds=step_seconds, max_game_seconds=max_minutes * 60,
                      victory="decisive", window=screen,  # a small screen: nothing looks at the pixels
+                     d3d_thread=False, render_threads=0,  # (and drawn in the game's own thread)
                      record_ai_orders=True)  # (the AI's orders: shown in the videos' panel)
 
 

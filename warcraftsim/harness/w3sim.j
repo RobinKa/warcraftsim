@@ -1443,6 +1443,7 @@ function W3S_MeleeResetPlayer takes integer i returns nothing
     if GetPlayerSlotState(p) == PLAYER_SLOT_STATE_PLAYING then
         call SetPlayerState(p, PLAYER_STATE_RESOURCE_GOLD, w3s_start_gold[i])
         call SetPlayerState(p, PLAYER_STATE_RESOURCE_LUMBER, w3s_start_lumber[i])
+        call SetPlayerState(p, PLAYER_STATE_RESOURCE_HERO_TOKENS, bj_MELEE_STARTING_HERO_TOKENS)  // the first hero: free
         loop
             exitwhen k >= w3s_nupgrades
             set n = GetPlayerTechCount(p, w3s_upgrades[k], true)

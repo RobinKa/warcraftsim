@@ -372,7 +372,8 @@ def main(argv: list[str] | None = None) -> int:
             slots[side] = Agent((r0, r1)[side], handicap=args.handicap, difficulty=(d0, d1)[side])
         setup = GameSetup(map=args.map, slots=slots,
                           step_seconds=args.step_seconds, max_game_seconds=args.max_minutes * 60,
-                          record_ai_orders=True, victory=args.victory, window=screen, wait_floor_ms=args.wait_floor_ms)
+                          record_ai_orders=True, victory=args.victory, window=screen, wait_floor_ms=args.wait_floor_ms,
+                          d3d_thread=False, render_threads=0)  # (nobody watches: drawn in the game's thread)
         name = names.get()
         t0 = [time.time()]
 

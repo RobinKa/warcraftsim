@@ -47,6 +47,44 @@ def parse_slk(text: str) -> list[dict[str, str]]:
     return rows
 
 
+def patch_slk(text: str, changes: dict[str, dict[str, int | float]]) -> str:
+    """A SYLK table's text with cells replaced: {the row's id (its first column): {column name: value}}.
+    Only cells the table has: a change to a missing row, column or cell is an error."""
+    lines = text.split("\n")
+    where: list[tuple[int, int] | None] = []  # each line's cell (row, column), if it is one with a value
+    cells: dict[tuple[int, int], str] = {}
+    x = y = 0
+    for line in lines:
+        at = None
+        if line.startswith("C;"):
+            value = None
+            for field in line.rstrip("\r")[2:].split(";"):
+                if field[:1] == "X":
+                    x = int(field[1:])
+                elif field[:1] == "Y":
+                    y = int(field[1:])
+                elif field[:1] == "K":
+                    value = field[1:]
+            if value is not None:
+                at = (y, x)
+                cells[at] = value[1:-1] if value.startswith('"') and value.endswith('"') else value
+        where.append(at)
+    column = {v: c for (r, c), v in cells.items() if r == 1}
+    row = {v: r for (r, c), v in cells.items() if c == 1}
+    new: dict[tuple[int, int], str] = {}
+    for rid, values in changes.items():
+        for name, value in values.items():
+            if rid not in row or name not in column or (row[rid], column[name]) not in cells:
+                raise KeyError(f"no cell {rid}.{name} in the table")
+            new[(row[rid], column[name])] = str(value) if isinstance(value, int) else f"{value:.6g}"
+    for i, at in enumerate(where):
+        if at in new:
+            end = "\r" if lines[i].endswith("\r") else ""
+            fields = [f for f in lines[i].rstrip("\r").split(";") if f[:1] != "K"]
+            lines[i] = ";".join(fields + ["K" + new[at]]) + end
+    return "\n".join(lines)
+
+
 @dataclass(frozen=True)
 class UnitInfo:
     id: str

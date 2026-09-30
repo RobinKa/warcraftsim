@@ -14,8 +14,9 @@ bases so the built-in AI plays as it does there:
   the middle. No items, shops or expansions.
 
 "duelfast" (FAST rules): the same map with hit points halved, build, train and research times
-cut to a third and costs halved for every unit type and upgrade (Rules, through the map's object
-data); with a 50% handicap, units have a quarter of their hit points.
+cut to a third and costs halved for every unit type and upgrade (Rules: the game's unit, upgrade
+and ability tables with the rules' values, in the map); with a 50% handicap, units have a quarter
+of their hit points.
 
 "duelrush" (RUSH rules, ~2-minute games): a faster version of the whole game. Everything that
 takes time runs 7 times faster (attacks, casts, cooldowns, production, regeneration, day and
@@ -45,7 +46,7 @@ from pathlib import Path
 from .. import paths
 from .flatmap import _resized, empty_doodads
 from .mpq import GameArchives, MpqArchive
-from .objects import parse_slk
+from .objects import parse_slk, patch_slk
 
 DEFAULT_SIZE = 48
 
@@ -204,20 +205,38 @@ def _object_mods(objects: list[tuple[str, list[tuple]]], levels: bool) -> bytes:
     return out + struct.pack("<i", 0)
 
 
-def rules_files(rules: Rules) -> dict[str, bytes]:
-    """war3map.w3u and war3map.w3q for `rules` (none for the game's own rules)."""
+# the rules as the game's tables in the map (False, or WARCRAFTSIM_RULES_AS_OBJECTS=1: as object data, the maps of before: v12)
+TABLES_IN_MAP = os.environ.get("WARCRAFTSIM_RULES_AS_OBJECTS") != "1"
+
+# the object-data fields the rules change -> the game tables' columns
+UNIT_FIELDS = {"uhpm": ("UnitBalance", "HP"), "ubld": ("UnitBalance", "bldtm"), "ugol": ("UnitBalance", "goldcost"),
+               "ulum": ("UnitBalance", "lumbercost"), "urtm": ("UnitBalance", "reptm"), "umvs": ("UnitBalance", "spd"),
+               "umas": ("UnitBalance", "maxSpd"), "uhpr": ("UnitBalance", "regenHP"), "umpr": ("UnitBalance", "regenMana"),
+               "ua1c": ("UnitWeapons", "cool1"), "ua2c": ("UnitWeapons", "cool2"), "udp1": ("UnitWeapons", "dmgpt1"),
+               "udp2": ("UnitWeapons", "dmgpt2"), "ubs1": ("UnitWeapons", "backSw1"), "ubs2": ("UnitWeapons", "backSw2"),
+               "ucpt": ("UnitWeapons", "castpt"), "ucbs": ("UnitWeapons", "castbsw"), "umvr": ("UnitData", "turnRate")}
+UPGRADE_FIELDS = {"gtib": "timebase", "gtim": "timemod", "gglb": "goldbase", "gglm": "goldmod", "glmb": "lumberbase",
+                  "glmm": "lumbermod"}
+ABILITY_FIELDS = {"acdn": "Cool", "adur": "Dur", "ahdu": "HeroDur", "acas": "Cast"}
+
+
+def rules_files(rules: Rules, tables_in_map: bool = True) -> dict[str, bytes]:
+    """The map's files for `rules` (none for the game's own rules): the game's unit, upgrade and
+    ability tables with the rules' values (`tables_in_map` False: as object data, war3map.w3u / w3q /
+    w3a), its gameplay constants and the built-in AI's scripts."""
     if rules == Rules():
         return {}
     with GameArchives() as g:
-        units = parse_slk(g.read("Units\\UnitBalance.slk").decode("latin-1"))
-        upgrades = parse_slk(g.read("Units\\UpgradeData.slk").decode("latin-1"))
+        tables = {name: g.read(f"Units\\{name}.slk").decode("latin-1")
+                  for name in ("UnitBalance", "UpgradeData", "UnitWeapons", "UnitData", "AbilityData")}
+        units = parse_slk(tables["UnitBalance"])
+        upgrades = parse_slk(tables["UpgradeData"])
         unit_abilities = parse_slk(g.read("Units\\UnitAbilities.slk").decode("latin-1"))
-        weapons = {r.get("serpent"): r for r in  # (the ID column's header in 1.29)
-                    parse_slk(g.read("Units\\UnitWeapons.slk").decode("latin-1"))}
-        unitdata = {r.get("unitID"): r for r in parse_slk(g.read("Units\\UnitData.slk").decode("latin-1"))}
+        weapons = {r.get("serpent"): r for r in parse_slk(tables["UnitWeapons"])}  # (the ID column's header in 1.29)
+        unitdata = {r.get("unitID"): r for r in parse_slk(tables["UnitData"])}
         campaign = {r.get("unitUIID") for r in parse_slk(g.read("Units\\UnitUI.slk").decode("latin-1"))
                     if r.get("campaign") == "1"}
-        abilities = {r.get("alias"): r for r in parse_slk(g.read("Units\\AbilityData.slk").decode("latin-1"))}
+        abilities = {r.get("alias"): r for r in parse_slk(tables["AbilityData"])}
         misc = g.read("Units\\MiscGame.txt").decode("latin-1")
     k = rules.speed
     # only what these games can have: the four races' units (and "other": summons, some buildings)
@@ -294,7 +313,7 @@ def rules_files(rules: Rules) -> dict[str, bytes]:
             ("glmm", scaled(num(row, "lumbermod"), rules.cost, 1))) if v is not None]
         if mods:
             w3q.append((oid, mods))
-    files = {"war3map.w3u": _object_mods(w3u, False), "war3map.w3q": _object_mods(w3q, True)}
+    files = {} if tables_in_map else {"war3map.w3u": _object_mods(w3u, False), "war3map.w3q": _object_mods(w3q, True)}
     w3a: dict[str, list] = {}
     carry = {("Ahar", "Har3"): rules.gold_carry, ("Ahar", "Har2"): rules.lumber_carry,
              ("Ahrl", "Har2"): rules.lumber_carry}
@@ -322,8 +341,27 @@ def rules_files(rules: Rules) -> dict[str, bytes]:
             for aid_, field, col in (("Agld", "Gld2", 2), ("Abgm", "Bgm2", 2), ("Aegm", "Egm2", 2)):
                 if aid == aid_ and (v := rscaled(real(row, f"Data{'ABCD'[col - 1]}1"), 1 / k)) is not None:
                     w3a.setdefault(aid, []).append((field, float(v), 1, col))
-    if w3a:
+    if w3a and not tables_in_map:
         files["war3map.w3a"] = _object_mods([(a, m) for a, m in w3a.items() if m], True)
+    if tables_in_map:
+        # the same changes as the game's own tables, changed, in the map: the game reads a map's
+        # copies of its files first. As object data (w3u / w3q / w3a: a list of changes it applies one
+        # by one) they made every load of the map 2 s longer (3.0 instead of 1.0 s for a reload).
+        changed: dict[str, dict[str, dict]] = {name: {} for name in tables}
+        for oid, mods in w3u:
+            for field, value in mods:
+                name, col = UNIT_FIELDS[field]
+                changed[name].setdefault(oid, {})[col] = value
+        for oid, mods in w3q:
+            for field, value in mods:
+                changed["UpgradeData"].setdefault(oid, {})[UPGRADE_FIELDS[field]] = value
+        for aid, mods in w3a.items():
+            for field, value, level, col in mods:
+                column = f"{ABILITY_FIELDS[field]}{level}" if col == 0 else f"Data{'ABCD'[col - 1]}{level}"
+                changed["AbilityData"].setdefault(aid, {})[column] = value
+        for name, rows in changed.items():
+            if rows:
+                files[f"Units\\{name}.slk"] = patch_slk(tables[name], rows).encode("latin-1")
     # the map's gameplay constants: a copy of the game's with some changed
     constants = {}
     if rules.hp != 1.0:  # heroes' hit points come from strength (25 per point)
@@ -417,7 +455,7 @@ def make_duel_map(source: str | Path, dest: str | Path, size: int = DEFAULT_SIZE
                 main = script.index("function main takes nothing returns nothing")
                 script = script[:main] + _script_rules(rules) + script[main:]
             files["war3map.j"] = script.replace("\r\n", "\n").replace("\n", "\r\n").encode("latin-1")
-            files.update(rules_files(rules))
+            files.update(rules_files(rules, TABLES_IN_MAP))
             for name, data in files.items():
                 m.write(name, data)
         tmp.replace(dest)
@@ -456,7 +494,7 @@ def duel_map_path(name: str) -> Path:
 
     size, rules, base_x = parse_duel_name(name)
     src = stock_map_path("(2)EchoIsles")
-    out = paths.CACHE_DIR / "maps" / f"duel{size}_b{base_x:g}{rules.tag}_v12.w3x"
+    out = paths.CACHE_DIR / "maps" / f"duel{size}_b{base_x:g}{rules.tag}_{'v13' if TABLES_IN_MAP else 'v12'}.w3x"
     with _lock:
         if not out.exists():
             make_duel_map(src, out, size, rules, base_x)
