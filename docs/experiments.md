@@ -731,9 +731,20 @@ Found while profiling (next section): the games between agents restarted by scri
 
 Every game now reloads the map (`--scripted-reset 0`, the default), in `fgself-9` from 9.4M steps on (the table's last column). The lesson for environment changes: compare per-game statistics by kind of game (heroes, research, food), not only win rates.
 
+The real game (the built-in AI without the curriculum's tax, 10% of the launches against it) before and after:
+
+| wins in the real game, `fgself-9` | all | human | night elf | orc | undead | easy AI | normal AI |
+|---|---|---|---|---|---|---|---|
+| the 4 hours before the fix (to 9.4M steps) | 252/642 (39%) | 30% | 80% | 21% | 25% | 34% | 45% |
+| the 2 hours after it | 89/223 (40%) | 30% | 83% | 12% | 25% | 36% | 45% |
+| 2 to 4 hours after it (11M to 15M steps) | 309/559 (55%) | 43% | 89% | 41% | 40% | 48% | 62% |
+| 5 hours after it (17M to 19M steps, five games per load) | 214/375 (57%) | 50% | 88% | 39% | 49% | 50% | 64% |
+
+Nothing else about the training changed in between (the speed work below changed how fast the same games are played), so the gain is the games between agents being whole games, or training that would have come anyway; there is no control run.
+
 ### Where a self-play step's time goes (speed, 2026-09-30)
 
-`fgself-9` ran at 560 agent steps/s with 32 games. A game thread spent 55% of its time waiting for the policy and 36% for the game. After this round: 15% and 50% (and 24% reloading the map), the machine's CPU is the limit, and it runs at about 800 steps/s with every game reloading the map (607 before the reset fix, when half the games were the cheap broken ones).
+`fgself-9` ran at 560 agent steps/s with 32 games. A game thread spent 55% of its time waiting for the policy and 36% for the game. After this round the learner is the limit with the machine's CPU close behind, and it runs at about 840 steps/s with whole games, five to a load of the map (607 before the reset fix, when half the games were the cheap broken ones).
 
 | change | agent steps/s | what it showed |
 |---|---|---|
@@ -746,6 +757,8 @@ Every game now reloads the map (`--scripted-reset 0`, the default), in `fgself-9
 | the loading screen drawn in the game's thread, a video every 10 minutes | 644 | a reload's CPU 2.1 → 1.4 s |
 | the pass over the units made by the shim (C) instead of the harness (JASS) | 719 | a step 41 → 36 ms; the learner is the limit again (an update 10.5 s, the actors waiting 1 s) |
 | minibatches of similar entity counts, no GPU waits for the statistics | ≈800 | an update 8.9 s; the learner is bound by its own Python (the GPU is 36% busy) |
+| five games per load of the map, each with two players of its own | 822 | the actors now make more steps than the learner trains on: an update 9.3 s, the batches 3 updates old and falling behind |
+| the trajectory queue holds one batch; an inference round at most every 4 ms | 837 | an update 8.7 s, the batches 1.3 updates old, the learner waiting 1.1 s an update |
 
 * **The cloning batches.** The loader takes its workers' batches in turn, and a worker reading 16 games before it emptied them gave nothing for seconds: the learner waited 26% of an update. `bc.Steps` is now a shuffle buffer kept full (9%).
 * **Only 58% of the games' time was play.** A reload took 13 s with 32 games running (5 s alone), as long as the game before it.
@@ -757,7 +770,15 @@ Every game now reloads the map (`--scripted-reset 0`, the default), in `fgself-9
 * **The units, in C.** Every step the harness went over every unit three times in JASS (collect them, count them for the result, write the records of those that changed): ~35 native calls and a few hundred JASS instructions per unit, 9-13 ms of a step with 150 units (4 ms on an idle machine). The natives are plain functions in the executable, found by name from the code that registers them, so the shim now makes the same calls itself: 4 ms (1.5). A game played with the harness's pass and its replay with the shim's agree in every field of every unit on every step (six games, both directions).
 * **The learner's minibatches.** A minibatch pads to its widest step: 91 entities at random for a mean of 41, and attention costs the square. Cut from groups of 8 minibatches sorted by entity count they pad to 49. The update's KL, clip fraction and value loss stayed the same (0.0033, 0.024, 0.018); the gradient norm rose from 0.15 to 0.19.
 
-What is left, largest first: the map reload per game (a quarter of a game thread's time; fresh player slots per game would avoid it), the learner's Python (a compiled update, or fewer passes: the clone's logits once per update), the video renderer (3.4 cores while it renders), and wineserver (a tenth of a step: the engine's threads signal each other ~500 times a step).
+* **Five games per load of the map.** A reload per game was a quarter of a game thread's time. The scripted reset's trouble is per player, so the duel maps are now also built for five pairs of players (`GameSetup.pairs`): each game of a load is played by two players who have not played, the next game starts 0.1 s after the last one's end, and the fifth game's end reloads the map. Python still sees players 0 and 1. Twelve players crashed the game at load; ten and the observer load.
+  * The next pair's game has to start as a load's does. The first version gave the first observation one step late: the workers already on their way, the built-in AI's starting gold spent, the agent's first orders lost. Win rates hardly moved in 25 minutes, but orc built 0.60 altars a game instead of 1.57 and trained 0.4 heroes instead of 1.4, night elf alike: the policy's opening depends on its first observation. The per-game statistics by race showed it within minutes (the lesson of the reset above, applied).
+  * The switch now takes three ticks of the game, as a load has them. Everything of the last game is removed (units, corpses, items; trees regrow, blight clears). A tick later, the gold mines the engine put back from under removed haunted and entangled mines are removed too, and the map's mines and creeps and the new players' starting units are made. Another tick later the units are collected as an enumeration finds them, and the first step follows at once.
+  * Checked at three levels. Every unit, player and event of a later pair's first six steps against a load's, for all four races against the undead and night elf AI: the differences are those between two loads. Built-in AI games, 240 with five pairs and 240 with a reload each: 2.11 and 2.18 minutes, the races' win rates alike; and 298 games by their place in a load: food at step 80 within 1 of the matchup's mean at every place. The policy's altars, heroes and research per game by race in the run (orc 1.54 altars and 1.40 heroes again).
+  * Collecting demonstrations (built-in AI on both sides, no network calls) runs 1.55 times as fast: 2700 against 1750 games an hour, next to the training run.
+* **The learner and the actors in balance.** With the reloads gone the actors made more steps than the learner trained on. The trajectory queue had no bound, so the batches were 3 updates old and falling behind; it now holds one batch and the actors wait. Every round of the inference server takes the GPU from the learner for a turn, so a round now starts at most every 4 ms (`--infer-period-ms`; 174 rounds a second instead of 229, for the same rows): an update 9.3 → 8.7 s.
+* **Another dead end.** The learner and the inference server on cores of their own (`--pin`): the update was no faster (9.0 s) and the games lost 4 threads.
+
+What is left, largest first: the learner (an update takes 8.7 s for 8192 steps, so 940 steps/s at most; it is bound by its own Python: a compiled update, or fewer passes such as the clone's logits once per update), the video renderer (3.4 cores while it renders), and wineserver (a tenth of a step: the engine's threads signal each other ~500 times a step).
 
 ### Memory and a value head in BC
 

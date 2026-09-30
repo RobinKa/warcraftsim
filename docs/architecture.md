@@ -59,6 +59,11 @@ Before the mailbox, actions went through a file the harness loaded with `Preload
     * the built-in AI does not survive it (its engine state outlives the reset, with its scripts started anew too);
     * the engine keeps counting a removed hero: the type is refused from then on and the next hero needs the second tier, although `GetPlayerTechCount`, the limits and the hero tokens read as in a new game (handing the hero to the neutral player first does not help);
     * in self-play's games between agents, research all but stopped and the food count drifted (down to -345).
+  * **A pair of players per game** (`GameSetup.pairs`, duel maps, up to 5) is the fast reset that is a new game: the map has 2·pairs players, game k of a load is played by players 2k and 2k+1, and only the last game's restart reloads the map. The engine's leftovers are per player, and these players have not played.
+    * Python sees players 0 and 1 in every game: the harness and the shim map the ids in observations and commands (`W3S_Pid`, `W3S_Real`).
+    * The switch takes three ticks (`W3S_PairClear`, `W3S_PairMake`, `W3S_StepAgain`), as a load does. Tick 1 removes everything (units, corpses, items), regrows the trees, clears the blight and pauses the old built-in AI. Tick 2 removes what the engine made in between (a removed haunted or entangled gold mine leaves a plain one behind), then makes the map's mines and creeps and the new players' starting units and starts their AI. Tick 3 collects the units by enumeration, as after a load (`W3S_Retrack`: enter events would also have recorded the hidden mine under an entangled one), and steps at once, so the first observation is a load's.
+    * The map's `config` gives every pair its own team and the two start locations to every pair; `MeleeStartingUnits` is replaced by one for the pair in play (`W3S_StartingUnits`).
+    * 12 players crash the game while loading; 10 and the observer work.
   * Scenarios reset inside the game.
 * **Melee AI start.** In 1.29 the melee start sends the starting workers to the mine automatically for every player. The AI is started by the map's `MeleeStartingAI`, which the harness replaces with one that skips agent slots. The AI reads its level through the native `MeleeDifficulty()`, which comes from the lobby or `.wgc`.
 * **Old-format maps** use players 12-15 as the neutral players, so the harness loops over `bj_MAX_PLAYERS` (12).
@@ -89,7 +94,7 @@ The layout of these was documented by the MIT-licensed `pwang724/wc3env` project
 ## Not done yet / next steps
 
 * **Faster whole-game training** (the machine's CPU is its limit; see `docs/experiments.md`):
-  * no reload per game: a reset by script with a fresh pair of player slots each game (the engine's state is per player; 1.29 has 24 slots);
+  * the learner (a compiled update, fewer passes): it is the limit since the games stopped reloading the map each time;
   * a cheaper video renderer (3.4 cores while it renders).
 * **Replays in the stock client.** Agent orders are not in the `.w3g`; they are in the command log next to it.
   * Recording agent orders as engine actions would need the command-packet path (wc3env's approach): selection plus order packets sent as the local player's network actions.
