@@ -196,6 +196,7 @@ static void handle_go(const char *line) {
 }
 
 static void sync_point(void) {
+    units_mark(4);
     EnterCriticalSection(&g_sync_lock);
     if (g_t_go) {
         LONGLONG now = real_qpc_ticks();
@@ -234,6 +235,7 @@ static void sync_point(void) {
     g_wait_ticks += g_t_go - t0;
     clock_freeze(0);
     LeaveCriticalSection(&g_sync_lock);
+    units_mark(0);
 }
 
 void sync_frame(void) {
@@ -338,6 +340,11 @@ static int __cdecl GetTechMax_hook(int player, int techid) {
         }
         return g_mbox[techid - MBOX];
     }
+    if (techid < 0 || (techid >= MBOX - 200 && techid <= MBOX - 2)) { /* the pass over the units (units.c) */
+        int result;
+        if (units_call(techid, MBOX, &result))
+            return result;
+    }
     return GetTechMax_orig(player, techid);
 }
 
@@ -377,6 +384,7 @@ void sync_install(void) {
         return;
     }
     install_mailbox();
+    units_install();
     obs_install();
     InterlockedExchange(&g_enabled, 1);
     shim_log("step sync on the mailbox and '%ls' via port %d", g_sync_suffix, g_port);

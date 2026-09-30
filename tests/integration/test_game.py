@@ -383,3 +383,41 @@ def test_builtin_ai_takes_over_an_agent(game_dir):
         hall = next(u for u in obs.units_of(0) if u.type_id == int.from_bytes(b"htow", "big"))
         obs = g.step([ImmediateOrder(hall.id, int.from_bytes(b"hpea", "big"))])
         assert obs.command_results == [False], "agent commands to a player the AI plays are refused"
+
+
+def test_shim_unit_pass_matches_the_harness(game_dir, tmp_path, monkeypatch):
+    """The pass over the units made by the shim (shim/units.c) writes what the harness's JASS
+    wrote: a game played with the harness's pass, its replay played back with the shim's, every
+    field of every unit and player the same on every step (and the units dropped, and the result)."""
+    import dataclasses
+
+    from warcraftsim.runtime.instance import BuiltinAI, GameInstance
+
+    def snap(obs):
+        return ({u.id: dataclasses.astuple(u) for u in obs.units},
+                {i: dataclasses.astuple(p) for i, p in obs.players.items()}, obs.game_over)
+
+    setup = GameSetup(map="duelrush", slots=[BuiltinAI("undead", "normal", handicap=50), BuiltinAI("human", "normal", handicap=50)],
+                      step_seconds=0.5, max_game_seconds=120, victory="decisive", window=(320, 240), wait_floor_ms=5,
+                      record_ai_orders=True)
+    monkeypatch.setenv("W3SIM_UNITS", "0")
+    live, played = {}, {}
+    with GameInstance(setup, name="it_unitpass") as g:
+        obs = g.start()
+        while True:
+            live[obs.seq] = snap(obs)
+            if obs.game_over:
+                break
+            obs = g.step([])
+        replay = g.save_replay(tmp_path / "game.w3g")
+        assert "written by the harness" in (g.inst_dir / "shim.log").read_text()
+        monkeypatch.setenv("W3SIM_UNITS", "1")
+        obs = g.play_replay(replay)
+        while True:
+            played[obs.seq] = snap(obs)
+            if obs.game_over:
+                break
+            obs = g.step([])
+        assert "written by the shim" in (g.inst_dir / "shim.log").read_text()
+    assert len(live) > 100 and sum(len(s[0]) for s in live.values()) > 5000
+    assert [s for s in live if live[s] != played.get(s)] == []

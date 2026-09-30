@@ -93,6 +93,11 @@ globals
     // skill learned), x, y, target id
     integer array w3s_iss
     integer w3s_niss = 0
+    integer w3s_cser = 0  // the shim makes the pass over the units (1; 2: it checks its records against the harness's)
+    player w3s_np = null  // the neutral passive player (the mailbox's)
+    integer w3s_nseer = 0  // the seers, as a list: their players and their bits in the visibility mask
+    player array w3s_seer_p
+    integer array w3s_seer_bit
     boolean array w3s_seer  // players whose view the units' visibility bits report: agents (and
                             // with W3S_CFG_RECORD_ORDERS every player, to see what the AI saw)
     // Replay videos: markers drawn in the game (ops 80-83). They are all made at init, the same in a
@@ -272,17 +277,16 @@ function W3S_UnitFlags takes unit u returns integer
     return f
 endfunction
 
+// (over the seers only: a loop over every player slot was a third of a unit's cost, every unit, every step)
 function W3S_Visibility takes unit u returns integer
-    local integer i = 0
+    local integer k = 0
     local integer bits = 0
-    local integer bit = 1
     loop
-        exitwhen i >= bj_MAX_PLAYERS
-        if w3s_seer[i] and IsUnitVisible(u, Player(i)) then
-            set bits = bits + bit
+        exitwhen k >= w3s_nseer
+        if IsUnitVisible(u, w3s_seer_p[k]) then
+            set bits = bits + w3s_seer_bit[k]
         endif
-        set bit = bit * 2
-        set i = i + 1
+        set k = k + 1
     endloop
     return bits
 endfunction
@@ -385,6 +389,9 @@ function W3S_SerChunk takes nothing returns boolean
     endif
     loop
         exitwhen w3s_cursor >= stop
+        if w3s_cser == 2 then  // (the shim makes the record too, and compares the two)
+            call GetPlayerTechMaxAllowed(w3s_np, 0 - GetHandleId(w3s_units[w3s_cursor]))
+        endif
         call W3S_SerUnit(w3s_units[w3s_cursor])
         set w3s_units[w3s_cursor] = null
         set w3s_cursor = w3s_cursor + 1
@@ -480,9 +487,74 @@ function W3S_SerOrders takes nothing returns nothing
     // @ORDERS@
 endfunction
 
+// The pass over the units made by the shim (shim/units.c: the same natives, called from C): units
+// that are gone or were reported dead are dropped, the living counted for the result, and the
+// records of those that changed kept for the observation. In JASS these were three passes
+// (W3S_EnumAdd, W3S_CountDecisive, W3S_SerUnit): 9 of a step's ms with 150 units, 3 from C.
+// w3s_cser: 0 the shim has none (the harness does it all), 1 the shim does, 2 the harness does
+// and the shim checks each record against its own.
+function W3S_CSerInit takes nothing returns nothing
+    local integer i = 0
+    set w3s_np = Player(PLAYER_NEUTRAL_PASSIVE)
+    set w3s_cser = GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 2)
+    if w3s_cser != 1 and w3s_cser != 2 then
+        set w3s_cser = 0
+        return
+    endif
+    // what it needs of the harness (a reloaded map has new tables; the shim outlives it)
+    call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 5)
+    call GetPlayerTechMaxAllowed(w3s_np, 0 - GetHandleId(w3s_ht))
+    call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 6)
+    call GetPlayerTechMaxAllowed(w3s_np, 0 - GetHandleId(w3s_abil))
+    call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 13)
+    call GetPlayerTechMaxAllowed(w3s_np, 0 - GetHandleId(w3s_all))
+    call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 14)
+    call GetPlayerTechMaxAllowed(w3s_np, 0 - bj_MAX_PLAYERS)
+    call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 7)
+    loop
+        exitwhen i >= bj_MAX_PLAYERS
+        if w3s_seer[i] then
+            call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 8)
+            call GetPlayerTechMaxAllowed(w3s_np, 0 - (i + 1))
+        endif
+        set i = i + 1
+    endloop
+endfunction
+
+function W3S_CPassEnum takes nothing returns nothing
+    call GetPlayerTechMaxAllowed(w3s_np, 0 - GetHandleId(GetEnumUnit()))
+endfunction
+
+function W3S_CPass takes nothing returns nothing
+    local integer i = 0
+    if w3s_full or w3s_first then
+        call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 10)
+    else
+        call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 9)
+    endif
+    call ForGroup(w3s_all, function W3S_CPassEnum)
+    call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 15)
+    loop
+        exitwhen i >= bj_MAX_PLAYERS
+        if GetPlayerSlotState(Player(i)) == PLAYER_SLOT_STATE_PLAYING then
+            set w3s_halls[i] = GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 100 - 3 * i)
+            set w3s_mobile[i] = GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 101 - 3 * i)
+            set w3s_alive[i] = GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 102 - 3 * i)
+        endif
+        set i = i + 1
+    endloop
+endfunction
+
 function W3S_WriteObs takes nothing returns nothing
     local integer i
     set w3s_full = w3s_full or w3s_first
+    if w3s_cser == 2 then
+        if w3s_full then
+            call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 4)
+        else
+            call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 3)
+        endif
+    endif
     call PreloadGenClear()
     call PreloadGenStart()
     call Preload("V")
@@ -513,19 +585,26 @@ function W3S_WriteObs takes nothing returns nothing
         endif
     endif
     // units
-    set w3s_nunits = 0
-    set w3s_cursor = 0
-    set w3s_prune = true
-    call ForGroup(w3s_all, function W3S_EnumAdd)
-    set w3s_prune = false
-    loop
-        exitwhen w3s_cursor >= w3s_nunits
-        set i = w3s_cursor
-        call TriggerEvaluate(w3s_ser_trig)
-        exitwhen w3s_cursor == i // a crashed chunk must not hang the game
-    endloop
+    if w3s_cser == 1 then
+        call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 11)  // (the records of W3S_CPass)
+    else
+        set w3s_nunits = 0
+        set w3s_cursor = 0
+        set w3s_prune = true
+        call ForGroup(w3s_all, function W3S_EnumAdd)
+        set w3s_prune = false
+        loop
+            exitwhen w3s_cursor >= w3s_nunits
+            set i = w3s_cursor
+            call TriggerEvaluate(w3s_ser_trig)
+            exitwhen w3s_cursor == i // a crashed chunk must not hang the game
+        endloop
+    endif
     set w3s_full = false
     // units that left the game
+    if w3s_cser == 1 then
+        call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 12)
+    endif
     set i = 0
     loop
         exitwhen i >= w3s_nremoved
@@ -1228,7 +1307,9 @@ function W3S_CheckResult takes nothing returns nothing
     if w3s_over then
         return
     endif
-    if W3S_CFG_VICTORY == 1 then
+    if w3s_cser == 1 then
+        // (counted in W3S_CPass)
+    elseif W3S_CFG_VICTORY == 1 then
         call W3S_CountAlive()
     elseif W3S_CFG_VICTORY == 3 then
         call W3S_CountDecisive()
@@ -1574,7 +1655,13 @@ endfunction
 // step
 
 function W3S_Step takes nothing returns nothing
+    if w3s_first then
+        call W3S_CSerInit()
+    endif
     call W3S_RunScripted()
+    if w3s_cser == 1 then
+        call W3S_CPass()
+    endif
     call W3S_CheckResult()
     call W3S_WriteObs()
     set w3s_first = false
@@ -1795,6 +1882,11 @@ function W3S_Configure takes nothing returns nothing
         set w3s_agent[i] = ModuloInteger(W3S_CFG_AGENT_MASK / W3S_Pow2(i), 2) == 1
         set w3s_scripted[i] = ModuloInteger(W3S_CFG_SCRIPTED_MASK / W3S_Pow2(i), 2) == 1
         set w3s_seer[i] = w3s_agent[i] or (W3S_CFG_RECORD_ORDERS and GetPlayerSlotState(Player(i)) == PLAYER_SLOT_STATE_PLAYING)
+        if w3s_seer[i] then
+            set w3s_seer_p[w3s_nseer] = Player(i)
+            set w3s_seer_bit[w3s_nseer] = W3S_Pow2(i)
+            set w3s_nseer = w3s_nseer + 1
+        endif
         set i = i + 1
     endloop
 endfunction

@@ -66,6 +66,15 @@ void obs_install(void);
 int obs_take(const char **data); /* the captured observation's length, or -1 if none */
 void obs_reset(void);
 
+void obs_bytes(const char *s, int n); /* tokens from the shim itself (lines) */
+int obs_capture_on(void);
+
+/* units.c: unit records written by the shim (W3SIM_UNITS=0: by the harness, 2: both, compared) */
+void units_install(void);
+int units_call(int key, int mbox, int *result);
+void units_verify_token(const char *s);
+void units_mark(int phase); /* W3SIM_PROFILE: a step's phases (0 GO, 3 the observation ends, 4 the sync) */
+
 /* audio.c (W3SIM_AUDIO=1) */
 void audio_install(void);
 /* the audio played during a captured frame of `seconds`; 0 if there is no audio device */

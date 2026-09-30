@@ -49,8 +49,17 @@ static void append(const char *s, int n) {
 
 static void __cdecl Preload_hook(int h) {
     const char *s = g_jstring(h);
-    if (s && *s && !g_ready)
+    if (s && *s && !g_ready) {
+        units_verify_token(s);
         append(s, (int)strlen(s));
+    }
+}
+
+/* tokens written by the shim itself (units.c: lines, each ending in a newline), as if the harness had sent them */
+void obs_bytes(const char *s, int n) {
+    if (g_installed && !g_ready && n > 0) {
+        append(s, n - 1); /* (append adds the last newline) */
+    }
 }
 
 static int is_obs_file(const char *s) {
@@ -62,6 +71,7 @@ static void __cdecl PreloadGenEnd_hook(int h) {
     const char *s = h ? g_jstring(h) : NULL;
     if (s && is_obs_file(s)) {
         g_ready = 1; /* sent with the next step sync */
+        units_mark(3);
         return;
     }
     PreloadGenEnd_orig(h);
