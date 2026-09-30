@@ -43,10 +43,18 @@ Before the mailbox, actions went through a file the harness loaded with `Preload
 * **Hidden units.** Area enumerations skip hidden units, such as workers inside a gold mine. The harness therefore tracks units that enter the map (plus an initial enumeration) itself.
 * **Replays.** A replay stores the map as `..\w3sim\map.w3x` and resolves it from `Documents\Warcraft III`, so each instance links `Documents\Warcraft III\w3sim` to `C:\w3sim`. Playback runs the harness again (it writes observations and syncs), which is how `play_replay` feeds back the command log.
 * **Resets.** `RestartGame(false)` called by the harness reloads the map inside the running `.wgc` game: the loading screen runs again, and the new game has the same slots and a fresh built-in AI. (Earlier notes here said it drops a `.wgc` game back to the main menu; re-tested, it does not.) `ChangeLevel` and `LoadGame` were not re-tested.
-  * Melee restarts use it by default (`GameSetup.engine_restart`). A reload costs 2.8 s on the plain duel map and about 5 s on `duelrush`, against about 10 s for a new launch; over 20 reloads in one process the time stayed the same and memory grew by about 1 MB per reload. The difference is the object data: the speed-scaled unit and ability data cost about 2.5 s, the hit point, time and cost tables about 0.9 s (every modified unit counts: leaving out the campaign-only units, 470 → 249, took 0.6 s off). The overriding AI scripts cost nothing.
+  * Melee restarts use it by default (`GameSetup.engine_restart`). A reload takes 1.0 s on the duel maps, against about 4 s for a new launch; over 20 reloads in one process the time stayed the same and memory grew by about 1 MB per reload. With 32 games running it takes 4-5 s (and costs 1.4 s of CPU; 2.1 s before the loading screen was drawn in the game's thread: `GameSetup.render_threads`, `d3d_thread`).
+  * What made reloads slow, and no longer does:
+    * **Map object data** (`w3u`, `w3q`, `w3a`) is applied change by change at every load: the rush rules took 2 s (every modified unit counts). The same values as changed copies of the game's tables (`Units\UnitBalance.slk`, `UnitWeapons.slk`, `UnitData.slk`, `UpgradeData.slk`, `AbilityData.slk`) in the map cost nothing: the game reads a map's copies of its files first (`data.objects.patch_slk`, `duelmap.rules_files`).
+    * **"Allow Local Files"** (registry) makes the game look in its folder for every file before its archives; under Wine each miss scans the directory. `GameSetup.local_files` is off: nothing needs it since the actions stopped coming from a file.
+    * The overriding AI scripts cost nothing. Melee's preload lists (`Scripts\*Melee.pld`) cost nothing either: the shim's `Preload` hook does not pass them on.
+  * The loading screen waits about two seconds of game time while drawing frames, so a slow clock during a reload makes it cost more, not less.
   * With `engine_restart=False`, melee resets use a **warm spare**: a second process with its own prefix, display and IPC directory. It loads in the background and waits frozen at game time 0 (the harness is blocked in its first sync, so it uses no CPU).
   * On `restart()` the instance then swaps process fields with the spare (`_PROCESS_ATTRS`). The retired process is shut down in the background, and the next spare loads under its name. A spare restarts in about 1 s, but every game costs a full launch, which competes for the CPU when many games run.
-  * A scripted melee reset (`GameSetup.melee_reset`: remove every unit and respawn the start) takes 0.1 s, but the built-in AI does not survive it, so it is only for games without AI players.
+  * A scripted melee reset (`GameSetup.melee_reset`: remove every unit and respawn the start) takes 0.1 s, but it is **not a new game**:
+    * the built-in AI does not survive it (its engine state outlives the reset, with its scripts started anew too);
+    * the engine keeps counting a removed hero: the type is refused from then on and the next hero needs the second tier, although `GetPlayerTechCount`, the limits and the hero tokens read as in a new game (handing the hero to the neutral player first does not help);
+    * in self-play's games between agents, research all but stopped and the food count drifted (down to -345).
   * Scenarios reset inside the game.
 * **Melee AI start.** In 1.29 the melee start sends the starting workers to the mine automatically for every player. The AI is started by the map's `MeleeStartingAI`, which the harness replaces with one that skips agent slots. The AI reads its level through the native `MeleeDifficulty()`, which comes from the lobby or `.wgc`.
 * **Old-format maps** use players 12-15 as the neutral players, so the harness loops over `bj_MAX_PLAYERS` (12).
@@ -58,6 +66,7 @@ Before the mailbox, actions went through a file the harness loaded with `Preload
   * serializing about 120 units costs about 3 ms (with deltas);
   * Python parsing costs about 0.5-1 ms.
   * Rendering is only a few frames per second.
+  * A `duelrush` step (0.5 s, built-in AI on both sides) costs 14.6 ms of CPU in a game alone (68 steps/s) and 35-40 ms with 32 games running; about 8 ms of it is the harness (from steps of 0.25, 0.5 and 2 s). The game makes about 500 wineserver requests a step (its threads set and wait for events at the virtual clock's pace): a tenth of the CPU.
   * `turbo` (engine turn pacing bypass: `W3SIM_TURBO_MS`) exists but did not help at 0.25 s steps.
 * **Launching.** `-graphicsapi Null` crashes 1.29. The minimum working window is 800x600 (400x300 hangs). The game must be started with a proper working directory: the launcher uses `C:\Warcraft III`, since `.wgc` map paths are relative to it.
 * **WSLg.** `/tmp/.X11-unix` is read-only, so Xvfb listens only on the abstract socket. Readiness is checked in `/proc/net/unix`.
@@ -75,10 +84,10 @@ The layout of these was documented by the MIT-licensed `pwang724/wc3env` project
 
 ## Not done yet / next steps
 
-* **Faster steps:**
-  * move serialization into the shim by hooking natives;
-  * skip rendering entirely;
-  * profile the JASS VM cost.
+* **Faster whole-game training** (the machine's CPU is its limit; see `docs/experiments.md`):
+  * no reload per game: a reset by script with a fresh pair of player slots each game (the engine's state is per player; 1.29 has 24 slots);
+  * move the observation's serialization into the shim by calling the natives from C (about a fifth of a step is the harness's JASS);
+  * a cheaper video renderer (3.4 cores while it renders).
 * **Replays in the stock client.** Agent orders are not in the `.w3g`; they are in the command log next to it.
   * Recording agent orders as engine actions would need the command-packet path (wc3env's approach): selection plus order packets sent as the local player's network actions.
   * Game-cache syncs (`SyncStoredInteger`) are not recorded in single-player replays; tested and ruled out.

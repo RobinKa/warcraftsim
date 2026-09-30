@@ -712,6 +712,48 @@ Human and orc, which RL alone never moved, win a quarter to a third of their rea
 
 Night elf had almost no real games at first (6 against 46–96 for the other races). The real-or-curriculum draw came right after the race choice, and the actors' seeded random streams correlated them. A replay of those streams gave night elf 12 of 91 real launches. The real game is now a launch kind of its own, and the replay gives 17–24 per race.
 
+### Games between agents had no heroes: the scripted reset (`fgself-1` to `fgself-9`)
+
+Found while profiling (next section): the games between agents restarted by script (`GameSetup.melee_reset`: remove every unit, respawn the start; 0.1 s) instead of reloading the map, and that was not a new game.
+
+| per game, `fgself-9` | against the built-in AI (map reloaded) | between agents, scripted reset | between agents, map reloaded |
+|---|---|---|---|
+| heroes trained, orc | 1.30 | 0.07 | 1.33 |
+| heroes trained, undead | 1.69 | 0.13 | 1.91 |
+| heroes trained, night elf | 0.80 | 0.08 | 0.91 |
+| research started, orc | 5.7 | 0.35 | 5.5 |
+| research started, undead | 4.7 | 0.55 | 5.7 |
+| food used after a minute, median (lowest) | 41 (3) | 18 (-345) | 39 (0) |
+
+* **Heroes.** The engine keeps counting a removed hero. After one game with a Blademaster the altar refused another and a Far Seer needed a Stronghold (the second hero's requirement); a game later the Far Seer was refused even with a Fortress. `GetPlayerTechCount`, the type and hero limits and the hero tokens all read as in a new game. Handing the hero to the neutral player before removing it changed nothing.
+* **Food and research.** A third of those games had less than 5 food used after a minute, and research all but stopped. A simple reset test (units in training, a research under way, a dead hero) reproduced neither: the food count was right after it and the research was accepted again. They were not chased further.
+* These were more than half of all games (the learner against itself and against past snapshots), in every run so far.
+
+Every game now reloads the map (`--scripted-reset 0`, the default), in `fgself-9` from 9.4M steps on (the table's last column). The lesson for environment changes: compare per-game statistics by kind of game (heroes, research, food), not only win rates.
+
+### Where a self-play step's time goes (speed, 2026-09-30)
+
+`fgself-9` ran at 560 agent steps/s with 32 games. A game thread spent 55% of its time waiting for the policy and 36% for the game. After this round: 12% and 72%, the machine's CPU is the limit, and it runs at 644 steps/s with every game reloading the map (607 before the reset fix, when half the games were the cheap broken ones).
+
+| change | agent steps/s | what it showed |
+|---|---|---|
+| start | 560 | the inference server 90% busy at 3.4 rows a call |
+| a pipe per game thread instead of queues | 545 | a request took ~32 ms of a 59 ms step, the server's call 4.5 of them: feeder threads, a shared write lock, a reader thread, each a wait for a GIL |
+| games niced (+10) | 595 | the server and the learner get the CPU first: a call 4.2 → 2.9 ms, an update 11.4 → 9.5 s |
+| a round's calls started together, one wait | 606 | next to the learner every wait costs a turn of the GPU (a call: 0.8 ms alone, 1.7 next to a synthetic learner, 2.5 in the run); a round 3.9 → 2.8 ms |
+| CUDA graphs captured by hand | 607 | 0.4 s a shape instead of torch.compile's 10-20 s (the games waited); a new league member no longer stalls everything for 25-50 s |
+| every game reloads the map (the fix above) | 540 | the games between agents are real games now (47 ms a step, not 32) |
+| the loading screen drawn in the game's thread, a video every 10 minutes | 644 | a reload's CPU 2.1 → 1.4 s |
+
+* **The cloning batches.** The loader takes its workers' batches in turn, and a worker reading 16 games before it emptied them gave nothing for seconds: the learner waited 26% of an update. `bc.Steps` is now a shuffle buffer kept full (9%).
+* **Only 58% of the games' time was play.** A reload took 13 s with 32 games running (5 s alone), as long as the game before it.
+  * "Allow Local Files" (a registry setting the harness needed when it read its actions from a file) made the game look in its folder for every file before its archives; under Wine each miss scans the directory. Off: 13.2 → 9.9 s.
+  * The rush rules were map object data (`w3u`, `w3q`, `w3a`), which the game applies change by change at every load: 2 of 3 s. They are now the game's own tables with the rules' values, in the map: a reload takes 1.0 s alone, as on the plain `duel` map. Checked cell by cell against the object data (a unit test) and with 240 built-in AI games on each map (2.10 and 2.09 minutes; the races' win rates within noise).
+* **The machine is full.** A game alone steps 68 times a second at 14.6 ms of CPU a step. With 32 games running, the same step costs 35-40 ms (two threads a core, the all-core clock, contention), and 16, 32 and 48 games step 418, 638 and 618 times a second in all. A reload per game is a quarter of the games' CPU.
+* **Dead ends.** The inference call as a thread of the learner (one GPU context): capturing a CUDA graph fails while another thread draws random numbers. Emptying melee's preload lists: the shim's `Preload` hook already drops them. A slower clock while reloading: the loading screen waits about two game seconds drawing frames, so it costs more.
+
+What is left, largest first: the map reload per game (fresh player slots per game would avoid it), the video renderer (3.4 cores while it renders), the observations serialized in JASS (about a fifth of a step), and wineserver (a tenth: the engine's threads signal each other ~500 times a step).
+
 ### Memory and a value head in BC
 
 Two additions to cloning:
