@@ -17,7 +17,7 @@
 | `warcraftsim/runtime/display.py` | One private Xvfb per game. |
 | `warcraftsim/runtime/instance.py` | Process lifecycle, the TCP step protocol and IPC files in `/dev/shm`. |
 | `warcraftsim/client.py`, `env.py`, `vec.py`, `scenario.py` | User-facing API. |
-| `shim/` | `w3shim.dll` (clock, sync, turbo, profiler) and the `w3launch.exe` injector. |
+| `shim/` | `w3shim.dll` (clock, sync, the pass over the units, turbo, profiler) and the `w3launch.exe` injector. |
 | `warcraftsim/video.py` | Replay playback to MP4: frame-stepped clock, every frame grabbed from Xvfb (XGetImage) into ffmpeg; audio from the shim's virtual sound card (`shim/audio.c`), muxed with its latency removed. |
 | `puffer/wc3_bridge.h`, `warcraftsim/puffer/` | PufferLib 5.0: C bridge environment, tasks, bridge server, trainer build, `train` orchestrator. |
 | `warcraftsim/dashboard/` | Training dashboard: a standard-library HTTP server plus one self-contained page. |
@@ -26,6 +26,10 @@
 
 1. The harness timer fires every `step_seconds` of game time.
 2. The harness writes the observation with `PreloadGenStart`, then `Preload(token)`×N, then `PreloadGenEnd("w3sim\\obs.txt")`. The shim hooks `Preload`/`PreloadGenEnd` (`shim/obs.c`) and keeps the tokens in memory instead of checking the disk per token and writing a file.
+   * The units are the shim's part (`shim/units.c`). The harness hands it each unit's handle id (`ForGroup` over all units, a call of the mailbox native per unit with the negated id), and the shim makes the native calls itself: it drops units that are gone or were reported dead, counts the living ones for the result, and keeps the records of those that changed, which go into the observation where the harness used to write them.
+   * The natives are plain cdecl functions in the executable: handles and integers by value, a real returned as its bits in `eax`, and "handles" like `UNIT_TYPE_HERO` are the integers themselves. The game registers each with `push signature; push name; push function; call`, so the shim finds them by name (the first registration of a name is the real function; a second table registers every name with one stub).
+   * In JASS this was three passes with ~35 native calls and a few hundred instructions per unit: 9-13 ms a step with 150 units and 32 games running, against 4 now (4.0 and 1.5 ms on an idle machine).
+   * `W3SIM_UNITS=0` leaves it all to the harness (also what happens without the shim or with a native missing); `W3SIM_UNITS=2` has the harness write the records and the shim check each against its own. An integration test plays a game with the harness's pass and its replay with the shim's and compares every field of every unit and player on every step.
 3. The harness calls `GetPlayerTechMaxAllowed(Player(PLAYER_NEUTRAL_PASSIVE), 1048575)`. The shim hooks that native (`shim/sync.c`): it freezes the virtual clock, sends `OBS n len` followed by the tokens, then blocks on the socket.
 4. Python parses and merges the observation and answers `GO [speed=..] [turbo=..] [frame=..] [capture=..] A n v1 .. vn` with the encoded commands.
 5. The native returns n; the harness reads the command integers with the same native (keys 1048577+i, answered from the `A` list) and issues the orders.
@@ -63,7 +67,7 @@ Before the mailbox, actions went through a file the harness loaded with `Preload
   * WineHQ stable 11.0 needed less wineserver CPU than staging 11.18. Esync made no difference.
 * **Speed.** The simulation itself costs about 0.6 ms of wall time per 25 ms turn (a 25-minute AI-vs-AI game in 39 s). Per 0.25 s step:
   * the harness plus the sync cost roughly 3-6 ms;
-  * serializing about 120 units costs about 3 ms (with deltas);
+  * serializing about 120 units cost about 3 ms in JASS (with deltas; now done by the shim, see the step protocol);
   * Python parsing costs about 0.5-1 ms.
   * Rendering is only a few frames per second.
   * A `duelrush` step (0.5 s, built-in AI on both sides) costs 14.6 ms of CPU in a game alone (68 steps/s) and 35-40 ms with 32 games running; about 8 ms of it is the harness (from steps of 0.25, 0.5 and 2 s). The game makes about 500 wineserver requests a step (its threads set and wait for events at the virtual clock's pace): a tenth of the CPU.
@@ -86,7 +90,6 @@ The layout of these was documented by the MIT-licensed `pwang724/wc3env` project
 
 * **Faster whole-game training** (the machine's CPU is its limit; see `docs/experiments.md`):
   * no reload per game: a reset by script with a fresh pair of player slots each game (the engine's state is per player; 1.29 has 24 slots);
-  * move the observation's serialization into the shim by calling the natives from C (about a fifth of a step is the harness's JASS);
   * a cheaper video renderer (3.4 cores while it renders).
 * **Replays in the stock client.** Agent orders are not in the `.w3g`; they are in the command log next to it.
   * Recording agent orders as engine actions would need the command-packet path (wc3env's approach): selection plus order packets sent as the local player's network actions.

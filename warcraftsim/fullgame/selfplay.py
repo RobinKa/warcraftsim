@@ -990,6 +990,23 @@ def collate(steps: list[dict], device) -> dict:
             "own": torch.arange(O, device=device)[None] < t(n_own)[:, None]}
 
 
+def minibatches(sizes: np.ndarray, size: int, group: int, rng=np.random) -> list[np.ndarray]:
+    """An epoch's minibatches (indices). A minibatch is padded to its widest step, and at random
+    that is twice the mean (91 entities for a mean of 41: attention costs the square). So the steps,
+    in random order, are cut into groups of `group` minibatches, each group sorted by entity count
+    and cut into its minibatches (49 entities with 8), which then come in random order. `group` 1:
+    at random."""
+    order = rng.permutation(len(sizes))
+    if group <= 1:
+        return [order[a:a + size] for a in range(0, len(order), size)]
+    out = []
+    for a in range(0, len(order), size * group):
+        part = order[a:a + size * group]
+        part = part[np.argsort(sizes[part], kind="stable")]
+        out += [part[b:b + size] for b in range(0, len(part), size)]
+    return [out[i] for i in rng.permutation(len(out))]
+
+
 def pieces(chunks: list[list[dict]], seq_len: int) -> list[list[dict]]:
     """The chunks (consecutive steps of one game side) cut into sequences of at most seq_len steps."""
     return [c[a:a + seq_len] for c in chunks for a in range(0, len(c), seq_len)]
@@ -1024,16 +1041,16 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
     of demonstrations (bc.Steps) whose cloning loss joins each minibatch's, times args.bc_coef."""
     advs = np.array([s["adv"] for s in steps], np.float32)
     mean, std = float(advs.mean()), float(advs.std()) + 1e-8
-    stats: dict[str, list[float]] = {}
+    stats: dict[str, list[torch.Tensor]] = {}  # (kept on the GPU until the end: a float() each was a wait for it)
     autocast = torch.autocast("cuda", dtype=torch.bfloat16, enabled=bool(device.type == "cuda" and args.bf16))
     net.train()
     seqs = pieces(chunks, args.seq_len) if net.memory else None
     per_mb = max(1, args.minibatch // args.seq_len)
+    sizes = np.array([s["n"] for s in steps])
     for _ in range(args.epochs):
         if seqs is None:
-            order = np.random.permutation(len(steps))
-            batches = (collate([steps[i] for i in order[a:a + args.minibatch]], device)
-                       for a in range(0, len(order), args.minibatch))
+            batches = (collate([steps[i] for i in idx], device)
+                       for idx in minibatches(sizes, args.minibatch, args.pad_groups))
         else:
             order = np.random.permutation(len(seqs))
             batches = (collate_seq([seqs[i] for i in order[a:a + per_mb]], device) for a in range(0, len(order), per_mb))
@@ -1073,9 +1090,9 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
             if bc_iter is not None and args.bc_coef > 0:  # DAgger's labels as an auxiliary loss (not a fine-tune:
                 from .bc import losses as bc_losses  # cloning afterwards overwrote what RL had learned)
                 with autocast:
-                    l_bc, _ = bc_losses(net, next(bc_iter), device, None, value_coef=0.0)
+                    l_bc, _ = bc_losses(net, next(bc_iter), device, None, value_coef=0.0, stats=False)
                 loss = loss + args.bc_coef * l_bc
-                stats.setdefault("loss/bc", []).append(float(l_bc))
+                stats.setdefault("loss/bc", []).append(l_bc.detach())
             opt.zero_grad(set_to_none=True)
             loss.backward()
             gn = torch.nn.utils.clip_grad_norm_(net.parameters(), args.max_grad_norm)
@@ -1085,9 +1102,9 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
                 clipfrac = (((ratio - 1).abs() > args.clip).float() * own).sum() / n_units
             for k, v in (("loss/policy", pg), ("loss/value", v_loss), ("loss/entropy", entropy), ("loss/kl", approx_kl),
                          ("loss/clipfrac", clipfrac), ("loss/ref_kl", ref_kl), ("grad_norm", gn)):
-                stats.setdefault(k, []).append(float(v))
+                stats.setdefault(k, []).append(v.detach())
     net.eval()
-    return {k: sum(v) / len(v) for k, v in stats.items()}
+    return {k: float(torch.stack(v).float().mean()) for k, v in stats.items()}
 
 
 def publish(net: FullGameNet, version: int, run_dir: Path) -> None:
@@ -1162,6 +1179,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--pfsp", default="hard")
     ap.add_argument("--batch-steps", type=int, default=8192, help="agent steps per update")
     ap.add_argument("--minibatch", type=int, default=256)
+    ap.add_argument("--pad-groups", type=int, default=8,
+                    help="minibatches are cut from groups of this many, sorted by entity count: they pad to their widest "
+                         "step (1: minibatches at random)")
     ap.add_argument("--epochs", type=int, default=2)
     ap.add_argument("--lr", type=float, default=5e-5)
     ap.add_argument("--gamma", type=float, default=0.997)
@@ -1305,15 +1325,16 @@ def main(argv: list[str] | None = None) -> int:
                                      else (0, 0, 0))
     bc_iter = None
     if args.bc_data:  # demonstrations for the auxiliary cloning loss, encoded by loader workers, epoch after epoch
-        from .bc import Steps
+        from .bc import Steps, as_is
         bc_paths = sorted(p for d in args.bc_data for p in d.glob("game*.npz"))
-        bc_set = Steps(bc_paths, vocab, args.bc_batch, cfg["values"], order_costs(vocab, args.map))
+        bc_set = Steps(bc_paths, vocab, args.bc_batch, cfg["values"], order_costs(vocab, args.map), arrays=True)
 
         def bc_cycle():
             epoch = 0
             while True:
                 bc_set.epoch, epoch = epoch, epoch + 1
-                yield from torch.utils.data.DataLoader(bc_set, batch_size=None, num_workers=args.bc_workers)
+                for b in torch.utils.data.DataLoader(bc_set, batch_size=None, num_workers=args.bc_workers, collate_fn=as_is):
+                    yield {k: torch.from_numpy(v) for k, v in b.items()}
         bc_iter = bc_cycle()
         print(f"auxiliary cloning loss: {len(bc_paths)} games, x{args.bc_coef}", flush=True)
     buf: list[dict] = []

@@ -541,3 +541,48 @@ def test_packed_network_call_matches_evaluate(memory):
         assert np.abs(ev["logp"][i, :o].numpy() - r["logp"]).max() < 1e-4
         assert abs(float(ev["value"][i]) - r["value"]) < 1e-4
         assert ("h" in r) == memory
+
+
+def test_minibatches_of_similar_sizes():
+    """The learner's minibatches: every step once an epoch, and steps of similar entity counts
+    together (a minibatch pads to its widest step)."""
+    from warcraftsim.fullgame.selfplay import minibatches
+    rng = np.random.default_rng(0)
+    sizes = rng.integers(5, 110, 8192)
+    padded = {}
+    for group in (1, 8):
+        mbs = minibatches(sizes, 256, group, np.random.RandomState(0))
+        assert len(mbs) == 32 and sorted(np.concatenate(mbs).tolist()) == list(range(8192))
+        padded[group] = np.mean([sizes[m].max() for m in mbs])
+    assert padded[8] < 0.65 * padded[1]
+    odd = minibatches(sizes[:1000], 256, 8, np.random.RandomState(0))
+    assert sorted(np.concatenate(odd).tolist()) == list(range(1000)) and sorted(len(m) for m in odd) == [232, 256, 256, 256]
+
+
+def test_ppo_update_runs_on_minibatches_by_size():
+    """One PPO update over steps of different sizes (minibatches cut by entity count, the clone's KL
+    term, the statistics read once at the end): finite losses, and the network moved."""
+    import types
+
+    from warcraftsim.fullgame.model import act
+    from warcraftsim.fullgame.selfplay import ppo_update
+    net, ref = _net(False), _net(False)
+    rng = np.random.default_rng(0)
+    steps = []
+    for i in range(24):
+        n, own = int(rng.integers(3, 13)), int(rng.integers(1, 4))
+        st = {"n": n, "n_own": own, "ent": rng.normal(size=(n, fx.F)).astype(np.float32), "type": rng.integers(0, 20, n),
+              "cur": rng.integers(0, 10, n), "glob": rng.normal(size=30).astype(np.float32)}
+        with torch.no_grad():
+            a = act(net, torch.from_numpy(st["ent"])[None], torch.from_numpy(st["type"])[None], torch.from_numpy(st["cur"])[None],
+                    torch.ones(1, n, dtype=torch.bool), torch.from_numpy(st["glob"])[None], torch.tensor([own]))
+        steps.append({**st, **{k: a[k][0, :own].numpy() for k in ("order", "tgt", "bx", "by", "logp")}, "avail": None,
+                      "adv": float(rng.normal()), "ret": float(rng.normal())})
+    args = types.SimpleNamespace(epochs=2, minibatch=8, pad_groups=2, seq_len=1, bf16=0, clip=0.2, vf_coef=0.5, ent_coef=0.01,
+                                 ref_kl=0.2, bc_coef=0.0, max_grad_norm=0.5)
+    before = net.value_head[0].weight.detach().clone()
+    opt = torch.optim.Adam(net.parameters(), lr=1e-3)
+    out = ppo_update(net, ref, opt, steps, args, False, torch.device("cpu"))
+    assert {"loss/policy", "loss/value", "loss/entropy", "loss/kl", "loss/clipfrac", "loss/ref_kl", "grad_norm"} <= set(out)
+    assert all(np.isfinite(v) for v in out.values()) and out["loss/ref_kl"] >= 0
+    assert float((net.value_head[0].weight - before).abs().max()) > 0

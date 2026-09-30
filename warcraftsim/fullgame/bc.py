@@ -71,13 +71,20 @@ def side_data(enc: fx.Encoder, game: dict, player: int, values: dict) -> dict:
     return out
 
 
+def as_is(batch):
+    """A loader's collate_fn for batches that are complete already (Steps with arrays)."""
+    return batch
+
+
 class Steps(torch.utils.data.IterableDataset):
     """Shuffled batches of steps from the games (both sides), encoded by the loader workers."""
 
     def __init__(self, paths: list[Path], vocab: dict, batch: int, values: dict, costs=None, buffer_steps: int = 8192,
-                 seed: int = 0):
+                 seed: int = 0, arrays: bool = False):
+        """`arrays`: numpy batches (with a loader's collate_fn=as_is they cross to its process as bytes:
+        a tensor crosses as a shared-memory file of its own, ~15 ms for a batch's twelve)."""
         self.paths, self.vocab, self.batch, self.buffer_steps, self.seed = paths, vocab, batch, buffer_steps, seed
-        self.values, self.costs = values, costs
+        self.values, self.costs, self.arrays = values, costs, arrays
         self.epoch = 0
 
     def __iter__(self):
@@ -99,7 +106,7 @@ class Steps(torch.utils.data.IterableDataset):
         def batch():
             idx = pick.choice(np.flatnonzero(used), self.batch, replace=False)
             used[idx] = False
-            return {k: torch.from_numpy(buf[k][idx]) for k in KEYS}
+            return {k: buf[k][idx] if self.arrays else torch.from_numpy(buf[k][idx]) for k in KEYS}
 
         for p in paths:
             game = fx.load_game(p)
@@ -228,11 +235,12 @@ def allowed_orders(paths: list[Path], vocab: dict) -> np.ndarray:
 
 
 def losses(net: FullGameNet, b: dict, device, states: torch.Tensor | None = None,
-           value_coef: float = 0.5, avail_mask: bool = True) -> tuple[torch.Tensor, dict]:
-    """The loss of a batch and its statistics. With memory, `states` [lanes, d] holds each lane's
-    state after its last chunk (read, and updated with the batch's)."""
+           value_coef: float = 0.5, avail_mask: bool = True, stats: bool = True) -> tuple[torch.Tensor, dict]:
+    """The loss of a batch and its statistics (`stats` False: none, and a dozen waits for the GPU
+    fewer). With memory, `states` [lanes, d] holds each lane's state after its last chunk (read, and
+    updated with the batch's)."""
+    E = int(b["mask"].any(0).nonzero().max()) + 1  # the batch's widest view (before the copy: no wait for the GPU)
     b = {k: v.to(device, non_blocking=True) for k, v in b.items()}
-    E = int(b["mask"].any(0).nonzero().max()) + 1  # the batch's widest view
     O = min(fx.MAX_OWN, E)
     ent, typ, cur, mask = b["ent"][:, :E].float(), b["type"][:, :E].long(), b["cur"][:, :E].long(), b["mask"][:, :E]
     y_order, y_ptr = b["y_order"][:, :O].long(), b["y_ptr"][:, :O].long()
@@ -261,6 +269,8 @@ def losses(net: FullGameNet, b: dict, device, states: torch.Tensor | None = None
     if "valid" in b:  # (padded steps: no value target)
         value, ret = value[b["valid"]], ret[b["valid"]]
     l_value = 0.5 * ((value - ret) ** 2).mean()
+    if not stats:
+        return l_order + l_ptr + 0.5 * l_pt + value_coef * l_value, {}
     with torch.no_grad():
         issued = own & (y_order > 0)
         p_order = 1 - logits.softmax(-1)[..., 0]  # the chance of any order
