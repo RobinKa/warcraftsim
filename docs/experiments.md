@@ -712,6 +712,8 @@ Human and orc, which RL alone never moved, win a quarter to a third of their rea
 
 Night elf had almost no real games at first (6 against 46–96 for the other races). The real-or-curriculum draw came right after the race choice, and the actors' seeded random streams correlated them. A replay of those streams gave night elf 12 of 91 real launches. The real game is now a launch kind of its own, and the replay gives 17–24 per race.
 
+A second skew, found on a day of 15 restarts (2026-09-30): a game thread's random stream was seeded by the thread alone, so every restart began with the same launches. Of the real launches against the normal AI, 43 were human's and 6 orc's. The seed now includes the update the run starts from; over 200 simulated restarts every race gets its share (101 to 132 of 923 real launches per race and difficulty).
+
 ### Games between agents had no heroes: the scripted reset (`fgself-1` to `fgself-9`)
 
 Found while profiling (next section): the games between agents restarted by script (`GameSetup.melee_reset`: remove every unit, respawn the start; 0.1 s) instead of reloading the map, and that was not a new game.
@@ -740,7 +742,7 @@ The real game (the built-in AI without the curriculum's tax, 10% of the launches
 | 2 to 4 hours after it (11M to 15M steps) | 309/559 (55%) | 43% | 89% | 41% | 40% | 48% | 62% |
 | 5 hours after it (17M to 19M steps, five games per load) | 214/375 (57%) | 50% | 88% | 39% | 49% | 50% | 64% |
 
-Nothing else about the training changed in between (the speed work below changed how fast the same games are played), so the gain is the games between agents being whole games, or training that would have come anyway; there is no control run.
+The races' columns are the measure: the restarts of that day skewed the mix of races in "all" and in the difficulties' columns (see the note on seeds above). Nothing else about the training changed in between (the speed work below changed how fast the same games are played), so the gain is the games between agents being whole games, or training that would have come anyway; there is no control run.
 
 ### Where a self-play step's time goes (speed, 2026-09-30)
 

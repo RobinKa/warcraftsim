@@ -529,11 +529,19 @@ def _choose(rng: random.Random, options: list[dict]) -> dict:
     return options[-1]
 
 
+def game_rng(cfg: dict, wid: int, k: int) -> random.Random:
+    """A game thread's draws (races, sides, kinds of launches, opponents). The update the run starts
+    from is part of the seed: seeded by the thread alone, every restart of a run began with the same
+    launches (on a day of 15 restarts, 43 launches of the real game for human against the normal AI
+    and 6 for orc)."""
+    return random.Random(f"{cfg['seed']}/{cfg.get('start_update', 0)}/{wid}/{k}")
+
+
 def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render_q) -> None:
     from ..runtime.instance import Agent, BuiltinAI, GameInstance, GameSetup
     from .play import BCAgent
 
-    rng = random.Random(cfg["seed"] * 1000 + wid * 16 + k)
+    rng = game_rng(cfg, wid, k)
     if cfg.get("avail_mask") and "costs_array" not in cfg:
         cfg["costs_array"] = np.asarray(cfg["costs"], np.int64)
     # videos: each actor's first game slot in turn (together one every video_every minutes); the
@@ -1323,7 +1331,8 @@ def main(argv: list[str] | None = None) -> int:
            "max_minutes": args.max_minutes, "max_steps": int(args.max_minutes * 60 / args.step_seconds) + 20,
            "wait_floor_ms": args.wait_floor_ms, "games_per_actor": args.games_per_actor,
            "games_per_process": args.games_per_process, "chunk": args.chunk, "gamma": args.gamma, "lam": args.lam,
-           "seed": args.seed, "slot": slot, "video_every": args.video_every, "scripted_reset": bool(args.scripted_reset),
+           "seed": args.seed, "start_update": resumed["update"] if resumed else 0, "slot": slot,
+           "video_every": args.video_every, "scripted_reset": bool(args.scripted_reset),
            "agent_games_factor": args.agent_games_factor, "mirror": bool(args.mirror), "learner_pid": os.getpid(),
            "actors": args.actors, "values": unit_values(), "shaping": args.shaping, "shaping_scale": args.shaping_scale,
            "tie_break": args.tie_break, "compile": bool(args.compile), "native_obs": bool(args.native_obs),

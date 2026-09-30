@@ -586,3 +586,13 @@ def test_ppo_update_runs_on_minibatches_by_size():
     assert {"loss/policy", "loss/value", "loss/entropy", "loss/kl", "loss/clipfrac", "loss/ref_kl", "grad_norm"} <= set(out)
     assert all(np.isfinite(v) for v in out.values()) and out["loss/ref_kl"] >= 0
     assert float((net.value_head[0].weight - before).abs().max()) > 0
+
+
+def test_a_restarted_run_draws_other_launches():
+    from warcraftsim.fullgame.selfplay import game_rng
+    draws = lambda cfg, w, k: [game_rng(cfg, w, k).random() for _ in range(3)]  # noqa: E731
+    a = {"seed": 0, "start_update": 100}
+    assert draws(a, 1, 2) == draws(dict(a), 1, 2)  # (a thread's stream is its own, and repeatable)
+    assert draws(a, 1, 2) != draws(a, 2, 1) and draws(a, 0, 16) != draws(a, 1, 0)
+    assert draws(a, 1, 2) != draws({"seed": 0, "start_update": 101}, 1, 2)
+    assert draws({"seed": 0}, 1, 2) == draws({"seed": 0, "start_update": 0}, 1, 2)
