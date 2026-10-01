@@ -674,13 +674,25 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     trace: list[dict] = []
     names = {int(k): v for k, v in (cfg.get("order_names") or {}).items()}
     while True:
+        # the tax first: the step's commands run in order, and set after an agent's orders the
+        # resources undid what they spent (a taxed agent trained for free); the taxed agent sees
+        # what it has left
+        cmds = []
+        if taxed is not None and obs.players.get(taxed) is not None:
+            p = obs.players[taxed]
+            now = (p.gold_gathered, p.lumber_gathered)
+            dg, dl = (p.gold, p.lumber) if gathered is None else (now[0] - gathered[0], now[1] - gathered[1])
+            if dg > 0 or dl > 0:  # (at the start: its starting gold and lumber)
+                p.gold, p.lumber = max(0, p.gold - int(opp["tax"] * dg)), max(0, p.lumber - int(opp["tax"] * dl))
+                cmds.append(SetResources(taxed, p.gold, p.lumber))
+            gathered = now
         rows = unit_rows(obs, t)  # once for both sides
         sts = {s: bot.observe(obs, t, rows) for s, bot in bots.items()}
         live = [s for s in bots if sts[s] is not None]
         for s in live:
             sts[s]["h"] = bots[s].h
         results = infer.request([(keys[s], sts[s]) for s in live]) if live else []
-        cmds, spans = [], {}
+        spans = {}
         for s, res in zip(live, results):
             if res is None:
                 continue
@@ -698,13 +710,6 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                                     entropy={s: r["entropy"] for s, r in zip(live, results) if r}))
         if late is not None and t == opp["start"]:  # the built-in AI takes over its side (after the bots' orders)
             cmds.append(StartAI(late))
-        if taxed is not None and obs.players.get(taxed) is not None:  # (applied before the game goes on)
-            p = obs.players[taxed]
-            now = (p.gold_gathered, p.lumber_gathered)
-            dg, dl = (p.gold, p.lumber) if gathered is None else (now[0] - gathered[0], now[1] - gathered[1])
-            if dg > 0 or dl > 0:  # (at the start: its starting gold and lumber)
-                cmds.append(SetResources(taxed, max(0, p.gold - int(opp["tax"] * dg)), max(0, p.lumber - int(opp["tax"] * dl))))
-            gathered = now
         obs = g.step(cmds)
         for s, (a, b) in spans.items():
             bots[s].accepted(cmds[a:b], obs.command_results[a:b])
