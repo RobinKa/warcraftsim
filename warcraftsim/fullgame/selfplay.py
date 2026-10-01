@@ -537,6 +537,21 @@ def game_rng(cfg: dict, wid: int, k: int) -> random.Random:
     return random.Random(f"{cfg['seed']}/{cfg.get('start_update', 0)}/{wid}/{k}")
 
 
+def matchup(mirror: bool, race: str, opp: str) -> str:
+    """The key of the curriculum's level for a learner playing `race` against `opp` (League)."""
+    return race if mirror else f"{race}/{opp}"
+
+
+def balance_tax(spec: dict, races: list[str]) -> tuple[int, float]:
+    """A game between agents playing `races` (players 0, 1): (the side whose income is taxed, the
+    share taken; 0: none), from the league's balance between the two races (League.balance)."""
+    a, b = races
+    t = spec.get("balance", {}).get(f"{a}/{b}")
+    if t is None:
+        t = -spec.get("balance", {}).get(f"{b}/{a}", 0.0)
+    return (0 if t > 0 else 1), abs(t)
+
+
 def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render_q) -> None:
     from ..runtime.instance import Agent, BuiltinAI, GameInstance, GameSetup
     from .play import BCAgent
@@ -566,8 +581,9 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
         slots = [Agent(races[0], handicap=cfg["handicap"]), Agent(races[1], handicap=cfg["handicap"])]
         real = bool(ai.get("real"))  # the real game (the yardstick, no curriculum)
         curr = ai["kind"] == "ai" and "by_race" in ai  # a curriculum game (League.knobs, by the learner's race)
+        key = matchup(cfg["mirror"], races[side], races[1 - side])
         if curr:
-            ai = {**ai, **ai["by_race"].get(races[side], {})}
+            ai = {**ai, **ai["by_race"].get(key, {})}
         late = curr and ai.get("delay", 0.0) > 0  # the AI starts late: an agent slot till then
         if ai["kind"] == "ai":
             slots[1 - side] = (Agent(races[1 - side], handicap=cfg["handicap"], difficulty=ai["difficulty"]) if late
@@ -596,9 +612,13 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                     except (FileNotFoundError, json.JSONDecodeError):
                         pass
                     opp = ({"name": f"script:ai-{ai['difficulty']}" + (" (real)" if real else ""), "kind": "ai"}
-                           if ai["kind"] == "ai" else _choose(rng, spec["agents"]))
+                           if ai["kind"] == "ai" else dict(_choose(rng, spec["agents"])))
+                    if agents_only:  # races apart: the stronger one's income taxed (League.balance)
+                        taxed, share = balance_tax(spec, races)
+                        if share > 0:
+                            opp["tax"], opp["tax_side"] = share, taxed
                     if curr:  # the curriculum's current knobs for this AI
-                        now = next((x.get("by_race", {}).get(races[side], ai) for x in spec["launch"]
+                        now = next((x.get("by_race", {}).get(key, ai) for x in spec["launch"]
                                     if x.get("difficulty") == ai["difficulty"] and not x.get("real")), ai)
                         opp["curriculum"] = now.get("level", 0.0)
                         if late:
@@ -632,7 +652,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     keys: dict[int, str] = {}
     trajs: dict[int, Trajectory] = {}
     late = 1 - side if opp.get("start") is not None else None  # the built-in AI's side, idle until opp["start"]
-    taxed = 1 - side if opp.get("tax") else None  # the AI's side losing opp["tax"] of what it gathers
+    # the side losing opp["tax"] of what it gathers: the AI's (the curriculum), or an agent's (the balance)
+    taxed = opp.get("tax_side", 1 - side) if opp.get("tax") else None
     gathered = None
     prod = Production()  # what both sides make (the episode row: the dashboard's Production tab)
     prod.step(obs)
@@ -725,6 +746,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"curriculum": opp["curriculum"], "handicap": g.setup.slots[side].handicap,
             "ai_delay": opp.get("start", 0) * cfg["step_seconds"], "ai_tax": opp.get("tax", 0.0)}
            if "curriculum" in opp else {}),
+        # games between agents: the share of the learner's income taken (< 0: of the opponent's)
+        **({"balance_tax": opp["tax"] if opp["tax_side"] == side else -opp["tax"]} if "tax_side" in opp else {}),
         "prod": prod.row(side, obs), "opp_prod": prod.row(1 - side, obs)}
     out_q.put({"episode": ep})
     if record:  # the video's panel: A = the learner's side
@@ -857,7 +880,7 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
 class League:
     def __init__(self, run_dir: Path, ai: list[str], shares: dict, max_past: int, pfsp: str,
                  curriculum: tuple[float, float, float, int] | None = None, mode: str = "hp",
-                 races: tuple[str, ...] = ("",)):
+                 races: tuple[str, ...] = ("",), mirror: bool = True, balance: tuple[float, float] | None = None):
         """`curriculum`: (start level, step, the knob at level 1, base handicap): games against the
         built-in AI get easier or harder towards a 50% score, a level per difficulty in [0, 1] that
         a loss raises by `step`, a win lowers (a tie leaves it). At 0 the game is the real one; None:
@@ -871,20 +894,37 @@ class League:
         * "tax": the AI plays from the start, but loses this share of what it gathers (and of its
           starting gold and lumber), up to the knob (e.g. 0.9): a poorer opponent, nothing idle.
         A level per difficulty and learner's race (`races`): one per difficulty settled where night
-        elf games (96% won) balanced human and orc ones (7-14%), and neither end taught anything."""
+        elf games (96% won) balanced human and orc ones (7-14%), and neither end taught anything.
+        Without `mirror` matchups, a level per difficulty and matchup ("human/nightelf": the learner
+        human, the AI night elf).
+
+        `balance` (step, the tax at level 1), for games between agents of different races (the races
+        are not balanced on duelrush: night elf won 78% of the built-in AI's games, undead 29%): a
+        level in [-1, 1] per pair of races ("human/orc": > 0 the first one's income is taxed, < 0
+        the second's), which a win of the first raises by `step` and a loss lowers. Only the
+        learner's games against itself move it (the same player on both sides: the races alone
+        differ); games against past snapshots are taxed the same."""
         self.run_dir, self.shares, self.max_past, self.pfsp = run_dir, shares, max_past, pfsp
         self.scripts = {f"script:ai-{d}": Member(f"script:ai-{d}") for d in ai}
         self.rule, self.mode, self.races = curriculum, mode, tuple(races)
-        self.level = {(n, r): curriculum[0] for n in self.scripts for r in self.races} if curriculum else {}
+        self.mirror = mirror
+        self.keys = self.races if mirror else tuple(matchup(False, a, b) for a in self.races for b in self.races)
+        self.level = {(n, k): curriculum[0] for n in self.scripts for k in self.keys} if curriculum else {}
+        self.balance_rule = balance
+        self.balance = ({f"{a}/{b}": 0.0 for i, a in enumerate(self.races) for b in self.races[i + 1:]}
+                        if balance and not mirror else {})
         # with a curriculum some launches play the real game (the yardstick: "script:ai-X (real)")
         self.real = {f"{n} (real)": Member(f"{n} (real)") for n in self.scripts} if curriculum else {}
         self.real_share = 0.0  # (set by the learner: --real-share)
         self.past: list[Member] = []
         self.self_member = Member("self")
 
+    def matchup(self, race: str, opp: str) -> str:
+        return matchup(self.mirror, race, opp)
+
     def knobs(self, name: str, race: str = "") -> dict:
-        """At the level of AI `name` and the learner's `race`: the learner's handicap (hit points in
-        percent), the AI's late start (seconds) and the share of the AI's income taken."""
+        """At the level of AI `name` and the learner's `race` (or matchup): the learner's handicap
+        (hit points in percent), the AI's late start (seconds) and the share of the AI's income taken."""
         _, _, top, base = self.rule
         lv = self.level[(name, race)]
         if self.mode == "tax":
@@ -900,6 +940,18 @@ class League:
         key = (name, race)
         if key in self.level:
             self.level[key] = min(1.0, max(0.0, self.level[key] - self.rule[1] * outcome))
+
+    def balanced(self, race: str, opp: str, outcome: float) -> None:
+        """A game of the learner against itself, `race` against `opp`, ended (`outcome` for `race`)."""
+        pair, sign = f"{race}/{opp}", 1.0
+        if pair not in self.balance:
+            pair, sign = f"{opp}/{race}", -1.0
+        if pair in self.balance:
+            self.balance[pair] = min(1.0, max(-1.0, self.balance[pair] + self.balance_rule[0] * sign * outcome))
+
+    def balance_taxes(self) -> dict:
+        """Per pair of races, the share of the first one's income taken (< 0: of the second's)."""
+        return {k: round(v * self.balance_rule[1], 3) for k, v in self.balance.items()}
 
     def member(self, name: str) -> Member | None:
         if name == "self":
@@ -925,9 +977,16 @@ class League:
             m.recent = list(row.get("recent") or [])
         for n, v in (summary.get("level") or {}).items():  # "script:ai-X|race" (runs from before races: every race)
             name, _, race = n.partition("|")
-            for key in ([(name, race)] if race else [(name, r) for r in self.races]):
+            if not race:
+                keys = [(name, k) for k in self.keys]
+            elif not self.mirror and "/" not in race:  # (a run of mirror matchups goes on with mixed ones)
+                keys = [(name, self.matchup(race, b)) for b in self.races]
+            else:
+                keys = [(name, race)]
+            for key in keys:
                 if key in self.level:
                     self.level[key] = v
+        self.balance.update({k: v for k, v in (summary.get("balance") or {}).items() if k in self.balance})
         me = summary.get("self") or {}
         self.self_member.wins, self.self_member.losses = me.get("wins", 0.0), me.get("losses", 0.0)
         self.self_member.draws, self.self_member.recent = me.get("draws", 0.0), list(me.get("recent") or [])
@@ -943,7 +1002,7 @@ class League:
                         "p": ai_share * real_share / len(self.scripts)} for n in self.scripts]
             ai_share *= 1.0 - real_share
         launch += [{"kind": "ai", "difficulty": n.split("-", 1)[1], "p": ai_share / len(self.scripts),
-                    **({"by_race": {r: dict(self.knobs(n, r), level=self.level[(n, r)]) for r in self.races}}
+                    **({"by_race": {k: dict(self.knobs(n, k), level=self.level[(n, k)]) for k in self.keys}}
                        if self.level else {})}
                    for n in self.scripts]
         agents = [{"name": "self", "kind": "self", "p": self.shares["self"] if self.past else 1.0}]
@@ -952,7 +1011,7 @@ class League:
             total = sum(w) or 1.0
             agents += [{"name": m.name, "kind": "past", "path": m.path, "p": self.shares["past"] * x / total}
                        for m, x in zip(self.past, w)]
-        return {"launch": launch, "agents": agents}
+        return {"launch": launch, "agents": agents, **({"balance": self.balance_taxes()} if self.balance else {})}
 
     def write(self) -> None:
         spec = self.run_dir / "league_spec.json"
@@ -966,7 +1025,8 @@ class League:
                     "draws": m.draws, "win_rate": p, "weight": pfsp_weight(p, self.pfsp) if m.path else None,
                     "path": m.path, "recent": m.recent}
         summary = {"pfsp": self.pfsp, "members": [row(m) for m in [*self.scripts.values(), *self.real.values(), *self.past]],
-                   "self": row(self.self_member), "level": {f"{n}|{r}": v for (n, r), v in self.level.items()}}
+                   "self": row(self.self_member), "level": {f"{n}|{r}": v for (n, r), v in self.level.items()},
+                   "balance": self.balance}
         tmp = self.run_dir / "league.json.tmp"
         tmp.write_text(json.dumps(summary))
         tmp.replace(self.run_dir / "league.json")
@@ -979,10 +1039,12 @@ class League:
         if self.self_member.win_rate() is not None:
             out["league/self"] = self.self_member.win_rate()
         out["league/members"] = len(self.past)
+        used = {"tax": ("tax",), "delay": ("delay",)}.get(self.mode, ("handicap", "delay"))  # (the others stay put)
         for (n, r), lv in self.level.items():  # the curriculum: its levels and knobs
             short = f"{n.split(':', 1)[1]} {r}".strip()
             out[f"curriculum/{short} level"] = lv
-            out.update({f"curriculum/{short} {k}": v for k, v in self.knobs(n, r).items()})
+            out.update({f"curriculum/{short} {k}": v for k, v in self.knobs(n, r).items() if k in used})
+        out.update({f"balance/{k} tax": v for k, v in self.balance_taxes().items()} if self.balance else {})
         return out
 
 
@@ -1178,6 +1240,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--races", default="all")
     ap.add_argument("--mirror", type=int, default=1, help="both sides play the same race (on duelrush the races "
                                                            "are far from balanced: night elf beat the others 96%%)")
+    ap.add_argument("--balance-step", type=float, default=0.02,
+                    help="without --mirror: how far a game of the learner against itself moves the tax between "
+                         "its two races (League: the winner's income taxed more, towards a 50%% score; 0: no tax)")
+    ap.add_argument("--balance-max", type=float, default=0.9, help="the tax between two races at the end of its range")
     ap.add_argument("--handicap", type=int, default=50)
     ap.add_argument("--step-seconds", type=float, default=0.5)
     ap.add_argument("--max-minutes", type=float, default=4.0)
@@ -1316,7 +1382,9 @@ def main(argv: list[str] | None = None) -> int:
     league = League(run_dir, ai, {"ai": args.ai_share, "self": args.self_share, "past": 1.0 - args.self_share},
                     args.max_past, args.pfsp,
                     curriculum=((args.curriculum, args.curriculum_step, args.curriculum_delay, args.handicap)
-                                if args.curriculum >= 0 else None), mode=args.curriculum_mode, races=tuple(races))
+                                if args.curriculum >= 0 else None), mode=args.curriculum_mode, races=tuple(races),
+                    mirror=bool(args.mirror),
+                    balance=(args.balance_step, args.balance_max) if args.balance_step > 0 else None)
     league.real_share = args.real_share
     if resumed is not None and (run_dir / "league.json").exists():
         league.restore(json.loads((run_dir / "league.json").read_text()))
@@ -1401,7 +1469,9 @@ def main(argv: list[str] | None = None) -> int:
                     if m is not None:
                         m.record(e["outcome"])
                     if "curriculum" in e:
-                        league.curriculum(e["opponent"], e["outcome"], e["race"])
+                        league.curriculum(e["opponent"], e["outcome"], league.matchup(e["race"], e["opponent_race"]))
+                    if e["opponent"] == "self" and e["race"] != e["opponent_race"]:
+                        league.balanced(e["race"], e["opponent_race"], e["outcome"])
                     with open(run_dir / "episodes.jsonl", "a") as f:
                         f.write(json.dumps(e) + "\n")
                     continue

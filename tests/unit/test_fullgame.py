@@ -363,6 +363,43 @@ def test_curriculum_by_race(tmp_path):
     assert lg.level[("script:ai-normal", "human")] == lg.level[("script:ai-normal", "nightelf")] == 0.7
 
 
+def test_mixed_matchups_curriculum_and_balance(tmp_path):
+    """Without mirror matchups: a curriculum level per matchup, and between agents of two races a
+    tax on the stronger one's income that the learner's games against itself move towards 50%."""
+    from warcraftsim.fullgame.selfplay import balance_tax
+    lg = League(tmp_path, ["normal"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard",
+                curriculum=(0.5, 0.1, 0.9, 50), mode="tax", races=("human", "nightelf"), mirror=False,
+                balance=(0.25, 0.8))
+    n = "script:ai-normal"
+    assert set(k for _, k in lg.level) == {"human/human", "human/nightelf", "nightelf/human", "nightelf/nightelf"}
+    lg.curriculum(n, -1.0, lg.matchup("human", "nightelf"))  # the learner human, the AI night elf
+    by = [x for x in lg.spec()["launch"] if x["kind"] == "ai"][0]["by_race"]
+    assert by["human/nightelf"]["tax"] == 0.54 and by["nightelf/human"]["tax"] == 0.45
+    assert lg.balance == {"human/nightelf": 0.0}
+    assert balance_tax(lg.spec(), ["human", "nightelf"])[1] == 0.0  # (nothing taken yet)
+    lg.balanced("nightelf", "human", 1.0)  # night elf won: its income taxed
+    lg.balanced("human", "nightelf", -1.0)
+    lg.balanced("human", "nightelf", 0.0)  # (a tie: unchanged)
+    assert lg.balance["human/nightelf"] == -0.5 and lg.spec()["balance"] == {"human/nightelf": -0.4}
+    assert balance_tax(lg.spec(), ["nightelf", "human"]) == (0, 0.4)  # player 0 is the night elf
+    assert balance_tax(lg.spec(), ["human", "nightelf"]) == (1, 0.4)
+    assert balance_tax(lg.spec(), ["human", "human"])[1] == 0.0
+    for _ in range(9):
+        lg.balanced("human", "nightelf", 1.0)
+    assert lg.balance["human/nightelf"] == 1.0 and lg.train_keys()["balance/human/nightelf tax"] == 0.8
+    lg.write()
+    again = League(tmp_path, ["normal"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard",
+                   curriculum=(0.5, 0.1, 0.9, 50), mode="tax", races=("human", "nightelf"), mirror=False,
+                   balance=(0.25, 0.8))
+    again.restore(json.loads((tmp_path / "league.json").read_text()))
+    assert again.balance == lg.balance and again.level == lg.level
+    again.restore({"level": {f"{n}|human": 0.3}})  # a run of mirror matchups goes on with mixed ones
+    assert again.level[(n, "human/nightelf")] == again.level[(n, "human/human")] == 0.3
+    mirror = League(tmp_path, ["normal"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard",
+                    curriculum=(0.5, 0.1, 0.9, 50), mode="tax", races=("human", "nightelf"), balance=(0.25, 0.8))
+    assert mirror.balance == {} and "balance" not in mirror.spec() and mirror.matchup("human", "human") == "human"
+
+
 def test_harvest_switch_is_a_decision():
     """A harvest order is redundant only for a worker already harvesting that resource: a miner
     sent to the trees is a decision (the clone had learned that harvesting workers never switch)."""

@@ -886,7 +886,7 @@ class Dashboard:
         if "launch" not in info:
             info["launch"] = {"run_command": _rebuilt_command(info), "rebuilt": True}
         train_rows = self.cache.read(d / "train.jsonl")
-        train = [{k: v for k, v in r.items() if k in TRAIN_KEYS or k.startswith(("league/", "curriculum/"))} for r in train_rows]
+        train = [{k: v for k, v in r.items() if k in TRAIN_KEYS or k.startswith(("league/", "curriculum/", "balance/"))} for r in train_rows]
         episodes = self._merged(d, "episodes")
         steps = _interp_steps([e["time"] for e in episodes], train_rows)
         if info.get("kind") == "match":  # no trainer: episodes in order

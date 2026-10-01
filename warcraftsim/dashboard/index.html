@@ -696,6 +696,8 @@ const SECTIONS = [
       [["trp", "curriculum/", " delay", "nonzero"]], { ymin: 0, empty: "the AI starts on time (no curriculum, or one without a late start: --curriculum-mode)", hideEmpty: true }],
     ["c-lg-tax", "The tax on the AI's income", "the share of what it gathers taken away (--curriculum-mode tax)",
       [["trp", "curriculum/", " tax", "nonzero"]], { ymin: 0, ymax: 1, empty: "the AI keeps its income (no curriculum, or one without a tax: --curriculum-mode tax)", hideEmpty: true }],
+    ["c-lg-balance", "The tax between races", "games between agents of two races: the share of the first race's income taken (below 0: the second's), moved towards a 50% score by the learner's games against itself",
+      [["trp", "balance/", " tax"]], { ymin: -1, ymax: 1, empty: "mirror matchups, or no tax between races (--balance-step)", hideEmpty: true }],
   ]],
   ["Production", [
     ["c-pr-army", "Army trained per game", "games against the built-in AI (in curriculum games it is taxed)",
