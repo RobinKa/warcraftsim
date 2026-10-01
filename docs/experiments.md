@@ -749,6 +749,21 @@ The races' columns are the measure: the restarts of that day skewed the mix of r
 
 Over the run's last 20M steps human still trained almost no heroes (0.03 a game), and undead fewer (1.7 → 1.2) while it won more. `fgself-9` played mirror matchups only (`--mirror 1`, as every run so far). The next run (`fgself-10`) goes on from its last checkpoint with mixed matchups: a curriculum level per matchup against the built-in AI and a tax between races in games between agents (`--mirror 0`, `League.balance`).
 
+### Mixed matchups (`fgself-10`)
+
+`fgself-9`'s last checkpoint (42.6M steps, mirror matchups only) in 320 real games against the normal AI over all 16 matchups (`play.py --race all --ai-race all`), the learner's race by row:
+
+| learner \ AI | human | orc | undead | night elf | all |
+|---|---|---|---|---|---|
+| human | 59% (22) | 29% (17) | 50% (18) | 0% (26) | 33% |
+| orc | 65% (26) | 85% (13) | 71% (17) | 7% (14) | 59% |
+| undead | 48% (25) | 11% (27) | 50% (20) | 0% (16) | 28% |
+| night elf | 88% (25) | 82% (17) | 87% (15) | 91% (22) | 87% |
+
+70% in the mirror matchups it trained on, 44% in the others. Against the night elf AI the other races won 1 game in 56: night elf is the strongest race on `duelrush` (78% of the built-in AI's games). `fgself-10` goes on from this checkpoint with `fgself-9`'s recipe and mixed matchups (`--mirror 0`):
+* the curriculum against the built-in AI keeps a level per difficulty and matchup (32), starting at 0.3 (a tax of 27% on the AI);
+* games between agents of two races tax the stronger race's income (`League.balance`): a level per pair of races that the learner's games against itself move towards a 50% score (0.02 a game, a tax of at most 90%); games against past snapshots pay the same tax. In the first 150 games night elf's tax against human rose to 11%.
+
 ### Where a self-play step's time goes (speed, 2026-09-30)
 
 `fgself-9` ran at 560 agent steps/s with 32 games. A game thread spent 55% of its time waiting for the policy and 36% for the game. After this round the learner is the limit with the machine's CPU close behind, and it runs at about 840 steps/s with whole games, five to a load of the map (607 before the reset fix, when half the games were the cheap broken ones).
