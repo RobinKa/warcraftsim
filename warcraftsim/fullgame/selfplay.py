@@ -1320,7 +1320,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", help="default: cuda if available (asking opens the GPU driver)")
     ap.add_argument("--resume", action="store_true", help="continue the run --name: its latest checkpoint, league and counts")
-    ap.add_argument("--note", default="")
+    ap.add_argument("--note", default="", help="the run's notes (notes.md); with --resume, why it was restarted (the "
+                                                "restart's marker on the dashboard's charts)")
     args = ap.parse_args(argv)
     args.device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     import signal
@@ -1374,14 +1375,22 @@ def main(argv: list[str] | None = None) -> int:
                    "episodes": sum(1 for _ in open(run_dir / "episodes.jsonl")) if (run_dir / "episodes.jsonl").exists() else 0,
                    "checkpoint": cks[-1].name if cks else None}
         info.update(created=old.get("created", info["created"]), init_from=old.get("init_from", info["init_from"]),
-                    resumes=old.get("resumes", []) + [{"time": time.time(), **resumed}])
+                    resumes=old.get("resumes", []) + [{"time": time.time(), **resumed, **({"note": args.note} if args.note else {})}])
 
     def save_info():
+        try:  # notes written on the restarts since (by hand, in run.json) stay
+            notes = {r["time"]: r["note"] for r in json.loads((run_dir / "run.json").read_text()).get("resumes", [])
+                     if r.get("note")}
+            for r in info.get("resumes", []):
+                if not r.get("note") and r["time"] in notes:
+                    r["note"] = notes[r["time"]]
+        except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError):
+            pass
         tmp = run_dir / "run.json.tmp"
         tmp.write_text(json.dumps(info, indent=1))
         tmp.replace(run_dir / "run.json")
     save_info()
-    if args.note:
+    if args.note and resumed is None:  # (resuming, it is the restart's note: a marker on the dashboard's charts)
         (run_dir / "notes.md").write_text(args.note + "\n")
 
     league = League(run_dir, ai, {"ai": args.ai_share, "self": args.self_share, "past": 1.0 - args.self_share},

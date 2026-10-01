@@ -77,6 +77,21 @@ main { padding:14px 18px 40px; overflow:auto; min-height:0; }
 .tip { position:absolute; pointer-events:none; background:#0b0f13d9; border:1px solid var(--line); border-radius:6px; padding:4px 7px;
        font-size:11px; line-height:1.35; white-space:nowrap; display:none; z-index:5; }
 .tip.hovered { background:#0b0f13f2; border-color:#4a5868; }
+/* restarts on the charts (as Grafana's annotations): a dotted line, a badge at its foot, the note on hover */
+.mark { position:absolute; width:14px; height:14px; margin:-7px 0 0 -7px; z-index:4; cursor:default; }
+.mark i { position:absolute; left:3px; top:3px; width:7px; height:7px; background:#e0a33a; border-radius:1.5px;
+          transform:rotate(45deg); box-shadow:0 0 0 1.5px var(--panel); }
+.mark:hover i { background:#ffc35c; }
+.mark .mark-tip { display:none; position:absolute; bottom:15px; left:50%; transform:translateX(-50%); width:max-content;
+                  max-width:340px; background:#0b0f13f2; border:1px solid #4a5868; border-radius:6px; padding:5px 8px;
+                  font-size:11px; line-height:1.4; white-space:normal; z-index:6; }
+.mark .mark-tip.l { left:-2px; transform:none; }
+.mark .mark-tip.r { left:auto; right:-2px; transform:none; }
+.mark:hover .mark-tip { display:block; }
+.mark-tip > div + div.mt { margin-top:6px; padding-top:5px; border-top:1px solid var(--line); }
+.mark-tip .mt b { color:#e0a33a; font-weight:600; }
+.mark-tip .mt span, .mark-tip .ms { color:var(--muted); }
+.mark-tip .mn { margin-top:3px; color:var(--text); }
 section { margin-top:18px; }
 section > h3 { font-size:13px; margin:0 0 8px; color:var(--muted); text-transform:uppercase; letter-spacing:.8px; }
 /* replays: one player, the episodes beside it */
@@ -270,6 +285,7 @@ function smooth(points, a) {
 function drawChart(id) {
   const c = ui.charts[id]; if (!c) return;
   const canvas = c.canvas, dpr = window.devicePixelRatio || 1, W = canvas.clientWidth, H = canvas.clientHeight;
+  canvas.parentElement.querySelectorAll(".mark").forEach(e => e.remove());
   if (!W) { c.geo = null; return; }  // in a hidden tab: drawn when the tab is shown
   canvas.width = W * dpr; canvas.height = H * dpr;
   c.overlay.width = W * dpr; c.overlay.height = H * dpr; c.overlay.style.width = W + "px"; c.overlay.style.height = H + "px";
@@ -321,8 +337,30 @@ function drawChart(id) {
     }
     g.setLineDash([]);
   }
+  // restarts: a dotted line each, and at its foot a badge with the note (restarts at one step share one)
+  const marks = new Map();
+  for (const m of c.marks || []) {
+    if (m.x < x0 || m.x > x1) continue;
+    const px = Math.round(X(m.x)) + .5;
+    marks.set(px, [...(marks.get(px) || []), m]);
+  }
+  for (const [px, ms] of marks) {
+    g.strokeStyle = "rgba(224,163,58,.6)"; g.lineWidth = 1; g.setLineDash([2, 3]);
+    g.beginPath(); g.moveTo(px, pad.t); g.lineTo(px, H - pad.b); g.stroke(); g.setLineDash([]);
+    const el = document.createElement("div");
+    el.className = "mark"; el.style.left = px + "px"; el.style.top = (H - pad.b) + "px";
+    el.innerHTML = `<i></i><div class="mark-tip ${px < 170 ? "l" : px > W - 170 ? "r" : ""}">${ms.map(markHtml).join("")}</div>`;
+    canvas.parentElement.appendChild(el);
+  }
   c.geo = { series, X, Y, x0, x1, pad, W, H };
   drawCrosshair(id);
+}
+
+function markHtml(m) {  // a restart's note: when, at which step, from which checkpoint, why
+  const when = new Date(m.time * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return `<div class="mt"><b>restarted</b>${m.runName ? ` <span>${esc(m.runName)}</span>` : ""} <span>${when}</span></div>` +
+    `<div class="ms">at ${fmt(m.steps || 0, 0)} steps · update ${m.update ?? "–"}${m.checkpoint ? ` · from ${esc(m.checkpoint)}` : ""}</div>` +
+    (m.note ? `<div class="mn">${esc(m.note)}</div>` : "");
 }
 
 function nearest(pts, x) {
@@ -844,9 +882,13 @@ function renderMain() {
   document.getElementById("legend").innerHTML = shown.length > 1
     ? shown.map((n, i) => `<span>${dashSvg(DASHES[i % DASHES.length], runColor(i))}${n}${state.data[n]?.info?.sweep ? ` <span style="color:var(--muted)">${state.data[n].info.sweep.options}</span>` : ""}</span>`).join("")
     : "";
+  // restarts (run.json "resumes"; --resume --note says why): markers on the charts of steps
+  const marks = shown.flatMap((n, ri) => (state.data[n].info.resumes || []).map(r => ({ ...r, x: off(n) + (r.steps || 0),
+                                                                                       runName: shown.length > 1 ? n : "" })));
   for (const [, charts] of SECTIONS) {
     for (const [id, , , defs] of charts) {
       const c = ui.charts[id]; if (!c) continue;
+      c.marks = (c.opts.axis || "steps") === "steps" ? marks : [];
       c.series = [];
       shown.forEach((n, ri) => {
         for (const [src, key, name, color] of expandDefs(defs, state.data[n])) {
@@ -1167,6 +1209,7 @@ function overviewHtml(info, what) {
 function setCharts(defs, pointsOf) {
   for (const [id, , , series] of defs) {
     const c = ui.charts[id]; if (!c) continue;
+    c.marks = [];
     c.series = series.map(([key, name, color]) => ({ name, color, run: 0, runName: "", dash: [], points: pointsOf(id, key),
                                                       raw: !!c.opts.raw, dots: !!c.opts.dots }));
     drawChart(id);
