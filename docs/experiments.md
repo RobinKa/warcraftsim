@@ -741,8 +741,13 @@ The real game (the built-in AI without the curriculum's tax, 10% of the launches
 | the 2 hours after it | 89/223 (40%) | 30% | 83% | 12% | 25% | 36% | 45% |
 | 2 to 4 hours after it (11M to 15M steps) | 309/559 (55%) | 43% | 89% | 41% | 40% | 48% | 62% |
 | 5 hours after it (17M to 19M steps, five games per load) | 214/375 (57%) | 50% | 88% | 39% | 49% | 50% | 64% |
+| 21M to 24M steps | 242/407 (59%) | 50% | 81% | 62% | 43% | 50% | 69% |
+| 30M to 33M steps | 276/426 (65%) | 51% | 88% | 74% | 54% | 56% | 73% |
+| 39M to 42.6M steps (the end, stopped for a shutdown) | 390/522 (75%) | 64% | 91% | 73% | 70% | 72% | 78% |
 
 The races' columns are the measure: the restarts of that day skewed the mix of races in "all" and in the difficulties' columns (see the note on seeds above). Nothing else about the training changed in between (the speed work below changed how fast the same games are played), so the gain is the games between agents being whole games, or training that would have come anyway; there is no control run.
+
+Over the run's last 20M steps human still trained almost no heroes (0.03 a game), and undead fewer (1.7 → 1.2) while it won more. `fgself-9` played mirror matchups only (`--mirror 1`, as every run so far). The next run (`fgself-10`) goes on from its last checkpoint with mixed matchups: a curriculum level per matchup against the built-in AI and a tax between races in games between agents (`--mirror 0`, `League.balance`).
 
 ### Where a self-play step's time goes (speed, 2026-09-30)
 
