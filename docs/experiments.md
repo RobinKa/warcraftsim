@@ -766,6 +766,26 @@ Over the run's last 20M steps human still trained almost no heroes (0.03 a game)
 
 **The tax was a subsidy at first.** By 8.6M steps every pair's level had run to the end of its range, and the taxed side still won: night elf, taxed 90% against every race, won 76% of those games. A taxed night elf trained as many units as its opponent (36 against 38 a game) from a tenth of its income. The tax was the last of a step's commands: it set the taxed player's gold and lumber to what the observation showed minus the tax, which undid what that player's orders earlier in the same commands had just spent. A taxed agent trained and researched for free. The tax on the built-in AI was not affected, because the AI spends between steps. Now the tax is a step's first command, and the taxed agent sees what it has left. `fgself-10` went on from 8.6M steps with the levels back at 0. In those 8.6M steps about 40% of the games (the mixed games between agents) gave one side free production.
 
+`fgself-10` ran to 38.7M steps (stopped for a shutdown, 2026-10-02 00:00). The real game, by steps:
+
+| steps | all | mirror | mixed | human | orc | undead | night elf | vs human AI | vs orc AI | vs undead AI | vs night elf AI | easy AI | normal AI |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 0–8.6M (the tax a subsidy) | 73% | 79% | 70% | 55% | 80% | 57% | 98% | 79% | 63% | 84% | 66% | 66% | 78% |
+| 8.6–20M | 75% | 86% | 72% | 52% | 86% | 66% | 97% | 84% | 71% | 83% | 62% | 72% | 78% |
+| 20–30M | 80% | 86% | 78% | 60% | 89% | 71% | 98% | 86% | 80% | 83% | 70% | 81% | 79% |
+| 30–38.7M | 79% | 87% | 76% | 57% | 89% | 77% | 98% | 85% | 77% | 87% | 67% | 78% | 80% |
+
+By matchup from 30M steps on (real games against both difficulties, about 40–100 a cell):
+
+| learner \ AI | human | orc | undead | night elf |
+|---|---|---|---|---|
+| human | 69% | 57% | 70% | 36% |
+| orc | 90% | 97% | 90% | 81% |
+| undead | 89% | 67% | 90% | 61% |
+| night elf | 96% | 95% | 100% | 100% |
+
+Mixed matchups went from 44% (the start's 320 games against the normal AI) to 76%; the cells that were near zero rose most (undead against the orc AI 11% → 67%, orc against the night elf AI 7% → 81%, undead against it 0% → 61%, human against it 0% → 36%; the start's numbers are from the normal AI alone). Human stayed the weak race at 52–60% and trained almost no heroes (0.02–0.05 a game) all run. At the end the taxes between races stood at 25–58% on the stronger race (the most: orc against human 54%, night elf against human 58%), and the curriculum still eased only human's games (against the night elf AI 0.3–0.36, the easy orc AI 0.12).
+
 ### Where a self-play step's time goes (speed, 2026-09-30)
 
 `fgself-9` ran at 560 agent steps/s with 32 games. A game thread spent 55% of its time waiting for the policy and 36% for the game. After this round the learner is the limit with the machine's CPU close behind, and it runs at about 840 steps/s with whole games, five to a load of the map (607 before the reset fix, when half the games were the cheap broken ones).
