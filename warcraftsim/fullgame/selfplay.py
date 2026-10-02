@@ -1422,7 +1422,7 @@ def main(argv: list[str] | None = None) -> int:
             "spaces": fx.describe_spaces(vocab, None if vocab.get("order_names") else fx.demo_order_names(args.runs),
                                          "two per game against itself or a past snapshot, one against the built-in AI"),
             "launch": {"command": "python3 -m warcraftsim.fullgame.selfplay " + " ".join(sys.argv[1:] if argv is None else argv),
-                       "git": git_info()}}
+                       "argv": list(sys.argv[1:] if argv is None else argv), "git": git_info()}}
 
     resumed = None
     if args.resume and (run_dir / "run.json").exists():  # the run goes on: its weights, league and counts
