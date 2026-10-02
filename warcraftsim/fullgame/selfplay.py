@@ -1145,9 +1145,9 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
         if seqs is None:
             batches = (collate([steps[i] for i in idx], device)
                        for idx in minibatches(sizes, args.minibatch, args.pad_groups))
-        else:
-            order = np.random.permutation(len(seqs))
-            batches = (collate_seq([seqs[i] for i in order[a:a + per_mb]], device) for a in range(0, len(order), per_mb))
+        else:  # (sequences of similar widths together too: a sequence pads to its minibatch's widest step)
+            widths = np.array([max(s["n"] for s in q) for q in seqs])
+            batches = (collate_seq([seqs[i] for i in idx], device) for idx in minibatches(widths, per_mb, args.pad_groups))
         for mb in batches:
             seq = mb.get("seq")
             with autocast:  # bf16 matmuls (the losses and log-probabilities in fp32)

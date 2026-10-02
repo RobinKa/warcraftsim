@@ -596,14 +596,16 @@ def test_minibatches_of_similar_sizes():
     assert sorted(np.concatenate(odd).tolist()) == list(range(1000)) and sorted(len(m) for m in odd) == [232, 256, 256, 256]
 
 
-def test_ppo_update_runs_on_minibatches_by_size():
+@pytest.mark.parametrize("memory", [False, True])
+def test_ppo_update_runs_on_minibatches_by_size(memory):
     """One PPO update over steps of different sizes (minibatches cut by entity count, the clone's KL
-    term, the statistics read once at the end): finite losses, and the network moved."""
+    term, the statistics read once at the end; with memory over sequences of them): finite losses,
+    and the network moved."""
     import types
 
     from warcraftsim.fullgame.model import act
     from warcraftsim.fullgame.selfplay import ppo_update
-    net, ref = _net(False), _net(False)
+    net, ref = _net(memory), _net(memory)
     rng = np.random.default_rng(0)
     steps = []
     for i in range(24):
@@ -615,11 +617,12 @@ def test_ppo_update_runs_on_minibatches_by_size():
                     torch.ones(1, n, dtype=torch.bool), torch.from_numpy(st["glob"])[None], torch.tensor([own]))
         steps.append({**st, **{k: a[k][0, :own].numpy() for k in ("order", "tgt", "bx", "by", "logp")}, "avail": None,
                       "adv": float(rng.normal()), "ret": float(rng.normal())})
-    args = types.SimpleNamespace(epochs=2, minibatch=8, pad_groups=2, seq_len=1, bf16=0, clip=0.2, vf_coef=0.5, ent_coef=0.01,
-                                 ref_kl=0.2, bc_coef=0.0, max_grad_norm=0.5)
+    args = types.SimpleNamespace(epochs=2, minibatch=8, pad_groups=2, seq_len=4 if memory else 1, bf16=0, clip=0.2,
+                                 vf_coef=0.5, ent_coef=0.01, ref_kl=0.2, bc_coef=0.0, max_grad_norm=0.5)
     before = net.value_head[0].weight.detach().clone()
     opt = torch.optim.Adam(net.parameters(), lr=1e-3)
-    out = ppo_update(net, ref, opt, steps, args, False, torch.device("cpu"))
+    chunks = [steps[a:a + 8] for a in range(0, 24, 8)] if memory else None  # (three games' pieces)
+    out = ppo_update(net, ref, opt, steps, args, False, torch.device("cpu"), chunks)
     assert {"loss/policy", "loss/value", "loss/entropy", "loss/kl", "loss/clipfrac", "loss/ref_kl", "grad_norm"} <= set(out)
     assert all(np.isfinite(v) for v in out.values()) and out["loss/ref_kl"] >= 0
     assert float((net.value_head[0].weight - before).abs().max()) > 0
