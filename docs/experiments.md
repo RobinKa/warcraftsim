@@ -786,6 +786,22 @@ By matchup from 30M steps on (real games against both difficulties, about 40–1
 
 Mixed matchups went from 44% (the start's 320 games against the normal AI) to 76%; the cells that were near zero rose most (undead against the orc AI 11% → 67%, orc against the night elf AI 7% → 81%, undead against it 0% → 61%, human against it 0% → 36%; the start's numbers are from the normal AI alone). Human stayed the weak race at 52–60% and trained almost no heroes (0.02–0.05 a game) all run. At the end the taxes between races stood at 25–58% on the stronger race (the most: orc against human 54%, night elf against human 58%), and the curriculum still eased only human's games (against the night elf AI 0.3–0.36, the easy orc AI 0.12).
 
+Resumed on 2026-10-02, it got the insane AI as a third difficulty from 40.4M steps (`--ai easy,normal,insane`, a curriculum level per matchup starting at 0.3). In the real game against the insane AI it won 16 of its first 30 games. It stopped at 41.4M steps to move on to longer games.
+
+Human's footmen and riflemen without heroes are a duelrush strategy: human built 0.02 altars a game against the human AI's 1.0, and its games with a hero were won less often (43% against 54%, 10k games). Two-minute games do not pay for a hero.
+
+### Longer games: `duelfast` (`fgself-11`)
+
+`duelfast` is the duel map with the game's own speed, a third of the build, train and research times, and half the costs and hit points (no extra harvest). 48 built-in AI games (`runs/fullgame/probe-duelfast`, normal and insane, all races) lasted 5.9 minutes on average (median 5.4, longest 12.7, no ties within 15). The insane AI beat the normal AI in 20 of 23 games. Between different races orc won 17 of 22 and night elf 11 of 14, human 6 of 25 and undead 4 of 15 (few games).
+
+`fgself-11` goes on from `fgself-10`'s last checkpoint on `duelfast`, with:
+* a memory core (a minGRU added as a no-op, `--memory 1`): the games are three times longer and the enemy is out of sight most of the time;
+* a longer horizon: gamma 0.999 instead of 0.997 (about 8 minutes instead of 3), and 10 updates of the value alone first;
+* the auxiliary cloning loss on new takeover games on `duelfast` from `fgself-10`'s policy (`demos-fast-takeover-1*`: the policy plays one side for 10 seconds to 5 minutes, then the built-in AI takes over);
+* the rest as `fgself-10`: mixed matchups, the curriculum per matchup and difficulty (easy, normal, insane), the tax between races, the clone's KL term (now towards `fgself-10`'s policy).
+
+The takeover collection was bound by its own Python (24 games' policy calls in one process; the machine 65% idle), so three processes collected side by side.
+
 ### Where a self-play step's time goes (speed, 2026-09-30)
 
 `fgself-9` ran at 560 agent steps/s with 32 games. A game thread spent 55% of its time waiting for the policy and 36% for the game. After this round the learner is the limit with the machine's CPU close behind, and it runs at about 840 steps/s with whole games, five to a load of the map (607 before the reset fix, when half the games were the cheap broken ones).
