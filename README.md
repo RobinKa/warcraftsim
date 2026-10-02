@@ -359,7 +359,10 @@ python -m warcraftsim.fullgame.collect --out runs/fullgame/demos-1 --games 800 -
 python3 -m warcraftsim.fullgame.bc --data runs/fullgame/demos-1 --name fullgame-1        # the torch Python
 python3 -m warcraftsim.fullgame.play runs/bc/fullgame-1/policy.pt --games 16 --race all --ai-race all
 python3 -m warcraftsim.fullgame.selfplay --name fgself-1 --init runs/bc/fullgame-1/policy.pt
+python3 -m warcraftsim.fullgame.versus runs/fgself-10/checkpoints/<steps>.pt --you human --agent orc   # play it yourself
 ```
+
+`fullgame/versus.py` opens the game in a window on your desktop (WSLg) with you as one player (a `Human` slot: the local player) and the policy as the other, the clock at real time (`--speed`). The policy plays as it trained: on `duelrush` everything but walking runs 7 times faster and a game lasts about 2 minutes.
 
 ## Performance (Ryzen 5950X, 32 threads, WSL2, llvmpipe)
 

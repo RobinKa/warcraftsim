@@ -21,3 +21,16 @@ def test_every_game_setup_call_names_real_fields():
                         names |= {key.value for key in k.value.keys if isinstance(key, ast.Constant)}
                 assert names <= fields, f"{path.name}:{node.lineno}: {sorted(names - fields)}"
     assert calls > 5
+
+
+def test_a_human_slot_is_the_local_player():
+    """versus.py: a person plays one slot (the user), the policy the other; no observer slot."""
+    import pytest
+
+    from warcraftsim.runtime.instance import Agent, GameSetup, Human
+    setup = GameSetup(map="duelrush", slots=[Human("orc", handicap=50), Agent("human", handicap=50)])
+    w = setup.wgc("Maps\\x.w3x")
+    assert [s.is_user for s in w.slots] == [True, False] and not any(s.is_observer for s in w.slots)
+    assert w.slots[0].handicap == 50 and setup.agent_players == (1,)
+    with pytest.raises(ValueError):
+        GameSetup(map="duelrush", slots=[Human("orc"), Human("human")]).wgc("Maps\\x.w3x")

@@ -80,7 +80,7 @@ class GameCrashed(GameError):
     pass
 
 
-SLOT_KINDS = ("agent", "ai", "scripted", "idle")
+SLOT_KINDS = ("agent", "ai", "scripted", "idle", "human")
 
 
 @dataclass(frozen=True)
@@ -89,7 +89,7 @@ class Slot:
 
     kind: "agent" (controlled from Python), "ai" (built-in melee AI), "scripted" (scenario
     opponent: idle units attack-move to the nearest enemy), "idle" (no controller; units only
-    auto-acquire targets).
+    auto-acquire targets), "human" (a person: the local player, at the game's window; at most one).
     """
     kind: str
     race: str = "human"
@@ -115,6 +115,11 @@ def Agent(race: str = "human", team: int | None = None, handicap: int = 100,  # 
 def BuiltinAI(race: str = "orc", difficulty: str = "normal", team: int | None = None,  # noqa: N802
               handicap: int = 100) -> Slot:
     return Slot("ai", race, difficulty, team, handicap)
+
+
+def Human(race: str = "human", team: int | None = None, handicap: int = 100) -> Slot:  # noqa: N802
+    """You: the local player (GameInstance's display shows the game; fullgame/versus.py)."""
+    return Slot("human", race, team=team, handicap=handicap)
 
 
 def Scripted(race: str = "orc", team: int | None = None) -> Slot:  # noqa: N802
@@ -270,7 +275,10 @@ class GameSetup:
 
     def wgc(self, map_path: str) -> Wgc:
         slots = []
-        user = self.agent_players[0] if self.agent_is_user and self.agent_players else None
+        humans = [i for i, s in enumerate(self.slots) if s.kind == "human"]
+        if len(humans) > 1 or (humans and (self.pairs > 1 or self.agent_is_user)):
+            raise ValueError("one human slot at most, the only user (no pairs, no agent_is_user)")
+        user = humans[0] if humans else self.agent_players[0] if self.agent_is_user and self.agent_players else None
         for i, s in enumerate(self.slots * self.pairs):  # (pairs: every game's two players, as the two slots)
             team = s.team if s.team is not None and self.pairs == 1 else i
             if i == user:
