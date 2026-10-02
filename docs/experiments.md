@@ -819,6 +819,23 @@ What it did in the real game, against the AI, per game (the last 150): 32.6 work
 
 The clone's KL term held the policy to `fgself-10`'s, a duelrush policy: its distance stayed at 0.002 a unit for the whole run. AlphaStar's KL term is towards a supervised policy of the same game. So the next run starts from a clone of the built-in AI on `duelfast` (`fgself-10`'s network fine-tuned on 3000 built-in AI games on `duelfast` and the 1017 takeover games), with that clone as the anchor.
 
+The clone, `fullgame-fast-1` (3 epochs, 46 minutes): validation loss 2.48 → 2.38, the AI's order 77% of the time, its target 94%, the value explaining 90% of the returns' variance. It lost all 45 real games it played against the normal AI (6 minutes on average, 15 food at one minute against 21).
+
+`fgself-12` (from the clone, the clone as the anchor; memory core, gamma 0.999, 20-minute games, 2 games per launch, the cloning loss on all the duelfast demonstrations) ran 12.9M steps (4 hours). Its habits stayed the AI's: 1.2–1.4 heroes a game against the AI's 1.4 (`fgself-11`: 0.1), about one altar a race, 14–15 workers against 10 (`fgself-11`: 32). But it did not learn to win:
+
+| | first hour | last hour |
+|---|---|---|
+| curriculum games won | 4–9% | 1–4% |
+| tied at the time limit | 14–29% | 78–86% |
+| the AI's tax | 0.32–0.43 | 0.67–0.76 |
+| the real game | 1 of 234 in all | |
+
+* **Ties.** In the tied games it was ahead in material (lead 1.6, ahead in 79%), with armies even and kills even, and the AI kept ~11 buildings. A tie with that lead was worth ~+0.5 against +1 for a win: `--tie-break 0.1` (from 5.7M steps). Ties went on rising.
+* **The curriculum stood still**: a tie left a level where it was, so with 78% ties the AI's tax stayed at 0.67 for an hour. `--curriculum-tie 0.5` (a tie raises a level by half a loss's step, from 10.3M): the levels rose from 0.72 to 0.88 on average (26 of 48 at the most) in an hour; the curriculum games won only 4% at a tax of 0.76.
+* **It does not spend.** It ended games holding ~3,600–3,800 gold and lumber (the AI ~800), gathered 40% less gold than the AI with half again as many workers, and trained fewer basic units than the AI (21.7 footmen against 33.7, 22.7 ghouls against 35.4) but more supply buildings (1.7 times) and some high-tech units. Its material shaping counts units and buildings but not what is held, so spending was already rewarded.
+
+Open for the next session: why it holds its resources (production buildings saturated? the train decisions' rates?), a penalty on resources held, and whether the tie-heavy curriculum games teach anything at all.
+
 ### Where a self-play step's time goes (speed, 2026-09-30)
 
 `fgself-9` ran at 560 agent steps/s with 32 games. A game thread spent 55% of its time waiting for the policy and 36% for the game. After this round the learner is the limit with the machine's CPU close behind, and it runs at about 840 steps/s with whole games, five to a load of the map (607 before the reset fix, when half the games were the cheap broken ones).
