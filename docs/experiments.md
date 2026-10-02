@@ -802,6 +802,23 @@ Human's footmen and riflemen without heroes are a duelrush strategy: human built
 
 The takeover collection was bound by its own Python (24 games' policy calls in one process; the machine 65% idle), so three processes collected side by side.
 
+`fgself-11` ran 14.8M steps (5 hours) and stalled:
+
+| | the first hour | hours 3 to 5 |
+|---|---|---|
+| curriculum games won (the AI taxed ~0.65) | 1–3% | 31–34% |
+| tied at the time limit | 17% | 33–41% |
+| the real game | 0 of 80 | 4 of 346 in all (1%) |
+
+Fixes on the way:
+* **The clone's KL term spiked** (96 and 4.4, gradient norms of 726 and 39 in two updates): the cloning loss on the new demonstrations allowed new (unit type, order) pairs to the learner but not to the clone, whose log-probability for them stayed at -1e9. The clone now gets the learner's allowed orders.
+* **Games tied at 15 minutes** (59% of the curriculum games at one point, the learner ahead in material in most), and a tie leaves the curriculum's level alone: 20 minutes now.
+* **Six games per launch** kept a launch's races and opponent for 10 minutes of duelfast games: the real games came in streaks of one matchup. Two now.
+
+What it did in the real game, against the AI, per game (the last 150): 32.6 workers trained against 10.1, an army of 23 against 28, 38 food at most against 60, 0.1 heroes against 1.6, almost no research (the AI researched in a quarter of its games), 8 kills against 42. These are duelrush habits: there, walking workers carried 6.5 times the gold, so more workers paid, and a game was over before heroes and research paid. At the AI's own hero decisions in the duelfast demonstrations the policy gave the hero order 0.6% (`fgself-10`: 2.5%, orc 8%), and a stronger cloning loss (×0.02 for an hour) did not move it.
+
+The clone's KL term held the policy to `fgself-10`'s, a duelrush policy: its distance stayed at 0.002 a unit for the whole run. AlphaStar's KL term is towards a supervised policy of the same game. So the next run starts from a clone of the built-in AI on `duelfast` (`fgself-10`'s network fine-tuned on 3000 built-in AI games on `duelfast` and the 1017 takeover games), with that clone as the anchor.
+
 ### Where a self-play step's time goes (speed, 2026-09-30)
 
 `fgself-9` ran at 560 agent steps/s with 32 games. A game thread spent 55% of its time waiting for the policy and 36% for the game. After this round the learner is the limit with the machine's CPU close behind, and it runs at about 840 steps/s with whole games, five to a load of the map (607 before the reset fix, when half the games were the cheap broken ones).
