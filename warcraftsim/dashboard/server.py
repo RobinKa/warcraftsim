@@ -31,6 +31,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
 
+import numpy as np
+
 TRAIN_KEYS = ("agent_steps", "SPS", "epoch", "uptime", "env/win_rate", "env/loss_rate", "env/episode_return",
               "env/episode_length", "env/n", "loss/policy", "loss/value", "loss/entropy", "loss/kl",
               "loss/old_kl", "loss/clipfrac", "loss/bc", "importance", "perf/rollout", "perf/eval_env", "perf/eval_model",
@@ -84,6 +86,158 @@ def _real_game(episodes: list[dict], n: int = 100) -> dict | None:
         return None
     return {"games": len(real), "wins": sum(e.get("outcome", 0) > 0 for e in real) / len(real),
             "ties": sum(e.get("outcome", 0) == 0 for e in real) / len(real)}
+
+
+MATCHUP_RACES = ("human", "orc", "undead", "nightelf")
+SPARSE_GAMES = 40
+SERIES_KEYS = tuple(EPISODE_SERIES)
+
+
+def _matchup_kind(e: dict) -> list[str]:
+    """The kinds of whole-game self-play game an episode counts for in the matchup tables."""
+    o = str(e.get("opponent", ""))
+    if "(real)" in o:
+        return ["real", "real " + o.split("-", 1)[-1].split()[0]]
+    if o.startswith("script:"):
+        return ["curriculum"]
+    if o == "self":
+        return ["self"]
+    return ["past"] if o.startswith("past:") else []
+
+
+class _EpisodeSeries:
+    """A run's episodes as columns of their EPISODE_SERIES values (NaN: none), and their results by
+    matchup, kept between requests and extended with the new episodes only: a live run's page
+    refreshes every few seconds, and reading 135k episodes anew took 2 s, binning them 3 s."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.reset()
+
+    def reset(self) -> None:
+        self.seen: dict[Path, tuple[int, int]] = {}  # file -> (its rows list's id, rows read)
+        self.times = np.empty(0)
+        self.cols = np.empty((0, len(SERIES_KEYS)))
+        # sparse series of whole-game self-play: series name -> (rows, values): curriculum games won
+        # by AI and matchup ("cwin/ai-easy human/orc"), the real game won by the learner's race ("rwin/human")
+        self.extra: dict[str, tuple[list[int], list[float]]] = {}
+        # kind -> [(race, opponent race, 0 win / 1 tie / 2 loss)], and the whole run's counts
+        self.games: dict[str, list[tuple[int, int, int]]] = {}
+        self.totals: dict[str, np.ndarray] = {}
+
+    def update(self, files: list[tuple[Path, list[dict]]]) -> None:
+        """`files`: the run's episode files and their rows (as _JsonlCache keeps them: one list per
+        file that grows; a new list when the file was replaced)."""
+        if any(f in self.seen and (self.seen[f][0] != id(rows) or self.seen[f][1] > len(rows)) for f, rows in files) \
+                or set(self.seen) - {f for f, _ in files}:
+            self.reset()  # (a file replaced or gone: read anew)
+        new = []
+        for f, rows in files:
+            new += [r for r in rows[self.seen.get(f, (0, 0))[1]:] if "event" not in r]
+            self.seen[f] = (id(rows), len(rows))
+        if not new:
+            return
+        block = np.full((len(new), len(SERIES_KEYS)), np.nan)
+        gets = list(EPISODE_SERIES.values())
+        n0 = len(self.times)
+        for i, e in enumerate(new):
+            for j, get in enumerate(gets):
+                v = get(e)
+                if v is not None:
+                    block[i, j] = float(v)
+            r, b = e.get("race"), e.get("opponent_race")
+            if r in MATCHUP_RACES and b in MATCHUP_RACES:
+                x = e.get("outcome", 0)
+                g = (MATCHUP_RACES.index(r), MATCHUP_RACES.index(b), 0 if x > 0 else 1 if x == 0 else 2)
+                for k in _matchup_kind(e):
+                    self.games.setdefault(k, []).append(g)
+                    self.totals.setdefault(k, np.zeros((4, 4, 3), np.int64))[g] += 1
+                o = str(e.get("opponent", ""))
+                key = (f"rwin/{r}" if "(real)" in o else f"cwin/{o.split(':', 1)[1]} {r}/{b}" if o.startswith("script:") else None)
+                if key:
+                    rows, vals = self.extra.setdefault(key, ([], []))
+                    rows.append(n0 + i)
+                    vals.append(1.0 if x > 0 else 0.0)
+        self.cols = np.concatenate([self.cols, block])
+        self.times = np.concatenate([self.times, [float(e.get("time", 0)) for e in new]])
+
+    def binned(self, train: list[dict], in_order: bool = False) -> tuple[list[dict], dict]:
+        """The series binned on the trainer's step axis (the episodes placed by their times; the
+        file's order is not quite theirs: games end in one order and arrive in another), or with
+        `in_order` by their number; and the sparse series, each binned on its own: name -> [[x, mean,
+        games], ...], at least `SPARSE_GAMES` games a point (a matchup's games are a 30th of all: in
+        the shared bins a point held one or two)."""
+        order = np.argsort(self.times, kind="stable")
+        times = self.times[order]
+        if in_order:
+            xs = np.arange(1.0, len(times) + 1)
+        else:
+            pts = np.array([(r["time"], r.get("agent_steps", 0)) for r in train if "time" in r], float).reshape(-1, 2)
+            if len(pts):  # as _interp_steps: linear between the trainer's lines, 0 before the first, the last after it
+                xs = np.where(times < pts[0, 0], 0.0, np.interp(times, pts[:, 0], pts[:, 1]))
+            else:
+                xs = np.zeros(len(times))
+        x_of = np.empty(len(times))
+        x_of[order] = xs  # (each row's step, in the file's order)
+        sparse = {}
+        for key, (rows, vals) in self.extra.items():
+            x, v = x_of[np.asarray(rows)], np.asarray(vals)
+            o = np.argsort(x, kind="stable")
+            x, v = x[o], v[o]
+            size = max(SPARSE_GAMES, -(-len(x) // 120))
+            cuts = list(range(0, len(x), size))
+            if len(cuts) > 1 and len(x) - cuts[-1] < size // 2:
+                cuts.pop()  # (a short last piece joins the one before)
+            ends = cuts[1:] + [len(x)]
+            sparse[key] = [[float(x[a:b].mean()), float(v[a:b].mean()), b - a] for a, b in zip(cuts, ends)]
+        return _binned_columns(xs, self.cols[order]), sparse
+
+    def matchups(self, recent: int = 1500) -> dict | None:
+        """Win rates by matchup (the learner's race by the opponent's), [wins, ties, losses] a cell,
+        for each kind of game: the real game against the built-in AI (also by difficulty),
+        curriculum games (the AI taxed), the learner against itself (each game counted from both
+        sides) and against past snapshots; over the kind's last `recent` games and the whole run."""
+        if not self.games:
+            return None
+
+        def table(m: np.ndarray, both: bool) -> dict:
+            if both:  # (against itself: the other side's result too)
+                m = m + m.transpose(1, 0, 2)[:, :, ::-1]
+            return {a: {b: [int(v) for v in m[i, j]] for j, b in enumerate(MATCHUP_RACES)} for i, a in enumerate(MATCHUP_RACES)}
+        out = {}
+        for k, gs in self.games.items():
+            m = np.zeros((4, 4, 3), np.int64)
+            for g in gs[-recent:]:
+                m[g] += 1
+            out[k] = {"recent": table(m, k == "self"), "all": table(self.totals[k], k == "self"),
+                      "games": len(gs), "recent_games": min(recent, len(gs))}
+        return out
+
+
+def _binned_columns(xs: list[float], cols: np.ndarray, n: int | None = None) -> list[dict]:
+    """_binned() over columns (SERIES_KEYS, NaN: no value): each bin's mean of each column over the
+    rows that have it, x = the bin's mean x."""
+    n, N = n or MAX_POINTS, len(xs)
+    if not N:
+        return []
+    size = max(1, -(-N // n))
+    b = np.arange(N) // size
+    nb = int(b[-1]) + 1
+    cnt = np.bincount(b, minlength=nb)
+    sx = np.bincount(b, weights=np.asarray(xs, float), minlength=nb)
+    out = [{"steps": float(sx[i] / cnt[i]), "n": int(cnt[i])} for i in range(nb)]
+    have = ~np.isnan(cols)
+    for j, key in enumerate(SERIES_KEYS):
+        m = have[:, j]
+        if not m.any():
+            continue
+        c = np.bincount(b[m], minlength=nb)
+        s = np.bincount(b[m], weights=cols[m, j], minlength=nb)
+        for i in np.nonzero(c)[0]:
+            out[i][key] = float(s[i] / c[i])
+    return out
+
+
 MAX_POINTS = 600
 MAX_NOTES = 64 * 1024
 # train.py options in the order its command line gives them (a command rebuilt for older runs)
@@ -428,6 +582,7 @@ class Dashboard:
     def __init__(self, runs_dir: Path):
         self.runs_dir = Path(runs_dir)
         self.cache = _JsonlCache()
+        self._series: dict[Path, _EpisodeSeries] = {}  # run dir -> its episodes as columns
         self._summaries: dict[Path, tuple[tuple, dict]] = {}  # run dir -> (file mtimes, summary)
         self._bc_meta: dict[str, tuple[float, dict]] = {}  # dataset -> (mtime, meta.json)
         self._runs_cache: tuple[float, list[dict]] = (0.0, [])  # the list and the sweeps from one scan
@@ -805,12 +960,15 @@ class Dashboard:
         for r in runs:
             r["children"] = sorted(children.get(r.get("name"), []))
 
+    @staticmethod
+    def _files(d: Path, stem: str) -> list[Path]:
+        return [f for f in sorted(d.glob(f"{stem}*.jsonl")) if f.stem == stem or f.stem.startswith(stem + "-")]
+
     def _merged(self, d: Path, stem: str) -> list[dict]:
         """<stem>.jsonl plus <stem>-<worker>.jsonl files, ordered by time."""
         rows: list[dict] = []
-        for f in sorted(d.glob(f"{stem}*.jsonl")):
-            if f.stem == stem or f.stem.startswith(stem + "-"):
-                rows.extend(r for r in self.cache.read(f) if "event" not in r)
+        for f in self._files(d, stem):
+            rows.extend(r for r in self.cache.read(f) if "event" not in r)
         return sorted(rows, key=lambda r: r.get("time", 0))
 
     def runs(self) -> list[dict]:
@@ -888,18 +1046,11 @@ class Dashboard:
         train_rows = self.cache.read(d / "train.jsonl")
         train = [{k: v for k, v in r.items() if k in TRAIN_KEYS or k.startswith(("league/", "curriculum/", "balance/"))} for r in train_rows]
         episodes = self._merged(d, "episodes")
-        steps = _interp_steps([e["time"] for e in episodes], train_rows)
-        if info.get("kind") == "match":  # no trainer: episodes in order
-            steps = [float(i + 1) for i in range(len(episodes))]
-        ep_rows = []
-        for e in episodes:
-            row = {}
-            for name, get in EPISODE_SERIES.items():
-                v = get(e)
-                if v is not None:
-                    row[name] = float(v)
-            ep_rows.append(row)
-        ep_series = _binned(steps, ep_rows)
+        series = self._series.setdefault(d, _EpisodeSeries())
+        with series.lock:
+            series.update([(f, self.cache.read(f)) for f in self._files(d, "episodes")])
+            ep_series, sparse = series.binned(train_rows, in_order=info.get("kind") == "match")  # (a match: no trainer)
+            matchups = series.matchups() if info.get("trainer") == "fullgame" else None
         # throughput: sum the bridge workers' latest rates in 5 s buckets
         buckets: dict[int, dict[int, float]] = {}
         for r in self._merged(d, "bridge"):
@@ -922,6 +1073,8 @@ class Dashboard:
             info["real_game"] = _real_game(episodes)
         return {
             "production": production,
+            "matchups": matchups,
+            "sparse": sparse,
             "checkpoints": _checkpoints(d, self.runs_dir.parent, evals, league,
                                         {"current.pt": "the weights the actors play with"}),
             "calibration": calibration,

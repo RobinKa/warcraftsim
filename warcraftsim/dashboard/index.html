@@ -69,6 +69,9 @@ main { padding:14px 18px 40px; overflow:auto; min-height:0; }
 .chart .legend { font-size:11px; color:var(--muted); margin:4px 0 2px; line-height:1.6; }
 .chart .legend span { margin-right:10px; white-space:nowrap; }
 .chart .legend i { display:inline-block; width:10px; height:3px; margin:0 4px 2px 0; vertical-align:middle; border-radius:1px; }
+.chart .legend.compact { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:0 8px; font-size:10.5px; line-height:1.5; }
+.chart .legend.compact span { margin:0; overflow:hidden; text-overflow:ellipsis; }
+.chart .legend svg { vertical-align:middle; margin-right:3px; }
 .chart canvas.overlay { position:absolute; left:0; top:0; pointer-events:none; }
 .legend { display:flex; flex-wrap:wrap; gap:16px; align-items:center; margin:2px 0 10px; color:var(--muted); font-size:12px; }
 .legend svg { vertical-align:middle; margin-right:5px; }
@@ -163,6 +166,16 @@ table.runs td, table.runs th { font-size:12px; padding:4px 8px; }
 .badge.collecting { background:#1e3a2c; color:var(--good); }
 table.matrix td, table.matrix th { text-align:center; padding:3px 8px; }
 table.matrix td.w { font-variant-numeric: tabular-nums; }
+/* matchups: win rates by race, a cell's colour from red (all lost) through grey (even) to green (all won) */
+.mu-bar { display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin:2px 0 12px; color:var(--muted); font-size:12px; }
+.mu-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(440px,1fr)); gap:12px; }
+table.mu { border-collapse:separate; border-spacing:3px; width:100%; }
+table.mu th { font-size:11px; font-weight:500; color:var(--muted); padding:2px 4px; }
+table.mu th.r { text-align:right; white-space:nowrap; }
+table.mu td { text-align:center; border-radius:4px; padding:7px 4px 5px; font-variant-numeric:tabular-nums; font-size:14px; font-weight:600; }
+table.mu td small { display:block; font-size:10px; font-weight:400; color:var(--muted); margin-top:1px; }
+table.mu td.none { color:var(--muted); font-weight:400; background:var(--panel2); }
+table.mu td.tot { outline:1px solid var(--line); }
 .cks td { vertical-align:top; } .cks .role { color:var(--muted); font-size:12px; }
 .cks .tag { font-size:11px; padding:1px 6px; border-radius:9px; background:#2d3743; color:var(--muted); margin-right:4px; white-space:nowrap; }
 .cks .tag.lg { background:#1f3a44; color:#39c5cf; } .cks .tag.ev { background:#1e3a2c; color:var(--good); }
@@ -297,7 +310,10 @@ function drawChart(id) {
   const withData = series.filter(s => s.pts.length), box = canvas.closest(".chart");
   let lg = box && box.querySelector(".legend");
   if (box && !lg && withData.length >= 3) { lg = document.createElement("div"); lg.className = "legend"; box.appendChild(lg); }
-  if (lg) lg.innerHTML = withData.length >= 3 ? withData.map(s => `<span><i style="background:${s.color}"></i>${esc(s.name)}${s.runName ? ` <small>${esc(s.runName)}</small>` : ""}</span>`).join("") : "";
+  if (lg) {  // (many lines: a compact grid; a line with a dash shows it)
+    lg.classList.toggle("compact", withData.length >= 9);
+    lg.innerHTML = withData.length >= 3 ? withData.map(s => `<span>${s.dash && s.dash.length ? dashSvg(s.dash, s.color).replace('width="34"', 'width="18"').replace('x2="34"', 'x2="18"') : `<i style="background:${s.color}"></i>`}${esc(s.name)}${s.runName ? ` <small>${esc(s.runName)}</small>` : ""}</span>`).join("") : "";
+  }
   c.geo = null;
   if (!pts.length) { g.fillStyle = "#8795a3"; g.font = "11px system-ui"; g.fillText(c.opts.empty || "no data yet", 12, H / 2); return; }
   // one x range for all charts of an axis (0 .. the latest step of the shown runs), so they line up
@@ -727,15 +743,21 @@ const SECTIONS = [
        TR("league/self", "itself", "#4cc38a")], { ymin: 0, ymax: 1, empty: "no league" }],
     ["c-lg-exploit", "The main exploiter", "its win rate against the main learner's current policy (it restarts from the main learner above --exploiter-reset or below --exploiter-reset-low)",
       [TR("league/exploiter_vs_main", "exploiter vs main", "#f47067"), TR("league/exploiter_resets", "resets", "#8795a3")], { ymin: 0, empty: "no exploiter (--torch.exploiters=1)", only: "micro" }],
+    ["c-lg-real", "The real game by race", "games won against the untaxed AI (easy, normal), 40+ games a point",
+      [["epp", "rwin/"]], { ymin: 0, ymax: 1, empty: "no real games (a curriculum's --real-share)", hideEmpty: true, matchups: true }],
+    ["c-lg-balance", "The tax between races", "agents' games: the first race's income taken (< 0: the second's)",
+      [["trp", "balance/", " tax"]], { ymin: -1, ymax: 1, empty: "mirror matchups, or no tax between races (--balance-step)", hideEmpty: true, matchups: true }],
+    ["c-lg-level-easy", "Curriculum level, easy AI", "learner / AI · 0 the real game · tax mode: the AI taxed 0.9 × it",
+      [["trp", "curriculum/ai-easy ", " level"]], { ymin: 0, ymax: 1, empty: "no curriculum (--curriculum)", hideEmpty: true, matchups: true }],
+    ["c-lg-level-normal", "Curriculum level, normal AI", "learner / AI · moved towards a 50% score",
+      [["trp", "curriculum/ai-normal ", " level"]], { ymin: 0, ymax: 1, empty: "no curriculum (--curriculum)", hideEmpty: true, matchups: true }],
+    ["c-lg-cwin-easy", "Curriculum games won, easy AI", "learner / AI · against the taxed AI · 40+ games a point",
+      [["epp", "cwin/ai-easy "]], { ymin: 0, ymax: 1, empty: "no curriculum games", hideEmpty: true, matchups: true }],
+    ["c-lg-cwin-normal", "Curriculum games won, normal AI", "learner / AI · against the taxed AI · 40+ games a point",
+      [["epp", "cwin/ai-normal "]], { ymin: 0, ymax: 1, empty: "no curriculum games", hideEmpty: true, matchups: true }],
     ["c-lg-members", "League size", "past snapshots", [TR("league/members", "snapshots", "#39c5cf")], { ymin: 0, empty: "no league" }],
-    ["c-lg-level", "Curriculum against the built-in AI", "per AI and race: 0 the real game, 1 the easiest; moved towards a 50% score",
-      [["trp", "curriculum/", " level"]], { ymin: 0, ymax: 1, empty: "no curriculum (--curriculum)", hideEmpty: true }],
     ["c-lg-delay", "The AI's late start", "seconds its units idle at the start of a game (the learner's hit points: the handicap)",
       [["trp", "curriculum/", " delay", "nonzero"]], { ymin: 0, empty: "the AI starts on time (no curriculum, or one without a late start: --curriculum-mode)", hideEmpty: true }],
-    ["c-lg-tax", "The tax on the AI's income", "the share of what it gathers taken away (--curriculum-mode tax)",
-      [["trp", "curriculum/", " tax", "nonzero"]], { ymin: 0, ymax: 1, empty: "the AI keeps its income (no curriculum, or one without a tax: --curriculum-mode tax)", hideEmpty: true }],
-    ["c-lg-balance", "The tax between races", "games between agents of two races: the share of the first race's income taken (below 0: the second's), moved towards a 50% score by the learner's games against itself",
-      [["trp", "balance/", " tax"]], { ymin: -1, ymax: 1, empty: "mirror matchups, or no tax between races (--balance-step)", hideEmpty: true }],
   ]],
   ["Production", [
     ["c-pr-army", "Army trained per game", "games against the built-in AI (in curriculum games it is taxed)",
@@ -763,19 +785,29 @@ const SECTIONS = [
 ];
 
 // ["trp", prefix(, suffix)]: one series per trainer key with that prefix (and suffix; e.g. every script the league has)
+// series named by race or matchup ("human", "human/orc": the learner's race / the opponent's): a colour per
+// learner's race, a dash per opponent's (chart option matchups)
+const RACE_COLORS = { human: "#539bf5", orc: "#e5534b", undead: "#b083f0", nightelf: "#4cc38a" };
+const RACE_DASHES = { human: [], orc: [6, 3], undead: [2, 2], nightelf: [9, 3, 2, 3] };
+function matchupStyle(name) {
+  const [a, b] = name.split("/");
+  return RACE_COLORS[a] ? { color: RACE_COLORS[a], dash: b ? RACE_DASHES[b] || [] : [] } : null;
+}
 const PREFIX_COLORS = ["#8795a3", "#e0a33a", "#b083f0", "#e5534b", "#539bf5", "#4cc38a", "#39c5cf", "#f56ed2"];
 function expandDefs(defs, d) {
   const out = [];
   for (const def of defs) {
-    if (def[0] !== "trp") { out.push(def); continue; }
+    if (def[0] !== "trp" && def[0] !== "epp") { out.push(def); continue; }
     const keys = new Set();
     const suffix = def[2] || "", nonzero = new Set();
-    for (const r of (d && d.train) || []) for (const k in r) if (k.startsWith(def[1]) && k.endsWith(suffix) && !k.endsWith("_n")) {
+    const rows = (d && (def[0] === "epp" ? [d.sparse || {}] : d.train)) || [];
+    for (const r of rows) for (const k in r) if (k.startsWith(def[1]) && k.endsWith(suffix) && !k.endsWith("_n")) {
       keys.add(k);
       if (r[k]) nonzero.add(k);
     }
     if (def[3] === "nonzero") for (const k of [...keys]) if (!nonzero.has(k)) keys.delete(k);  // (e.g. no late start in a tax curriculum)
-    [...keys].sort().forEach((k, i) => out.push(["tr", k, k.slice(def[1].length, k.length - suffix.length).trim(), PREFIX_COLORS[i % PREFIX_COLORS.length]]));
+    [...keys].sort().forEach((k, i) => out.push([def[0] === "epp" ? "sp" : "tr", k, k.slice(def[1].length, k.length - suffix.length).trim() || "all races",
+                                                 PREFIX_COLORS[i % PREFIX_COLORS.length]]));
   }
   return out;
 }
@@ -783,6 +815,7 @@ function expandDefs(defs, d) {
 function seriesPoints(d, src, key) {
   const o = d.info.init_steps || 0;  // a run continued from a checkpoint starts where its parent was
   if (src === "ep") return d.episodes.filter(e => e[key] !== undefined).map(e => [o + e.steps, e[key]]);
+  if (src === "sp") return ((d.sparse || {})[key] || []).map(p => [o + p[0], p[1]]);  // (sparse series: their own bins)
   if (src === "tr") return d.train.filter(r => r[key] !== undefined).map(r => [o + (r.agent_steps ?? r.steps), r[key]]);
   if (src === "br") return d.bridge.map(b => [o + b.steps, b[key]]);
   if (src === "cal") return d.calibration.map(c => [o + c.steps, c[key]]);
@@ -816,6 +849,7 @@ function renderMain() {
         ...SECTIONS.map(([name, charts]) => [slug(name), name, `<div class="grid">${charts.map(box).join("")}</div>`
           + (name === "Production" ? `<div id="production"></div>` : ""), true]),
         ["leaguetable", "League table", `<div id="leaguetable"></div>`],
+        ["matchups", "Matchups", `<div id="matchups"></div>`],
         ["replays", "Replays", `<div id="media"></div>`],
         ["episodes", "Episodes", `<div id="episodes"></div>`],
         ["evals", "Evaluations", `<div style="color:var(--muted);margin-bottom:8px">bc eval of its checkpoints</div><div id="evals"></div>`],
@@ -833,6 +867,7 @@ function renderMain() {
   renderLineage(d);
   renderCheckpoints(d);
   renderProduction(d);
+  renderMatchups(d);
   chartVisibility(d);
   const match = info.kind === "match";
   if (match) {  // two players against each other: the score
@@ -892,8 +927,9 @@ function renderMain() {
       c.series = [];
       shown.forEach((n, ri) => {
         for (const [src, key, name, color] of expandDefs(defs, state.data[n])) {
-          c.series.push({ name, color: defs.length === 1 && shown.length > 1 ? runColor(ri) : color, run: ri,
-                          runName: shown.length > 1 ? n : "", dash: DASHES[ri % DASHES.length], many: shown.length > 1,
+          const mu = c.opts.matchups && shown.length === 1 ? matchupStyle(name) : null;  // (comparing runs: a dash per run)
+          c.series.push({ name, color: mu ? mu.color : defs.length === 1 && shown.length > 1 ? runColor(ri) : color, run: ri,
+                          runName: shown.length > 1 ? n : "", dash: mu ? mu.dash : DASHES[ri % DASHES.length], many: shown.length > 1,
                           dots: src === "cal", points: seriesPoints(state.data[n], src, key) });
         }
       });
@@ -1425,6 +1461,59 @@ function renderProduction(d) {
           `<tr><td>${label}</td><td>${list(g.learner[k], k === "research")}</td><td>${list(g.opponent[k], k === "research")}</td></tr>`).join("") +
         `</table></div>`;
     }).join("");
+}
+
+// ---- whole-game self-play: win rates by matchup (the learner's race by the opponent's) ------------
+const MU_NAMES = { human: "human", orc: "orc", undead: "undead", nightelf: "night elf" };
+try { ui.mu = JSON.parse(localStorage.getItem("matchups") || "{}"); } catch (e) { ui.mu = {}; }
+function muColor(p, n) {  // red below 50%, green above; stronger the further from even (faint for few games)
+  const a = (0.12 + 0.6 * Math.min(1, Math.abs(p - 0.5) * 2)) * Math.min(1, 0.35 + n / 30);
+  return p >= 0.5 ? `rgba(76,195,138,${a.toFixed(3)})` : `rgba(229,83,75,${a.toFixed(3)})`;
+}
+function muCell([w, t, l], cls = "", extra = "") {
+  const n = w + t + l;
+  if (!n) return `<td class="none ${cls}">–</td>`;
+  const p = (w + 0.5 * t) / n;  // (a tie counts half, as the curriculum and the league count it)
+  return `<td class="${cls}" style="background:${muColor(p, n)}" title="${w} won, ${t} tied, ${l} lost${extra}">${(100 * w / n).toFixed(0)}%<small>${n} games</small></td>`;
+}
+function muTable(m, note) {  // rows: the learner's race; columns: the opponent's
+  const sum = cells => cells.reduce((a, c) => a.map((v, i) => v + c[i]), [0, 0, 0]);
+  const col = b => sum(RACES.map(a => m[a][b])), row = a => sum(RACES.map(b => m[a][b]));
+  return `<table class="mu"><tr><th></th>${RACES.map(b => `<th>vs ${MU_NAMES[b]}</th>`).join("")}<th>all</th></tr>` +
+    RACES.map(a => `<tr><th class="r">${MU_NAMES[a]}</th>${RACES.map(b => muCell(m[a][b], "", note ? note(a, b) : "")).join("")}${muCell(row(a), "tot")}</tr>`).join("") +
+    `<tr><th class="r">all</th>${RACES.map(b => muCell(col(b), "tot")).join("")}${muCell(sum(RACES.map(row)), "tot")}</tr></table>`;
+}
+function renderMatchups(d) {
+  const tab = document.getElementById("tab-matchups"), box = document.getElementById("matchups");
+  if (tab) tab.style.display = d.matchups ? "" : "none";
+  if (!box || !d.matchups) return;
+  const M = d.matchups, win = ui.mu.window || "recent", diff = ui.mu.diff || "";
+  const last = d.train && d.train.length ? d.train[d.train.length - 1] : {};
+  const pct = v => (100 * v).toFixed(0) + "%";
+  // the taxes in force now (the last trainer line): between races, and on the AI per matchup
+  const balance = (a, b) => { const k = `balance/${a}/${b} tax`, k2 = `balance/${b}/${a} tax`;
+    const v = last[k] !== undefined ? last[k] : last[k2] !== undefined ? -last[k2] : undefined;
+    return v ? ` · now ${v > 0 ? MU_NAMES[a] : MU_NAMES[b]}'s income taxed ${pct(Math.abs(v))}` : ""; };
+  const aiTax = (a, b) => ["easy", "normal"].map(x => last[`curriculum/ai-${x} ${a}/${b} tax`] ?? last[`curriculum/ai-${x} ${a} tax`])
+    .some(v => v) ? ` · the AI taxed now: ${["easy", "normal"].map(x => `${x} ${pct(last[`curriculum/ai-${x} ${a}/${b} tax`] ?? last[`curriculum/ai-${x} ${a} tax`] ?? 0)}`).join(", ")}` : "";
+  const real = M["real" + (diff ? " " + diff : "")];
+  const panels = [
+    [real, `The real game against the built-in AI${diff ? ` (${diff})` : ""}`, "no tax, no handicap: the run's yardstick", null],
+    [M.self, "Against itself", "both sides the learner, so the races alone differ (each game counted from both sides); the stronger race's income taxed", balance],
+    [M.curriculum, "Curriculum games against the built-in AI", "the AI's income taxed by the matchup's curriculum level", aiTax],
+    [M.past, "Against past snapshots", "the learner's race by the snapshot's (taxed between races as against itself)", null],
+  ].filter(p => p[0]);
+  const seg = (key, opts, cur) => `<span class="seg">${opts.map(([v, label]) => `<button data-mu="${key}" data-v="${v}" class="${v === cur ? "on" : ""}">${label}</button>`).join("")}</span>`;
+  box.innerHTML = `<div class="mu-bar">${seg("window", [["recent", "recent games"], ["all", "whole run"]], win)}
+      ${seg("diff", [["", "easy + normal AI"], ["easy", "easy AI"], ["normal", "normal AI"]], diff)}
+      <span>rows: the learner's race · columns: its opponent's · a cell: games won (colour: the score, ties half; hover for wins, ties and losses, and the taxes in force)</span></div>
+    <div class="mu-grid">` + panels.map(([k, title, sub, note]) => `<div class="panel"><h3>${title}<span>${win === "recent" ? `last ${k.recent_games}` : k.games} games</span></h3>
+      <div style="color:var(--muted);font-size:11.5px;margin:-4px 0 8px">${sub}</div>${muTable(k[win], note)}</div>`).join("") + `</div>`;
+  box.querySelectorAll("button[data-mu]").forEach(b => b.onclick = () => {
+    ui.mu[b.dataset.mu] = b.dataset.v;
+    try { localStorage.setItem("matchups", JSON.stringify(ui.mu)); } catch (e) {}
+    renderMatchups(d);
+  });
 }
 
 function renderCheckpoints(d) {
