@@ -646,6 +646,30 @@ def test_cloning_loss_on_shuffled_steps_with_memory():
     assert torch.isfinite(loss) and net.mem_in.weight.grad is not None
 
 
+def test_league_with_an_exploiter(tmp_path):
+    """--exploiter-share: games between the learner and its exploiter are a launch kind of their
+    own (out of the others' shares alike); the learner's results against it are kept and restored,
+    and its snapshots join the league under their own name."""
+    lg = League(tmp_path, ["normal"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=4, pfsp="hard", exploiter_share=0.2)
+    spec = lg.spec()
+    p = {x["kind"]: x["p"] for x in spec["launch"]}
+    assert abs(p["exploit"] - 0.2) < 1e-9 and abs(sum(x["p"] for x in spec["launch"]) - 1.0) < 1e-9
+    assert abs(p["agents"] - 0.4) < 1e-9
+    for o in (1.0, -1.0, -1.0, 0.0):
+        lg.member("exploiter").record(o)
+    assert abs(lg.train_keys()["league/exploiter_vs_main"] - (1 - 1.5 / 4)) < 1e-9
+    lg.add_snapshot(tmp_path / "x.pt", 100, name="exploiter:100")
+    lg.exploiter_resets = 2
+    lg.write()
+    again = League(tmp_path, ["normal"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=4, pfsp="hard", exploiter_share=0.2)
+    (tmp_path / "x.pt").write_bytes(b"")
+    again.restore(json.loads((tmp_path / "league.json").read_text()))
+    assert again.exploiter.recent == lg.exploiter.recent and again.exploiter_resets == 2
+    assert any(m.name == "exploiter:100" for m in again.past)
+    plain = League(tmp_path, ["normal"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=4, pfsp="hard")
+    assert plain.member("exploiter") is None and all(x["kind"] != "exploit" for x in plain.spec()["launch"])
+
+
 def test_a_restarted_run_draws_other_launches():
     from warcraftsim.fullgame.selfplay import game_rng
     draws = lambda cfg, w, k: [game_rng(cfg, w, k).random() for _ in range(3)]  # noqa: E731

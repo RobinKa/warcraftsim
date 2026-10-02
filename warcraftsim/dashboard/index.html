@@ -742,7 +742,7 @@ const SECTIONS = [
       [TR("league/past", "past snapshots", "#539bf5"), TR("league/exploiter", "exploiter snapshots", "#e5534b"),
        TR("league/self", "itself", "#4cc38a")], { ymin: 0, ymax: 1, empty: "no league" }],
     ["c-lg-exploit", "The main exploiter", "its win rate against the main learner's current policy (it restarts from the main learner above --exploiter-reset or below --exploiter-reset-low)",
-      [TR("league/exploiter_vs_main", "exploiter vs main", "#f47067"), TR("league/exploiter_resets", "resets", "#8795a3")], { ymin: 0, empty: "no exploiter (--torch.exploiters=1)", only: "micro" }],
+      [TR("league/exploiter_vs_main", "exploiter vs main", "#f47067"), TR("league/exploiter_resets", "resets", "#8795a3")], { ymin: 0, empty: "no exploiter (--torch.exploiters=1, fullgame --exploiter-share)", hideEmpty: true }],
     ["c-lg-real", "The real game by race", "games won against the untaxed AI (easy, normal), 40+ games a point",
       [["epp", "rwin/"]], { ymin: 0, ymax: 1, empty: "no real games (a curriculum's --real-share)", hideEmpty: true, matchups: true }],
     ["c-lg-balance", "The tax between races", "agents' games: the first race's income taken (< 0: the second's)",

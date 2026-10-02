@@ -58,46 +58,60 @@ RUNS = Path(__file__).resolve().parents[2] / "runs"
 
 # ---- actors ---------------------------------------------------------------------------------------
 
+LIVE = ("current", "exploiter")  # the networks the learner trains (published, reloaded); else past snapshots
+
+
 class Nets:
-    """An actor's networks: the learner's current weights (reloaded when the learner publishes
-    new ones) and past snapshots (a few, most recently used)."""
+    """An actor's networks: the learner's current weights and its exploiter's (reloaded when the
+    learner publishes new ones) and past snapshots (a few, most recently used)."""
 
     def __init__(self, cfg: dict, device):
         self.cfg, self.device = cfg, device
         self.current_path = Path(cfg["run_dir"]) / "current.pt"
+        self.exploiter_path = Path(cfg["run_dir"]) / "exploiter.pt"
         self.current: FullGameNet | None = None
-        self.version = -1
-        self.mtime = 0.0
+        self.exploiter: FullGameNet | None = None
+        self.version = self.exploiter_version = -1
+        self.mtime = self.exploiter_mtime = 0.0
         self.checked = 0.0
         self.snapshots: dict[str, FullGameNet] = {}
         self.reload()
 
-    def reload(self) -> None:
-        self.checked = time.time()
+    def _live(self, path: Path, net: FullGameNet | None, version: int, mtime: float) -> tuple:
         try:
-            mtime = self.current_path.stat().st_mtime
+            m = path.stat().st_mtime
         except FileNotFoundError:
-            return
-        if mtime == self.mtime:
-            return
+            return net, version, mtime
+        if m == mtime:
+            return net, version, mtime
         for _ in range(3):
             try:
-                ck = torch.load(self.current_path, map_location=self.device, weights_only=False)
+                ck = torch.load(path, map_location=self.device, weights_only=False)
                 break
             except (EOFError, RuntimeError, OSError):  # being replaced
                 time.sleep(0.2)
         else:
-            return
-        if self.current is None:
-            self.current = FullGameNet(**ck["config"]).to(self.device).eval()
-        self.current.load_state_dict(ck["model"])
-        self.version, self.mtime = ck["version"], mtime
+            return net, version, mtime
+        if net is None:
+            net = FullGameNet(**ck["config"]).to(self.device).eval()
+        net.load_state_dict(ck["model"])  # (in place: CUDA graphs captured from it stay valid)
+        return net, ck["version"], m
+
+    def reload(self) -> None:
+        self.checked = time.time()
+        self.current, self.version, self.mtime = self._live(self.current_path, self.current, self.version, self.mtime)
+        if self.cfg.get("exploiter_share", 0) > 0:
+            self.exploiter, self.exploiter_version, self.exploiter_mtime = self._live(
+                self.exploiter_path, self.exploiter, self.exploiter_version, self.exploiter_mtime)
+
+    def live_version(self, key: str) -> int:
+        return self.version if key == "current" else self.exploiter_version if key == "exploiter" else -1
 
     def get(self, key: str) -> FullGameNet:
-        if key == "current":
+        if key in LIVE:
             if time.time() - self.checked > 5.0:
                 self.reload()
-            return self.current
+            return self.current if key == "current" else self.exploiter
         net = self.snapshots.pop(key, None)
         if net is None:
             net, _ = load(key, self.device)
@@ -163,7 +177,7 @@ class Inference:
                 except Exception:  # noqa: BLE001 (the games must not hang on it)
                     traceback.print_exc()
                     results = [None] * len(items)
-                version = self.nets.version if key == "current" else -1
+                version = self.nets.live_version(key)
                 for (key_, st, out, k, done, n), res in zip(items, results):
                     if res is not None:
                         res["version"] = version
@@ -427,19 +441,19 @@ def inference_main(cfg: dict, conns: list, stop) -> None:
                 groups.setdefault(key, []).append((c, k, st))
         calls = []  # the round's calls, all started before the one wait for them
         for key, items in groups.items():
-            fwd, size = (infer, top) if key == "current" else (past, 16)
+            fwd, size = (infer, top) if key in LIVE else (past, 16)
             for a in range(0, len(items), size):
                 part = items[a:a + size]
                 try:
                     net = nets.get(key)
-                    handle = fwd._launch(net if key == "current" else swap.get(key, net), [it[2] for it in part])
+                    handle = fwd._launch(net if key in LIVE else swap.get(key, net), [it[2] for it in part])
                 except Exception:  # noqa: BLE001 (the games must not hang on it)
                     traceback.print_exc()
                     handle = None
-                calls.append((fwd, handle, part, nets.version if key == "current" else -1))
+                calls.append((fwd, handle, part, nets.live_version(key)))
                 ns = [it[2]["n"] for it in part]
                 stats["calls"] += 1
-                stats["past"] += key != "current"
+                stats["past"] += key not in LIVE
                 stats["rows"] += len(part)
                 stats["ents"] += sum(ns)
                 stats["ents_max"] += max(ns)
@@ -612,7 +626,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                     except (FileNotFoundError, json.JSONDecodeError):
                         pass
                     opp = ({"name": f"script:ai-{ai['difficulty']}" + (" (real)" if real else ""), "kind": "ai"}
-                           if ai["kind"] == "ai" else dict(_choose(rng, spec["agents"])))
+                           if ai["kind"] == "ai" else {"name": "exploiter", "kind": "exploiter"} if ai["kind"] == "exploit"
+                           else dict(_choose(rng, spec["agents"])))
                     if agents_only:  # races apart: the stronger one's income taxed (League.balance)
                         taxed, share = balance_tax(spec, races)
                         if share > 0:
@@ -663,9 +678,12 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         bot = BCAgent(None, vocab, s, None, costs=cfg.get("costs_array"))
         bot.begin(obs, race_ix)
         bots[s] = bot
-        keys[s] = "current" if s == side or opp["kind"] == "self" else opp["path"]
+        keys[s] = ("current" if s == side or opp["kind"] == "self" else "exploiter" if opp["kind"] == "exploiter"
+                   else opp["path"])
         if keys[s] == "current":
             trajs[s] = Trajectory(cfg, out_q, {"worker": wid, "opponent": opp["name"]})
+        elif keys[s] == "exploiter":  # (its steps train the exploiter: League, --exploiter-share)
+            trajs[s] = Trajectory(cfg, out_q, {"worker": wid, "opponent": "main", "learner": "exploiter"})
     t, t0 = 0, time.time()
     values, scale = cfg["values"], cfg["shaping_scale"]
     mat = material(obs, values)
@@ -758,7 +776,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     if record:  # the video's panel: A = the learner's side
         who = {"self": "itself", "ai": "built-in AI"}.get(opp["kind"], opp["name"])
         other = (f"built-in AI {opp['name'].split('-', 1)[1]}" if opp["kind"] == "ai"
-                 else "itself" if opp["kind"] == "self" else f"snapshot {opp['name']}")
+                 else "itself" if opp["kind"] == "self" else "its exploiter" if opp["kind"] == "exploiter"
+                 else f"snapshot {opp['name']}")
         ep["trace"] = {"steps": trace, "gamma": cfg["gamma"], "outcome": {str(s): v for s, v in outcome.items()},
                        "title": f"{Path(cfg['run_dir']).name} · policy v{infer.nets.version} · vs {who}",
                        "sides": [{"player": side, "name": f"learner ({races[side]})", "kind": "agent"},
@@ -885,7 +904,8 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
 class League:
     def __init__(self, run_dir: Path, ai: list[str], shares: dict, max_past: int, pfsp: str,
                  curriculum: tuple[float, float, float, int] | None = None, mode: str = "hp",
-                 races: tuple[str, ...] = ("",), mirror: bool = True, balance: tuple[float, float] | None = None):
+                 races: tuple[str, ...] = ("",), mirror: bool = True, balance: tuple[float, float] | None = None,
+                 exploiter_share: float = 0.0):
         """`curriculum`: (start level, step, the knob at level 1, base handicap): games against the
         built-in AI get easier or harder towards a 50% score, a level per difficulty in [0, 1] that
         a loss raises by `step`, a win lowers (a tie leaves it). At 0 the game is the real one; None:
@@ -908,7 +928,12 @@ class League:
         level in [-1, 1] per pair of races ("human/orc": > 0 the first one's income is taxed, < 0
         the second's), which a win of the first raises by `step` and a loss lowers. Only the
         learner's games against itself move it (the same player on both sides: the races alone
-        differ); games against past snapshots are taxed the same."""
+        differ); games against past snapshots are taxed the same.
+
+        `exploiter_share` (AlphaStar's main exploiter): that share of launches are games between the
+        learner and its exploiter, a second network that trains only against it (both sides train,
+        each its own network). "exploiter" (a member) holds the learner's results against the
+        current exploiter; the exploiter's snapshots that beat it join the league ("exploiter:N")."""
         self.run_dir, self.shares, self.max_past, self.pfsp = run_dir, shares, max_past, pfsp
         self.scripts = {f"script:ai-{d}": Member(f"script:ai-{d}") for d in ai}
         self.rule, self.mode, self.races = curriculum, mode, tuple(races)
@@ -923,6 +948,9 @@ class League:
         self.real_share = 0.0  # (set by the learner: --real-share)
         self.past: list[Member] = []
         self.self_member = Member("self")
+        self.exploiter_share = exploiter_share
+        self.exploiter = Member("exploiter") if exploiter_share > 0 else None
+        self.exploiter_resets = 0
 
     def matchup(self, race: str, opp: str) -> str:
         return matchup(self.mirror, race, opp)
@@ -961,10 +989,12 @@ class League:
     def member(self, name: str) -> Member | None:
         if name == "self":
             return self.self_member
+        if name == "exploiter":
+            return self.exploiter
         return self.scripts.get(name) or self.real.get(name) or next((m for m in self.past if m.name == name), None)
 
-    def add_snapshot(self, path: Path, steps: int) -> None:
-        self.past.append(Member(f"past:{steps}", path=str(path), steps=steps))
+    def add_snapshot(self, path: Path, steps: int, name: str | None = None) -> None:
+        self.past.append(Member(name or f"past:{steps}", path=str(path), steps=steps))
         if len(self.past) > self.max_past:  # keep the first (the clone) and the newest
             del self.past[1]
 
@@ -992,6 +1022,11 @@ class League:
                 if key in self.level:
                     self.level[key] = v
         self.balance.update({k: v for k, v in (summary.get("balance") or {}).items() if k in self.balance})
+        if self.exploiter is not None and summary.get("exploiter"):
+            x = summary["exploiter"]
+            self.exploiter.wins, self.exploiter.losses, self.exploiter.draws = x.get("wins", 0.0), x.get("losses", 0.0), x.get("draws", 0.0)
+            self.exploiter.recent = list(x.get("recent") or [])
+            self.exploiter_resets = summary.get("exploiter_resets", 0)
         me = summary.get("self") or {}
         self.self_member.wins, self.self_member.losses = me.get("wins", 0.0), me.get("losses", 0.0)
         self.self_member.draws, self.self_member.recent = me.get("draws", 0.0), list(me.get("recent") or [])
@@ -1002,6 +1037,10 @@ class League:
         kind; an extra draw after the races' made night elf rare: 1 of 38 real launches)."""
         ai_share = self.shares["ai"] if self.scripts else 0.0
         launch = [{"kind": "agents", "p": 1.0 - ai_share}]
+        if self.exploiter is not None:  # (out of every other kind's share alike)
+            launch = [{"kind": "agents", "p": (1.0 - ai_share) * (1 - self.exploiter_share)},
+                      {"kind": "exploit", "p": self.exploiter_share}]
+            ai_share *= 1 - self.exploiter_share
         if self.level and real_share > 0:
             launch += [{"kind": "ai", "difficulty": n.split("-", 1)[1], "real": True,
                         "p": ai_share * real_share / len(self.scripts)} for n in self.scripts]
@@ -1031,7 +1070,8 @@ class League:
                     "path": m.path, "recent": m.recent}
         summary = {"pfsp": self.pfsp, "members": [row(m) for m in [*self.scripts.values(), *self.real.values(), *self.past]],
                    "self": row(self.self_member), "level": {f"{n}|{r}": v for (n, r), v in self.level.items()},
-                   "balance": self.balance}
+                   "balance": self.balance,
+                   **({"exploiter": row(self.exploiter), "exploiter_resets": self.exploiter_resets} if self.exploiter else {})}
         tmp = self.run_dir / "league.json.tmp"
         tmp.write_text(json.dumps(summary))
         tmp.replace(self.run_dir / "league.json")
@@ -1050,6 +1090,10 @@ class League:
             out[f"curriculum/{short} level"] = lv
             out.update({f"curriculum/{short} {k}": v for k, v in self.knobs(n, r).items() if k in used})
         out.update({f"balance/{k} tax": v for k, v in self.balance_taxes().items()} if self.balance else {})
+        if self.exploiter is not None:
+            if self.exploiter.win_rate() is not None:
+                out["league/exploiter_vs_main"] = 1.0 - self.exploiter.win_rate()  # (the exploiter's score)
+            out["league/exploiter_resets"] = self.exploiter_resets
         return out
 
 
@@ -1201,11 +1245,11 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
     return {k: float(torch.stack(v).float().mean()) for k, v in stats.items()}
 
 
-def publish(net: FullGameNet, version: int, run_dir: Path) -> None:
-    tmp = run_dir / "current.pt.tmp"
+def publish(net: FullGameNet, version: int, run_dir: Path, name: str = "current.pt") -> None:
+    tmp = run_dir / f"{name}.tmp"
     torch.save({"model": {k: v.detach().cpu() for k, v in net.state_dict().items()}, "config": net.config,
                 "version": version}, tmp)
-    tmp.replace(run_dir / "current.pt")
+    tmp.replace(run_dir / name)
 
 
 def git_info() -> dict:
@@ -1245,6 +1289,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--races", default="all")
     ap.add_argument("--mirror", type=int, default=1, help="both sides play the same race (on duelrush the races "
                                                            "are far from balanced: night elf beat the others 96%%)")
+    ap.add_argument("--exploiter-share", type=float, default=0.0,
+                    help="AlphaStar's main exploiter: this share of launches are games between the learner and a "
+                         "second network that trains only against it (League; 0: none)")
+    ap.add_argument("--exploiter-batch", type=int, default=4096, help="the exploiter's steps per update")
+    ap.add_argument("--exploiter-reset", type=float, default=0.7,
+                    help="the exploiter's score against the learner (its last 50 games) at which its weights join the "
+                         "league and it starts over from the run's starting weights")
+    ap.add_argument("--exploiter-timeout", type=int, default=300, help="updates after which it starts over anyway")
     ap.add_argument("--balance-step", type=float, default=0.02,
                     help="without --mirror: how far a game of the learner against itself moves the tax between "
                          "its two races (League: the winner's income taxed more, towards a 50%% score; 0: no tax)")
@@ -1348,6 +1400,11 @@ def main(argv: list[str] | None = None) -> int:
         for p in ref.parameters():
             p.requires_grad_(False)
     opt = torch.optim.Adam(net.parameters(), lr=args.lr, eps=1e-5)
+    # the main exploiter (--exploiter-share): a second network, from the run's starting weights
+    # (as AlphaStar's from the supervised agent), trained on its games against the learner alone
+    x_init = {k: v.detach().clone() for k, v in net.state_dict().items()} if args.exploiter_share > 0 else None
+    xnet = copy.deepcopy(net) if x_init is not None else None
+    xopt = torch.optim.Adam(xnet.parameters(), lr=args.lr, eps=1e-5) if xnet is not None else None
     slot, slot_lock = claim_slot(args.runs)
     races = list(fx.RACES) if args.races == "all" else args.races.split(",")
     ai = [d for d in args.ai.split(",") if d]
@@ -1398,7 +1455,8 @@ def main(argv: list[str] | None = None) -> int:
                     curriculum=((args.curriculum, args.curriculum_step, args.curriculum_delay, args.handicap)
                                 if args.curriculum >= 0 else None), mode=args.curriculum_mode, races=tuple(races),
                     mirror=bool(args.mirror),
-                    balance=(args.balance_step, args.balance_max) if args.balance_step > 0 else None)
+                    balance=(args.balance_step, args.balance_max) if args.balance_step > 0 else None,
+                    exploiter_share=args.exploiter_share)
     league.real_share = args.real_share
     if resumed is not None and (run_dir / "league.json").exists():
         league.restore(json.loads((run_dir / "league.json").read_text()))
@@ -1408,6 +1466,13 @@ def main(argv: list[str] | None = None) -> int:
         league.add_snapshot(first, 0)  # the clone itself: the first past opponent
     league.write()
     publish(net, resumed["update"] if resumed else 0, run_dir)
+    x_update = x_since = 0  # the exploiter's updates (its weights' version), and since its last restart
+    if xnet is not None:
+        if resumed is not None and (run_dir / "exploiter.pt").exists():  # (it goes on too)
+            xck = torch.load(run_dir / "exploiter.pt", map_location=device, weights_only=False)
+            xnet.load_state_dict(xck["model"])
+            x_update, x_since = xck["version"], xck.get("since", 0)
+        publish(xnet, x_update, run_dir, "exploiter.pt")
     cfg = {"run_dir": str(run_dir), "device": str(device), "vocab": str(run_dir / "vocab.json"), "races": races,
            "map": args.map, "handicap": args.handicap, "step_seconds": args.step_seconds,
            "max_minutes": args.max_minutes, "max_steps": int(args.max_minutes * 60 / args.step_seconds) + 20,
@@ -1419,6 +1484,7 @@ def main(argv: list[str] | None = None) -> int:
            "actors": args.actors, "values": unit_values(), "shaping": args.shaping, "shaping_scale": args.shaping_scale,
            "tie_break": args.tie_break, "compile": bool(args.compile), "native_obs": bool(args.native_obs),
            "real_share": args.real_share, "infer_batch": 64, "game_nice": args.game_nice, "pairs": args.pairs,
+           "exploiter_share": args.exploiter_share,
            "infer_period": args.infer_period_ms / 1000.0,
            "avail_mask": bool(args.avail_mask),
            "costs": order_costs(vocab, args.map).tolist() if args.avail_mask else None, "max_past": args.max_past,
@@ -1467,6 +1533,39 @@ def main(argv: list[str] | None = None) -> int:
     buf: list[dict] = []
     chunks: list[list[dict]] = []
     stale = []
+    xbuf: list[dict] = []
+    xchunks: list[list[dict]] = []
+    x_stats: dict = {}
+
+    def exploiter_update() -> None:
+        """A PPO update of the exploiter on its steps (no cloning loss: it is to find what beats the
+        learner, not to play like the AI), then a restart when it beats the learner often enough
+        (its weights join the league) or has not in --exploiter-timeout updates."""
+        nonlocal xbuf, xchunks, x_update, x_since, xopt, x_stats
+        x_stats = ppo_update(xnet, ref, xopt, xbuf, args, x_since < args.value_warmup, device, xchunks, None)
+        xbuf, xchunks = [], []
+        x_update += 1
+        x_since += 1
+        xm = league.exploiter
+        score = None if len(xm.recent) < 50 else 1.0 - xm.win_rate()
+        if (score is not None and score >= args.exploiter_reset) or x_since >= args.exploiter_timeout:
+            if score is not None and score >= args.exploiter_reset:
+                path = run_dir / "checkpoints" / f"exploiter-{agent_steps:016d}.pt"
+                torch.save({"model": xnet.state_dict(), "config": xnet.config, "vocab": vocab, "agent_steps": agent_steps,
+                            "update": x_update}, path)
+                league.add_snapshot(path, agent_steps, name=f"exploiter:{agent_steps}")
+            print(f"exploiter restarts after {x_since} updates (its score against the learner: "
+                  f"{'-' if score is None else f'{score:.2f}'})", flush=True)
+            xnet.load_state_dict(x_init)
+            xopt = torch.optim.Adam(xnet.parameters(), lr=args.lr, eps=1e-5)
+            xm.recent = []
+            league.exploiter_resets += 1
+            x_since = 0
+        torch.save({"model": {k: v.detach().cpu() for k, v in xnet.state_dict().items()}, "config": xnet.config,
+                    "version": x_update, "since": x_since}, run_dir / "exploiter.pt.tmp")
+        (run_dir / "exploiter.pt.tmp").replace(run_dir / "exploiter.pt")
+        league.write()
+
     try:
         while agent_steps < args.timesteps:
             t_collect = time.time()
@@ -1489,6 +1588,12 @@ def main(argv: list[str] | None = None) -> int:
                     with open(run_dir / "episodes.jsonl", "a") as f:
                         f.write(json.dumps(e) + "\n")
                     continue
+                if (msg.get("info") or {}).get("learner") == "exploiter":
+                    xbuf += msg["steps"]
+                    xchunks.append(msg["steps"])
+                    if len(xbuf) >= args.exploiter_batch:
+                        exploiter_update()
+                    continue
                 buf += msg["steps"]
                 chunks.append(msg["steps"])
                 stale += [update - s["version"] for s in msg["steps"] if s["version"] >= 0]
@@ -1509,6 +1614,9 @@ def main(argv: list[str] | None = None) -> int:
                             "update": update}, run_dir / "checkpoints" / f"{agent_steps:016d}.pt")
             league.write()
             now = time.time()
+            if x_stats:  # the exploiter's last update
+                stats.update({f"exploiter/{k.split('/')[-1]}": v for k, v in x_stats.items()})
+                stats["exploiter/updates"] = x_update
             row = {"agent_steps": agent_steps, "epoch": update, "time": now, "uptime": now - t0,
                    "SPS": len(steps) / max(now - t_collect, 1e-9), "lr": args.lr, "value_warmup": warmup,
                    "perf/rollout": t_train - t_collect, "perf/train": now - t_train,
