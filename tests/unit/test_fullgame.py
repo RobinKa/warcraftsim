@@ -622,9 +622,10 @@ def test_ppo_update_runs_on_minibatches_by_size(memory):
     before = net.value_head[0].weight.detach().clone()
     opt = torch.optim.Adam(net.parameters(), lr=1e-3)
     chunks = [steps[a:a + 8] for a in range(0, 24, 8)] if memory else None  # (three games' pieces)
+    ref.allowed[:, 1:] = False  # (orders only the learner may give: the cloning loss allows more as it goes)
     out = ppo_update(net, ref, opt, steps, args, False, torch.device("cpu"), chunks)
     assert {"loss/policy", "loss/value", "loss/entropy", "loss/kl", "loss/clipfrac", "loss/ref_kl", "grad_norm"} <= set(out)
-    assert all(np.isfinite(v) for v in out.values()) and out["loss/ref_kl"] >= 0
+    assert all(np.isfinite(v) for v in out.values()) and 0 <= out["loss/ref_kl"] < 10
     assert float((net.value_head[0].weight - before).abs().max()) > 0
 
 
