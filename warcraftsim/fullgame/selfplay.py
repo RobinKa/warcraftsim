@@ -905,7 +905,7 @@ class League:
     def __init__(self, run_dir: Path, ai: list[str], shares: dict, max_past: int, pfsp: str,
                  curriculum: tuple[float, float, float, int] | None = None, mode: str = "hp",
                  races: tuple[str, ...] = ("",), mirror: bool = True, balance: tuple[float, float] | None = None,
-                 exploiter_share: float = 0.0):
+                 exploiter_share: float = 0.0, tie: float = 0.0):
         """`curriculum`: (start level, step, the knob at level 1, base handicap): games against the
         built-in AI get easier or harder towards a 50% score, a level per difficulty in [0, 1] that
         a loss raises by `step`, a win lowers (a tie leaves it). At 0 the game is the real one; None:
@@ -930,13 +930,17 @@ class League:
         learner's games against itself move it (the same player on both sides: the races alone
         differ); games against past snapshots are taxed the same.
 
+        `tie`: how far a tie moves a curriculum level, as a share of a loss's step (0: not at all; on
+        duelfast 78% of the curriculum games tied at the time limit, so the levels stood still while
+        the learner won 1%).
+
         `exploiter_share` (AlphaStar's main exploiter): that share of launches are games between the
         learner and its exploiter, a second network that trains only against it (both sides train,
         each its own network). "exploiter" (a member) holds the learner's results against the
         current exploiter; the exploiter's snapshots that beat it join the league ("exploiter:N")."""
         self.run_dir, self.shares, self.max_past, self.pfsp = run_dir, shares, max_past, pfsp
         self.scripts = {f"script:ai-{d}": Member(f"script:ai-{d}") for d in ai}
-        self.rule, self.mode, self.races = curriculum, mode, tuple(races)
+        self.rule, self.mode, self.races, self.tie = curriculum, mode, tuple(races), tie
         self.mirror = mirror
         self.keys = self.races if mirror else tuple(matchup(False, a, b) for a in self.races for b in self.races)
         self.level = {(n, k): curriculum[0] for n in self.scripts for k in self.keys} if curriculum else {}
@@ -972,7 +976,8 @@ class League:
         for the learner): that level moves."""
         key = (name, race)
         if key in self.level:
-            self.level[key] = min(1.0, max(0.0, self.level[key] - self.rule[1] * outcome))
+            move = -outcome if outcome != 0 else self.tie  # (a win lowers it, a loss raises it)
+            self.level[key] = min(1.0, max(0.0, self.level[key] + self.rule[1] * move))
 
     def balanced(self, race: str, opp: str, outcome: float) -> None:
         """A game of the learner against itself, `race` against `opp`, ended (`outcome` for `race`)."""
@@ -1316,6 +1321,8 @@ def main(argv: list[str] | None = None) -> int:
                          "points up to twice the AI's, then the AI starting late), moved towards a 50%% score; "
                          "-1: none, the real game")
     ap.add_argument("--curriculum-step", type=float, default=0.02, help="how much a loss raises the level (a win lowers it)")
+    ap.add_argument("--curriculum-tie", type=float, default=0.0,
+                    help="a tie raises the level by this share of a loss's step (0: a tie leaves it)")
     ap.add_argument("--curriculum-delay", type=float, default=120.0,
                     help="the knob at level 1: the AI's late start (seconds; modes hp and delay) or the share of "
                          "its income taken (mode tax, e.g. 0.9)")
@@ -1460,7 +1467,7 @@ def main(argv: list[str] | None = None) -> int:
                                 if args.curriculum >= 0 else None), mode=args.curriculum_mode, races=tuple(races),
                     mirror=bool(args.mirror),
                     balance=(args.balance_step, args.balance_max) if args.balance_step > 0 else None,
-                    exploiter_share=args.exploiter_share)
+                    exploiter_share=args.exploiter_share, tie=args.curriculum_tie)
     league.real_share = args.real_share
     if resumed is not None and (run_dir / "league.json").exists():
         league.restore(json.loads((run_dir / "league.json").read_text()))

@@ -322,6 +322,17 @@ def test_curriculum_against_the_builtin_ai(tmp_path):
     assert again.level[(n, "")] == 1.0  # (resumed runs keep their levels)
 
 
+def test_curriculum_tie_moves_the_level(tmp_path):
+    lg = League(tmp_path, ["normal"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard",
+                curriculum=(0.5, 0.1, 0.9, 50), mode="tax", tie=0.5)
+    lg.curriculum("script:ai-normal", 0.0)
+    assert abs(lg.level[("script:ai-normal", "")] - 0.55) < 1e-9  # (half a loss's step)
+    still = League(tmp_path, ["normal"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard",
+                   curriculum=(0.5, 0.1, 0.9, 50), mode="tax")
+    still.curriculum("script:ai-normal", 0.0)
+    assert still.level[("script:ai-normal", "")] == 0.5
+
+
 def test_curriculum_late_start_only(tmp_path):
     lg = League(tmp_path, ["normal"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard",
                 curriculum=(0.5, 0.1, 180.0, 50), mode="delay")
