@@ -755,6 +755,10 @@ const SECTIONS = [
       [["epp", "cwin/ai-easy "]], { ymin: 0, ymax: 1, empty: "no curriculum games", hideEmpty: true, matchups: true }],
     ["c-lg-cwin-normal", "Curriculum games won, normal AI", "learner / AI · against the taxed AI · 40+ games a point",
       [["epp", "cwin/ai-normal "]], { ymin: 0, ymax: 1, empty: "no curriculum games", hideEmpty: true, matchups: true }],
+    ["c-lg-level-insane", "Curriculum level, insane AI", "learner / AI · moved towards a 50% score",
+      [["trp", "curriculum/ai-insane ", " level"]], { ymin: 0, ymax: 1, empty: "no insane AI (--ai)", hideEmpty: true, matchups: true }],
+    ["c-lg-cwin-insane", "Curriculum games won, insane AI", "learner / AI · against the taxed AI · 40+ games a point",
+      [["epp", "cwin/ai-insane "]], { ymin: 0, ymax: 1, empty: "no insane AI (--ai)", hideEmpty: true, matchups: true }],
     ["c-lg-members", "League size", "past snapshots", [TR("league/members", "snapshots", "#39c5cf")], { ymin: 0, empty: "no league" }],
     ["c-lg-delay", "The AI's late start", "seconds its units idle at the start of a game (the learner's hit points: the handicap)",
       [["trp", "curriculum/", " delay", "nonzero"]], { ymin: 0, empty: "the AI starts on time (no curriculum, or one without a late start: --curriculum-mode)", hideEmpty: true }],
@@ -1494,18 +1498,19 @@ function renderMatchups(d) {
   const balance = (a, b) => { const k = `balance/${a}/${b} tax`, k2 = `balance/${b}/${a} tax`;
     const v = last[k] !== undefined ? last[k] : last[k2] !== undefined ? -last[k2] : undefined;
     return v ? ` · now ${v > 0 ? MU_NAMES[a] : MU_NAMES[b]}'s income taxed ${pct(Math.abs(v))}` : ""; };
-  const aiTax = (a, b) => ["easy", "normal"].map(x => last[`curriculum/ai-${x} ${a}/${b} tax`] ?? last[`curriculum/ai-${x} ${a} tax`])
-    .some(v => v) ? ` · the AI taxed now: ${["easy", "normal"].map(x => `${x} ${pct(last[`curriculum/ai-${x} ${a}/${b} tax`] ?? last[`curriculum/ai-${x} ${a} tax`] ?? 0)}`).join(", ")}` : "";
-  const real = M["real" + (diff ? " " + diff : "")];
+  const diffs = ["easy", "normal", "insane"].filter(x => Object.keys(last).some(k => k.startsWith(`curriculum/ai-${x} `)));
+  const aiTax = (a, b) => diffs.map(x => last[`curriculum/ai-${x} ${a}/${b} level`] ?? last[`curriculum/ai-${x} ${a} level`])
+    .some(v => v) ? ` · the AI's curriculum level now: ${diffs.map(x => `${x} ${(last[`curriculum/ai-${x} ${a}/${b} level`] ?? last[`curriculum/ai-${x} ${a} level`] ?? 0).toFixed(2)}`).join(", ")}` : "";
+  const real = M["real" + (diff && M["real " + diff] ? " " + diff : "")];
   const panels = [
-    [real, `The real game against the built-in AI${diff ? ` (${diff})` : ""}`, "no tax, no handicap: the run's yardstick", null],
+    [real, `The real game against the built-in AI${diff && M["real " + diff] ? ` (${diff})` : ""}`, "no tax, no handicap: the run's yardstick", null],
     [M.self, "Against itself", "both sides the learner, so the races alone differ (each game counted from both sides); the stronger race's income taxed", balance],
     [M.curriculum, "Curriculum games against the built-in AI", "the AI's income taxed by the matchup's curriculum level", aiTax],
     [M.past, "Against past snapshots", "the learner's race by the snapshot's (taxed between races as against itself)", null],
   ].filter(p => p[0]);
   const seg = (key, opts, cur) => `<span class="seg">${opts.map(([v, label]) => `<button data-mu="${key}" data-v="${v}" class="${v === cur ? "on" : ""}">${label}</button>`).join("")}</span>`;
   box.innerHTML = `<div class="mu-bar">${seg("window", [["recent", "recent games"], ["all", "whole run"]], win)}
-      ${seg("diff", [["", "easy + normal AI"], ["easy", "easy AI"], ["normal", "normal AI"]], diff)}
+      ${seg("diff", [["", "every AI"], ...["easy", "normal", "insane"].filter(x => M["real " + x]).map(x => [x, x + " AI"])], diff)}
       <span>rows: the learner's race · columns: its opponent's · a cell: games won (colour: the score, ties half; hover for wins, ties and losses, and the taxes in force)</span></div>
     <div class="mu-grid">` + panels.map(([k, title, sub, note]) => `<div class="panel"><h3>${title}<span>${win === "recent" ? `last ${k.recent_games}` : k.games} games</span></h3>
       <div style="color:var(--muted);font-size:11.5px;margin:-4px 0 8px">${sub}</div>${muTable(k[win], note)}</div>`).join("") + `</div>`;
