@@ -625,6 +625,24 @@ def test_ppo_update_runs_on_minibatches_by_size():
     assert float((net.value_head[0].weight - before).abs().max()) > 0
 
 
+def test_cloning_loss_on_shuffled_steps_with_memory():
+    """Self-play's auxiliary cloning loss draws shuffled steps (no lanes): a network with memory
+    takes each as a game's first step."""
+    from warcraftsim.fullgame.bc import losses
+    net = _net(True)
+    rng = np.random.default_rng(0)
+    B, E, O = 4, 6, 3
+    b = {"ent": torch.from_numpy(rng.normal(size=(B, E, fx.F)).astype(np.float32)), "type": torch.from_numpy(rng.integers(0, 20, (B, E))),
+         "cur": torch.from_numpy(rng.integers(0, 10, (B, E))), "mask": torch.ones(B, E, dtype=torch.bool),
+         "glob": torch.from_numpy(rng.normal(size=(B, 30)).astype(np.float32)), "n_own": torch.full((B,), O),
+         "y_order": torch.from_numpy(rng.integers(0, 5, (B, E))), "y_ptr": torch.full((B, E), -1),  # (labels as wide as the view)
+         "y_x": torch.from_numpy(rng.integers(0, fx.BINS, (B, E))), "y_y": torch.from_numpy(rng.integers(0, fx.BINS, (B, E))),
+         "avail": torch.ones(B, 30, dtype=torch.bool), "ret": torch.zeros(B)}
+    loss, _ = losses(net, b, torch.device("cpu"), None, value_coef=0.0, stats=False)
+    loss.backward()
+    assert torch.isfinite(loss) and net.mem_in.weight.grad is not None
+
+
 def test_a_restarted_run_draws_other_launches():
     from warcraftsim.fullgame.selfplay import game_rng
     draws = lambda cfg, w, k: [game_rng(cfg, w, k).random() for _ in range(3)]  # noqa: E731

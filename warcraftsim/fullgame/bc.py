@@ -247,11 +247,13 @@ def losses(net: FullGameNet, b: dict, device, states: torch.Tensor | None = None
     y_x, y_y = b["y_x"][:, :O].long(), b["y_y"][:, :O].long()
     n_own = b["n_own"].long()
     g, u = net.encode(ent, typ, cur, mask, b["glob"].float())
-    if net.memory:
+    if net.memory and "lane" in b:
         L = len(b["lane"])
         c, h = net.context_seq(g.view(L, -1, g.shape[-1]), states[b["lane"]], b["starts"])
         states[b["lane"]] = h[:, -1].detach().to(states.dtype)
         g = c.reshape(g.shape)
+    elif net.memory:  # shuffled steps (self-play's auxiliary cloning loss): each as if a game's first
+        g = net.context(g, None)[0]
     avail = b["avail"] if avail_mask else None  # (as when playing: what the player can pay for)
     logits = net.order_logits(g, u[:, :O], typ, n_own, by_type=False, avail=avail)  # own units come first
     own = torch.arange(O, device=device)[None] < n_own[:, None]
