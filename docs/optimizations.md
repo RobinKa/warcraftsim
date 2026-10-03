@@ -1,0 +1,83 @@
+# Optimizations
+
+How a step of the real game became cheap enough to train on, what each fix bought, what limits throughput now, and what did not work. The numbers are from this machine: Ryzen 5950X (16 cores, 32 threads), 47 GB, RTX 3090, WSL2, WineHQ stable 11.0, llvmpipe.
+
+## A game step
+
+| fix | what it saved |
+|---|---|
+| Actions through a hooked native (`GetPlayerTechMaxAllowed` on mailbox keys) instead of a file the harness loaded with `Preloader` | ~7 ms a step of JASS compilation, and a ~20 KB leak per step that forced game recycling |
+| Observations captured by hooking `Preload` / `PreloadGenEnd` instead of written to a file | a wineserver round trip per token |
+| The harness's pass over the units done by the shim in C (`shim/units.c`: the game's natives called directly) | 9–13 → 4 ms a step with 150 units under load (4.0 → 1.5 ms on an idle machine); self-play 644 → 719 steps/s |
+| `wait_floor_ms`: the virtual clock turns short waits into at least 1–5 ms | game threads polling with scaled timeouts spun at 5,000–11,000 wakeups a second, each a wineserver call |
+| Observations parsed in C (`native/w3obs.c`, `GameSetup.native_obs`) | a Python object per unit, and the GIL |
+| Training games on a 320×240 virtual screen, drawn in the game's own thread (`render_threads=0`, Wine's csmt off) | llvmpipe 5.3 → 1.7 cores for 16 games; a reload's CPU 2.1 → 1.4 s |
+| WineHQ stable instead of staging | staging was ~25% slower in parallel |
+
+A `duelrush` step (0.5 s of game time, built-in AI on both sides) costs 14.6 ms of CPU in a game alone (68 steps/s) and 35–40 ms with 32 games running (two threads a core, the all-core clock, contention); about 8 ms of it is the harness and the sync, ~10% is wineserver (~500 requests a step).
+
+## Starting the next game
+
+| fix | effect |
+|---|---|
+| `RestartGame` from the harness: the map reloads inside the running game | ~1 s instead of a ~4 s launch |
+| "Allow Local Files" off (every file lookup scanned the game folder under Wine) | a reload under load 13.2 → 9.9 s |
+| The rules as the game's own tables in the map instead of object data (`w3u`/`w3q`/`w3a`, applied change by change at every load) | a reload 3.0 → 1.0 s on an idle machine |
+| Five games per map load, each with two players of its own (`GameSetup.pairs`) | a reload was a quarter of a game thread's time: games 2.1 → 2.55 a second; demonstrations 1.55× faster |
+
+A reset by script for the same players (remove everything, respawn) took 0.1 s but was not a new game: the engine kept counting the removed heroes (see [experiments](experiments.md)).
+
+## Whole-game self-play (`fullgame/selfplay.py`)
+
+32 games in 4 actor processes, one inference server process, one learner. Agent steps per second on `fgself-9`:
+
+| change | steps/s | why |
+|---|---|---|
+| start | 560 | the inference server 90% busy at 3.4 rows a call |
+| a pipe per game thread instead of queues | 545 | a request took ~32 ms of a 59 ms step through feeder threads and locks |
+| games niced (+10) | 595 | the server and the learner get the CPU first |
+| a round's network calls launched together, one GPU wait per round | 606 | every wait costs a turn of the GPU next to the learner |
+| CUDA graphs captured by hand instead of `torch.compile` | 607 | 0.4 s a shape instead of 10–20 s stalls; past snapshots through one network with swapped weights |
+| every game reloads the map (the reset fix) | 540 | the agents' games became real games |
+| the loading screen drawn in the game's thread, a video every 10 minutes | 644 | |
+| the units' pass in C | 719 | |
+| minibatches of similar entity counts, statistics kept on the GPU | ≈800 | padding 91 → 49 entities; the update 10.5 → 8.9 s |
+| five games per map load | 822 | |
+| the trajectory queue bounded to a batch, an inference round at most every 4 ms | ≈840 | the batches 1.3 updates old instead of 3 and growing |
+
+Now the learner (an update of 8,192 steps in ~8.5–9 s, bound by its own Python; the GPU ~36% busy) and the games' CPU are about even: speeding one up alone buys a few percent.
+
+## Micro training
+
+* **PufferLib 5** (`micro_mirror`, 24 games): 620 → 3,000 agent steps/s. OpenMP threads spun at the barrier while the slowest game finished (`OMP_WAIT_POLICY=passive`), one buffer per two games.
+* **The torch trainer** (league self-play): 160–180 → ~800 agent steps/s. The league's snapshots shared one compiled network with swapped weights (128 → 5 ms a step); the policy step compiled whole (Gumbel-max sampling, the GRU as plain ops: 10 → 0.6 ms); one pinned upload and one download a step; the PPO update in a thread during the next rollout.
+
+## The dashboard
+
+A run's page re-read and re-binned all its episodes on every refresh: 4.5 s for 135k episodes. Its series are now kept between requests as numpy columns, extended with new episodes only and binned with numpy: ~1 s.
+
+## Dead ends
+
+* 8 actor processes of 4 games instead of 4 of 8 (627 against 644 steps/s).
+* A CUDA-graph inference thread inside the learner process (capturing fails while another thread draws random numbers).
+* Pinning the learner and the server to cores of their own (no faster; the games lost 4 threads).
+* Emptying melee's preload lists (the shim's `Preload` hook already drops them).
+* A slower clock while reloading (the loading screen waits ~2 s of game time drawing frames: slower costs more).
+* Wine's csmt off alone; esync; clock speeds far above what the game reaches (more wineserver wakeups).
+* 36 or 48 micro games instead of 24 (1,871 and 1,751 steps/s against 1,830).
+
+## What is left
+
+* **Longer steps on longer games.** Half the step's CPU is per step (harness, sync, Python), half is simulation; 1 s steps would give ~1.4× the game time per CPU, at the cost of half the decisions.
+* **The learner**: the cloning loss's calls (~18% of an update: many small batches), the clone's forward for the KL term (~5%), a compiled update.
+* **The video renderer**: 3.4 cores while it renders.
+* **wineserver**: ~10% of a step.
+
+## Measuring
+
+* `py-spy record --threads --idle` on a process (it pauses the process while sampling: an update measured during a profile is slower).
+* `perf record -a` (`/usr/lib/linux-tools/5.15.0-194-generic/perf`).
+* `scripts/bench_env.py` (env steps/s, CPU per process and thread kind), `scripts/bench_train.py`, `W3SIM_PROFILE=1..3` (the shim's per-second profile in each game's `shim.log`).
+* `runs/<run>/inference.jsonl` (the server's rounds, rows, waits); `scripts/selfplay_status.py <run>`.
+* `scripts/production_probe.py` and `scripts/order_probability.py`: what a policy does at its buildings, and how likely it is to give the built-in AI's orders.
+* Benchmarks with many games must share one measurement window (games launched at different times never overlap).

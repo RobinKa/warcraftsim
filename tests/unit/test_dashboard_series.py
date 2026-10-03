@@ -35,3 +35,15 @@ def test_series_grow_with_new_episodes_and_match_a_full_read():
     assert m["self"]["all"]["orc"]["human"] == [30, 0, 0] and m["self"]["all"]["human"]["orc"] == [0, 0, 30]
     s.update([(f, list(rows[:10]))])  # a file replaced: read anew
     assert s.matchups()["curriculum"]["all"]["human"]["orc"] == [5, 0, 5]
+
+
+def test_docs_list_read_save(tmp_path):
+    """The Docs tab: docs/*.md listed (the reader's order first), read, saved; names checked."""
+    from warcraftsim.dashboard.server import Docs
+    (tmp_path / "zeta.md").write_text("# Zeta\n\ntext\n")
+    (tmp_path / "overview.md").write_text("# Overview\n")
+    d = Docs(tmp_path)
+    assert [x["name"] for x in d.list()] == ["overview", "zeta"] and d.list()[1]["title"] == "Zeta"
+    assert d.read("zeta")["text"].startswith("# Zeta") and d.read("../zeta") is None and d.read("nope") is None
+    assert d.save("new-doc", "# New\n") and d.read("new-doc")["title"] == "New"
+    assert not d.save("../evil", "x") and not d.save("Upper", "x")

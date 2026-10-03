@@ -240,6 +240,50 @@ def _binned_columns(xs: list[float], cols: np.ndarray, n: int | None = None) -> 
 
 MAX_POINTS = 600
 MAX_NOTES = 64 * 1024
+MAX_DOC = 512 * 1024
+DOC_NAME = __import__("re").compile(r"[a-z0-9][a-z0-9-]{0,63}")
+# the Docs tab: docs/*.md, first the ones a reader starts with, then by title
+DOC_ORDER = ("overview", "environments", "road-to-the-real-game", "experiments", "optimizations", "architecture")
+
+
+class Docs:
+    """The repository's documents (docs/*.md) for the dashboard's Docs tab: listed, read, saved."""
+
+    def __init__(self, root: Path):
+        self.root = root
+
+    @staticmethod
+    def title(text: str, name: str) -> str:
+        for line in text.splitlines():
+            if line.startswith("# "):
+                return line[2:].strip()
+        return name
+
+    def list(self) -> list[dict]:
+        out = []
+        for f in sorted(self.root.glob("*.md")):
+            text = f.read_text(errors="replace")
+            out.append({"name": f.stem, "title": self.title(text, f.stem), "updated": f.stat().st_mtime,
+                        "bytes": f.stat().st_size, "lines": text.count("\n") + 1})
+        rank = {n: i for i, n in enumerate(DOC_ORDER)}
+        return sorted(out, key=lambda d: (rank.get(d["name"], len(rank)), d["title"].lower()))
+
+    def read(self, name: str) -> dict | None:
+        f = self.root / f"{name}.md"
+        if not DOC_NAME.fullmatch(name) or not f.is_file():
+            return None
+        text = f.read_text(errors="replace")
+        return {"name": name, "title": self.title(text, name), "text": text, "updated": f.stat().st_mtime}
+
+    def save(self, name: str, text: str) -> bool:
+        """Writes docs/<name>.md (a new document too); the name: lowercase letters, digits, dashes."""
+        if not DOC_NAME.fullmatch(name) or len(text) > MAX_DOC:
+            return False
+        self.root.mkdir(parents=True, exist_ok=True)
+        tmp = self.root / f".{name}.md.tmp"
+        tmp.write_text(text)
+        tmp.replace(self.root / f"{name}.md")
+        return True
 # train.py options in the order its command line gives them (a command rebuilt for older runs)
 _ARG_ORDER = ("task", "envs", "workers", "timesteps", "step_seconds", "horizon", "minibatch", "replay_ratio",
               "buffers", "lr", "ent_coef", "gamma", "hidden", "layers", "checkpoint_interval", "record_every",
@@ -1108,7 +1152,9 @@ def _page() -> bytes:
     return resources.files("warcraftsim.dashboard").joinpath("index.html").read_bytes()
 
 
-def make_handler(dash: Dashboard):
+def make_handler(dash: Dashboard, docs: Docs | None = None):
+    docs = docs or Docs(dash.runs_dir.parent / "docs")
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):  # quiet
             pass
@@ -1135,6 +1181,16 @@ def make_handler(dash: Dashboard):
             if path.startswith("/api/runs/"):
                 data = dash.run(path[len("/api/runs/"):])
                 return self._json(data) if data else self._json({"error": "no such run"}, 404)
+            if path == "/api/docs":
+                return self._json(docs.list())
+            if path.startswith("/api/docs/"):
+                doc = docs.read(path[len("/api/docs/"):])
+                return self._json(doc) if doc else self._json({"error": "no such document"}, 404)
+            if path.startswith("/docs/"):  # a document's pictures (docs/media/...)
+                target = (docs.root / path[len("/docs/"):]).resolve()
+                if docs.root.resolve() not in target.parents or not target.is_file():
+                    return self._send(b"not found", "text/plain", 404)
+                return self._file(target)
             if path.startswith("/files/"):
                 rel = Path(path[len("/files/"):])
                 target = (dash.runs_dir / rel).resolve()
@@ -1156,6 +1212,17 @@ def make_handler(dash: Dashboard):
                 name = path[len("/api/runs/"):-len("/notes")]
                 if not isinstance(text, str) or not dash.set_notes(name, text):
                     return self._json({"error": "no such run, or notes too long"}, 400)
+                return self._json({"ok": True})
+            if path.startswith("/api/docs/"):
+                length = int(self.headers.get("Content-Length") or 0)
+                if length > MAX_DOC * 4:
+                    return self._json({"error": "too long"}, 413)
+                try:
+                    text = json.loads(self.rfile.read(length) or b"{}").get("text", "")
+                except (json.JSONDecodeError, AttributeError):
+                    return self._json({"error": "expected {\"text\": markdown}"}, 400)
+                if not isinstance(text, str) or not docs.save(path[len("/api/docs/"):], text):
+                    return self._json({"error": "a name of lowercase letters, digits and dashes, and at most 512 KB"}, 400)
                 return self._json({"ok": True})
             if path.startswith("/api/sweeps/") and path.endswith("/notes"):
                 length = int(self.headers.get("Content-Length") or 0)

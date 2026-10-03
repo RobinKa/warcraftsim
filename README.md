@@ -431,8 +431,9 @@ What's left, per epoch of 1,664 steps: about 1 s waiting for the games and 0.9 s
 .venv/bin/pytest -m wine         # integration tests: launch real games
 ```
 
-See `docs/architecture.md` for design notes, limits and what is known about the engine, and
-`docs/experiments.md` for the training experiments.
+See [docs/overview.md](docs/overview.md) for where things stand and the other documents: [environments](docs/environments.md),
+[the road to the real game](docs/road-to-the-real-game.md), [experiments](docs/experiments.md), [optimizations](docs/optimizations.md)
+and [architecture](docs/architecture.md) (design notes, limits and what is known about the engine). The dashboard's Docs tab shows and edits them.
 
 ## License
 

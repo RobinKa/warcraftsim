@@ -206,11 +206,39 @@ a.go:hover { text-decoration:underline; }
 .kv span { background:var(--panel); border:1px solid var(--line); border-radius:4px; padding:1px 6px; color:var(--muted); }
 .kv span b { color:var(--text); font-weight:500; }
 .kv span.def { border-style:dashed; }
+/* the Docs view: docs/*.md, listed, rendered, edited in place */
+.topnav button { padding:4px 14px; }
+.docs { display:grid; grid-template-columns:250px minmax(0,1fr); gap:18px; align-items:start; }
+.docs .list { position:sticky; top:0; display:flex; flex-direction:column; gap:4px; }
+.docs .list a { display:block; padding:7px 10px; border:1px solid var(--line); border-radius:6px; background:var(--panel); color:var(--text);
+                text-decoration:none; cursor:pointer; }
+.docs .list a:hover { border-color:#4a5868; }
+.docs .list a.on { border-color:var(--accent); background:var(--panel2); }
+.docs .list a small { display:block; color:var(--muted); font-size:11px; margin-top:2px; }
+.docs .list button { margin-top:6px; }
+.doc { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:18px 26px 26px; min-width:0; }
+.doc .bar { display:flex; gap:8px; align-items:center; justify-content:flex-end; color:var(--muted); font-size:12px; margin-bottom:6px; }
+.doc .bar .grow { flex:1; }
+.doc textarea { width:100%; min-height:70vh; background:#0b0f13; color:var(--text); border:1px solid var(--line); border-radius:6px;
+                padding:10px; font:12.5px/1.5 ui-monospace, monospace; resize:vertical; }
+.md { line-height:1.6; font-size:14px; max-width:980px; overflow-wrap:break-word; }
+.md h1 { font-size:24px; margin:4px 0 14px; } .md h2 { font-size:19px; margin:26px 0 10px; padding-bottom:4px; border-bottom:1px solid var(--line); }
+.md h3 { font-size:16px; margin:20px 0 8px; } .md h4 { font-size:14px; margin:16px 0 6px; color:var(--muted); }
+.md p { margin:8px 0; } .md ul, .md ol { margin:6px 0; padding-left:24px; } .md li { margin:3px 0; }
+.md code { background:#0b0f13; border:1px solid var(--line); border-radius:4px; padding:0 4px; font-size:12.5px; }
+.md pre { background:#0b0f13; border:1px solid var(--line); border-radius:6px; padding:10px 12px; overflow-x:auto; }
+.md pre code { border:0; padding:0; background:none; }
+.md table { border-collapse:collapse; margin:10px 0; font-size:13px; display:block; overflow-x:auto; }
+.md th, .md td { border:1px solid var(--line); padding:4px 9px; text-align:left; vertical-align:top; }
+.md th { background:var(--panel2); }
+.md blockquote { margin:8px 0; padding:2px 12px; border-left:3px solid var(--line); color:var(--muted); }
+.md a { color:#539bf5; } .md img { max-width:100%; border-radius:6px; } .md hr { border:0; border-top:1px solid var(--line); margin:18px 0; }
 </style>
 </head>
 <body>
 <header>
   <h1>warcraft<span>sim</span></h1><span class="sub">Warcraft III 1.29 · PufferLib 5.0 training dashboard</span>
+  <span class="seg topnav"><button id="nav-runs" class="on">Runs</button><button id="nav-docs">Docs</button></span>
   <div class="right"><label class="smooth" title="exponential moving average over the points of every chart">smoothing
     <input type="range" id="smooth" min="0" max="0.99" step="0.01"><span id="smoothv"></span></label>
     <span id="clock"></span><label><input type="checkbox" id="auto" checked> auto-refresh</label></div>
@@ -241,6 +269,7 @@ try { const v = parseFloat(localStorage.getItem("smooth")); if (!Number.isNaN(v)
   const h = new URLSearchParams(location.hash.slice(1));
   if (h.get("run")) state.selected = h.get("run");
   if (h.get("sweep")) { state.view = "sweep"; state.sweep = h.get("sweep"); }
+  if (h.has("docs")) state.view = "docs";
   if (h.get("compare")) h.get("compare").split(",").filter(Boolean).forEach(n => state.compare.add(n));
   if (h.get("smooth") !== null && !Number.isNaN(parseFloat(h.get("smooth")))) ui.smooth = parseFloat(h.get("smooth"));
   if (h.get("hover")) ui.hoverX = parseFloat(h.get("hover"));  // a cursor position (screenshots)
@@ -441,6 +470,19 @@ function refresh() {
   return refreshing;
 }
 async function refreshOnce() {
+  if (state.view === "docs") {  // the run list stays current; the document too, unless it is being edited
+    try {
+      [state.runs, state.sweeps] = await Promise.all([getJSON("/api/runs"), getJSON("/api/sweeps")]);
+      renderRuns();
+      if (!ui.docs.editing) {
+        const list = await getJSON("/api/docs"), cur = ui.docs.doc && list.find(d => d.name === ui.docs.doc.name);
+        if (cur && cur.updated !== ui.docs.doc.updated) ui.docs.doc = await getJSON("/api/docs/" + encodeURIComponent(cur.name));
+        if (JSON.stringify(list) !== JSON.stringify(ui.docs.list) || cur) { ui.docs.list = list; renderDocs(); }
+      }
+    } catch (e) { console.error(e); }
+    document.getElementById("clock").textContent = "updated " + new Date().toLocaleTimeString();
+    return;
+  }
   try {
     [state.runs, state.sweeps] = await Promise.all([getJSON("/api/runs"), getJSON("/api/sweeps")]);
     if (!state.selected && state.runs.length) state.selected = state.runs[0].name;
@@ -484,7 +526,10 @@ function selectionChanged() {
   }
   refresh();
 }
-function openRun(name) { state.view = "run"; state.selected = name; state.mediaKey = ""; selectionChanged(); }
+function openRun(name) {
+  if (state.view === "docs" && ui.docs.editing && !confirm("Leave the document without saving?")) return;
+  state.view = "run"; state.selected = name; state.mediaKey = ""; setNav(); selectionChanged();
+}
 function openSweep(group) { state.view = "sweep"; state.sweep = group; ui.expanded.add(group); keepExpanded(); selectionChanged(); }
 
 // run list controls: a text filter, the kinds of runs listed, and "selected only" (the compared
@@ -1521,6 +1566,111 @@ function renderMatchups(d) {
   });
 }
 
+// ---- the Docs view: docs/*.md (GET /api/docs, /api/docs/<name>; POST saves) ---------------------
+function mdInline(s) {  // escaped text -> inline markdown: code, images, links, bold, italics
+  const codes = [];
+  s = s.replace(/`([^`]+)`/g, (_, c) => { codes.push(c); return `\u0000${codes.length - 1}\u0000`; });
+  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, a, u) => `<img alt="${a}" src="${/^(https?:|\/)/.test(u) ? u : "/docs/" + u}">`);
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, txt, u) => {
+    const doc = u.match(/^(?:\.\/|docs\/)?([a-z0-9-]+)\.md(#.*)?$/);  // a link to another document: open it here
+    return doc ? `<a href="#docs=${doc[1]}" data-doc="${doc[1]}">${txt}</a>` : `<a href="${u}" target="_blank" rel="noopener">${txt}</a>`;
+  });
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/(^|[^\w*])\*([^*\s][^*]*)\*(?!\w)/g, "$1<i>$2</i>")
+       .replace(/(^|[^\w])_([^_\s][^_]*)_(?!\w)/g, "$1<i>$2</i>");
+  return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codes[+i]}</code>`);
+}
+function mdToHtml(text) {
+  const lines = esc(text).split("\n"), out = [];
+  let i = 0;
+  const isTable = k => /^\s*\|.*\|\s*$/.test(lines[k] || "") && /^\s*\|[\s:|-]+\|\s*$/.test(lines[k + 1] || "");
+  const cells = l => l.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(c => mdInline(c.trim()));
+  while (i < lines.length) {
+    const l = lines[i];
+    if (/^```/.test(l)) {  // a code block
+      const body = []; i++;
+      while (i < lines.length && !/^```/.test(lines[i])) body.push(lines[i++]);
+      i++; out.push(`<pre><code>${body.join("\n")}</code></pre>`); continue;
+    }
+    const h = l.match(/^(#{1,4})\s+(.*)$/);
+    if (h) { out.push(`<h${h[1].length}>${mdInline(h[2])}</h${h[1].length}>`); i++; continue; }
+    if (/^\s*(-{3,}|\*{3,})\s*$/.test(l)) { out.push("<hr>"); i++; continue; }
+    if (isTable(i)) {
+      const head = cells(lines[i]); i += 2; const rows = [];
+      while (i < lines.length && /^\s*\|/.test(lines[i])) rows.push(cells(lines[i++]));
+      out.push(`<table><tr>${head.map(c => `<th>${c}</th>`).join("")}</tr>` + rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join("")}</tr>`).join("") + `</table>`);
+      continue;
+    }
+    if (/^\s*([*-]|\d+\.)\s+/.test(l)) {  // a list, nested by indentation
+      const stack = [];
+      while (i < lines.length && (/^\s*([*-]|\d+\.)\s+/.test(lines[i]) || (/^\s{2,}\S/.test(lines[i]) && stack.length))) {
+        const m = lines[i].match(/^(\s*)([*-]|\d+\.)\s+(.*)$/);
+        if (!m) { out.push(" " + mdInline(lines[i].trim())); i++; continue; }  // a list item's continued line
+        const depth = m[1].length, tag = /\d/.test(m[2]) ? "ol" : "ul";
+        while (stack.length && stack[stack.length - 1].depth > depth) out.push(`</li></${stack.pop().tag}>`);
+        if (!stack.length || stack[stack.length - 1].depth < depth) { out.push(`<${tag}>`); stack.push({ depth, tag }); }
+        else out.push("</li>");
+        out.push(`<li>${mdInline(m[3])}`); i++;
+      }
+      while (stack.length) out.push(`</li></${stack.pop().tag}>`);
+      continue;
+    }
+    if (/^&gt;\s?/.test(l)) {
+      const body = [];
+      while (i < lines.length && /^&gt;\s?/.test(lines[i])) body.push(lines[i++].replace(/^&gt;\s?/, ""));
+      out.push(`<blockquote>${mdInline(body.join(" "))}</blockquote>`); continue;
+    }
+    if (!l.trim()) { i++; continue; }
+    const para = [];
+    while (i < lines.length && lines[i].trim() && !/^(#{1,4}\s|```|\s*([*-]|\d+\.)\s+|&gt;)/.test(lines[i]) && !isTable(i)) para.push(lines[i++]);
+    out.push(`<p>${mdInline(para.join(" "))}</p>`);
+  }
+  return out.join("\n");
+}
+ui.docs = { list: [], doc: null, editing: false };
+function setNav() {
+  document.getElementById("nav-runs").classList.toggle("on", state.view !== "docs");
+  document.getElementById("nav-docs").classList.toggle("on", state.view === "docs");
+}
+async function openDocs(name) {
+  state.view = "docs"; setNav();
+  try { ui.docs.list = await getJSON("/api/docs"); } catch (e) { ui.docs.list = []; }
+  name = name || (ui.docs.doc && ui.docs.doc.name) || (ui.docs.list[0] || {}).name;
+  ui.docs.editing = false;
+  ui.docs.doc = name ? await getJSON("/api/docs/" + encodeURIComponent(name)).catch(() => null) : null;
+  history.replaceState(null, "", "#docs=" + (ui.docs.doc ? ui.docs.doc.name : ""));
+  renderDocs();
+}
+function renderDocs() {
+  const m = document.getElementById("main"); m.dataset.run = "";
+  const D = ui.docs, doc = D.doc;
+  const list = D.list.map(d => `<a data-doc="${esc(d.name)}" class="${doc && doc.name === d.name ? "on" : ""}">${esc(d.title)}<small>${esc(d.name)}.md · ${ago(d.updated)}</small></a>`).join("");
+  const body = !doc ? `<div class="empty">no documents yet (docs/*.md)</div>` : D.editing
+    ? `<div class="bar"><span class="grow">docs/${esc(doc.name)}.md · markdown</span><span id="docstate"></span><button id="docsave">save</button><button id="doccancel">cancel</button></div><textarea id="doctext" spellcheck="false">${esc(doc.text)}</textarea>`
+    : `<div class="bar"><span class="grow">docs/${esc(doc.name)}.md · updated ${ago(doc.updated)}</span><button id="docedit">edit</button></div><div class="md">${mdToHtml(doc.text)}</div>`;
+  m.innerHTML = `<div class="docs"><div class="list">${list}<button id="docnew" title="a new document in docs/">+ new document</button></div><div class="doc">${body}</div></div>`;
+  m.querySelectorAll("[data-doc]").forEach(a => a.onclick = ev => { ev.preventDefault(); if (!D.editing || confirm("Leave without saving?")) openDocs(a.dataset.doc); });
+  const on = (id, f) => { const el = document.getElementById(id); if (el) el.onclick = f; };
+  on("docedit", () => { D.editing = true; renderDocs(); });
+  on("doccancel", () => { D.editing = false; renderDocs(); });
+  on("docsave", async () => {
+    const text = document.getElementById("doctext").value, st = document.getElementById("docstate");
+    st.textContent = "saving…";
+    const r = await fetch("/api/docs/" + encodeURIComponent(doc.name), { method: "POST", body: JSON.stringify({ text }) });
+    if (!r.ok) { st.textContent = "not saved: " + ((await r.json()).error || r.status); return; }
+    D.editing = false; openDocs(doc.name);
+  });
+  on("docnew", async () => {
+    const name = (prompt("The new document's file name (lowercase letters, digits and dashes; docs/<name>.md):") || "").trim();
+    if (!name) return;
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(name)) { alert("lowercase letters, digits and dashes only"); return; }
+    if (D.list.some(d => d.name === name)) return openDocs(name);
+    await fetch("/api/docs/" + name, { method: "POST", body: JSON.stringify({ text: `# ${name.replace(/-/g, " ")}\n\n` }) });
+    await openDocs(name); D.editing = true; renderDocs();
+  });
+  const ta = document.getElementById("doctext");
+  if (ta) ta.addEventListener("keydown", ev => { if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) document.getElementById("docsave").click(); });
+}
+
 function renderCheckpoints(d) {
   const el = document.getElementById("checkpoints"); if (!el) return;
   const cks = d.checkpoints || [];
@@ -1670,6 +1820,9 @@ slider.addEventListener("input", () => {
   for (const id in ui.charts) drawChart(id);
 });
 setupRunTools();
+document.getElementById("nav-docs").onclick = () => openDocs(state.view === "docs" ? null : undefined);
+document.getElementById("nav-runs").onclick = () => { if (state.view === "docs") openRun(state.selected || (state.runs[0] || {}).name); };
+if (state.view === "docs") openDocs(new URLSearchParams(location.hash.slice(1)).get("docs") || undefined);
 refresh().then(showSelectedRun);
 setInterval(() => { if (document.getElementById("auto").checked) refresh(); }, 5000);
 window.addEventListener("resize", () => { for (const id in ui.charts) drawChart(id); });
