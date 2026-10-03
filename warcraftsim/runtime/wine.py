@@ -50,7 +50,7 @@ def wine_env(prefix: Path, **extra: str) -> dict[str, str]:
         env["PATH"] = f"{wine_bin}{os.pathsep}{env.get('PATH', '')}"
     env.update(
         WINEPREFIX=str(prefix),
-        WINEDEBUG="-all",
+        WINEDEBUG=os.environ.get("W3SIM_WINEDEBUG", "-all"),  # (e.g. +server: every wineserver request, to profile)
         # no Mono/Gecko prompts, no menu entries, no audio device (sound is off anyway)
         WINEDLLOVERRIDES="mscoree,mshtml=;winemenubuilder.exe=d;winealsa.drv,winepulse.drv,wineoss.drv=d",
         WINEARCH="win64",

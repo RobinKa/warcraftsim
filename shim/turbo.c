@@ -269,6 +269,7 @@ static DWORD WINAPI profile_thread(LPVOID arg) {
         shim_log("phases/s: %s", phases);
         if (g_wait_stats)
             clock_report_waits(secs);
+        syncstat_report(secs);
     }
     return 0;
 }

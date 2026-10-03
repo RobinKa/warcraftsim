@@ -89,5 +89,7 @@ void registry_install(void);
 void turbo_install(int ms);
 void render_install(int draw); /* W3SIM_DRAW=0: the Direct3D device draws nothing (render.c) */
 long render_skipped(void);     /* draw calls skipped since the last call */
+void syncstat_install(void);   /* W3SIM_PROFILE=4: the game's synchronization calls by call site (syncstat.c) */
+void syncstat_report(double secs);
 void turbo_set(int ms);
 int turbo_get(void);
