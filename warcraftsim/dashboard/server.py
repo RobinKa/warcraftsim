@@ -1040,6 +1040,20 @@ class Dashboard:
             rows.extend(r for r in self.cache.read(f) if "event" not in r)
         return sorted(rows, key=lambda r: r.get("time", 0))
 
+    def _segments(self, name: str) -> list[dict]:
+        """A run's launches in order: [{steps (where it started), note, time, inputs ({init, bc_data})}],
+        the first its start. Inputs come from run.json (self-play records them since 2026-10-03) or
+        from runs/<name>/lineage.json (written by hand for earlier restarts: {inputs, resumes: [{steps,
+        inputs}]})."""
+        info = _read_json(self.runs_dir / name / "run.json") or {}
+        side = _read_json(self.runs_dir / name / "lineage.json") or {}
+        known = {int(x.get("steps", -1)): x.get("inputs") for x in side.get("resumes", [])}
+        out = [{"steps": 0, "inputs": info.get("inputs") or side.get("inputs")}]
+        for r in info.get("resumes") or []:
+            at = int(r.get("steps") or 0)
+            out.append({"steps": at, "note": r.get("note"), "time": r.get("time"), "inputs": r.get("inputs") or known.get(at)})
+        return out
+
     def lineage(self) -> dict:
         """What each run came from, as a graph: runs (their parent: a run's checkpoint or a cloning fit),
         cloning fits (the checkpoint they started from, the demonstrations they fit) and demonstration
@@ -1047,9 +1061,30 @@ class Dashboard:
         result}; edges: {from, to, why}."""
         runs = self.runs()
         names = {r["name"] for r in runs}
+        # a run's launches: a new node where its inputs changed (a new anchor for its KL term, new
+        # demonstrations, the built-in AI advising); every restart listed in the node it falls in
+        segs = {}
+        for r in runs:
+            if r.get("kind") not in (None, "run"):
+                continue
+            ls = self._segments(r["name"])
+            if len(ls) < 2:
+                continue
+            parts, prev = [{"steps": 0, "inputs": ls[0].get("inputs"), "restarts": []}], ls[0].get("inputs")
+            for s in ls[1:]:
+                cur = s.get("inputs") or prev
+                if cur and prev and any((cur.get(k) or None) != (prev.get(k) or None) for k in ("init", "bc_data", "advisor")):
+                    parts.append({"steps": s["steps"], "inputs": cur, "note": s.get("note"), "prev": prev, "restarts": []})
+                else:
+                    parts[-1]["restarts"].append({"steps": s["steps"], "note": s.get("note") or ""})
+                prev = cur
+            segs[r["name"]] = parts
 
-        def node_of(path: str | None) -> str | None:  # a checkpoint or data path -> the run it belongs to
-            if not path:
+        def seg_name(name: str, k: int) -> str:
+            return name if k == 0 else f"{name}@{segs[name][k]['steps']}"
+
+        def node_of(path: str | None) -> str | None:  # a checkpoint or data path -> the run it belongs to (a
+            if not path:                               # checkpoint: the part of the run that wrote it)
                 return None
             parts = Path(str(path)).parts
             if "runs" not in parts:
@@ -1058,8 +1093,30 @@ class Dashboard:
             if not rest:
                 return None
             name = "/".join(rest[:2]) if rest[0] in ("bc", "fullgame") and len(rest) > 1 else rest[0]
-            return name if name in names else None
+            if name not in names:
+                return None
+            if name in segs and len(rest) >= 3 and rest[1] == "checkpoints" and rest[2][:-3].isdigit():
+                at = int(rest[2][:-3])  # (a checkpoint at a restart's step: written before it)
+                k = max([i for i, s in enumerate(segs[name]) if s["steps"] < at] or [0])
+                return seg_name(name, k)
+            return name
         nodes, edges = [], []
+        restarts_of = {name: ps[0]["restarts"] for name, ps in segs.items()}
+        for name, ps in segs.items():
+            track = "whole game" if str(next((r.get("task") for r in runs if r["name"] == name), "")).startswith("fullgame") else "micro"
+            for k, s in enumerate(ps[1:], 1):
+                cur, prev = s["inputs"], s["prev"]
+                nodes.append({"name": seg_name(name, k), "kind": "segment", "track": track, "run": name, "steps": s["steps"],
+                              "note": s.get("note") or "", "advisor": cur.get("advisor"), "restarts": s["restarts"]})
+                edges.append({"from": seg_name(name, k - 1), "to": seg_name(name, k), "why": "restart"})
+                if cur.get("init") != prev.get("init") and node_of(cur.get("init")):
+                    edges.append({"from": node_of(cur.get("init")), "to": seg_name(name, k), "why": "anchor"})
+                for d in set(cur.get("bc_data") or []) - set(prev.get("bc_data") or []):
+                    if node_of(d):
+                        edges.append({"from": node_of(d), "to": seg_name(name, k), "why": "data"})
+            for d in (ps[0].get("inputs") or {}).get("bc_data") or []:  # the start's demonstrations
+                if node_of(d):
+                    edges.append({"from": node_of(d), "to": name, "why": "data"})
         for r in runs:
             kind = r.get("kind") or "run"
             task = str(r.get("task") or "")
@@ -1068,9 +1125,13 @@ class Dashboard:
             result = (r.get("real_game") or {}).get("wins") if isinstance(r.get("real_game"), dict) else None
             nodes.append({"name": r["name"], "kind": kind if kind != "run" or not task.startswith("fullgame") else "selfplay",
                           "track": track, "status": r.get("status"), "win_rate": s.get("win_rate_100"),
-                          "steps": s.get("agent_steps"), "result": result})
+                          "steps": s.get("agent_steps"), "result": result, "restarts": restarts_of.get(r["name"], []),
+                          "parts": len(segs.get(r["name"], [])) or 1})
             par = r.get("parent")
-            if isinstance(par, dict) and par.get("name"):
+            src = node_of(r.get("init_from")) if r["name"] in segs or r.get("init_from") else None
+            if kind == "run" and src:  # (a checkpoint: the launch that wrote it)
+                edges.append({"from": src, "to": r["name"], "why": "start"})
+            elif isinstance(par, dict) and par.get("name"):
                 src = ("bc/" + par["name"]) if par.get("kind") == "bc" and not par["name"].startswith("bc/") else par["name"]
                 if src in names:
                     edges.append({"from": src, "to": r["name"], "why": "start"})

@@ -1833,7 +1833,7 @@ function renderDocs() {
 ui.lineage = { track: "whole game", data: null };
 const LINEAGE_KINDS = { selfplay: ["self-play", "#1d3a2a", "#4cc38a"], bc: ["cloning fit", "#2d2140", "#b083f0"],
                         collect: ["demonstrations", "#16323a", "#39c5cf"], run: ["micro training", "#1d252e", "#8795a3"],
-                        match: ["match", "#3a2a1d", "#e0a33a"] };
+                        match: ["match", "#3a2a1d", "#e0a33a"], segment: ["a run from a restart with new inputs", "#16231c", "#3a8a63"] };
 async function openLineage(track) {
   state.view = "lineage"; setNav();
   if (track) ui.lineage.track = track;
@@ -1850,10 +1850,19 @@ function renderLineageGraph() {
   const linked = new Set(edges.flatMap(e => [e.from, e.to]));
   const shown = nodes.filter(n => linked.has(n.name)), id = new Map(shown.map((n, i) => [n.name, "n" + i]));
   const steps = n => n.steps ? ` · ${fmt(n.steps, 0)} steps` : "";
-  const label = n => `${n.name.replace(/^(bc|fullgame)\//, "")}<br/><small>${(LINEAGE_KINDS[n.kind] || [n.kind])[0]}${steps(n)}${n.status === "training" ? " · training" : ""}</small>`;
+  const short = (s, n = 46) => { s = (s || "").replace(/\s+/g, " ").trim(); return s.length > n ? s.slice(0, n - 2).replace(/[ ,.;:(]+\S*$/, "") + "…" : s; };
+  const rlines = n => {  // the restarts inside a node (in full on hover)
+    const rs = n.restarts || []; if (!rs.length) return "";
+    const shown = rs.slice(-4).map(r => `${fmt(r.steps, 0)}: ${esc(short(r.note, 40) || "restarted")}`);
+    return `<br/><small>${rs.length > 4 ? `… ${rs.length - 4} more restarts<br/>` : ""}${shown.join("<br/>")}</small>`;
+  };
+  const label = n => n.kind === "segment"  // (a run from a restart that brought new inputs on)
+    ? `${n.run.replace(/^(bc|fullgame)\//, "")} from ${fmt(n.steps, 0)}<br/><small>${n.advisor ? `${esc(n.advisor)} advising · ` : ""}${esc(short(n.note) || "restarted")}</small>${rlines(n)}`
+    : `${n.name.replace(/^(bc|fullgame)\//, "")}<br/><small>${(LINEAGE_KINDS[n.kind] || [n.kind])[0]}${steps(n)}${n.status === "training" ? " · training" : ""}</small>${rlines(n)}`;
   const lines = ["flowchart LR"];
   for (const n of shown) lines.push(`  ${id.get(n.name)}["${label(n).replace(/"/g, "'")}"]:::${LINEAGE_KINDS[n.kind] ? n.kind : "run"}`);
-  for (const e of edges) lines.push(`  ${id.get(e.from)} ${e.why === "data" ? "-.->" : e.why === "policy" ? "==>" : e.why === "played" ? "-.-" : "-->"} ${id.get(e.to)}`);
+  const arrow = w => w === "data" ? "-.->" : w === "policy" ? "==>" : w === "played" ? "-.-" : w === "anchor" ? "-- anchor -->" : "-->";
+  for (const e of edges) lines.push(`  ${id.get(e.from)} ${arrow(e.why)} ${id.get(e.to)}`);
   for (const [k, [, fill, stroke]] of Object.entries(LINEAGE_KINDS)) lines.push(`  classDef ${k} fill:${fill},stroke:${stroke},color:#d7dee6`);
   lines.push("  classDef current stroke-width:3px,stroke:#e0a33a");
   if (id.has(state.selected)) lines.push(`  class ${id.get(state.selected)} current`);  // (one ::: class per node only)
@@ -1861,7 +1870,7 @@ function renderLineageGraph() {
   const key = Object.entries(LINEAGE_KINDS).filter(([k]) => shown.some(n => n.kind === k))
     .map(([, [name, fill, stroke]]) => `<span><i style="background:${fill};border:1px solid ${stroke}"></i>${name}</span>`).join("");
   m.innerHTML = `<div class="lineage"><div class="bar"><span class="seg">${seg}</span><span class="key">${key}</span>
-      <span>→ started from · ⇢ fitted on · ⇒ its policy played the games · ┄ played in the match · click a box to open it ·
+      <span>→ started from, or the same run restarted with new inputs · anchor: its KL term's new clone · ⇢ fitted on, or new demonstrations · ⇒ its policy played the games · ┄ played in the match · click a box to open it ·
         drawn from the runs' own records (run.json, bc.json, collect.json), and kept current</span>
       <span>${nodes.length - shown.length} with no lineage not shown</span></div>
     <div class="graph"><div class="zoom"><button data-z="in" title="zoom in (+)">+</button><button data-z="out" title="zoom out (−)">−</button>
@@ -1876,8 +1885,12 @@ function renderLineageGraph() {
     m.querySelectorAll(".graph g.node").forEach(g => {
       const k = (g.id.match(/flowchart-(n\d+)-/) || [])[1], name = byId.get(k);
       if (!name) return;
-      const title = document.createElementNS("http://www.w3.org/2000/svg", "title"); title.textContent = name; g.appendChild(title);
-      g.addEventListener("click", () => { if (!pz.moved()) openRun(name); });  // (not the end of a drag)
+      const n = shown.find(x => x.name === name), run = n && n.kind === "segment" ? n.run : name;
+      const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+      title.textContent = (n && n.kind === "segment" ? `${run}, restarted at ${fmt(n.steps, 0)} steps${n.note ? ": " + n.note : ""}` : name) +
+        (n && (n.restarts || []).length ? "\n\nrestarts:\n" + n.restarts.map(r => `${fmt(r.steps, 0)} steps: ${r.note || "–"}`).join("\n") : "");
+      g.appendChild(title);
+      g.addEventListener("click", () => { if (!pz.moved()) openRun(run); });  // (not the end of a drag)
     });
   });
 }

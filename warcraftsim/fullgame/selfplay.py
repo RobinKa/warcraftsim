@@ -1537,6 +1537,8 @@ def main(argv: list[str] | None = None) -> int:
             "config": {k: str(v) for k, v in vars(args).items()},
             "spaces": fx.describe_spaces(vocab, None if vocab.get("order_names") else fx.demo_order_names(args.runs),
                                          "two per game against itself or a past snapshot, one against the built-in AI"),
+            "inputs": {"init": str(args.init), "bc_data": [str(d) for d in (args.bc_data or [])],
+                       **({"advisor": f"built-in AI ({args.opd_difficulty})"} if args.opd_share > 0 else {})},
             "launch": {"command": "python3 -m warcraftsim.fullgame.selfplay " + " ".join(sys.argv[1:] if argv is None else argv),
                        "argv": list(sys.argv[1:] if argv is None else argv), "git": git_info()}}
 
@@ -1551,8 +1553,11 @@ def main(argv: list[str] | None = None) -> int:
         resumed = {"steps": rows[-1]["agent_steps"] if rows else 0, "update": rows[-1]["epoch"] if rows else 0,
                    "episodes": sum(1 for _ in open(run_dir / "episodes.jsonl")) if (run_dir / "episodes.jsonl").exists() else 0,
                    "checkpoint": cks[-1].name if cks else None}
+        # what this launch takes in (the lineage: a new anchor or new demonstrations enter the run here)
         info.update(created=old.get("created", info["created"]), init_from=old.get("init_from", info["init_from"]),
-                    resumes=old.get("resumes", []) + [{"time": time.time(), **resumed, **({"note": args.note} if args.note else {})}])
+                    inputs=old.get("inputs") or info["inputs"],
+                    resumes=old.get("resumes", []) + [{"time": time.time(), **resumed, **({"note": args.note} if args.note else {}),
+                                                       "inputs": info["inputs"], "argv": info["launch"]["argv"]}])
 
     def save_info():
         try:  # notes written on the restarts since (by hand, in run.json) stay
