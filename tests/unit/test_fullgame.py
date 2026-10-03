@@ -682,6 +682,16 @@ def test_league_with_an_exploiter(tmp_path):
     assert plain.member("exploiter") is None and all(x["kind"] != "exploit" for x in plain.spec()["launch"])
 
 
+def test_shaping_counts_held_resources_against_a_player():
+    import types
+
+    from warcraftsim.fullgame.selfplay import shaped
+    obs = types.SimpleNamespace(players={0: types.SimpleNamespace(gold=1000, lumber=200), 1: types.SimpleNamespace(gold=100, lumber=0)})
+    mat = {0: 5000.0, 1: 4000.0}
+    assert shaped(obs, mat, 0.0) is mat
+    assert shaped(obs, mat, 0.5) == {0: 5000.0 - 600.0, 1: 4000.0 - 50.0}
+
+
 def test_a_restarted_run_draws_other_launches():
     from warcraftsim.fullgame.selfplay import game_rng
     draws = lambda cfg, w, k: [game_rng(cfg, w, k).random() for _ in range(3)]  # noqa: E731

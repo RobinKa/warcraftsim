@@ -525,6 +525,21 @@ class Trajectory:
         self.steps = self.steps[-1:] if bootstrap else []
 
 
+def shaped(obs, mat: dict, penalty: float) -> dict:
+    """The material the shaping's potential counts: `mat` (units and buildings, fullgame.trace.material)
+    less `penalty` times the gold and lumber each player holds. With a penalty, spending is credited
+    when the resources leave the bank (an order), not only when what they buy appears: on duelfast the
+    learner held ~3,700 a game (the AI ~800) and its idle barracks trained 5% of the steps."""
+    if not penalty:
+        return mat
+    out = dict(mat)
+    for p in out:
+        pl = obs.players.get(p)
+        if pl is not None:
+            out[p] -= penalty * (pl.gold + pl.lumber)
+    return out
+
+
 def potential(obs, side: int, values: dict, scale: float) -> float:
     """Reward shaping's potential: the side's material lead (what its living units and buildings
     cost, times their hit points left, minus the enemy's) over `scale`. Full information: the
@@ -687,7 +702,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     t, t0 = 0, time.time()
     values, scale = cfg["values"], cfg["shaping_scale"]
     mat = material(obs, values)
-    phi = {s: (mat[s] - mat[1 - s]) / scale for s in trajs}  # at the last recorded state
+    pot = shaped(obs, mat, cfg.get("float_penalty", 0.0))
+    phi = {s: (pot[s] - pot[1 - s]) / scale for s in trajs}  # at the last recorded state
     ret = {s: 0.0 for s in trajs}
     trace: list[dict] = []
     names = {int(k): v for k, v in (cfg.get("order_names") or {}).items()}
@@ -720,7 +736,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             cmds += c
             if s in trajs:
                 trajs[s].add(sts[s], res)
-                phi[s] = (mat[s] - mat[1 - s]) / scale
+                phi[s] = (pot[s] - pot[1 - s]) / scale
         if record:
             chose = {s: Counter(fx.order_label(*bots[s].orders[int(c)], names) for c in r["order"] if c)
                      for s, r in zip(live, results) if r is not None}
@@ -734,11 +750,12 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         t += 1
         prod.step(obs)
         mat = material(obs, values)
+        pot = shaped(obs, mat, cfg.get("float_penalty", 0.0))
         if obs.game_over or t >= cfg["max_steps"]:
             break
         for s, tr in trajs.items():  # shaping: gamma * phi(s') - phi(s), for the step just taken
             if s in spans and tr.steps:  # (it recorded a step this time)
-                r = cfg["shaping"] * (cfg["gamma"] * (mat[s] - mat[1 - s]) / scale - phi[s])
+                r = cfg["shaping"] * (cfg["gamma"] * (pot[s] - pot[1 - s]) / scale - phi[s])
                 if tr.steps:
                     tr.steps[-1]["reward"] += r
                     ret[s] += r
@@ -1379,6 +1396,9 @@ def main(argv: list[str] | None = None) -> int:
                          "3.4 cores (the game at 960x540 on a software renderer, in real time)")
     ap.add_argument("--shaping", type=float, default=1.0, help="weight of the material-lead reward shaping (0: none)")
     ap.add_argument("--shaping-scale", type=float, default=2000.0, help="material (gold + lumber cost) worth 1 of potential")
+    ap.add_argument("--float-penalty", type=float, default=0.0,
+                    help="the shaping's potential counts the gold and lumber a player holds at minus this (0: not at "
+                         "all): spending is credited at the order")
     ap.add_argument("--tie-break", type=float, default=0.5, help="a tie's reward: this times tanh(2 x material lead)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", help="default: cuda if available (asking opens the GPU driver)")
@@ -1495,7 +1515,7 @@ def main(argv: list[str] | None = None) -> int:
            "actors": args.actors, "values": unit_values(), "shaping": args.shaping, "shaping_scale": args.shaping_scale,
            "tie_break": args.tie_break, "compile": bool(args.compile), "native_obs": bool(args.native_obs),
            "real_share": args.real_share, "infer_batch": 64, "game_nice": args.game_nice, "pairs": args.pairs,
-           "exploiter_share": args.exploiter_share,
+           "exploiter_share": args.exploiter_share, "float_penalty": args.float_penalty,
            "infer_period": args.infer_period_ms / 1000.0,
            "avail_mask": bool(args.avail_mask),
            "costs": order_costs(vocab, args.map).tolist() if args.avail_mask else None, "max_past": args.max_past,
