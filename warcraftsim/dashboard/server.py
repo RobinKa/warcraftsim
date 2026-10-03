@@ -105,6 +105,19 @@ def _matchup_kind(e: dict) -> list[str]:
     return ["past"] if o.startswith("past:") else []
 
 
+def _opponent_kind(o: str) -> str | None:
+    """An episode's opponent as the League tab's tie and loss charts name it: the script
+    ("ai-normal": curriculum games when the run has one; "ai-normal (real)": the untaxed AI),
+    "itself", "past snapshots" or "exploiter"."""
+    if o.startswith("script:"):
+        return o.split(":", 1)[1]
+    if o == "self":
+        return "itself"
+    if o.startswith("past:"):
+        return "past snapshots"
+    return "exploiter" if o.startswith("exploiter") else None
+
+
 class _EpisodeSeries:
     """A run's episodes as columns of their EPISODE_SERIES values (NaN: none), and their results by
     matchup, kept between requests and extended with the new episodes only: a live run's page
@@ -119,7 +132,8 @@ class _EpisodeSeries:
         self.times = np.empty(0)
         self.cols = np.empty((0, len(SERIES_KEYS)))
         # sparse series of whole-game self-play: series name -> (rows, values): curriculum games won
-        # by AI and matchup ("cwin/ai-easy human/orc"), the real game won by the learner's race ("rwin/human")
+        # by AI and matchup ("cwin/ai-easy human/orc"), the real game won by the learner's race ("rwin/human");
+        # games tied and lost by opponent (any self-play run: "otie/ai-normal (real)", "oloss/itself")
         self.extra: dict[str, tuple[list[int], list[float]]] = {}
         # kind -> [(race, opponent race, 0 win / 1 tie / 2 loss)], and the whole run's counts
         self.games: dict[str, list[tuple[int, int, int]]] = {}
@@ -145,6 +159,12 @@ class _EpisodeSeries:
                 v = get(e)
                 if v is not None:
                     block[i, j] = float(v)
+            kind = _opponent_kind(str(e.get("opponent", ""))) if "outcome" in e else None
+            if kind:
+                for name, v in ((f"otie/{kind}", e["outcome"] == 0), (f"oloss/{kind}", e["outcome"] < 0)):
+                    rows, vals = self.extra.setdefault(name, ([], []))
+                    rows.append(n0 + i)
+                    vals.append(float(v))
             r, b = e.get("race"), e.get("opponent_race")
             if r in MATCHUP_RACES and b in MATCHUP_RACES:
                 x = e.get("outcome", 0)

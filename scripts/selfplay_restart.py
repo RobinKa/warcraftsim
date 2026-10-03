@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -31,6 +32,29 @@ def learner_pid(name: str) -> int | None:
     return None
 
 
+# a self-play run's game instances ("fgsp<slot>_<actor>_<k>", videos "fgvid<slot>"): only one runs
+# at a time on this machine. Collections ("demo...") and evaluations keep their games.
+SELFPLAY_PREFIX = re.compile(rb"^WINEPREFIX=.*/instances/fg(sp|vid)\d")
+
+
+def leftovers() -> list[int]:
+    """The processes a stopped self-play run can leave: its games and their Wine services (by
+    their WINEPREFIX), and Xvfb servers whose parent is gone."""
+    out = []
+    for d in Path("/proc").iterdir():
+        if not d.name.isdigit():
+            continue
+        try:
+            env = (d / "environ").read_bytes().split(b"\0")
+            stat = (d / "stat").read_text()
+        except OSError:
+            continue
+        comm, ppid = stat[stat.index("(") + 1:stat.rindex(")")], int(stat[stat.rindex(")") + 2:].split()[1])
+        if any(SELFPLAY_PREFIX.match(kv) for kv in env) or (comm == "Xvfb" and ppid == 1):
+            out.append(int(d.name))
+    return out
+
+
 def stop(name: str, timeout: float = 600.0) -> None:
     pid = learner_pid(name)
     if pid is None:
@@ -48,10 +72,11 @@ def stop(name: str, timeout: float = 600.0) -> None:
             raise SystemExit(f"{name}: the learner ({pid}) did not stop within {timeout:.0f} s")
         print(f"{name}: stopped after {time.time() - t0:.0f} s")
     time.sleep(5)
-    # the games (and Wine's services) of every self-play run: only one runs at a time on this machine
-    for pattern in ("Warcraft III.exe", "wineserver", "C:.windows.system32"):  # (regular expressions)
-        subprocess.run(["pkill", "-f", pattern], capture_output=True)
-    subprocess.run(["pkill", "-x", "Xvfb"], capture_output=True)
+    for p in leftovers():
+        try:
+            os.kill(p, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
     videos = ROOT / "runs" / name / "videos"
     for f in list(videos.glob("*.pcm")) + list(videos.glob("*.video.mp4")):  # a video cut off mid-render
         f.unlink()
