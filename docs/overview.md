@@ -26,6 +26,7 @@ flowchart LR
 ## Read next
 
 * [Environments](environments.md): the maps, the opponents, what the agent sees and does.
+* [The whole-game model](model.md): tokens, transformer, action heads.
 * [Experiments](experiments.md): what worked and what did not.
 * [The road to the real game](road-to-the-real-game.md): what is still missing.
 * [Optimizations](optimizations.md): how a step became fast.

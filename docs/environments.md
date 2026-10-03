@@ -38,6 +38,7 @@ flowchart LR
 
 * The view follows the fog of war. The agent sees enemies only while they are in sight.
 * The agent does not see terrain, trees or buildings it saw earlier.
+* [The whole-game model](model.md) shows the tokens, the transformer and the action heads.
 
 ## Opponents
 
