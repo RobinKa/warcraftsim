@@ -880,6 +880,18 @@ After the switch (17.77M to 21.0M steps, 1.5 hours): curriculum games won 9% →
 
 In games of 6 minutes or more both sides reach tier 2 (94% and 86%): the learner techs, but late. It trains 1.3-2.5x the AI's workers a minute (human 4.4 vs 2.3, undead 1.3 vs 0.5) and holds twice the resources (2,800 vs 1,300). Most losses to insane come in minutes 3-5. Human wins 2 of 46 such games, orc 14%, undead 23%, night elf 39%. From 33.4M steps the distillation loss weighs x0.15 (was x0.05).
 
+**3 h 20 min at x0.15** (33.4M → 46.4M steps, 21:56): the real game 95 of 366 won (26%: easy 34%, normal 40%, insane 4%), so no change. The agreement with the advisor rose 58% → 64%; the KL per update stayed at 0.0033, the distance to the anchor rose 0.006 → 0.0095. Against normal the tempo is now even, against insane it is not:
+
+| real games, learner vs AI | normal (118) | insane (120) |
+|---|---|---|
+| food at 1 minute | 19.1 vs 19.2 | 18.5 vs 20.9 |
+| tier 2 reached | 86% vs 73% | 72% vs 94% |
+| heroes | 1.8 vs 1.6 | 1.4 vs 2.2 |
+| workers per game minute | 1.55 vs 1.11 | 2.21 vs 1.35 |
+| kills / units lost | 0.70 | 0.30 |
+
+The losses are decided in the fights: in real losses against normal and insane the learner trained about the AI's army (27 vs 25 units) but killed 8.8 units for 40 lost (in wins 39 for 17). The chance of the AI's own orders at its decisions (46.35M): heroes 5.1% (4.9% at 40.8M, 7.2% at 31.6M), basic units 33% (40% at 31.6M). By race the heroes are human 3.1% (the clones 11.5-12.6%), undead 1.8% (4.9-5.9%), night elf 4.6% (5.1-5.3%), orc 9.8% (8.4-9.6%); human basic units 31% (45-46%). Those are the races that lose: against normal and insane human won 2 of 48, undead 8 of 62, orc 13 of 66, night elf 29 of 62.
+
 ### The built-in AI as an advisor (shadow games)
 
 Takeover games label only the states after the takeover, and they soon become the AI's states. On-policy distillation asks the teacher for a label in every state the student reaches. The built-in AI is a script, not a function, so it cannot be asked. In a shadow game it plays the policy's player too: the harness records its orders as labels and undoes them (`protocol.ShadowAI`, `collect.py --shadow`).
