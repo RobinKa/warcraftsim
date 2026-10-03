@@ -869,6 +869,17 @@ After the switch (17.77M to 21.0M steps, 1.5 hours): curriculum games won 9% →
 
 **After 2 h 50 min of distillation** (31.7M steps, 17:49): the real game 55 of 227 won (24%: easy 33%, normal 35%, insane 9%, insane 18% in the last 30 minutes). The chance of the AI's own orders at its decisions: basic units 40% (30% at 20.9M; the clones 39%), heroes 7.2% (6.3%; the clones 7.8-8.6%): distillation brought production back to the clones' level. The curriculum's tax fell to 0.31.
 
+**A plateau after 3 hours** (33.4M steps): the real game held at ~24% in every half hour since the first (normal 30-40%, insane ~8%), and the agreement with the advisor at ~58% (the distillation loss 2.6, flat). The real games are lost on tempo:
+
+| real games against normal and insane (learner vs AI) | won (50) | lost (171) |
+|---|---|---|
+| food at 1 minute (normal) | 21.4 vs 20.5 | 16.9 vs 22.5 |
+| tier 2 reached | 100% vs 50% | 63% vs 91% |
+| heroes | 2.0 vs 1.3 | 1.2 vs 2.0 |
+| minutes | 8.3 | 6.2 |
+
+In games of 6 minutes or more both sides reach tier 2 (94% and 86%): the learner techs, but late. It trains 1.3-2.5x the AI's workers a minute (human 4.4 vs 2.3, undead 1.3 vs 0.5) and holds twice the resources (2,800 vs 1,300). Most losses to insane come in minutes 3-5. Human wins 2 of 46 such games, orc 14%, undead 23%, night elf 39%. From 33.4M steps the distillation loss weighs x0.15 (was x0.05).
+
 ### The built-in AI as an advisor (shadow games)
 
 Takeover games label only the states after the takeover, and they soon become the AI's states. On-policy distillation asks the teacher for a label in every state the student reaches. The built-in AI is a script, not a function, so it cannot be asked. In a shadow game it plays the policy's player too: the harness records its orders as labels and undoes them (`protocol.ShadowAI`, `collect.py --shadow`).
