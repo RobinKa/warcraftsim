@@ -2,24 +2,58 @@
 
 One network plays one side. It sees the game from its own player's view, as a set of tokens. Code: `fullgame/features.py` and `fullgame/model.py`.
 
-## Tokens
+## The full network
+
+E is the number of units in view (at most 160). O is the number of own units (at most 96). Width d = 192.
 
 ```mermaid
-flowchart LR
-  subgraph T["tokens (a set: no order, no position encoding)"]
-    G["Player token<br/>80 numbers → MLP"]
-    U1["Own units<br/>≤96, first"]
-    U2["Visible enemy units"]
-    U3["Visible neutral units<br/>(creeps, mines)"]
+flowchart TB
+  subgraph IN["Inputs, one step"]
+    F["unit numbers<br/>[E, 29]"]
+    TY["unit type ids<br/>[E] of 147"]
+    CO["current order ids<br/>[E] of 156"]
+    PL["player numbers<br/>[80]"]
   end
-  T --> TR["Transformer<br/>3 layers · width 192 · 4 heads"]
+  F --> LF["Linear 29→192"]
+  TY --> ET["Embedding 147×192"]
+  CO --> EC["Embedding 156×192"]
+  LF --> SUM(("+"))
+  ET --> SUM
+  EC --> SUM
+  SUM --> UT["unit tokens [E, 192]"]
+  PL --> MP["Linear 80→192 · ReLU · Linear 192→192"] --> PT["player token [192]"]
+  PT --> SEQ["tokens [1+E, 192]<br/>padding masked"]
+  UT --> SEQ
+  SEQ --> TR["Transformer encoder × 3<br/>pre-norm · 4 heads · feed-forward 768 · dropout 0.1<br/>then a final LayerNorm"]
+  TR --> G["g: player token out [192]"]
+  TR --> U["u: unit tokens out [E, 192]"]
+  G --> MEM["minGRU (optional)<br/>a, c = Linear 192→384 of g · z = sigmoid of a<br/>h = (1−z)·h + z·c, carried to the next step<br/>context = g + Linear 192→192 of h (starts at 0)"]
+  MEM --> C["context c [192]"]
+  C --> VH["Value head<br/>Linear 192→192 · ReLU · Linear 192→1"] --> V["value"]
+  U --> OI["for each own unit i: concat u_i, c [384]"]
+  C --> OI
+  OI --> OH["Order head<br/>Linear 384→192 · ReLU · Linear 192→399"] --> MSK["mask: the unit type's orders,<br/>what the player can pay for · class 0 = none"] --> O1["order o_i [O]"]
+  O1 --> OE["Embedding 399×192 of o_i"]
+  OE --> CD["concat u_i + emb, c [384]<br/>Linear 384→192 · ReLU · LayerNorm"]
+  U --> CD
+  C --> CD
+  CD --> Z["z_i [192]"]
+  subgraph PTRS["Pointer head: a target unit"]
+    Q["query: Linear 192→192 of z_i"] --> PTR["q·k / √192 over the E units<br/>→ target unit"]
+    K["keys: Linear 192→192 of every u_j"] --> PTR
+  end
+  subgraph PNT["Point head: x, then y given x"]
+    PX["x: Linear 192→128<br/>→ x bin"] --> XE["Embedding 128×192 of the x bin"] --> PY["y: z_i + it · Linear 192→192 · ReLU · Linear 192→128<br/>→ y bin"]
+  end
+  Z --> Q
+  U --> K
+  Z --> PX
+  Z --> PY
 ```
 
-## Transformer
-
-* 3 encoder layers, width 192, 4 attention heads, feed-forward 768, pre-norm, dropout 0.1, and a final layer norm.
-* Every token attends to every other token. A batch pads to its widest step, and attention ignores the padding.
-* The player token's output feeds the value head and every unit's order head.
+* The tokens are a set. There is no position encoding: a unit's position is its x, y numbers.
+* The order decides which target heads count: a unit (pointer), a point (x then y), or none.
+* Each head samples with the Gumbel-max trick.
 
 ## Token channels
 
@@ -84,16 +118,6 @@ flowchart LR
 There are no tokens per time step and no time encoding. The order of the steps is the order of the recurrence. AlphaStar and OpenAI Five use the same split: a network over units at each step, then a recurrent core.
 
 ## Actions
-
-```mermaid
-flowchart LR
-  U["Own unit token + player token"] --> O["Order head<br/>no order or 1 of 399"]
-  O --> K{"What target?"}
-  K -- unit --> P["Pointer:<br/>attention over all units"]
-  K -- point --> X["x: 128 bins"] --> Y["y: 128 bins, given x"]
-  K -- none --> N["—"]
-  G["Player token"] --> V["Value"]
-```
 
 * Every own unit gets its own order at every step (half a second).
 * Masks allow only orders that the unit's type gave in the demonstrations, and that the player can pay for now.

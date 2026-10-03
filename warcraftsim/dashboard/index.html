@@ -1785,10 +1785,11 @@ function renderLineageGraph() {
   const steps = n => n.steps ? ` · ${fmt(n.steps, 0)} steps` : "";
   const label = n => `${n.name.replace(/^(bc|fullgame)\//, "")}<br/><small>${(LINEAGE_KINDS[n.kind] || [n.kind])[0]}${steps(n)}${n.status === "training" ? " · training" : ""}</small>`;
   const lines = ["flowchart LR"];
-  for (const n of shown) lines.push(`  ${id.get(n.name)}["${label(n).replace(/"/g, "'")}"]:::${LINEAGE_KINDS[n.kind] ? n.kind : "run"}${n.name === state.selected ? ":::current" : ""}`);
+  for (const n of shown) lines.push(`  ${id.get(n.name)}["${label(n).replace(/"/g, "'")}"]:::${LINEAGE_KINDS[n.kind] ? n.kind : "run"}`);
   for (const e of edges) lines.push(`  ${id.get(e.from)} ${e.why === "data" ? "-.->" : e.why === "policy" ? "==>" : e.why === "played" ? "-.-" : "-->"} ${id.get(e.to)}`);
   for (const [k, [, fill, stroke]] of Object.entries(LINEAGE_KINDS)) lines.push(`  classDef ${k} fill:${fill},stroke:${stroke},color:#d7dee6`);
   lines.push("  classDef current stroke-width:3px,stroke:#e0a33a");
+  if (id.has(state.selected)) lines.push(`  class ${id.get(state.selected)} current`);  // (one ::: class per node only)
   const seg = ["whole game", "micro"].map(x => `<button data-track="${x}" class="${x === track ? "on" : ""}">${x}</button>`).join("");
   const key = Object.entries(LINEAGE_KINDS).filter(([k]) => shown.some(n => n.kind === k))
     .map(([, [name, fill, stroke]]) => `<span><i style="background:${fill};border:1px solid ${stroke}"></i>${name}</span>`).join("");
