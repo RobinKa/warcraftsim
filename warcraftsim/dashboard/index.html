@@ -840,8 +840,10 @@ const SECTIONS = [
     ["c-lent", "Entropy", "the policy's (micro: summed over action heads; whole game: the order's, per unit)", [TR("loss/entropy", "entropy", "#b083f0")], {}],
     ["c-lkl", "Approx. KL", "per update", [TR("loss/kl", "kl", "#4cc38a")], { ymin: 0 }],
     ["c-lclip", "Clip fraction", "", [TR("loss/clipfrac", "clip fraction", "#39c5cf")], { ymin: 0 }],
-    ["c-lbc", "Cloning loss", "the auxiliary loss on demonstrations (--bc-data: e.g. takeover games from the policy's own states)",
-      [TR("loss/bc", "cloning loss", "#e0a33a")], { hideEmpty: true }],
+    ["c-lbc", "Cloning loss", "the auxiliary loss on demonstrations (--bc-data) · distillation: on the learner's own steps the built-in AI advised (--opd-share)",
+      [TR("loss/bc", "cloning loss", "#e0a33a"), TR("loss/opd", "distillation", "#4cc38a")], { hideEmpty: true }],
+    ["c-lopd", "Agreeing with the advisor", "the learner's most likely order = the built-in AI's (its orders, not none) · the share of steps advised",
+      [TR("opd/acc", "agrees", "#4cc38a"), TR("opd/steps", "steps advised", "#8795a3")], { ymin: 0, ymax: 1, hideEmpty: true }],
     ["c-lref", "KL to the reference", "how far the policy moved from its reference (the fitted script, the clone)", [TR("loss/ref_kl", "KL", "#f56ed2")], { ymin: 0, empty: "no reference policy" }],
   ]],
   ["League", [

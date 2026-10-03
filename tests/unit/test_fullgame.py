@@ -628,14 +628,18 @@ def test_ppo_update_runs_on_minibatches_by_size(memory):
                     torch.ones(1, n, dtype=torch.bool), torch.from_numpy(st["glob"])[None], torch.tensor([own]))
         steps.append({**st, **{k: a[k][0, :own].numpy() for k in ("order", "tgt", "bx", "by", "logp")}, "avail": None,
                       "adv": float(rng.normal()), "ret": float(rng.normal())})
+        if i % 2:  # the advisor's labels (on-policy distillation): an order, a unit or a point target
+            steps[-1].update(y_order=rng.integers(0, 4, own), y_ptr=np.where(rng.random(own) < 0.5, rng.integers(0, n, own), -1),
+                             y_x=rng.integers(0, 128, own), y_y=rng.integers(0, 128, own))
     args = types.SimpleNamespace(epochs=2, minibatch=8, pad_groups=2, seq_len=4 if memory else 1, bf16=0, clip=0.2,
-                                 vf_coef=0.5, ent_coef=0.01, ref_kl=0.2, bc_coef=0.0, max_grad_norm=0.5)
+                                 vf_coef=0.5, ent_coef=0.01, ref_kl=0.2, bc_coef=0.0, max_grad_norm=0.5, opd_coef=0.1)
     before = net.value_head[0].weight.detach().clone()
     opt = torch.optim.Adam(net.parameters(), lr=1e-3)
     chunks = [steps[a:a + 8] for a in range(0, 24, 8)] if memory else None  # (three games' pieces)
     ref.allowed[:, 1:] = False  # (orders only the learner may give: the cloning loss allows more as it goes)
     out = ppo_update(net, ref, opt, steps, args, False, torch.device("cpu"), chunks)
-    assert {"loss/policy", "loss/value", "loss/entropy", "loss/kl", "loss/clipfrac", "loss/ref_kl", "grad_norm"} <= set(out)
+    assert {"loss/policy", "loss/value", "loss/entropy", "loss/kl", "loss/clipfrac", "loss/ref_kl", "grad_norm",
+            "loss/opd", "opd/acc", "opd/steps"} <= set(out)
     assert all(np.isfinite(v) for v in out.values()) and 0 <= out["loss/ref_kl"] < 10
     assert float((net.value_head[0].weight - before).abs().max()) > 0
 

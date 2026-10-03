@@ -341,41 +341,54 @@ class Encoder:
             if st["avail"] is not None:
                 out["avail"][t] = st["avail"]
             # labels: each own unit's last order in the step
-            index = st["index"]
             rows_t = od[os_[t]:os_[t + 1]]
-            paid = self._paid(rows_t, st, me[0] if len(me) else None, trees)
-            if self.costs is not None:  # train / research orders that started nothing: refused (tech, hero limit)
-                later = ev[es[t]:es[min(t + 3, T)]]
-                started = set(later[np.isin(later[:, 1], list(PRODUCTION_START)), 2].tolist())
-                paid = [ok and not (int(r[3]) == 0 and int(r[2]) >= TYPE_CODE and int(r[1]) in view.own_buildings
-                                    and int(r[1]) not in started and int(r[1]) not in view.busy)
-                        for r, ok in zip(rows_t, paid)]
+            y, paid = self.step_labels(view, st, rows_t, me[0] if len(me) else None, ev[es[t]:es[min(t + 3, T)]], trees)
+            for k in ("y_order", "y_ptr", "y_x", "y_y"):
+                out[k][t] = y[k]
             if po is None:
                 view.record_orders((int(r[1]), int(r[2]), int(r[3])) for r, ok in zip(rows_t, paid) if ok)
             else:  # what the policy did (the game accepted it)
                 view.record_orders((int(r[1]), int(r[2]), int(r[3])) for r in po[pos[t]:pos[t + 1]])
-            for r, ok in zip(rows_t, paid):
-                k = index.get(int(r[1]))
-                if not ok or k is None or k >= st["n_own"]:
-                    continue
-                target = int(r[6])
-                lab = relabel(int(r[2]), int(r[3]), target in index, target in trees)
-                c = self.order_index.get(lab) if lab is not None else None
-                ttype = int(st["sel"][index[target], C_TYPE]) if target in index else None
-                res = harvest_resource(lab[0], lab[1], ttype) if lab is not None else None
-                if c is None or redundant(lab[0], lab[1], int(st["sel"][k, C_ORDER]), res, view.assign.get(int(r[1]))):
-                    continue
-                out["y_order"][t, k] = c
-                out["y_ptr"][t, k] = -1
-                out["y_x"][t, k] = out["y_y"][t, k] = -1
-                if lab[1] == UNIT:
-                    out["y_ptr"][t, k] = index[target]
-                elif lab[1] in (POINT, TREE):
-                    x, y = (trees[target] if lab[1] == TREE else (int(r[4]), int(r[5])))
-                    out["y_x"][t, k] = _bin(np.array(sign * x))
-                    out["y_y"][t, k] = _bin(np.array(y))
             view.track_harvest(rows_t if po is None else po[pos[t]:pos[t + 1]], st, trees)
         return out
+
+    def step_labels(self, view: "View", st: dict, rows: np.ndarray, me, later: np.ndarray, trees: dict) -> tuple[dict, list]:
+        """One step's labels (y_order, y_ptr, y_x, y_y [MAX_OWN]) from the orders the AI gave in it
+        (rows: step, unit, order, kind, x, y, target), in the state `st` (View.step; the view as it
+        was then), and which of the orders count (paid for, and train / research orders that started
+        something within `later`'s events: the step's and up to two after; a building busy already
+        queues them). Self-play's distillation from the built-in AI advising (protocol.ShadowAI)
+        labels its live steps with it, the demonstrations' encoder its recorded ones."""
+        y = {"y_order": np.zeros(MAX_OWN, np.int16), "y_ptr": np.full(MAX_OWN, -1, np.int16),
+             "y_x": np.full(MAX_OWN, -1, np.int16), "y_y": np.full(MAX_OWN, -1, np.int16)}
+        index = st["index"]
+        paid = self._paid(rows, st, me, trees)
+        if self.costs is not None:  # train / research orders that started nothing: refused (tech, hero limit)
+            started = set(later[np.isin(later[:, 1], list(PRODUCTION_START)), 2].tolist())
+            paid = [ok and not (int(r[3]) == 0 and int(r[2]) >= TYPE_CODE and int(r[1]) in view.own_buildings
+                                and int(r[1]) not in started and int(r[1]) not in view.busy)
+                    for r, ok in zip(rows, paid)]
+        for r, ok in zip(rows, paid):
+            k = index.get(int(r[1]))
+            if not ok or k is None or k >= min(st["n_own"], MAX_OWN):
+                continue
+            target = int(r[6])
+            lab = relabel(int(r[2]), int(r[3]), target in index, target in trees)
+            c = self.order_index.get(lab) if lab is not None else None
+            ttype = int(st["sel"][index[target], C_TYPE]) if target in index else None
+            res = harvest_resource(lab[0], lab[1], ttype) if lab is not None else None
+            if c is None or redundant(lab[0], lab[1], int(st["sel"][k, C_ORDER]), res, view.assign.get(int(r[1]))):
+                continue
+            y["y_order"][k] = c
+            y["y_ptr"][k] = -1
+            y["y_x"][k] = y["y_y"][k] = -1
+            if lab[1] == UNIT:
+                y["y_ptr"][k] = index[target]
+            elif lab[1] in (POINT, TREE):
+                x, yy = (trees[target] if lab[1] == TREE else (int(r[4]), int(r[5])))
+                y["y_x"][k] = _bin(np.array(view.sign * x))
+                y["y_y"][k] = _bin(np.array(yy))
+        return y, paid
 
 
 def _paid_orders(enc: "Encoder", rows: np.ndarray, st: dict, me, trees: dict) -> list[bool]:

@@ -190,7 +190,7 @@ def evaluate(net: FullGameNet, ent, typ, cur, mask, glob, n_own, order, tgt, bx,
     yl = net.y_logits(z, bx)
     uses_ptr, uses_pt = net.uses(order)
     logp = _logp(logits, order) + uses_ptr * _logp(ptr, tgt) + uses_pt * (_logp(xl, bx) + _logp(yl, by))
-    return {"logp": logp, "entropy": _entropy(logits), "logits": logits, "value": net.value(g)}
+    return {"logp": logp, "entropy": _entropy(logits), "logits": logits, "value": net.value(g), "g": g, "u": u}
 
 
 def load(path, device="cpu", memory: bool | None = None) -> tuple[FullGameNet, dict]:

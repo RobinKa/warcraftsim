@@ -525,6 +525,23 @@ class Trajectory:
         self.steps = self.steps[-1:] if bootstrap else []
 
 
+def label_step(obs, t: int, advised: list[int], spans: dict, sts: dict, held: dict, bots: dict, trajs: dict) -> None:
+    """The built-in AI advising (protocol.ShadowAI): its orders given during step t (in the next
+    observation, `obs`) label the step each advised side just recorded (its last trajectory step),
+    as the demonstrations' encoder labels a recorded game (features.Encoder.step_labels: in the state
+    the side acted in, what it could pay for, train orders that started something)."""
+    rows = np.asarray([(t, o.unit, o.order, o.kind, o.x, o.y, o.target) for o in obs.issued], np.int64).reshape(-1, 7)
+    later = np.asarray([(t + 1, int(e.kind), e.a, e.b, e.c) for e in obs.events], np.int64).reshape(-1, 5)
+    for s in advised:
+        if s not in spans or not trajs[s].steps or s not in held:
+            continue
+        bot, step = bots[s], trajs[s].steps[-1]
+        y, _ = bot.enc.step_labels(bot.view, sts[s], rows, held[s], later, bot.trees)
+        n = step["n_own"]
+        for k, v in y.items():
+            step[k] = v[:n]
+
+
 def shaped(obs, mat: dict, penalty: float) -> dict:
     """The material the shaping's potential counts: `mat` (units and buildings, fullgame.trace.material)
     less `penalty` times the gold and lumber each player holds. With a penalty, spending is credited
@@ -607,7 +624,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
             races[1] = races[0]
         side = rng.randrange(2)  # the learner's
         ai = _choose(rng, spec["launch"])  # {"kind": "agents"} or {"kind": "ai", "difficulty"[, "delay"]}
-        slots = [Agent(races[0], handicap=cfg["handicap"]), Agent(races[1], handicap=cfg["handicap"])]
+        adv = cfg.get("opd_difficulty", "normal")  # (an agent slot's AI: the advisor's, protocol.ShadowAI)
+        slots = [Agent(races[0], handicap=cfg["handicap"], difficulty=adv), Agent(races[1], handicap=cfg["handicap"], difficulty=adv)]
         real = bool(ai.get("real"))  # the real game (the yardstick, no curriculum)
         curr = ai["kind"] == "ai" and "by_race" in ai  # a curriculum game (League.knobs, by the learner's race)
         key = matchup(cfg["mirror"], races[side], races[1 - side])
@@ -618,13 +636,14 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
             slots[1 - side] = (Agent(races[1 - side], handicap=cfg["handicap"], difficulty=ai["difficulty"]) if late
                                else BuiltinAI(races[1 - side], ai["difficulty"], handicap=cfg["handicap"]))
             if curr:  # (the handicap is the launch's: the level when it started)
-                slots[side] = Agent(races[side], handicap=int(ai.get("handicap", cfg["handicap"])))
+                slots[side] = Agent(races[side], handicap=int(ai.get("handicap", cfg["handicap"])), difficulty=adv)
         agents_only = ai["kind"] != "ai"
         # a restart goes on to the next pair of players (--pairs), or reloads the map (1 s).
         # (--scripted-reset: games without the built-in AI reset by script for the same players instead,
         # 0.1 s, but not to a new game: see GameSetup.melee_reset)
         setup = GameSetup(map=cfg["map"], slots=slots, step_seconds=cfg["step_seconds"],
                           max_game_seconds=cfg["max_minutes"] * 60, victory="decisive", window=(320, 240),
+                          record_ai_orders=cfg.get("opd_share", 0.0) > 0,
                           wait_floor_ms=cfg["wait_floor_ms"], melee_reset=agents_only and cfg["scripted_reset"],
                           native_obs=cfg["native_obs"], nice=cfg.get("game_nice", 0), d3d_thread=False,
                           render_threads=0, pairs=cfg.get("pairs", 1))
@@ -647,6 +666,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                         taxed, share = balance_tax(spec, races)
                         if share > 0:
                             opp["tax"], opp["tax_side"] = share, taxed
+                    # on-policy distillation: the built-in AI advises the learner (never in the real game)
+                    opp["advise"] = not real and rng.random() < cfg.get("opd_share", 0.0)
                     if curr:  # the curriculum's current knobs for this AI
                         now = next((x.get("by_race", {}).get(key, ai) for x in spec["launch"]
                                     if x.get("difficulty") == ai["difficulty"] and not x.get("real")), ai)
@@ -676,7 +697,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     (fullgame.overlay), in the returned episode row's "trace"."""
     from .play import BCAgent
 
-    from ..protocol import SetResources, StartAI
+    from ..protocol import SetResources, ShadowAI, StartAI
     race_ix = [fx.RACES.index(r) if r in fx.RACES else 0 for r in races]
     bots: dict[int, BCAgent] = {}
     keys: dict[int, str] = {}
@@ -699,6 +720,10 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             trajs[s] = Trajectory(cfg, out_q, {"worker": wid, "opponent": opp["name"]})
         elif keys[s] == "exploiter":  # (its steps train the exploiter: League, --exploiter-share)
             trajs[s] = Trajectory(cfg, out_q, {"worker": wid, "opponent": "main", "learner": "exploiter"})
+    # the built-in AI advises the learner's sides (opp["advise"]): its orders label their steps
+    advised = [s for s in trajs if keys[s] == "current"] if opp.get("advise") else []
+    for s in advised:
+        bots[s].repair_builds = True  # (a builder the advisor pulled away resumes with "repair")
     t, t0 = 0, time.time()
     values, scale = cfg["values"], cfg["shaping_scale"]
     mat = material(obs, values)
@@ -720,6 +745,10 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                 p.gold, p.lumber = max(0, p.gold - int(opp["tax"] * dg)), max(0, p.lumber - int(opp["tax"] * dl))
                 cmds.append(SetResources(taxed, p.gold, p.lumber))
             gathered = now
+        if t == 0:
+            cmds += [ShadowAI(s) for s in advised]
+        held = {s: obs.players.get(s) for s in advised}  # (the labels count what the player could pay for)
+        held = {s: np.asarray([t, s, p.gold, p.lumber, p.food_used, p.food_cap, p.upkeep]) for s, p in held.items() if p}
         rows = unit_rows(obs, t)  # once for both sides
         sts = {s: bot.observe(obs, t, rows) for s, bot in bots.items()}
         live = [s for s in bots if sts[s] is not None]
@@ -745,6 +774,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         if late is not None and t == opp["start"]:  # the built-in AI takes over its side (after the bots' orders)
             cmds.append(StartAI(late))
         obs = g.step(cmds)
+        if advised:  # the advisor's orders of the step just taken: the labels of the step recorded
+            label_step(obs, t, advised, spans, sts, held, bots, trajs)
         for s, (a, b) in spans.items():
             bots[s].accepted(cmds[a:b], obs.command_results[a:b])
         t += 1
@@ -789,7 +820,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
            if "curriculum" in opp else {}),
         # games between agents: the share of the learner's income taken (< 0: of the opponent's)
         **({"balance_tax": opp["tax"] if opp["tax_side"] == side else -opp["tax"]} if "tax_side" in opp else {}),
-        "prod": prod.row(side, obs), "opp_prod": prod.row(1 - side, obs)}
+        "prod": prod.row(side, obs), "opp_prod": prod.row(1 - side, obs), **({"advised": True} if advised else {})}
     out_q.put({"episode": ep})
     if record:  # the video's panel: A = the learner's side
         who = {"self": "itself", "ai": "built-in AI"}.get(opp["kind"], opp["name"])
@@ -1144,7 +1175,17 @@ def collate(steps: list[dict], device) -> dict:
             acts[k][i, :o] = s[k]
         logp[i, :o] = s["logp"]
     t = lambda a: torch.from_numpy(a).to(device, non_blocking=True)  # noqa: E731
-    return {"ent": t(ent), "type": t(typ), "cur": t(cur), "mask": t(mask), "glob": t(glob), "n_own": t(n_own),
+    labels = {}
+    if any("y_order" in s for s in steps):  # the advisor's labels (on-policy distillation; others: none)
+        labels = {"y_order": np.zeros((B, O), np.int64), **{k: np.full((B, O), -1, np.int64) for k in ("y_ptr", "y_x", "y_y")}}
+        has = np.zeros(B, bool)
+        for i, s in enumerate(steps):
+            if "y_order" in s:
+                has[i] = True
+                for k in labels:
+                    labels[k][i, :s["n_own"]] = s[k]
+        labels = {**{k: t(v) for k, v in labels.items()}, "y_has": t(has)}
+    return {"ent": t(ent), "type": t(typ), "cur": t(cur), "mask": t(mask), "glob": t(glob), "n_own": t(n_own), **labels,
             **{k: t(v) for k, v in acts.items()}, "logp": t(logp), "avail": t(avail) if avail is not None else None,
             "adv": torch.tensor([s["adv"] for s in steps], device=device, dtype=torch.float32),
             "ret": torch.tensor([s["ret"] for s in steps], device=device, dtype=torch.float32),
@@ -1195,6 +1236,30 @@ def collate_seq(seqs: list[list[dict]], device) -> dict:
     return mb
 
 
+def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast) -> tuple[torch.Tensor, torch.Tensor]:
+    """On-policy distillation: the cloning loss (bc.losses: the order, then its target given the
+    teacher's order) on the learner's own steps that the built-in AI advised (mb["y_has"]), from
+    the PPO pass's network outputs; and the share of the teacher's orders (not "none") the policy
+    likes most."""
+    own = mb["own"] & mb["y_has"][:, None]
+    y = mb["y_order"]
+    lp = torch.log_softmax(ev["logits"].float(), -1)
+    lp_y = lp.gather(-1, y.unsqueeze(-1)).squeeze(-1)
+    ok = own & (lp_y > -1e4)  # (an order the unit can't get now: none of its business)
+    l_order = -(lp_y * ok).sum() / ok.sum().clamp(min=1)
+    with autocast:
+        ptr, xl, z = net.target_logits(ev["g"], ev["u"], mb["mask"], y)
+        yl = net.y_logits(z, mb["y_x"])
+    has_ptr, has_pt = (mb["y_ptr"] >= 0) & ok, (mb["y_x"] >= 0) & ok
+    ce = torch.nn.functional.cross_entropy
+    l_ptr = ce(ptr[has_ptr].float(), mb["y_ptr"][has_ptr]) if has_ptr.any() else lp.sum() * 0
+    l_pt = (ce(xl[has_pt].float(), mb["y_x"][has_pt]) + ce(yl[has_pt].float(), mb["y_y"][has_pt])) if has_pt.any() else lp.sum() * 0
+    with torch.no_grad():
+        issued = ok & (y > 0)
+        acc = ((lp[..., 1:].argmax(-1) + 1 == y) & issued).sum() / issued.sum().clamp(min=1)
+    return l_order + l_ptr + 0.5 * l_pt, acc
+
+
 def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict], args, warmup: bool, device,
                chunks: list[list[dict]] | None = None, bc_iter=None) -> dict:
     """PPO epochs over the steps; for a network with memory over sequences cut from `chunks` (the
@@ -1202,6 +1267,13 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
     of demonstrations (bc.Steps) whose cloning loss joins each minibatch's, times args.bc_coef."""
     advs = np.array([s["adv"] for s in steps], np.float32)
     mean, std = float(advs.mean()), float(advs.std()) + 1e-8
+    if getattr(args, "opd_coef", 0.0) > 0:  # the advisor's orders become orders the unit type can get (as cloning's do)
+        typ_y = [(s["type"][:s["n_own"]], s["y_order"]) for s in steps if "y_order" in s]
+        if typ_y:
+            ty = torch.from_numpy(np.concatenate([a for a, _ in typ_y]).astype(np.int64))
+            yy = torch.from_numpy(np.concatenate([b for _, b in typ_y]).astype(np.int64))
+            keep = yy > 0
+            net.allowed[ty[keep].to(net.allowed.device), yy[keep].to(net.allowed.device)] = True
     if ref is not None:  # the orders each unit type can get: the cloning loss adds the demonstrations' (a
         # pair only the learner allowed had the clone's logit at -1e9: a KL of 96 and a gradient norm
         # of 726 in one of fgself-11's first updates)
@@ -1252,6 +1324,12 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
                 # also while the value warms up: it shares the network's trunk, so training it alone
                 # moved the policy too (the KL to the clone doubled in the first five updates)
                 loss = loss + args.ref_kl * ref_kl
+            if getattr(args, "opd_coef", 0.0) > 0 and "y_has" in mb and bool(mb["y_has"].any()):
+                l_opd, opd_acc = distill_loss(net, ev, mb, autocast)
+                loss = loss + args.opd_coef * l_opd
+                stats.setdefault("loss/opd", []).append(l_opd.detach())
+                stats.setdefault("opd/acc", []).append(opd_acc)
+                stats.setdefault("opd/steps", []).append(mb["y_has"].float().mean())
             if bc_iter is not None and args.bc_coef > 0:  # DAgger's labels as an auxiliary loss (not a fine-tune:
                 from .bc import losses as bc_losses  # cloning afterwards overwrote what RL had learned)
                 with autocast:
@@ -1352,6 +1430,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--bc-winners", type=int, default=0, help="the cloning loss: only the side that won each game")
     ap.add_argument("--bc-max-minutes", type=float, default=0.0, help="the cloning loss: only games decided within this many minutes")
     ap.add_argument("--bc-workers", type=int, default=2)
+    ap.add_argument("--opd-share", type=float, default=0.0,
+                    help="on-policy distillation: the share of games (not the real game) in which the built-in AI "
+                         "advises the learner's side (protocol.ShadowAI: its orders are labels, undone); the "
+                         "learner's steps there get its labels and a cloning loss towards them (--opd-coef)")
+    ap.add_argument("--opd-coef", type=float, default=0.05, help="the distillation loss's weight (--opd-share)")
+    ap.add_argument("--opd-difficulty", default="insane", help="the advising AI's difficulty")
     ap.add_argument("--real-share", type=float, default=0.1, help="with a curriculum: the share of launches against "
                                                                    "the built-in AI that play the real game (the yardstick)")
     ap.add_argument("--curriculum-mode", default="hp", choices=("hp", "delay", "tax"),
@@ -1523,6 +1607,7 @@ def main(argv: list[str] | None = None) -> int:
            "exploiter_share": args.exploiter_share, "float_penalty": args.float_penalty,
            "infer_period": args.infer_period_ms / 1000.0,
            "avail_mask": bool(args.avail_mask),
+           "opd_share": args.opd_share, "opd_difficulty": args.opd_difficulty,
            "costs": order_costs(vocab, args.map).tolist() if args.avail_mask else None, "max_past": args.max_past,
            "order_names": vocab.get("order_names") or {str(k): v for k, v in fx.demo_order_names(args.runs).items()}}
     if args.pin and (os.cpu_count() or 0) >= 16:
