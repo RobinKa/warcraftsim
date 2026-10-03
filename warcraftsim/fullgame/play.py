@@ -54,6 +54,9 @@ def unit_rows(obs: Observation, t: int) -> np.ndarray:
                        for u in obs.units], np.int64).reshape(-1, 18)
 
 
+REPAIR = 852024  # the order a worker resumes a building with
+
+
 class BCAgent:
     """The policy playing one player of a live game."""
 
@@ -67,6 +70,10 @@ class BCAgent:
         self.view = None
         self.trees: dict[int, tuple[int, int]] = {}
         self.issued = 0
+        # a worker repairing counts as building too: with the built-in AI advising (collect.Shadow) a
+        # builder the AI pulled away is sent back to its building with "repair", and the policy then
+        # gave it another order (human buildings started by 2 minutes, finished: 1.2 a game, 4.2 without)
+        self.repair_builds = False
 
     def begin(self, obs: Observation, races: list[int]) -> None:
         rows = unit_rows(obs, 0)
@@ -107,7 +114,8 @@ class BCAgent:
         events = np.asarray([(t, int(e.kind), e.a, e.b, e.c) for e in obs.events], np.int64).reshape(-1, 5)
         st = self.view.step(rows, me, events, t)
         sel = st["sel"][:st["n_own"]]  # the workers busy with a building order, and since when
-        busy = {int(u) for u, f, o in zip(sel[:, fx.C_ID], sel[:, fx.C_FLAGS], sel[:, fx.C_ORDER]) if fx.building(int(f), int(o))}
+        busy = {int(u) for u, f, o in zip(sel[:, fx.C_ID], sel[:, fx.C_FLAGS], sel[:, fx.C_ORDER])
+                if fx.building(int(f), int(o)) or (self.repair_builds and int(o) == REPAIR and int(f) & fx.WORKER)}
         self.building_since = {u: self.building_since.get(u, t) for u in busy}
         return st if st["n_own"] > 0 else None
 

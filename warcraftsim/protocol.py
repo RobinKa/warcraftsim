@@ -484,6 +484,7 @@ class Op(IntEnum):
     QUEUE_SPAWN = 92
     QUEUE_SKILL = 93
     START_AI = 94
+    SHADOW_AI = 95
     CAMERA = 96
     END_GAME = 97
     SNAPSHOT = 98
@@ -601,6 +602,18 @@ class StartAI(Command):
 
     def encode(self) -> list[int]:
         return [Op.START_AI, self.player]
+
+
+@dataclass(frozen=True)
+class ShadowAI(Command):
+    """The built-in AI advises an agent's player from now on: its orders are recorded like any AI
+    player's (Observation.issued: a teacher's labels in the agent's own states) and undone at once
+    (a unit gets the agent's last order again, training it queued is cancelled, a skill it learned
+    unlearned). The agent keeps playing. Needs GameSetup(record_ai_orders=True)."""
+    player: int
+
+    def encode(self) -> list[int]:
+        return [Op.SHADOW_AI, self.player]
 
 
 @dataclass(frozen=True)
@@ -765,7 +778,7 @@ def encode_commands(commands: Iterable[Command]) -> list[int]:
 
 _OP_LENGTHS = {Op.POINT: 5, Op.TARGET: 4, Op.IMMEDIATE: 3, Op.BUILD: 5, Op.LEARN: 3, Op.TARGET_DESTRUCTABLE: 4,
                Op.ITEM: 7, Op.VIS_CLEAR: 1, Op.VIS_MARK: 6, Op.VIS_LINE: 9, Op.VIS_AREA: 5, Op.CAMERA_ZOOM: 2,
-               Op.SET_RESOURCES: 4, Op.SPAWN: 5, Op.QUEUE_SPAWN: 8, Op.QUEUE_SKILL: 2, Op.START_AI: 2, Op.CAMERA: 3,
+               Op.SET_RESOURCES: 4, Op.SPAWN: 5, Op.QUEUE_SPAWN: 8, Op.QUEUE_SKILL: 2, Op.START_AI: 2, Op.SHADOW_AI: 2, Op.CAMERA: 3,
                Op.END_GAME: 1, Op.SNAPSHOT: 1, Op.RESTART: 1}
 
 

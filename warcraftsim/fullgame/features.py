@@ -309,11 +309,16 @@ class Encoder:
         its train orders until it can afford them: 61% of its train and research orders were attempts
         the game refused, and they left stale queues), nor are train / research orders that started
         nothing within 2 steps at a building that wasn't busy (refused for tech or the hero limit);
-        and "avail" is each step's availability mask."""
+        and "avail" is each step's availability mask. The side a policy played with the built-in AI
+        advising it (collect.py --shadow): the AI's orders are the labels, the policy's own orders
+        ("policy_orders") what the features count (queues, workers on lumber)."""
         meta = game["meta"]
         T = meta["steps"] + 1
         u, pl, ev, od = game["units"], game["players"], game["events"], game["orders"]
         us, ps, es, os_ = (_step_slices(a[:, 0], T) for a in (u, pl, ev, od))
+        sh = meta.get("shadow")
+        po = game.get("policy_orders") if sh and sh["player"] == player else None
+        pos = _step_slices(po[:, 0], T) if po is not None else None
         sign = self.side(u[us[0]:us[1]], player)
         trees = {int(r[0]): (int(r[2]), int(r[3])) for r in game["trees"]}
         races = [RACES.index(r) if r in RACES else 0 for r in meta["races"]]
@@ -345,7 +350,10 @@ class Encoder:
                 paid = [ok and not (int(r[3]) == 0 and int(r[2]) >= TYPE_CODE and int(r[1]) in view.own_buildings
                                     and int(r[1]) not in started and int(r[1]) not in view.busy)
                         for r, ok in zip(rows_t, paid)]
-            view.record_orders((int(r[1]), int(r[2]), int(r[3])) for r, ok in zip(rows_t, paid) if ok)
+            if po is None:
+                view.record_orders((int(r[1]), int(r[2]), int(r[3])) for r, ok in zip(rows_t, paid) if ok)
+            else:  # what the policy did (the game accepted it)
+                view.record_orders((int(r[1]), int(r[2]), int(r[3])) for r in po[pos[t]:pos[t + 1]])
             for r, ok in zip(rows_t, paid):
                 k = index.get(int(r[1]))
                 if not ok or k is None or k >= st["n_own"]:
@@ -366,7 +374,7 @@ class Encoder:
                     x, y = (trees[target] if lab[1] == TREE else (int(r[4]), int(r[5])))
                     out["y_x"][t, k] = _bin(np.array(sign * x))
                     out["y_y"][t, k] = _bin(np.array(y))
-            view.track_harvest(rows_t, st, trees)
+            view.track_harvest(rows_t if po is None else po[pos[t]:pos[t + 1]], st, trees)
         return out
 
 

@@ -706,6 +706,20 @@ def test_cloning_sides_winners_and_short_games():
     assert sides_of(late, winners=True, max_minutes=6) == ()
 
 
+def test_shadow_games_learn_from_the_advised_side():
+    from warcraftsim.fullgame.bc import sides_of
+    from warcraftsim.fullgame.collect import command_row
+    from warcraftsim.protocol import Build, ImmediateOrder, PointOrder, ShadowAI, TargetOrder, encode_commands, command_ops
+    lost = {"meta": {"result": {"0": "DEFEAT", "1": "VICTORY"}, "game_seconds": 300.0, "shadow": {"player": 0}}}
+    assert sides_of(lost, winners=True) == (0, 1)  # the advised side counts whoever won
+    assert sides_of(lost, winners=True, max_minutes=4) == (0,)
+    assert command_ops(encode_commands([ShadowAI(0), ImmediateOrder(5, 851972)])) == [95, 3]
+    assert command_row(7, ImmediateOrder(5, 851972)) == (7, 5, 851972, 0, 0, 0, 0)
+    assert command_row(7, PointOrder(5, 851983, 100.4, -20.0)) == (7, 5, 851983, 1, 100, -20, 0)
+    assert command_row(7, TargetOrder(5, 852018, 9)) == (7, 5, 852018, 2, 0, 0, 9)
+    assert command_row(7, Build(5, "hhou", 10.0, 20.0))[2:4] == (int.from_bytes(b"hhou", "big"), 1)
+
+
 def test_a_restarted_run_draws_other_launches():
     from warcraftsim.fullgame.selfplay import game_rng
     draws = lambda cfg, w, k: [game_rng(cfg, w, k).random() for _ in range(3)]  # noqa: E731

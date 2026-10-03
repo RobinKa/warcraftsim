@@ -99,6 +99,29 @@ globals
     // skill learned), x, y, target id
     integer array w3s_iss
     integer w3s_niss = 0
+    // the built-in AI as an advisor of an agent's player (op 95, W3S_ShadowAI): its orders are recorded
+    // as any AI player's (the labels) and undone at once (W3S_ShadowRestore, a 0 s timer: the order has
+    // been carried out by then): a unit gets the agent's last order again (or stops), the training or
+    // research it queued is cancelled (its cost back), a hero skill it learned is unlearned
+    boolean array w3s_shadow
+    boolean w3s_quiet = false  // the harness gives the orders now (the agents' commands, undos): not the AI's
+    hashtable w3s_lo = null  // an agent unit's last order: 0 op (8: building it, 2 the building), 1 order, 2 x / target,
+                             // 3 y, 4 given at (game time); 9 trained at
+    unit array w3s_pb_u  // the advised players' workers with a build order and no building yet
+    integer w3s_npb = 0
+    unit array w3s_un_u
+    integer array w3s_un_order
+    integer array w3s_un_kind
+    integer array w3s_un_cur  // the unit's order at the event (a builder still on its way: its build)
+    integer array w3s_un_gold  // its player's resources at the event (before the order)
+    integer array w3s_un_lumber
+    integer array w3s_un_g  // (W3S_ShadowRestore: per player, the resources after the order looked at)
+    integer array w3s_un_l
+    integer w3s_nun = 0
+    timer w3s_un_timer = null
+    unit array w3s_tu_u  // units the advisor moved this step (W3S_ShadowTouch)
+    integer w3s_ntu = 0
+    constant integer W3S_TYPE_CODE = 16777216  // order ids at or above it are unit / building / upgrade codes
     integer w3s_pair = 0  // the game of this load (W3S_CFG_PAIRS)
     integer w3s_cser = 0  // the shim makes the pass over the units (1; 2: it checks its records against the harness's)
     player w3s_np = null  // the neutral passive player (the mailbox's)
@@ -1141,18 +1164,8 @@ endfunction
 // the built-in AI takes over an agent's player mid-game (demonstrations from states a policy
 // reached: the AI's melee scripts build toward target counts, so they carry on from any state).
 // Its orders are recorded from then on (W3S_CFG_RECORD_ORDERS), and agent commands to it refused.
-function W3S_StartAI takes integer i returns boolean
-    local player p
-    local race r
-    if i < 0 or i >= bj_MAX_PLAYERS or not w3s_agent[i] then
-        return false
-    endif
-    set p = Player(i)
-    if GetPlayerController(p) != MAP_CONTROL_COMPUTER then
-        return false
-    endif
-    set w3s_agent[i] = false
-    set r = GetPlayerRace(p)
+function W3S_MeleeAI takes player p returns nothing
+    local race r = GetPlayerRace(p)
     if r == RACE_HUMAN then
         call PickMeleeAI(p, "human.ai", null, null)
     elseif r == RACE_ORC then
@@ -1163,7 +1176,33 @@ function W3S_StartAI takes integer i returns boolean
         call PickMeleeAI(p, "elf.ai", null, null)
     endif
     call ShareEverythingWithTeamAI(p)
-    set p = null
+    set r = null
+endfunction
+
+function W3S_StartAI takes integer i returns boolean
+    if i < 0 or i >= bj_MAX_PLAYERS or not w3s_agent[i] then
+        return false
+    endif
+    if GetPlayerController(Player(i)) != MAP_CONTROL_COMPUTER then
+        return false
+    endif
+    set w3s_agent[i] = false
+    set w3s_shadow[i] = false
+    call W3S_MeleeAI(Player(i))
+    return true
+endfunction
+
+// the built-in AI advises an agent's player from now on: its orders are recorded and undone
+// (W3S_Issued, W3S_ShadowRestore); the agent keeps playing
+function W3S_ShadowAI takes integer i returns boolean
+    if i < 0 or i >= bj_MAX_PLAYERS or not w3s_agent[i] or w3s_shadow[i] then
+        return false
+    endif
+    if GetPlayerController(Player(i)) != MAP_CONTROL_COMPUTER then
+        return false
+    endif
+    set w3s_shadow[i] = true
+    call W3S_MeleeAI(Player(i))
     return true
 endfunction
 
@@ -1245,6 +1284,9 @@ function W3S_ApplyOne takes integer at returns integer
     elseif op == 94 then
         set n = 2
         set ok = W3S_StartAI(W3S_Real(w3s_cmd[at + 1]))
+    elseif op == 95 then
+        set n = 2
+        set ok = W3S_ShadowAI(W3S_Real(w3s_cmd[at + 1]))
     elseif op == 91 then
         set n = 5
         set u = CreateUnit(Player(W3S_Real(w3s_cmd[at + 1])), w3s_cmd[at + 2], I2R(w3s_cmd[at + 3] - 65536), I2R(w3s_cmd[at + 4] - 65536), 270.0)
@@ -1293,6 +1335,17 @@ function W3S_ApplyOne takes integer at returns integer
     endif
     if ok then
         set w3s_cres[w3s_ncres] = 1
+        if (op == 1 or op == 2 or op == 3 or op == 4 or op == 6) and w3s_shadow[GetPlayerId(GetOwningPlayer(u))] then
+            call SaveInteger(w3s_lo, GetHandleId(u), 0, op)
+            call SaveInteger(w3s_lo, GetHandleId(u), 1, w3s_cmd[at + 2])
+            call SaveInteger(w3s_lo, GetHandleId(u), 2, w3s_cmd[at + 3])
+            call SaveInteger(w3s_lo, GetHandleId(u), 3, w3s_cmd[at + 4])
+            call SaveReal(w3s_lo, GetHandleId(u), 4, TimerGetElapsed(w3s_clock))
+            if op == 4 and w3s_npb < 64 then
+                set w3s_pb_u[w3s_npb] = u
+                set w3s_npb = w3s_npb + 1
+            endif
+        endif
     else
         set w3s_cres[w3s_ncres] = 0
     endif
@@ -1323,12 +1376,14 @@ function W3S_ReadCommands takes nothing returns nothing
         set i = i + 1
     endloop
     set w3s_cursor = 0
+    set w3s_quiet = true  // (the orders given now are the agents')
     loop
         exitwhen w3s_cursor >= w3s_ncmd
         set i = w3s_cursor
         call TriggerEvaluate(w3s_act_trig)
         exitwhen w3s_cursor == i
     endloop
+    set w3s_quiet = false
 endfunction
 
 //===========================================================================
@@ -1783,11 +1838,159 @@ endfunction
 //===========================================================================
 // step
 
+// the agent's last order to a unit again (W3S_ShadowRestore); false: none, or the game refused it
+function W3S_Reissue takes unit u, integer cur returns boolean
+    local integer h = GetHandleId(u)
+    local integer op
+    local integer o
+    local unit u2
+    local boolean ok
+    if not HaveSavedInteger(w3s_lo, h, 0) then
+        return false
+    endif
+    set op = LoadInteger(w3s_lo, h, 0)
+    set o = LoadInteger(w3s_lo, h, 1)
+    if op == 1 then
+        return IssuePointOrderById(u, o, I2R(LoadInteger(w3s_lo, h, 2) - 65536), I2R(LoadInteger(w3s_lo, h, 3) - 65536))
+    elseif op == 2 then
+        return IssueTargetOrderById(u, o, W3S_Unit(LoadInteger(w3s_lo, h, 2)))
+    elseif op == 3 then
+        return o < W3S_TYPE_CODE and IssueImmediateOrderById(u, o)  // (never a building's training again)
+    elseif op == 4 then  // on its way to build (no building of it yet: W3S_ShadowBuilt), for at most 60 s
+        return TimerGetElapsed(w3s_clock) - LoadReal(w3s_lo, h, 4) < 60.0 and W3S_Build(u, o, I2R(LoadInteger(w3s_lo, h, 2) - 65536), I2R(LoadInteger(w3s_lo, h, 3) - 65536))
+    elseif op == 8 then  // building it (human, orc; the undead's and night elves' are done at the start)
+        set u2 = W3S_Unit(LoadInteger(w3s_lo, h, 2))
+        set ok = u2 != null and LoadBoolean(w3s_ht, GetHandleId(u2), 1) and IssueTargetOrderById(u, 852024, u2)  // repair
+        set u2 = null
+        return ok
+    elseif op == 6 then
+        return IssueTargetOrderById(u, o, LoadDestructableHandle(w3s_ht, LoadInteger(w3s_lo, h, 2), 0))
+    endif
+    return false
+endfunction
+
+// the advisor's orders of this instant undone (a 0 s timer: they have been carried out). An order's
+// cost: what its player held at its event less what it held at its next event (or now).
+function W3S_ShadowRestore takes nothing returns nothing
+    local integer i = w3s_nun - 1
+    local integer p
+    local unit u
+    set w3s_quiet = true
+    set p = 0
+    loop
+        exitwhen p >= bj_MAX_PLAYERS
+        set w3s_un_g[p] = GetPlayerState(Player(p), PLAYER_STATE_RESOURCE_GOLD)
+        set w3s_un_l[p] = GetPlayerState(Player(p), PLAYER_STATE_RESOURCE_LUMBER)
+        set p = p + 1
+    endloop
+    loop
+        exitwhen i < 0
+        set u = w3s_un_u[i]
+        set p = GetPlayerId(GetOwningPlayer(u))
+        if GetUnitTypeId(u) != 0 and not IsUnitType(u, UNIT_TYPE_DEAD) then
+            if w3s_un_kind[i] == 3 then  // a hero skill: unlearned, the point back
+                if GetUnitAbilityLevel(u, w3s_un_order[i]) > 1 then
+                    call DecUnitAbilityLevel(u, w3s_un_order[i])
+                else
+                    call UnitRemoveAbility(u, w3s_un_order[i])
+                endif
+                call UnitModifySkillPoints(u, 1)
+            elseif IsUnitType(u, UNIT_TYPE_STRUCTURE) then
+                if w3s_un_order[i] >= W3S_TYPE_CODE then
+                    if w3s_un_g[p] < w3s_un_gold[i] or w3s_un_l[p] < w3s_un_lumber[i] then
+                        call IssueImmediateOrderById(u, 851976)  // cancel: the last thing queued, its cost back
+                    endif
+                elseif w3s_un_order[i] == 852082 then  // townbellon: workers to militia
+                    call IssueImmediateOrderById(u, 852083)  // townbelloff
+                elseif w3s_un_order[i] == 852099 then  // battlestations: peons into the burrows
+                    call IssueImmediateOrderById(u, 852113)  // standdown
+                else
+                    call W3S_Reissue(u, w3s_un_cur[i])  // (a rally point: the agent's, if it set one)
+                endif
+            elseif not W3S_Reissue(u, w3s_un_cur[i]) then
+                call IssueImmediateOrderById(u, 851972)  // stop
+            endif
+        endif
+        set w3s_un_g[p] = w3s_un_gold[i]
+        set w3s_un_l[p] = w3s_un_lumber[i]
+        set w3s_un_u[i] = null
+        set i = i - 1
+    endloop
+    set w3s_nun = 0
+    set w3s_quiet = false
+    set u = null
+endfunction
+
+function W3S_ShadowUndo takes unit u, integer order, integer kind returns nothing
+    local player p = GetOwningPlayer(u)
+    if w3s_nun >= 400 then
+        return
+    endif
+    set w3s_un_u[w3s_nun] = u
+    set w3s_un_order[w3s_nun] = order
+    set w3s_un_kind[w3s_nun] = kind
+    set w3s_un_cur[w3s_nun] = GetUnitCurrentOrder(u)
+    set w3s_un_gold[w3s_nun] = GetPlayerState(p, PLAYER_STATE_RESOURCE_GOLD)
+    set w3s_un_lumber[w3s_nun] = GetPlayerState(p, PLAYER_STATE_RESOURCE_LUMBER)
+    set w3s_nun = w3s_nun + 1
+    if w3s_nun == 1 then
+        call TimerStart(w3s_un_timer, 0.0, false, function W3S_ShadowRestore)
+    endif
+    set p = null
+endfunction
+
+// the agent's worker on its way to build, or building (human, orc: the building waits without it)
+function W3S_Builder takes unit u returns boolean
+    local integer op = LoadInteger(w3s_lo, GetHandleId(u), 0)
+    if op == 4 then
+        return TimerGetElapsed(w3s_clock) - LoadReal(w3s_lo, GetHandleId(u), 4) < 60.0
+    endif
+    return op == 8 and LoadBoolean(w3s_ht, LoadInteger(w3s_lo, GetHandleId(u), 2), 1)
+endfunction
+
+// a unit the advisor gave an order that moves it (not one that spends or builds): undone at the
+// next step, before the observation (W3S_ShadowSettle), once: undone at once, a unit the advisor
+// orders again and again (a fight, a repair) lost every attack swing and a worker its trips
+function W3S_ShadowTouch takes unit u returns nothing
+    local integer h = GetHandleId(u)
+    if LoadInteger(w3s_lo, h, 7) == w3s_seq + 1 or w3s_ntu >= 400 then
+        return
+    endif
+    call SaveInteger(w3s_lo, h, 7, w3s_seq + 1)
+    set w3s_tu_u[w3s_ntu] = u
+    set w3s_ntu = w3s_ntu + 1
+endfunction
+
+function W3S_ShadowSettle takes nothing returns nothing
+    local integer i = 0
+    local unit u
+    set w3s_quiet = true
+    loop
+        exitwhen i >= w3s_ntu
+        set u = w3s_tu_u[i]
+        if GetUnitTypeId(u) != 0 and not IsUnitType(u, UNIT_TYPE_DEAD) then
+            if IsUnitType(u, UNIT_TYPE_STRUCTURE) then
+                call W3S_Reissue(u, 0)  // (a rally point: the agent's, if it set one)
+            elseif not W3S_Reissue(u, 0) then
+                call IssueImmediateOrderById(u, 851972)  // stop
+            endif
+        endif
+        set w3s_tu_u[i] = null
+        set i = i + 1
+    endloop
+    set w3s_ntu = 0
+    set w3s_quiet = false
+    set u = null
+endfunction
+
 function W3S_Step takes nothing returns nothing
     if w3s_first then
         call W3S_CSerInit()
     endif
     call W3S_RunScripted()
+    if w3s_ntu > 0 then
+        call W3S_ShadowSettle()  // (the units as the agents left them, in the observation)
+    endif
     if w3s_cser == 1 then
         call W3S_CPass()
     endif
@@ -1834,6 +2037,8 @@ function W3S_Retrack takes nothing returns nothing
     call GroupClear(w3s_all)
     call FlushParentHashtable(w3s_ht)
     set w3s_ht = InitHashtable()
+    call FlushParentHashtable(w3s_lo)
+    set w3s_lo = InitHashtable()
     call GroupClear(w3s_group)
     call GroupEnumUnitsInRect(w3s_group, GetWorldBounds(), null)
     call ForGroup(w3s_group, function W3S_AddUnit)
@@ -1898,10 +2103,42 @@ function W3S_OnDeath takes nothing returns boolean
     return false
 endfunction
 
+// an advised player's building started: its builder (the agent's build order of that type there)
+// builds it now (op 8), or is done with it
+function W3S_ShadowBuilt takes unit s returns nothing
+    local integer i = 0
+    local unit w
+    local integer h
+    loop
+        exitwhen i >= w3s_npb
+        set w = w3s_pb_u[i]
+        set h = GetHandleId(w)
+        if GetUnitTypeId(w) == 0 or IsUnitType(w, UNIT_TYPE_DEAD) or LoadInteger(w3s_lo, h, 0) != 4 or TimerGetElapsed(w3s_clock) - LoadReal(w3s_lo, h, 4) >= 60.0 then
+            set w3s_npb = w3s_npb - 1  // (no longer on its way to build)
+            set w3s_pb_u[i] = w3s_pb_u[w3s_npb]
+            set w3s_pb_u[w3s_npb] = null
+        elseif GetOwningPlayer(w) == GetOwningPlayer(s) and LoadInteger(w3s_lo, h, 1) == GetUnitTypeId(s) and RAbsBJ(I2R(LoadInteger(w3s_lo, h, 2) - 65536) - GetUnitX(s)) < 320.0 and RAbsBJ(I2R(LoadInteger(w3s_lo, h, 3) - 65536) - GetUnitY(s)) < 320.0 then
+            call SaveInteger(w3s_lo, h, 0, 8)
+            call SaveInteger(w3s_lo, h, 2, GetHandleId(s))
+            set w3s_npb = w3s_npb - 1
+            set w3s_pb_u[i] = w3s_pb_u[w3s_npb]
+            set w3s_pb_u[w3s_npb] = null
+            set w = null
+            return
+        else
+            set i = i + 1
+        endif
+    endloop
+    set w = null
+endfunction
+
 function W3S_OnConstructStart takes nothing returns boolean
     local unit u = GetConstructingStructure()
     call SaveBoolean(w3s_ht, GetHandleId(u), 1, true)
     call W3S_Track(u)
+    if w3s_shadow[GetPlayerId(GetOwningPlayer(u))] then
+        call W3S_ShadowBuilt(u)
+    endif
     call W3S_Ev(2, GetHandleId(u), GetUnitTypeId(u), 0)
     set u = null
     return false
@@ -1927,6 +2164,9 @@ endfunction
 
 function W3S_OnTrainFinish takes nothing returns boolean
     call W3S_Track(GetTrainedUnit())
+    if w3s_shadow[GetPlayerId(GetOwningPlayer(GetTrainedUnit()))] then
+        call SaveReal(w3s_lo, GetHandleId(GetTrainedUnit()), 9, TimerGetElapsed(w3s_clock))
+    endif
     call W3S_Ev(6, GetHandleId(GetTriggerUnit()), GetHandleId(GetTrainedUnit()), GetUnitTypeId(GetTrainedUnit()))
     return false
 endfunction
@@ -1990,14 +2230,37 @@ function W3S_OnItemPickup takes nothing returns boolean
     return false
 endfunction
 
-// an order (or hero skill) of a built-in AI player, recorded for the next observation
+// an order (or hero skill) of a built-in AI player, recorded for the next observation; of an
+// advisor (W3S_ShadowAI) also undone
 function W3S_Issued takes unit u, integer order, integer kind, real x, real y, integer target returns nothing
     local integer p = GetPlayerId(GetOwningPlayer(u))
     local integer k = w3s_niss * 6
-    if p >= bj_MAX_PLAYERS or w3s_agent[p] or w3s_scripted[p] or w3s_niss >= 1300 then
+    if p >= bj_MAX_PLAYERS or w3s_scripted[p] then
         return
     endif
-    if GetPlayerController(Player(p)) != MAP_CONTROL_COMPUTER then
+    if w3s_agent[p] then
+        if not w3s_shadow[p] or w3s_quiet then
+            return
+        endif
+        // the engine's own orders (fullgame.features.DROPPED_ORDERS: a worker going back to its mine or
+        // home with its load, autocasts) are no advice: undone, a harvester was stopped again and again
+        if order == 851974 or order == 852660 or order == 852017 or order == 852020 or order == 852157 or order == 852131 then
+            return
+        endif
+        if HaveSavedReal(w3s_lo, GetHandleId(u), 9) then  // trained this instant: the engine sends it to the rally point
+            if LoadReal(w3s_lo, GetHandleId(u), 9) == TimerGetElapsed(w3s_clock) then
+                call RemoveSavedReal(w3s_lo, GetHandleId(u), 9)
+                return
+            endif
+            call RemoveSavedReal(w3s_lo, GetHandleId(u), 9)
+        endif
+        if kind == 3 or order >= W3S_TYPE_CODE or order == 852082 or order == 852099 or W3S_Builder(u) then
+            call W3S_ShadowUndo(u, order, kind)  // spends, builds, sticks, or stops a building: undone at once
+        else
+            call W3S_ShadowTouch(u)
+        endif
+    endif
+    if w3s_niss >= 1300 or GetPlayerController(Player(p)) != MAP_CONTROL_COMPUTER then
         return
     endif
     set w3s_iss[k] = GetHandleId(u)
@@ -2115,6 +2378,8 @@ function W3S_Init takes nothing returns nothing
     local trigger t
     local region r
     set w3s_ht = InitHashtable()
+    set w3s_lo = InitHashtable()
+    set w3s_un_timer = CreateTimer()
     call W3S_InitHeroAbilities()
     set w3s_group = CreateGroup()
     set w3s_all = CreateGroup()

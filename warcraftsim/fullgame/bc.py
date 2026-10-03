@@ -76,10 +76,15 @@ def sides_of(game: dict, winners: bool = False, max_minutes: float = 0.0) -> tup
     tie); with `max_minutes` only games decided within that many minutes of the start, or of the
     takeover in a takeover game. (As AlphaStar fine-tuned its supervised policy on winning replays:
     on duelfast the policy tied 80-95% of its games and the built-in AI's short wins show it
-    finishing them.)"""
+    finishing them.) The side the built-in AI advised (collect.py --shadow) always counts: its labels
+    are the teacher's in the policy's own states, whoever won."""
     if not winners and not max_minutes:
         return (0, 1)
     meta = game["meta"]
+    sh = meta.get("shadow")
+    if sh:
+        return tuple(sorted({sh["player"], *sides_of({"meta": {k: v for k, v in meta.items() if k != "shadow"}},
+                                                      winners, max_minutes)}))
     if max_minutes:
         seconds = meta.get("game_seconds") or 0.0
         tk = meta.get("takeover")

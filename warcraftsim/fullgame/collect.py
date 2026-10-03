@@ -67,10 +67,61 @@ class Takeover:
             self.bot.accepted(self.sent, obs.command_results[:len(self.sent)])
 
 
-def play_game(g: GameInstance, obs, max_steps: int = 4000, values: dict | None = None, driver: Takeover | None = None) -> dict:
+def command_row(t: int, c) -> tuple | None:
+    """A command a policy gave in step t as a recorded order row (step, unit, order, kind, x, y,
+    target), as the game reports the built-in AI's (Observation.issued); None: not an order."""
+    from ..protocol import Build, ImmediateOrder, LearnSkill, PointOrder, TargetDestructable, TargetOrder, fourcc
+    if isinstance(c, ImmediateOrder):
+        return (t, c.unit, c.order, 0, 0, 0, 0)
+    if isinstance(c, PointOrder):
+        return (t, c.unit, c.order, 1, int(c.x), int(c.y), 0)
+    if isinstance(c, Build):
+        return (t, c.unit, fourcc(c.building), 1, int(c.x), int(c.y), 0)
+    if isinstance(c, TargetOrder):
+        return (t, c.unit, c.order, 2, 0, 0, c.target)
+    if isinstance(c, TargetDestructable):
+        return (t, c.unit, c.order, 2, 0, 0, c.destructable)
+    if isinstance(c, LearnSkill):
+        return (t, c.hero, fourcc(c.ability), 3, 0, 0, 0)
+    return None
+
+
+class Shadow:
+    """A policy (play.BCAgent) plays `player` the whole game while the built-in AI advises it
+    (protocol.ShadowAI): the AI's orders are recorded (the labels) and undone, so every state is
+    the policy's own: on-policy distillation with the built-in AI as the teacher. The policy's
+    accepted orders are kept too ("policy_orders"): the side's features (what it queued, which
+    workers cut lumber) follow what it did, not what the AI advised."""
+
+    def __init__(self, bot, player: int):
+        self.bot, self.player = bot, player
+        bot.repair_builds = True  # (a builder the advisor pulled away resumes with "repair")
+        self.sent: list = []
+        self.t = 0
+        self.orders: list[tuple] = []
+
+    def act(self, obs, t: int) -> list:
+        from ..protocol import ShadowAI
+        self.t = t
+        self.sent = self.bot.act(obs, t)
+        return ([ShadowAI(self.player)] if t == 0 else []) + self.sent
+
+    def after(self, obs) -> None:
+        res = list(obs.command_results)[1 if self.t == 0 else 0:][:len(self.sent)]
+        if self.sent:
+            self.bot.accepted(self.sent, res)
+        for c, ok in zip(self.sent, res):
+            row = command_row(self.t, c) if ok else None
+            if row is not None:
+                self.orders.append(row)
+
+
+def play_game(g: GameInstance, obs, max_steps: int = 4000, values: dict | None = None,
+              driver: Takeover | Shadow | None = None) -> dict:
     """One game from its first observation `obs`; returns the arrays of the .npz. `values` (unit
     type values, fullgame.trace.unit_values): also a trace for the video's panel ("trace").
-    `driver`: a policy plays a side until the built-in AI takes it over (Takeover)."""
+    `driver`: a policy plays a side until the built-in AI takes it over (Takeover), or all game
+    with the built-in AI advising it (Shadow)."""
     from . import features as fx
     from .trace import material, trace_step
     units, heroes, players, events, orders = [], [], [], [], []
@@ -116,6 +167,7 @@ def play_game(g: GameInstance, obs, max_steps: int = 4000, values: dict | None =
     return {"units": as_array(units, len(UNIT_COLS)), "heroes": as_array(heroes, len(HERO_COLS)),
             "players": as_array(players, len(PLAYER_COLS)), "events": as_array(events, 5),
             "orders": as_array(orders, 7), "trees": as_array(trees, 5),
+            **({"policy_orders": as_array(driver.orders, 7)} if isinstance(driver, Shadow) else {}),
             "meta_extra": {"order_names": order_names, "result": result, "steps": t,
                            "game_seconds": obs.game_time},
             **({"trace": {"steps": trace, "gamma": 0.997,
@@ -295,6 +347,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--policy", type=Path, help="takeover games (the torch Python): this policy (a fullgame/bc.py "
                                                 "policy.pt) plays one side until the built-in AI takes it over")
     ap.add_argument("--takeover", default="10-180", help="with --policy: the step the AI takes over at, drawn from this range")
+    ap.add_argument("--shadow", action="store_true", help="with --policy: the policy plays its side all game and "
+                                                          "the built-in AI advises it (protocol.ShadowAI): labels in "
+                                                          "the policy's own states")
     ap.add_argument("--device", default="cpu", help="with --policy: where the policy runs")
     args = ap.parse_args(argv)
     if args.index:
@@ -352,7 +407,9 @@ def main(argv: list[str] | None = None) -> int:
                 "map_file": map_file,
                 "victory": args.victory,
                 "step_seconds": args.step_seconds, **extra}
-        if side >= 0:  # the policy played `side` until step `at` (bc.py: no labels there before it)
+        if side >= 0 and args.shadow:  # the policy played `side` all game, the AI's labels throughout
+            meta["shadow"] = {"player": side, "policy": str(args.policy)}
+        elif side >= 0:  # the policy played `side` until step `at` (bc.py: no labels there before it)
             meta["takeover"] = {"player": side, "step": at, "policy": str(args.policy)}
         tmp = path.with_suffix(".tmp.npz")
         np.savez_compressed(tmp, meta=json.dumps(meta), **data)
@@ -388,7 +445,7 @@ def main(argv: list[str] | None = None) -> int:
                 from .play import BCAgent
                 bot = BCAgent(policy["net"], policy["vocab"], side, policy["device"], costs=policy["costs"])
                 bot.begin(obs, [RACES.index(r) for r in (r0, r1)])
-                driver = Takeover(bot, side, chunk[k][6])
+                driver = Shadow(bot, side) if args.shadow else Takeover(bot, side, chunk[k][6])
             data = play_game(g, obs, values=values if film else None, driver=driver)
             trace = data.pop("trace", None)
             winner, minutes = save(chunk[k], data, time.time() - t0[0])
@@ -397,7 +454,10 @@ def main(argv: list[str] | None = None) -> int:
                 if trace is not None:
                     sides = [{"player": 0, "name": f"built-in AI {d0} ({r0})", "kind": "ai"},
                              {"player": 1, "name": f"built-in AI {d1} ({r1})", "kind": "ai"}]
-                    if side >= 0:
+                    if side >= 0 and args.shadow:
+                        sides[side] = {"player": side, "kind": "agent",
+                                       "name": f"the policy, the AI ({(d0, d1)[side]}) advising ({(r0, r1)[side]})"}
+                    elif side >= 0:
                         sides[side] = {"player": side, "kind": "agent", "name": f"the clone, the AI ({(d0, d1)[side]}) from "
                                                                                 f"{chunk[k][6] * args.step_seconds:.0f} s ({(r0, r1)[side]})"}
                     trace.update(title=f"{args.out.name} · game {i}", sides=sides)
