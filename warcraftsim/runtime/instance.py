@@ -205,6 +205,9 @@ class GameSetup:
     # uses a 960x540 window on 1024x768 (the size replay videos and their overlay assume).
     # Training does not look at the pixels: a small screen saves most of the rendering CPU.
     window: tuple[int, int] = (1024, 768)
+    # Wine's HID, USB and Bluetooth bus drivers (gamepads): off, the game reads no gamepad, and the HID
+    # bus's SDL event loop woke every millisecond in every game
+    device_drivers: bool = False
     scenario: "Scenario | None" = None
     # True: the first agent is the local (user) player instead of a computer slot watched by an
     # observer. Only one slot can be a user in a local game.
@@ -592,6 +595,9 @@ class GameInstance:
                             W3SIM_LOG=_winpath(log_path))
         if self.setup.render_threads is not None:
             env["LP_NUM_THREADS"] = str(self.setup.render_threads)
+        if not self.setup.device_drivers:  # (Plug and Play loads them even with their services disabled)
+            env["WINEDLLOVERRIDES"] += ";winebus.sys,wineusb.sys,winebth.sys=d"
+
         out = open(self.inst_dir / "wine.log", "wb") if self.keep_logs else subprocess.DEVNULL
         self.proc = subprocess.Popen(
             (["nice", "-n", str(self.setup.nice)] if self.setup.nice else [])

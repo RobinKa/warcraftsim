@@ -35,6 +35,12 @@ static DWORD g_wait_floor;
  * woke ~1,300 times a second per game, each a wineserver round trip */
 static volatile DWORD g_main_tid;
 static double g_bg_speed;
+/* While the clock is frozen (the step sync: the game waits for its orders) the background threads' timed
+ * waits block until the clock runs again or what they wait for is signalled, then time out: a frozen
+ * clock cannot reach a timeout. They had polled every 1-5 ms (~130 wakeups a step, each a wineserver
+ * round trip). W3SIM_PARK=0: poll as before. */
+static HANDLE g_thaw; /* manual-reset: signalled while the clock runs */
+static int g_park = 1;
 /* W3SIM_SLOW_WAITS="rva,rva": only waits called from these places in the executable get the cap
  * (some background threads pace the game's turns: capping all of them made a step 10x slower) */
 #define SLOW_MAX 16
@@ -156,12 +162,16 @@ void clock_freeze(int frozen) {
     if (frozen && !a.frozen) {
         a.frozen_at = real_qpc();
         a.frozen = 1;
+        if (g_thaw)
+            ResetEvent(g_thaw);
         anchor_write(&a);
     } else if (!frozen && a.frozen) {
         a.virt0 = virt_at(&a, a.frozen_at);
         a.real0 = real_qpc();
         a.frozen = 0;
         anchor_write(&a);
+        if (g_thaw)
+            SetEvent(g_thaw);
     }
     LeaveCriticalSection(&g_write_lock);
 }
@@ -359,11 +369,39 @@ void clock_report_waits(double secs) {
     }
 }
 
+/* A background thread's timed wait while the clock is frozen: 1 if it should block until the thaw */
+static int parks(DWORD ms) {
+    if (!g_park || !g_thaw || ms == 0 || ms == INFINITE || !g_main_tid || GetCurrentThreadId() == g_main_tid)
+        return 0;
+    Anchor a = anchor_read(NULL);
+    return a.frozen && a.frame_ticks == 0;
+}
+
+/* Wait for n handles (n < MAXIMUM_WAIT_OBJECTS, any of them) or the thaw: the handle's result, or
+ * WAIT_TIMEOUT at the thaw. msg: MsgWaitForMultipleObjects' wake mask (its message result is n). */
+static DWORD park_wait(DWORD n, const HANDLE *h, BOOL alertable, int msg, DWORD mask) {
+    HANDLE all[MAXIMUM_WAIT_OBJECTS];
+    for (DWORD i = 0; i < n; i++)
+        all[i] = h[i];
+    all[n] = g_thaw;
+    DWORD r = msg ? MsgWait_orig(n + 1, all, FALSE, INFINITE, mask)
+                  : WaitForMultipleObjectsEx(n + 1, all, FALSE, INFINITE, alertable);
+    if (r == WAIT_OBJECT_0 + n)
+        return WAIT_TIMEOUT;
+    if (msg && r == WAIT_OBJECT_0 + n + 1)
+        return WAIT_OBJECT_0 + n;
+    return r;
+}
+
 static VOID WINAPI Sleep_hook(DWORD ms) {
     void *ra = __builtin_return_address(0);
     DWORD s = scale_timeout_at(ms, ra);
     wait_stat(ms, s, ra);
     wait_stat_api(W_SLEEP, ms);
+    if (parks(ms)) {
+        park_wait(0, NULL, FALSE, 0, 0);
+        return;
+    }
     Sleep_orig(s);
 }
 static DWORD WINAPI SleepEx_hook(DWORD ms, BOOL alertable) {
@@ -371,6 +409,8 @@ static DWORD WINAPI SleepEx_hook(DWORD ms, BOOL alertable) {
     DWORD s = scale_timeout_at(ms, ra);
     wait_stat(ms, s, ra);
     wait_stat_api(W_SLEEPEX, ms);
+    if (parks(ms))
+        return park_wait(0, NULL, alertable, 0, 0) == WAIT_IO_COMPLETION ? WAIT_IO_COMPLETION : 0;
     return SleepEx_orig(s, alertable);
 }
 static DWORD WINAPI Wfso_hook(HANDLE h, DWORD ms) {
@@ -378,6 +418,8 @@ static DWORD WINAPI Wfso_hook(HANDLE h, DWORD ms) {
     DWORD s = scale_timeout_at(ms, ra);
     wait_stat(ms, s, ra);
     wait_stat_api(W_WFSO, ms);
+    if (parks(ms))
+        return park_wait(1, &h, FALSE, 0, 0);
     return Wfso_orig(h, s);
 }
 static DWORD WINAPI WfsoEx_hook(HANDLE h, DWORD ms, BOOL alertable) {
@@ -385,6 +427,8 @@ static DWORD WINAPI WfsoEx_hook(HANDLE h, DWORD ms, BOOL alertable) {
     DWORD s = scale_timeout_at(ms, ra);
     wait_stat(ms, s, ra);
     wait_stat_api(W_WFSOEX, ms);
+    if (parks(ms))
+        return park_wait(1, &h, alertable, 0, 0);
     return WfsoEx_orig(h, s, alertable);
 }
 static DWORD WINAPI Wfmo_hook(DWORD n, const HANDLE *h, BOOL all, DWORD ms) {
@@ -392,6 +436,8 @@ static DWORD WINAPI Wfmo_hook(DWORD n, const HANDLE *h, BOOL all, DWORD ms) {
     DWORD s = scale_timeout_at(ms, ra);
     wait_stat(ms, s, ra);
     wait_stat_api(W_WFMO, ms);
+    if (!all && n < MAXIMUM_WAIT_OBJECTS && parks(ms))
+        return park_wait(n, h, FALSE, 0, 0);
     return Wfmo_orig(n, h, all, s);
 }
 static DWORD WINAPI MsgWait_hook(DWORD n, const HANDLE *h, BOOL all, DWORD ms, DWORD mask) {
@@ -399,6 +445,8 @@ static DWORD WINAPI MsgWait_hook(DWORD n, const HANDLE *h, BOOL all, DWORD ms, D
     DWORD s = scale_timeout_at(ms, ra);
     wait_stat(ms, s, ra);
     wait_stat_api(W_MSGWAIT, ms);
+    if (!all && n + 1 < MAXIMUM_WAIT_OBJECTS && parks(ms))
+        return park_wait(n, h, FALSE, 1, mask);
     return MsgWait_orig(n, h, all, s, mask);
 }
 
@@ -426,6 +474,9 @@ void clock_install(double speed, DWORD wait_floor) {
         shim_log("warning: some clock imports were not found");
 
     char bg[32];
+    if (GetEnvironmentVariableA("W3SIM_PARK", bg, sizeof bg))
+        g_park = atoi(bg) != 0;
+    g_thaw = CreateEventA(NULL, TRUE, TRUE, NULL);
     if (GetEnvironmentVariableA("W3SIM_BG_SPEED", bg, sizeof bg))
         g_bg_speed = atof(bg);
     char sites[256];
@@ -444,5 +495,6 @@ void clock_install(double speed, DWORD wait_floor) {
     g_base_virt = virt_qpc();
 
     patch_rdtsc();
-    shim_log("clock installed: speed=%.1f wait_floor=%lu background speed=%.1f", a.speed, (unsigned long)wait_floor, g_bg_speed);
+    shim_log("clock installed: speed=%.1f wait_floor=%lu background speed=%.1f park while frozen=%d", a.speed,
+             (unsigned long)wait_floor, g_bg_speed, g_park);
 }

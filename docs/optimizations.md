@@ -34,6 +34,7 @@ flowchart LR
 4. One inference server with CUDA graphs and one GPU wait per round.
 5. The learner's minibatch steps as CUDA graphs: one launch where eager PyTorch made ~2,000.
 6. The games draw nothing: the Direct3D device's draw calls return at once (17% less CPU a step, the same simulation).
+7. While a game waits for its orders its background threads sleep, and Wine's gamepad drivers are not loaded (~22% less CPU a step).
 
 ## What remains
 
