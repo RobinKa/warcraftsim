@@ -37,7 +37,7 @@ TRAIN_KEYS = ("agent_steps", "SPS", "epoch", "uptime", "env/win_rate", "env/loss
               "env/episode_length", "env/n", "loss/policy", "loss/value", "loss/entropy", "loss/kl",
               "loss/old_kl", "loss/clipfrac", "loss/bc", "importance", "perf/rollout", "perf/eval_env", "perf/eval_model",
               "perf/eval_copy", "perf/train", "util/gpu_percent", "util/vram_used_gb", "util/cpu_mem_gb", "time",
-              "loss/ref_kl", "lr")
+              "loss/ref_kl", "lr", "loss/opd", "opd/acc", "opd/steps")
 # per-episode series (rolling means): name -> value of an episode row (None: not recorded)
 EPISODE_SERIES = {
     "win_rate": lambda e: 1.0 if e.get("outcome", 0) > 0 else 0.0,

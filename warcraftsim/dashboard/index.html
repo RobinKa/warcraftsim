@@ -63,8 +63,23 @@ main { padding:14px 18px 40px; overflow:auto; min-height:0; }
 .progress div { height:100%; background:var(--accent); }
 .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(420px,1fr)); gap:12px; }
 .chart { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px 6px; position:relative; }
-.chart h3 { margin:0 0 6px; font-size:12px; font-weight:600; color:var(--muted); display:flex; justify-content:space-between; }
+.chart h3 { margin:0 0 6px; font-size:12px; font-weight:600; color:var(--muted); display:flex; justify-content:space-between; white-space:nowrap; }
+.chart h3 > span { white-space:normal; text-align:right; margin-left:14px; }  /* (a long subtitle wraps, the title does not) */
 .chart .plot { position:relative; }
+/* a panel's controls (log scale, fullscreen): top right, shown on hover; a space kept for them so
+   they never cover the subtitle; a log scale that is on stays shown */
+.chart h3 { padding-right:46px; }
+.chart .ctl { position:absolute; top:7px; right:8px; display:flex; gap:2px; opacity:0; transition:opacity .12s; z-index:6; }
+.chart:hover .ctl, .chart .ctl.keep, .chart.full .ctl { opacity:1; }
+.chart .ctl button { background:transparent; border:1px solid transparent; border-radius:4px; color:var(--muted);
+                     font:600 10px/14px system-ui; padding:1px 4px; cursor:pointer; }
+.chart .ctl button:hover { border-color:var(--line); color:var(--text); }
+.chart .ctl button.on { color:var(--accent); border-color:#4a3c22; }
+.chart.full { position:fixed; inset:14px; z-index:60; display:flex; flex-direction:column; padding:14px 18px 10px;
+              box-shadow:0 0 0 100vmax rgba(5,8,11,.72); }
+.chart.full h3 { font-size:14px; }
+.chart.full .plot { flex:1 1 auto; min-height:0; }
+.chart.full .plot > canvas:not(.overlay) { height:100%; }
 .chart canvas { width:100%; height:210px; display:block; }
 .chart .legend { font-size:11px; color:var(--muted); margin:4px 0 2px; line-height:1.6; }
 .chart .legend span { margin-right:10px; white-space:nowrap; }
@@ -283,7 +298,8 @@ const DASHES = [[], [7, 4], [2, 3], [10, 3, 2, 3], [14, 5], [4, 2, 1, 2], [1, 5]
                 [5, 5], [10, 2, 2, 2, 2, 2], [3, 6, 9, 6], [20, 6]];
 let state = { runs: [], sweeps: [], selected: null, compare: new Set(), data: {}, dataVer: {}, mediaKey: "",
               view: "run", sweep: null };  // view: a run's page, or a sweep's (state.sweep)
-const ui = { smooth: 0.6, hoverX: null, hoverChart: null, charts: {} };
+const ui = { smooth: 0.6, hoverX: null, hoverChart: null, charts: {}, full: null };
+try { ui.logy = new Set(JSON.parse(localStorage.getItem("logy") || "[]")); } catch (e) { ui.logy = new Set(); }
 try { const v = parseFloat(localStorage.getItem("smooth")); if (!Number.isNaN(v)) ui.smooth = v; } catch (e) {}
 // the page's address: /run/<name>, /sweep/<group> or /doc/<name>, and ?tab=…&compare=A,B&smooth=0.8. Each
 // page change is a browser history entry (back and forward work); compared runs and smoothing replace it.
@@ -404,20 +420,30 @@ function drawChart(id) {
   const xr = c.opts.xfit ? null : (ui.xranges || {})[c.opts.axis || "steps"];  // (xfit: data recorded only lately)
   let x0 = xr ? xr[0] : Math.min(...pts.map(p => p[0]));
   let x1 = xr ? xr[1] : Math.max(...pts.map(p => p[0]));
-  // y range without the most extreme 0.5% on either side (a partial last epoch reports huge SPS)
-  const ys = pts.map(p => p[1]).sort((a, b) => a - b), q = k => ys[Math.min(ys.length - 1, Math.max(0, Math.round(k * (ys.length - 1))))];
-  let y0 = c.opts.ymin ?? (ys.length > 50 ? q(0.005) : ys[0]), y1 = c.opts.ymax ?? (ys.length > 50 ? q(0.995) : ys[ys.length - 1]);
+  // y range without the most extreme 0.5% on either side (a partial last epoch reports huge SPS);
+  // on a log scale (the panel's "log"): of the positive values, in decades
+  const logy = ui.logy.has(id), T = logy ? (y => y > 0 ? Math.log10(y) : NaN) : (y => y);
+  const ys = pts.map(p => T(p[1])).filter(Number.isFinite).sort((a, b) => a - b), q = k => ys[Math.min(ys.length - 1, Math.max(0, Math.round(k * (ys.length - 1))))];
+  if (!ys.length) { g.fillStyle = "#8795a3"; g.font = "11px system-ui"; g.fillText("no positive values for a log scale", 12, H / 2); return; }
+  const lim = v => v === undefined || (logy && !(v > 0)) ? undefined : T(v);  // (a minimum of 0: none on a log scale)
+  const ymin = lim(c.opts.ymin), ymax = lim(c.opts.ymax);
+  let y0 = ymin ?? (ys.length > 50 ? q(0.005) : ys[0]), y1 = ymax ?? (ys.length > 50 ? q(0.995) : ys[ys.length - 1]);
   if (x1 === x0) x1 = x0 + 1;
-  if (y1 === y0) { y1 += 1; y0 -= c.opts.ymin !== undefined ? 0 : 1; }
-  const yr = y1 - y0; if (c.opts.ymin === undefined) y0 -= yr * 0.05; if (c.opts.ymax === undefined) y1 += yr * 0.05;
+  if (y1 === y0) { y1 += 1; y0 -= ymin !== undefined ? 0 : 1; }
+  const yr = y1 - y0; if (ymin === undefined) y0 -= yr * 0.05; if (ymax === undefined) y1 += yr * 0.05;
   const X = x => pad.l + (x - x0) / (x1 - x0) * (W - pad.l - pad.r);
-  const Yraw = y => H - pad.b - (y - y0) / (y1 - y0) * (H - pad.t - pad.b);
-  const Y = y => Math.max(pad.t - 2, Math.min(H - pad.b + 2, Yraw(y)));  // clip outliers to the frame
+  const Yraw = v => H - pad.b - (v - y0) / (y1 - y0) * (H - pad.t - pad.b);
+  const Y = y => { const v = T(y); return Number.isFinite(v) ? Math.max(pad.t - 2, Math.min(H - pad.b + 2, Yraw(v))) : H - pad.b + 2; };  // clip outliers to the frame
   g.font = "10px system-ui"; g.strokeStyle = "#2a3440"; g.fillStyle = "#8795a3"; g.lineWidth = 1;
-  for (let i = 0; i <= 4; i++) {
-    const y = y0 + (y1 - y0) * i / 4, py = Math.round(Y(y)) + .5;
+  let ticks = [0, 1, 2, 3, 4].map(i => y0 + (y1 - y0) * i / 4);
+  if (logy && Math.floor(y1) - Math.ceil(y0) >= 1) {  // two or more decades: a line at each (at most 6)
+    const k0 = Math.ceil(y0), k1 = Math.floor(y1), step = Math.ceil((k1 - k0 + 1) / 6);
+    ticks = []; for (let k = k0; k <= k1; k += step) ticks.push(k);
+  }
+  for (const v of ticks) {
+    const py = Math.round(Math.max(pad.t - 2, Math.min(H - pad.b + 2, Yraw(v)))) + .5;
     g.beginPath(); g.moveTo(pad.l, py); g.lineTo(W - pad.r, py); g.stroke();
-    g.fillText(fmt(y), 4, py + 3);
+    g.fillText(fmt(logy ? 10 ** v : v), 4, py + 3);
   }
   for (let i = 0; i <= 4; i++) {
     const x = x0 + (x1 - x0) * i / 4;
@@ -498,9 +524,36 @@ function drawCrosshair(id) {
 
 function drawAllCrosshairs() { for (const id in ui.charts) drawCrosshair(id); }
 
+// a panel over the whole page (its fullscreen button; Esc or the button again closes it)
+function setFull(id) {
+  const prev = ui.full; ui.full = id;
+  for (const k of [prev, id]) {
+    const c = k && ui.charts[k], box = c && c.canvas.closest(".chart"); if (!box) continue;
+    box.classList.toggle("full", k === id);
+    const fs = box.querySelector(".ctl .fs"); if (fs) { fs.textContent = k === id ? "✕" : "⤢"; fs.title = k === id ? "close (Esc)" : "fullscreen (Esc closes)"; }
+  }
+  requestAnimationFrame(() => { for (const k of [prev, id]) if (k && ui.charts[k]) drawChart(k); });
+}
+document.addEventListener("keydown", ev => { if (ev.key === "Escape" && ui.full) setFull(null); });
+
 function registerChart(id, opts) {
   const canvas = document.getElementById(id), overlay = document.getElementById(id + "-ov"), tip = document.getElementById(id + "-tip");
   ui.charts[id] = { canvas, overlay, tip, opts, series: [], geo: null };
+  const box = canvas.closest(".chart");
+  if (box && !box.querySelector(".ctl")) {  // log scale and fullscreen, top right (shown on hover)
+    box.insertAdjacentHTML("beforeend", `<div class="ctl"><button class="lg" title="log scale (y axis)">log</button>` +
+      `<button class="fs" title="fullscreen (Esc closes)">⤢</button></div>`);
+    const ctl = box.querySelector(".ctl"), lg = ctl.querySelector(".lg"), fs = ctl.querySelector(".fs");
+    const showLog = () => { const on = ui.logy.has(id); lg.classList.toggle("on", on); ctl.classList.toggle("keep", on); };
+    showLog();
+    lg.onclick = ev => {
+      ev.stopPropagation();
+      ui.logy.has(id) ? ui.logy.delete(id) : ui.logy.add(id);
+      try { localStorage.setItem("logy", JSON.stringify([...ui.logy])); } catch (e) {}
+      showLog(); drawChart(id);
+    };
+    fs.onclick = ev => { ev.stopPropagation(); setFull(ui.full === id ? null : id); };
+  }
   canvas.addEventListener("mousemove", ev => {
     const geo = ui.charts[id].geo; if (!geo) return;
     const r = canvas.getBoundingClientRect(), mx = ev.clientX - r.left;

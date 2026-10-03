@@ -1,7 +1,7 @@
 // A screenshot of the dashboard (headless Chrome from Playwright's cache, driven over the DevTools
 // protocol; no packages needed), optionally with the mouse over an element:
 //   node scripts/dashboard_shot.mjs "http://localhost:8765/#run=fgself-10&tab=matchups" out.png \
-//        [--wait "#matchups table"] [--hover "#c-win" --index 3] [--width 1500 --height 1000]
+//        [--wait "#matchups table"] [--hover "#c-win" --index 3] [--click "sel1;sel2"] [--width 1500 --height 1000]
 // --hover: a chart's canvas id hovers its restart badges (.mark), any other selector the element.
 import { spawn } from "node:child_process";
 import { readdirSync, writeFileSync } from "node:fs";
@@ -37,6 +37,13 @@ for (let i = 0; i < 120; i++) {  // a big run's first load reads its files (seco
   if (await ev(`!!document.querySelector(${JSON.stringify(wait || ".mark")})`)) break;
 }
 await sleep(1200);
+// --click "sel1;sel2": click these elements in turn (e.g. a panel's buttons), 600 ms apart
+for (const sel of (opt("--click") || "").split(";").filter(Boolean)) {
+  const ok = await ev(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return false;
+    el.scrollIntoView({ block: "center" }); el.click(); return true; })()`);
+  console.log("clicked:", sel, ok);
+  await sleep(600);
+}
 const hover = opt("--hover");
 if (hover) {
   const pos = await ev(`(() => { let el = document.querySelector(${JSON.stringify(hover)}); if (!el) return null;
