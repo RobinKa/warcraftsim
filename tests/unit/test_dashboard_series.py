@@ -46,4 +46,5 @@ def test_docs_list_read_save(tmp_path):
     assert [x["name"] for x in d.list()] == ["overview", "zeta"] and d.list()[1]["title"] == "Zeta"
     assert d.read("zeta")["text"].startswith("# Zeta") and d.read("../zeta") is None and d.read("nope") is None
     assert d.save("new-doc", "# New\n") and d.read("new-doc")["title"] == "New"
+    assert d.save("reference/deep", "# Deep\n") and d.list()[-1]["name"] == "reference/deep"
     assert not d.save("../evil", "x") and not d.save("Upper", "x")

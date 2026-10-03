@@ -207,14 +207,21 @@ a.go:hover { text-decoration:underline; }
 .kv span b { color:var(--text); font-weight:500; }
 .kv span.def { border-style:dashed; }
 /* the Docs view: docs/*.md, listed, rendered, edited in place */
-.topnav button { padding:4px 14px; }
-.docs { display:grid; grid-template-columns:250px minmax(0,1fr); gap:18px; align-items:start; }
+.topnav { margin-left:8px; }
+.topnav button { padding:5px 18px; font-size:13px; }
+body.docs-view .layout { grid-template-columns:1fr; }
+body.docs-view aside, body.docs-view header .right { display:none; }
+body.docs-view main { padding:18px 28px 40px; }
+.md .mermaid { background:#0b0f13; border:1px solid var(--line); border-radius:6px; padding:12px; margin:12px 0; text-align:center; overflow-x:auto; }
+.md .mermaid:not([data-processed]) { white-space:pre; text-align:left; font:12px/1.4 ui-monospace, monospace; color:var(--muted); }
+.docs { display:grid; grid-template-columns:260px minmax(0,1fr); gap:22px; align-items:start; max-width:1500px; }
 .docs .list { position:sticky; top:0; display:flex; flex-direction:column; gap:4px; }
 .docs .list a { display:block; padding:7px 10px; border:1px solid var(--line); border-radius:6px; background:var(--panel); color:var(--text);
                 text-decoration:none; cursor:pointer; }
 .docs .list a:hover { border-color:#4a5868; }
 .docs .list a.on { border-color:var(--accent); background:var(--panel2); }
 .docs .list a small { display:block; color:var(--muted); font-size:11px; margin-top:2px; }
+.docs .list .group { margin:14px 2px 2px; font-size:11px; text-transform:uppercase; letter-spacing:.8px; color:var(--muted); }
 .docs .list button { margin-top:6px; }
 .doc { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:18px 26px 26px; min-width:0; }
 .doc .bar { display:flex; gap:8px; align-items:center; justify-content:flex-end; color:var(--muted); font-size:12px; margin-bottom:6px; }
@@ -474,10 +481,10 @@ async function refreshOnce() {
     try {
       [state.runs, state.sweeps] = await Promise.all([getJSON("/api/runs"), getJSON("/api/sweeps")]);
       renderRuns();
-      if (!ui.docs.editing) {
+      if (!ui.docs.editing) {  // re-drawn only when a document changed (edited elsewhere, or a new one)
         const list = await getJSON("/api/docs"), cur = ui.docs.doc && list.find(d => d.name === ui.docs.doc.name);
         if (cur && cur.updated !== ui.docs.doc.updated) ui.docs.doc = await getJSON("/api/docs/" + encodeURIComponent(cur.name));
-        if (JSON.stringify(list) !== JSON.stringify(ui.docs.list) || cur) { ui.docs.list = list; renderDocs(); }
+        if (JSON.stringify(list) !== JSON.stringify(ui.docs.list)) { ui.docs.list = list; renderDocs(); }
       }
     } catch (e) { console.error(e); }
     document.getElementById("clock").textContent = "updated " + new Date().toLocaleTimeString();
@@ -1572,7 +1579,7 @@ function mdInline(s) {  // escaped text -> inline markdown: code, images, links,
   s = s.replace(/`([^`]+)`/g, (_, c) => { codes.push(c); return `\u0000${codes.length - 1}\u0000`; });
   s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, a, u) => `<img alt="${a}" src="${/^(https?:|\/)/.test(u) ? u : "/docs/" + u}">`);
   s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, txt, u) => {
-    const doc = u.match(/^(?:\.\/|docs\/)?([a-z0-9-]+)\.md(#.*)?$/);  // a link to another document: open it here
+    const doc = u.match(/^(?:\.\.\/|\.\/|docs\/)?((?:reference\/)?[a-z0-9-]+)\.md(#.*)?$/);  // a link to another document: open it here
     return doc ? `<a href="#docs=${doc[1]}" data-doc="${doc[1]}">${txt}</a>` : `<a href="${u}" target="_blank" rel="noopener">${txt}</a>`;
   });
   s = s.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/(^|[^\w*])\*([^*\s][^*]*)\*(?!\w)/g, "$1<i>$2</i>")
@@ -1586,10 +1593,12 @@ function mdToHtml(text) {
   const cells = l => l.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(c => mdInline(c.trim()));
   while (i < lines.length) {
     const l = lines[i];
-    if (/^```/.test(l)) {  // a code block
-      const body = []; i++;
+    if (/^```/.test(l)) {  // a code block (```mermaid: a diagram)
+      const lang = l.slice(3).trim(), body = []; i++;
       while (i < lines.length && !/^```/.test(lines[i])) body.push(lines[i++]);
-      i++; out.push(`<pre><code>${body.join("\n")}</code></pre>`); continue;
+      i++;
+      out.push(lang === "mermaid" ? `<div class="mermaid">${body.join("\n")}</div>` : `<pre><code>${body.join("\n")}</code></pre>`);
+      continue;
     }
     const h = l.match(/^(#{1,4})\s+(.*)$/);
     if (h) { out.push(`<h${h[1].length}>${mdInline(h[2])}</h${h[1].length}>`); i++; continue; }
@@ -1630,6 +1639,23 @@ ui.docs = { list: [], doc: null, editing: false };
 function setNav() {
   document.getElementById("nav-runs").classList.toggle("on", state.view !== "docs");
   document.getElementById("nav-docs").classList.toggle("on", state.view === "docs");
+  document.body.classList.toggle("docs-view", state.view === "docs");  // (no run list, no chart controls)
+  if (state.view !== "docs") for (const id in ui.charts) drawChart(id);  // (sized while hidden)
+}
+// mermaid diagrams (```mermaid blocks): the library loads the first time a document has one; offline the
+// diagram's text shows instead
+let mermaidLoad = null;
+async function renderMermaid(root) {
+  const nodes = [...root.querySelectorAll(".mermaid:not([data-processed])")];
+  if (!nodes.length) return;
+  mermaidLoad = mermaidLoad || new Promise((ok, fail) => {
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js";
+    s.onload = () => { window.mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict",
+                                                   themeVariables: { fontSize: "15px" } }); ok(window.mermaid); };
+    s.onerror = fail; document.head.appendChild(s);
+  });
+  try { await (await mermaidLoad).run({ nodes }); } catch (e) { console.warn("mermaid:", e); }
 }
 async function openDocs(name) {
   state.view = "docs"; setNav();
@@ -1643,7 +1669,10 @@ async function openDocs(name) {
 function renderDocs() {
   const m = document.getElementById("main"); m.dataset.run = "";
   const D = ui.docs, doc = D.doc;
-  const list = D.list.map(d => `<a data-doc="${esc(d.name)}" class="${doc && doc.name === d.name ? "on" : ""}">${esc(d.title)}<small>${esc(d.name)}.md · ${ago(d.updated)}</small></a>`).join("");
+  const item = d => `<a data-doc="${esc(d.name)}" class="${doc && doc.name === d.name ? "on" : ""}">${esc(d.title)}<small>${esc(d.name)}.md · ${ago(d.updated)}</small></a>`;
+  const ref = D.list.filter(d => d.group === "reference");
+  const list = D.list.filter(d => d.group !== "reference").map(item).join("") +
+    (ref.length ? `<div class="group">Reference (the details)</div>` + ref.map(item).join("") : "");
   const body = !doc ? `<div class="empty">no documents yet (docs/*.md)</div>` : D.editing
     ? `<div class="bar"><span class="grow">docs/${esc(doc.name)}.md · markdown</span><span id="docstate"></span><button id="docsave">save</button><button id="doccancel">cancel</button></div><textarea id="doctext" spellcheck="false">${esc(doc.text)}</textarea>`
     : `<div class="bar"><span class="grow">docs/${esc(doc.name)}.md · updated ${ago(doc.updated)}</span><button id="docedit">edit</button></div><div class="md">${mdToHtml(doc.text)}</div>`;
@@ -1669,6 +1698,7 @@ function renderDocs() {
   });
   const ta = document.getElementById("doctext");
   if (ta) ta.addEventListener("keydown", ev => { if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) document.getElementById("docsave").click(); });
+  renderMermaid(m);
 }
 
 function renderCheckpoints(d) {

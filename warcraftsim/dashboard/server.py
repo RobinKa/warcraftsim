@@ -241,9 +241,9 @@ def _binned_columns(xs: list[float], cols: np.ndarray, n: int | None = None) -> 
 MAX_POINTS = 600
 MAX_NOTES = 64 * 1024
 MAX_DOC = 512 * 1024
-DOC_NAME = __import__("re").compile(r"[a-z0-9][a-z0-9-]{0,63}")
-# the Docs tab: docs/*.md, first the ones a reader starts with, then by title
-DOC_ORDER = ("overview", "environments", "road-to-the-real-game", "experiments", "optimizations", "architecture")
+DOC_NAME = __import__("re").compile(r"(reference/)?[a-z0-9][a-z0-9-]{0,63}")
+# the Docs tab: docs/*.md (short, first the ones a reader starts with), then docs/reference/*.md (the details)
+DOC_ORDER = ("overview", "environments", "experiments", "road-to-the-real-game", "optimizations", "architecture")
 
 
 class Docs:
@@ -261,12 +261,14 @@ class Docs:
 
     def list(self) -> list[dict]:
         out = []
-        for f in sorted(self.root.glob("*.md")):
-            text = f.read_text(errors="replace")
-            out.append({"name": f.stem, "title": self.title(text, f.stem), "updated": f.stat().st_mtime,
-                        "bytes": f.stat().st_size, "lines": text.count("\n") + 1})
+        for group, files in (("", self.root.glob("*.md")), ("reference", (self.root / "reference").glob("*.md"))):
+            for f in sorted(files):
+                text = f.read_text(errors="replace")
+                name = f"{group}/{f.stem}" if group else f.stem
+                out.append({"name": name, "group": group, "title": self.title(text, f.stem), "updated": f.stat().st_mtime,
+                            "bytes": f.stat().st_size, "lines": text.count("\n") + 1})
         rank = {n: i for i, n in enumerate(DOC_ORDER)}
-        return sorted(out, key=lambda d: (rank.get(d["name"], len(rank)), d["title"].lower()))
+        return sorted(out, key=lambda d: (d["group"] != "", rank.get(d["name"], len(rank)), d["title"].lower()))
 
     def read(self, name: str) -> dict | None:
         f = self.root / f"{name}.md"
@@ -279,10 +281,11 @@ class Docs:
         """Writes docs/<name>.md (a new document too); the name: lowercase letters, digits, dashes."""
         if not DOC_NAME.fullmatch(name) or len(text) > MAX_DOC:
             return False
-        self.root.mkdir(parents=True, exist_ok=True)
-        tmp = self.root / f".{name}.md.tmp"
+        target = self.root / f"{name}.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(f".{target.name}.tmp")
         tmp.write_text(text)
-        tmp.replace(self.root / f"{name}.md")
+        tmp.replace(target)
         return True
 # train.py options in the order its command line gives them (a command rebuilt for older runs)
 _ARG_ORDER = ("task", "envs", "workers", "timesteps", "step_seconds", "horizon", "minibatch", "replay_ratio",

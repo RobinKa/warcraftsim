@@ -32,7 +32,7 @@ with Wc3Game(GameSetup(map="(2)EchoIsles", slots=[Agent("human"), BuiltinAI("orc
 <p align="center"><img src="docs/media/dashboard-comparison.png" width="900" alt="The training dashboard comparing four runs"></p>
 
 *The training dashboard comparing four runs from the same starting point: with horizon 64 (orange, blue) the return keeps
-rising, with horizon 16 (green, red) it doesn't (see [experiments](docs/experiments.md#the-horizon)).*
+rising, with horizon 16 (green, red) it doesn't (see [experiments](docs/reference/experiment-log.md#the-horizon)).*
 
 ## How it works
 
@@ -206,7 +206,7 @@ Tasks (add more in `tasks.py`; `scripts/baselines.py` measures scripted policies
 
   Scripted policies for baselines and demonstrations (`agents/micro.py`): `noop`, `focus`, `range`, `sticky`, `[base]pull<L>[p<P>]` (pull a hurt unit back below L% hit points, with probability P), `cast<policy>` and `smartcast<policy>` (heroes cast too).
 
-What we found (details, tables and the runs behind them: [docs/experiments.md](docs/experiments.md)):
+What we found (details, tables and the runs behind them: [docs/reference/experiment-log.md](docs/reference/experiment-log.md)):
 * Sweeps made learning much faster: `footmen2` reaches 95% wins in ~1.5 min; on the ability task the tuned settings (horizon 16, λ 0.8, clip 0.3) reach 30% wins after 0.1M steps instead of 0.66M.
 * On the mirror matches, PPO from scratch ends near "let the units fight on their own". Team tactics (focus fire plus pulling hurt units back) don't emerge from random exploration, because either half alone doesn't pay.
 * Starting from a fitted script (behavior cloning) fixes that: PPO keeps the script's tactics and sharpens them (the fitted `pull35`: 58% → 66-73%).
@@ -315,7 +315,7 @@ After micro, the whole melee game (economy, building, tech, armies, heroes), sta
 * **Duel maps** (`data/duelmap.py`, generated on first use):
   * `duel`: 48×48 tiles, two bases 4600 apart (the smallest stock two-player maps are 80×80). The bases copy Echo Isles' main bases (mine distance, a tree wall behind, creep camps away from the bases), so the built-in AI plays as it does there.
   * `duelfast`: hit points and costs halved, build, train and research times cut to a third.
-  * `duelrush`: a faster version of the whole game, games of about 2 minutes. Everything that takes time runs 7× faster: attacks, casts, cooldowns, production, day and night, the gameplay constants that are times, and the waits in the built-in AI's scripts (overriding copies in the map). Movement can't: the engine stops units at 522, so units move 1.3× faster and the map is smaller (40 tiles, bases 3000 apart). Hit points, costs and production times are halved, players start with twice the gold and lumber, and the AI attacks main bases from force level 20 and by night. The mines hold 7 times their gold (at 7 times the income a mine would last 3 minutes). Workers that walk their loads home carry 6.5 times the gold and 4 times the lumber: mining speeds up 7 times but walking only 1.3 times, and without this night elf and undead (whose gold needs no walking) beat human and orc almost always (docs/experiments.md).
+  * `duelrush`: a faster version of the whole game, games of about 2 minutes. Everything that takes time runs 7× faster: attacks, casts, cooldowns, production, day and night, the gameplay constants that are times, and the waits in the built-in AI's scripts (overriding copies in the map). Movement can't: the engine stops units at 522, so units move 1.3× faster and the map is smaller (40 tiles, bases 3000 apart). Hit points, costs and production times are halved, players start with twice the gold and lumber, and the AI attacks main bases from force level 20 and by night. The mines hold 7 times their gold (at 7 times the income a mine would last 3 minutes). Workers that walk their loads home carry 6.5 times the gold and 4 times the lumber: mining speeds up 7 times but walking only 1.3 times, and without this night elf and undead (whose gold needs no walking) beat human and orc almost always (docs/reference/experiment-log.md).
   * The rules (`duelmap.Rules`) go into the map as the game's own unit, upgrade and ability tables with the rules' values (object data made every load 2 s longer), gameplay constants and AI scripts, so they can be dialed back one by one.
 * **Demonstrations** (`fullgame/collect.py`): built-in AI against built-in AI, with every step's state and the orders the AI gave (`GameSetup.record_ai_orders`: the harness records its units' order events). One `.npz` per game. Games of one matchup run in one process, five to a load of the map, each with two players of its own (`--pairs`; see self-play's speed notes); after the fifth the map reloads in the running game (the engine's `RestartGame`), which is faster than a new launch.
 * **Takeover games** (`collect.py --policy runs/bc/<fit>/policy.pt`): a clone plays one side for a random number of steps (`--takeover 10-180`); then the built-in AI takes that side over (`protocol.StartAI`: the harness starts the race's melee AI script for the player mid-game) and its orders are recorded from there. These are demonstrations from states the clone reaches, with the built-in AI as the expert (DAgger's idea). The AI's melee scripts build toward target counts, so they carry on from any state. The clone fell behind in its first seconds (a farm late, a barracks twice) into states the AI's own games never show. BC skips the taken-over side's steps before the takeover.
@@ -431,9 +431,10 @@ What's left, per epoch of 1,664 steps: about 1 s waiting for the games and 0.9 s
 .venv/bin/pytest -m wine         # integration tests: launch real games
 ```
 
-See [docs/overview.md](docs/overview.md) for where things stand and the other documents: [environments](docs/environments.md),
-[the road to the real game](docs/road-to-the-real-game.md), [experiments](docs/experiments.md), [optimizations](docs/optimizations.md)
-and [architecture](docs/architecture.md) (design notes, limits and what is known about the engine). The dashboard's Docs tab shows and edits them.
+Short documents (a minute each, the dashboard's Docs tab shows and edits them): [overview](docs/overview.md),
+[environments](docs/environments.md), [experiments](docs/reference/experiment-log.md), [the road to the real game](docs/road-to-the-real-game.md),
+[optimizations](docs/optimizations.md), [architecture](docs/architecture.md). The details behind them:
+[experiment log](docs/reference/experiment-log.md), [engine notes](docs/reference/engine-notes.md), [optimization log](docs/reference/optimization-log.md).
 
 ## License
 
