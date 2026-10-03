@@ -30,5 +30,6 @@ The clone, `fgself-8`, `fgself-9` and `fgself-10` played `duelrush`. `fgself-11`
 |---|---|
 | Games between agents had no heroes for 9 runs | a scripted reset was not a new game. The engine kept counting removed heroes. |
 | The `duelrush` policy kept rush habits on `duelfast` | its KL term held it to the rush policy |
-| `duelfast` games end in ties | the policy banks its money and does not attack to win |
+| `duelfast` curriculum games end in ties | the policy banks its money and does not attack to win |
+| The curriculum hid a slow opening | the taxed AI had 7 food at one minute; the real AI has 21 against the policy's 15 |
 | RL lowers the chance of production and hero orders | all units of a step share one advantage, so rare orders get noisy credit |

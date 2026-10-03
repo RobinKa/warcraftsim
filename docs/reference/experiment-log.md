@@ -863,6 +863,33 @@ The tax cuts the AI to 7 food at one minute, so the curriculum hides the policy'
 
 `fgself-12` goes on from 17.77M steps with it as the KL anchor and its data as the cloning loss (`--bc-winners 1 --bc-max-minutes 6`). The cloning data also gets takeover games from `fgself-12`'s own states, with the AI taking over at 0.5–5 minutes, before the real games are lost (`demos-fast-takeover-12`).
 
+After the switch (17.77M to 21.0M steps, 1.5 hours): curriculum games won 9% → 24%, tied 83% → 69%. The real game: still no win in 46 games, but games lasted 9.7 minutes instead of 7.6 and the policy killed 12 units a game instead of 7.5. The chance of the AI's hero orders: 6.3% (the old clone 7.8%, `fullgame-fast-win6` 8.6%), basic units 30% (39%, 39%). The takeover collection ended with 600 games: 512 taken over (the rest lost before the takeover), 102 won by the taken-over side within 6 minutes of it. From 21.0M steps the cloning loss reads all 600.
+
+### The built-in AI as an advisor (shadow games)
+
+Takeover games label only the states after the takeover, and they soon become the AI's states. On-policy distillation asks the teacher for a label in every state the student reaches. The built-in AI is a script, not a function, so it cannot be asked. In a shadow game it plays the policy's player too: the harness records its orders as labels and undoes them (`protocol.ShadowAI`, `collect.py --shadow`).
+
+| undo | how |
+|---|---|
+| training, research | cancelled when they were paid for (the player's resources before and after the order) |
+| build orders, orders to the agent's builders | the agent's last order again, at once |
+| a hero skill | unlearned, the point back |
+| town bell, burrows | switched off |
+| any other order | stands until the step ends; then the agent's last order again, before the observation |
+| the engine's own (a worker going back to its mine, autocasts), a trained unit's rally | not touched |
+
+Each version against the same 16 games without the advisor (`fgself-12` at 20.9M, `duelfast`, normal and insane AI):
+
+| version | food at 1 min | food at 2 min | gathered by 2 min | what was wrong |
+|---|---|---|---|---|
+| no advisor | 16.6 | 26.4 | 1,412 | |
+| undo everything at once | 12.7 | 18.2 | 1,266 | units the AI ordered every tick lost their attack swings: 78 deaths by 2 minutes, not 51 |
+| other orders undone at the step | 15.9 | 20.5 | 1,284 | human buildings finished: 1.2 a game, not 4.2. The AI pulled builders away. |
+| builders undone at once | 14.4 | 19.5 | 1,262 | the restored builder's order is "repair", so the policy gave it another order |
+| the policy keeps repairing builders | **17.4** | **25.7** | **1,402** | |
+
+The labels cover 5.9% of unit-steps (the AI's own games: 3.5%), 770 train or research orders and 816 build orders in the 16 games. `demos-fast-shadow-12`: 800 games from `fgself-12` at 23.7M steps.
+
 ### Where a self-play step's time goes (speed, 2026-09-30)
 
 `fgself-9` ran at 560 agent steps/s with 32 games. A game thread spent 55% of its time waiting for the policy and 36% for the game. After this round the learner is the limit with the machine's CPU close behind, and it runs at about 840 steps/s with whole games, five to a load of the map (607 before the reset fix, when half the games were the cheap broken ones).
