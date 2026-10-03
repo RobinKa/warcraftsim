@@ -865,6 +865,8 @@ The tax cuts the AI to 7 food at one minute, so the curriculum hides the policy'
 
 After the switch (17.77M to 21.0M steps, 1.5 hours): curriculum games won 9% → 24%, tied 83% → 69%. The real game: still no win in 46 games, but games lasted 9.7 minutes instead of 7.6 and the policy killed 12 units a game instead of 7.5. The chance of the AI's hero orders: 6.3% (the old clone 7.8%, `fullgame-fast-win6` 8.6%), basic units 30% (39%, 39%). The takeover collection ended with 600 games: 512 taken over (the rest lost before the takeover), 102 won by the taken-over side within 6 minutes of it. From 21.0M steps the cloning loss reads all 600.
 
+**After 50 minutes of distillation** (24.13M → 25.65M steps): the real game (never advised) 13 of 50 won (26%: easy 5 of 14, normal 7 of 18, insane 1 of 18; before: 1 of 98), 6% ties, 8.5 minutes a game, food at one minute 19.0 against 21.6. Unadvised curriculum games 82% won with the AI's tax falling 0.84 → 0.60; unadvised self-play 13% ties (82% before). The policy agrees with the advisor's order 59% of the time; its KL per update 0.003, its distance to the anchor 0.006.
+
 ### The built-in AI as an advisor (shadow games)
 
 Takeover games label only the states after the takeover, and they soon become the AI's states. On-policy distillation asks the teacher for a label in every state the student reaches. The built-in AI is a script, not a function, so it cannot be asked. In a shadow game it plays the policy's player too: the harness records its orders as labels and undoes them (`protocol.ShadowAI`, `collect.py --shadow`).
