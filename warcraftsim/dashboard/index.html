@@ -1123,11 +1123,12 @@ function renderMain() {
   const outc = e => `<td class="${e.outcome > 0 ? "win" : e.outcome < 0 ? "loss" : ""}">${e.outcome > 0 ? "win" : e.outcome < 0 ? "loss" : "draw"}</td>`;
   if (info.trainer === "fullgame") {  // whole games: who against whom, and what each side made
     const two = (a, b, dg = 0) => `${a == null ? "–" : fmt(a, dg)} / ${b == null ? "–" : fmt(b, dg)}`;
-    document.getElementById("episodes").innerHTML = d.recent_episodes.length ? `<table><tr><th>#</th><th>opponent</th><th>race</th><th>outcome</th><th>return</th><th>game time</th>
+    document.getElementById("episodes").innerHTML = d.recent_episodes.length ? `<table><tr><th>#</th><th>opponent</th><th>races (learner vs opponent)</th><th>outcome</th><th>return</th><th>game time</th>
         <th>material lead</th><th>army (learner / opponent)</th><th>heroes</th><th>kills / losses</th><th>gold / lumber</th><th>when</th></tr>` +
       d.recent_episodes.map(e => { const p = e.prod || {}, o = e.opp_prod || {};
-        const opp = esc(e.opponent) + (e.ai_tax ? ` <small>taxed ${(100 * e.ai_tax).toFixed(0)}%</small>` : e.ai_delay ? ` <small>${fmt(e.ai_delay, 0)} s late</small>` : "");
-        return `<tr><td>${e.episode}</td><td>${opp}</td><td>${esc(e.race || "")}</td>${outc(e)}<td>${fmt(e.return, 3)}</td><td>${e.game_time ? e.game_time.toFixed(1) + "s" : "–"}</td>
+        const opp = esc(e.opponent) + (e.ai_tax ? ` <small>taxed ${(100 * e.ai_tax).toFixed(0)}%</small>` : e.ai_delay ? ` <small>${fmt(e.ai_delay, 0)} s late</small>` : "")
+          + (e.advised ? ` <small title="the built-in AI advised the learner (on-policy distillation)">advised</small>` : "");
+        return `<tr><td>${e.episode}</td><td>${opp}</td><td>${esc(e.race || "")} <small>vs</small> ${esc(e.opponent_race || "–")}</td>${outc(e)}<td>${fmt(e.return, 3)}</td><td>${e.game_time ? e.game_time.toFixed(1) + "s" : "–"}</td>
           <td>${fmt(e.material_lead, 2)}</td><td>${two(p.army, o.army)}</td><td>${two(p.heroes, o.heroes)}</td><td>${two(p.kills, p.lost)}</td><td>${two(e.gold, p.lumber)}</td><td>${ago(e.time)}</td></tr>`; }).join("") +
       `</table>` : `<div class="empty">no episodes yet</div>`;
   } else
