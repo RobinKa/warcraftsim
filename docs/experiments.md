@@ -834,7 +834,9 @@ The clone, `fullgame-fast-1` (3 epochs, 46 minutes): validation loss 2.48 → 2.
 * **The curriculum stood still**: a tie left a level where it was, so with 78% ties the AI's tax stayed at 0.67 for an hour. `--curriculum-tie 0.5` (a tie raises a level by half a loss's step, from 10.3M): the levels rose from 0.72 to 0.88 on average (26 of 48 at the most) in an hour; the curriculum games won only 4% at a tax of 0.76.
 * **It does not spend.** It ended games holding ~3,600–3,800 gold and lumber (the AI ~800), gathered 40% less gold than the AI with half again as many workers, and trained fewer basic units than the AI (21.7 footmen against 33.7, 22.7 ghouls against 35.4) but more supply buildings (1.7 times) and some high-tech units. Its material shaping counts units and buildings but not what is held, so spending was already rewarded.
 
-Open for the next session: why it holds its resources (production buildings saturated? the train decisions' rates?), a penalty on resources held, and whether the tie-heavy curriculum games teach anything at all.
+**Why it holds its resources** (`scripts/production_probe.py`: games on the CPU, the policy's production buildings looked at every step). Its barracks (and ancients of war, crypts, the great hall) were busy 23–42% of the time and idle with something affordable 50–75%; there the policy trained in 4–9% of the steps. The clone `fullgame-fast-1` was the same: the built-in AI keeps its production queued, so its games hardly show an idle barracks with money in the bank, and the clone did not learn what to do there. The KL term (×0.2) then held the policy to the clone's rate: from 5% to 50% at such a building is ~0.8 nats a step, against a few hundredths of shaping reward for the unit it buys.
+
+From 13.0M steps `fgself-12` goes on with the held gold and lumber counted against the shaping's potential (`--float-penalty 0.5`: spending is credited at the order, not ~14 steps later when the unit appears, half the credit after GAE's lambda) and the KL term ×0.05.
 
 ### Where a self-play step's time goes (speed, 2026-09-30)
 
