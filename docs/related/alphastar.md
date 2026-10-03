@@ -43,7 +43,21 @@ RL: actor-critic with V-trace, TD(λ) and UPGO, a new self-imitation update.
 |---|---|---|
 | start | 971,000 human replays | the built-in AI's games |
 | anchor | KL to the supervised policy | the same |
+| fine-tune on wins | winning replays with MMR above 6,200 | the winners of games decided within 6 minutes |
 | league | main agents, exploiters, PFSP | the same idea, with one optional main exploiter |
 | actions | one command for selected units, with a delay | an order for every unit, every half second |
 | inputs | units, minimap, scalars | units and scalars, no map |
 | compute | 12 agents × 32 TPUs × 44 days | one RTX 3090 and 16 cores |
+
+## Changing the anchor
+
+AlphaStar keeps its anchor for the whole run. Exploiters restart from the supervised policy. Main agents never restart. Other work moves the anchor:
+
+| work | how the anchor moves |
+|---|---|
+| DeepNash (Stratego, 2022, [2206.15378](https://arxiv.org/abs/2206.15378)) | After each phase, the policy becomes the new anchor. The change is gradual over the next phase. |
+| ProRL (language models, 2025, [2505.24864](https://arxiv.org/abs/2505.24864)) | When the KL term dominates the loss, the anchor becomes a recent policy. |
+| TR-DPO (language models, 2024, [2404.09656](https://arxiv.org/abs/2404.09656)) | The anchor follows the policy: a moving average, or a copy at intervals. |
+| PPO, TRPO | The anchor is the last policy, at every update. |
+
+`fgself-12` changed its anchor to a better clone, not to itself. Its distance to the new anchor stayed at 0.002–0.004 a unit, the same as to the old one.
