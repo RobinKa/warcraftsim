@@ -70,6 +70,19 @@ A run's page re-read and re-binned all its episodes on every refresh: 4.5 s for 
 * One autocast region per minibatch and losses without GPU syncs (masked means): the same losses to the digit; no measurable change in seconds per update (3.64 and 4.54 s against 3.79 and 3.81 s: the noise of the demonstration loader).
 * bf16 against fp32 on one real batch (CPU): KL between the order distributions 3e-6 (max 8e-4), log-probability differences 7e-4 (max 0.09), the gradient's cosine 1.000.
 
+## The learner as CUDA graphs (2026-10-03, `fgself-12`)
+
+`GraphedUpdate` captures a minibatch's whole step once per shape (entities padded to 32, 48, 64, 96, 128 or 160; the cloning batch alike; minibatches of 16 sequences of 16 steps) and replays it. First the update lost its GPU syncs (masked means, not boolean indexing; one autocast region per minibatch); a capture warms up on a side stream and puts the weights and Adam's state back.
+
+| | eager | graphed |
+|---|---|---|
+| alone, no cloning loss (dropout off: the same losses to 3-4 digits) | 2.35 s | 1.53 s |
+| alone, the run's settings | 3.35 s | ~2.3 s |
+| in the run, next to 32 games | ~9.5 s | ~5.0 s |
+| the run's steps/s | ~800 | ~950-1,100 |
+
+The steps/s rose more than the learner's freed CPU: the trajectory queue holds one batch, so the actors had waited for the slow updates. Now the learner waits 2-3 s an update for data.
+
 ## Dead ends
 
 * 8 actor processes of 4 games instead of 4 of 8 (627 against 644 steps/s).
