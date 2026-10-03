@@ -567,6 +567,53 @@ def test_inference_server_answers_each_game_over_its_pipe(tmp_path):
             server.terminate()
 
 
+def test_inference_server_through_shared_rows(tmp_path):
+    """The view steps and answers through shared memory (SharedRows), not pickled: a game's two sides
+    in its rows, the same values (and memory states) as a direct call."""
+    import os
+    import torch.multiprocessing as mp
+    from warcraftsim.fullgame.model import FullGameNet
+    from warcraftsim.fullgame.selfplay import Inference, RemoteInference, SharedRows, inference_main, publish
+    torch.manual_seed(0)
+    net = FullGameNet(n_types=20, n_cur=10, n_orders=30, G=30, d=64, layers=1, memory=True).eval()
+    net.allowed[:] = True
+    torch.nn.init.normal_(net.mem_out.weight, std=0.3)
+    publish(net, 5, tmp_path)
+    past = tmp_path / "past.pt"
+    torch.save({"model": net.state_dict(), "config": net.config}, past)
+    spec = SharedRows(str(tmp_path / "rows"), 4, 30, 30, 64, create=True).spec
+    ctx = mp.get_context("spawn")
+    pipes = [ctx.Pipe() for _ in range(2)]
+    stop = ctx.Event()
+    cfg = {"run_dir": str(tmp_path), "device": "cpu", "learner_pid": os.getpid(), "infer_batch": 8, "compile": False,
+           "max_past": 2, "shared_rows": spec}
+    server = ctx.Process(target=inference_main, args=(cfg, [b for _, b in pipes], stop), daemon=True)
+    server.start()
+    try:
+        infer = RemoteInference([a for a, _ in pipes], SharedRows(*spec), [0, 2])
+        direct = Inference(None, torch.device("cpu"), 8, compile_=False, thread=False)
+        rng = np.random.default_rng(0)
+
+        def st(n, own, h):
+            return {"n": n, "n_own": own, "ent": rng.normal(size=(n, fx.F)).astype(np.float32),
+                    "type": rng.integers(1, 20, n), "cur": rng.integers(0, 10, n),
+                    "glob": rng.normal(size=30).astype(np.float32), "avail": None,
+                    "h": rng.normal(size=64).astype(np.float32) if h else None}
+        for n in (9, 4, 12):  # (fewer entities than the last time too: the rows' leftovers must not count)
+            sts = [st(n, min(4, n), True), st(n - 2, 2, False)]
+            out = infer.request([("current", sts[0]), (str(past), sts[1])])
+            want = direct._finish(direct._launch(net, sts))
+            assert [len(r["order"]) for r in out] == [min(4, n), 2] and [r["version"] for r in out] == [5, -1]
+            for r, w in zip(out, want):
+                assert abs(r["value"] - w["value"]) < 1e-5 and abs(r["entropy"] - w["entropy"]) < 1e-4
+                assert r["h"].shape == (64,) and np.abs(r["h"] - w["h"]).max() < 1e-5
+    finally:
+        stop.set()
+        server.join(timeout=20)
+        if server.is_alive():
+            server.terminate()
+
+
 @pytest.mark.parametrize("memory", [False, True])
 def test_packed_network_call_matches_evaluate(memory):
     """The actors' network call packs a batch into one tensor (and its outputs into one): the

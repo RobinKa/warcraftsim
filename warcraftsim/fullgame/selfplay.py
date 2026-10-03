@@ -128,12 +128,13 @@ class Inference:
     """Batches the network calls of an actor's agents (one per game side) on the GPU."""
 
     def __init__(self, nets: Nets, device, max_batch: int, compile_: bool = True, buckets: tuple[int, ...] | None = None,
-                 thread: bool = True, entities: tuple[int, ...] = (fx.MAX_ENT,)):
+                 thread: bool = True, entities: tuple[int, ...] = (fx.MAX_ENT,), shared: "SharedRows | None" = None):
         """`buckets`: the batch sizes its compiled calls pad to (the smallest that fits; default: just
         max_batch); `entities`: likewise the entity counts (a call padded 4 rows of ~47 entities to
         16 x 160: ~50 times the attention). `thread` False: no batching thread of its own (the
         inference server calls _forward)."""
         self.nets, self.device, self.max_batch = nets, device, max_batch
+        self.shared = shared  # view steps given as {"n", "n_own", "row"}: their rows there
         self.buckets = tuple(sorted(buckets or (max_batch,)))
         self.entities = tuple(sorted(set(entities) | {fx.MAX_ENT}))
         self._hosts: dict[tuple, torch.Tensor] = {}
@@ -242,7 +243,7 @@ class Inference:
         fixed = self.compile and bucket is not None
         widest = max(st["n"] for st in sts)
         B, E = (bucket, next(e for e in self.entities if widest <= e)) if fixed else (len(sts), widest)
-        G, NO, d = len(sts[0]["glob"]), net.config["n_orders"], net.config["d"] if net.memory else 0
+        G, NO, d = net.config["G"], net.config["n_orders"], net.config["d"] if net.memory else 0
         W = E * (fx.F + 3) + G + 1 + NO + d
         pinned = fixed and self.device.type == "cuda"
         if pinned:  # the same shapes every call: pinned host buffers, reused (a round's calls each their own)
@@ -264,14 +265,27 @@ class Inference:
         n_own, avail, hs = hb[:, a], hb[:, a + 1:a + 1 + NO], hb[:, a + 1 + NO:]
         avail[:] = 1.0
         mask[:, 0] = 1.0  # (padding rows: one entity, or attention over nothing gives NaNs)
-        for i, st in enumerate(sts):
-            n = st["n"]
-            ent[i, :n], typ[i, :n], cur[i, :n], mask[i, :n] = st["ent"], st["type"], st["cur"], 1.0
-            glob[i], n_own[i] = st["glob"], min(st["n_own"], fx.MAX_OWN)
-            if st.get("avail") is not None:
-                avail[i] = st["avail"]
-            if d and st.get("h") is not None:  # (none: the game's start, zeros)
-                hs[i] = st["h"]
+        if self.shared is not None and "row" in sts[0]:  # the rows gathered at once (zeros past each's entities)
+            sh, R = self.shared, len(sts)
+            idx = np.fromiter((st["row"] for st in sts), np.int64, R)
+            ns = np.fromiter((st["n"] for st in sts), np.int64, R)
+            keep = np.arange(E)[None, :] < ns[:, None]
+            mask[:R] = keep
+            ent[:R] = sh.ent[idx, :E] * keep[..., None]
+            typ[:R], cur[:R] = sh.typ[idx, :E] * keep, sh.cur[idx, :E] * keep
+            glob[:R], avail[:R] = sh.glob[idx], sh.avail[idx]
+            n_own[:R] = np.minimum(sh.n_own[idx], fx.MAX_OWN)
+            if d:
+                hs[:R] = sh.h[idx, :d]
+        else:
+            for i, st in enumerate(sts):
+                n = st["n"]
+                ent[i, :n], typ[i, :n], cur[i, :n], mask[i, :n] = st["ent"], st["type"], st["cur"], 1.0
+                glob[i], n_own[i] = st["glob"], min(st["n_own"], fx.MAX_OWN)
+                if st.get("avail") is not None:
+                    avail[i] = st["avail"]
+                if d and st.get("h") is not None:  # (none: the game's start, zeros)
+                    hs[i] = st["h"]
         own = n_own[:len(sts)].astype(np.int64)
         if pinned:  # queued one behind the other: the input in, the graph, its output out (before it runs again)
             x, graph, packed = self._graph(net, host)
@@ -299,6 +313,16 @@ class Inference:
                 done.synchronize()
         self._used.clear()
 
+    def _finish_shared(self, handle: tuple, rows: list[int], version: int) -> list[tuple]:
+        """A call's answers into its rows of the shared memory: [(version, O, memory width)] per row."""
+        out, own, O, memory = handle
+        p = out.numpy() if out.device.type == "cpu" else out.cpu().numpy()
+        R, sh = len(rows), self.shared
+        idx = np.asarray(rows, np.int64)
+        sh.out[idx, :p.shape[1]] = p[:R]
+        width = p.shape[1] - 5 * O - 2 if memory else 0
+        return [(version, O, width)] * R
+
     def _finish(self, handle: tuple) -> list[dict]:
         out, own, O, memory = handle
         p = out.cpu().numpy()
@@ -316,6 +340,50 @@ class Inference:
 ST_FIELDS = ("ent", "type", "cur", "glob", "n", "n_own", "avail", "h")  # what a network call needs of a view step
 
 
+class SharedRows:
+    """The games' requests to the inference server and its answers in shared memory (a file in
+    /dev/shm, mapped by each process): a game writes its sides' view steps into rows of its own and
+    sends only their numbers; the server gathers a call's rows with a few index operations and writes
+    the answers back the same way. (Pickled through the pipes they were ~18% of the server's time and
+    ~11% of an actor's, and the server copied its inputs in row by row.) A row is written before its
+    message is sent and read after it arrives: the pipe orders them."""
+
+    def __init__(self, path: str, rows: int, G: int, NO: int, d: int, create: bool = False):
+        E, F, O = fx.MAX_ENT, fx.F, fx.MAX_OWN
+        layout = [("ent", (rows, E, F)), ("typ", (rows, E)), ("cur", (rows, E)), ("glob", (rows, G)), ("n_own", (rows,)),
+                  ("avail", (rows, NO)), ("h", (rows, max(d, 1))), ("out", (rows, 5 * O + 2 + max(d, 1)))]
+        size = sum(int(np.prod(shape)) for _, shape in layout)
+        if create:
+            with open(path, "wb") as f:
+                f.truncate(4 * size)
+        self.mm = np.memmap(path, dtype=np.float32, mode="r+", shape=(size,))
+        at = 0
+        for name, shape in layout:
+            n = int(np.prod(shape))
+            setattr(self, name, self.mm[at:at + n].reshape(shape))
+            at += n
+        self.spec = (path, rows, G, NO, d)
+
+    def write(self, r: int, st: dict) -> None:
+        """A view step into row r (an actor's game)."""
+        n = st["n"]
+        self.ent[r, :n], self.typ[r, :n], self.cur[r, :n] = st["ent"], st["type"], st["cur"]
+        self.glob[r], self.n_own[r] = st["glob"], st["n_own"]
+        self.avail[r] = st["avail"] if st.get("avail") is not None else 1.0
+        h = st.get("h")
+        self.h[r, :len(h) if h is not None else self.h.shape[1]] = h if h is not None else 0.0
+
+    def answer(self, r: int, n_own: int, info: tuple) -> dict:
+        """Row r's answer (an actor's game): info (version, O, memory) from the server."""
+        version, O, memory = info
+        p, o = self.out[r], min(n_own, fx.MAX_OWN, O)
+        res = {k: p[i * O:i * O + o].astype(np.int64) for i, k in enumerate(("order", "tgt", "bx", "by"))}
+        res.update(logp=np.array(p[4 * O:4 * O + o]), value=float(p[5 * O]), entropy=float(p[5 * O + 1]), version=version)
+        if memory:
+            res["h"] = np.array(p[5 * O + 2:5 * O + 2 + memory])
+        return res
+
+
 class RemoteInference:
     """An actor's side of the inference server (inference_main): the same request() as Inference, the
     calls made in one process for all the actors' games. Every game thread has a pipe of its own to
@@ -323,8 +391,11 @@ class RemoteInference:
     server's call 4.5 of them: a feeder thread and a shared lock on the way in, a feeder, a reader
     thread and an event on the way back, each a wait for some process's GIL.)"""
 
-    def __init__(self, conns: list):
-        self.free = list(conns)
+    def __init__(self, conns: list, shared: SharedRows | None = None, rows: list[int] | None = None):
+        """`shared`, `rows`: the view steps go through shared memory, each pipe's game in rows of its own
+        (rows[i]: the first of conns[i]'s two)."""
+        self.free = list(zip(conns, rows or [0] * len(conns)))
+        self.shared = shared
         self.lock = threading.Lock()
         self.local = threading.local()
         self.nets = types.SimpleNamespace(version=-1)  # (the version the server answered with last)
@@ -333,15 +404,25 @@ class RemoteInference:
         loc = self.local
         if not hasattr(loc, "conn"):
             with self.lock:
-                loc.conn, loc.rid = self.free.pop(), 0
+                (loc.conn, loc.row), loc.rid = self.free.pop(), 0
         loc.rid += 1
-        loc.conn.send((loc.rid, [(key, {f: st.get(f) for f in ST_FIELDS}) for key, st in items]))
+        sh = self.shared
+        if sh is not None:  # (a game's two sides at most: its two rows)
+            assert len(items) <= 2
+            for k, (_, st) in enumerate(items):
+                sh.write(loc.row + k, st)
+            loc.conn.send((loc.rid, [(key, st["n"], int(st["n_own"]), loc.row + k) for k, (key, st) in enumerate(items)]))
+        else:
+            loc.conn.send((loc.rid, [(key, {f: st.get(f) for f in ST_FIELDS}) for key, st in items]))
         while True:
             if not loc.conn.poll(300):
                 raise RuntimeError("no answer from the inference server for 5 minutes")
             rid, out = loc.conn.recv()
             if rid == loc.rid:  # (not the answer to a request this thread gave up on)
                 break
+        if sh is not None:
+            out = [None if info is None else sh.answer(loc.row + k, int(items[k][1]["n_own"]), info)
+                   for k, info in enumerate(out)]
         for res in out:
             if res is not None and res.get("version", -1) >= 0:
                 self.nets.version = res["version"]
@@ -452,9 +533,11 @@ def inference_main(cfg: dict, conns: list, stop) -> None:
         time.sleep(1)
         nets.reload()
     top = cfg["infer_batch"]
+    shared = SharedRows(*cfg["shared_rows"]) if cfg.get("shared_rows") else None
     infer = Inference(nets, device, top, cfg["compile"], buckets=tuple(b for b in (8, 24, 64) if b <= top) or (top,),
-                      thread=False, entities=(48, 96))
-    past = Inference(nets, device, 16, cfg["compile"], buckets=(4, 16), thread=False, entities=(64,))  # past snapshots: few calls
+                      thread=False, entities=(48, 96), shared=shared)
+    past = Inference(nets, device, 16, cfg["compile"], buckets=(4, 16), thread=False, entities=(64,),
+                     shared=shared)  # past snapshots: few calls
     swap = PastNet(device, slots=cfg.get("infer_past_slots", 1))
     streams = {} if cfg.get("infer_streams", 0) else None
     def fresh():
@@ -496,7 +579,11 @@ def inference_main(cfg: dict, conns: list, stop) -> None:
                 live.remove(c)
                 continue
             asked[c] = (rid, [None] * len(items))
-            for k, (key, st) in enumerate(items):
+            for k, item in enumerate(items):
+                if len(item) == 4:  # (key, entities, own units, its row in the shared memory)
+                    key, st = item[0], {"n": item[1], "n_own": item[2], "row": item[3]}
+                else:
+                    key, st = item
                 groups.setdefault(key, []).append((c, k, st))
         calls, used = launch_round(groups, nets, infer, past, swap, top, streams)  # all started before the one wait
         for fwd, _, part, _ in calls:
@@ -511,14 +598,20 @@ def inference_main(cfg: dict, conns: list, stop) -> None:
         past.wait(used or None)
         stats["wait"] += time.time() - t_wait
         for fwd, handle, part, version in calls:
+            rows = [st.get("row") for _, _, st in part]
             try:
-                results = fwd._finish(handle) if handle is not None else [None] * len(part)
+                if handle is None:
+                    results = [None] * len(part)
+                elif rows[0] is not None:  # the answers in the shared memory: (version, O, memory width) each
+                    results = fwd._finish_shared(handle, rows, version)
+                else:
+                    results = fwd._finish(handle)
+                    for res in results:
+                        res["version"] = version
             except Exception:  # noqa: BLE001
                 traceback.print_exc()
                 results = [None] * len(part)
             for (c, k, _), res in zip(part, results):
-                if res is not None:
-                    res["version"] = version
                 asked[c][1][k] = res
         for c, answer in asked.items():
             try:
@@ -979,7 +1072,9 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
     try:
         if conns is not None:  # the inference server makes the network calls (no GPU context here)
             sys.setswitchinterval(0.001)  # (a game thread woken by its answer waits for the GIL: 5 ms by default)
-            infer = RemoteInference(conns)
+            shared = SharedRows(*cfg["shared_rows"]) if cfg.get("shared_rows") else None
+            per = cfg["games_per_actor"]
+            infer = RemoteInference(conns, shared, [2 * (wid * per + k) for k in range(len(conns))])
         else:
             device = torch.device(cfg["device"])
             nets = Nets(cfg, device)
@@ -1703,6 +1798,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="1: one inference server makes every actor's network calls (one GPU context, batches over all "
                          "games); 0: each actor its own")
     ap.add_argument("--native-obs", type=int, default=1, help="observations parsed in C (warcraftsim.native)")
+    ap.add_argument("--infer-shm", type=int, default=1, help="the games' view steps and answers through shared "
+                                                              "memory (SharedRows), not pickled through the pipes")
     ap.add_argument("--infer-streams", type=int, default=1, help="the inference server runs a round's networks "
                                                                   "side by side, a CUDA stream each")
     ap.add_argument("--infer-past-slots", type=int, default=4, help="past snapshots a round runs side by side "
@@ -1873,6 +1970,12 @@ def main(argv: list[str] | None = None) -> int:
     # a pipe per game to the inference server: [actor][game] -> (the game's end, the server's)
     pipes = [[ctx.Pipe() for _ in range(args.games_per_actor)] if args.central_inference else None
              for _ in range(args.actors)]
+    shared_path = None
+    if args.central_inference and args.infer_shm:  # the view steps and answers: two rows a game
+        shared_path = f"/dev/shm/warcraftsim-{args.name}-{os.getpid()}.rows"
+        c = net.config
+        cfg["shared_rows"] = SharedRows(shared_path, 2 * args.actors * args.games_per_actor, c["G"], c["n_orders"],
+                                        c["d"] if net.memory else 0, create=True).spec
     actors = [ctx.Process(target=actor_main, args=(w, cfg, out_q, stop, render_q, pipes[w] and [a for a, _ in pipes[w]]),
                           daemon=True) for w in range(args.actors)]
     if args.central_inference:
@@ -2027,6 +2130,8 @@ def main(argv: list[str] | None = None) -> int:
             p.join(timeout=60)
             if p.is_alive():
                 p.terminate()
+        if shared_path:
+            Path(shared_path).unlink(missing_ok=True)
     return 0
 
 
