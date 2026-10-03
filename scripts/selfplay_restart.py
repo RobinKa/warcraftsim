@@ -86,6 +86,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("name")
     ap.add_argument("--note", default="", help="why it restarts (the dashboard's restart marker)")
+    ap.add_argument("--title", default="", help="the restart's short name (a few words: the lineage's subtitle)")
     ap.add_argument("--set", action="append", default=[], help="flag=value (without the dashes); flag= drops it")
     ap.add_argument("--stop", action="store_true", help="only stop it")
     args = ap.parse_args()
@@ -102,7 +103,7 @@ def main() -> None:
             flags.append([w])
         elif flags:
             flags[-1].append(w)
-    flags = [f for f in flags if f[0] not in ("--note", "--resume")]
+    flags = [f for f in flags if f[0] not in ("--note", "--title", "--resume")]
     for s in args.set:
         k, _, v = s.partition("=")
         flags = [f for f in flags if f[0] != f"--{k}"]
@@ -111,6 +112,8 @@ def main() -> None:
     argv = [sys.executable, "-m", "warcraftsim.fullgame.selfplay", *[w for f in flags for w in f], "--resume"]
     if args.note:
         argv += ["--note", args.note]
+    if args.title:
+        argv += ["--title", args.title]
     with open(ROOT / "runs" / f"{args.name}.log", "a") as log:
         subprocess.Popen(argv, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     print("launched:", " ".join(shlex.quote(a) for a in argv[1:]))

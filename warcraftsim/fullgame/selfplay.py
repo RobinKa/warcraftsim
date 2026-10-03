@@ -1492,6 +1492,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", help="default: cuda if available (asking opens the GPU driver)")
     ap.add_argument("--resume", action="store_true", help="continue the run --name: its latest checkpoint, league and counts")
+    ap.add_argument("--title", default="", help="with --resume: the restart's short name (the lineage's subtitle)")
     ap.add_argument("--note", default="", help="the run's notes (notes.md); with --resume, why it was restarted (the "
                                                 "restart's marker on the dashboard's charts)")
     args = ap.parse_args(argv)
@@ -1557,6 +1558,7 @@ def main(argv: list[str] | None = None) -> int:
         info.update(created=old.get("created", info["created"]), init_from=old.get("init_from", info["init_from"]),
                     inputs=old.get("inputs") or info["inputs"],
                     resumes=old.get("resumes", []) + [{"time": time.time(), **resumed, **({"note": args.note} if args.note else {}),
+                                                       **({"title": args.title} if args.title else {}),
                                                        "inputs": info["inputs"], "argv": info["launch"]["argv"]}])
 
     def save_info():

@@ -1047,12 +1047,51 @@ class Dashboard:
         inputs}]})."""
         info = _read_json(self.runs_dir / name / "run.json") or {}
         side = _read_json(self.runs_dir / name / "lineage.json") or {}
-        known = {int(x.get("steps", -1)): x.get("inputs") for x in side.get("resumes", [])}
-        out = [{"steps": 0, "inputs": info.get("inputs") or side.get("inputs")}]
+        known = {int(x.get("steps", -1)): x for x in side.get("resumes", [])}
+        # (the first launch's inputs: run.json keeps them from the run's start since 2026-10-03, but a run
+        # older than that took its first restart's; the hand-written ones come first)
+        out = [{"steps": 0, "inputs": side.get("inputs") or info.get("inputs")}]
         for r in info.get("resumes") or []:
             at = int(r.get("steps") or 0)
-            out.append({"steps": at, "note": r.get("note"), "time": r.get("time"), "inputs": r.get("inputs") or known.get(at)})
+            k = known.get(at) or {}
+            out.append({"steps": at, "note": r.get("note"), "time": r.get("time"), "inputs": r.get("inputs") or k.get("inputs"),
+                        "title": r.get("title") or k.get("title")})
         return out
+
+    def _about(self, r: dict, kind: str, s: dict, node_of) -> dict:
+        """A lineage box's hover panel: when, its notes, and a few facts by kind ([label, value] rows)."""
+        rows: list[list[str]] = []
+        add = lambda k, v: rows.append([k, str(v)]) if v not in (None, "", [], {}) else None  # noqa: E731
+        pct = lambda v: f"{100 * float(v):.0f}%" if v is not None else None  # noqa: E731
+        if kind == "bc":
+            g = r.get("games") or {}
+            add("games", f"{g.get('train')} for training, {g.get('val')} held out" if isinstance(g, dict) and g else s.get("episodes"))
+            add("epochs", s.get("fit_epochs"))
+            add("order accuracy", pct(s.get("fit_acc")))
+            add("started from", node_of(r.get("init_from")) or r.get("init_from"))
+            add("data", ", ".join((node_of(d) or d).replace("fullgame/", "") for d in str(r.get("data") or "").split()))
+        elif kind == "collect":
+            info = _read_json(self.runs_dir / r["name"] / "collect.json") or {}
+            mode = ("shadow: the policy plays, the AI advises" if info.get("shadow") else
+                    f"takeover at steps {info.get('takeover')}" if info.get("policy") else "the built-in AI on both sides")
+            add("games", f"{s.get('games')} of {r.get('planned')}")
+            add("map", r.get("map"))
+            add("mode", mode)
+            add("policy", node_of(info.get("policy")) or info.get("policy"))
+            add("races", r.get("races"))
+            add("AI", r.get("difficulty"))
+            add("minutes a game", f"{float(s['minutes']):.1f}" if s.get("minutes") else None)
+        elif kind == "match":
+            add("result", r.get("summary_line"))
+        else:
+            add("steps", f"{int(s['agent_steps']):,}" if s.get("agent_steps") else None)
+            add("episodes", f"{int(s['episodes']):,}" if s.get("episodes") else None)
+            add("won, last 100", pct(s.get("win_rate_100")))
+            add("task", r.get("task"))
+            add("started from", node_of(r.get("init_from")) or r.get("init_from"))
+            add("restarts", len(r.get("resumes") or []) if isinstance(r.get("resumes"), list) else None)
+        return {"created": r.get("created"), "finished": r.get("finished"), "status": r.get("status"),
+                "notes": str(r.get("notes") or "")[:600], "rows": rows}
 
     def lineage(self) -> dict:
         """What each run came from, as a graph: runs (their parent: a run's checkpoint or a cloning fit),
@@ -1061,25 +1100,15 @@ class Dashboard:
         result}; edges: {from, to, why}."""
         runs = self.runs()
         names = {r["name"] for r in runs}
-        # a run's launches: a new node where its inputs changed (a new anchor for its KL term, new
-        # demonstrations, the built-in AI advising); every restart listed in the node it falls in
+        # a run's launches: each restart a node of its own, after the run's (the inputs that came in
+        # there, its name and note)
         segs = {}
         for r in runs:
             if r.get("kind") not in (None, "run"):
                 continue
             ls = self._segments(r["name"])
-            if len(ls) < 2:
-                continue
-            parts, prev = [{"steps": 0, "inputs": ls[0].get("inputs"), "restarts": []}], ls[0].get("inputs")
-            for s in ls[1:]:
-                cur = s.get("inputs") or prev
-                if cur and prev and any((cur.get(k) or None) != (prev.get(k) or None) for k in ("init", "bc_data", "advisor")):
-                    parts.append({"steps": s["steps"], "inputs": cur, "note": s.get("note"), "time": s.get("time"), "prev": prev,
-                                  "restarts": []})
-                else:
-                    parts[-1]["restarts"].append({"steps": s["steps"], "note": s.get("note") or "", "time": s.get("time")})
-                prev = cur
-            segs[r["name"]] = parts
+            if len(ls) > 1:
+                segs[r["name"]] = ls
 
         def seg_name(name: str, k: int) -> str:
             return name if k == 0 else f"{name}@{segs[name][k]['steps']}"
@@ -1102,23 +1131,28 @@ class Dashboard:
                 return seg_name(name, k)
             return name
         nodes, edges = [], []
-        restarts_of = {name: ps[0]["restarts"] for name, ps in segs.items()}
         for name, ps in segs.items():
             track = "whole game" if str(next((r.get("task") for r in runs if r["name"] == name), "")).startswith("fullgame") else "micro"
+            prev = ps[0].get("inputs")
             for k, s in enumerate(ps[1:], 1):
-                cur, prev = s["inputs"], s["prev"]
-                changes = ([f"anchor: {node_of(cur.get('init')) or cur.get('init')}"] if cur.get("init") != prev.get("init") else []) + \
-                    [f"demonstrations: {node_of(d) or d}" for d in sorted(set(cur.get("bc_data") or []) - set(prev.get("bc_data") or []))] + \
-                    ([f"advisor: {cur.get('advisor') or 'none'}"] if cur.get("advisor") != prev.get("advisor") else [])
-                nodes.append({"name": seg_name(name, k), "kind": "segment", "track": track, "run": name, "steps": s["steps"],
-                              "note": s.get("note") or "", "time": s.get("time"), "advisor": cur.get("advisor"),
-                              "changes": changes, "restarts": s["restarts"]})
+                cur = s.get("inputs") or prev
+                changes = []
+                if cur and prev:
+                    if cur.get("init") != prev.get("init"):
+                        changes.append(f"anchor: {node_of(cur.get('init')) or cur.get('init')}")
+                        if node_of(cur.get("init")):
+                            edges.append({"from": node_of(cur.get("init")), "to": seg_name(name, k), "why": "anchor"})
+                    for d in sorted(set(cur.get("bc_data") or []) - set(prev.get("bc_data") or [])):
+                        changes.append(f"demonstrations: {node_of(d) or d}")
+                        if node_of(d):
+                            edges.append({"from": node_of(d), "to": seg_name(name, k), "why": "data"})
+                    if (cur.get("advisor") or None) != (prev.get("advisor") or None):
+                        changes.append(f"advisor: {cur.get('advisor') or 'none'}")
+                nodes.append({"name": seg_name(name, k), "kind": "restart", "track": track, "run": name, "steps": s["steps"],
+                              "note": s.get("note") or "", "title": s.get("title") or "", "time": s.get("time"),
+                              "advisor": (cur or {}).get("advisor"), "changes": changes})
                 edges.append({"from": seg_name(name, k - 1), "to": seg_name(name, k), "why": "restart"})
-                if cur.get("init") != prev.get("init") and node_of(cur.get("init")):
-                    edges.append({"from": node_of(cur.get("init")), "to": seg_name(name, k), "why": "anchor"})
-                for d in set(cur.get("bc_data") or []) - set(prev.get("bc_data") or []):
-                    if node_of(d):
-                        edges.append({"from": node_of(d), "to": seg_name(name, k), "why": "data"})
+                prev = cur
             for d in (ps[0].get("inputs") or {}).get("bc_data") or []:  # the start's demonstrations
                 if node_of(d):
                     edges.append({"from": node_of(d), "to": name, "why": "data"})
@@ -1128,10 +1162,10 @@ class Dashboard:
             track = "whole game" if task.startswith("fullgame") or kind == "collect" else "micro"
             s = r.get("summary") or {}
             result = (r.get("real_game") or {}).get("wins") if isinstance(r.get("real_game"), dict) else None
-            nodes.append({"name": r["name"], "kind": kind if kind != "run" or not task.startswith("fullgame") else "selfplay",
+            about = self._about(r, kind, s, node_of)
+            nodes.append({"name": r["name"], "kind": kind if kind != "run" or not task.startswith("fullgame") else "selfplay", "about": about,
                           "track": track, "status": r.get("status"), "win_rate": s.get("win_rate_100"),
-                          "steps": s.get("agent_steps"), "result": result, "restarts": restarts_of.get(r["name"], []),
-                          "parts": len(segs.get(r["name"], [])) or 1})
+                          "steps": s.get("agent_steps"), "result": result, "restarts": len(segs.get(r["name"], [])) - 1 if r["name"] in segs else 0})
             par = r.get("parent")
             src = node_of(r.get("init_from")) if r["name"] in segs or r.get("init_from") else None
             if kind == "run" and src:  # (a checkpoint: the launch that wrote it)

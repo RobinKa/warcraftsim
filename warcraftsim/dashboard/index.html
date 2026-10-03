@@ -236,6 +236,10 @@ body.page-view main { padding:18px 28px 40px; }
                   background:#0b0f13f2; border:1px solid var(--line); border-radius:8px; padding:10px 12px; font-size:12px; line-height:1.45; }
 .lineage .lgtip span { color:var(--muted); font-size:11px; }
 .lineage .lgtip .ch { margin:6px 0; color:var(--good); }
+.lineage .lgtip .tt { margin:4px 0 0; color:var(--accent); font-weight:600; }
+.lineage .lgtip table.kv { border-collapse:collapse; margin:6px 0 2px; }
+.lineage .lgtip table.kv td { padding:1px 10px 1px 0; vertical-align:top; border:0; }
+.lineage .lgtip table.kv td:first-child { color:var(--muted); white-space:nowrap; }
 .lineage .lgtip .nt { margin:4px 0 2px; color:var(--text); }
 .lineage .lgtip .rh { margin:8px 0 4px; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.04em; }
 .lineage .lgtip ul.tl { list-style:none; margin:0; padding:0 0 0 4px; border-left:1px solid #3a8a63; }
@@ -1845,7 +1849,7 @@ function renderDocs() {
 ui.lineage = { track: "whole game", data: null };
 const LINEAGE_KINDS = { selfplay: ["self-play", "#1d3a2a", "#4cc38a"], bc: ["cloning fit", "#2d2140", "#b083f0"],
                         collect: ["demonstrations", "#16323a", "#39c5cf"], run: ["micro training", "#1d252e", "#8795a3"],
-                        match: ["match", "#3a2a1d", "#e0a33a"], segment: ["a run from a restart with new inputs", "#16231c", "#3a8a63"] };
+                        match: ["match", "#3a2a1d", "#e0a33a"], restart: ["a restart", "#16231c", "#3a8a63"] };
 async function openLineage(track) {
   state.view = "lineage"; setNav();
   if (track) ui.lineage.track = track;
@@ -1862,33 +1866,41 @@ function renderLineageGraph() {
   const linked = new Set(edges.flatMap(e => [e.from, e.to]));
   const shown = nodes.filter(n => linked.has(n.name)), id = new Map(shown.map((n, i) => [n.name, "n" + i]));
   const steps = n => n.steps ? ` · ${fmt(n.steps, 0)} steps` : "";
-  const nr = n => (n.restarts || []).length, ago_ = s => new Date(s * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-  const badge = n => nr(n) ? ` · ↻ ${nr(n)}` : "";  // (its restarts: hover the box for them)
-  const label = n => n.kind === "segment"  // (a run from a restart that brought new inputs on)
-    ? `${n.run.replace(/^(bc|fullgame)\//, "")} from ${fmt(n.steps, 0)}<br/><small>${n.advisor ? "AI advising" : "new inputs"}${badge(n)}</small>`
-    : `${n.name.replace(/^(bc|fullgame)\//, "")}<br/><small>${(LINEAGE_KINDS[n.kind] || [n.kind])[0]}${steps(n)}${n.status === "training" ? " · training" : ""}${badge(n)}</small>`;
-  const detail = n => {  // the hover panel: what came in, and the restarts as a timeline
-    const head = n.kind === "segment"
-      ? `<b>${esc(n.run)}</b>, restarted at ${fmt(n.steps, 0)} steps${n.time ? ` <span>${ago_(n.time)}</span>` : ""}` +
-        (n.changes && n.changes.length ? `<div class="ch">${n.changes.map(c => `<div>+ ${esc(c)}</div>`).join("")}</div>` : "") +
-        (n.note ? `<div class="nt">${esc(n.note)}</div>` : "")
-      : `<b>${esc(n.name)}</b> <span>${(LINEAGE_KINDS[n.kind] || [n.kind])[0]}${steps(n)}</span>`;
-    const rs = (n.restarts || []).map(r => `<li><i></i><div><b>${fmt(r.steps, 0)} steps</b>${r.time ? ` <span>${ago_(r.time)}</span>` : ""}` +
-      `<div>${esc(r.note || "restarted (no note)")}</div></div></li>`).join("");
-    return head + (rs ? `<div class="rh">restarts</div><ul class="tl">${rs}</ul>` : "") + `<div class="hint2">click to open the run</div>`;
+  const when = s => new Date(s * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  const title = n => {  // a restart's short name: its own, or the start of its note
+    if (n.title) return n.title;
+    const s = (n.note || "").replace(/\s+/g, " ").trim().split(/: |; | \(|\. /)[0];
+    return s.length > 30 ? s.slice(0, 29).replace(/\s+\S*$/, "") + "…" : s || "restarted";
   };
+  const label = n => n.kind === "restart"
+    ? `↻ ${fmt(n.steps, 0)}<br/><small>${esc(title(n))}</small>`
+    : `${n.name.replace(/^(bc|fullgame)\//, "")}<br/><small>${(LINEAGE_KINDS[n.kind] || [n.kind])[0]}${steps(n)}${n.status === "training" ? " · training" : ""}</small>`;
+  const detail = n => n.kind === "restart" ? restartDetail(n) : nodeDetail(n);
+  const nodeDetail = n => {  // the hover panel of a run, fit, collection or match: when, facts, notes
+    const a = n.about || {};
+    const dates = [a.created && `started ${when(a.created)}`, a.finished && `finished ${when(a.finished)}`].filter(Boolean).join(" · ");
+    return `<b>${esc(n.name.replace(/^(bc|fullgame)\//, ""))}</b> <span>${(LINEAGE_KINDS[n.kind] || [n.kind])[0]}${a.status ? " · " + esc(a.status) : ""}</span>` +
+      (dates ? `<div><span>${dates}</span></div>` : "") +
+      ((a.rows || []).length ? `<table class="kv">${a.rows.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join("")}</table>` : "") +
+      (a.notes ? `<div class="nt">${esc(a.notes)}</div>` : "") + `<div class="hint2">click to open it</div>`;
+  };
+  const restartDetail = n =>  // the hover panel of a restart: when, what came in, why
+    `<b>${esc(n.run)}</b>, restarted at ${fmt(n.steps, 0)} steps${n.time ? ` <span>${when(n.time)}</span>` : ""}` +
+    `<div class="tt">${esc(title(n))}</div>` +
+    (n.changes && n.changes.length ? `<div class="ch">${n.changes.map(c => `<div>+ ${esc(c)}</div>`).join("")}</div>` : "") +
+    (n.note ? `<div class="nt">${esc(n.note)}</div>` : "") + `<div class="hint2">click to open the run</div>`;
   const lines = ["flowchart LR"];
   for (const n of shown) lines.push(`  ${id.get(n.name)}["${label(n).replace(/"/g, "'")}"]:::${LINEAGE_KINDS[n.kind] ? n.kind : "run"}`);
   const arrow = w => w === "data" ? "-.->" : w === "policy" ? "==>" : w === "played" ? "-.-" : w === "anchor" ? "-- anchor -->" : "-->";
   for (const e of edges) lines.push(`  ${id.get(e.from)} ${arrow(e.why)} ${id.get(e.to)}`);
-  for (const [k, [, fill, stroke]] of Object.entries(LINEAGE_KINDS)) lines.push(`  classDef ${k} fill:${fill},stroke:${stroke},color:#d7dee6`);
+  for (const [k, [, fill, stroke]] of Object.entries(LINEAGE_KINDS)) lines.push(`  classDef ${k} fill:${fill},stroke:${stroke},color:#d7dee6${k === "restart" ? ",font-size:12px" : ""}`);
   lines.push("  classDef current stroke-width:3px,stroke:#e0a33a");
   if (id.has(state.selected)) lines.push(`  class ${id.get(state.selected)} current`);  // (one ::: class per node only)
   const seg = ["whole game", "micro"].map(x => `<button data-track="${x}" class="${x === track ? "on" : ""}">${x}</button>`).join("");
   const key = Object.entries(LINEAGE_KINDS).filter(([k]) => shown.some(n => n.kind === k))
     .map(([, [name, fill, stroke]]) => `<span><i style="background:${fill};border:1px solid ${stroke}"></i>${name}</span>`).join("");
   m.innerHTML = `<div class="lineage"><div class="bar"><span class="seg">${seg}</span><span class="key">${key}</span>
-      <span>→ started from, or the same run restarted with new inputs · anchor: its KL term's new clone · ⇢ fitted on, or new demonstrations · ⇒ its policy played the games · ┄ played in the match · click a box to open it ·
+      <span>→ started from · ↻ restarted (hover for why) · anchor: its KL term's new clone · ⇢ fitted on, or new demonstrations · ⇒ its policy played the games · ┄ played in the match · click a box to open it ·
         drawn from the runs' own records (run.json, bc.json, collect.json), and kept current</span>
       <span>${nodes.length - shown.length} with no lineage not shown</span></div>
     <div class="graph"><div class="zoom"><button data-z="in" title="zoom in (+)">+</button><button data-z="out" title="zoom out (−)">−</button>
@@ -1908,12 +1920,12 @@ function renderLineageGraph() {
     m.querySelectorAll(".graph g.node").forEach(g => {
       const k = (g.id.match(/flowchart-(n\d+)-/) || [])[1], name = byId.get(k);
       if (!name) return;
-      const n = shown.find(x => x.name === name), run = n && n.kind === "segment" ? n.run : name;
+      const n = shown.find(x => x.name === name), run = n && n.kind === "restart" ? n.run : name;
       const tip = m.querySelector(".graph .lgtip"), box = m.querySelector(".graph");
       g.dataset.name = name;
       g.addEventListener("mouseenter", () => {  // a panel beside the box (inside the graph's frame)
         clearTimeout(tip._hide);
-        if (!n || (!nr(n) && n.kind !== "segment")) return;
+        if (!n) return;
         tip.innerHTML = detail(n); tip.style.display = "block";
         const b = box.getBoundingClientRect(), r = g.getBoundingClientRect(), w = tip.offsetWidth, h = tip.offsetHeight;
         let x = r.right - b.left + 10; if (x + w > b.width - 8) x = r.left - b.left - w - 10;
