@@ -271,26 +271,57 @@ let state = { runs: [], sweeps: [], selected: null, compare: new Set(), data: {}
               view: "run", sweep: null };  // view: a run's page, or a sweep's (state.sweep)
 const ui = { smooth: 0.6, hoverX: null, hoverChart: null, charts: {} };
 try { const v = parseFloat(localStorage.getItem("smooth")); if (!Number.isNaN(v)) ui.smooth = v; } catch (e) {}
-// shareable view: #run=NAME&compare=A,B&smooth=0.8
+// the page's address: /run/<name>, /sweep/<group> or /doc/<name>, and ?tab=…&compare=A,B&smooth=0.8. Each
+// page change is a browser history entry (back and forward work); compared runs and smoothing replace it.
+// Links of the form #run=…&tab=… (from before) still open.
+function parseUrl() {
+  const parts = location.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+  const q = new URLSearchParams(location.search), out = { view: null, name: null, q };
+  if (parts[0] === "run" && parts.length > 1) { out.view = "run"; out.name = parts.slice(1).join("/"); }
+  else if (parts[0] === "sweep" && parts.length > 1) { out.view = "sweep"; out.name = parts.slice(1).join("/"); }
+  else if (parts[0] === "doc") { out.view = "docs"; out.name = parts.slice(1).join("/") || null; }
+  if (!out.view && location.hash.length > 1) {
+    const h = new URLSearchParams(location.hash.slice(1));
+    if (h.get("run")) { out.view = "run"; out.name = h.get("run"); }
+    else if (h.get("sweep")) { out.view = "sweep"; out.name = h.get("sweep"); }
+    else if (h.has("docs")) { out.view = "docs"; out.name = h.get("docs") || null; }
+    for (const k of ["tab", "compare", "smooth", "hover"]) if (h.get(k) !== null) q.set(k, h.get(k));
+  }
+  return out;
+}
+const encPath = n => n.split("/").map(encodeURIComponent).join("/");
+function runTabKind() {
+  const dk = state.view === "run" && state.data[state.selected] ? state.data[state.selected].kind : "run";
+  return dk === "bc" && state.data[state.selected].info.task === "fullgame" ? "fullbc" : dk === "bc" || dk === "collect" ? dk : "run";
+}
+function urlFor() {
+  let path = "/";
+  if (state.view === "docs") path = "/doc/" + (ui.docs && ui.docs.doc ? encPath(ui.docs.doc.name) : "");
+  else if (state.view === "sweep" && state.sweep) path = "/sweep/" + encPath(state.sweep);
+  else if (state.selected) path = "/run/" + encPath(state.selected);
+  const q = new URLSearchParams();
+  if (state.view !== "docs") {
+    if (state.compare.size) q.set("compare", [...state.compare].join(","));
+    const kind = runTabKind();
+    if (state.view === "run" && ui.tabs && ui.tabs[kind] && ui.tabs[kind] !== "overview") q.set("tab", ui.tabs[kind]);
+  }
+  return path + (q.toString() ? "?" + q.toString() : "");
+}
+let navigating = false;  // restoring a history entry: no new entry
+function saveUrl(push = false) {
+  const url = urlFor();
+  if (url === location.pathname + location.search && !location.hash) return;
+  if (push && !navigating) history.pushState(null, "", url); else history.replaceState(null, "", url);
+}
 (() => {
-  const h = new URLSearchParams(location.hash.slice(1));
-  if (h.get("run")) state.selected = h.get("run");
-  if (h.get("sweep")) { state.view = "sweep"; state.sweep = h.get("sweep"); }
-  if (h.has("docs")) state.view = "docs";
+  const u = parseUrl(), h = u.q;
+  if (u.view === "run") state.selected = u.name;
+  if (u.view === "sweep") { state.view = "sweep"; state.sweep = u.name; }
+  if (u.view === "docs") state.view = "docs";
   if (h.get("compare")) h.get("compare").split(",").filter(Boolean).forEach(n => state.compare.add(n));
   if (h.get("smooth") !== null && !Number.isNaN(parseFloat(h.get("smooth")))) ui.smooth = parseFloat(h.get("smooth"));
   if (h.get("hover")) ui.hoverX = parseFloat(h.get("hover"));  // a cursor position (screenshots)
 })();
-function saveHash() {
-  const h = new URLSearchParams();
-  if (state.view === "sweep" && state.sweep) h.set("sweep", state.sweep);
-  else if (state.selected) h.set("run", state.selected);
-  if (state.compare.size) h.set("compare", [...state.compare].join(","));
-  const dk = state.view === "run" && state.data[state.selected] ? state.data[state.selected].kind : "run";
-  const kind = dk === "bc" && state.data[state.selected].info.task === "fullgame" ? "fullbc" : dk === "bc" || dk === "collect" ? dk : "run";
-  if (state.view === "run" && ui.tabs && ui.tabs[kind] && ui.tabs[kind] !== "overview") h.set("tab", ui.tabs[kind]);
-  history.replaceState(null, "", "#" + h.toString());
-}
 
 function fmt(v, d = 2) {
   if (v === null || v === undefined || Number.isNaN(v)) return "–";
@@ -523,8 +554,8 @@ function showSelectedRun() {
   if (r.top < list.top || r.bottom > list.bottom + 1) el.scrollIntoView({ block: "center" });  // a visible one stays
 }
 // a selection change shows at once (with the data already loaded), then loads what is missing
-function selectionChanged() {
-  saveHash(); renderRuns(); showSelectedRun();
+function selectionChanged(push = false) {
+  saveUrl(push); renderRuns(); showSelectedRun();
   if (state.view === "sweep") renderSweep();
   else if (state.selected && state.data[state.selected]) renderMain();
   else if (state.selected) {  // its data is on the way: not the previous page meanwhile
@@ -535,9 +566,9 @@ function selectionChanged() {
 }
 function openRun(name) {
   if (state.view === "docs" && ui.docs.editing && !confirm("Leave the document without saving?")) return;
-  state.view = "run"; state.selected = name; state.mediaKey = ""; setNav(); selectionChanged();
+  state.view = "run"; state.selected = name; state.mediaKey = ""; setNav(); selectionChanged(true);
 }
-function openSweep(group) { state.view = "sweep"; state.sweep = group; ui.expanded.add(group); keepExpanded(); selectionChanged(); }
+function openSweep(group) { state.view = "sweep"; state.sweep = group; ui.expanded.add(group); keepExpanded(); setNav(); selectionChanged(true); }
 
 // run list controls: a text filter, the kinds of runs listed, and "selected only" (the compared
 // runs and the one shown)
@@ -1034,7 +1065,7 @@ function renderLeague(d) {
 
 // ---- tabs of a run's (or a dataset's) page: the one shown stays when another run is opened ---------
 try { ui.tabs = JSON.parse(localStorage.getItem("tabs") || "{}"); } catch (e) { ui.tabs = {}; }
-(() => { const t = new URLSearchParams(location.hash.slice(1)).get("tab"); if (t) ui.tabs.run = ui.tabs.bc = ui.tabs.collect = ui.tabs.fullbc = t; })();
+(() => { const t = parseUrl().q.get("tab"); if (t) ui.tabs.run = ui.tabs.bc = ui.tabs.collect = ui.tabs.fullbc = t; })();
 const slug = t => t.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 function tabsHtml(kind, tabs) {
   const cur = tabs.some(t => t[0] === ui.tabs[kind]) ? ui.tabs[kind] : tabs[0][0];
@@ -1062,7 +1093,7 @@ function showTab(kind, id, quiet) {
   const legend = document.getElementById("legend"); if (legend) legend.style.display = charts ? "" : "none";
   // charts in a hidden tab have no size: drawn when shown
   document.querySelectorAll(`.pane[data-pane="${id}"] canvas:not(.overlay)`).forEach(c => drawChart(c.id));
-  if (!quiet) saveHash();
+  if (!quiet) saveUrl(true);  // (a tab is a page: back returns to the one before)
 }
 // a tab's count (e.g. evaluations); `keep`: shown also at zero (else the tab hides)
 function setTabCount(id, n, keep) {
@@ -1580,7 +1611,7 @@ function mdInline(s) {  // escaped text -> inline markdown: code, images, links,
   s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, a, u) => `<img alt="${a}" src="${/^(https?:|\/)/.test(u) ? u : "/docs/" + u}">`);
   s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, txt, u) => {
     const doc = u.match(/^(?:\.\.\/|\.\/|docs\/)?((?:reference\/)?[a-z0-9-]+)\.md(#.*)?$/);  // a link to another document: open it here
-    return doc ? `<a href="#docs=${doc[1]}" data-doc="${doc[1]}">${txt}</a>` : `<a href="${u}" target="_blank" rel="noopener">${txt}</a>`;
+    return doc ? `<a href="/doc/${doc[1]}" data-doc="${doc[1]}">${txt}</a>` : `<a href="${u}" target="_blank" rel="noopener">${txt}</a>`;
   });
   s = s.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/(^|[^\w*])\*([^*\s][^*]*)\*(?!\w)/g, "$1<i>$2</i>")
        .replace(/(^|[^\w])_([^_\s][^_]*)_(?!\w)/g, "$1<i>$2</i>");
@@ -1663,13 +1694,13 @@ async function openDocs(name) {
   name = name || (ui.docs.doc && ui.docs.doc.name) || (ui.docs.list[0] || {}).name;
   ui.docs.editing = false;
   ui.docs.doc = name ? await getJSON("/api/docs/" + encodeURIComponent(name)).catch(() => null) : null;
-  history.replaceState(null, "", "#docs=" + (ui.docs.doc ? ui.docs.doc.name : ""));
+  saveUrl(true);
   renderDocs();
 }
 function renderDocs() {
   const m = document.getElementById("main"); m.dataset.run = "";
   const D = ui.docs, doc = D.doc;
-  const item = d => `<a data-doc="${esc(d.name)}" class="${doc && doc.name === d.name ? "on" : ""}">${esc(d.title)}<small>${esc(d.name)}.md · ${ago(d.updated)}</small></a>`;
+  const item = d => `<a href="/doc/${encPath(d.name)}" data-doc="${esc(d.name)}" class="${doc && doc.name === d.name ? "on" : ""}">${esc(d.title)}<small>${esc(d.name)}.md · ${ago(d.updated)}</small></a>`;
   const ref = D.list.filter(d => d.group === "reference");
   const list = D.list.filter(d => d.group !== "reference").map(item).join("") +
     (ref.length ? `<div class="group">Reference (the details)</div>` + ref.map(item).join("") : "");
@@ -1677,7 +1708,9 @@ function renderDocs() {
     ? `<div class="bar"><span class="grow">docs/${esc(doc.name)}.md · markdown</span><span id="docstate"></span><button id="docsave">save</button><button id="doccancel">cancel</button></div><textarea id="doctext" spellcheck="false">${esc(doc.text)}</textarea>`
     : `<div class="bar"><span class="grow">docs/${esc(doc.name)}.md · updated ${ago(doc.updated)}</span><button id="docedit">edit</button></div><div class="md">${mdToHtml(doc.text)}</div>`;
   m.innerHTML = `<div class="docs"><div class="list">${list}<button id="docnew" title="a new document in docs/">+ new document</button></div><div class="doc">${body}</div></div>`;
-  m.querySelectorAll("[data-doc]").forEach(a => a.onclick = ev => { ev.preventDefault(); if (!D.editing || confirm("Leave without saving?")) openDocs(a.dataset.doc); });
+  m.querySelectorAll("[data-doc]").forEach(a => a.onclick = ev => {
+    if (ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.button) return;  // (a new tab or window: the browser's)
+    ev.preventDefault(); if (!D.editing || confirm("Leave without saving?")) openDocs(a.dataset.doc); });
   const on = (id, f) => { const el = document.getElementById(id); if (el) el.onclick = f; };
   on("docedit", () => { D.editing = true; renderDocs(); });
   on("doccancel", () => { D.editing = false; renderDocs(); });
@@ -1852,7 +1885,28 @@ slider.addEventListener("input", () => {
 setupRunTools();
 document.getElementById("nav-docs").onclick = () => openDocs(state.view === "docs" ? null : undefined);
 document.getElementById("nav-runs").onclick = () => { if (state.view === "docs") openRun(state.selected || (state.runs[0] || {}).name); };
-if (state.view === "docs") openDocs(new URLSearchParams(location.hash.slice(1)).get("docs") || undefined);
+if (state.view === "docs") openDocs(parseUrl().name || undefined);
+else saveUrl(false);  // (an old #… link: its address in the new form)
+// back and forward: show the page of that history entry
+window.addEventListener("popstate", async () => {
+  const u = parseUrl();
+  navigating = true;
+  try {
+    if (u.view === "docs") { ui.docs.editing = false; await openDocs(u.name || undefined); }
+    else {
+      const t = u.q.get("tab");
+      if (t) ui.tabs.run = ui.tabs.bc = ui.tabs.collect = ui.tabs.fullbc = t; else ui.tabs.run = ui.tabs.bc = ui.tabs.collect = ui.tabs.fullbc = "overview";
+      if (u.view === "sweep") { state.view = "sweep"; state.sweep = u.name; setNav(); selectionChanged(); }
+      else {
+        const name = u.name || state.selected;
+        const same = state.view === "run" && name === state.selected;
+        state.view = "run"; state.selected = name; setNav();
+        if (same && document.querySelector(".tabs")) showTab(runTabKind(), ui.tabs[runTabKind()] || "overview", true);
+        else { state.mediaKey = ""; selectionChanged(); }
+      }
+    }
+  } finally { navigating = false; }
+});
 refresh().then(showSelectedRun);
 setInterval(() => { if (document.getElementById("auto").checked) refresh(); }, 5000);
 window.addEventListener("resize", () => { for (const id in ui.charts) drawChart(id); });

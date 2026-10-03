@@ -1175,8 +1175,8 @@ def make_handler(dash: Dashboard, docs: Docs | None = None):
 
         def do_GET(self):
             path = urllib.parse.unquote(urllib.parse.urlparse(self.path).path)
-            if path in ("/", "/index.html"):
-                return self._send(_page(), "text/html; charset=utf-8")
+            if path in ("/", "/index.html") or path.startswith(("/run/", "/sweep/", "/doc/")) or path == "/doc":
+                return self._send(_page(), "text/html; charset=utf-8")  # (the page's own addresses: it routes)
             if path == "/api/runs":
                 return self._json(dash.runs())
             if path == "/api/sweeps":

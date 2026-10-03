@@ -305,7 +305,7 @@ The dashboard (`python -m warcraftsim dashboard`) shows:
 * per sweep: its description, where its runs started from, a table of its runs, its launch command;
 * per behavior cloning dataset: the demonstrations (outcomes, action mix, combat), the fit per epoch (loss, accuracy, recall and precision per unit order), evaluations, and the runs started from it.
 
-Compared runs share the charts: one colour and line style per run. The tab, the compared runs and the smoothing are part of the link.
+Compared runs share the charts: one colour and line style per run. Each page has its own address (`/run/<name>?tab=…&compare=…`, `/sweep/<group>`, `/doc/<name>`), so the browser's back and forward buttons work and links can be shared.
 
 Example: `nav` with 16 games went from a 3% to a 62% success rate within 100k steps (about 3 minutes, at about 550 env steps/s).
 
