@@ -22,7 +22,8 @@ flowchart LR
   L -- "weights" --> I
 ```
 
-* The games fill all 32 CPU threads. A step costs 14.6 ms alone and 35–40 ms with 32 games running.
+* A game step takes ~51 ms with 40 games: ~20 ms waiting for the game, ~19 ms for the inference server (which shares the GPU with the learner), ~12 ms in the actor's Python (10 games share one GIL).
+* CPU a game step: the game 14.5 ms, wineserver 4.3 ms, Wine's services 1.1 ms; a third of the machine's busy CPU is kernel time, mostly Wine's round trips. While a game waits for orders its background threads keep polling (~130 wakeups a step).
 * The learner is faster than the games: an update of 8,192 steps takes ~5 s (9.5 s before its CUDA graphs), and it waits 2–3 s for the next batch.
 
 ## The largest fixes

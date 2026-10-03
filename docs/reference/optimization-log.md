@@ -109,6 +109,33 @@ The run stays at 40. The game's main thread without drawing: the game's own code
 * The game's own synchronization calls (`W3SIM_PROFILE=4`, shim/syncstat.c): ~3,800 a second a game, 85% from two call sites, one `SetEvent` (`exe+0x3c2add`) and one `ResetEvent` (`exe+0x3c1e46`) per 25 ms turn: the hand-off between the main thread and the thread that paces the turns. Only ~4.5% of the calls set an event already set or reset one already reset: skipping them saves nothing worth having.
 * What would remove most of the requests: Wine's ntsync (events in the kernel, no wineserver round trip), which needs `/dev/ntsync` (Linux 6.14; WSL runs 6.6), or the turn hand-off's events replaced in the shim.
 
+## Where a step's time goes with 40 games (2026-10-03, `fgself-12` at 47.9M)
+
+~1,010 agent steps/s are ~776 game steps/s (a self-play game makes two agent steps a step): each of the 40 games makes ~19 steps a second, ~51 ms a step.
+
+| a step's wall time (an actor's 10 games, `py-spy`) | share | ms |
+|---|---|---|
+| waiting for the game's observation | 39% | ~20 |
+| waiting for the inference server (rounds of 7-9 ms, 3-4.7 ms of each waiting for the GPU it shares with the learner; 92% busy) | 37% | ~19 |
+| the actor's Python (features, parsing, sending: 3.6 ms of CPU; the rest waiting for the GIL its 10 games share) | 24% | ~12 |
+
+The same kind of game with replies at once, under the same load (`BuiltinAI` on both sides): 10-15 ms a step, 8-11 ms of the game's CPU and 1.7-2.2 ms of wineserver's.
+
+| CPU over 30 s (32 threads, 24.6 busy, a video rendering) | cores | ms a game step |
+|---|---|---|
+| the games' main threads | 8.3 (kernel 0.8) | 10.7 |
+| the games' other threads | 3.0 | 3.8 |
+| wineserver | 3.3 (kernel 2.75) | 4.3 |
+| Wine's services (`winedevice.exe` polling every ~1 ms) | 0.84 | 1.1 |
+| the actors (4 processes) | 2.8 | 3.6 |
+| the inference server | 1.2 | 1.5 |
+| the learner and its data loaders | 1.2 | 1.5 |
+| the video renderer (game, ffmpeg) | 2.7 | |
+
+* Kernel time is 8 of the 24.6 busy cores: the scheduler, pipes and wakeups of the games' wineserver round trips, with the kernel's Spectre/SRSO mitigations on every entry and context switch (`srso_alias_safe_ret`, MSR writes).
+* While a game waits for its orders, the shim freezes the clock, and the background threads' timed waits become 1-5 ms polls: ~2,550 wakeups a second a game (~130 a step), each a wineserver round trip. With replies at once a step costs half the background and wineserver CPU.
+* Nine `winedevice.exe` from a finished collection were still polling after 10 hours (0.14 cores; killed).
+
 ## Dead ends
 
 * 8 actor processes of 4 games instead of 4 of 8 (627 against 644 steps/s).
