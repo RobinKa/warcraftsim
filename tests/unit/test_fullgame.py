@@ -724,6 +724,20 @@ def test_shadow_games_learn_from_the_advised_side():
     assert command_row(7, Build(5, "hhou", 10.0, 20.0))[2:4] == (int.from_bytes(b"hhou", "big"), 1)
 
 
+def test_fixed_shape_minibatches_for_cuda_graphs():
+    """collate_seq pads to a width and to fixed sequences, and with labels gives the advisor's label
+    arrays even when no step has any (a CUDA graph captured with them found none: a KeyError)."""
+    import torch
+
+    from warcraftsim.fullgame.selfplay import collate_seq
+    st = {"ent": np.zeros((3, fx.F), np.float16), "type": np.zeros(3, np.int16), "cur": np.zeros(3, np.int16),
+          "glob": np.zeros(30, np.float32), "n": 3, "n_own": 1, "avail": None, "h": None, "logp": np.zeros(1, np.float32),
+          "adv": 0.0, "ret": 0.0, **{k: np.zeros(1, np.int16) for k in ("order", "tgt", "bx", "by")}}
+    mb = collate_seq([[st, st]], torch.device("cpu"), width=32, B=2, T=4, labels=True)
+    assert mb["ent"].shape == (8, 32, fx.F) and mb["valid"].tolist() == [True, True] + [False] * 6
+    assert not mb["y_has"].any() and mb["y_order"].shape == (8, 32) and mb["seq"][:2] == (2, 4)
+
+
 def test_a_restarted_run_draws_other_launches():
     from warcraftsim.fullgame.selfplay import game_rng
     draws = lambda cfg, w, k: [game_rng(cfg, w, k).random() for _ in range(3)]  # noqa: E731

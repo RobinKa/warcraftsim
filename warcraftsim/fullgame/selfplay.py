@@ -1153,9 +1153,9 @@ class League:
 
 # ---- the learner ----------------------------------------------------------------------------------
 
-def collate(steps: list[dict], device, width: int | None = None, labels: bool = False) -> dict:
+def collate(steps: list[dict], device, width: int | None = None, with_labels: bool = False) -> dict:
     """A minibatch of steps as padded tensors. `width`: pad the entities to it (CUDA graphs: a few
-    fixed shapes); `labels`: the advisor's label arrays even when no step has any."""
+    fixed shapes); `with_labels`: the advisor's label arrays even when no step has any."""
     B, E = len(steps), max(max(s["n"] for s in steps), width or 0)
     O = min(fx.MAX_OWN, E)
     G = len(steps[0]["glob"])
@@ -1178,7 +1178,7 @@ def collate(steps: list[dict], device, width: int | None = None, labels: bool = 
         logp[i, :o] = s["logp"]
     t = lambda a: torch.from_numpy(a).to(device, non_blocking=True)  # noqa: E731
     labels = {}
-    if labels or any("y_order" in s for s in steps):  # the advisor's labels (on-policy distillation; others: none)
+    if with_labels or any("y_order" in s for s in steps):  # the advisor's labels (on-policy distillation; others: none)
         labels = {"y_order": np.zeros((B, O), np.int64), **{k: np.full((B, O), -1, np.int64) for k in ("y_ptr", "y_x", "y_y")}}
         has = np.zeros(B, bool)
         for i, s in enumerate(steps):
@@ -1230,7 +1230,7 @@ def collate_seq(seqs: list[list[dict]], device, width: int | None = None, B: int
            "glob": np.zeros(G, np.float32), "n": 1, "n_own": 0, "logp": np.zeros(0, np.float32), "adv": 0.0, "ret": 0.0,
            "avail": None, **{k: np.zeros(0, np.int16) for k in ("order", "tgt", "bx", "by")}}
     flat = [q[t] if t < len(q) else pad for q in seqs for t in range(T)]
-    mb = collate(flat, device, width, labels)
+    mb = collate(flat, device, width, with_labels=labels)
     mb["valid"] = torch.tensor([t < len(q) for q in seqs for t in range(T)], device=device)
     d = next((len(q[0]["h"]) for q in seqs if q and q[0].get("h") is not None), None)
     h0 = None
