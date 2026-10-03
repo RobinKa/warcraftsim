@@ -157,6 +157,11 @@ class GameSetup:
     # 3 frames a second: off, the draw calls run in the game's thread and the stream's thread (2-3%
     # of a training machine's CPU, most of it waiting for work) is gone.
     d3d_thread: bool = True
+    # The game builds every frame, but its Direct3D device draws nothing (shim W3SIM_DRAW=0: draw calls,
+    # clears and presents return at once): a whole duelfast game 22.6 -> 18.7 ms of CPU a step (game 18.5
+    # -> 15.0, wineserver 4.0 -> 3.7); a replay played back drawing and not drawing agrees in every unit
+    # at every step (scripts/draw_parity.py). Training and collection games; videos need it on.
+    draw: bool = True
     # The software renderer's threads (LP_NUM_THREADS; None: one per core, 0: it draws in the calling
     # thread). A reload's loading screen cost 0.75 s of CPU on 32 threads and the stream's, 0.2 s in
     # the game's own thread (of 2.1 and 1.4 s for the reload; 32 games: 592 -> 638 game steps/s).
@@ -583,6 +588,7 @@ class GameInstance:
                             W3SIM_SPEED=str(self.setup.launch_speed), W3SIM_TURBO_MS=str(self.setup.turbo_ms),
                             W3SIM_WAIT_FLOOR=str(self.setup.wait_floor_ms),
                             W3SIM_AUDIO="1" if self.setup.audio else "0",
+                            W3SIM_DRAW="1" if self.setup.draw else "0",
                             W3SIM_LOG=_winpath(log_path))
         if self.setup.render_threads is not None:
             env["LP_NUM_THREADS"] = str(self.setup.render_threads)

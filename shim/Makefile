@@ -9,7 +9,7 @@ all: $(OUT)/w3shim.dll $(OUT)/w3launch.exe
 
 MINHOOK := ../third_party/minhook
 MINHOOK_SRC := $(MINHOOK)/src/buffer.c $(MINHOOK)/src/hook.c $(MINHOOK)/src/trampoline.c $(MINHOOK)/src/hde/hde32.c
-SHIM_SRC := main.c clock.c iat.c sync.c turbo.c registry.c obs.c audio.c units.c
+SHIM_SRC := main.c clock.c iat.c sync.c turbo.c registry.c obs.c audio.c units.c render.c
 
 $(OUT)/w3shim.dll: $(SHIM_SRC) w3shim.h | $(OUT)
 	$(CC) $(filter-out -municode,$(CFLAGS)) -I$(MINHOOK)/include -shared -o $@ $(SHIM_SRC) \

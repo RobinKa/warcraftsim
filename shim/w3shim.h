@@ -87,5 +87,7 @@ void registry_install(void);
 
 /* turbo.c */
 void turbo_install(int ms);
+void render_install(int draw); /* W3SIM_DRAW=0: the Direct3D device draws nothing (render.c) */
+long render_skipped(void);     /* draw calls skipped since the last call */
 void turbo_set(int ms);
 int turbo_get(void);

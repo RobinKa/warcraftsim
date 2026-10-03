@@ -433,7 +433,7 @@ def main(argv: list[str] | None = None) -> int:
         setup = GameSetup(map=args.map, slots=slots,
                           step_seconds=args.step_seconds, max_game_seconds=args.max_minutes * 60,
                           record_ai_orders=True, victory=args.victory, window=screen, wait_floor_ms=args.wait_floor_ms,
-                          d3d_thread=False, render_threads=0,  # (nobody watches: drawn in the game's thread)
+                          d3d_thread=False, render_threads=0, draw=False,  # (nobody watches; videos play back the replays)
                           pairs=args.pairs)
         name = names.get()
         t0 = [time.time()]

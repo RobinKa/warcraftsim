@@ -644,6 +644,7 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
         setup = GameSetup(map=cfg["map"], slots=slots, step_seconds=cfg["step_seconds"],
                           max_game_seconds=cfg["max_minutes"] * 60, victory="decisive", window=(320, 240),
                           record_ai_orders=cfg.get("opd_share", 0.0) > 0,
+                          draw=False,  # (nobody looks: videos are played back from the replays, drawing)
                           wait_floor_ms=cfg["wait_floor_ms"], melee_reset=agents_only and cfg["scripted_reset"],
                           native_obs=cfg["native_obs"], nice=cfg.get("game_nice", 0), d3d_thread=False,
                           render_threads=0, pairs=cfg.get("pairs", 1))

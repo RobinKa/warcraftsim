@@ -55,6 +55,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved) {
     clock_install(env_double("W3SIM_SPEED", 1.0), (DWORD)env_double("W3SIM_WAIT_FLOOR", 0));
     sync_install();
     turbo_install((int)env_double("W3SIM_TURBO_MS", 0));
+    render_install((int)env_double("W3SIM_DRAW", 1));
     registry_install();
     audio_install();
     return TRUE;
