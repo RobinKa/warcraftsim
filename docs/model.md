@@ -115,6 +115,21 @@ flowchart LR
 * The gate does not read `h`, so training computes 16 steps at once with a parallel scan. The actors start each sequence from the state they stored.
 * `W` starts at zero, so a new core changes nothing at first. In `fgself-12` its size grew from 0 to 2.2.
 
+### Training with memory
+
+```mermaid
+flowchart LR
+  A["Actor plays<br/>stores h at every step"] --> S["16 steps of one game<br/>+ the h it had at the start"]
+  S --> E["transformer on all 16 steps at once<br/>(each step alone)"]
+  E --> SC["scan over the 16 steps<br/>log2(16) = 4 passes"]
+  SC --> L["PPO loss on every step"]
+```
+
+* The state still depends on the last state. The dependency is linear, so a scan computes 16 steps in 4 passes, not 16 one after the other.
+* A GRU or LSTM puts `h(t−1)` inside its gates and its tanh. That is not linear, so it must step through time.
+* Each sequence starts from the state the actor had, not from zero. The gradient does not flow into that start state.
+* Acting needs one step at a time, as any RNN: the inference server keeps 192 numbers per game.
+
 There are no tokens per time step and no time encoding. The order of the steps is the order of the recurrence. AlphaStar and OpenAI Five use the same split: a network over units at each step, then a recurrent core.
 
 ## Actions
