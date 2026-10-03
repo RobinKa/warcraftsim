@@ -305,7 +305,7 @@ The dashboard (`python -m warcraftsim dashboard`) shows:
 * per sweep: its description, where its runs started from, a table of its runs, its launch command;
 * per behavior cloning dataset: the demonstrations (outcomes, action mix, combat), the fit per epoch (loss, accuracy, recall and precision per unit order), evaluations, and the runs started from it.
 
-The **Lineage** view draws what every run, cloning fit and demonstration collection came from (started from, fitted on, its policy played the games), whole game or micro; a box opens its run. The **Docs** view shows and edits `docs/`.
+The **Lineage** view draws what every run, cloning fit, demonstration collection and match came from (started from, fitted on, its policy played the games, played in the match), whole game or micro. It is computed from the runs' own records (`run.json`, `bc.json`, `collect.json`) and follows new runs while open; it pans and zooms (drag, wheel, pinch, buttons, keys, double-click to fit), and a box opens its run. The **Docs** view shows and edits `docs/`.
 
 Compared runs share the charts: one colour and line style per run. Each page has its own address (`/run/<name>?tab=…&compare=…`, `/sweep/<group>`, `/doc/<name>`), so the browser's back and forward buttons work and links can be shared.
 

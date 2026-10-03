@@ -1067,6 +1067,12 @@ class Dashboard:
                 src = node_of(info.get("policy"))
                 if src:
                     edges.append({"from": src, "to": r["name"], "why": "policy"})
+            if kind == "match":  # its two players: runs (a run's latest checkpoint, or "run@checkpoint")
+                for pl in (r.get("players") or {}).values():
+                    src = str((pl or {}).get("name", "")).split("@")[0]
+                    src = src if src in names else node_of((pl or {}).get("spec")) or (("bc/" + src) if "bc/" + src in names else None)
+                    if src:
+                        edges.append({"from": src, "to": r["name"], "why": "played"})
         seen, unique = set(), []
         for e in edges:
             k = (e["from"], e["to"])

@@ -66,10 +66,13 @@ def test_lineage_links_runs_fits_and_collections(tmp_path):
                       {"name": "b", "kind": "run", "task": "fullgame_duelfast", "parent": {"kind": "run", "name": "a"}},
                       {"name": "bc/c", "kind": "bc", "task": "fullgame", "init_from": "runs/b/checkpoints/2.pt",
                        "data": "runs/fullgame/demos-x"},
-                      {"name": "fullgame/demos-x", "kind": "collect", "task": "fullgame"}]
+                      {"name": "fullgame/demos-x", "kind": "collect", "task": "fullgame"},
+                      {"name": "m", "kind": "match", "task": "micro", "players": {"A": {"name": "a@1.0M", "spec": "runs/a/checkpoints/1.pt"},
+                                                                                  "B": {"name": "script:amove"}}}]
     (runs / "fullgame" / "demos-x").mkdir(parents=True)
     (runs / "fullgame" / "demos-x" / "collect.json").write_text(j.dumps({"policy": "runs/a/checkpoints/1.pt"}))
     L = d.lineage()
     assert {(e["from"], e["to"], e["why"]) for e in L["edges"]} == {
-        ("a", "b", "start"), ("b", "bc/c", "start"), ("fullgame/demos-x", "bc/c", "data"), ("a", "fullgame/demos-x", "policy")}
+        ("a", "b", "start"), ("b", "bc/c", "start"), ("fullgame/demos-x", "bc/c", "data"), ("a", "fullgame/demos-x", "policy"),
+        ("a", "m", "played")}
     assert {n["name"]: n["kind"] for n in L["nodes"]}["a"] == "selfplay"

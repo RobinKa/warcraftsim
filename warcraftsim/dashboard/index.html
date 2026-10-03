@@ -213,8 +213,15 @@ body.page-view .layout { grid-template-columns:1fr; }
 body.page-view aside, body.page-view header .right { display:none; }
 body.page-view main { padding:18px 28px 40px; }
 .lineage .bar { display:flex; gap:12px; align-items:center; color:var(--muted); font-size:12px; margin-bottom:12px; flex-wrap:wrap; }
-.lineage .graph { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; overflow:auto; }
-.lineage .graph svg { max-width:none !important; }
+.lineage .graph { position:relative; background:var(--panel); border:1px solid var(--line); border-radius:8px;
+                  height:calc(100vh - 150px); min-height:360px; overflow:hidden; cursor:grab; touch-action:none; }
+.lineage .graph.dragging { cursor:grabbing; }
+.lineage .graph .mermaid { position:absolute; left:0; top:0; transform-origin:0 0; margin:0; padding:0; border:0; background:none; }
+.lineage .graph svg { max-width:none !important; display:block; }
+.lineage .zoom { position:absolute; right:10px; top:10px; z-index:3; display:flex; flex-direction:column; gap:4px; }
+.lineage .zoom button { width:32px; height:30px; padding:0; font-size:15px; line-height:1; }
+.lineage .zoom .pct { font-size:11px; color:var(--muted); text-align:center; }
+.lineage .hint { position:absolute; left:10px; bottom:8px; z-index:3; font-size:11px; color:var(--muted); pointer-events:none; }
 .lineage .graph g.node { cursor:pointer; }
 .lineage .graph g.node:hover rect { stroke-width:2.5px !important; }
 .lineage .key span { display:inline-flex; align-items:center; gap:5px; margin-right:12px; }
@@ -518,7 +525,14 @@ function refresh() {
   return refreshing;
 }
 async function refreshOnce() {
-  if (state.view === "lineage") { document.getElementById("clock").textContent = "updated " + new Date().toLocaleTimeString(); return; }
+  if (state.view === "lineage") {  // the graph follows the runs: re-drawn (where it was) when it changed
+    try {
+      const L = await getJSON("/api/lineage");
+      if (JSON.stringify(L) !== JSON.stringify(ui.lineage.data)) { ui.lineage.data = L; renderLineageGraph(); }
+    } catch (e) { console.error(e); }
+    document.getElementById("clock").textContent = "updated " + new Date().toLocaleTimeString();
+    return;
+  }
   if (state.view === "docs") {  // the run list stays current; the document too, unless it is being edited
     try {
       [state.runs, state.sweeps] = await Promise.all([getJSON("/api/runs"), getJSON("/api/sweeps")]);
@@ -1772,24 +1786,85 @@ function renderLineageGraph() {
   const label = n => `${n.name.replace(/^(bc|fullgame)\//, "")}<br/><small>${(LINEAGE_KINDS[n.kind] || [n.kind])[0]}${steps(n)}${n.status === "training" ? " · training" : ""}</small>`;
   const lines = ["flowchart LR"];
   for (const n of shown) lines.push(`  ${id.get(n.name)}["${label(n).replace(/"/g, "'")}"]:::${LINEAGE_KINDS[n.kind] ? n.kind : "run"}${n.name === state.selected ? ":::current" : ""}`);
-  for (const e of edges) lines.push(`  ${id.get(e.from)} ${e.why === "data" ? "-.->" : e.why === "policy" ? "==>" : "-->"} ${id.get(e.to)}`);
+  for (const e of edges) lines.push(`  ${id.get(e.from)} ${e.why === "data" ? "-.->" : e.why === "policy" ? "==>" : e.why === "played" ? "-.-" : "-->"} ${id.get(e.to)}`);
   for (const [k, [, fill, stroke]] of Object.entries(LINEAGE_KINDS)) lines.push(`  classDef ${k} fill:${fill},stroke:${stroke},color:#d7dee6`);
   lines.push("  classDef current stroke-width:3px,stroke:#e0a33a");
   const seg = ["whole game", "micro"].map(x => `<button data-track="${x}" class="${x === track ? "on" : ""}">${x}</button>`).join("");
   const key = Object.entries(LINEAGE_KINDS).filter(([k]) => shown.some(n => n.kind === k))
     .map(([, [name, fill, stroke]]) => `<span><i style="background:${fill};border:1px solid ${stroke}"></i>${name}</span>`).join("");
   m.innerHTML = `<div class="lineage"><div class="bar"><span class="seg">${seg}</span><span class="key">${key}</span>
-      <span>→ started from · ⇢ fitted on · ⇒ its policy played the games · click a box to open it</span>
+      <span>→ started from · ⇢ fitted on · ⇒ its policy played the games · ┄ played in the match · click a box to open it ·
+        drawn from the runs' own records (run.json, bc.json, collect.json), and kept current</span>
       <span>${nodes.length - shown.length} with no lineage not shown</span></div>
-    <div class="graph"><div class="mermaid">${esc(lines.join("\n"))}</div></div></div>`;
+    <div class="graph"><div class="zoom"><button data-z="in" title="zoom in (+)">+</button><button data-z="out" title="zoom out (−)">−</button>
+      <button data-z="fit" title="fit the graph (0 or double-click)">⤢</button><button data-z="one" title="actual size (1)">1:1</button><span class="pct"></span></div>
+      <span class="hint">drag to move · wheel or pinch to zoom · double-click to fit</span>
+      <div class="mermaid">${esc(lines.join("\n"))}</div></div></div>`;
   m.querySelectorAll("button[data-track]").forEach(b => b.onclick = () => openLineage(b.dataset.track));
   const byId = new Map(shown.map(n => [id.get(n.name), n.name]));
-  renderMermaid(m).then(() => m.querySelectorAll(".graph g.node").forEach(g => {
-    const k = (g.id.match(/flowchart-(n\d+)-/) || [])[1], name = byId.get(k);
-    if (!name) return;
-    const title = document.createElementNS("http://www.w3.org/2000/svg", "title"); title.textContent = name; g.appendChild(title);
-    g.addEventListener("click", () => openRun(name));
-  }));
+  const at = ui.lineage.view && ui.lineage.view.track === track ? ui.lineage.view : null;  // (a re-draw stays where it was)
+  renderMermaid(m).then(() => {
+    const pz = panZoom(m.querySelector(".graph"), m.querySelector(".graph .mermaid"), at, v => { ui.lineage.view = { ...v, track }; });
+    m.querySelectorAll(".graph g.node").forEach(g => {
+      const k = (g.id.match(/flowchart-(n\d+)-/) || [])[1], name = byId.get(k);
+      if (!name) return;
+      const title = document.createElementNS("http://www.w3.org/2000/svg", "title"); title.textContent = name; g.appendChild(title);
+      g.addEventListener("click", () => { if (!pz.moved()) openRun(name); });  // (not the end of a drag)
+    });
+  });
+}
+// pan and zoom for a drawing in a box: drag, the wheel (around the cursor), pinch, buttons, keys, double-click to fit
+function panZoom(box, inner, start = null, onChange = null) {
+  const svg = inner.querySelector("svg"); if (!svg) return { moved: () => false };
+  const vb = svg.viewBox && svg.viewBox.baseVal, w = vb && vb.width || svg.getBBox().width, h = vb && vb.height || svg.getBBox().height;
+  svg.setAttribute("width", w); svg.setAttribute("height", h); svg.style.maxWidth = "none";
+  let s = 1, x = 0, y = 0, drag = null, moved = false;
+  const pct = box.querySelector(".pct");
+  const apply = () => { inner.style.transform = `translate(${x}px, ${y}px) scale(${s})`; if (pct) pct.textContent = Math.round(100 * s) + "%";
+                        if (onChange) onChange({ s, x, y }); };
+  const zoomAt = (f, cx, cy) => { const n = Math.min(4, Math.max(0.1, s * f)); x = cx - (cx - x) * n / s; y = cy - (cy - y) * n / s; s = n; apply(); };
+  const center = () => { const r = box.getBoundingClientRect(); return [r.width / 2, r.height / 2]; };
+  const fit = () => { const r = box.getBoundingClientRect(); s = Math.min(4, Math.max(0.1, Math.min((r.width - 24) / w, (r.height - 24) / h)));
+                      x = (r.width - w * s) / 2; y = (r.height - h * s) / 2; apply(); };
+  box.addEventListener("wheel", ev => { ev.preventDefault(); const r = box.getBoundingClientRect();
+    zoomAt(Math.exp(-ev.deltaY * (ev.ctrlKey ? 0.01 : 0.0015)), ev.clientX - r.left, ev.clientY - r.top); }, { passive: false });
+  const pointers = new Map();
+  box.addEventListener("pointerdown", ev => {
+    if (ev.target.closest(".zoom")) return;
+    pointers.set(ev.pointerId, [ev.clientX, ev.clientY]);
+    drag = { x0: ev.clientX, y0: ev.clientY, x, y, dist: null }; moved = false; box.classList.add("dragging");
+  });
+  window.addEventListener("pointermove", ev => {
+    if (!drag || !pointers.has(ev.pointerId)) return;
+    pointers.set(ev.pointerId, [ev.clientX, ev.clientY]);
+    if (pointers.size === 2) {  // pinch
+      const [[ax, ay], [bx, by]] = [...pointers.values()], d = Math.hypot(ax - bx, ay - by), r = box.getBoundingClientRect();
+      if (drag.dist) zoomAt(d / drag.dist, (ax + bx) / 2 - r.left, (ay + by) / 2 - r.top);
+      drag.dist = d; moved = true; return;
+    }
+    const dx = ev.clientX - drag.x0, dy = ev.clientY - drag.y0;
+    if (Math.abs(dx) + Math.abs(dy) > 4) moved = true;
+    x = drag.x + dx; y = drag.y + dy; apply();
+  });
+  const up = ev => { pointers.delete(ev.pointerId); if (!pointers.size) { drag = null; box.classList.remove("dragging"); } };
+  window.addEventListener("pointerup", up); window.addEventListener("pointercancel", up);
+  box.addEventListener("dblclick", ev => { if (!ev.target.closest(".zoom")) fit(); });
+  box.querySelectorAll("button[data-z]").forEach(b => b.onclick = () => {
+    const [cx, cy] = center();
+    if (b.dataset.z === "in") zoomAt(1.25, cx, cy); else if (b.dataset.z === "out") zoomAt(0.8, cx, cy);
+    else if (b.dataset.z === "fit") fit(); else { s = 1; x = 12; y = 12; apply(); }
+  });
+  box.tabIndex = 0;
+  box.addEventListener("keydown", ev => {
+    const [cx, cy] = center();
+    if (ev.key === "+" || ev.key === "=") zoomAt(1.25, cx, cy); else if (ev.key === "-") zoomAt(0.8, cx, cy);
+    else if (ev.key === "0") fit(); else if (ev.key === "1") { s = 1; x = 12; y = 12; apply(); }
+    else if (ev.key.startsWith("Arrow")) { const d = 60; x += ev.key === "ArrowLeft" ? d : ev.key === "ArrowRight" ? -d : 0; y += ev.key === "ArrowUp" ? d : ev.key === "ArrowDown" ? -d : 0; apply(); }
+    else return;
+    ev.preventDefault();
+  });
+  if (start) { ({ s, x, y } = start); apply(); } else fit();
+  return { moved: () => moved };
 }
 
 function renderCheckpoints(d) {
