@@ -848,7 +848,20 @@ The KL weight ×0.05 let RL lower the production orders: the chance the policy g
 
 At 17.8M steps (5.5 hours) it had won 2 of 334 real games. Games lasted ~19 of 20 minutes at a tax of 0.84. It held ~4,000 gold and lumber against the AI's ~330 and had the larger army (28 food against 17), but killed 7 units a game and lost 15: it out-builds the AI and does not attack.
 
-**Learn from short wins** (AlphaStar fine-tuned its supervised policy on winning replays). Of the 3,000 built-in AI games on `duelfast`, 13 were ties and 55% were decided within 6 minutes. `fullgame-fast-win6`: the clone fine-tuned on the winning sides of the games decided within 6 minutes (2,180 of 8,034 game sides, takeover games included; `bc --winners-only --max-minutes 6`). `fgself-12` goes on from 17.8M steps with it as the KL anchor and its data as the cloning loss (`--bc-winners 1 --bc-max-minutes 6`).
+**The real game is not a tie.** The untaxed AI wins in 5–7 minutes. The last 150 real games against the curriculum games of the same hours:
+
+| per game (learner vs AI) | real, normal AI | real, insane AI | curriculum (tax 0.84) |
+|---|---|---|---|
+| result | 49 of 50 lost | 62 of 62 lost | 83% ties |
+| minutes | 6.7 | 5.3 | 19 |
+| food at 1 minute | 15 vs 21 | 16 vs 20 | 15 vs 7 |
+| most food | 34 vs 53 | 31 vs 62 | 72 vs 34 |
+
+The tax cuts the AI to 7 food at one minute, so the curriculum hides the policy's slow opening. The clone was already behind (15 against 21). Many matchups were at level 1.0 (the AI without income) and the policy still tied them.
+
+**Learn from short wins** (AlphaStar fine-tuned its supervised policy on winning replays). Of the 3,000 built-in AI games on `duelfast`, 13 were ties and 55% were decided within 6 minutes. `fullgame-fast-win6`: the clone fine-tuned on the winning sides of the games decided within 6 minutes (2,180 of 8,034 game sides, takeover games included; `bc --winners-only --max-minutes 6`). `fullgame-fast-win6` (4 epochs, the best the third): validation loss 2.314 on held-out short wins, the AI's order 81% of the time.
+
+`fgself-12` goes on from 17.77M steps with it as the KL anchor and its data as the cloning loss (`--bc-winners 1 --bc-max-minutes 6`). The cloning data also gets takeover games from `fgself-12`'s own states, with the AI taking over at 0.5–5 minutes, before the real games are lost (`demos-fast-takeover-12`).
 
 ### Where a self-play step's time goes (speed, 2026-09-30)
 
