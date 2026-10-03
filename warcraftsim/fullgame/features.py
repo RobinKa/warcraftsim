@@ -364,7 +364,7 @@ class Encoder:
         index = st["index"]
         paid = self._paid(rows, st, me, trees)
         if self.costs is not None:  # train / research orders that started nothing: refused (tech, hero limit)
-            started = set(later[np.isin(later[:, 1], list(PRODUCTION_START)), 2].tolist())
+            started = {int(r[2]) for r in later.tolist() if r[1] in PRODUCTION_START}  # (a few events: np.isin cost more)
             paid = [ok and not (int(r[3]) == 0 and int(r[2]) >= TYPE_CODE and int(r[1]) in view.own_buildings
                                 and int(r[1]) not in started and int(r[1]) not in view.busy)
                     for r, ok in zip(rows, paid)]
