@@ -838,6 +838,18 @@ The clone, `fullgame-fast-1` (3 epochs, 46 minutes): validation loss 2.48 → 2.
 
 From 13.0M steps `fgself-12` goes on with the held gold and lumber counted against the shaping's potential (`--float-penalty 0.5`: spending is credited at the order, not ~14 steps later when the unit appears, half the credit after GAE's lambda) and the KL term ×0.05.
 
+The KL weight ×0.05 let RL lower the production orders: the chance the policy gave the AI's own hero orders at the AI's decisions (`scripts/order_probability.py`) fell from 7.8% (the clone) to 2.7% at 14.1M steps, its basic units from 39% to 20%. From 15.07M steps the KL term is ×0.2 again and the cloning loss ×0.02: 5.9% and 32% at 16.9M.
+
+| `fgself-12`, 30-minute windows | 60–90 min before 16.9M | 30–60 min | the last 30 min |
+|---|---|---|---|
+| curriculum games won | 3% | 5% | 9% |
+| tied | 95% | 90% | 83% |
+| lost | 2% | 5% | 7% |
+
+At 17.8M steps (5.5 hours) it had won 2 of 334 real games. Games lasted ~19 of 20 minutes at a tax of 0.84. It held ~4,000 gold and lumber against the AI's ~330 and had the larger army (28 food against 17), but killed 7 units a game and lost 15: it out-builds the AI and does not attack.
+
+**Learn from short wins** (AlphaStar fine-tuned its supervised policy on winning replays). Of the 3,000 built-in AI games on `duelfast`, 13 were ties and 55% were decided within 6 minutes. `fullgame-fast-win6`: the clone fine-tuned on the winning sides of the games decided within 6 minutes (2,180 of 8,034 game sides, takeover games included; `bc --winners-only --max-minutes 6`). `fgself-12` goes on from 17.8M steps with it as the KL anchor and its data as the cloning loss (`--bc-winners 1 --bc-max-minutes 6`).
+
 ### Where a self-play step's time goes (speed, 2026-09-30)
 
 `fgself-9` ran at 560 agent steps/s with 32 games. A game thread spent 55% of its time waiting for the policy and 36% for the game. After this round the learner is the limit with the machine's CPU close behind, and it runs at about 840 steps/s with whole games, five to a load of the map (607 before the reset fix, when half the games were the cheap broken ones).
