@@ -890,6 +890,8 @@ Each version against the same 16 games without the advisor (`fgself-12` at 20.9M
 
 The labels cover 5.9% of unit-steps (the AI's own games: 3.5%), 770 train or research orders and 816 build orders in the 16 games. `demos-fast-shadow-12`: 800 games from `fgself-12` at 23.7M steps.
 
+**Distillation in self-play** (on-policy distillation: the teacher labels the student's own states while it learns, so the labels never go stale). From 24.1M steps, `fgself-12 --opd-share 0.5 --opd-coef 0.05`: in half the games (never the real game) the insane AI advises the learner. Its orders of a step label that step (`features.Encoder.step_labels`, the same code as the demonstrations' encoder). The update adds the cloning loss on those steps, from the PPO pass's outputs. First updates: 45–60% of a batch's steps advised, the distillation loss 2.6–3.0, the policy's first choice the AI's order 51–59% of the time. Steps/s unchanged (750–800). The policy's KL per update 0.004–0.006 (0.001 before), its distance to the anchor 0.005 (0.002). The 28 offline shadow games collected are kept, unused.
+
 ### Where a self-play step's time goes (speed, 2026-09-30)
 
 `fgself-9` ran at 560 agent steps/s with 32 games. A game thread spent 55% of its time waiting for the policy and 36% for the game. After this round the learner is the limit with the machine's CPU close behind, and it runs at about 840 steps/s with whole games, five to a load of the map (607 before the reset fix, when half the games were the cheap broken ones).
