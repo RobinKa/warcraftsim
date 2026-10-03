@@ -1349,6 +1349,8 @@ def main(argv: list[str] | None = None) -> int:
                          "loss joins each PPO minibatch, times --bc-coef")
     ap.add_argument("--bc-coef", type=float, default=0.02)
     ap.add_argument("--bc-batch", type=int, default=256)
+    ap.add_argument("--bc-winners", type=int, default=0, help="the cloning loss: only the side that won each game")
+    ap.add_argument("--bc-max-minutes", type=float, default=0.0, help="the cloning loss: only games decided within this many minutes")
     ap.add_argument("--bc-workers", type=int, default=2)
     ap.add_argument("--real-share", type=float, default=0.1, help="with a curriculum: the share of launches against "
                                                                    "the built-in AI that play the real game (the yardstick)")
@@ -1553,7 +1555,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.bc_data:  # demonstrations for the auxiliary cloning loss, encoded by loader workers, epoch after epoch
         from .bc import Steps, as_is
         bc_paths = sorted(p for d in args.bc_data for p in d.glob("game*.npz"))
-        bc_set = Steps(bc_paths, vocab, args.bc_batch, cfg["values"], order_costs(vocab, args.map), arrays=True)
+        bc_set = Steps(bc_paths, vocab, args.bc_batch, cfg["values"], order_costs(vocab, args.map), arrays=True,
+                       winners=bool(args.bc_winners), max_minutes=args.bc_max_minutes)
 
         def bc_cycle():
             epoch = 0

@@ -692,6 +692,15 @@ def test_shaping_counts_held_resources_against_a_player():
     assert shaped(obs, mat, 0.5) == {0: 5000.0 - 600.0, 1: 4000.0 - 50.0}
 
 
+def test_cloning_sides_winners_and_short_games():
+    from warcraftsim.fullgame.bc import sides_of
+    g = lambda res, secs: {"meta": {"result": res, "game_seconds": secs}}  # noqa: E731
+    won1 = g({"0": "DEFEAT", "1": "VICTORY"}, 250.0)
+    assert sides_of(won1) == (0, 1) and sides_of(won1, winners=True) == (1,)
+    assert sides_of(won1, max_minutes=4) == () and sides_of(won1, winners=True, max_minutes=6) == (1,)
+    assert sides_of(g({"0": "TIE", "1": "TIE"}, 900.0), winners=True) == ()
+
+
 def test_a_restarted_run_draws_other_launches():
     from warcraftsim.fullgame.selfplay import game_rng
     draws = lambda cfg, w, k: [game_rng(cfg, w, k).random() for _ in range(3)]  # noqa: E731

@@ -71,6 +71,22 @@ def side_data(enc: fx.Encoder, game: dict, player: int, values: dict) -> dict:
     return out
 
 
+def sides_of(game: dict, winners: bool = False, max_minutes: float = 0.0) -> tuple[int, ...]:
+    """The sides of a game to learn from: both; with `winners` only the side that won (none for a
+    tie); with `max_minutes` only games decided within that many minutes. (As AlphaStar fine-tuned
+    its supervised policy on winning replays: on duelfast the policy tied 80-95% of its games and
+    the built-in AI's short wins show it finishing them.)"""
+    if not winners and not max_minutes:
+        return (0, 1)
+    meta = game["meta"]
+    if max_minutes and (meta.get("game_seconds") or 0.0) > 60.0 * max_minutes:
+        return ()
+    if not winners:
+        return (0, 1)
+    res = meta.get("result") or {}
+    return tuple(p for p in (0, 1) if res.get(str(p)) == "VICTORY")
+
+
 def as_is(batch):
     """A loader's collate_fn for batches that are complete already (Steps with arrays)."""
     return batch
@@ -80,11 +96,12 @@ class Steps(torch.utils.data.IterableDataset):
     """Shuffled batches of steps from the games (both sides), encoded by the loader workers."""
 
     def __init__(self, paths: list[Path], vocab: dict, batch: int, values: dict, costs=None, buffer_steps: int = 8192,
-                 seed: int = 0, arrays: bool = False):
+                 seed: int = 0, arrays: bool = False, winners: bool = False, max_minutes: float = 0.0):
         """`arrays`: numpy batches (with a loader's collate_fn=as_is they cross to its process as bytes:
         a tensor crosses as a shared-memory file of its own, ~15 ms for a batch's twelve)."""
         self.paths, self.vocab, self.batch, self.buffer_steps, self.seed = paths, vocab, batch, buffer_steps, seed
         self.values, self.costs, self.arrays = values, costs, arrays
+        self.winners, self.max_minutes = winners, max_minutes  # (sides_of)
         self.epoch = 0
 
     def __iter__(self):
@@ -110,7 +127,7 @@ class Steps(torch.utils.data.IterableDataset):
 
         for p in paths:
             game = fx.load_game(p)
-            for player in (0, 1):
+            for player in sides_of(game, self.winners, self.max_minutes):
                 out = side_data(enc, game, player, self.values)
                 if not buf:
                     buf = {k: np.zeros((cap,) + out[k].shape[1:], out[k].dtype) for k in KEYS}
@@ -134,9 +151,11 @@ class Sequences(torch.utils.data.IterableDataset):
     state resets) and "lane" [lanes] (ids across the loader workers, for the carried states). A lane
     goes on with a new side where its side ends."""
 
-    def __init__(self, paths: list[Path], vocab: dict, lanes: int, seq_len: int, values: dict, costs=None, seed: int = 0):
+    def __init__(self, paths: list[Path], vocab: dict, lanes: int, seq_len: int, values: dict, costs=None, seed: int = 0,
+                 winners: bool = False, max_minutes: float = 0.0):
         self.paths, self.vocab, self.lanes, self.seq_len, self.seed = paths, vocab, lanes, seq_len, seed
         self.values, self.costs = values, costs
+        self.winners, self.max_minutes = winners, max_minutes
         self.epoch = 0
 
     def __iter__(self):
@@ -154,7 +173,7 @@ class Sequences(torch.utils.data.IterableDataset):
                 if p is None:
                     return None
                 g = fx.load_game(p)
-                for player in (0, 1):
+                for player in sides_of(g, self.winners, self.max_minutes):
                     pending.append(side_data(enc, g, player, self.values))
             return pending.pop(0)
 
@@ -184,7 +203,8 @@ class Sequences(torch.utils.data.IterableDataset):
             yield b
 
 
-def whole_sides(paths: list[Path], vocab: dict, values: dict, costs=None, sides: int = 4):
+def whole_sides(paths: list[Path], vocab: dict, values: dict, costs=None, sides: int = 4, winners: bool = False,
+                max_minutes: float = 0.0):
     """Validation: every step of every game side, `sides` sides per batch as sequences padded to the
     longest ("valid" marks the steps; lane-major as Sequences, each lane starting at its side's start).
     The same batches for every model, with memory or without."""
@@ -192,7 +212,7 @@ def whole_sides(paths: list[Path], vocab: dict, values: dict, costs=None, sides:
     todo = []
     for p in paths:
         g = fx.load_game(p)
-        todo += [side_data(enc, g, player, values) for player in (0, 1)]
+        todo += [side_data(enc, g, player, values) for player in sides_of(g, winners, max_minutes)]
     for a in range(0, len(todo), sides):
         group = todo[a:a + sides]
         T = max(len(x["n_own"]) for x in group)
@@ -319,6 +339,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--max-games", type=int, default=0)
     ap.add_argument("--memory", action="store_true", help="the minGRU core (trained on chunks of consecutive steps)")
+    ap.add_argument("--winners-only", action="store_true", help="learn only from the side that won each game (bc.sides_of)")
+    ap.add_argument("--max-minutes", type=float, default=0.0, help="learn only from games decided within this many minutes")
     ap.add_argument("--init", type=Path, help="start from this fit's policy (its network and vocabulary; e.g. to add "
                                              "takeover games to a fit)")
     ap.add_argument("--seq-len", type=int, default=32, help="with --memory: steps per chunk")
@@ -369,12 +391,12 @@ def main(argv: list[str] | None = None) -> int:
     opt = torch.optim.AdamW(net.parameters(), lr=args.lr, weight_decay=1e-4)
     if args.memory:  # args.batch steps: lanes of seq_len steps
         lanes = max(1, args.batch // args.seq_len)
-        data = Sequences(train, vocab, lanes, args.seq_len, values, costs)
+        data = Sequences(train, vocab, lanes, args.seq_len, values, costs, winners=args.winners_only, max_minutes=args.max_minutes)
         states = torch.zeros(args.workers * lanes, args.d, device=device)
     else:
-        data = Steps(train, vocab, args.batch, values, costs)
+        data = Steps(train, vocab, args.batch, values, costs, winners=args.winners_only, max_minutes=args.max_minutes)
         states = None
-    val_batches = list(whole_sides(val, vocab, values, costs))
+    val_batches = list(whole_sides(val, vocab, values, costs, winners=args.winners_only, max_minutes=args.max_minutes))
     print(f"{len(train)} training games, {len(val)} validation ({len(val_batches)} batches); "
           f"{enc.n_types} unit types, {enc.n_orders} order classes", flush=True)
     t0 = time.time()
