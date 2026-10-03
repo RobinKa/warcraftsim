@@ -167,6 +167,20 @@ GE-Proton 10-34's Wine (10.0 with Proton's patches) with `WINEFSYNC=1` keeps Win
 * Its Windows user is "steamuser" (the Documents folder: replays).
 * `selfplay --wine <files/bin> --fsync 1`: prefixes in a runtime folder of the Wine's own (`~/wc3/runtime-GE-Proton10-34`).
 
+## Actors, and the inference server's transport (2026-10-03/04)
+
+* **8 actor processes of 5 games** instead of 4 of 10 (40 games either way): an actor's games had each waited ~8 ms a step for its GIL (py-spy: 3.6 ms of Python a step, ~12 ms in it). 1,053 → ~1,200 steps/s (10-20 minute averages).
+* **A round's networks on CUDA streams of their own** (the current network's; past snapshots in four `PastNet` slots, a network copy each): `scripts/bench_inference.py` gives identical values and entropies; alone a round only went 4.4 → 4.2 ms (1.6 ms of launching, ~3 ms of the GPU), so in the run the wait is mostly for the learner's kernels.
+* **View steps and answers through shared memory** (`SharedRows`: a /dev/shm file mapped by every process; a game writes its sides' rows and sends their numbers; the server gathers a call's rows in a few index operations): pickling and the row-by-row copy had been ~40% of the server's time.
+
+| inference server (run averages) | round | of it waiting for the GPU | busy |
+|---|---|---|---|
+| before (GE Wine, 23:21-23:36) | 12.5 ms | 6.8 ms | 96% |
+| CUDA streams (6 minutes) | 9.9 ms | 4.6 ms | 95% |
+| shared memory as well (14 minutes) | 7.4 ms | 3.5 ms | 91% |
+
+The run's steps/s for the last two are not measured yet: another project's headless Chrome took ~10 cores in bursts in both windows (the run fell to ~1,000 steps/s while it ran). With it the live run's CPU: wineserver 0.6 cores (3.3 at the start of the evening), the games' other threads 0.8 (3.0), kernel time 3.0 (8.0).
+
 ## Dead ends
 
 * 8 actor processes of 4 games instead of 4 of 8 (627 against 644 steps/s).
