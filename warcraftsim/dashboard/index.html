@@ -850,10 +850,10 @@ const SECTIONS = [
     ["c-lg-past", "Against its past", "win rate against past snapshots (PFSP) and against itself",
       [TR("league/past", "past snapshots", "#539bf5"), TR("league/exploiter", "exploiter snapshots", "#e5534b"),
        TR("league/self", "itself", "#4cc38a")], { ymin: 0, ymax: 1, empty: "no league" }],
-    ["c-lg-tie", "Games tied", "by opponent · (real): the untaxed AI, else the curriculum's taxed AI · 40+ games a point",
-      [["epp", "otie/"]], { ymin: 0, ymax: 1, empty: "no games with a result", hideEmpty: true, kinds: true }],
-    ["c-lg-loss", "Games lost", "by opponent · (real): the untaxed AI, else the curriculum's taxed AI · 40+ games a point",
-      [["epp", "oloss/"]], { ymin: 0, ymax: 1, empty: "no games with a result", hideEmpty: true, kinds: true }],
+    ["c-lg-tie", "Games tied", "by opponent · dashed: the taxed AI (curriculum) · 40+ games a point",
+      [["epp", "otie/"]], { ymin: 0, ymax: 1, empty: "no games with a result", hideEmpty: true, opponents: true }],
+    ["c-lg-loss", "Games lost", "by opponent · dashed: the taxed AI (curriculum) · 40+ games a point",
+      [["epp", "oloss/"]], { ymin: 0, ymax: 1, empty: "no games with a result", hideEmpty: true, opponents: true }],
     ["c-lg-exploit", "The main exploiter", "its win rate against the main learner's current policy (it restarts from the main learner above --exploiter-reset or below --exploiter-reset-low)",
       [TR("league/exploiter_vs_main", "exploiter vs main", "#f47067"), TR("league/exploiter_resets", "resets", "#8795a3")], { ymin: 0, empty: "no exploiter (--torch.exploiters=1, fullgame --exploiter-share)", hideEmpty: true }],
     ["c-lg-real", "The real game by race", "games won against the untaxed AI (easy, normal), 40+ games a point",
@@ -910,12 +910,12 @@ function matchupStyle(name) {
   const [a, b] = name.split("/");
   return RACE_COLORS[a] ? { color: RACE_COLORS[a], dash: b ? RACE_DASHES[b] || [] : [] } : null;
 }
-// series named by opponent (chart option kinds): a colour per AI difficulty or kind of opponent, dashed
+// series named by opponent (chart option opponents): a colour per AI difficulty or kind of opponent, dashed
 // for the curriculum's taxed AI ("ai-normal"), solid for the real game ("ai-normal (real)") and the agents
-const KIND_COLORS = [["easy", "#4cc38a"], ["normal", "#e0a33a"], ["insane", "#e5534b"], ["itself", "#539bf5"],
-                     ["past", "#b083f0"], ["exploiter", "#8795a3"]];
-function kindStyle(name) {
-  const c = KIND_COLORS.find(([k]) => name.includes(k));
+const OPPONENT_COLORS = [["easy", "#4cc38a"], ["normal", "#e0a33a"], ["insane", "#e5534b"], ["itself", "#539bf5"],
+                         ["past", "#b083f0"], ["exploiter", "#8795a3"]];
+function opponentStyle(name) {
+  const c = OPPONENT_COLORS.find(([k]) => name.includes(k));
   return c ? { color: c[1], dash: name.startsWith("ai-") && !name.includes("(real)") ? [6, 3] : [] } : null;
 }
 const PREFIX_COLORS = ["#8795a3", "#e0a33a", "#b083f0", "#e5534b", "#539bf5", "#4cc38a", "#39c5cf", "#f56ed2"];
@@ -1052,7 +1052,7 @@ function renderMain() {
       c.series = [];
       shown.forEach((n, ri) => {
         for (const [src, key, name, color] of expandDefs(defs, state.data[n])) {
-          const mu = shown.length > 1 ? null : c.opts.matchups ? matchupStyle(name) : c.opts.kinds ? kindStyle(name) : null;  // (comparing runs: a dash per run)
+          const mu = shown.length > 1 ? null : c.opts.matchups ? matchupStyle(name) : c.opts.opponents ? opponentStyle(name) : null;  // (comparing runs: a dash per run)
           c.series.push({ name, color: mu ? mu.color : defs.length === 1 && shown.length > 1 ? runColor(ri) : color, run: ri,
                           runName: shown.length > 1 ? n : "", dash: mu ? mu.dash : DASHES[ri % DASHES.length], many: shown.length > 1,
                           dots: src === "cal", points: seriesPoints(state.data[n], src, key) });
