@@ -288,6 +288,22 @@ def losses(net: FullGameNet, b: dict, device, states: torch.Tensor | None = None
     avail = b["avail"] if avail_mask else None  # (as when playing: what the player can pay for)
     logits = net.order_logits(g, u[:, :O], typ, n_own, by_type=False, avail=avail)  # own units come first
     own = torch.arange(O, device=device)[None] < n_own[:, None]
+    if not stats:  # (self-play's auxiliary loss: masked means, not boolean indexing; each was a GPU sync)
+        w = own.float()
+        if net.training:  # the orders each unit type gets (padding and "none" set class 0: always allowed)
+            net.allowed[typ[:, :O].reshape(-1), y_order.reshape(-1)] = True
+        ptr, xl, z = net.target_logits(g, u, mask, y_order)
+        yl = net.y_logits(z, y_x)
+        loss = (_masked_ce(logits, y_order, w) + _masked_ce(ptr, y_ptr, w)
+                + 0.5 * (_masked_ce(xl, y_x, w) + _masked_ce(yl, y_y, w)))
+        if value_coef:
+            value, ret = net.value(g).float(), b["ret"].float()
+            if "valid" in b:
+                v = b["valid"].float()
+                loss = loss + value_coef * 0.5 * (((value - ret) ** 2) * v).sum() / v.sum().clamp(min=1)
+            else:
+                loss = loss + value_coef * 0.5 * ((value - ret) ** 2).mean()
+        return loss, {}
     l_order = F_.cross_entropy(logits[own], y_order[own])
     if net.training:  # the orders each unit type gets (the mask for playing)
         issued_ = own & (y_order > 0)
@@ -302,8 +318,6 @@ def losses(net: FullGameNet, b: dict, device, states: torch.Tensor | None = None
     if "valid" in b:  # (padded steps: no value target)
         value, ret = value[b["valid"]], ret[b["valid"]]
     l_value = 0.5 * ((value - ret) ** 2).mean()
-    if not stats:
-        return l_order + l_ptr + 0.5 * l_pt + value_coef * l_value, {}
     with torch.no_grad():
         issued = own & (y_order > 0)
         p_order = 1 - logits.softmax(-1)[..., 0]  # the chance of any order
@@ -318,6 +332,14 @@ def losses(net: FullGameNet, b: dict, device, states: torch.Tensor | None = None
                  "ret_n": len(ret), "ret_sum": float(ret.sum()), "ret_sq": float((ret ** 2).sum()),
                  "err_sq": float(((value - ret) ** 2).sum())}
     return l_order + l_ptr + 0.5 * l_pt + value_coef * l_value, stats
+
+
+def _masked_ce(logits: torch.Tensor, y: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    """Cross-entropy of [N, O, K] logits against labels [N, O] (-1: none), averaged over the labelled
+    entries with weight > 0 (0 when there are none), with no GPU sync."""
+    has = (y >= 0).float() * weight
+    ce = F_.cross_entropy(logits.float().flatten(0, 1), y.clamp(min=0).flatten(), reduction="none")
+    return (ce * has.flatten()).sum() / has.sum().clamp(min=1)
 
 
 def summarize(stats: list[dict]) -> dict:

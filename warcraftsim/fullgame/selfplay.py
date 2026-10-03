@@ -1184,7 +1184,7 @@ def collate(steps: list[dict], device) -> dict:
                 has[i] = True
                 for k in labels:
                     labels[k][i, :s["n_own"]] = s[k]
-        labels = {**{k: t(v) for k, v in labels.items()}, "y_has": t(has)}
+        labels = {**{k: t(v) for k, v in labels.items()}, "y_has": t(has), "y_any": bool(has.any())}
     return {"ent": t(ent), "type": t(typ), "cur": t(cur), "mask": t(mask), "glob": t(glob), "n_own": t(n_own), **labels,
             **{k: t(v) for k, v in acts.items()}, "logp": t(logp), "avail": t(avail) if avail is not None else None,
             "adv": torch.tensor([s["adv"] for s in steps], device=device, dtype=torch.float32),
@@ -1245,19 +1245,25 @@ def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast) -> tuple[torch.
     y = mb["y_order"]
     lp = torch.log_softmax(ev["logits"].float(), -1)
     lp_y = lp.gather(-1, y.unsqueeze(-1)).squeeze(-1)
-    ok = own & (lp_y > -1e4)  # (an order the unit can't get now: none of its business)
+    ok = (own & (lp_y > -1e4)).float()  # (an order the unit can't get now: none of its business)
     l_order = -(lp_y * ok).sum() / ok.sum().clamp(min=1)
-    with autocast:
-        ptr, xl, z = net.target_logits(ev["g"], ev["u"], mb["mask"], y)
-        yl = net.y_logits(z, mb["y_x"])
-    has_ptr, has_pt = (mb["y_ptr"] >= 0) & ok, (mb["y_x"] >= 0) & ok
-    ce = torch.nn.functional.cross_entropy
-    l_ptr = ce(ptr[has_ptr].float(), mb["y_ptr"][has_ptr]) if has_ptr.any() else lp.sum() * 0
-    l_pt = (ce(xl[has_pt].float(), mb["y_x"][has_pt]) + ce(yl[has_pt].float(), mb["y_y"][has_pt])) if has_pt.any() else lp.sum() * 0
+    ptr, xl, z = net.target_logits(ev["g"], ev["u"], mb["mask"], y)  # (in the caller's autocast)
+    yl = net.y_logits(z, mb["y_x"])
+    # (masked means, not boolean indexing: every index or any() was a wait for the GPU)
+    l_ptr = _masked_ce(ptr, mb["y_ptr"], ok)
+    l_pt = _masked_ce(xl, mb["y_x"], ok) + _masked_ce(yl, mb["y_y"], ok)
     with torch.no_grad():
-        issued = ok & (y > 0)
-        acc = ((lp[..., 1:].argmax(-1) + 1 == y) & issued).sum() / issued.sum().clamp(min=1)
+        issued = ok * (y > 0)
+        acc = ((lp[..., 1:].argmax(-1) + 1 == y) * issued).sum() / issued.sum().clamp(min=1)
     return l_order + l_ptr + 0.5 * l_pt, acc
+
+
+def _masked_ce(logits: torch.Tensor, y: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    """Cross-entropy [N, O, K] logits against labels [N, O] (-1: none) averaged over the labelled
+    entries with weight > 0 (0 when there are none), with no GPU sync."""
+    has = (y >= 0).float() * weight
+    ce = torch.nn.functional.cross_entropy(logits.float().flatten(0, 1), y.clamp(min=0).flatten(), reduction="none")
+    return (ce * has.flatten()).sum() / has.sum().clamp(min=1)
 
 
 def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict], args, warmup: bool, device,
@@ -1293,9 +1299,11 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
             batches = (collate_seq([seqs[i] for i in idx], device) for idx in minibatches(widths, per_mb, args.pad_groups))
         for mb in batches:
             seq = mb.get("seq")
-            with autocast:  # bf16 matmuls (the losses and log-probabilities in fp32)
-                ev = evaluate(net, mb["ent"], mb["type"], mb["cur"], mb["mask"], mb["glob"], mb["n_own"],
-                              mb["order"], mb["tgt"], mb["bx"], mb["by"], mb["avail"], seq=seq)
+            # every forward pass of the minibatch in one autocast region: bf16 matmuls (the losses and
+            # log-probabilities in fp32), and a weight cast to bf16 once, not once per pass
+            autocast.__enter__()  # (left before the backward pass, below)
+            ev = evaluate(net, mb["ent"], mb["type"], mb["cur"], mb["mask"], mb["glob"], mb["n_own"],
+                          mb["order"], mb["tgt"], mb["bx"], mb["by"], mb["avail"], seq=seq)
             ev["value"] = ev["value"].float()
             own = mb["own"].float()
             n_units = own.sum().clamp(min=1)
@@ -1314,7 +1322,7 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
                 loss = loss + pg
             ref_kl = torch.zeros((), device=device)
             if ref is not None and args.ref_kl > 0:
-                with torch.no_grad(), autocast:
+                with torch.no_grad():
                     ev_ref = evaluate(ref, mb["ent"], mb["type"], mb["cur"], mb["mask"], mb["glob"], mb["n_own"],
                                       mb["order"], mb["tgt"], mb["bx"], mb["by"], mb["avail"],
                                       seq=seq if ref.memory else None)
@@ -1324,7 +1332,7 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
                 # also while the value warms up: it shares the network's trunk, so training it alone
                 # moved the policy too (the KL to the clone doubled in the first five updates)
                 loss = loss + args.ref_kl * ref_kl
-            if getattr(args, "opd_coef", 0.0) > 0 and "y_has" in mb and bool(mb["y_has"].any()):
+            if getattr(args, "opd_coef", 0.0) > 0 and mb.get("y_any"):
                 l_opd, opd_acc = distill_loss(net, ev, mb, autocast)
                 loss = loss + args.opd_coef * l_opd
                 stats.setdefault("loss/opd", []).append(l_opd.detach())
@@ -1332,10 +1340,10 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
                 stats.setdefault("opd/steps", []).append(mb["y_has"].float().mean())
             if bc_iter is not None and args.bc_coef > 0:  # DAgger's labels as an auxiliary loss (not a fine-tune:
                 from .bc import losses as bc_losses  # cloning afterwards overwrote what RL had learned)
-                with autocast:
-                    l_bc, _ = bc_losses(net, next(bc_iter), device, None, value_coef=0.0, stats=False)
+                l_bc, _ = bc_losses(net, next(bc_iter), device, None, value_coef=0.0, stats=False)
                 loss = loss + args.bc_coef * l_bc
                 stats.setdefault("loss/bc", []).append(l_bc.detach())
+            autocast.__exit__(None, None, None)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             gn = torch.nn.utils.clip_grad_norm_(net.parameters(), args.max_grad_norm)
