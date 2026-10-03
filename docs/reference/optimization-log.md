@@ -79,6 +79,7 @@ A run's page re-read and re-binned all its episodes on every refresh: 4.5 s for 
 * A slower clock while reloading (the loading screen waits ~2 s of game time drawing frames: slower costs more).
 * Wine's csmt off alone; esync; clock speeds far above what the game reaches (more wineserver wakeups).
 * 36 or 48 micro games instead of 24 (1,871 and 1,751 steps/s against 1,830).
+* Slower waits for the game's background threads (2026-10-03, shim `W3SIM_BG_SPEED`, `W3SIM_SLOW_WAITS`): four threads wake ~1,300 times a second a game (the shim divides their timeouts by the clock's speed). One of them paces the turns (call site `exe+0x3c2ede`, ~720 wakeups a second, mostly polls): waiting in real time, a game took 4x as long. Capping the other three (`0x352ce`, `0x3c2f8f`, `0x3b80f1`) cut wineserver from 4.2 to 3.6 ms a step and the whole game's CPU by ~3%, with the games no faster. Off.
 
 ## What is left
 
