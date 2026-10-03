@@ -26,6 +26,7 @@ league.json, checkpoints/<agent steps>.pt (play.py and further runs can load the
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import json
 import math
@@ -285,12 +286,17 @@ class Inference:
             out = self._fn(net)(host.to(self.device))
         return out, own, min(fx.MAX_OWN, E), bool(d)
 
-    def wait(self) -> None:
-        """Until the calls launched are done (sleeping: CUDA's default sync spins a core the games need)."""
+    def wait(self, streams: list | None = None) -> None:
+        """Until the calls launched (on these streams; default: the current one) are done (sleeping:
+        CUDA's default sync spins a core the games need)."""
         if self.device.type == "cuda":
-            done = torch.cuda.Event(blocking=True)
-            done.record()
-            done.synchronize()
+            events = []
+            for st in streams or [torch.cuda.current_stream()]:
+                done = torch.cuda.Event(blocking=True)
+                done.record(st)
+                events.append(done)
+            for done in events:
+                done.synchronize()
         self._used.clear()
 
     def _finish(self, handle: tuple) -> list[dict]:
@@ -343,23 +349,38 @@ class RemoteInference:
 
 
 class PastNet:
-    """The past snapshots' calls through one network object (per architecture): a snapshot's weights
-    are copied into it before its calls. Its parameters are views of one flat tensor, so that is one
-    copy. (Compiled per snapshot, every new league member stalled all the games for 25-50 s: four
-    shapes to compile, every 20 updates.)"""
+    """The past snapshots' calls through a few network objects (slots, per architecture): a snapshot's
+    weights are copied into a slot before its calls. Its parameters are views of one flat tensor, so
+    that is one copy. Each slot has its CUDA graphs and stream: a round's snapshots run side by side.
+    (Compiled per snapshot, every new league member stalled all the games for 25-50 s: four shapes to
+    compile, every 20 updates.)"""
 
-    def __init__(self, device):
-        self.device = device
-        self.hosts: dict[str, list] = {}  # architecture -> [network, its flat weights, its buffers, the snapshot loaded]
+    def __init__(self, device, slots: int = 1):
+        self.device, self.slots = device, slots
+        self.hosts: dict[tuple, list] = {}  # (architecture, slot) -> [network, its flat weights, its buffers, the snapshot loaded]
         self.flats = weakref.WeakKeyDictionary()  # snapshot network -> (its weights, flat; its buffers)
+        self.holding: dict[int, str] = {}  # slot -> the snapshot it holds
+
+    def slot(self, key: str, taken: set) -> int:
+        """A slot for this snapshot in a round (`taken`: the round's slots so far): the one that holds
+        it, else a free one, else one already taken (its calls then wait for the other's)."""
+        free = [k for k in range(self.slots) if k not in taken]
+        held = [k for k in free if self.holding.get(k) == key]
+        if held:
+            return held[0]
+        if free:
+            empty = [k for k in free if k not in self.holding]
+            return (empty or free)[0]
+        return len(taken) % self.slots
 
     @torch.no_grad()
-    def get(self, key: str, src: FullGameNet) -> FullGameNet:
+    def get(self, key: str, src: FullGameNet, slot: int = 0) -> FullGameNet:
         if src not in self.flats:
             self.flats[src] = (torch.cat([p.data.reshape(-1) for p in src.parameters()]), list(src.buffers()),
                                json.dumps(src.config, sort_keys=True, default=str))
         flat, buffers, arch = self.flats[src]
-        host = self.hosts.get(arch)
+        self.holding[slot] = key
+        host = self.hosts.get((arch, slot))
         if host is None:
             net = FullGameNet(**src.config).to(self.device).eval()
             net.load_state_dict(src.state_dict())
@@ -368,13 +389,50 @@ class PastNet:
             for p in net.parameters():
                 p.data = mine[at:at + p.numel()].view(p.shape)
                 at += p.numel()
-            host = self.hosts[arch] = [net, mine, list(net.buffers()), key]
+            host = self.hosts[(arch, slot)] = [net, mine, list(net.buffers()), key]
         if host[3] != key:
             host[1].copy_(flat)
             for mine, theirs in zip(host[2], buffers):
                 mine.copy_(theirs)
             host[3] = key
         return host[0]
+
+
+def launch_round(groups: dict, nets: Nets, infer: Inference, past: Inference, swap: PastNet, top: int,
+                 streams: dict | None) -> tuple[list, list]:
+    """Start a round's calls without waiting for them (-> [(its Inference, handle, the part's items, the
+    network's version)], the streams to wait for). `groups`: network key -> [(pipe, index, view step)].
+    `streams` (a dict the server keeps them in): every network its own CUDA stream (the current
+    network's, each past snapshot slot's), so a round's calls run side by side; one after the other
+    they were ~3-4 small calls a round and ~45% of the server's time a wait for the GPU. None: all on
+    the current stream."""
+    cuda = streams is not None and infer.device.type == "cuda"
+    base = torch.cuda.current_stream() if cuda else None
+    calls, used, taken = [], [], set()
+    for key, items in groups.items():
+        live_key = key in LIVE
+        fwd, size = (infer, top) if live_key else (past, 16)
+        slot = 0 if live_key else swap.slot(key, taken)
+        taken |= set() if live_key else {slot}
+        st = None
+        if cuda:
+            st = streams.get((live_key, key if live_key else slot))
+            if st is None:
+                st = streams[(live_key, key if live_key else slot)] = torch.cuda.Stream(device=infer.device)
+            if st not in used:  # (after the current stream's work: weights reloaded, snapshots loaded)
+                st.wait_stream(base)
+                used.append(st)
+        with torch.cuda.stream(st) if st is not None else contextlib.nullcontext():
+            for a in range(0, len(items), size):
+                part = items[a:a + size]
+                try:
+                    net = nets.get(key)
+                    handle = fwd._launch(net if live_key else swap.get(key, net, slot), [it[2] for it in part])
+                except Exception:  # noqa: BLE001 (the games must not hang on it)
+                    traceback.print_exc()
+                    handle = None
+                calls.append((fwd, handle, part, nets.live_version(key)))
+    return calls, used
 
 
 def inference_main(cfg: dict, conns: list, stop) -> None:
@@ -397,7 +455,8 @@ def inference_main(cfg: dict, conns: list, stop) -> None:
     infer = Inference(nets, device, top, cfg["compile"], buckets=tuple(b for b in (8, 24, 64) if b <= top) or (top,),
                       thread=False, entities=(48, 96))
     past = Inference(nets, device, 16, cfg["compile"], buckets=(4, 16), thread=False, entities=(64,))  # past snapshots: few calls
-    swap = PastNet(device)
+    swap = PastNet(device, slots=cfg.get("infer_past_slots", 1))
+    streams = {} if cfg.get("infer_streams", 0) else None
     def fresh():
         return {"calls": 0, "past": 0, "rows": 0, "busy": 0.0, "wait": 0.0, "ents": 0, "ents_max": 0, "rounds": 0,
                 "t": time.time()}
@@ -439,27 +498,17 @@ def inference_main(cfg: dict, conns: list, stop) -> None:
             asked[c] = (rid, [None] * len(items))
             for k, (key, st) in enumerate(items):
                 groups.setdefault(key, []).append((c, k, st))
-        calls = []  # the round's calls, all started before the one wait for them
-        for key, items in groups.items():
-            fwd, size = (infer, top) if key in LIVE else (past, 16)
-            for a in range(0, len(items), size):
-                part = items[a:a + size]
-                try:
-                    net = nets.get(key)
-                    handle = fwd._launch(net if key in LIVE else swap.get(key, net), [it[2] for it in part])
-                except Exception:  # noqa: BLE001 (the games must not hang on it)
-                    traceback.print_exc()
-                    handle = None
-                calls.append((fwd, handle, part, nets.live_version(key)))
-                ns = [it[2]["n"] for it in part]
-                stats["calls"] += 1
-                stats["past"] += key not in LIVE
-                stats["rows"] += len(part)
-                stats["ents"] += sum(ns)
-                stats["ents_max"] += max(ns)
+        calls, used = launch_round(groups, nets, infer, past, swap, top, streams)  # all started before the one wait
+        for fwd, _, part, _ in calls:
+            ns = [it[2]["n"] for it in part]
+            stats["calls"] += 1
+            stats["past"] += fwd is past
+            stats["rows"] += len(part)
+            stats["ents"] += sum(ns)
+            stats["ents_max"] += max(ns)
         t_wait = time.time()
-        infer.wait()
-        past.wait()
+        infer.wait(used or None)
+        past.wait(used or None)
         stats["wait"] += time.time() - t_wait
         for fwd, handle, part, version in calls:
             try:
@@ -1654,6 +1703,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="1: one inference server makes every actor's network calls (one GPU context, batches over all "
                          "games); 0: each actor its own")
     ap.add_argument("--native-obs", type=int, default=1, help="observations parsed in C (warcraftsim.native)")
+    ap.add_argument("--infer-streams", type=int, default=1, help="the inference server runs a round's networks "
+                                                                  "side by side, a CUDA stream each")
+    ap.add_argument("--infer-past-slots", type=int, default=4, help="past snapshots a round runs side by side "
+                                                                     "(a network copy each)")
     ap.add_argument("--wine", default="", help="another Wine's bin folder (e.g. GE-Proton's files/bin; "
                                               "runtime.wine.use_wine): its own prefixes")
     ap.add_argument("--fsync", type=int, default=0, help="with --wine (a Proton build): Wine's synchronization "
@@ -1800,7 +1853,8 @@ def main(argv: list[str] | None = None) -> int:
            "agent_games_factor": args.agent_games_factor, "mirror": bool(args.mirror), "learner_pid": os.getpid(),
            "actors": args.actors, "values": unit_values(), "shaping": args.shaping, "shaping_scale": args.shaping_scale,
            "tie_break": args.tie_break, "tie_value": args.tie_value, "compile": bool(args.compile), "native_obs": bool(args.native_obs),
-           "real_share": args.real_share, "infer_batch": 64, "game_nice": args.game_nice, "pairs": args.pairs,
+           "real_share": args.real_share, "infer_batch": 64, "infer_streams": args.infer_streams,
+           "infer_past_slots": args.infer_past_slots, "game_nice": args.game_nice, "pairs": args.pairs,
            "exploiter_share": args.exploiter_share, "float_penalty": args.float_penalty,
            "infer_period": args.infer_period_ms / 1000.0,
            "avail_mask": bool(args.avail_mask),

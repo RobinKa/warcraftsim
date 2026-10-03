@@ -505,6 +505,29 @@ def test_past_snapshots_share_one_network_object():
     assert all(h is hosts[0] for h in hosts) and hosts[0] is not a
 
 
+def test_past_snapshot_slots_run_a_round_side_by_side():
+    """A round's past snapshots each get a slot of their own (a network object each, a CUDA stream
+    each): the slot that holds a snapshot, else an empty or free one; with more snapshots than slots
+    they share."""
+    from warcraftsim.fullgame.model import FullGameNet
+    from warcraftsim.fullgame.selfplay import PastNet
+    torch.manual_seed(0)
+    nets = {k: FullGameNet(n_types=20, n_cur=10, n_orders=30, G=30, d=64, layers=1).eval() for k in "abcde"}
+    swap = PastNet(torch.device("cpu"), slots=3)
+    taken, got = set(), {}
+    for k in "abc":
+        got[k] = swap.slot(k, taken)
+        taken.add(got[k])
+        swap.get(k, nets[k], got[k])
+    assert sorted(got.values()) == [0, 1, 2]
+    assert len({id(swap.get(k, nets[k], got[k])) for k in "abc"}) == 3  # a network object per slot
+    taken = set()
+    assert swap.slot("c", taken) == got["c"]  # the slot that holds it: no copy
+    taken = {got["c"]}
+    assert swap.slot("d", taken) in {got["a"], got["b"]}
+    assert swap.slot("e", {0, 1, 2}) in {0, 1, 2}  # more snapshots than slots: one is shared
+
+
 def test_inference_server_answers_each_game_over_its_pipe(tmp_path):
     """The inference server (its own process) and an actor's side of it: a game's request for the
     current network and a past snapshot comes back on the game's own pipe, one answer per side."""
