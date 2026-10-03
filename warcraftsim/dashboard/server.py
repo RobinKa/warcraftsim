@@ -1018,6 +1018,61 @@ class Dashboard:
             rows.extend(r for r in self.cache.read(f) if "event" not in r)
         return sorted(rows, key=lambda r: r.get("time", 0))
 
+    def lineage(self) -> dict:
+        """What each run came from, as a graph: runs (their parent: a run's checkpoint or a cloning fit),
+        cloning fits (the checkpoint they started from, the demonstrations they fit) and demonstration
+        collections (the policy that played the takeover games). Nodes: {name, kind, track, status,
+        result}; edges: {from, to, why}."""
+        runs = self.runs()
+        names = {r["name"] for r in runs}
+
+        def node_of(path: str | None) -> str | None:  # a checkpoint or data path -> the run it belongs to
+            if not path:
+                return None
+            parts = Path(str(path)).parts
+            if "runs" not in parts:
+                return None
+            rest = parts[parts.index("runs") + 1:]
+            if not rest:
+                return None
+            name = "/".join(rest[:2]) if rest[0] in ("bc", "fullgame") and len(rest) > 1 else rest[0]
+            return name if name in names else None
+        nodes, edges = [], []
+        for r in runs:
+            kind = r.get("kind") or "run"
+            task = str(r.get("task") or "")
+            track = "whole game" if task.startswith("fullgame") or kind == "collect" else "micro"
+            s = r.get("summary") or {}
+            result = (r.get("real_game") or {}).get("wins") if isinstance(r.get("real_game"), dict) else None
+            nodes.append({"name": r["name"], "kind": kind if kind != "run" or not task.startswith("fullgame") else "selfplay",
+                          "track": track, "status": r.get("status"), "win_rate": s.get("win_rate_100"),
+                          "steps": s.get("agent_steps"), "result": result})
+            par = r.get("parent")
+            if isinstance(par, dict) and par.get("name"):
+                src = ("bc/" + par["name"]) if par.get("kind") == "bc" and not par["name"].startswith("bc/") else par["name"]
+                if src in names:
+                    edges.append({"from": src, "to": r["name"], "why": "start"})
+            if kind == "bc":
+                src = node_of(r.get("init_from"))
+                if src:
+                    edges.append({"from": src, "to": r["name"], "why": "start"})
+                for d in str(r.get("data") or "").split():
+                    src = node_of(d)
+                    if src:
+                        edges.append({"from": src, "to": r["name"], "why": "data"})
+            if kind == "collect":
+                info = _read_json(self.runs_dir / r["name"] / "collect.json") or {}
+                src = node_of(info.get("policy"))
+                if src:
+                    edges.append({"from": src, "to": r["name"], "why": "policy"})
+        seen, unique = set(), []
+        for e in edges:
+            k = (e["from"], e["to"])
+            if k not in seen and e["from"] != e["to"]:
+                seen.add(k)
+                unique.append(e)
+        return {"nodes": nodes, "edges": unique}
+
     def runs(self) -> list[dict]:
         out = []
         if not self.runs_dir.exists():
@@ -1175,7 +1230,7 @@ def make_handler(dash: Dashboard, docs: Docs | None = None):
 
         def do_GET(self):
             path = urllib.parse.unquote(urllib.parse.urlparse(self.path).path)
-            if path in ("/", "/index.html") or path.startswith(("/run/", "/sweep/", "/doc/")) or path == "/doc":
+            if path in ("/", "/index.html", "/doc", "/lineage") or path.startswith(("/run/", "/sweep/", "/doc/")):
                 return self._send(_page(), "text/html; charset=utf-8")  # (the page's own addresses: it routes)
             if path == "/api/runs":
                 return self._json(dash.runs())
@@ -1184,6 +1239,8 @@ def make_handler(dash: Dashboard, docs: Docs | None = None):
             if path.startswith("/api/runs/"):
                 data = dash.run(path[len("/api/runs/"):])
                 return self._json(data) if data else self._json({"error": "no such run"}, 404)
+            if path == "/api/lineage":
+                return self._json(dash.lineage())
             if path == "/api/docs":
                 return self._json(docs.list())
             if path.startswith("/api/docs/"):

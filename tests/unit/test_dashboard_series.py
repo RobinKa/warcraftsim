@@ -48,3 +48,28 @@ def test_docs_list_read_save(tmp_path):
     assert d.save("new-doc", "# New\n") and d.read("new-doc")["title"] == "New"
     assert d.save("reference/deep", "# Deep\n") and d.list()[-1]["name"] == "reference/deep"
     assert not d.save("../evil", "x") and not d.save("Upper", "x")
+
+
+def test_lineage_links_runs_fits_and_collections(tmp_path):
+    """The Lineage view's graph: a run's parent, a fit's start and data, a collection's policy."""
+    import json as j
+
+    from warcraftsim.dashboard.server import Dashboard
+    runs = tmp_path / "runs"
+    (runs / "a").mkdir(parents=True)
+    (runs / "a" / "run.json").write_text(j.dumps({"name": "a", "kind": "run", "task": "fullgame_duelfast", "status": "stopped"}))
+    (runs / "b").mkdir()
+    (runs / "b" / "run.json").write_text(j.dumps({"name": "b", "kind": "run", "task": "fullgame_duelfast", "status": "training",
+                                                  "init_from": "runs/a/checkpoints/1.pt"}))
+    d = Dashboard(runs)
+    d.runs = lambda: [{"name": "a", "kind": "run", "task": "fullgame_duelfast"},
+                      {"name": "b", "kind": "run", "task": "fullgame_duelfast", "parent": {"kind": "run", "name": "a"}},
+                      {"name": "bc/c", "kind": "bc", "task": "fullgame", "init_from": "runs/b/checkpoints/2.pt",
+                       "data": "runs/fullgame/demos-x"},
+                      {"name": "fullgame/demos-x", "kind": "collect", "task": "fullgame"}]
+    (runs / "fullgame" / "demos-x").mkdir(parents=True)
+    (runs / "fullgame" / "demos-x" / "collect.json").write_text(j.dumps({"policy": "runs/a/checkpoints/1.pt"}))
+    L = d.lineage()
+    assert {(e["from"], e["to"], e["why"]) for e in L["edges"]} == {
+        ("a", "b", "start"), ("b", "bc/c", "start"), ("fullgame/demos-x", "bc/c", "data"), ("a", "fullgame/demos-x", "policy")}
+    assert {n["name"]: n["kind"] for n in L["nodes"]}["a"] == "selfplay"
