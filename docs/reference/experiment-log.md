@@ -867,6 +867,8 @@ After the switch (17.77M to 21.0M steps, 1.5 hours): curriculum games won 9% →
 
 **After 50 minutes of distillation** (24.13M → 25.65M steps): the real game (never advised) 13 of 50 won (26%: easy 5 of 14, normal 7 of 18, insane 1 of 18; before: 1 of 98), 6% ties, 8.5 minutes a game, food at one minute 19.0 against 21.6. Unadvised curriculum games 82% won with the AI's tax falling 0.84 → 0.60; unadvised self-play 13% ties (82% before). The policy agrees with the advisor's order 59% of the time; its KL per update 0.003, its distance to the anchor 0.006.
 
+**After 2 h 50 min of distillation** (31.7M steps, 17:49): the real game 55 of 227 won (24%: easy 33%, normal 35%, insane 9%, insane 18% in the last 30 minutes). The chance of the AI's own orders at its decisions: basic units 40% (30% at 20.9M; the clones 39%), heroes 7.2% (6.3%; the clones 7.8-8.6%): distillation brought production back to the clones' level. The curriculum's tax fell to 0.31.
+
 ### The built-in AI as an advisor (shadow games)
 
 Takeover games label only the states after the takeover, and they soon become the AI's states. On-policy distillation asks the teacher for a label in every state the student reaches. The built-in AI is a script, not a function, so it cannot be asked. In a shadow game it plays the policy's player too: the harness records its orders as labels and undoes them (`protocol.ShadowAI`, `collect.py --shadow`).
