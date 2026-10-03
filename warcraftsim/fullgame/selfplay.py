@@ -770,7 +770,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     for s, tr in trajs.items():
         # the end: the outcome; a tie (the time limit) goes to the side ahead in material; and the
         # potential back to 0 (so the shaping only moves credit around and sums to ~0 over a game)
-        terminal = outcome[s] if outcome[s] != 0.0 else cfg["tie_break"] * math.tanh(2.0 * lead[s])
+        terminal = (outcome[s] if outcome[s] != 0.0
+                    else cfg.get("tie_value", 0.0) + cfg["tie_break"] * math.tanh(2.0 * lead[s]))
         last = terminal - cfg["shaping"] * phi.get(s, 0.0)
         tr.end(last)
         ret[s] += last
@@ -1400,6 +1401,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="the shaping's potential counts the gold and lumber a player holds at minus this (0: not at "
                          "all): spending is credited at the order")
     ap.add_argument("--tie-break", type=float, default=0.5, help="a tie's reward: this times tanh(2 x material lead)")
+    ap.add_argument("--tie-value", type=float, default=0.0,
+                    help="added to a tie's reward (e.g. -0.5: a tie at the time limit counts almost as a loss)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", help="default: cuda if available (asking opens the GPU driver)")
     ap.add_argument("--resume", action="store_true", help="continue the run --name: its latest checkpoint, league and counts")
@@ -1513,7 +1516,7 @@ def main(argv: list[str] | None = None) -> int:
            "video_every": args.video_every, "scripted_reset": bool(args.scripted_reset),
            "agent_games_factor": args.agent_games_factor, "mirror": bool(args.mirror), "learner_pid": os.getpid(),
            "actors": args.actors, "values": unit_values(), "shaping": args.shaping, "shaping_scale": args.shaping_scale,
-           "tie_break": args.tie_break, "compile": bool(args.compile), "native_obs": bool(args.native_obs),
+           "tie_break": args.tie_break, "tie_value": args.tie_value, "compile": bool(args.compile), "native_obs": bool(args.native_obs),
            "real_share": args.real_share, "infer_batch": 64, "game_nice": args.game_nice, "pairs": args.pairs,
            "exploiter_share": args.exploiter_share, "float_penalty": args.float_penalty,
            "infer_period": args.infer_period_ms / 1000.0,
