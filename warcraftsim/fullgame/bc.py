@@ -266,11 +266,12 @@ def allowed_orders(paths: list[Path], vocab: dict) -> np.ndarray:
 
 
 def losses(net: FullGameNet, b: dict, device, states: torch.Tensor | None = None,
-           value_coef: float = 0.5, avail_mask: bool = True, stats: bool = True) -> tuple[torch.Tensor, dict]:
+           value_coef: float = 0.5, avail_mask: bool = True, stats: bool = True, width: int | None = None) -> tuple[torch.Tensor, dict]:
     """The loss of a batch and its statistics (`stats` False: none, and a dozen waits for the GPU
     fewer). With memory, `states` [lanes, d] holds each lane's state after its last chunk (read, and
-    updated with the batch's)."""
-    E = int(b["mask"].any(0).nonzero().max()) + 1  # the batch's widest view (before the copy: no wait for the GPU)
+    updated with the batch's). `width`: the entities to look at (default: the batch's widest view;
+    a CUDA graph needs it given: finding it on the GPU is a wait)."""
+    E = width or int(b["mask"].any(0).nonzero().max()) + 1  # the batch's widest view (before the copy: no wait for the GPU)
     b = {k: v.to(device, non_blocking=True) for k, v in b.items()}
     O = min(fx.MAX_OWN, E)
     ent, typ, cur, mask = b["ent"][:, :E].float(), b["type"][:, :E].long(), b["cur"][:, :E].long(), b["mask"][:, :E]
@@ -291,7 +292,8 @@ def losses(net: FullGameNet, b: dict, device, states: torch.Tensor | None = None
     if not stats:  # (self-play's auxiliary loss: masked means, not boolean indexing; each was a GPU sync)
         w = own.float()
         if net.training:  # the orders each unit type gets (padding and "none" set class 0: always allowed)
-            net.allowed[typ[:, :O].reshape(-1), y_order.reshape(-1)] = True
+            y_flat = y_order.reshape(-1)  # (a GPU tensor of True: a Python True is a copy from the CPU, not capturable)
+            net.allowed.index_put_((typ[:, :O].reshape(-1), y_flat), torch.ones_like(y_flat, dtype=torch.bool))
         ptr, xl, z = net.target_logits(g, u, mask, y_order)
         yl = net.y_logits(z, y_x)
         loss = (_masked_ce(logits, y_order, w) + _masked_ce(ptr, y_ptr, w)

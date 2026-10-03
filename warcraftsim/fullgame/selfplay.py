@@ -1153,8 +1153,10 @@ class League:
 
 # ---- the learner ----------------------------------------------------------------------------------
 
-def collate(steps: list[dict], device) -> dict:
-    B, E = len(steps), max(s["n"] for s in steps)
+def collate(steps: list[dict], device, width: int | None = None, labels: bool = False) -> dict:
+    """A minibatch of steps as padded tensors. `width`: pad the entities to it (CUDA graphs: a few
+    fixed shapes); `labels`: the advisor's label arrays even when no step has any."""
+    B, E = len(steps), max(max(s["n"] for s in steps), width or 0)
     O = min(fx.MAX_OWN, E)
     G = len(steps[0]["glob"])
     ent = np.zeros((B, E, fx.F), np.float32)
@@ -1176,7 +1178,7 @@ def collate(steps: list[dict], device) -> dict:
         logp[i, :o] = s["logp"]
     t = lambda a: torch.from_numpy(a).to(device, non_blocking=True)  # noqa: E731
     labels = {}
-    if any("y_order" in s for s in steps):  # the advisor's labels (on-policy distillation; others: none)
+    if labels or any("y_order" in s for s in steps):  # the advisor's labels (on-policy distillation; others: none)
         labels = {"y_order": np.zeros((B, O), np.int64), **{k: np.full((B, O), -1, np.int64) for k in ("y_ptr", "y_x", "y_y")}}
         has = np.zeros(B, bool)
         for i, s in enumerate(steps):
@@ -1214,23 +1216,26 @@ def pieces(chunks: list[list[dict]], seq_len: int) -> list[list[dict]]:
     return [c[a:a + seq_len] for c in chunks for a in range(0, len(c), seq_len)]
 
 
-def collate_seq(seqs: list[list[dict]], device) -> dict:
+def collate_seq(seqs: list[list[dict]], device, width: int | None = None, B: int | None = None, T: int | None = None,
+                labels: bool = False) -> dict:
     """Sequences as collate() batches of B * T steps (T: the longest; shorter ones padded with steps
     that have no units, "valid" False), plus "seq" for evaluate(): (B, T, the first steps' states
     [B, d], no starts: a sequence stays in one game)."""
-    B, T = len(seqs), max(len(q) for q in seqs)
-    first = seqs[0][0]
+    T = max(T or 0, max(len(q) for q in seqs))
+    seqs = seqs + [[] for _ in range((B or len(seqs)) - len(seqs))]  # (empty: all padding)
+    B = len(seqs)
+    first = next(q[0] for q in seqs if q)
     G = len(first["glob"])
     pad = {"ent": np.zeros((1, fx.F), np.float16), "type": np.zeros(1, np.int16), "cur": np.zeros(1, np.int16),
            "glob": np.zeros(G, np.float32), "n": 1, "n_own": 0, "logp": np.zeros(0, np.float32), "adv": 0.0, "ret": 0.0,
            "avail": None, **{k: np.zeros(0, np.int16) for k in ("order", "tgt", "bx", "by")}}
     flat = [q[t] if t < len(q) else pad for q in seqs for t in range(T)]
-    mb = collate(flat, device)
+    mb = collate(flat, device, width, labels)
     mb["valid"] = torch.tensor([t < len(q) for q in seqs for t in range(T)], device=device)
-    d = next((len(q[0]["h"]) for q in seqs if q[0].get("h") is not None), None)
+    d = next((len(q[0]["h"]) for q in seqs if q and q[0].get("h") is not None), None)
     h0 = None
     if d is not None:
-        h0 = torch.from_numpy(np.stack([q[0]["h"] if q[0].get("h") is not None else np.zeros(d, np.float32)
+        h0 = torch.from_numpy(np.stack([q[0]["h"] if q and q[0].get("h") is not None else np.zeros(d, np.float32)
                                         for q in seqs])).to(device)
     mb["seq"] = (B, T, h0, None)
     return mb
@@ -1358,6 +1363,171 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
     return {k: float(torch.stack(v).float().mean()) for k, v in stats.items()}
 
 
+WIDTHS = (32, 48, 64, 96, 128, fx.MAX_ENT)  # the padded entity counts the update's CUDA graphs are captured for
+
+
+def _width(n: int) -> int:
+    return next(w for w in WIDTHS if w >= n)
+
+
+class GraphedUpdate:
+    """The update's minibatch step (every forward pass, the losses, the backward pass, the gradient's
+    clip and Adam's step) as CUDA graphs, one per shape: the minibatch's entities padded to WIDTHS,
+    the cloning batch's alike. A replay is a few launches where eager PyTorch made ~2,000: the update
+    was bound by its own Python (3.7 s for 8,192 steps alone, ~10 s next to the games, with 1.8 s of
+    kernels). The same losses as ppo_update: padding steps and entities are masked out (only dropout
+    draws other numbers). Needs a network with memory (sequences), CUDA, and Adam(capturable=True)."""
+
+    def __init__(self, net: FullGameNet, ref: FullGameNet | None, opt, args, device):
+        self.net, self.ref, self.opt, self.args, self.device = net, ref, opt, args, device
+        self.graphs: dict[tuple, tuple] = {}
+        self.pool = torch.cuda.graph_pool_handle()
+        self.mean = torch.zeros((), device=device)
+        self.std = torch.ones((), device=device)
+        self.pg_coef = torch.ones((), device=device)
+
+    def _step(self, s: dict, b: dict | None) -> dict:
+        """One minibatch's step on the static inputs `s` (and the cloning batch `b`): no GPU syncs."""
+        net, ref, args = self.net, self.ref, self.args
+        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=bool(args.bf16), cache_enabled=False):
+            seq = (s["B"], s["T"], s["h0"], None)
+            ev = evaluate(net, s["ent"], s["type"], s["cur"], s["mask"], s["glob"], s["n_own"],
+                          s["order"], s["tgt"], s["bx"], s["by"], s["avail"], seq=seq)
+            value = ev["value"].float()
+            own = s["own"].float()
+            n_units = own.sum().clamp(min=1)
+            adv = ((s["adv"] - self.mean) / self.std)[:, None]
+            log_ratio = (ev["logp"] - s["logp"]) * own
+            ratio = log_ratio.exp()
+            pg = -(torch.min(ratio * adv, ratio.clamp(1 - args.clip, 1 + args.clip) * adv) * own).sum() / n_units
+            valid = s["valid"].float()
+            v_loss = 0.5 * (((value - s["ret"]) ** 2) * valid).sum() / valid.sum().clamp(min=1)
+            entropy = (ev["entropy"] * own).sum() / n_units
+            loss = args.vf_coef * v_loss - args.ent_coef * entropy + self.pg_coef * pg
+            out = {"loss/policy": pg, "loss/value": v_loss, "loss/entropy": entropy}
+            ref_kl = torch.zeros((), device=self.device)
+            if ref is not None and args.ref_kl > 0:
+                with torch.no_grad():
+                    ev_ref = evaluate(ref, s["ent"], s["type"], s["cur"], s["mask"], s["glob"], s["n_own"],
+                                      s["order"], s["tgt"], s["bx"], s["by"], s["avail"], seq=seq if ref.memory else None)
+                lp, lp_ref = torch.log_softmax(ev["logits"].float(), -1), torch.log_softmax(ev_ref["logits"].float(), -1)
+                ref_kl = ((lp.exp() * (lp - lp_ref)).sum(-1) * own).sum() / n_units
+                loss = loss + args.ref_kl * ref_kl
+            out["loss/ref_kl"] = ref_kl
+            if getattr(args, "opd_coef", 0.0) > 0:
+                l_opd, opd_acc = distill_loss(net, ev, s, None)
+                loss = loss + args.opd_coef * l_opd
+                out.update({"loss/opd": l_opd, "opd/acc": opd_acc, "opd/steps": s["y_has"].float().sum() / valid.sum().clamp(min=1)})
+            if b is not None:
+                from .bc import losses as bc_losses
+                l_bc, _ = bc_losses(net, {k: v for k, v in b.items() if k != "width"}, self.device, None, value_coef=0.0,
+                                    stats=False, width=b["width"])
+                loss = loss + args.bc_coef * l_bc
+                out["loss/bc"] = l_bc
+        loss.backward()
+        out["grad_norm"] = torch.nn.utils.clip_grad_norm_(net.parameters(), args.max_grad_norm, foreach=True)
+        self.opt.step()
+        with torch.no_grad():
+            out["loss/kl"] = (((ratio - 1) - log_ratio) * own).sum() / n_units
+            out["loss/clipfrac"] = (((ratio - 1).abs() > args.clip).float() * own).sum() / n_units
+        return out
+
+    def _static(self, mb: dict, b: dict | None) -> tuple[dict, dict | None]:
+        s = {k: v.clone() for k, v in mb.items() if isinstance(v, torch.Tensor)}
+        B, T, h0, _ = mb["seq"]
+        s["B"], s["T"] = B, T
+        s["h0"] = (h0.clone() if h0 is not None else torch.zeros(B, self.net.d, device=self.device))
+        if b is not None:
+            b = {**{k: v.to(self.device).clone() for k, v in b.items() if isinstance(v, torch.Tensor)}, "width": b["width"]}
+        return s, b
+
+    def _fill(self, s: dict, mb: dict, sb: dict | None, b: dict | None) -> None:
+        for k, v in mb.items():
+            if isinstance(v, torch.Tensor) and k in s:
+                s[k].copy_(v, non_blocking=True)
+        h0 = mb["seq"][2]
+        s["h0"].copy_(h0) if h0 is not None else s["h0"].zero_()
+        if sb is not None:
+            for k, v in b.items():
+                if isinstance(v, torch.Tensor):
+                    sb[k].copy_(v, non_blocking=True)
+
+    def _capture(self, key: tuple, mb: dict, b: dict | None) -> tuple:
+        """Warm up on a side stream (cuBLAS, autotuning), put the weights and Adam's state back, then
+        capture the step (capturing runs nothing)."""
+        s, sb = self._static(mb, b)
+        params = [p for p in self.net.parameters()]
+        saved = [p.detach().clone() for p in params]
+        state = {id(p): {k: v.clone() for k, v in self.opt.state[p].items() if isinstance(v, torch.Tensor)}
+                 for p in params if p in self.opt.state}
+        allowed = self.net.allowed.clone()
+        side = torch.cuda.Stream()
+        side.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(side):
+            for _ in range(2):
+                self.opt.zero_grad(set_to_none=True)
+                self._step(s, sb)
+        torch.cuda.current_stream().wait_stream(side)
+        with torch.no_grad():
+            for p, v in zip(params, saved):
+                p.copy_(v)
+            for p in params:
+                for k, v in self.opt.state[p].items() if p in self.opt.state else ():
+                    if isinstance(v, torch.Tensor):  # (as before; a state the warm-up made: zero)
+                        v.copy_(state[id(p)][k]) if id(p) in state and k in state[id(p)] else v.zero_()
+            self.net.allowed.copy_(allowed)
+        self.opt.zero_grad(set_to_none=True)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, pool=self.pool):
+            out = self._step(s, sb)
+        self.graphs[key] = (graph, s, sb, out)
+        return self.graphs[key]
+
+    def update(self, steps: list[dict], chunks: list[list[dict]], warmup: bool, bc_iter=None) -> dict:
+        args, net, device = self.args, self.net, self.device
+        advs = np.array([s["adv"] for s in steps], np.float32)
+        self.mean.fill_(float(advs.mean()))
+        self.std.fill_(float(advs.std()) + 1e-8)
+        self.pg_coef.fill_(0.0 if warmup else 1.0)
+        if getattr(args, "opd_coef", 0.0) > 0:  # the advisor's orders become orders the unit type can get
+            typ_y = [(s["type"][:s["n_own"]], s["y_order"]) for s in steps if "y_order" in s]
+            if typ_y:
+                ty = torch.from_numpy(np.concatenate([a for a, _ in typ_y]).astype(np.int64)).to(device)
+                yy = torch.from_numpy(np.concatenate([c for _, c in typ_y]).astype(np.int64)).to(device)
+                net.allowed[ty, yy] = True  # ("none" sets class 0: always allowed)
+        if self.ref is not None:
+            self.ref.allowed.copy_(net.allowed)
+        net.train()
+        seqs = pieces(chunks, args.seq_len)
+        per_mb = max(1, args.minibatch // args.seq_len)
+        labels = getattr(args, "opd_coef", 0.0) > 0
+        outs: list[dict] = []
+        for _ in range(args.epochs):
+            widths = np.array([max(s["n"] for s in q) for q in seqs])
+            for idx in minibatches(widths, per_mb, args.pad_groups):
+                width = _width(int(widths[idx].max()))
+                mb = collate_seq([seqs[i] for i in idx], device, width=width, B=per_mb, T=args.seq_len, labels=labels)
+                b = None
+                if bc_iter is not None and args.bc_coef > 0:
+                    b = dict(next(bc_iter))
+                    bw = _width(int(b["mask"].any(0).nonzero().max()) + 1)  # (on the CPU: no wait)
+                    b = {k: (v[:, :bw] if v.dim() >= 2 and v.shape[1] == b["mask"].shape[1] else v) for k, v in b.items()}
+                    if b["mask"].shape[1] < bw:  # (pad to the width)
+                        b = {k: (torch.nn.functional.pad(v, (0, 0) * (v.dim() - 2) + (0, bw - v.shape[1]))
+                                 if v.dim() >= 2 and v.shape[1] == b["mask"].shape[1] else v) for k, v in b.items()}
+                    b["width"] = bw
+                key = (width, b["width"] if b is not None else 0, tuple(sorted(k for k, v in mb.items() if isinstance(v, torch.Tensor))))
+                if key in self.graphs:
+                    graph, s, sb, out = self.graphs[key]
+                    self._fill(s, mb, sb, b)
+                else:
+                    graph, s, sb, out = self._capture(key, mb, b)
+                graph.replay()
+                outs.append({k: v.detach().clone() for k, v in out.items()})
+        net.eval()
+        return {k: float(torch.stack([o[k] for o in outs]).float().mean()) for k in outs[0]} if outs else {}
+
+
 def publish(net: FullGameNet, version: int, run_dir: Path, name: str = "current.pt") -> None:
     tmp = run_dir / f"{name}.tmp"
     torch.save({"model": {k: v.detach().cpu() for k, v in net.state_dict().items()}, "config": net.config,
@@ -1470,6 +1640,8 @@ def main(argv: list[str] | None = None) -> int:
                                                                   "2 when BC trained the value head)")
     ap.add_argument("--max-grad-norm", type=float, default=1.0)
     ap.add_argument("--bf16", type=int, default=1, help="the updates' matmuls in bfloat16")
+    ap.add_argument("--cuda-graphs", type=int, default=1, help="the update's minibatch steps as CUDA graphs (GraphedUpdate; "
+                                                             "networks with memory)")
     ap.add_argument("--compile", type=int, default=1, help="the actors' network calls as CUDA graphs")
     ap.add_argument("--infer-period-ms", type=float, default=4.0,
                     help="the inference server makes a round of calls at most this often (0: whenever requests wait)")
@@ -1528,7 +1700,8 @@ def main(argv: list[str] | None = None) -> int:
     if ref is not None:
         for p in ref.parameters():
             p.requires_grad_(False)
-    opt = torch.optim.Adam(net.parameters(), lr=args.lr, eps=1e-5)
+    graphed = bool(args.cuda_graphs) and device.type == "cuda" and bool(net.memory)
+    opt = torch.optim.Adam(net.parameters(), lr=args.lr, eps=1e-5, capturable=graphed)
     # the main exploiter (--exploiter-share): a second network, from the run's starting weights
     # (as AlphaStar's from the supervised agent), trained on its games against the learner alone
     x_init = {k: v.detach().clone() for k, v in net.state_dict().items()} if args.exploiter_share > 0 else None
@@ -1652,6 +1825,7 @@ def main(argv: list[str] | None = None) -> int:
     agent_steps, update, episodes = ((resumed["steps"], resumed["update"], resumed["episodes"]) if resumed
                                      else (0, 0, 0))
     bc_iter = None
+    updater = GraphedUpdate(net, ref, opt, args, device) if graphed else None
     if args.bc_data:  # demonstrations for the auxiliary cloning loss, encoded by loader workers, epoch after epoch
         from .bc import Steps, as_is
         bc_paths = sorted(p for d in args.bc_data for p in d.glob("game*.npz"))
@@ -1737,7 +1911,16 @@ def main(argv: list[str] | None = None) -> int:
             t_train = time.time()
             steps, buf, batch_chunks, chunks = buf, [], chunks, []
             warmup = update < args.value_warmup
-            stats = ppo_update(net, ref, opt, steps, args, warmup, device, batch_chunks, bc_iter)
+            stats = None
+            if updater is not None:
+                try:
+                    stats = updater.update(steps, batch_chunks, warmup, bc_iter)
+                except Exception:  # noqa: BLE001 (the eager update from here on)
+                    traceback.print_exc()
+                    print("CUDA-graph update failed: the eager one from now on", flush=True)
+                    updater = None
+            if stats is None:
+                stats = ppo_update(net, ref, opt, steps, args, warmup, device, batch_chunks, bc_iter)
             update += 1
             agent_steps += len(steps)
             publish(net, update, run_dir)

@@ -12,6 +12,7 @@
 #include "w3shim.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <x86intrin.h>
 
@@ -29,6 +30,21 @@ static int64_t g_freq;
 static double g_tsc_per_qpc = 1.0;
 static int64_t g_base_filetime, g_base_virt;
 static DWORD g_wait_floor;
+/* W3SIM_BG_SPEED > 0: the game's background threads (all but the one that steps the game, known from
+ * its first step sync) have their timeouts divided by at most this, not by the clock's speed: they
+ * woke ~1,300 times a second per game, each a wineserver round trip */
+static volatile DWORD g_main_tid;
+static double g_bg_speed;
+/* W3SIM_SLOW_WAITS="rva,rva": only waits called from these places in the executable get the cap
+ * (some background threads pace the game's turns: capping all of them made a step 10x slower) */
+#define SLOW_MAX 16
+static DWORD g_slow_rva[SLOW_MAX];
+static int g_n_slow;
+
+void clock_main_thread(void) {
+    if (!g_main_tid)
+        g_main_tid = GetCurrentThreadId();
+}
 
 static BOOL(WINAPI *Qpc_orig)(LARGE_INTEGER *);
 static DWORD(WINAPI *Tick_orig)(void);
@@ -229,14 +245,27 @@ static void patch_rdtsc(void) {
     shim_log("rdtsc helper patched, tsc/qpc=%.3f", g_tsc_per_qpc);
 }
 
+static int slow_site(void *ra) {
+    if (!g_n_slow)
+        return 1; /* (no list: every background wait) */
+    DWORD rva = (DWORD)((BYTE *)ra - g_base);
+    for (int i = 0; i < g_n_slow; i++)
+        if (g_slow_rva[i] == rva)
+            return 1;
+    return 0;
+}
+
 /* Timeouts pace threads against wall time: divide finite ones by the speed factor. */
-static DWORD scale_timeout(DWORD ms) {
+static DWORD scale_timeout_at(DWORD ms, void *ra) {
     if (ms == 0 || ms == INFINITE)
         return ms;
     Anchor a = anchor_read(NULL);
-    if (a.speed <= 1.0)
+    double speed = a.speed;
+    if (g_bg_speed > 0 && g_main_tid && GetCurrentThreadId() != g_main_tid && speed > g_bg_speed && slow_site(ra))
+        speed = g_bg_speed;
+    if (speed <= 1.0)
         return ms;
-    DWORD s = (DWORD)(ms / a.speed);
+    DWORD s = (DWORD)(ms / speed);
     if (a.frozen && s == 0)
         return 1; /* do not spin on a clock that does not move */
     return s < g_wait_floor ? g_wait_floor : s;
@@ -252,6 +281,7 @@ static struct {
     volatile LONG calls, zero;
     volatile LONGLONG req_ms;
     volatile LONG api[W_APIS], api_zero[W_APIS];
+    volatile DWORD site; /* the last call site (RVA in the executable) */
 } g_waits[WAIT_SLOTS];
 int g_wait_stats;
 
@@ -270,7 +300,7 @@ static void wait_stat_api(int api, DWORD ms) {
     }
 }
 
-static void wait_stat(DWORD ms, DWORD scaled) {
+static void wait_stat(DWORD ms, DWORD scaled, void *ra) {
     if (!g_wait_stats)
         return;
     DWORD tid = GetCurrentThreadId();
@@ -279,6 +309,7 @@ static void wait_stat(DWORD ms, DWORD scaled) {
         if (g_waits[k].tid == tid ||
             (g_waits[k].tid == 0 && InterlockedCompareExchange((volatile LONG *)&g_waits[k].tid, tid, 0) == 0)) {
             InterlockedIncrement(&g_waits[k].calls);
+            g_waits[k].site = (DWORD)((BYTE *)ra - g_base);
             if (scaled == 0)
                 InterlockedIncrement(&g_waits[k].zero);
             if (ms != INFINITE)
@@ -322,45 +353,51 @@ void clock_report_waits(double secs) {
                 len += _snprintf(apis + len, sizeof apis - len, " %s %.0f/s (%.0f/s with 0 ms)", g_api_names[a],
                                  n / secs, nz / secs);
         }
-        shim_log("waits: tid %lu start %s+%#lx: %.0f/s, %.0f%% scaled to 0 ms, mean request %.1f ms;%s", tid,
-                 b ? b + 1 : mn, (unsigned long)((BYTE *)start - (BYTE *)m), calls / secs, 100.0 * zero / calls,
-                 (double)req / calls, apis);
+        shim_log("waits: tid %lu start %s+%#lx site exe+%#lx: %.0f/s, %.0f%% scaled to 0 ms, mean request %.1f ms;%s", tid,
+                 b ? b + 1 : mn, (unsigned long)((BYTE *)start - (BYTE *)m), (unsigned long)g_waits[k].site, calls / secs,
+                 100.0 * zero / calls, (double)req / calls, apis);
     }
 }
 
 static VOID WINAPI Sleep_hook(DWORD ms) {
-    DWORD s = scale_timeout(ms);
-    wait_stat(ms, s);
+    void *ra = __builtin_return_address(0);
+    DWORD s = scale_timeout_at(ms, ra);
+    wait_stat(ms, s, ra);
     wait_stat_api(W_SLEEP, ms);
     Sleep_orig(s);
 }
 static DWORD WINAPI SleepEx_hook(DWORD ms, BOOL alertable) {
-    DWORD s = scale_timeout(ms);
-    wait_stat(ms, s);
+    void *ra = __builtin_return_address(0);
+    DWORD s = scale_timeout_at(ms, ra);
+    wait_stat(ms, s, ra);
     wait_stat_api(W_SLEEPEX, ms);
     return SleepEx_orig(s, alertable);
 }
 static DWORD WINAPI Wfso_hook(HANDLE h, DWORD ms) {
-    DWORD s = scale_timeout(ms);
-    wait_stat(ms, s);
+    void *ra = __builtin_return_address(0);
+    DWORD s = scale_timeout_at(ms, ra);
+    wait_stat(ms, s, ra);
     wait_stat_api(W_WFSO, ms);
     return Wfso_orig(h, s);
 }
 static DWORD WINAPI WfsoEx_hook(HANDLE h, DWORD ms, BOOL alertable) {
-    DWORD s = scale_timeout(ms);
-    wait_stat(ms, s);
+    void *ra = __builtin_return_address(0);
+    DWORD s = scale_timeout_at(ms, ra);
+    wait_stat(ms, s, ra);
     wait_stat_api(W_WFSOEX, ms);
     return WfsoEx_orig(h, s, alertable);
 }
 static DWORD WINAPI Wfmo_hook(DWORD n, const HANDLE *h, BOOL all, DWORD ms) {
-    DWORD s = scale_timeout(ms);
-    wait_stat(ms, s);
+    void *ra = __builtin_return_address(0);
+    DWORD s = scale_timeout_at(ms, ra);
+    wait_stat(ms, s, ra);
     wait_stat_api(W_WFMO, ms);
     return Wfmo_orig(n, h, all, s);
 }
 static DWORD WINAPI MsgWait_hook(DWORD n, const HANDLE *h, BOOL all, DWORD ms, DWORD mask) {
-    DWORD s = scale_timeout(ms);
-    wait_stat(ms, s);
+    void *ra = __builtin_return_address(0);
+    DWORD s = scale_timeout_at(ms, ra);
+    wait_stat(ms, s, ra);
     wait_stat_api(W_MSGWAIT, ms);
     return MsgWait_orig(n, h, all, s, mask);
 }
@@ -388,6 +425,14 @@ void clock_install(double speed, DWORD wait_floor) {
     if (!ok)
         shim_log("warning: some clock imports were not found");
 
+    char bg[32];
+    if (GetEnvironmentVariableA("W3SIM_BG_SPEED", bg, sizeof bg))
+        g_bg_speed = atof(bg);
+    char sites[256];
+    if (GetEnvironmentVariableA("W3SIM_SLOW_WAITS", sites, sizeof sites))
+        for (char *tok = strtok(sites, ","); tok && g_n_slow < SLOW_MAX; tok = strtok(NULL, ","))
+            g_slow_rva[g_n_slow++] = (DWORD)strtoul(tok, NULL, 0);
+
     Anchor a = {0};
     a.real0 = a.virt0 = real_qpc();
     a.speed = speed > 0 ? speed : 1.0;
@@ -399,5 +444,5 @@ void clock_install(double speed, DWORD wait_floor) {
     g_base_virt = virt_qpc();
 
     patch_rdtsc();
-    shim_log("clock installed: speed=%.1f wait_floor=%lu", a.speed, (unsigned long)wait_floor);
+    shim_log("clock installed: speed=%.1f wait_floor=%lu background speed=%.1f", a.speed, (unsigned long)wait_floor, g_bg_speed);
 }

@@ -196,6 +196,7 @@ static void handle_go(const char *line) {
 }
 
 static void sync_point(void) {
+    clock_main_thread(); /* (the thread that steps the game) */
     units_mark(4);
     EnterCriticalSection(&g_sync_lock);
     if (g_t_go) {

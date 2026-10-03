@@ -95,6 +95,8 @@ def main() -> int:
     ap.add_argument("--profile", action="store_true")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--set", action="append", default=[], help="an update setting, e.g. --set minibatch=512")
+    ap.add_argument("--graphs", action="store_true", help="the CUDA-graph update (selfplay.GraphedUpdate)")
+    ap.add_argument("--no-dropout", action="store_true", help="dropout off (to compare the eager and graphed updates)")
     a = ap.parse_args()
     device = torch.device(a.device)
     torch.manual_seed(0); random.seed(0); np.random.seed(0)
@@ -120,7 +122,15 @@ def main() -> int:
             for b in torch.utils.data.DataLoader(bc_set, batch_size=None, num_workers=2, collate_fn=bc.as_is):
                 yield {k: torch.from_numpy(v) for k, v in b.items()}
     bc_iter = bc_cycle()
-    opt = torch.optim.Adam(net.parameters(), lr=3e-5, eps=1e-5)
+    if a.no_dropout:
+        for m in net.modules():
+            if isinstance(m, torch.nn.Dropout):
+                m.p = 0.0
+            if hasattr(m, "dropout") and isinstance(getattr(m, "dropout"), float):
+                m.dropout = 0.0
+    opt = torch.optim.Adam(net.parameters(), lr=3e-5, eps=1e-5, capturable=a.graphs)
+    from warcraftsim.fullgame.selfplay import GraphedUpdate
+    updater = GraphedUpdate(net, ref, opt, args, device) if a.graphs else None
     times = []
     for u in range(a.updates + 1):
         torch.cuda.synchronize() if device.type == "cuda" else None
@@ -128,7 +138,7 @@ def main() -> int:
         if a.profile and u == a.updates:
             from torch.profiler import ProfilerActivity, profile
             with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
-                out = ppo_update(net, ref, opt, steps, args, False, device, chunks, bc_iter)
+                out = updater.update(steps, chunks, False, bc_iter) if updater else ppo_update(net, ref, opt, steps, args, False, device, chunks, bc_iter)
                 torch.cuda.synchronize()
             ka = prof.key_averages()
             cuda_total = sum(e.self_device_time_total for e in ka) / 1e6
@@ -137,12 +147,13 @@ def main() -> int:
             print(ka.table(sort_by="self_cpu_time_total", row_limit=25))
             print(ka.table(sort_by="self_device_time_total", row_limit=15))
             break
-        out = ppo_update(net, ref, opt, steps, args, False, device, chunks, bc_iter)
+        out = updater.update(steps, chunks, False, bc_iter) if updater else ppo_update(net, ref, opt, steps, args, False, device, chunks, bc_iter)
         torch.cuda.synchronize() if device.type == "cuda" else None
         times.append(time.time() - t)
         print(f"update {u}: {times[-1]:.2f} s  " + " ".join(f"{k} {v:.4f}" for k, v in sorted(out.items())), flush=True)
     if len(times) > 1:
         print(f"seconds per update (after the first): {np.mean(times[1:]):.2f}")
+    print("weights checksum:", float(sum(p.detach().double().sum() for p in net.parameters())))
     return 0
 
 

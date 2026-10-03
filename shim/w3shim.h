@@ -41,6 +41,7 @@ void clock_set_speed(double speed);
 void clock_freeze(int frozen);
 void clock_set_frame_step(double seconds); /* > 0: advance only per rendered frame; 0: real time */
 void clock_frame(void);                    /* a frame was presented */
+void clock_main_thread(void);              /* the calling thread steps the game (W3SIM_BG_SPEED) */
 int64_t clock_virtual_ticks(void);         /* virtual time (QPC ticks) */
 double clock_frame_seconds(void);          /* frame-stepped: game time per frame, else 0 */
 void clock_report_waits(double secs);      /* W3SIM_PROFILE=3: per-thread wait statistics */
