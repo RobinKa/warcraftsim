@@ -73,14 +73,20 @@ def side_data(enc: fx.Encoder, game: dict, player: int, values: dict) -> dict:
 
 def sides_of(game: dict, winners: bool = False, max_minutes: float = 0.0) -> tuple[int, ...]:
     """The sides of a game to learn from: both; with `winners` only the side that won (none for a
-    tie); with `max_minutes` only games decided within that many minutes. (As AlphaStar fine-tuned
-    its supervised policy on winning replays: on duelfast the policy tied 80-95% of its games and
-    the built-in AI's short wins show it finishing them.)"""
+    tie); with `max_minutes` only games decided within that many minutes of the start, or of the
+    takeover in a takeover game. (As AlphaStar fine-tuned its supervised policy on winning replays:
+    on duelfast the policy tied 80-95% of its games and the built-in AI's short wins show it
+    finishing them.)"""
     if not winners and not max_minutes:
         return (0, 1)
     meta = game["meta"]
-    if max_minutes and (meta.get("game_seconds") or 0.0) > 60.0 * max_minutes:
-        return ()
+    if max_minutes:
+        seconds = meta.get("game_seconds") or 0.0
+        tk = meta.get("takeover")
+        if tk and tk["step"] < (meta.get("steps") or 0):
+            seconds -= tk["step"] * meta.get("step_seconds", 0.5)
+        if seconds > 60.0 * max_minutes:
+            return ()
     if not winners:
         return (0, 1)
     res = meta.get("result") or {}

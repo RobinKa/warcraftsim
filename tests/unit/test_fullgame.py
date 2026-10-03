@@ -699,6 +699,11 @@ def test_cloning_sides_winners_and_short_games():
     assert sides_of(won1) == (0, 1) and sides_of(won1, winners=True) == (1,)
     assert sides_of(won1, max_minutes=4) == () and sides_of(won1, winners=True, max_minutes=6) == (1,)
     assert sides_of(g({"0": "TIE", "1": "TIE"}, 900.0), winners=True) == ()
+    late = {"meta": {"result": {"0": "VICTORY", "1": "DEFEAT"}, "game_seconds": 700.0, "steps": 1400,
+                     "step_seconds": 0.5, "takeover": {"player": 0, "step": 800}}}  # decided 5 min after it
+    assert sides_of(late, winners=True, max_minutes=6) == (0,)
+    late["meta"]["takeover"]["step"] = 1500  # the game ended before the takeover
+    assert sides_of(late, winners=True, max_minutes=6) == ()
 
 
 def test_a_restarted_run_draws_other_launches():
