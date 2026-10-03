@@ -34,7 +34,8 @@ def wine_bin_dir() -> str | None:
     """Wine to use: $WARCRAFTSIM_WINE, else WineHQ stable if installed, else `wine` on PATH.
 
     WineHQ stable 11.0 measured ~35% more parallel throughput than staging 11.18 here (less
-    wineserver CPU per game).
+    wineserver CPU per game). GE-Proton 10's Wine (10.0) with fsync: 28% less CPU a step than stable
+    11.0 (wineserver 2.6 -> 0.7 ms), the same without fsync (see use_wine).
     """
     configured = os.environ.get("WARCRAFTSIM_WINE")
     if configured:
@@ -43,11 +44,40 @@ def wine_bin_dir() -> str | None:
     return str(stable) if (stable / "wine").exists() else None
 
 
+def proton_files(wine_bin: str | None) -> Path | None:
+    """A Proton build's `files` folder (GE-Proton: Wine with fsync), if `wine_bin` is its `files/bin`."""
+    if not wine_bin:
+        return None
+    files = Path(wine_bin).resolve().parent
+    return files if (files / "lib" / "vkd3d").is_dir() and (files / "share" / "default_pfx").is_dir() else None
+
+
+def use_wine(wine_bin: str, fsync: bool) -> None:
+    """This process and its children use another Wine: its own prefixes (in a runtime folder named after
+    it: a prefix belongs to the Wine that made it) and, with `fsync`, its futex-based synchronization
+    (WINEFSYNC: Wine's events, mutexes and waits without a wineserver round trip; Proton builds only)."""
+    wine_bin = str(Path(wine_bin).expanduser().resolve())
+    files = proton_files(wine_bin)
+    tag = files.parent.name if files else Path(wine_bin).parent.name
+    os.environ["WARCRAFTSIM_WINE"] = wine_bin
+    runtime = paths.RUNTIME_DIR if paths.RUNTIME_DIR.name.endswith(f"-{tag}") else \
+        paths.RUNTIME_DIR.with_name(f"{paths.RUNTIME_DIR.name}-{tag}")
+    os.environ["WARCRAFTSIM_RUNTIME"] = str(runtime)
+    paths.RUNTIME_DIR = runtime
+    os.environ["WINEFSYNC"] = "1" if fsync else "0"
+
+
 def wine_env(prefix: Path, **extra: str) -> dict[str, str]:
     env = dict(os.environ)
     wine_bin = wine_bin_dir()
     if wine_bin:
         env["PATH"] = f"{wine_bin}{os.pathsep}{env.get('PATH', '')}"
+    files = proton_files(wine_bin)
+    if files:  # what Proton's own launcher sets (its Wine's libraries, vkd3d for wined3d)
+        lib = files / "lib"
+        env["WINEDLLPATH"] = f"{lib / 'vkd3d'}:{lib / 'wine'}"
+        env["LD_LIBRARY_PATH"] = ":".join([str(lib / "x86_64-linux-gnu"), str(lib / "i386-linux-gnu")]
+                                          + ([env["LD_LIBRARY_PATH"]] if env.get("LD_LIBRARY_PATH") else []))
     env.update(
         WINEPREFIX=str(prefix),
         WINEDEBUG=os.environ.get("W3SIM_WINEDEBUG", "-all"),  # (e.g. +server: every wineserver request, to profile)
@@ -63,7 +93,10 @@ def wine_env(prefix: Path, **extra: str) -> dict[str, str]:
 
 
 def documents_dir(prefix: Path) -> Path:
-    return prefix / "drive_c" / "users" / os.environ.get("USER", "user") / "Documents" / "Warcraft III"
+    users = prefix / "drive_c" / "users"
+    # (Proton's Wine names the Windows user "steamuser" whoever runs it)
+    user = "steamuser" if (users / "steamuser").is_dir() else os.environ.get("USER", "user")
+    return users / user / "Documents" / "Warcraft III"
 
 
 def _reg_file(settings: dict[str, dict[str, int]]) -> str:
@@ -93,8 +126,16 @@ def ensure_template(display: str | None = None, force_registry: bool = False) ->
     if display:
         env["DISPLAY"] = display
     if not (prefix / "system.reg").exists():
-        subprocess.run(["wineboot", "-i"], env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # (`wine wineboot`: a Proton build has no wineboot script, and another Wine's would make the prefix)
+        subprocess.run(["wine", "wineboot", "-i"], env=env, check=True, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL)
         subprocess.run(["wineserver", "-w"], env=env, check=False)
+    files = proton_files(wine_bin_dir())
+    if files:  # Proton copies these into its prefixes: wined3d (Direct3D 9) needs them
+        for arch in ("system32", "syswow64"):
+            for dll in ("libvkd3d-1.dll", "libvkd3d-shader-1.dll"):
+                shutil.copy2(files / "share" / "default_pfx" / "drive_c" / "windows" / arch / dll,
+                             prefix / "drive_c" / "windows" / arch / dll)
     game_link = prefix / "drive_c" / GAME_LINK
     if game_link.is_symlink() or game_link.exists():
         game_link.unlink()

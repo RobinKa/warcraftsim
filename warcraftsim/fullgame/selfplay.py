@@ -1654,6 +1654,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="1: one inference server makes every actor's network calls (one GPU context, batches over all "
                          "games); 0: each actor its own")
     ap.add_argument("--native-obs", type=int, default=1, help="observations parsed in C (warcraftsim.native)")
+    ap.add_argument("--wine", default="", help="another Wine's bin folder (e.g. GE-Proton's files/bin; "
+                                              "runtime.wine.use_wine): its own prefixes")
+    ap.add_argument("--fsync", type=int, default=0, help="with --wine (a Proton build): Wine's synchronization "
+                                                         "on futexes, not wineserver (WINEFSYNC)")
     ap.add_argument("--avail-mask", type=int, default=1, help="mask the orders the player can't pay for yet")
     ap.add_argument("--chunk", type=int, default=64, help="steps per trajectory piece an actor sends")
     ap.add_argument("--seq-len", type=int, default=16, help="a network with memory: steps per training sequence "
@@ -1678,6 +1682,10 @@ def main(argv: list[str] | None = None) -> int:
                                                 "restart's marker on the dashboard's charts)")
     args = ap.parse_args(argv)
     args.device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    if args.wine:  # (before any game or child process: they read the environment)
+        from ..runtime import wine
+        wine.use_wine(args.wine, bool(args.fsync))
+        wine.ensure_template()  # (here, once: not by the actors' games at once)
     import signal
     signal.signal(signal.SIGTERM, _interrupt)  # kill: a clean stop (status, a checkpoint, the actors)
 

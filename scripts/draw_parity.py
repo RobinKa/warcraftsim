@@ -58,9 +58,14 @@ def main() -> int:
     ap.add_argument("--races", default="human,orc")
     ap.add_argument("--env", help="NAME=a,b: play back once per value of this environment variable instead")
     ap.add_argument("--shim", type=Path, help="the shim's build folder (default build/shim)")
+    ap.add_argument("--wine", default="", help="another Wine's bin folder (runtime.wine.use_wine; fsync as WINEFSYNC)")
     a = ap.parse_args()
     if a.shim:
         instance.SHIM_DIR = a.shim.resolve()
+    if a.wine:
+        from warcraftsim.runtime import wine
+        wine.use_wine(a.wine, os.environ.get("WINEFSYNC") == "1")
+        wine.ensure_template()
     r0, r1 = a.races.split(",")
     setup = GameSetup(map=a.map, slots=[BuiltinAI(r0, "normal", handicap=50), BuiltinAI(r1, "normal", handicap=50)],
                       step_seconds=0.5, max_game_seconds=3600, victory="decisive", window=(320, 240))
