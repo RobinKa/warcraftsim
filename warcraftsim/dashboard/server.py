@@ -241,7 +241,8 @@ def _binned_columns(xs: list[float], cols: np.ndarray, n: int | None = None) -> 
 MAX_POINTS = 600
 MAX_NOTES = 64 * 1024
 MAX_DOC = 512 * 1024
-DOC_NAME = __import__("re").compile(r"(reference/)?[a-z0-9][a-z0-9-]{0,63}")
+DOC_NAME = __import__("re").compile(r"((reference|proposals)/)?[a-z0-9][a-z0-9-]{0,63}")
+DOC_GROUPS = ("", "proposals", "reference")  # the tab's sections: docs/*.md, docs/proposals/*.md, docs/reference/*.md
 # the Docs tab: docs/*.md (short, first the ones a reader starts with), then docs/reference/*.md (the details)
 DOC_ORDER = ("overview", "environments", "model", "experiments", "road-to-the-real-game", "optimizations", "architecture")
 
@@ -261,14 +262,15 @@ class Docs:
 
     def list(self) -> list[dict]:
         out = []
-        for group, files in (("", self.root.glob("*.md")), ("reference", (self.root / "reference").glob("*.md"))):
+        for group in DOC_GROUPS:
+            files = (self.root / group).glob("*.md") if group else self.root.glob("*.md")
             for f in sorted(files):
                 text = f.read_text(errors="replace")
                 name = f"{group}/{f.stem}" if group else f.stem
                 out.append({"name": name, "group": group, "title": self.title(text, f.stem), "updated": f.stat().st_mtime,
                             "bytes": f.stat().st_size, "lines": text.count("\n") + 1})
         rank = {n: i for i, n in enumerate(DOC_ORDER)}
-        return sorted(out, key=lambda d: (d["group"] != "", rank.get(d["name"], len(rank)), d["title"].lower()))
+        return sorted(out, key=lambda d: (DOC_GROUPS.index(d["group"]), rank.get(d["name"], len(rank)), d["title"].lower()))
 
     def read(self, name: str) -> dict | None:
         f = self.root / f"{name}.md"
