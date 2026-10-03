@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from warcraftsim.fullgame import features as fx
 from warcraftsim.fullgame.costs import order_costs
 from warcraftsim.fullgame.model import load
-from warcraftsim.fullgame.play import BCAgent, matchup_setup
+from warcraftsim.fullgame.play import BCAgent, matchup_setup, unit_rows
 from warcraftsim.runtime.instance import GameInstance
 
 A = 9 + len(fx.FLAG_BITS)  # the entity features after the flags (features.Encoder.entities)
@@ -104,7 +104,18 @@ def main() -> None:
             obs = g.start()
             bot.begin(obs, [fx.RACES.index(s.race) for s in setup.slots])
             t = 0
+            minutes = []  # per minute, both sides: food, held, gold gathered, heroes, their levels (as the AI analysis)
             while not obs.game_over:
+                if t % 120 == 0 and t > 0:
+                    rows = unit_rows(obs, t)
+                    alive = rows[(rows[:, fx.C_FLAGS] & 1024) == 0]
+                    for p_ in (side, 1 - side):
+                        pl_ = obs.players.get(p_)
+                        hs = alive[(alive[:, fx.C_OWNER] == p_) & ((alive[:, fx.C_FLAGS] & 1) > 0)]
+                        if pl_ is not None:
+                            minutes.append({"minute": t // 120, "learner": p_ == side, "food": pl_.food_used,
+                                            "held": pl_.gold + pl_.lumber, "gold_gathered": pl_.gold_gathered,
+                                            "heroes": len(hs), "hero_levels": int(hs[:, fx.C_HLEVEL].sum()) if len(hs) else 0})
                 cmds = bot.act(obs, t)
                 obs = g.step(cmds)
                 bot.accepted(cmds, obs.command_results)
@@ -112,11 +123,18 @@ def main() -> None:
             result = obs.players[side].result.name if side in obs.players else "?"
         with lock:
             games.append({"race": race, "ai": ai_race, "result": result, "minutes": round(obs.game_time / 60, 1),
-                          "rows": bot.rows})
+                          "rows": bot.rows, "per_minute": minutes})
             print(f"game {i}: {race} vs {ai_race}: {result} after {obs.game_time / 60:.1f} min", flush=True)
 
     with ThreadPoolExecutor(min(args.games, 8)) as ex:
         list(ex.map(run, plans))
+    print("per minute, the learner vs the AI (mean over the games still going): food | held | gold gathered | heroes | hero levels")
+    for m in range(1, 7):
+        pm = [r for g in games for r in g["per_minute"] if r["minute"] == m]
+        if not pm:
+            continue
+        cell = lambda k: "%7.1f vs %-7.1f" % (st_.mean(r[k] for r in pm if r["learner"]), st_.mean(r[k] for r in pm if not r["learner"]))  # noqa: E731
+        print(f"  {m} | " + " | ".join(cell(k) for k in ("food", "held", "gold_gathered", "heroes", "hero_levels")) + f"  (n {len(pm) // 2})")
     by_type: dict[int, list] = {}
     for g in games:
         for r in g["rows"]:
