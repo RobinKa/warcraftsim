@@ -1,7 +1,7 @@
 // A screenshot of the dashboard (headless Chrome from Playwright's cache, driven over the DevTools
 // protocol; no packages needed), optionally with the mouse over an element:
 //   node scripts/dashboard_shot.mjs "http://localhost:8765/#run=fgself-10&tab=matchups" out.png \
-//        [--wait "#matchups table"] [--hover "#c-win" --index 3] [--click "sel1;sel2"] [--width 1500 --height 1000]
+//        [--wait "#matchups table"] [--hover "#c-win" --index 3] [--click "sel1;sel2"] [--eval "js"] [--width 1500 --height 1000]
 // --hover: a chart's canvas id hovers its restart badges (.mark), any other selector the element.
 import { spawn } from "node:child_process";
 import { readdirSync, writeFileSync } from "node:fs";
@@ -53,6 +53,8 @@ if (hover) {
   if (pos) { await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: pos.x, y: pos.y }); await sleep(400); }
   console.log("hovered:", JSON.stringify(pos));
 }
+// --eval "<expression>": print its value (after the clicks and the hover; e.g. to check a panel's state)
+if (opt("--eval")) console.log("eval:", await ev(opt("--eval")));
 const shot = await send("Page.captureScreenshot", { format: "png" });
 writeFileSync(out, Buffer.from(shot.result.data, "base64"));
 proc.kill();

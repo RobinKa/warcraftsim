@@ -231,6 +231,17 @@ body.page-view main { padding:18px 28px 40px; }
 .lineage .graph { position:relative; background:var(--panel); border:1px solid var(--line); border-radius:8px;
                   height:calc(100vh - 150px); min-height:360px; overflow:hidden; cursor:grab; touch-action:none; }
 .lineage .graph.dragging { cursor:grabbing; }
+/* a box's restarts on hover: a timeline */
+.lineage .lgtip { display:none; position:absolute; z-index:8; width:min(400px, 70%); max-height:70%; overflow:auto;
+                  background:#0b0f13f2; border:1px solid var(--line); border-radius:8px; padding:10px 12px; font-size:12px; line-height:1.45; }
+.lineage .lgtip span { color:var(--muted); font-size:11px; }
+.lineage .lgtip .ch { margin:6px 0; color:var(--good); }
+.lineage .lgtip .nt { margin:4px 0 2px; color:var(--text); }
+.lineage .lgtip .rh { margin:8px 0 4px; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.04em; }
+.lineage .lgtip ul.tl { list-style:none; margin:0; padding:0 0 0 4px; border-left:1px solid #3a8a63; }
+.lineage .lgtip ul.tl li { position:relative; padding:0 0 8px 12px; }
+.lineage .lgtip ul.tl li i { position:absolute; left:-5px; top:5px; width:7px; height:7px; border-radius:50%; background:#3a8a63; }
+.lineage .lgtip .hint2 { margin-top:6px; color:var(--muted); font-size:11px; }
 .lineage .graph .mermaid { position:absolute; left:0; top:0; transform-origin:0 0; margin:0; padding:0; border:0; background:none; }
 .lineage .graph svg { max-width:none !important; display:block; }
 .lineage .zoom { position:absolute; right:10px; top:10px; z-index:3; display:flex; flex-direction:column; gap:4px; }
@@ -1851,15 +1862,21 @@ function renderLineageGraph() {
   const linked = new Set(edges.flatMap(e => [e.from, e.to]));
   const shown = nodes.filter(n => linked.has(n.name)), id = new Map(shown.map((n, i) => [n.name, "n" + i]));
   const steps = n => n.steps ? ` · ${fmt(n.steps, 0)} steps` : "";
-  const short = (s, n = 46) => { s = (s || "").replace(/\s+/g, " ").trim(); return s.length > n ? s.slice(0, n - 2).replace(/[ ,.;:(]+\S*$/, "") + "…" : s; };
-  const rlines = n => {  // the restarts inside a node (in full on hover)
-    const rs = n.restarts || []; if (!rs.length) return "";
-    const shown = rs.slice(-4).map(r => `${fmt(r.steps, 0)}: ${esc(short(r.note, 40) || "restarted")}`);
-    return `<br/><small>${rs.length > 4 ? `… ${rs.length - 4} more restarts<br/>` : ""}${shown.join("<br/>")}</small>`;
-  };
+  const nr = n => (n.restarts || []).length, ago_ = s => new Date(s * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  const badge = n => nr(n) ? ` · ↻ ${nr(n)}` : "";  // (its restarts: hover the box for them)
   const label = n => n.kind === "segment"  // (a run from a restart that brought new inputs on)
-    ? `${n.run.replace(/^(bc|fullgame)\//, "")} from ${fmt(n.steps, 0)}<br/><small>${n.advisor ? `${esc(n.advisor)} advising · ` : ""}${esc(short(n.note) || "restarted")}</small>${rlines(n)}`
-    : `${n.name.replace(/^(bc|fullgame)\//, "")}<br/><small>${(LINEAGE_KINDS[n.kind] || [n.kind])[0]}${steps(n)}${n.status === "training" ? " · training" : ""}</small>${rlines(n)}`;
+    ? `${n.run.replace(/^(bc|fullgame)\//, "")} from ${fmt(n.steps, 0)}<br/><small>${n.advisor ? "AI advising" : "new inputs"}${badge(n)}</small>`
+    : `${n.name.replace(/^(bc|fullgame)\//, "")}<br/><small>${(LINEAGE_KINDS[n.kind] || [n.kind])[0]}${steps(n)}${n.status === "training" ? " · training" : ""}${badge(n)}</small>`;
+  const detail = n => {  // the hover panel: what came in, and the restarts as a timeline
+    const head = n.kind === "segment"
+      ? `<b>${esc(n.run)}</b>, restarted at ${fmt(n.steps, 0)} steps${n.time ? ` <span>${ago_(n.time)}</span>` : ""}` +
+        (n.changes && n.changes.length ? `<div class="ch">${n.changes.map(c => `<div>+ ${esc(c)}</div>`).join("")}</div>` : "") +
+        (n.note ? `<div class="nt">${esc(n.note)}</div>` : "")
+      : `<b>${esc(n.name)}</b> <span>${(LINEAGE_KINDS[n.kind] || [n.kind])[0]}${steps(n)}</span>`;
+    const rs = (n.restarts || []).map(r => `<li><i></i><div><b>${fmt(r.steps, 0)} steps</b>${r.time ? ` <span>${ago_(r.time)}</span>` : ""}` +
+      `<div>${esc(r.note || "restarted (no note)")}</div></div></li>`).join("");
+    return head + (rs ? `<div class="rh">restarts</div><ul class="tl">${rs}</ul>` : "") + `<div class="hint2">click to open the run</div>`;
+  };
   const lines = ["flowchart LR"];
   for (const n of shown) lines.push(`  ${id.get(n.name)}["${label(n).replace(/"/g, "'")}"]:::${LINEAGE_KINDS[n.kind] ? n.kind : "run"}`);
   const arrow = w => w === "data" ? "-.->" : w === "policy" ? "==>" : w === "played" ? "-.-" : w === "anchor" ? "-- anchor -->" : "-->";
@@ -1877,20 +1894,33 @@ function renderLineageGraph() {
     <div class="graph"><div class="zoom"><button data-z="in" title="zoom in (+)">+</button><button data-z="out" title="zoom out (−)">−</button>
       <button data-z="fit" title="fit the graph (0 or double-click)">⤢</button><button data-z="one" title="actual size (1)">1:1</button><span class="pct"></span></div>
       <span class="hint">drag to move · wheel or pinch to zoom · double-click to fit</span>
-      <div class="mermaid">${esc(lines.join("\n"))}</div></div></div>`;
+      <div class="mermaid">${esc(lines.join("\n"))}</div><div class="lgtip"></div></div></div>`;
   m.querySelectorAll("button[data-track]").forEach(b => b.onclick = () => openLineage(b.dataset.track));
   const byId = new Map(shown.map(n => [id.get(n.name), n.name]));
   const at = ui.lineage.view && ui.lineage.view.track === track ? ui.lineage.view : null;  // (a re-draw stays where it was)
   renderMermaid(m).then(() => {
     const pz = panZoom(m.querySelector(".graph"), m.querySelector(".graph .mermaid"), at, v => { ui.lineage.view = { ...v, track }; });
+    const lt = m.querySelector(".graph .lgtip");  // (it stays open while the pointer is on it, and scrolls without zooming)
+    lt.addEventListener("mouseenter", () => clearTimeout(lt._hide));
+    lt.addEventListener("mouseleave", () => { lt.style.display = "none"; });
+    lt.addEventListener("wheel", ev => ev.stopPropagation(), { passive: true });
+    lt.addEventListener("pointerdown", ev => ev.stopPropagation());
     m.querySelectorAll(".graph g.node").forEach(g => {
       const k = (g.id.match(/flowchart-(n\d+)-/) || [])[1], name = byId.get(k);
       if (!name) return;
       const n = shown.find(x => x.name === name), run = n && n.kind === "segment" ? n.run : name;
-      const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
-      title.textContent = (n && n.kind === "segment" ? `${run}, restarted at ${fmt(n.steps, 0)} steps${n.note ? ": " + n.note : ""}` : name) +
-        (n && (n.restarts || []).length ? "\n\nrestarts:\n" + n.restarts.map(r => `${fmt(r.steps, 0)} steps: ${r.note || "–"}`).join("\n") : "");
-      g.appendChild(title);
+      const tip = m.querySelector(".graph .lgtip"), box = m.querySelector(".graph");
+      g.dataset.name = name;
+      g.addEventListener("mouseenter", () => {  // a panel beside the box (inside the graph's frame)
+        clearTimeout(tip._hide);
+        if (!n || (!nr(n) && n.kind !== "segment")) return;
+        tip.innerHTML = detail(n); tip.style.display = "block";
+        const b = box.getBoundingClientRect(), r = g.getBoundingClientRect(), w = tip.offsetWidth, h = tip.offsetHeight;
+        let x = r.right - b.left + 10; if (x + w > b.width - 8) x = r.left - b.left - w - 10;
+        tip.style.left = Math.max(8, x) + box.scrollLeft + "px";  // (the frame clips, but can be scrolled by script)
+        tip.style.top = Math.max(8, Math.min(b.height - h - 8, r.top - b.top)) + box.scrollTop + "px";
+      });
+      g.addEventListener("mouseleave", () => { tip._hide = setTimeout(() => { tip.style.display = "none"; }, 250); });
       g.addEventListener("click", () => { if (!pz.moved()) openRun(run); });  // (not the end of a drag)
     });
   });

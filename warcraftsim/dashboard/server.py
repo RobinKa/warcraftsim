@@ -1074,9 +1074,10 @@ class Dashboard:
             for s in ls[1:]:
                 cur = s.get("inputs") or prev
                 if cur and prev and any((cur.get(k) or None) != (prev.get(k) or None) for k in ("init", "bc_data", "advisor")):
-                    parts.append({"steps": s["steps"], "inputs": cur, "note": s.get("note"), "prev": prev, "restarts": []})
+                    parts.append({"steps": s["steps"], "inputs": cur, "note": s.get("note"), "time": s.get("time"), "prev": prev,
+                                  "restarts": []})
                 else:
-                    parts[-1]["restarts"].append({"steps": s["steps"], "note": s.get("note") or ""})
+                    parts[-1]["restarts"].append({"steps": s["steps"], "note": s.get("note") or "", "time": s.get("time")})
                 prev = cur
             segs[r["name"]] = parts
 
@@ -1106,8 +1107,12 @@ class Dashboard:
             track = "whole game" if str(next((r.get("task") for r in runs if r["name"] == name), "")).startswith("fullgame") else "micro"
             for k, s in enumerate(ps[1:], 1):
                 cur, prev = s["inputs"], s["prev"]
+                changes = ([f"anchor: {node_of(cur.get('init')) or cur.get('init')}"] if cur.get("init") != prev.get("init") else []) + \
+                    [f"demonstrations: {node_of(d) or d}" for d in sorted(set(cur.get("bc_data") or []) - set(prev.get("bc_data") or []))] + \
+                    ([f"advisor: {cur.get('advisor') or 'none'}"] if cur.get("advisor") != prev.get("advisor") else [])
                 nodes.append({"name": seg_name(name, k), "kind": "segment", "track": track, "run": name, "steps": s["steps"],
-                              "note": s.get("note") or "", "advisor": cur.get("advisor"), "restarts": s["restarts"]})
+                              "note": s.get("note") or "", "time": s.get("time"), "advisor": cur.get("advisor"),
+                              "changes": changes, "restarts": s["restarts"]})
                 edges.append({"from": seg_name(name, k - 1), "to": seg_name(name, k), "why": "restart"})
                 if cur.get("init") != prev.get("init") and node_of(cur.get("init")):
                     edges.append({"from": node_of(cur.get("init")), "to": seg_name(name, k), "why": "anchor"})
