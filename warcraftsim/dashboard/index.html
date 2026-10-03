@@ -256,6 +256,8 @@ body.page-view main { padding:18px 28px 40px; }
 .lineage .graph g.node:hover rect { stroke-width:2.5px !important; }
 .lineage .key span { display:inline-flex; align-items:center; gap:5px; margin-right:12px; }
 .lineage .key i { width:12px; height:12px; border-radius:3px; display:inline-block; }
+.lineage .ekey span { display:inline-flex; align-items:center; gap:5px; margin-right:12px; }
+.lineage .ekey b { display:inline-block; width:24px; height:0; }
 .md .mermaid { background:#0b0f13; border:1px solid var(--line); border-radius:6px; padding:12px; margin:12px 0; text-align:center; overflow-x:auto; }
 .md .mermaid:not([data-processed]) { white-space:pre; text-align:left; font:12px/1.4 ui-monospace, monospace; color:var(--muted); }
 .docs { display:grid; grid-template-columns:260px minmax(0,1fr); gap:22px; align-items:start; max-width:1500px; }
@@ -1850,6 +1852,10 @@ ui.lineage = { track: "whole game", data: null };
 const LINEAGE_KINDS = { selfplay: ["self-play", "#1d3a2a", "#4cc38a"], bc: ["cloning fit", "#2d2140", "#b083f0"],
                         collect: ["demonstrations", "#16323a", "#39c5cf"], run: ["micro training", "#1d252e", "#8795a3"],
                         match: ["match", "#3a2a1d", "#e0a33a"], restart: ["a restart", "#16231c", "#3a8a63"] };
+// the arrows: why one box follows another (its name in the legend, colour, width)
+const LINEAGE_EDGES = { start: ["started from", "#c9d1d9", 1.6], restart: ["resumed (a restart)", "#4cc38a", 1.6],
+                        anchor: ["a new anchor for the KL term", "#e0a33a", 2.2], data: ["trained on demonstrations", "#39c5cf", 1.4],
+                        policy: ["its policy played the games", "#b083f0", 2.6], played: ["played in a match", "#8795a3", 1.2] };
 async function openLineage(track) {
   state.view = "lineage"; setNav();
   if (track) ui.lineage.track = track;
@@ -1873,7 +1879,7 @@ function renderLineageGraph() {
     return s.length > 30 ? s.slice(0, 29).replace(/\s+\S*$/, "") + "…" : s || "restarted";
   };
   const label = n => n.kind === "restart"
-    ? `↻ ${fmt(n.steps, 0)}<br/><small>${esc(title(n))}</small>`
+    ? `${n.run.replace(/^(bc|fullgame)\//, "")} ↻ ${fmt(n.steps, 0)}<br/><small>${esc(title(n))}</small>`
     : `${n.name.replace(/^(bc|fullgame)\//, "")}<br/><small>${(LINEAGE_KINDS[n.kind] || [n.kind])[0]}${steps(n)}${n.status === "training" ? " · training" : ""}</small>`;
   const detail = n => n.kind === "restart" ? restartDetail(n) : nodeDetail(n);
   const nodeDetail = n => {  // the hover panel of a run, fit, collection or match: when, facts, notes
@@ -1881,7 +1887,8 @@ function renderLineageGraph() {
     const dates = [a.created && `started ${when(a.created)}`, a.finished && `finished ${when(a.finished)}`].filter(Boolean).join(" · ");
     return `<b>${esc(n.name.replace(/^(bc|fullgame)\//, ""))}</b> <span>${(LINEAGE_KINDS[n.kind] || [n.kind])[0]}${a.status ? " · " + esc(a.status) : ""}</span>` +
       (dates ? `<div><span>${dates}</span></div>` : "") +
-      ((a.rows || []).length ? `<table class="kv">${a.rows.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join("")}</table>` : "") +
+      ((a.rows || []).length ? `<table class="kv">${a.rows.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${
+        esc(v.replace(/(^|[\s,])(bc\/|fullgame\/)?([\w.-]+)@(\d+)/g, (_, pre, _p, run, s) => `${pre}${run} at ${fmt(+s, 0)} steps`))}</td></tr>`).join("")}</table>` : "") +
       (a.notes ? `<div class="nt">${esc(a.notes)}</div>` : "") + `<div class="hint2">click to open it</div>`;
   };
   const restartDetail = n =>  // the hover panel of a restart: when, what came in, why
@@ -1891,8 +1898,11 @@ function renderLineageGraph() {
     (n.note ? `<div class="nt">${esc(n.note)}</div>` : "") + `<div class="hint2">click to open the run</div>`;
   const lines = ["flowchart LR"];
   for (const n of shown) lines.push(`  ${id.get(n.name)}["${label(n).replace(/"/g, "'")}"]:::${LINEAGE_KINDS[n.kind] ? n.kind : "run"}`);
-  const arrow = w => w === "data" ? "-.->" : w === "policy" ? "==>" : w === "played" ? "-.-" : w === "anchor" ? "-- anchor -->" : "-->";
-  for (const e of edges) lines.push(`  ${id.get(e.from)} ${arrow(e.why)} ${id.get(e.to)}`);
+  const arrow = w => w === "data" ? "-.->" : w === "policy" ? "==>" : w === "played" ? "-.-" : "-->";
+  const byWhy = {};  // each kind of arrow its colour (linkStyle: by the arrows' order)
+  edges.forEach((e, i) => { lines.push(`  ${id.get(e.from)} ${arrow(e.why)} ${id.get(e.to)}`); (byWhy[e.why] = byWhy[e.why] || []).push(i); });
+  for (const [w, idx] of Object.entries(byWhy)) if (LINEAGE_EDGES[w])
+    lines.push(`  linkStyle ${idx.join(",")} stroke:${LINEAGE_EDGES[w][1]},stroke-width:${LINEAGE_EDGES[w][2]}px`);
   for (const [k, [, fill, stroke]] of Object.entries(LINEAGE_KINDS)) lines.push(`  classDef ${k} fill:${fill},stroke:${stroke},color:#d7dee6${k === "restart" ? ",font-size:12px" : ""}`);
   lines.push("  classDef current stroke-width:3px,stroke:#e0a33a");
   if (id.has(state.selected)) lines.push(`  class ${id.get(state.selected)} current`);  // (one ::: class per node only)
@@ -1900,8 +1910,9 @@ function renderLineageGraph() {
   const key = Object.entries(LINEAGE_KINDS).filter(([k]) => shown.some(n => n.kind === k))
     .map(([, [name, fill, stroke]]) => `<span><i style="background:${fill};border:1px solid ${stroke}"></i>${name}</span>`).join("");
   m.innerHTML = `<div class="lineage"><div class="bar"><span class="seg">${seg}</span><span class="key">${key}</span>
-      <span>→ started from · ↻ restarted (hover for why) · anchor: its KL term's new clone · ⇢ fitted on, or new demonstrations · ⇒ its policy played the games · ┄ played in the match · click a box to open it ·
-        drawn from the runs' own records (run.json, bc.json, collect.json), and kept current</span>
+      <span class="ekey">${Object.entries(LINEAGE_EDGES).filter(([w]) => edges.some(e => e.why === w)).map(([w, [name, c, wd]]) =>
+        `<span><b style="border-top:${Math.round(wd)}px ${w === "data" || w === "played" ? "dotted" : "solid"} ${c}"></b>${name}</span>`).join("")}</span>
+      <span>↻ a restart (hover a box for more) · click a box to open it · drawn from the runs' own records (run.json, bc.json, collect.json), and kept current</span>
       <span>${nodes.length - shown.length} with no lineage not shown</span></div>
     <div class="graph"><div class="zoom"><button data-z="in" title="zoom in (+)">+</button><button data-z="out" title="zoom out (−)">−</button>
       <button data-z="fit" title="fit the graph (0 or double-click)">⤢</button><button data-z="one" title="actual size (1)">1:1</button><span class="pct"></span></div>
