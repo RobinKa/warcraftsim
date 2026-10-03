@@ -241,8 +241,8 @@ def _binned_columns(xs: list[float], cols: np.ndarray, n: int | None = None) -> 
 MAX_POINTS = 600
 MAX_NOTES = 64 * 1024
 MAX_DOC = 512 * 1024
-DOC_NAME = __import__("re").compile(r"((reference|proposals)/)?[a-z0-9][a-z0-9-]{0,63}")
-DOC_GROUPS = ("", "proposals", "reference")  # the tab's sections: docs/*.md, docs/proposals/*.md, docs/reference/*.md
+DOC_NAME = __import__("re").compile(r"((reference|proposals|related)/)?[a-z0-9][a-z0-9-]{0,63}")
+DOC_GROUPS = ("", "proposals", "related", "reference")  # the tab's sections: docs/*.md, then docs/<group>/*.md
 # the Docs tab: docs/*.md (short, first the ones a reader starts with), then docs/reference/*.md (the details)
 DOC_ORDER = ("overview", "environments", "model", "experiments", "road-to-the-real-game", "optimizations", "architecture")
 

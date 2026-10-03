@@ -1636,7 +1636,7 @@ function mdInline(s) {  // escaped text -> inline markdown: code, images, links,
   s = s.replace(/`([^`]+)`/g, (_, c) => { codes.push(c); return `\u0000${codes.length - 1}\u0000`; });
   s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, a, u) => `<img alt="${a}" src="${/^(https?:|\/)/.test(u) ? u : "/docs/" + u}">`);
   s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, txt, u) => {
-    const doc = u.match(/^(?:\.\.\/|\.\/|docs\/)?((?:reference\/|proposals\/)?[a-z0-9-]+)\.md(#.*)?$/);  // a link to another document: open it here
+    const doc = u.match(/^(?:\.\.\/|\.\/|docs\/)?((?:reference\/|proposals\/|related\/)?[a-z0-9-]+)\.md(#.*)?$/);  // a link to another document: open it here
     return doc ? `<a href="/doc/${doc[1]}" data-doc="${doc[1]}">${txt}</a>` : `<a href="${u}" target="_blank" rel="noopener">${txt}</a>`;
   });
   s = s.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/(^|[^\w*])\*([^*\s][^*]*)\*(?!\w)/g, "$1<i>$2</i>")
@@ -1731,7 +1731,7 @@ function renderDocs() {
   const D = ui.docs, doc = D.doc;
   const item = d => `<a href="/doc/${encPath(d.name)}" data-doc="${esc(d.name)}" class="${doc && doc.name === d.name ? "on" : ""}">${esc(d.title)}<small>${esc(d.name)}.md · ${ago(d.updated)}</small></a>`;
   const group = (g, title) => { const ds = D.list.filter(d => (d.group || "") === g); return ds.length ? (title ? `<div class="group">${title}</div>` : "") + ds.map(item).join("") : ""; };
-  const list = group("", "") + group("proposals", "Proposals and ideas") + group("reference", "Reference (the details)");
+  const list = group("", "") + group("proposals", "Proposals and ideas") + group("related", "Related work") + group("reference", "Reference (the details)");
   const body = !doc ? `<div class="empty">no documents yet (docs/*.md)</div>` : D.editing
     ? `<div class="bar"><span class="grow">docs/${esc(doc.name)}.md · markdown</span><span id="docstate"></span><button id="docsave">save</button><button id="doccancel">cancel</button></div><textarea id="doctext" spellcheck="false">${esc(doc.text)}</textarea>`
     : `<div class="bar"><span class="grow">docs/${esc(doc.name)}.md · updated ${ago(doc.updated)}</span><button id="docedit">edit</button></div><div class="md">${mdToHtml(doc.text)}</div>`;

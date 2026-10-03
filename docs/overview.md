@@ -31,3 +31,4 @@ flowchart LR
 * [The road to the real game](road-to-the-real-game.md): what is still missing.
 * [Optimizations](optimizations.md): how a step became fast.
 * [Architecture](architecture.md): how Python drives the game.
+* Related work: [AlphaStar](related/alphastar.md) and [OpenAI Five](related/openai-five.md), and how this project differs.
