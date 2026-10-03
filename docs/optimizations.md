@@ -7,16 +7,16 @@ The game's CPU sets the speed. The [optimization log](reference/optimization-log
 ```mermaid
 xychart-beta horizontal
   title "Whole-game self-play, agent steps per second"
-  x-axis ["start", "pipes not queues", "games niced", "one GPU wait", "CUDA graphs", "real resets", "cheaper render", "units in C", "padded less", "5 games a load", "bounded queue", "learner as CUDA graphs"]
-  y-axis "steps/s" 0 --> 1100
-  bar [560, 545, 595, 606, 607, 540, 644, 719, 800, 822, 840, 1000]
+  x-axis ["start", "pipes not queues", "games niced", "one GPU wait", "CUDA graphs", "real resets", "cheaper render", "units in C", "padded less", "5 games a load", "bounded queue", "learner as CUDA graphs", "no drawing, 40 games"]
+  y-axis "steps/s" 0 --> 1200
+  bar [560, 545, 595, 606, 607, 540, 644, 719, 800, 822, 840, 1000, 1110]
 ```
 
 ## Where the time goes
 
 ```mermaid
 flowchart LR
-  G["32 games<br/>CPU: 35–40 ms a step"] -- "observations" --> I["Inference server<br/>CUDA graphs"]
+  G["40 games, drawing nothing"] -- "observations" --> I["Inference server<br/>CUDA graphs, ~87% busy"]
   I -- "orders" --> G
   G -- "trajectories" --> L["Learner<br/>8,192 steps in ~5 s<br/>CUDA graphs"]
   L -- "weights" --> I
@@ -32,6 +32,7 @@ flowchart LR
 3. Five games per map load, each with new players.
 4. One inference server with CUDA graphs and one GPU wait per round.
 5. The learner's minibatch steps as CUDA graphs: one launch where eager PyTorch made ~2,000.
+6. The games draw nothing: the Direct3D device's draw calls return at once (17% less CPU a step, the same simulation).
 
 ## What remains
 

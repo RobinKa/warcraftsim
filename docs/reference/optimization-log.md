@@ -83,6 +83,24 @@ A run's page re-read and re-binned all its episodes on every refresh: 4.5 s for 
 
 The steps/s rose more than the learner's freed CPU: the trajectory queue holds one batch, so the actors had waited for the slow updates. Now the learner waits 2-3 s an update for data.
 
+## Games that draw nothing, 40 of them (2026-10-03)
+
+With drawing on, `OPENGL32.dll` (Wine's Direct3D 9 on Mesa's software rasterizer) took 18% of a training game's main thread (`W3SIM_PROFILE=2`). The shim now makes the Direct3D device's draw calls, clears and presents return at once (`W3SIM_DRAW=0`, `GameSetup.draw`, `shim/render.c`); the game still builds every frame. `OPENGL32.dll` fell to 1%.
+
+* Six duelfast games against six alongside: 22.6 → 18.7 ms of CPU a step (game 18.5 → 15.0, wineserver 4.0 → 3.7).
+* The simulation does not change: a replay played back with and without drawing agrees with the live game in every unit's position, hit points, mana and order at every step (`scripts/draw_parity.py`, 300 steps).
+* Mesa's own no-op driver (`GALLIUM_NOOP=1`) left the game without a first frame.
+
+In the run the freed CPU first went idle (~24%): the games waited for the inference server, which shares the GPU with the graphed learner (busy 73% → 85-90%, rounds 5.1 → 6 ms). More games give it bigger batches:
+
+| games | steps/s (12 updates after the restart) | inference busy | CPU idle |
+|---|---|---|---|
+| 32 | ~990 | 85% | ~24% |
+| 40 | **~1,110** | 87% | ~21% |
+| 48 | ~1,010 | 86% | ~16% |
+
+The run stays at 40. The game's main thread without drawing: the game's own code 58% (no page above 3.5%), Wine's system layer 38% (about 15 points of it the wait for Python at each step's sync).
+
 ## Dead ends
 
 * 8 actor processes of 4 games instead of 4 of 8 (627 against 644 steps/s).
