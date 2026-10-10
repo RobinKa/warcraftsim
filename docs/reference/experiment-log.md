@@ -896,6 +896,10 @@ The losses are decided in the fights: in real losses against normal and insane t
 
 Without it (58.0M → 72.8M, 3 hours): the real game 100 of 443 won (23%: easy 28%, normal 30%, insane 9%), against 25% before (not a clear difference). But the chance of the AI's hero orders at its decisions fell steadily, 6.0% → 5.1% (62.1M) → 4.0% (72.2M; human 7.5% → 3.2%, undead 3.3% → 1.9%, no order at all 76% → 85%), while basic units held (33-35%). In its own real games it still trained as many heroes (1.4-1.5 against insane's 2.2). So only the cloning loss had kept the AI's habits at the AI's own states. From 72.8M (22:10) it is back at x0.02 on half the batch (32 steps a minibatch: an update 2.24 s alone, against 2.64 s with 64 and 1.59 s without).
 
+With it back (72.8M → 81.8M, 2 hours): the real game 60 of 250 (24%: easy 24%, normal 44%, insane 6%), the AI's hero orders 4.5% at 81.4M (from 4.0%; human 4.6%).
+
+**The anchor halved** (from 82.0M, 2026-10-11 00:06; `--ref-kl 0.1`, was 0.2). For 40M steps the policy sat ~0.01 nats from `fullgame-fast-win6` and the real game at ~24-25%; a weaker pull lets the reinforcement learning move it further. Watch: ties and held resources (this run hoarded and tied without an anchor), the distance to the anchor, the AI's production orders, the real game over 300+ games.
+
 ### The built-in AI as an advisor (shadow games)
 
 Takeover games label only the states after the takeover, and they soon become the AI's states. On-policy distillation asks the teacher for a label in every state the student reaches. The built-in AI is a script, not a function, so it cannot be asked. In a shadow game it plays the policy's player too: the harness records its orders as labels and undoes them (`protocol.ShadowAI`, `collect.py --shadow`).
