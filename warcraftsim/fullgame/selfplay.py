@@ -138,7 +138,8 @@ class Inference:
         self.buckets = tuple(sorted(buckets or (max_batch,)))
         self.entities = tuple(sorted(set(entities) | {fx.MAX_ENT}))
         self._hosts: dict[tuple, torch.Tensor] = {}
-        self._used: dict[tuple, int] = {}  # the host buffers taken since the last wait()
+        self._used: dict[tuple, int] = {}  # the host buffers taken since the last wait() (or begin())
+        self.bank = 0  # which set of host buffers: two rounds in flight use two (inference_main's pipeline)
         # the calls as CUDA graphs (one launch instead of ~150 kernels: the network is small, its calls
         # latency-bound). Graphs need fixed shapes: the batch and the entities padded to a bucket.
         # Captured from the eager network, per network and shape, in well under a second. (torch.compile's
@@ -248,9 +249,9 @@ class Inference:
         pinned = fixed and self.device.type == "cuda"
         if pinned:  # the same shapes every call: pinned host buffers, reused (a round's calls each their own)
             slot = self._used[(B, W)] = self._used.get((B, W), -1) + 1
-            if (B, W, slot) not in self._hosts:
-                self._hosts[(B, W, slot)] = torch.zeros(B, W).pin_memory()
-            host = self._hosts[(B, W, slot)]
+            if (B, W, slot, self.bank) not in self._hosts:
+                self._hosts[(B, W, slot, self.bank)] = torch.zeros(B, W).pin_memory()
+            host = self._hosts[(B, W, slot, self.bank)]
             host.zero_()
         else:
             host = torch.zeros(B, W)
@@ -291,7 +292,7 @@ class Inference:
             x, graph, packed = self._graph(net, host)
             x.copy_(host, non_blocking=True)
             graph.replay()
-            key = ("out", B, packed.shape[1], slot)
+            key = ("out", B, packed.shape[1], slot, self.bank)
             if key not in self._hosts:
                 self._hosts[key] = torch.zeros(B, packed.shape[1]).pin_memory()
             out = self._hosts[key]
@@ -299,6 +300,11 @@ class Inference:
         else:
             out = self._fn(net)(host.to(self.device))
         return out, own, min(fx.MAX_OWN, E), bool(d)
+
+    def begin(self, bank: int) -> None:
+        """A round on this set of host buffers (the other one may still be in flight)."""
+        self.bank = bank
+        self._used.clear()
 
     def wait(self, streams: list | None = None) -> None:
         """Until the calls launched (on these streams; default: the current one) are done (sleeping:
@@ -541,61 +547,25 @@ def inference_main(cfg: dict, conns: list, stop) -> None:
     swap = PastNet(device, slots=cfg.get("infer_past_slots", 1))
     streams = {} if cfg.get("infer_streams", 0) else None
     def fresh():
-        return {"calls": 0, "past": 0, "rows": 0, "busy": 0.0, "wait": 0.0, "ents": 0, "ents_max": 0, "rounds": 0,
-                "t": time.time()}
+        return {"calls": 0, "past": 0, "rows": 0, "busy": 0.0, "wait": 0.0, "idle": 0.0, "ents": 0, "ents_max": 0,
+                "rounds": 0, "t": time.time()}
     stats = fresh()  # -> inference.jsonl
     stats_path = Path(cfg["run_dir"]) / "inference.jsonl"
     live = list(conns)
     t_round = 0.0
-    while not stop.is_set() and os.getppid() == cfg["learner_pid"]:
-        if time.time() - stats["t"] >= 10.0 and stats["calls"]:
-            dt = time.time() - stats["t"]
-            with open(stats_path, "a") as f:
-                f.write(json.dumps({"time": time.time(), "calls_per_s": round(stats["calls"] / dt, 1),
-                                    "rows_per_s": round(stats["rows"] / dt, 1), "rows_per_call": round(stats["rows"] / stats["calls"], 2),
-                                    "rounds_per_s": round(stats["rounds"] / dt, 1),
-                                    "past_calls_per_s": round(stats["past"] / dt, 1),
-                                    "round_ms": round(1000 * stats["busy"] / max(stats["rounds"], 1), 2),  # requests in to answers out
-                                    "wait_ms": round(1000 * stats["wait"] / max(stats["rounds"], 1), 2),  # of it: for the GPU
-                                    "busy": round(stats["busy"] / dt, 3), "entities": round(stats["ents"] / stats["rows"], 1),
-                                    "entities_max_mean": round(stats["ents_max"] / stats["calls"], 1)}) + "\n")
-            stats = fresh()
-        ready = wait(live, timeout=1.0)
-        if not ready:
-            continue
-        # a round at most every cfg["infer_period"] seconds: every round takes the GPU from the learner
-        # for a turn (260 rounds a second left it half of it), and what arrives meanwhile shares the round
-        pause = t_round + cfg.get("infer_period", 0.0) - time.time()
-        if pause > 0:
-            time.sleep(pause)
-            ready = wait(live, timeout=0)
-        t_busy = t_round = time.time()
-        asked: dict = {}  # game pipe -> (its request's id, the answers)
-        groups: dict[str, list] = {}  # network -> [(pipe, item, view step)]
-        for c in ready:
-            try:
-                rid, items = c.recv()
-            except (EOFError, OSError):  # its actor is gone
-                live.remove(c)
-                continue
-            asked[c] = (rid, [None] * len(items))
-            for k, item in enumerate(items):
-                if len(item) == 4:  # (key, entities, own units, its row in the shared memory)
-                    key, st = item[0], {"n": item[1], "n_own": item[2], "row": item[3]}
-                else:
-                    key, st = item
-                groups.setdefault(key, []).append((c, k, st))
-        calls, used = launch_round(groups, nets, infer, past, swap, top, streams)  # all started before the one wait
-        for fwd, _, part, _ in calls:
-            ns = [it[2]["n"] for it in part]
-            stats["calls"] += 1
-            stats["past"] += fwd is past
-            stats["rows"] += len(part)
-            stats["ents"] += sum(ns)
-            stats["ents_max"] += max(ns)
+    # Rounds in a pipeline (--infer-pipeline): the next round is read and launched while the last one
+    # is on the GPU (its host buffers another bank), then the last one is answered. A round was ~4 ms
+    # of reading, launching and answering and ~4.5 ms of waiting for the GPU (behind the learner's
+    # kernels): one after the other the games' requests waited for both.
+    pipeline = bool(cfg.get("infer_pipeline", 0))
+    pending = None  # the round in flight: (asked, calls, events, its start)
+    bank = 0
+
+    def complete(p) -> None:
+        asked, calls, events, t0 = p
         t_wait = time.time()
-        infer.wait(used or None)
-        past.wait(used or None)
+        for ev in events:
+            ev.synchronize()
         stats["wait"] += time.time() - t_wait
         for fwd, handle, part, version in calls:
             rows = [st.get("row") for _, _, st in part]
@@ -620,7 +590,78 @@ def inference_main(cfg: dict, conns: list, stop) -> None:
                 if c in live:
                     live.remove(c)
         stats["rounds"] += 1
-        stats["busy"] += time.time() - t_busy
+        stats["busy"] += time.time() - t0
+
+    while not stop.is_set() and os.getppid() == cfg["learner_pid"]:
+        if time.time() - stats["t"] >= 10.0 and stats["calls"]:
+            dt = time.time() - stats["t"]
+            with open(stats_path, "a") as f:
+                f.write(json.dumps({"time": time.time(), "calls_per_s": round(stats["calls"] / dt, 1),
+                                    "rows_per_s": round(stats["rows"] / dt, 1), "rows_per_call": round(stats["rows"] / stats["calls"], 2),
+                                    "rounds_per_s": round(stats["rounds"] / dt, 1),
+                                    "past_calls_per_s": round(stats["past"] / dt, 1),
+                                    "round_ms": round(1000 * stats["busy"] / max(stats["rounds"], 1), 2),  # requests in to answers out
+                                    "wait_ms": round(1000 * stats["wait"] / max(stats["rounds"], 1), 2),  # of it: for the GPU
+                                    "busy": round(1 - stats["idle"] / dt, 3), "entities": round(stats["ents"] / stats["rows"], 1),
+                                    "entities_max_mean": round(stats["ents_max"] / stats["calls"], 1)}) + "\n")
+            stats = fresh()
+        t_idle = time.time()
+        ready = wait(live, timeout=0 if pending else 1.0)
+        if pending is None:
+            stats["idle"] += time.time() - t_idle
+        if not ready:
+            if pending:
+                complete(pending)
+                pending = None
+            continue
+        # a round at most every cfg["infer_period"] seconds: every round takes the GPU from the learner
+        # for a turn (260 rounds a second left it half of it), and what arrives meanwhile shares the round
+        pause = t_round + cfg.get("infer_period", 0.0) - time.time()
+        if pause > 0 and pending is None:
+            time.sleep(pause)
+            ready = wait(live, timeout=0)
+        t_round = time.time()
+        asked: dict = {}  # game pipe -> (its request's id, the answers)
+        groups: dict[str, list] = {}  # network -> [(pipe, item, view step)]
+        for c in ready:
+            try:
+                rid, items = c.recv()
+            except (EOFError, OSError):  # its actor is gone
+                live.remove(c)
+                continue
+            asked[c] = (rid, [None] * len(items))
+            for k, item in enumerate(items):
+                if len(item) == 4:  # (key, entities, own units, its row in the shared memory)
+                    key, st = item[0], {"n": item[1], "n_own": item[2], "row": item[3]}
+                else:
+                    key, st = item
+                groups.setdefault(key, []).append((c, k, st))
+        infer.begin(bank)
+        past.begin(bank)
+        calls, used = launch_round(groups, nets, infer, past, swap, top, streams)  # all started before the one wait
+        events = []
+        if device.type == "cuda":  # (recorded now: the next round's work on these streams comes after them)
+            for st in used or [torch.cuda.current_stream()]:
+                ev = torch.cuda.Event(blocking=True)
+                ev.record(st)
+                events.append(ev)
+        for fwd, _, part, _ in calls:
+            ns = [it[2]["n"] for it in part]
+            stats["calls"] += 1
+            stats["past"] += fwd is past
+            stats["rows"] += len(part)
+            stats["ents"] += sum(ns)
+            stats["ents_max"] += max(ns)
+        this = (asked, calls, events, t_round)
+        if pending:
+            complete(pending)
+        pending = None
+        if pipeline:
+            pending, bank = this, bank ^ 1
+        else:
+            complete(this)
+    if pending:
+        complete(pending)
 
 
 class Trajectory:
@@ -1798,6 +1839,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="1: one inference server makes every actor's network calls (one GPU context, batches over all "
                          "games); 0: each actor its own")
     ap.add_argument("--native-obs", type=int, default=1, help="observations parsed in C (warcraftsim.native)")
+    ap.add_argument("--infer-pipeline", type=int, default=1, help="the inference server reads and launches the "
+                                                                   "next round while the last one is on the GPU")
     ap.add_argument("--infer-shm", type=int, default=1, help="the games' view steps and answers through shared "
                                                               "memory (SharedRows), not pickled through the pipes")
     ap.add_argument("--infer-streams", type=int, default=1, help="the inference server runs a round's networks "
@@ -1950,7 +1993,7 @@ def main(argv: list[str] | None = None) -> int:
            "agent_games_factor": args.agent_games_factor, "mirror": bool(args.mirror), "learner_pid": os.getpid(),
            "actors": args.actors, "values": unit_values(), "shaping": args.shaping, "shaping_scale": args.shaping_scale,
            "tie_break": args.tie_break, "tie_value": args.tie_value, "compile": bool(args.compile), "native_obs": bool(args.native_obs),
-           "real_share": args.real_share, "infer_batch": 64, "infer_streams": args.infer_streams,
+           "real_share": args.real_share, "infer_batch": 64, "infer_streams": args.infer_streams, "infer_pipeline": args.infer_pipeline,
            "infer_past_slots": args.infer_past_slots, "game_nice": args.game_nice, "pairs": args.pairs,
            "exploiter_share": args.exploiter_share, "float_penalty": args.float_penalty,
            "infer_period": args.infer_period_ms / 1000.0,

@@ -567,6 +567,56 @@ def test_inference_server_answers_each_game_over_its_pipe(tmp_path):
             server.terminate()
 
 
+def test_inference_server_pipeline_answers_concurrent_games(tmp_path):
+    """Rounds in a pipeline (the next launched before the last is answered): games asking at once, from
+    threads of their own, each get their own answers (the values of a direct call)."""
+    import os
+    import threading
+    import torch.multiprocessing as mp
+    from warcraftsim.fullgame.model import FullGameNet
+    from warcraftsim.fullgame.selfplay import Inference, RemoteInference, SharedRows, inference_main, publish
+    torch.manual_seed(0)
+    net = FullGameNet(n_types=20, n_cur=10, n_orders=30, G=30, d=64, layers=1, memory=True).eval()
+    net.allowed[:] = True
+    publish(net, 7, tmp_path)
+    spec = SharedRows(str(tmp_path / "rows"), 8, 30, 30, 64, create=True).spec
+    ctx = mp.get_context("spawn")
+    pipes = [ctx.Pipe() for _ in range(4)]
+    stop = ctx.Event()
+    cfg = {"run_dir": str(tmp_path), "device": "cpu", "learner_pid": os.getpid(), "infer_batch": 8, "compile": False,
+           "max_past": 2, "shared_rows": spec, "infer_pipeline": 1}
+    server = ctx.Process(target=inference_main, args=(cfg, [b for _, b in pipes], stop), daemon=True)
+    server.start()
+    try:
+        infer = RemoteInference([a for a, _ in pipes], SharedRows(*spec), [0, 2, 4, 6])
+        direct = Inference(None, torch.device("cpu"), 8, compile_=False, thread=False)
+        errors = []
+
+        def game(seed):
+            rng = np.random.default_rng(seed)
+            for _ in range(6):
+                n = int(rng.integers(3, 14))
+                st = {"n": n, "n_own": min(3, n), "ent": rng.normal(size=(n, fx.F)).astype(np.float32),
+                      "type": rng.integers(1, 20, n), "cur": rng.integers(0, 10, n),
+                      "glob": rng.normal(size=30).astype(np.float32), "avail": None,
+                      "h": rng.normal(size=64).astype(np.float32)}
+                got = infer.request([("current", st)])[0]
+                want = direct._finish(direct._launch(net, [st]))[0]
+                if abs(got["value"] - want["value"]) > 1e-5 or got["version"] != 7:
+                    errors.append((seed, got["value"], want["value"]))
+        threads = [threading.Thread(target=game, args=(s,)) for s in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+        assert not errors
+    finally:
+        stop.set()
+        server.join(timeout=20)
+        if server.is_alive():
+            server.terminate()
+
+
 def test_inference_server_through_shared_rows(tmp_path):
     """The view steps and answers through shared memory (SharedRows), not pickled: a game's two sides
     in its rows, the same values (and memory states) as a direct call."""
