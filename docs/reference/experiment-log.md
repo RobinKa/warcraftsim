@@ -898,7 +898,7 @@ Without it (58.0M → 72.8M, 3 hours): the real game 100 of 443 won (23%: easy 2
 
 With it back (72.8M → 81.8M, 2 hours): the real game 60 of 250 (24%: easy 24%, normal 44%, insane 6%), the AI's hero orders 4.5% at 81.4M (from 4.0%; human 4.6%).
 
-**The anchor halved** (from 82.0M, 2026-10-11 00:06; `--ref-kl 0.1`, was 0.2). For 40M steps the policy sat ~0.01 nats from `fullgame-fast-win6` and the real game at ~24-25%; a weaker pull lets the reinforcement learning move it further. Watch: ties and held resources (this run hoarded and tied without an anchor), the distance to the anchor, the AI's production orders, the real game over 300+ games.
+**The anchor halved** (from 82.8M, 2026-10-11 00:17; `--ref-kl 0.1`, was 0.2). For 40M steps the policy sat ~0.01 nats from `fullgame-fast-win6` and the real game at ~24-25%; a weaker pull lets the reinforcement learning move it further. Watch: ties and held resources (this run hoarded and tied without an anchor), the distance to the anchor, the AI's production orders, the real game over 300+ games.
 
 ### The built-in AI as an advisor (shadow games)
 
