@@ -5,6 +5,7 @@ took meanwhile (other work on the machine, e.g. a headless browser, skews a comp
     python3 scripts/throughput.py fgself-12 --since 18:32 [--until 18:47]     # one window
     python3 scripts/throughput.py fgself-12 --watch 600                         # the CPU outside the run, sampled
                                                                                 # every 10 s for 600 s (-> outside.jsonl)
+    python3 scripts/throughput.py fgself-12 --cpu 30                            # the cores by part of the run
 """
 
 from __future__ import annotations
@@ -126,14 +127,106 @@ def watch(name: str, seconds: float, path: Path) -> None:
         a, ta = b, tb
 
 
+def cpu_parts(name: str, seconds: float) -> None:
+    """Cores by part of the run over a window (user + kernel), the games' threads split into the busiest
+    (the main thread) and the rest; then the machine's busy and idle cores."""
+    def threads() -> dict:
+        out = {}
+        for pid in os.listdir("/proc"):
+            if not pid.isdigit():
+                continue
+            try:
+                for tid in os.listdir(f"/proc/{pid}/task"):
+                    st = open(f"/proc/{pid}/task/{tid}/stat").read()
+                    f = st[st.rindex(")") + 2:].split()
+                    out[(int(pid), int(tid))] = (int(f[11]) / TICK, int(f[12]) / TICK)
+            except OSError:
+                continue
+        return out
+
+    def machine() -> list[int]:
+        return [int(x) for x in open("/proc/stat").readline().split()[1:]]
+
+    def kind(pid: int, mine: set, server: int | None, learner: int | None) -> str:
+        try:
+            comm = open(f"/proc/{pid}/comm").read().strip()
+            args = open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="replace")
+        except OSError:
+            return "gone"
+        if "Warcraft III" in args:
+            return "video game" if "replay.w3g" in args else "game"
+        if comm == "wineserver":
+            return "wineserver" if pid in mine else "outside"
+        if pid in mine and (args.endswith(".exe") or ".exe " in args or "C:\\windows" in args):
+            return "Wine services"
+        if pid == learner:
+            return "learner"
+        if pid == server:
+            return "inference server"
+        if comm == "pt_data_worker":
+            return "learner data workers"
+        if comm == "ffmpeg":
+            return "video encoder"
+        if comm == "Xvfb":
+            return "Xvfb"
+        if pid in mine and comm.startswith("python"):
+            return "actors"
+        return "outside"
+
+    run = run_pids(name)
+    mine = run | wine_pids(name)
+    learner = min((p for p in run if open(f"/proc/{p}/comm").read().strip().startswith("python")), default=None)
+    server = None  # the one process below the learner with the GPU open (/dev/dxg on WSL)
+    for p in run:
+        try:
+            if any("dxg" in os.readlink(f"/proc/{p}/fd/{fd}") for fd in os.listdir(f"/proc/{p}/fd")) and p != learner \
+                    and open(f"/proc/{p}/comm").read().strip() != "pt_data_worker":
+                server = p
+        except OSError:
+            continue
+    a, ma, ta = threads(), machine(), time.time()
+    time.sleep(seconds)
+    b, mb, tb = threads(), machine(), time.time()
+    dt = tb - ta
+    parts: dict[str, list[float]] = {}
+    game_threads: dict[int, list[tuple]] = {}
+    kinds: dict[int, str] = {}
+    for (pid, tid), (u, k) in b.items():
+        u0, k0 = a.get((pid, tid), (0.0, 0.0))
+        du, dk = u - u0, k - k0
+        if du + dk <= 0:
+            continue
+        kd = kinds.setdefault(pid, kind(pid, mine, server, learner))
+        p = parts.setdefault(kd, [0.0, 0.0])
+        p[0] += du
+        p[1] += dk
+        if kd == "game":
+            game_threads.setdefault(pid, []).append((du + dk, du, dk))
+    d = [y - x for x, y in zip(ma, mb)]
+    ncpu = os.cpu_count() or 1
+    share = lambda i: d[i] / max(1, sum(d)) * ncpu  # noqa: E731
+    idle = share(3) + share(4)
+    print(f"{dt:.0f} s: {ncpu - idle:.1f} of {ncpu} threads busy (kernel {share(2):.1f}, user {share(0) + share(1):.1f})")
+    for kd, (u, k) in sorted(parts.items(), key=lambda kv: -sum(kv[1])):
+        print(f"  {kd:22s} {(u + k) / dt:5.2f} cores (kernel {k / dt:4.2f})")
+    if game_threads:
+        main = [max(ts) for ts in game_threads.values()]
+        rest = sum(sum(t[0] for t in ts) for ts in game_threads.values()) - sum(m[0] for m in main)
+        print(f"  ({len(main)} games: main threads {sum(m[0] for m in main) / dt:.2f} cores, the others {rest / dt:.2f})")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("name")
     ap.add_argument("--since")
     ap.add_argument("--until")
     ap.add_argument("--watch", type=float, help="seconds to sample the CPU outside the run for")
+    ap.add_argument("--cpu", type=float, help="seconds to measure the cores by part of the run")
     a = ap.parse_args()
     run = RUNS / a.name
+    if a.cpu:
+        cpu_parts(a.name, a.cpu)
+        return 0
     outside = run / "outside.jsonl"
     if a.watch:
         watch(a.name, a.watch, outside)
