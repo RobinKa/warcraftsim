@@ -892,6 +892,8 @@ In games of 6 minutes or more both sides reach tier 2 (94% and 86%): the learner
 
 The losses are decided in the fights: in real losses against normal and insane the learner trained about the AI's army (27 vs 25 units) but killed 8.8 units for 40 lost (in wins 39 for 17). The chance of the AI's own orders at its decisions (46.35M): heroes 5.1% (4.9% at 40.8M, 7.2% at 31.6M), basic units 33% (40% at 31.6M). By race the heroes are human 3.1% (the clones 11.5-12.6%), undead 1.8% (4.9-5.9%), night elf 4.6% (5.1-5.3%), orc 9.8% (8.4-9.6%); human basic units 31% (45-46%). Those are the races that lose: against normal and insane human won 2 of 48, undead 8 of 62, orc 13 of 66, night elf 29 of 62.
 
+**Without the cloning loss** (from 58.0M steps, 2026-10-10 19:11; `--bc-coef 0`, was 0.02). The distillation teaches the built-in AI's orders at the policy's own states; the cloning loss taught them at the AI's states in its winning games, at a third of an update's time. The KL anchor to `fullgame-fast-win6` stays (0.2). Before it, since the distillation weighs x0.15: the real game 150 of 589 won (25%: easy 31%, normal 38%, insane 6%; human 2 of 75 against normal and insane). What to watch: the real game, the chance of the AI's production orders at its decisions, the distance to the anchor.
+
 ### The built-in AI as an advisor (shadow games)
 
 Takeover games label only the states after the takeover, and they soon become the AI's states. On-policy distillation asks the teacher for a label in every state the student reaches. The built-in AI is a script, not a function, so it cannot be asked. In a shadow game it plays the policy's player too: the harness records its orders as labels and undoes them (`protocol.ShadowAI`, `collect.py --shadow`).

@@ -181,6 +181,15 @@ GE-Proton 10-34's Wine (10.0 with Proton's patches) with `WINEFSYNC=1` keeps Win
 
 The run's steps/s for the last two are not measured yet: another project's headless Chrome took ~10 cores in bursts in both windows (the run fell to ~1,000 steps/s while it ran). With it the live run's CPU: wineserver 0.6 cores (3.3 at the start of the evening), the games' other threads 0.8 (3.0), kernel time 3.0 (8.0).
 
+Measured a week later (2026-10-10, 15-minute windows, nothing else on the machine: `scripts/throughput.py`):
+
+| inference server | steps/s | round | of it waiting for the GPU | busy | the learner's update | its wait for data |
+|---|---|---|---|---|---|---|
+| without streams and shared memory | 1,364 | 12.4 ms | 6.8 ms | 98% | 5.08 s | 0.96 s |
+| with them | 1,347 | 9.3 ms | 5.2 ms | 94% | 5.45 s | 0.65 s |
+
+The same steps/s: the inference server was no longer the limit but the learner (an update of 8,192 steps 5.1-5.5 s of a ~6 s cycle). They stay on. Without the cloning loss (`--bc-coef 0`, an experiment on the learning side) an update takes 3.8-3.9 s and the learner waits ~2 s for data: the games and actors set the pace again (~1,350-1,500 steps/s).
+
 ## Dead ends
 
 * 8 actor processes of 4 games instead of 4 of 8 (627 against 644 steps/s).
