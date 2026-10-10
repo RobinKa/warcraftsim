@@ -97,6 +97,7 @@ def main() -> int:
     ap.add_argument("--set", action="append", default=[], help="an update setting, e.g. --set minibatch=512")
     ap.add_argument("--graphs", action="store_true", help="the CUDA-graph update (selfplay.GraphedUpdate)")
     ap.add_argument("--no-dropout", action="store_true", help="dropout off (to compare the eager and graphed updates)")
+    ap.add_argument("--bc-batch", type=int, default=64, help="steps of demonstrations a minibatch's cloning loss reads")
     a = ap.parse_args()
     device = torch.device(a.device)
     torch.manual_seed(0); random.seed(0); np.random.seed(0)
@@ -111,11 +112,11 @@ def main() -> int:
     steps, chunks = make_steps(paths, vocab, costs, net, device, a.steps)
     print(f"{len(steps)} steps in {len(chunks)} chunks ({time.time() - t0:.0f} s)", flush=True)
     args = types.SimpleNamespace(epochs=2, minibatch=256, pad_groups=8, seq_len=16, bf16=1, clip=0.2, vf_coef=0.5, ent_coef=0.0,
-                                 ref_kl=0.2, bc_coef=0.02, max_grad_norm=1.0, opd_coef=0.05)
+                                 ref_kl=0.2, bc_coef=0.02, max_grad_norm=1.0, opd_coef=0.15)
     for kv in a.set:
         k, v = kv.split("=", 1)
         setattr(args, k.replace("-", "_"), type(getattr(args, k.replace("-", "_"), 0.0))(v))
-    bc_set = bc.Steps(paths, vocab, 64, unit_values(), costs, arrays=True)
+    bc_set = bc.Steps(paths, vocab, a.bc_batch, unit_values(), costs, arrays=True)
 
     def bc_cycle():
         while True:
