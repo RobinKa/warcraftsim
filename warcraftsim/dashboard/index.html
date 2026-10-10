@@ -96,10 +96,17 @@ main { padding:14px 18px 40px; overflow:auto; min-height:0; }
        font-size:11px; line-height:1.35; white-space:nowrap; display:none; z-index:5; }
 .tip.hovered { background:#0b0f13f2; border-color:#4a5868; }
 /* restarts on the charts (as Grafana's annotations): a dotted line, a badge at its foot, the note on hover */
-.mark { position:absolute; width:14px; height:14px; margin:-7px 0 0 -7px; z-index:4; cursor:default; }
+.mark { position:absolute; width:14px; height:14px; margin:-7px 0 0 -7px; z-index:4; cursor:pointer; }
 .mark i { position:absolute; left:3px; top:3px; width:7px; height:7px; background:#e0a33a; border-radius:1.5px;
           transform:rotate(45deg); box-shadow:0 0 0 1.5px var(--panel); }
 .mark:hover i { background:#ffc35c; }
+.mark.on i { background:#ffc35c; box-shadow:0 0 0 1.5px var(--panel), 0 0 0 3px #e0a33a; }
+.mark-tip .mh { margin-top:5px; color:var(--muted); font-size:10.5px; }
+/* the step charts zoomed to one restart's span (its diamond clicked; a double-click on a chart undoes it) */
+.zoomnote { display:none; margin:-4px 0 10px; padding:4px 9px; border:1px solid #5a4420; background:#211a10; border-radius:6px;
+            color:#e0c08a; font-size:12px; width:fit-content; }
+.zoomnote.on { display:block; }
+.zoomnote button { margin-left:8px; background:none; border:1px solid #5a4420; border-radius:4px; color:#e0c08a; font:inherit; font-size:11px; cursor:pointer; }
 .mark .mark-tip { display:none; position:absolute; bottom:15px; left:50%; transform:translateX(-50%); width:max-content;
                   max-width:340px; background:#0b0f13f2; border:1px solid #4a5868; border-radius:6px; padding:5px 8px;
                   font-size:11px; line-height:1.4; white-space:normal; z-index:6; }
@@ -421,7 +428,12 @@ function drawChart(id) {
   c.overlay.width = W * dpr; c.overlay.height = H * dpr; c.overlay.style.width = W + "px"; c.overlay.style.height = H + "px";
   const g = canvas.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, W, H);
   const pad = { l: 46, r: 10, t: 8, b: 22 };
-  const series = c.series.map(s => ({ ...s, pts: s.dots || s.raw ? s.points : smooth(s.points, ui.smooth) }));
+  // zoomed to a restart's span (its diamond clicked): only its points, smoothed from its start
+  const zoom = (c.opts.axis || "steps") === "steps" && ui.stepsZoom ? ui.xranges.steps : null;
+  const series = c.series.map(s => {
+    const points = zoom ? s.points.filter(p => p[0] >= zoom[0] && p[0] <= zoom[1]) : s.points;
+    return { ...s, points, pts: s.dots || s.raw ? points : smooth(points, ui.smooth) };
+  });
   const pts = series.flatMap(s => s.pts);
   // a legend when a chart has many lines (names otherwise only on hover)
   const withData = series.filter(s => s.pts.length), box = canvas.closest(".chart");
@@ -432,11 +444,12 @@ function drawChart(id) {
     lg.innerHTML = withData.length >= 3 ? withData.map(s => `<span>${s.dash && s.dash.length ? dashSvg(s.dash, s.color).replace('width="34"', 'width="18"').replace('x2="34"', 'x2="18"') : `<i style="background:${s.color}"></i>`}${esc(s.name)}${s.runName ? ` <small>${esc(s.runName)}</small>` : ""}</span>`).join("") : "";
   }
   c.geo = null;
-  if (!pts.length) { g.fillStyle = "#8795a3"; g.font = "11px system-ui"; g.fillText(c.opts.empty || "no data yet", 12, H / 2); return; }
+  if (!pts.length) { g.fillStyle = "#8795a3"; g.font = "11px system-ui"; g.fillText(zoom ? "no data in this restart's span" : c.opts.empty || "no data yet", 12, H / 2); return; }
   // one x range for all charts of an axis (0 .. the latest step of the shown runs), so they line up
   const xr = c.opts.xfit ? null : (ui.xranges || {})[c.opts.axis || "steps"];  // (xfit: data recorded only lately)
   let x0 = xr ? xr[0] : Math.min(...pts.map(p => p[0]));
   let x1 = xr ? xr[1] : Math.max(...pts.map(p => p[0]));
+  if (zoom && c.opts.xfit) { x0 = Math.max(x0, zoom[0]); x1 = Math.min(x1, zoom[1]); }
   // y range without the most extreme 0.5% on either side (a partial last epoch reports huge SPS);
   // on a log scale (the panel's "log"): of the positive values, in decades
   const logy = ui.logy.has(id), T = logy ? (y => y > 0 ? Math.log10(y) : NaN) : (y => y);
@@ -466,6 +479,7 @@ function drawChart(id) {
     const x = x0 + (x1 - x0) * i / 4;
     g.fillText(fmt(x, 0), Math.min(X(x) - 12, W - 40), H - 6);
   }
+  g.save(); g.beginPath(); g.rect(pad.l, 0, W - pad.l - pad.r, H); g.clip();  // (zoomed: the lines beyond the plot cut)
   for (const s of series) {
     if (!s.pts.length) continue;
     g.strokeStyle = g.fillStyle = s.color; g.lineWidth = s.run === 0 ? 1.8 : 1.5; g.setLineDash(s.dash || []);
@@ -480,6 +494,7 @@ function drawChart(id) {
     }
     g.setLineDash([]);
   }
+  g.restore();
   // restarts: a dotted line each, and at its foot a badge with the note (restarts at one step share one)
   const marks = new Map();
   for (const m of c.marks || []) {
@@ -493,6 +508,10 @@ function drawChart(id) {
     const el = document.createElement("div");
     el.className = "mark"; el.style.left = px + "px"; el.style.top = (H - pad.b) + "px";
     el.innerHTML = `<i></i><div class="mark-tip ${px < 170 ? "l" : px > W - 170 ? "r" : ""}">${ms.map(markHtml).join("")}</div>`;
+    const m = ms[ms.length - 1];  // (restarts at one step: the latest)
+    el.classList.toggle("on", !!ui.stepsZoom && ui.stepsZoom.from === m.x);
+    el.addEventListener("click", ev => { ev.stopPropagation(); zoomTo(m, c.marks); });
+    el.addEventListener("dblclick", ev => ev.stopPropagation());
     canvas.parentElement.appendChild(el);
   }
   c.geo = { series, X, Y, x0, x1, pad, W, H };
@@ -503,7 +522,32 @@ function markHtml(m) {  // a restart's note: when, at which step, from which che
   const when = new Date(m.time * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
   return `<div class="mt"><b>restarted</b>${m.runName ? ` <span>${esc(m.runName)}</span>` : ""} <span>${when}</span></div>` +
     `<div class="ms">at ${fmt(m.steps || 0, 0)} steps · update ${m.update ?? "–"}${m.checkpoint ? ` · from ${esc(m.checkpoint)}` : ""}</div>` +
-    (m.note ? `<div class="mn">${esc(m.note)}</div>` : "");
+    (m.note ? `<div class="mn">${esc(m.note)}</div>` : "") +
+    `<div class="mh">click: only this restart's data · double-click a chart: everything</div>`;
+}
+
+// ---- the step charts zoomed to one restart: from its diamond to the next restart of its run (or now) ----
+function zoomTo(m, marks) {
+  const later = (marks || []).filter(o => o.x > m.x && (o.runName || "") === (m.runName || "")).map(o => o.x);
+  const same = ui.stepsZoom && ui.stepsZoom.from === m.x;
+  ui.stepsZoom = same ? null : { run: state.selected, from: m.x, to: later.length ? Math.min(...later) : null, mark: m };
+  applyZoom();
+}
+function applyZoom() {
+  const full = ui.stepsFull; if (!full) return;
+  ui.xranges = { ...(ui.xranges || {}), steps: ui.stepsZoom ? [ui.stepsZoom.from, ui.stepsZoom.to ?? full[1]] : full };
+  showZoomNote();
+  for (const id in ui.charts) if ((ui.charts[id].opts.axis || "steps") === "steps") drawChart(id);
+}
+function showZoomNote() {
+  const el = document.getElementById("zoomnote"); if (!el) return;
+  const z = ui.stepsZoom;
+  el.classList.toggle("on", !!z);
+  if (!z) { el.innerHTML = ""; return; }
+  const m = z.mark, name = m.title || (m.note ? m.note.slice(0, 60) + (m.note.length > 60 ? "…" : "") : "");
+  el.innerHTML = `Only the restart at ${fmt(m.steps || 0, 0)} steps${name ? ` (${esc(name)})` : ""}: steps ${fmt(z.from, 0)} – ` +
+    `${z.to == null ? "now" : fmt(z.to, 0)} · double-click a chart for everything<button>show everything</button>`;
+  el.querySelector("button").onclick = () => { ui.stepsZoom = null; applyZoom(); };
 }
 
 function nearest(pts, x) {
@@ -578,6 +622,11 @@ function registerChart(id, opts) {
     ui.hoverChart = id; ui.hoverAxis = ui.charts[id].opts.axis || "steps"; drawAllCrosshairs();
   });
   canvas.addEventListener("mouseleave", () => { ui.hoverX = null; ui.hoverChart = null; drawAllCrosshairs(); });
+  canvas.addEventListener("dblclick", ev => {  // a restart's span (its diamond clicked) -> everything again
+    if (!ui.stepsZoom) return;
+    ev.preventDefault(); window.getSelection()?.removeAllRanges();
+    ui.stepsZoom = null; applyZoom();
+  });
 }
 
 // ---- data --------------------------------------------------------------------------------------
@@ -1108,7 +1157,10 @@ function renderMain() {
   const off = n => state.data[n].info.init_steps || 0;
   const maxStep = Math.max(1, ...shown.map(n => { const t = state.data[n].train; return off(n) + (t.length ? (t[t.length - 1].agent_steps ?? 0) : 0); }),
                            ...shown.map(n => { const e = state.data[n].episodes; return off(n) + (e.length ? e[e.length - 1].steps : 0); }));
-  ui.xranges = { steps: [0, maxStep] };
+  ui.stepsFull = [0, maxStep];
+  if (ui.stepsZoom && ui.stepsZoom.run !== state.selected) ui.stepsZoom = null;  // (another run opened)
+  ui.xranges = { steps: ui.stepsZoom ? [ui.stepsZoom.from, ui.stepsZoom.to ?? maxStep] : [0, maxStep] };
+  showZoomNote();
   // compared runs: a line style each, and a colour each on charts of one metric (win rate, ...)
   const runColor = i => COLORS[i % COLORS.length];
   document.getElementById("legend").innerHTML = shown.length > 1
@@ -1182,7 +1234,7 @@ function tabsHtml(kind, tabs) {
   const cur = tabs.some(t => t[0] === ui.tabs[kind]) ? ui.tabs[kind] : tabs[0][0];
   return `<div class="tabs" data-kind="${kind}">${tabs.map(([id, title]) =>
       `<button class="tab ${id === cur ? "on" : ""}" data-tab="${id}" id="tab-${id}">${title}<span class="count" style="display:none"></span></button>`).join("")}</div>` +
-    (kind === "run" ? `<div class="legend" id="legend"></div>` : "") +
+    (kind === "run" ? `<div class="legend" id="legend"></div><div class="zoomnote" id="zoomnote"></div>` : "") +
     tabs.map(([id, , html, charts]) => `<div class="pane" data-pane="${id}"${charts ? " data-charts" : ""}${id === cur ? "" : ` style="display:none"`}>${html}</div>`).join("");
 }
 function setupTabs(kind) {
