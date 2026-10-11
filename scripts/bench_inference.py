@@ -48,6 +48,8 @@ def main() -> int:
     ap.add_argument("--rounds", type=int, default=300)
     ap.add_argument("--past", type=int, default=6, help="past snapshots to draw from")
     ap.add_argument("--slots", type=int, default=4)
+    ap.add_argument("--fuse", action="store_true", help="compare the compiled (fused) calls with the plain ones, "
+                                                          "both side by side")
     a = ap.parse_args()
     device = torch.device("cuda")
     league = json.loads((a.run / "league.json").read_text())
@@ -66,9 +68,9 @@ def main() -> int:
             groups[key] = [(None, i, rng.choice(steps)) for i in range(rng.randint(1, 6))]
         rounds.append(groups)
 
-    def run(parallel: bool) -> tuple[list, float]:
-        infer = Inference(nets, device, 64, True, buckets=(8, 24, 64), thread=False, entities=(48, 96))
-        past = Inference(nets, device, 16, True, buckets=(4, 16), thread=False, entities=(64,))
+    def run(parallel: bool, fuse: bool = False, bf16: bool = False) -> tuple[list, float]:
+        infer = Inference(nets, device, 64, True, buckets=(8, 24, 64), thread=False, entities=(48, 96), fuse=fuse, bf16=bf16)
+        past = Inference(nets, device, 16, True, buckets=(4, 16), thread=False, entities=(64,), fuse=fuse, bf16=bf16)
         swap = PastNet(device, slots=a.slots if parallel else 1)
         streams = {} if parallel else None
         out, times = [], []
@@ -86,8 +88,31 @@ def main() -> int:
                 times.append((t1 - t0, t2 - t1, t3 - t2))
             else:
                 out.append([(x["value"], x["entropy"]) for part in res for x in part])
+        if fuse:  # the sampling's noise must differ from one replay of a graph to the next
+            same = 0
+            for _ in range(2):
+                calls, used = launch_round(rounds[0], nets, infer, past, swap, 64, streams)
+                infer.wait(used or None)
+                past.wait(used or None)
+                orders = [x["order"].tolist() for fwd, h, _, _ in calls for x in fwd._finish(h)]
+                same = orders if same == 0 else same == orders
+            print(f"two replays of the same round sampled {'the SAME orders (noise not redrawn)' if same else 'different orders'}")
         return out, 1000 * np.mean(times, axis=0)
 
+    if a.fuse:  # fp32 plain (the reference), fused, bf16, fused bf16
+        base, t_base = run(True)
+        rows = sum(len(r) for r in base)
+        print(f"{rows} rows in {len(base)} rounds; ms a round, fp32: {t_base.sum():.2f} (launching {t_base[0]:.2f}, "
+              f"waiting for the GPU {t_base[1]:.2f}, the answers {t_base[2]:.2f})", flush=True)
+        for name, kw in (("fused fp32", {"fuse": True}), ("bf16", {"bf16": True}), ("fused bf16", {"fuse": True, "bf16": True})):
+            t0 = time.time()
+            out, t = run(True, **kw)
+            dv = [abs(x[0] - y[0]) for rs, rp in zip(base, out) for x, y in zip(rs, rp)]
+            de = [abs(x[1] - y[1]) for rs, rp in zip(base, out) for x, y in zip(rs, rp)]
+            print(f"{name}: {t.sum():.2f} ms a round (launching {t[0]:.2f}, GPU {t[1]:.2f}, answers {t[2]:.2f}); "
+                  f"value difference mean {np.mean(dv):.1e} max {max(dv):.1e}, entropy mean {np.mean(de):.1e} max {max(de):.1e}; "
+                  f"{time.time() - t0:.0f} s with compiling", flush=True)
+        return 0
     seq, t_seq = run(False)
     par, t_par = run(True)
     worst = max(abs(x[0] - y[0]) + abs(x[1] - y[1]) for rs, rp in zip(seq, par) for x, y in zip(rs, rp))

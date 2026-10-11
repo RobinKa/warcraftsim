@@ -97,6 +97,7 @@ def main() -> int:
     ap.add_argument("--set", action="append", default=[], help="an update setting, e.g. --set minibatch=512")
     ap.add_argument("--graphs", action="store_true", help="the CUDA-graph update (selfplay.GraphedUpdate)")
     ap.add_argument("--no-dropout", action="store_true", help="dropout off (to compare the eager and graphed updates)")
+    ap.add_argument("--ref-bf16", action="store_true", help="the KL term's clone with its weights in bfloat16")
     ap.add_argument("--bc-batch", type=int, default=64, help="steps of demonstrations a minibatch's cloning loss reads")
     a = ap.parse_args()
     device = torch.device(a.device)
@@ -106,6 +107,8 @@ def main() -> int:
     ref = load(a.ref, device, memory=False)[0] if a.ref else None
     if ref is not None:
         ref.eval()
+        if a.ref_bf16:  # (frozen: its weights cast once instead of at every use)
+            ref.to(torch.bfloat16)
     costs = order_costs(vocab, "duelfast")
     paths = sorted(p for d in a.data for p in d.glob("game*.npz"))
     t0 = time.time()

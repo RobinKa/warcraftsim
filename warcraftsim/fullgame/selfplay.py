@@ -128,13 +128,19 @@ class Inference:
     """Batches the network calls of an actor's agents (one per game side) on the GPU."""
 
     def __init__(self, nets: Nets, device, max_batch: int, compile_: bool = True, buckets: tuple[int, ...] | None = None,
-                 thread: bool = True, entities: tuple[int, ...] = (fx.MAX_ENT,), shared: "SharedRows | None" = None):
+                 thread: bool = True, entities: tuple[int, ...] = (fx.MAX_ENT,), shared: "SharedRows | None" = None,
+                 fuse: bool = False, bf16: bool = False):
         """`buckets`: the batch sizes its compiled calls pad to (the smallest that fits; default: just
         max_batch); `entities`: likewise the entity counts (a call padded 4 rows of ~47 entities to
         16 x 160: ~50 times the attention). `thread` False: no batching thread of its own (the
         inference server calls _forward)."""
         self.nets, self.device, self.max_batch = nets, device, max_batch
         self.shared = shared  # view steps given as {"n", "n_own", "row"}: their rows there
+        # fuse: the call compiled (torch.compile, inductor: fused kernels) before its CUDA graph is captured.
+        # A call was ~150 small kernels on ~10 rows: the GPU waited between them more than it computed.
+        self.fuse = fuse and device.type == "cuda"
+        # bf16: the network's matmuls in bfloat16 (tensor cores); the sampling and log-probabilities stay fp32
+        self.bf16 = bf16 and device.type == "cuda"
         self.buckets = tuple(sorted(buckets or (max_batch,)))
         self.entities = tuple(sorted(set(entities) | {fx.MAX_ENT}))
         self._hosts: dict[tuple, torch.Tensor] = {}
@@ -200,6 +206,7 @@ class Inference:
         if net not in self._fns:
             G, NO, d = net.config["G"], net.config["n_orders"], net.config["d"] if net.memory else 0
             ref = weakref.ref(net)  # (not the network itself: the entry would keep it alive)
+            bf16 = self.bf16
 
             def packed_act(x):
                 # one tensor in and one out: each copy to or from the GPU is a driver call of its own
@@ -212,10 +219,13 @@ class Inference:
                 typ, cur, mask = x[:, a:a + E].long(), x[:, a + E:a + 2 * E].long(), x[:, a + 2 * E:a + 3 * E] > 0.5
                 a += 3 * E
                 n_own, avail = x[:, a].long(), x[:, a + 1:a + 1 + NO] > 0.5
-                out = act(ref(), ent, typ, cur, mask, glob, n_own, avail, *([x[:, a + 1 + NO:]] if d else []))
+                with torch.autocast("cuda", dtype=torch.bfloat16, enabled=bf16, cache_enabled=False):
+                    out = act(ref(), ent, typ, cur, mask, glob, n_own, avail, *([x[:, a + 1 + NO:]] if d else []))
                 return torch.cat([out["order"].float(), out["tgt"].float(), out["bx"].float(), out["by"].float(),
                                   out["logp"].float(), out["value"].float()[:, None], out["entropy"].float()[:, None]]
                                  + ([out["h"].float()] if d else []), 1)
+            if self.fuse:  # (compiled at the shape's first calls, before its graph's capture)
+                packed_act = torch.compile(packed_act, dynamic=False)
             self._fns[net] = packed_act
         return self._fns[net]
 
@@ -540,10 +550,11 @@ def inference_main(cfg: dict, conns: list, stop) -> None:
         nets.reload()
     top = cfg["infer_batch"]
     shared = SharedRows(*cfg["shared_rows"]) if cfg.get("shared_rows") else None
+    fuse = bool(cfg.get("infer_fuse", 0))
     infer = Inference(nets, device, top, cfg["compile"], buckets=tuple(b for b in (8, 24, 64) if b <= top) or (top,),
-                      thread=False, entities=(48, 96), shared=shared)
+                      thread=False, entities=(48, 96), shared=shared, fuse=fuse)
     past = Inference(nets, device, 16, cfg["compile"], buckets=(4, 16), thread=False, entities=(64,),
-                     shared=shared)  # past snapshots: few calls
+                     shared=shared, fuse=fuse)  # past snapshots: few calls
     swap = PastNet(device, slots=cfg.get("infer_past_slots", 1))
     streams = {} if cfg.get("infer_streams", 0) else None
     def fresh():
@@ -1844,6 +1855,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="1: one inference server makes every actor's network calls (one GPU context, batches over all "
                          "games); 0: each actor its own")
     ap.add_argument("--native-obs", type=int, default=1, help="observations parsed in C (warcraftsim.native)")
+    ap.add_argument("--infer-fuse", type=int, default=1, help="the inference server's calls compiled (fused kernels) "
+                                                               "before their CUDA graphs are captured: 30%% less GPU a round")
     ap.add_argument("--infer-pipeline", type=int, default=1, help="the inference server reads and launches the "
                                                                    "next round while the last one is on the GPU")
     ap.add_argument("--infer-shm", type=int, default=1, help="the games' view steps and answers through shared "
@@ -1999,6 +2012,7 @@ def main(argv: list[str] | None = None) -> int:
            "actors": args.actors, "values": unit_values(), "shaping": args.shaping, "shaping_scale": args.shaping_scale,
            "tie_break": args.tie_break, "tie_value": args.tie_value, "compile": bool(args.compile), "native_obs": bool(args.native_obs),
            "real_share": args.real_share, "infer_batch": 64, "infer_streams": args.infer_streams, "infer_pipeline": args.infer_pipeline,
+           "infer_fuse": args.infer_fuse,
            "infer_past_slots": args.infer_past_slots, "game_nice": args.game_nice, "pairs": args.pairs,
            "exploiter_share": args.exploiter_share, "float_penalty": args.float_penalty,
            "infer_period": args.infer_period_ms / 1000.0,
