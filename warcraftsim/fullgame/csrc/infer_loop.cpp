@@ -169,26 +169,25 @@ class Loop {
         return nullptr;
     }
 
+    // Only the rows asked for are written (and copied to the GPU, and back): the call's other rows keep what
+    // an earlier call left there, valid inputs whose answers nobody reads (padding the whole batch with
+    // zeros was ~1 MB of writing and copying a call, for ~13 rows). Within a row, the entities past its own
+    // are masked out, so only the mask is written to the row's end.
     void gather(Shape& s, float* hin, const std::vector<Item>& items) {
-        const int E = s.E, W = s.W, B = s.B;
-        std::memset(hin, 0, sizeof(float) * size_t(B) * W);
+        const int E = s.E, W = s.W;
         const int a_ent = 0, a_glob = E * F, a_typ = a_glob + G, a_cur = a_typ + E, a_mask = a_cur + E, a_own = a_mask + E,
                   a_avail = a_own + 1, a_h = a_avail + NO;
-        for (int i = 0; i < B; i++) {  // (padding rows: one entity, every order available)
-            float* r = hin + size_t(i) * W;
-            r[a_mask] = 1.0f;
-            std::fill(r + a_avail, r + a_avail + NO, 1.0f);
-        }
         for (size_t i = 0; i < items.size(); i++) {
             const Item& it = items[i];
             float* r = hin + i * W;
-            const int n = std::min(it.n, E);
+            const int n = std::max(1, std::min(it.n, E));
             const size_t row = it.row;
             std::memcpy(r + a_ent, ent + row * E_max * F, sizeof(float) * n * F);
             std::memcpy(r + a_glob, glob + row * G, sizeof(float) * G);
             std::memcpy(r + a_typ, typ + row * E_max, sizeof(float) * n);
             std::memcpy(r + a_cur, cur + row * E_max, sizeof(float) * n);
             std::fill(r + a_mask, r + a_mask + n, 1.0f);
+            std::fill(r + a_mask + n, r + a_mask + E, 0.0f);
             r[a_own] = std::min(n_own_rows[row], float(O_max));
             std::memcpy(r + a_avail, avail + row * NO, sizeof(float) * NO);
             if (d) std::memcpy(r + a_h, h + row * hw, sizeof(float) * d);
@@ -392,10 +391,11 @@ class Loop {
                     float* hin = host(s->hin[bank], k, size_t(s->B) * s->W);
                     float* hout = host(s->hout[bank], k, size_t(s->B) * s->cols);
                     gather(*s, hin, part);
-                    C10_CUDA_CHECK(cudaMemcpyAsync(s->x_dev, hin, sizeof(float) * s->B * s->W, cudaMemcpyHostToDevice,
+                    const size_t used = part.size();
+                    C10_CUDA_CHECK(cudaMemcpyAsync(s->x_dev, hin, sizeof(float) * used * s->W, cudaMemcpyHostToDevice,
                                                    g->stream->stream()));
                     s->graph->replay();
-                    C10_CUDA_CHECK(cudaMemcpyAsync(hout, s->out_dev, sizeof(float) * s->B * s->cols,
+                    C10_CUDA_CHECK(cudaMemcpyAsync(hout, s->out_dev, sizeof(float) * used * s->cols,
                                                    cudaMemcpyDeviceToHost, g->stream->stream()));
                     round->calls.push_back({g, s, hout, std::move(part), g == &live ? version : -1});
                     st_calls++;
