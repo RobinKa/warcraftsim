@@ -1947,6 +1947,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", help="default: cuda if available (asking opens the GPU driver)")
     ap.add_argument("--resume", action="store_true", help="continue the run --name: its latest checkpoint, league and counts")
+    ap.add_argument("--resume-weights", type=Path, help="with --resume: this checkpoint's weights instead of the latest's "
+                                                        "(a roll back; scripts/selfplay_restart.py --weights)")
     ap.add_argument("--title", default="", help="with --resume: the restart's short name (the lineage's subtitle)")
     ap.add_argument("--note", default="", help="the run's notes (notes.md); with --resume, why it was restarted (the "
                                                 "restart's marker on the dashboard's charts)")
@@ -2008,12 +2010,15 @@ def main(argv: list[str] | None = None) -> int:
         old = json.loads((run_dir / "run.json").read_text())
         rows = [json.loads(line) for line in open(run_dir / "train.jsonl")] if (run_dir / "train.jsonl").exists() else []
         cks = sorted((run_dir / "checkpoints").glob("[0-9]*.pt"))
-        if cks:
-            last = torch.load(cks[-1], map_location=device, weights_only=False)
+        # --resume-weights: an earlier checkpoint's weights instead (a roll back; the counts and league go on)
+        src = args.resume_weights if args.resume_weights else (cks[-1] if cks else None)
+        if src:
+            last = torch.load(src, map_location=device, weights_only=False)
             net.load_state_dict(last["model"])
         resumed = {"steps": rows[-1]["agent_steps"] if rows else 0, "update": rows[-1]["epoch"] if rows else 0,
                    "episodes": sum(1 for _ in open(run_dir / "episodes.jsonl")) if (run_dir / "episodes.jsonl").exists() else 0,
-                   "checkpoint": cks[-1].name if cks else None}
+                   "checkpoint": Path(src).name if src else None,
+                   **({"rolled_back_to": str(args.resume_weights)} if args.resume_weights else {})}
         # what this launch takes in (the lineage: a new anchor or new demonstrations enter the run here)
         info.update(created=old.get("created", info["created"]), init_from=old.get("init_from", info["init_from"]),
                     inputs=old.get("inputs") or info["inputs"],

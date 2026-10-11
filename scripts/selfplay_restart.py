@@ -89,6 +89,7 @@ def main() -> None:
     ap.add_argument("--title", default="", help="the restart's short name (a few words: the lineage's subtitle)")
     ap.add_argument("--set", action="append", default=[], help="flag=value (without the dashes); flag= drops it")
     ap.add_argument("--stop", action="store_true", help="only stop it")
+    ap.add_argument("--weights", help="resume from this checkpoint's weights instead of the latest (a roll back; once)")
     args = ap.parse_args()
     run = ROOT / "runs" / args.name
     launch = json.loads((run / "run.json").read_text())["launch"]
@@ -103,13 +104,15 @@ def main() -> None:
             flags.append([w])
         elif flags:
             flags[-1].append(w)
-    flags = [f for f in flags if f[0] not in ("--note", "--title", "--resume")]
+    flags = [f for f in flags if f[0] not in ("--note", "--title", "--resume", "--resume-weights")]  # (one-shot flags)
     for s in args.set:
         k, _, v = s.partition("=")
         flags = [f for f in flags if f[0] != f"--{k}"]
         if v:
             flags.append([f"--{k}", *v.split()])
     argv = [sys.executable, "-m", "warcraftsim.fullgame.selfplay", *[w for f in flags for w in f], "--resume"]
+    if args.weights:
+        argv += ["--resume-weights", str(args.weights)]
     if args.note:
         argv += ["--note", args.note]
     if args.title:
