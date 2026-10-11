@@ -54,7 +54,15 @@ struct Group {  // the current network, or one past-snapshot slot of one archite
     std::string holding;                        // the snapshot in the slot
     int arch = -1;
     std::unique_ptr<c10::cuda::CUDAStream> stream;
+    // a round's events on this stream, one per bank, made once: creating and destroying events takes the CUDA
+    // context's lock exclusively, and next to the learner's calls that waited ~4 ms a round
+    cudaEvent_t start_ev[Shape::BANKS] = {}, end_ev[Shape::BANKS] = {};
 };
+
+cudaEvent_t bank_event(cudaEvent_t& ev, unsigned flags) {
+    if (!ev) C10_CUDA_CHECK(cudaEventCreateWithFlags(&ev, flags));
+    return ev;
+}
 
 struct Snapshot {
     int arch = -1;
@@ -78,6 +86,7 @@ struct Pending {
     std::vector<cudaEvent_t> events;
     std::vector<cudaEvent_t> starts;  // (timed: each stream's part of the round on the GPU, start to end)
     int learner_busy = 0;  // (the learner was in its update when the round was launched)
+    double t_launched = 0;  // (the round's last call enqueued)
     std::map<int, std::pair<uint32_t, std::vector<std::array<int32_t, 3>>>> replies;  // conn -> (rid, answers)
     double t0;
 };
@@ -152,6 +161,7 @@ class Loop {
     // statistics since the last report
     double st_t = 0, st_busy = 0, st_wait = 0, st_idle = 0;
     double st_lat[2] = {0, 0}, st_gpu[2] = {0, 0};  // rounds' latency and GPU time, the learner idle / updating
+    double st_launch[2] = {0, 0}, st_tail[2] = {0, 0};  // of the latency: enqueueing the round; answering it
     long st_n[2] = {0, 0};
     long st_rounds = 0, st_calls = 0, st_past = 0, st_rows = 0, st_ents = 0, st_ents_max = 0;
 
@@ -236,6 +246,8 @@ class Loop {
         s["lat"] = py::make_tuple(st_lat[0], st_lat[1]);
         s["gpu"] = py::make_tuple(st_gpu[0], st_gpu[1]);
         s["n"] = py::make_tuple(st_n[0], st_n[1]);
+        s["launch"] = py::make_tuple(st_launch[0], st_launch[1]);
+        s["tail"] = py::make_tuple(st_tail[0], st_tail[1]);
         s["idle"] = st_idle;
         stats_fn(s);
         st_t = now();
@@ -243,20 +255,18 @@ class Loop {
         st_busy = st_wait = st_idle = 0;
         st_lat[0] = st_lat[1] = st_gpu[0] = st_gpu[1] = 0;
         st_n[0] = st_n[1] = 0;
+        st_launch[0] = st_launch[1] = st_tail[0] = st_tail[1] = 0;
     }
 
     void complete(Pending& p) {
         double t = now();
+        const double t_complete = t;
         float gpu = 0;
         for (size_t i = 0; i < p.events.size(); i++) {
             C10_CUDA_CHECK(cudaEventSynchronize(p.events[i]));
             float ms = 0;
-            if (i < p.starts.size()) {
-                C10_CUDA_CHECK(cudaEventElapsedTime(&ms, p.starts[i], p.events[i]));
-                C10_CUDA_CHECK(cudaEventDestroy(p.starts[i]));
-            }
-            gpu = std::max(gpu, ms);
-            C10_CUDA_CHECK(cudaEventDestroy(p.events[i]));
+            if (i < p.starts.size()) C10_CUDA_CHECK(cudaEventElapsedTime(&ms, p.starts[i], p.events[i]));
+            gpu = std::max(gpu, ms);  // (the events are the groups' own, kept for the bank's next round)
         }
         st_wait += now() - t;
         st_gpu[p.learner_busy] += gpu / 1000.0;
@@ -289,6 +299,8 @@ class Loop {
         st_rounds++;
         st_busy += now() - p.t0;
         st_lat[p.learner_busy] += now() - p.t0;
+        st_launch[p.learner_busy] += p.t_launched - p.t0;
+        st_tail[p.learner_busy] += now() - t_complete;
         st_n[p.learner_busy]++;
     }
 
@@ -419,8 +431,7 @@ class Loop {
                 if (first) used.push_back(g);
                 c10::cuda::CUDAStreamGuard guard(*g->stream);
                 if (first) {  // (the stream's part of the round starts here: in `used` order, as the end events)
-                    cudaEvent_t ev;
-                    C10_CUDA_CHECK(cudaEventCreate(&ev));
+                    cudaEvent_t ev = bank_event(g->start_ev[bank], cudaEventDefault);
                     C10_CUDA_CHECK(cudaEventRecord(ev, g->stream->stream()));
                     round->starts.push_back(ev);
                 }
@@ -456,11 +467,11 @@ class Loop {
                 }
             }
             for (Group* g : used) {
-                cudaEvent_t ev;
-                C10_CUDA_CHECK(cudaEventCreateWithFlags(&ev, cudaEventBlockingSync));  // (timed: see starts)
+                cudaEvent_t ev = bank_event(g->end_ev[bank], cudaEventBlockingSync);  // (timed: see starts)
                 C10_CUDA_CHECK(cudaEventRecord(ev, g->stream->stream()));
                 round->events.push_back(ev);
             }
+            round->t_launched = now();
             inflight.push_back(std::move(round));
             bank = (bank + 1) % Shape::BANKS;
         }
