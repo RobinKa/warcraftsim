@@ -2185,8 +2185,10 @@ def main(argv: list[str] | None = None) -> int:
             epoch = 0
             while True:
                 bc_set.epoch, epoch = epoch, epoch + 1
+                # (workers forked, as before Python 3.14 made forkserver the default: nothing pickled)
                 for b in torch.utils.data.DataLoader(bc_set, batch_size=None, num_workers=args.bc_workers, collate_fn=as_is,
-                                                     worker_init_fn=lambda _i: _pin(cfg, "games")):
+                                                     worker_init_fn=lambda _i: _pin(cfg, "games"),
+                                                     multiprocessing_context="fork" if args.bc_workers else None):
                     yield {k: torch.from_numpy(v) for k, v in b.items()}
         bc_iter = bc_cycle()
         print(f"auxiliary cloning loss: {len(bc_paths)} games, x{args.bc_coef}", flush=True)

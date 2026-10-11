@@ -441,7 +441,8 @@ def main(argv: list[str] | None = None) -> int:
     for epoch in range(1, args.epochs + 1):
         data.epoch = epoch
         loader = torch.utils.data.DataLoader(data, batch_size=None, num_workers=args.workers, persistent_workers=False,
-                                             pin_memory=device.type == "cuda")
+                                             pin_memory=device.type == "cuda",  # (workers forked, as before Python 3.14)
+                                             multiprocessing_context="fork" if args.workers else None)
         net.train()
         train_stats, n = [], 0
         for b in loader:
