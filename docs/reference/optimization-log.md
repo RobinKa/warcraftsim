@@ -213,6 +213,17 @@ The fused calls give the same values to 1e-7 and draw new sampling noise at ever
 
 The turn-taking cost the learner 1.5 s an update; in the thread the server's Python waits for the learner's GIL instead (rounds 12.7 ms, the games waiting). Back to its own process; the next step is the server's loop in C++ in the learner's process, without the GIL.
 
+## The inference server's loop in C++ in the learner's process (2026-10-11)
+
+`--infer-native` (`fullgame/native_infer.py`, `fullgame/csrc/infer_loop.cpp`): Python captures every call's graph (fused, the server's own random generator) and the past-snapshot slots, and a C++ thread runs the rounds without the GIL: it reads the games' binary requests (`pack_request`), gathers their shared rows into a call's input, copies a past snapshot's weights into its slot when it changes, replays the graphs (`at::cuda::CUDAGraph::replay` from C++, so the generator's state advances), writes the answers back and replies (`pack_reply`). Python is called only to reload the current network (every 5 s), to load a new past snapshot, and for the statistics. `scripts/check_native_infer.py`: 604 calls equal to direct calls (values, entropies, versions), the sampling redrawn. Only the rows asked for are written and copied (the call's other rows keep earlier valid inputs whose answers nobody reads: ~1 MB less a call).
+
+| 15 minutes | steps/s | the learner's update | its wait for data | rows/s | a round |
+|---|---|---|---|---|---|
+| the server a process of its own (fused) | 1,431 | 5.1 s | 0.66 s | ~1,780 | 7.4 ms |
+| **the loop in C++ in the learner's process** | **1,487** | **3.5 s** | 2.05 s | 1,835 | 6.5 ms |
+
+The learner no longer waits for GPU turns; the loop (97% busy, half of a round waiting for its GPU work) is now the limit. Next: an event-driven loop that reads and launches new requests while earlier rounds are on the GPU.
+
 ## The game's own CPU with Ghidra and REA (2026-10-11)
 
 A subagent explored REA (https://github.com/morluto/rea, an MCP server driving Ghidra) to find what the game's main thread spends its time on (report: `~/tools/w3analysis/report.md`, outside the repo). A raw stack sampler in the shim (`W3SIM_PROFILE=5`, in a worktree) and Ghidra exports named the time:
