@@ -1816,30 +1816,43 @@ class GraphedUpdate:
         per_mb = max(1, args.minibatch // args.seq_len)
         labels = getattr(args, "opd_coef", 0.0) > 0
         outs: list[dict] = []
-        for _ in range(args.epochs):
-            widths = np.array([max(s["n"] for s in q) for q in seqs])
-            for idx in minibatches(widths, per_mb, args.pad_groups):
-                width = _width(int(widths[idx].max()))
-                mb = collate_seq([seqs[i] for i in idx], device, width=width, B=per_mb, T=args.seq_len, labels=labels)
-                b = None
-                if bc_iter is not None and args.bc_coef > 0:
-                    b = dict(next(bc_iter))
-                    bw = _width(int(b["mask"].any(0).nonzero().max()) + 1)  # (on the CPU: no wait)
-                    b = {k: (v[:, :bw] if v.dim() >= 2 and v.shape[1] == b["mask"].shape[1] else v) for k, v in b.items()}
-                    if b["mask"].shape[1] < bw:  # (pad to the width)
-                        b = {k: (torch.nn.functional.pad(v, (0, 0) * (v.dim() - 2) + (0, bw - v.shape[1]))
-                                 if v.dim() >= 2 and v.shape[1] == b["mask"].shape[1] else v) for k, v in b.items()}
-                    b = {k: (v.contiguous().pin_memory() if isinstance(v, torch.Tensor) else v)  # (see to_device)
-                         for k, v in b.items()}
-                    b["width"] = bw
-                key = (width, b["width"] if b is not None else 0, tuple(sorted(k for k, v in mb.items() if isinstance(v, torch.Tensor))))
-                if key in self.graphs:
-                    graph, s, sb, out = self.graphs[key]
-                    self._fill(s, mb, sb, b)
-                else:
-                    graph, s, sb, out = self._capture(key, mb, b)
-                graph.replay()
-                outs.append({k: v.detach().clone() for k, v in out.items()})
+
+        def prepared():  # the minibatches made on the CPU (their copies to the GPU queued)
+            for _ in range(args.epochs):
+                widths = np.array([max(s["n"] for s in q) for q in seqs])
+                for idx in minibatches(widths, per_mb, args.pad_groups):
+                    width = _width(int(widths[idx].max()))
+                    mb = collate_seq([seqs[i] for i in idx], device, width=width, B=per_mb, T=args.seq_len, labels=labels)
+                    b = None
+                    if bc_iter is not None and args.bc_coef > 0:
+                        b = dict(next(bc_iter))
+                        bw = _width(int(b["mask"].any(0).nonzero().max()) + 1)  # (on the CPU: no wait)
+                        b = {k: (v[:, :bw] if v.dim() >= 2 and v.shape[1] == b["mask"].shape[1] else v) for k, v in b.items()}
+                        if b["mask"].shape[1] < bw:  # (pad to the width)
+                            b = {k: (torch.nn.functional.pad(v, (0, 0) * (v.dim() - 2) + (0, bw - v.shape[1]))
+                                     if v.dim() >= 2 and v.shape[1] == b["mask"].shape[1] else v) for k, v in b.items()}
+                        b = {k: (v.contiguous().pin_memory() if isinstance(v, torch.Tensor) else v)  # (see to_device)
+                             for k, v in b.items()}
+                        b["width"] = bw
+                    yield (width, b["width"] if b is not None else 0,
+                           tuple(sorted(k for k, v in mb.items() if isinstance(v, torch.Tensor)))), mb, b
+
+        pause = getattr(args, "update_pause_ms", 0)
+        batches = prepared()
+        nxt = next(batches, None)
+        while nxt is not None:
+            key, mb, b = nxt
+            if key in self.graphs:
+                graph, s, sb, out = self.graphs[key]
+                self._fill(s, mb, sb, b)
+            else:
+                graph, s, sb, out = self._capture(key, mb, b)
+            graph.replay()
+            outs.append({k: v.detach().clone() for k, v in out.items()})
+            nxt = next(batches, None)  # (made while the GPU runs this one)
+            if pause > 0 and nxt is not None:  # then the GPU to the inference loop for a moment (--update-pause-ms)
+                torch.cuda.current_stream().synchronize()
+                time.sleep(pause / 1000)
         net.eval()
         return {k: float(torch.stack([o[k] for o in outs]).float().mean()) for k in outs[0]} if outs else {}
 
@@ -1956,6 +1969,11 @@ def main(argv: list[str] | None = None) -> int:
                                                                   "2 when BC trained the value head)")
     ap.add_argument("--max-grad-norm", type=float, default=1.0)
     ap.add_argument("--bf16", type=int, default=1, help="the updates' matmuls in bfloat16")
+    ap.add_argument("--update-pause-ms", type=float, default=0.0, help="after each minibatch of the CUDA-graph update, "
+                                                                     "wait for it and leave the GPU to the inference "
+                                                                     "loop this long (during the update its rounds took "
+                                                                     "~10x their GPU time; the learner waits for data "
+                                                                     "about as long as it updates)")
     ap.add_argument("--cuda-graphs", type=int, default=1, help="the update's minibatch steps as CUDA graphs (GraphedUpdate; "
                                                              "networks with memory)")
     ap.add_argument("--compile", type=int, default=1, help="the actors' network calls as CUDA graphs")
