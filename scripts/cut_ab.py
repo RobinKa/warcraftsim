@@ -296,7 +296,7 @@ def cmd_play(a) -> int:
                     run.setdefault("windows", []).append(w.get("instructions", 0) / a.window / 1e6)
                     run.setdefault("perf_parts", []).append(w)
                     perf = Perf(run["tid"], tmp / f"perf_{run['variant']}_{run['rep']}.txt")
-                if obs.game_over and t >= a.min_steps:
+                if (obs.game_over and t >= a.min_steps) or t == a.steps - 1:
                     break
                 obs = g.step([])
                 run["obs"] = obs
