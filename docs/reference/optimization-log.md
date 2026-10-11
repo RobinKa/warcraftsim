@@ -266,6 +266,37 @@ What the move broke, all fixed:
 * **dynamo's limit of 8 compiles a function** (also on WSL): the fused calls past the 8th shape had run unfused. The limit is raised for the fused calls: rounds of `scripts/check_native_infer.py` 4.2 → 3.6 ms, the start's capture ~20-50 s.
 * The C++ loop's build finds CUDA 13's runtime (`nvidia/cu13/lib`; the `nvidia-cuda-crt` package gives the headers torch's extension build needs).
 
+## The GPU shared by the learner and the inference loop (2026-10-11/12, native Linux)
+
+With 48 or 60 games, with or without a GPU split, the run stayed at ~1,800-1,850 steps/s, the inference loop at ~2,300 rows/s, ~155 rounds/s. py-spy on an actor (it reads Python 3.14 with sudo): the games' threads waited for answers ~2/3 of their time. The loop's statistics, split by the learner's phase (`lat_/gpu_/launch_/tail_` `_idle`/`_update` in `inference.jsonl`), showed where the time went:
+
+| rounds launched | latency | of it on the GPU | enqueueing the round |
+|---|---|---|---|
+| the learner waiting for data | 4.5 ms | 1.3 ms | 0.4 ms |
+| the learner in its update | 13.5 ms | 2.3 ms | 4.2 ms |
+
+* **Creating and destroying CUDA events takes the CUDA context's lock exclusively** (gdb: the loop blocked in `cuEventCreate`/`cuEventDestroy`): the loop's events are now made once per stream and bank.
+* **A copy from pageable memory holds that lock while the CUDA driver stages it** (gdb: the loop blocked in `cuEventRecord` while the learner was in `cuMemcpyHtoDAsync`): the learner's copies to the GPU now go through pinned memory (`selfplay.to_device`). Its update fell 3.0 → 2.4 s, and the GPU became the contention: rounds during the update 39 ms, 16.5 of them GPU work.
+* **The learner pauses after each minibatch** (`--update-pause-ms`: the next minibatch made, the GPU waited for, then a few ms for the inference loop alone): rounds during the update ~6 ms.
+
+| 5 minutes each | steps/s | the update | its wait for data | rounds during the update |
+|---|---|---|---|---|
+| before (events, pageable copies) | ~1,800 | 3.0 s | 1.5 s | 13.5 ms |
+| pinned copies | 1,770 | 2.3 s | 2.3 s | 39 ms |
+| pauses 15 ms, waiting before making the next minibatch | 1,687 | 4.3 s | 0.5 s | 5 ms |
+| pauses 15 ms, the next minibatch made first | 1,902 | 3.8 s | 0.6 s | 5.6 ms |
+| **pauses 8 ms** | **2,155** | 3.3 s | 0.5 s | 5.8 ms |
+| pauses 4 ms | 2,106 | 3.3 s | 0.6 s | 6.0 ms |
+
+Staleness rose from ~1.3 to ~2 updates (the learner is near its limit again).
+
+Tried and dropped:
+* **SMs split between the two (CUDA green contexts, `--gpu-split`)**: 16 or 32 SMs for inference changed nothing while the driver lock was the limit; after it, 24 SMs made rounds during the update worse (42 ms of GPU work, 1,657 steps/s): the two parts take turns on this GPU.
+* `CUDA_DEVICE_MAX_CONNECTIONS=32` (streams sharing hardware queues): no change.
+* Finer entity buckets for the inference calls (32/48/64/96): 12% less GPU a round alone, no change in the run; kept.
+
+**A bug found on the way**: the loop copied only a row's own entities into a call's input and left the padding as the pinned buffer held it. With recycled pinned memory a stale unit type failed a device-side assert in a fused call and killed the run; the padding is zeroed now.
+
 ## Dead ends
 
 * 8 actor processes of 4 games instead of 4 of 8 (627 against 644 steps/s).
