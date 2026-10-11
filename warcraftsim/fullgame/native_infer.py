@@ -12,6 +12,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -27,12 +28,18 @@ def extension():
     global _EXT
     if _EXT is None:
         from torch.utils.cpp_extension import load
+        # the CUDA headers and runtime from the pip packages torch depends on: one package per library
+        # with CUDA 12 (nvidia/cuda_runtime/...), one for all with CUDA 13 (nvidia/cu13/...)
         nv = Path(torch.__file__).resolve().parent.parent / "nvidia"
         incs = sorted(glob.glob(str(nv / "*" / "include")))
-        os.environ["PATH"] = f"{Path.home() / '.local' / 'bin'}:{os.environ.get('PATH', '')}"  # (ninja)
+        cudart = sorted(glob.glob(str(nv / "*" / "lib" / "libcudart.so.*")))
+        if not cudart:
+            raise FileNotFoundError(f"no libcudart in {nv}")
+        rt = Path(cudart[-1])
+        os.environ["PATH"] = f"{Path.home() / '.local' / 'bin'}:{Path(sys.executable).parent}:{os.environ.get('PATH', '')}"  # (ninja)
         _EXT = load(name="w3_infer_loop", sources=[str(Path(__file__).with_name("csrc") / "infer_loop.cpp")],
                     extra_include_paths=incs, extra_cflags=["-O2"],
-                    extra_ldflags=["-ltorch_cuda", "-lc10_cuda", f"-L{nv / 'cuda_runtime' / 'lib'}", "-l:libcudart.so.12"])
+                    extra_ldflags=["-ltorch_cuda", "-lc10_cuda", f"-L{rt.parent}", f"-l:{rt.name}", f"-Wl,-rpath,{rt.parent}"])
     return _EXT
 
 

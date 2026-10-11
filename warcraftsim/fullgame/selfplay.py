@@ -141,6 +141,8 @@ class Inference:
         # fuse: the call compiled (torch.compile, inductor: fused kernels) before its CUDA graph is captured.
         # A call was ~150 small kernels on ~10 rows: the GPU waited between them more than it computed.
         self.fuse = fuse and device.type == "cuda"
+        if self.fuse:  # (one compile per network object and shape, of the same function: past 8 the rest ran unfused)
+            torch._dynamo.config.recompile_limit = max(torch._dynamo.config.recompile_limit, 128)
         # bf16: the network's matmuls in bfloat16 (tensor cores); the sampling and log-probabilities stay fp32
         self.bf16 = bf16 and device.type == "cuda"
         # generator: the sampling's random numbers (an inference thread in the learner's process: the learner's
@@ -159,6 +161,10 @@ class Inference:
         self.compile = compile_ and device.type == "cuda"
         self._fns = weakref.WeakKeyDictionary()  # net -> its packed act
         self._graphs = weakref.WeakKeyDictionary()  # net -> {(batch, width): (input, graph, output)}
+        # net -> the stream its graphs are captured on: a graph keeps the cuBLAS workspace of the stream it was
+        # captured on, and two networks' graphs replayed side by side must not share one (CUDA 13's cuBLAS picks
+        # split-K kernels that count in it: two at once and one waited forever, the GPU at 100%)
+        self._capture = weakref.WeakKeyDictionary()
         self.q: queue.Queue = queue.Queue()
         if thread:
             threading.Thread(target=self._run, daemon=True).start()
@@ -249,7 +255,9 @@ class Inference:
             graph = torch.cuda.CUDAGraph()
             if self.generator is not None:
                 graph.register_generator_state(self.generator)
-            with torch.cuda.graph(graph, capture_error_mode=self.capture_mode):
+            if net not in self._capture:
+                self._capture[net] = torch.cuda.Stream(device=self.device)
+            with torch.cuda.graph(graph, stream=self._capture[net], capture_error_mode=self.capture_mode):
                 out = fn(x)
             per[host.shape] = (x, graph, out)
         return per[host.shape]
@@ -276,8 +284,7 @@ class Inference:
             host = torch.zeros(B, W)
         hb = host.numpy()
         a = E * fx.F
-        ent = hb[:, :a]
-        ent.shape = (B, E, fx.F)  # (a view)
+        ent = hb[:, :a].reshape(B, E, fx.F, copy=False)  # (a view)
         glob = hb[:, a:a + G]
         a += G
         typ, cur, mask = (hb[:, a + k * E:a + (k + 1) * E] for k in range(3))
