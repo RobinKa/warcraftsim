@@ -91,6 +91,9 @@ def wine_env(prefix: Path, **extra: str) -> dict[str, str]:
     from .display import SOFTWARE_GL
     env.update(SOFTWARE_GL)  # never the GPU (see display.SOFTWARE_GL)
     env.pop("W3SIM_PORT", None)
+    # never the desktop's Wayland: on native Linux the session's WAYLAND_DISPLAY (and DISPLAY=:0) would put Wine's
+    # windows on the user's screen (on WSL they went to WSLg); games and Wine's tools draw into an Xvfb of ours
+    env.pop("WAYLAND_DISPLAY", None)
     env.update(extra)
     return env
 
@@ -125,9 +128,19 @@ def ensure_template(display: str | None = None, force_registry: bool = False) ->
     if not (paths.GAME_DIR / "Warcraft III.exe").exists():
         raise FileNotFoundError(f"Warcraft III 1.29 not found at {paths.GAME_DIR} (set WC3_GAME_DIR)")
     prefix.parent.mkdir(parents=True, exist_ok=True)
-    env = wine_env(prefix)
-    if display:
-        env["DISPLAY"] = display
+    own = None
+    if not display:  # (wineboot's window and any dialog in an Xvfb of our own, not on the desktop)
+        from .display import Xvfb
+        own = Xvfb(320, 240)
+        display = own.display
+    try:
+        return _make_template(prefix, marker, wine_env(prefix, DISPLAY=display))
+    finally:
+        if own is not None:
+            own.close()
+
+
+def _make_template(prefix: Path, marker: Path, env: dict[str, str]) -> Path:
     if not (prefix / "system.reg").exists():
         # (`wine wineboot`: a Proton build has no wineboot script, and another Wine's would make the prefix)
         subprocess.run(["wine", "wineboot", "-i"], env=env, check=True, stdout=subprocess.DEVNULL,

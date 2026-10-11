@@ -76,6 +76,8 @@ struct Call {
 struct Pending {
     std::vector<Call> calls;
     std::vector<cudaEvent_t> events;
+    std::vector<cudaEvent_t> starts;  // (timed: each stream's part of the round on the GPU, start to end)
+    int learner_busy = 0;  // (the learner was in its update when the round was launched)
     std::map<int, std::pair<uint32_t, std::vector<std::array<int32_t, 3>>>> replies;  // conn -> (rid, answers)
     double t0;
 };
@@ -124,6 +126,7 @@ class Loop {
     int past_max_batch = 16;
     double period = 0.004;
     int version = -1;
+    int learner_busy = 0;  // (set by the learner around its updates: the statistics keep its rounds apart)
     py::object reload_fn, snapshot_fn, stats_fn;
 
     void start() {
@@ -148,6 +151,8 @@ class Loop {
     std::unordered_map<std::string, Snapshot> snapshots_;
     // statistics since the last report
     double st_t = 0, st_busy = 0, st_wait = 0, st_idle = 0;
+    double st_lat[2] = {0, 0}, st_gpu[2] = {0, 0};  // rounds' latency and GPU time, the learner idle / updating
+    long st_n[2] = {0, 0};
     long st_rounds = 0, st_calls = 0, st_past = 0, st_rows = 0, st_ents = 0, st_ents_max = 0;
 
     float* host(std::vector<float*>& pool, size_t k, size_t n) {
@@ -228,20 +233,33 @@ class Loop {
         s["ents_max"] = st_ents_max;
         s["busy"] = st_busy;
         s["wait"] = st_wait;
+        s["lat"] = py::make_tuple(st_lat[0], st_lat[1]);
+        s["gpu"] = py::make_tuple(st_gpu[0], st_gpu[1]);
+        s["n"] = py::make_tuple(st_n[0], st_n[1]);
         s["idle"] = st_idle;
         stats_fn(s);
         st_t = now();
         st_rounds = st_calls = st_past = st_rows = st_ents = st_ents_max = 0;
         st_busy = st_wait = st_idle = 0;
+        st_lat[0] = st_lat[1] = st_gpu[0] = st_gpu[1] = 0;
+        st_n[0] = st_n[1] = 0;
     }
 
     void complete(Pending& p) {
         double t = now();
-        for (auto ev : p.events) {
-            C10_CUDA_CHECK(cudaEventSynchronize(ev));
-            C10_CUDA_CHECK(cudaEventDestroy(ev));
+        float gpu = 0;
+        for (size_t i = 0; i < p.events.size(); i++) {
+            C10_CUDA_CHECK(cudaEventSynchronize(p.events[i]));
+            float ms = 0;
+            if (i < p.starts.size()) {
+                C10_CUDA_CHECK(cudaEventElapsedTime(&ms, p.starts[i], p.events[i]));
+                C10_CUDA_CHECK(cudaEventDestroy(p.starts[i]));
+            }
+            gpu = std::max(gpu, ms);
+            C10_CUDA_CHECK(cudaEventDestroy(p.events[i]));
         }
         st_wait += now() - t;
+        st_gpu[p.learner_busy] += gpu / 1000.0;
         for (auto& c : p.calls) {
             const int cols = c.shape->cols, O = std::min(O_max, c.shape->E);
             const int width = d ? cols - 5 * O - 2 : 0;
@@ -270,6 +288,8 @@ class Loop {
         }
         st_rounds++;
         st_busy += now() - p.t0;
+        st_lat[p.learner_busy] += now() - p.t0;
+        st_n[p.learner_busy]++;
     }
 
     void run() {
@@ -344,6 +364,7 @@ class Loop {
             t_round = now();
             auto round = std::make_unique<Pending>();
             round->t0 = t_round;
+            round->learner_busy = learner_busy ? 1 : 0;
             // the requests: per network key, its items in order
             std::map<std::string, std::vector<Item>> groups;
             for (size_t c = 0; c < pfds.size(); c++) {
@@ -394,8 +415,15 @@ class Loop {
                     g = held ? held : empty ? empty : free_ ? free_ : &slots[taken.size() % slots.size()];
                     taken.push_back({g, 1});
                 }
-                if (std::find(used.begin(), used.end(), g) == used.end()) used.push_back(g);
+                const bool first = std::find(used.begin(), used.end(), g) == used.end();
+                if (first) used.push_back(g);
                 c10::cuda::CUDAStreamGuard guard(*g->stream);
+                if (first) {  // (the stream's part of the round starts here: in `used` order, as the end events)
+                    cudaEvent_t ev;
+                    C10_CUDA_CHECK(cudaEventCreate(&ev));
+                    C10_CUDA_CHECK(cudaEventRecord(ev, g->stream->stream()));
+                    round->starts.push_back(ev);
+                }
                 if (snap && g->holding != key) {  // the snapshot's weights into the slot (in order on its stream)
                     for (size_t i = 0; i < g->dst.size() && i < snap->src.size(); i++)
                         C10_CUDA_CHECK(cudaMemcpyAsync(g->dst[i].first, snap->src[i].first, g->dst[i].second,
@@ -429,7 +457,7 @@ class Loop {
             }
             for (Group* g : used) {
                 cudaEvent_t ev;
-                C10_CUDA_CHECK(cudaEventCreateWithFlags(&ev, cudaEventBlockingSync | cudaEventDisableTiming));
+                C10_CUDA_CHECK(cudaEventCreateWithFlags(&ev, cudaEventBlockingSync));  // (timed: see starts)
                 C10_CUDA_CHECK(cudaEventRecord(ev, g->stream->stream()));
                 round->events.push_back(ev);
             }
@@ -497,6 +525,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         })
         .def_readwrite("period", &Loop::period)
         .def_readwrite("version", &Loop::version)
+        .def_readwrite("learner_busy", &Loop::learner_busy)
         .def("start", &Loop::start)
         .def("stop", &Loop::stop)
         .def("failed", &Loop::failed)

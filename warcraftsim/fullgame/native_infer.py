@@ -143,7 +143,11 @@ class NativeServer:
                                 "rounds_per_s": round(s["rounds"] / dt, 1), "past_calls_per_s": round(s["past"] / dt, 1),
                                 "round_ms": round(1000 * s["busy"] / rounds, 2), "wait_ms": round(1000 * s["wait"] / rounds, 2),
                                 "busy": round(1 - s["idle"] / dt, 3), "entities": round(s["ents"] / rows, 1),
-                                "entities_max_mean": round(s["ents_max"] / calls, 1), "native": True}) + "\n")
+                                "entities_max_mean": round(s["ents_max"] / calls, 1), "native": True,
+                                # rounds launched while the learner was idle / in its update: latency and GPU time
+                                **{f"{k}_{ph}": round(1000 * s[k][i] / max(s["n"][i], 1), 2)
+                                   for k in ("lat", "gpu") for i, ph in enumerate(("idle", "update"))},
+                                "rounds_update_share": round(s["n"][1] / max(s["n"][0] + s["n"][1], 1), 2)}) + "\n")
 
     def start(self) -> None:
         self.loop.start()

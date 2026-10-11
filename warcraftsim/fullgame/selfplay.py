@@ -2283,6 +2283,8 @@ def main(argv: list[str] | None = None) -> int:
             steps, buf, batch_chunks, chunks = buf, [], chunks, []
             warmup = update < args.value_warmup
             stats = None
+            if native is not None:  # (the inference loop's statistics: rounds during the update apart)
+                native.loop.learner_busy = 1
             if updater is not None:
                 try:
                     stats = updater.update(steps, batch_chunks, warmup, bc_iter)
@@ -2295,6 +2297,8 @@ def main(argv: list[str] | None = None) -> int:
             update += 1
             agent_steps += len(steps)
             publish(net, update, run_dir)
+            if native is not None:
+                native.loop.learner_busy = 0
             if update % args.snapshot_every == 0:
                 path = run_dir / "checkpoints" / f"{agent_steps:016d}.pt"
                 torch.save({"model": net.state_dict(), "config": net.config, "vocab": vocab, "agent_steps": agent_steps,
