@@ -46,11 +46,12 @@ def extension():
 class NativeServer:
     """The server's setup in Python and its loop in C++ (start(), stop(), failed())."""
 
-    def __init__(self, cfg: dict, conns: list, device):
+    def __init__(self, cfg: dict, conns: list, device, split=None):
         from .selfplay import Inference, Nets, PastNet, SharedRows, warm_inference
         assert cfg.get("shared_rows"), "--infer-native needs --infer-shm 1"
         assert not cfg.get("exploiter_share"), "--infer-native serves the current network and past snapshots only"
         self.cfg, self.conns, self.device = cfg, conns, device
+        self.split = split  # (gpu_split.GpuSplit: the loop's streams in its part of the GPU)
         self.nets = Nets(cfg, device)
         while self.nets.current is None:
             time.sleep(1)
@@ -89,7 +90,7 @@ class NativeServer:
         loop.set_rows([a.ctypes.data for a in (sh.ent, sh.typ, sh.cur, sh.glob, sh.n_own, sh.avail, sh.h, sh.out)],
                       fx.MAX_ENT, fx.F, fx.MAX_OWN, net.config["G"], net.config["n_orders"], d)
         loop.set_fds([c.fileno() for c in self.conns])
-        loop.set_live(self.infer.max_batch, list(self.infer.buckets), list(self.infer.entities))
+        loop.set_live(self.infer.max_batch, list(self.infer.buckets), list(self.infer.entities), self._stream())
         graphs = self.infer._graphs[net]
         for B in self.infer.buckets:
             for E in self.infer.entities:
@@ -99,7 +100,7 @@ class NativeServer:
             a = self.arch_ids.setdefault(arch, len(self.arch_ids))
             dst = [(flat.data_ptr(), flat.numel() * flat.element_size())] + \
                   [(b.data_ptr(), b.numel() * b.element_size()) for b in buffers]
-            k = loop.add_slot(a, 16, list(self.past.buckets), list(self.past.entities), dst)
+            k = loop.add_slot(a, 16, list(self.past.buckets), list(self.past.entities), dst, self._stream())
             assert k == slot, (k, slot)
             pg = self.past._graphs[slot_net]
             for B in self.past.buckets:
@@ -110,6 +111,12 @@ class NativeServer:
         loop.period = self.cfg.get("infer_period", 0.0)
         loop.version = self.nets.version
         return loop
+
+    def _stream(self) -> int:
+        """A stream for one of the loop's groups (0: a high-priority one from torch's pool, made by the loop)."""
+        if self.split is None:
+            return 0
+        return self.split.stream(0, min(torch.cuda.Stream.priority_range())).cuda_stream
 
     def _reload(self) -> int:  # (from the loop's thread, the GIL held, on the current network's stream)
         self.nets.reload()

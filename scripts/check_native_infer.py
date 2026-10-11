@@ -40,6 +40,8 @@ def main() -> int:
     ap.add_argument("--seconds", type=float, default=20)
     ap.add_argument("--entities", default="48,96", help="selfplay --infer-entities")
     ap.add_argument("--past-entities", default="64", help="selfplay --infer-past-entities")
+    ap.add_argument("--gpu-split", type=int, default=0, help="selfplay --gpu-split: the loop's streams in a part of "
+                                                            "the GPU of this many SMs")
     a = ap.parse_args()
     device = torch.device("cuda")
     tmp = Path(tempfile.mkdtemp(prefix="native_infer_"))
@@ -57,7 +59,12 @@ def main() -> int:
            "max_past": 32, "shared_rows": spec, "infer_fuse": 1, "infer_past_slots": 4, "infer_period": 0.004,
            "exploiter_share": 0, "infer_entities": [int(x) for x in a.entities.split(",")],
            "infer_past_entities": [int(x) for x in a.past_entities.split(",")]}
-    server = NativeServer(cfg, [b for _, b in pipes], device)
+    split = None
+    if a.gpu_split:
+        from warcraftsim.fullgame.gpu_split import GpuSplit
+        split = GpuSplit(a.gpu_split)
+        print(f"GPU split: {split.small_sms} SMs for the loop", flush=True)
+    server = NativeServer(cfg, [b for _, b in pipes], device, split)
     server.start()
     remote = RemoteInference([x for x, _ in pipes], SharedRows(*spec), [2 * k for k in range(a.games)])
     steps = view_steps(sorted(a.data.glob("game*.npz"))[:3], ck["vocab"], order_costs(ck["vocab"], "duelfast"), 400)

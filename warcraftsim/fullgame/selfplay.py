@@ -1966,6 +1966,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--infer-entities", default="48,96", help="the entity counts the current network's calls are "
                                                                "padded to (each a CUDA graph per batch bucket; up to 160 always)")
     ap.add_argument("--infer-past-entities", default="64", help="the same for the past snapshots' calls")
+    ap.add_argument("--gpu-split", type=int, default=0, help="with --infer-native: this many of the GPU's SMs the "
+                                                            "inference loop's alone, the rest the learner's (CUDA green "
+                                                            "contexts, gpu_split.py); 0: both on all")
     ap.add_argument("--infer-pipeline", type=int, default=1, help="the inference server reads and launches the "
                                                                    "next round while the last one is on the GPU")
     ap.add_argument("--infer-shm", type=int, default=1, help="the games' view steps and answers through shared "
@@ -2017,6 +2020,12 @@ def main(argv: list[str] | None = None) -> int:
     for sub_dir in ("checkpoints", "replays", "videos"):
         (run_dir / sub_dir).mkdir(parents=True, exist_ok=True)
     device = torch.device(args.device)
+    split = None
+    if args.gpu_split and device.type == "cuda" and args.central_inference and args.infer_native:
+        from .gpu_split import GpuSplit
+        split = GpuSplit(args.gpu_split)  # (before anything else on the GPU: the learner's work all on its part)
+        torch.cuda.set_stream(split.stream(1))
+        print(f"GPU split: {split.small_sms} SMs for the inference loop, {split.rest_sms} for the learner", flush=True)
     torch.set_num_threads(4)  # the games need the cores
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -2174,7 +2183,7 @@ def main(argv: list[str] | None = None) -> int:
         infer_thread.start()
     if args.central_inference and args.infer_native:  # the server's loop in C++ in this process (native_infer)
         from .native_infer import NativeServer
-        native = NativeServer(cfg, [b for ps in pipes for _, b in ps], device)
+        native = NativeServer(cfg, [b for ps in pipes for _, b in ps], device, split)
         native.start()
     _pin(cfg, "learner")  # (after the others started: they would inherit it)
     info.update(status="training", started=time.time())

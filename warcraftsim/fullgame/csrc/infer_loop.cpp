@@ -452,6 +452,13 @@ void add_shape(Group& g, int B, int E, int W, int cols, py::object graph, uintpt
     g.shapes.push_back(std::move(s));
 }
 
+// a group's stream: one made by the caller (a stream in the inference loop's part of the GPU: gpu_split.py), else a
+// high-priority one from torch's pool
+c10::cuda::CUDAStream make_stream(uintptr_t stream) {
+    if (stream) return c10::cuda::getStreamFromExternal(reinterpret_cast<cudaStream_t>(stream), c10::cuda::current_device());
+    return c10::cuda::getStreamFromPool(true);
+}
+
 }  // namespace
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -466,23 +473,23 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
             l.out_w = 5 * O_max + 2 + std::max(d, 1);
         })
         .def("set_fds", [](Loop& l, std::vector<int> fds) { l.fds = fds; })
-        .def("set_live", [](Loop& l, int max_batch, std::vector<int> buckets, std::vector<int> widths) {
+        .def("set_live", [](Loop& l, int max_batch, std::vector<int> buckets, std::vector<int> widths, uintptr_t stream) {
             l.live.max_batch = max_batch, l.live.buckets = buckets, l.live.widths = widths;
-            l.live.stream = std::make_unique<c10::cuda::CUDAStream>(c10::cuda::getStreamFromPool(true));
-        })
+            l.live.stream = std::make_unique<c10::cuda::CUDAStream>(make_stream(stream));
+        }, py::arg("max_batch"), py::arg("buckets"), py::arg("widths"), py::arg("stream") = 0)
         .def("add_live_shape", [](Loop& l, int B, int E, int W, int cols, py::object g, uintptr_t x, uintptr_t o) {
             add_shape(l.live, B, E, W, cols, g, x, o);
         })
         .def("add_slot", [](Loop& l, int arch, int max_batch, std::vector<int> buckets, std::vector<int> widths,
-                            std::vector<std::pair<uintptr_t, size_t>> dst) {
+                            std::vector<std::pair<uintptr_t, size_t>> dst, uintptr_t stream) {
             if (int(l.past.size()) <= arch) l.past.resize(arch + 1);
             l.past[arch].emplace_back();
             Group& g = l.past[arch].back();
             g.arch = arch, g.max_batch = max_batch, g.buckets = buckets, g.widths = widths;
             for (auto& [p, n] : dst) g.dst.emplace_back(reinterpret_cast<void*>(p), n);
-            g.stream = std::make_unique<c10::cuda::CUDAStream>(c10::cuda::getStreamFromPool(true));
+            g.stream = std::make_unique<c10::cuda::CUDAStream>(make_stream(stream));
             return int(l.past[arch].size()) - 1;
-        })
+        }, py::arg("arch"), py::arg("max_batch"), py::arg("buckets"), py::arg("widths"), py::arg("dst"), py::arg("stream") = 0)
         .def("add_slot_shape", [](Loop& l, int arch, int slot, int B, int E, int W, int cols, py::object g, uintptr_t x,
                                   uintptr_t o) { add_shape(l.past.at(arch).at(slot), B, E, W, cols, g, x, o); })
         .def("set_callbacks", [](Loop& l, py::object reload, py::object snapshot, py::object stats) {
