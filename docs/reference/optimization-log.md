@@ -202,6 +202,34 @@ The learner and the inference server are processes of their own on one GPU: on W
 
 The fused calls give the same values to 1e-7 and draw new sampling noise at every replay; compiling takes ~1 minute at a start. A round at most every 8 ms instead of 4 (fewer, larger rounds: more GPU for the learner) gave 1,246 steps/s: the update fell 5.7 → 5.3 s, but the games waited twice as long for their orders. The pipeline now keeps the period too (it had launched rounds back to back). The KL term's clone with its weights in bf16: no faster (2.30 against 2.24 s an update).
 
+## The inference server inside the learner's process, a prototype (2026-10-11)
+
+`--infer-in-learner 1`: the server as a thread of the learner's process (its own high-priority streams and random generator registered with its graphs, every graph captured before its loop, thread-local captures on both sides). One GPU context: the learner's kernels and the server's run side by side instead of taking turns.
+
+| 15 minutes | steps/s | the learner's update | its wait for data | a round | of it the GPU |
+|---|---|---|---|---|---|
+| the server a process of its own (fused calls) | **1,431** | 5.1 s | 0.66 s | 7.4 ms | 1.6 ms |
+| the server a thread of the learner's | 1,300 | **3.55 s** | 2.77 s | 12.7 ms | 0.4 ms |
+
+The turn-taking cost the learner 1.5 s an update; in the thread the server's Python waits for the learner's GIL instead (rounds 12.7 ms, the games waiting). Back to its own process; the next step is the server's loop in C++ in the learner's process, without the GIL.
+
+## The game's own CPU with Ghidra and REA (2026-10-11)
+
+A subagent explored REA (https://github.com/morluto/rea, an MCP server driving Ghidra) to find what the game's main thread spends its time on (report: `~/tools/w3analysis/report.md`, outside the repo). A raw stack sampler in the shim (`W3SIM_PROFILE=5`, in a worktree) and Ghidra exports named the time:
+
+| part of the main thread | share |
+|---|---|
+| pathing (path search, regions, proximity) | ~37% |
+| unit, ability and attack timers | ~17% |
+| the built-in AI (JASS and C++) | ~8-10% |
+| **our harness**: the per-unit JASS callback feeding `shim/units.c` (9.7%), the rest of `W3S_Step`'s JASS (5.4%) | **~15%** |
+| frame paint (with drawing off) | ~6% |
+| fog of war | ~2% |
+
+* Hooks that keep the simulation identical (every unit's state over 400 steps, 22 playbacks): a memo of the map-version check behind `GetPlayerId` (a 14 KB copy, 20-40k times a second: -5.6% of the main thread's instructions) and no JPEG decoding of textures created during play (-5.1%); together ~6% less CPU a step. Skipping paint left the simulation identical but made the fog pass grow over a game (to 17% by step 700): not safe as is.
+* The harness's own share is the larger target and needs no engine patch: units.c walking the units itself, `GetPlayerId` cached per player, `UnitIsSleeping` only for neutral units, the rest of the step's serialization in C.
+* These pay off once the games are the limit again (now the GPU's turns between the learner and the inference server are).
+
 ## Dead ends
 
 * 8 actor processes of 4 games instead of 4 of 8 (627 against 644 steps/s).
