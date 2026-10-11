@@ -900,6 +900,8 @@ With it back (72.8M → 81.8M, 2 hours): the real game 60 of 250 (24%: easy 24%,
 
 **The anchor halved** (from 82.8M, 2026-10-11 00:17; `--ref-kl 0.1`, was 0.2). For 40M steps the policy sat ~0.01 nats from `fullgame-fast-win6` and the real game at ~24-25%; a weaker pull lets the reinforcement learning move it further. Watch: ties and held resources (this run hoarded and tied without an anchor), the distance to the anchor, the AI's production orders, the real game over 300+ games.
 
+Stopped for a shutdown at 85.9M (00:55) after 30 minutes: the real game 21 of 93 (23%), ties as before (self 18%, past 26%), resources held at a real game's end 3,261 (3,506 before; the AI ~1,390), the distance to the anchor 0.010 → 0.014. Not judged yet: it resumes from `0000000085906150.pt` with the same flags.
+
 ### The built-in AI as an advisor (shadow games)
 
 Takeover games label only the states after the takeover, and they soon become the AI's states. On-policy distillation asks the teacher for a label in every state the student reaches. The built-in AI is a script, not a function, so it cannot be asked. In a shadow game it plays the policy's player too: the harness records its orders as labels and undoes them (`protocol.ShadowAI`, `collect.py --shadow`).
