@@ -902,6 +902,10 @@ With it back (72.8M → 81.8M, 2 hours): the real game 60 of 250 (24%: easy 24%,
 
 Stopped for a shutdown at 85.9M (00:55) after 30 minutes: the real game 21 of 93 (23%), ties as before (self 18%, past 26%), resources held at a real game's end 3,261 (3,506 before; the AI ~1,390), the distance to the anchor 0.010 → 0.014. Not judged yet: it resumes from `0000000085906150.pt` with the same flags.
 
+**The anchor at 0.1, judged** (302 real games, 82.8M → 93.1M): against normal and insane 42 won where the built-in AI would win ~96 in the same matchups (**44% of its record**, as before: 43-45%), but ties rose in every kind of game: self-play 18-22% → 27%, past snapshots 20-25% → 31%, unadvised curriculum ~15% → 27% (resources held at a real game's end stayed lower: ~3,200 against ~3,500). No gain for the run's old drift towards ties: back at 0.2.
+
+**A quarter of the AI games real** (from 93.1M, 2026-10-11 12:47; `--real-share 0.25`, was 0.1, with the anchor at 0.2): more of the training against the untaxed built-in AI, the yardstick's own opponent. Judged on 300+ real games against the AI's record in the same matchups (43-45% before), ties and the curriculum's tax.
+
 **A fairer yardstick: the AI's own record in the same matchups.** `duelfast` is far from balanced even for the built-in AI against itself (3,000 games, mixed matchups): night elf wins 81% (normal) / 75% (insane), orc 65% / 71%, undead 33% / 37%, human 22% / 19% (human vs night elf 8% / 6%, vs orc 15% / 6%). So a race's real-game win rate says as much about the map as about the policy. `scripts/real_games.py` now also counts, for real games against normal and insane, how many the AI itself would win in the same matchups: from 2026-10-03 18:36 to 2026-10-11 00:17 the learner won 195 of 896, the AI would win ~455 (**43% of the AI's record**; 45% in the last two hours before the anchor experiment). 100% is the built-in AI's level.
 
 ### The built-in AI as an advisor (shadow games)
