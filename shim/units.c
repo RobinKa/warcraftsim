@@ -506,6 +506,7 @@ int units_call(int key, int mbox, int *result) {
         g_ht = g_abil = g_all = g_nseer = g_pending = g_pass = g_nremoved = g_rec_len = g_pair_first = g_paired = 0;
         g_npid = 0;
         g_cur.u = 0;
+        cuts_game_start();
         *result = obs_capture_on() ? g_ok : 0;
         return 1;
     }

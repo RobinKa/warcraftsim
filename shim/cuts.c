@@ -19,6 +19,15 @@
  * 256  paint (with drawing off) at most once every W3SIM_PAINT_EVERY steps (default 50) once the game steps, instead of
  *      ~8 times a wall second: what it builds is never shown. Unlike skipping it (2), the world frame's unit list
  *      that the per-turn fog pass walks is still rebuilt by it now and then (0x6125d0), so it stays short.
+ * 512  Storm's heap choice: SMemAlloc hashes its caller's source file name and line (0x43fb00, a one-entry memo
+ *      inside) on every allocation; for names in the executable's read-only data (string literals: their
+ *      bytes never change) the hash is remembered per (name, line), and the one-entry memo's globals are left as
+ *      the original's computation leaves them
+ * 1024 A*: a neighbour's heuristic (0x8bda00, pure: the node's cell, the goal) computed after the relaxation's
+ *      early return instead of before it (0x8bf980 in C; the same stores, in the same order)
+ * 2048 the agent type check IsA(type, base) (0x7f55f0; the game memoizes it in a table of its own, 0x7f5630)
+ *      answered from a small direct-mapped cache on the main thread for pairs it has answered before; forgotten
+ *      at every game's first step and when the type registry changes
  * 128  soft float: count leading zeros (0x9a0330) as LZCNT; the integer square root (0x9a2150, 16 rounds of
  *      digit-by-digit) as floor(sqrt(double))
  *
@@ -279,6 +288,160 @@ static unsigned __fastcall Ring_hook(BYTE *s, void *edx, int x, int y, int r, in
     return mask;
 }
 
+
+/* 512: SMemAlloc's file-name hash */
+#define VA_FHASH 0x43fb00 /* cdecl unsigned hash(const char *file, unsigned line) */
+#define G_FH_ON 0x10db538
+#define G_FH_FIRST 0x1131350
+#define G_FH_LINE 0x1131354
+#define G_FH_PTR 0x1131358
+#define G_FH_VAL 0x113135c
+typedef unsigned(__cdecl *FHashFn)(const char *, unsigned);
+static FHashFn FHash_orig;
+static DWORD g_ro_lo[16], g_ro_hi[16];
+static int g_nro;
+static CRITICAL_SECTION g_fh_lock;
+#define FH_SLOTS 1024
+static struct {
+    const char *p;
+    unsigned line, v;
+} g_fh[FH_SLOTS];
+static volatile LONG g_fh_hits, g_fh_miss;
+
+static int read_only(const void *p) {
+    DWORD a = (DWORD)(size_t)p;
+    for (int i = 0; i < g_nro; i++)
+        if (a >= g_ro_lo[i] && a + 8 <= g_ro_hi[i])
+            return 1;
+    return 0;
+}
+
+static unsigned __cdecl FHash_hook(const char *file, unsigned line) {
+    if (!file || !read_only(file))
+        return FHash_orig(file, line);
+    unsigned k = (((DWORD)(size_t)file >> 2) ^ (line * 2654435761u)) & (FH_SLOTS - 1);
+    EnterCriticalSection(&g_fh_lock);
+    if (g_fh[k].p == file && g_fh[k].line == line) {
+        unsigned v = g_fh[k].v;
+        /* (what the original's computation leaves in its one-entry memo) */
+        *(DWORD *)VA_(G_FH_VAL) = v;
+        *(DWORD *)VA_(G_FH_LINE) = line;
+        *(DWORD *)VA_(G_FH_PTR) = (DWORD)(size_t)file;
+        *(DWORD *)VA_(G_FH_FIRST) = *(const DWORD *)file;
+        LeaveCriticalSection(&g_fh_lock);
+        g_fh_hits++;
+        return v;
+    }
+    unsigned v = FHash_orig(file, line);
+    g_fh[k].p = file;
+    g_fh[k].line = line;
+    g_fh[k].v = v;
+    LeaveCriticalSection(&g_fh_lock);
+    g_fh_miss++;
+    return v;
+}
+
+static void install_fhash(void) {
+    IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(g_base + ((IMAGE_DOS_HEADER *)g_base)->e_lfanew);
+    IMAGE_SECTION_HEADER *sec = IMAGE_FIRST_SECTION(nt);
+    for (int i = 0; i < nt->FileHeader.NumberOfSections && g_nro < 16; i++)
+        if (!(sec[i].Characteristics & (IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_EXECUTE))) {
+            g_ro_lo[g_nro] = (DWORD)(size_t)g_base + sec[i].VirtualAddress;
+            g_ro_hi[g_nro++] = (DWORD)(size_t)g_base + sec[i].VirtualAddress + sec[i].Misc.VirtualSize;
+        }
+    InitializeCriticalSection(&g_fh_lock);
+    if (g_nro && hook(VA_FHASH - 0x400000, (void *)FHash_hook, (void **)&FHash_orig, "SMemAlloc file hash"))
+        shim_log("cuts: SMemAlloc file hash remembered (%d read-only sections)", g_nro);
+}
+
+/* 1024: A* relaxation with the heuristic after the early return */
+#define VA_RELAX 0x8bf980 /* thiscall void relax(search, node, parent, cost), ret 0xc */
+#define VA_HEUR 0x8bda00  /* cdecl unsigned h(int *xy, int *goal, int k) */
+#define VA_UNLINK 0x8bfbc0 /* thiscall void unlink(search, node), ret 4 */
+#define VA_PUSH 0x8a3090  /* thiscall void push(heap, key, node, gen), ret 0xc */
+typedef void(__fastcall *RelaxFn)(BYTE *, void *, int, int, int);
+typedef unsigned(__cdecl *HeurFn)(int *, int *, int);
+typedef void(__fastcall *UnlinkFn)(BYTE *, void *, int);
+typedef void(__fastcall *PushFn)(BYTE *, void *, unsigned, int, unsigned);
+static RelaxFn Relax_orig;
+static volatile LONG g_relax_n, g_relax_early;
+
+static void __fastcall Relax_hook(BYTE *s, void *edx, int idx, int parent, int cost) {
+    DWORD *n = (DWORD *)(*(BYTE **)(s + 0x30) + idx * 0x24);
+    unsigned g = *(DWORD *)(*(BYTE **)(s + 0x30) + parent * 0x24 + 0x14) + (unsigned)cost;
+    g_relax_n++;
+    if (n[3] == 0xffffffffu) {
+        int dy = (int)n[1] - *(int *)(s + 0x8c), dx = (int)n[0] - *(int *)(s + 0x88);
+        unsigned d2 = (unsigned)dy * (unsigned)dy + (unsigned)dx * (unsigned)dx;
+        if (d2 < *(DWORD *)(s + 0x98)) {
+            *(DWORD *)(s + 0x98) = d2;
+            *(int *)(s + 0x9c) = idx;
+        }
+    } else {
+        if (g >= n[5]) {
+            g_relax_early++;
+            return;
+        }
+        if (n[3] < 0xfffffffeu)
+            ((UnlinkFn)(void *)VA_(VA_UNLINK))(s, NULL, idx);
+        else {
+            n[2]++;
+            n[3] = 0xffffffffu;
+            n[4] = 0xffffffffu;
+        }
+    }
+    unsigned h = ((HeurFn)(void *)VA_(VA_HEUR))((int *)n, (int *)(s + 0x88), 0xf);
+    n[5] = g;
+    n[7] = (DWORD)parent;
+    n[6] = h;
+    DWORD *m = (DWORD *)(*(BYTE **)(s + 0x30) + idx * 0x24);
+    unsigned key = m[6] + m[5];
+    m[2]++;
+    unsigned gen = m[2];
+    m[3] = 0xfffffffeu;
+    m[4] = 0xffffffffu;
+    ((PushFn)(void *)VA_(VA_PUSH))(s + 0x44, NULL, key, idx, gen);
+}
+
+/* 2048: IsA */
+#define VA_ISA 0x7f55f0  /* cdecl int isa(type, base) */
+#define G_REGISTRY 0x115e9ec
+typedef int(__cdecl *IsaFn)(int, int);
+static IsaFn Isa_orig;
+#define ISA_SLOTS 2048
+static struct {
+    int a, b, r;
+} g_isa[ISA_SLOTS];
+static DWORD g_isa_reg;
+static volatile LONG g_isa_hits, g_isa_miss, g_isa_gen;
+static LONG g_isa_seen_gen;
+
+void cuts_game_start(void) {
+    InterlockedIncrement(&g_isa_gen);
+}
+
+static int __cdecl Isa_hook(int a, int b) {
+    DWORD reg = *(DWORD *)VA_(G_REGISTRY);
+    if (b == 0x2b616761 || a == b || !reg || GetCurrentThreadId() != g_step_tid)
+        return Isa_orig(a, b);
+    if (reg != g_isa_reg || g_isa_seen_gen != g_isa_gen) {
+        memset(g_isa, 0, sizeof g_isa);
+        g_isa_reg = reg;
+        g_isa_seen_gen = g_isa_gen;
+    }
+    unsigned k = ((unsigned)a * 2654435761u ^ (unsigned)b * 40503u) >> 21; /* (11 bits) */
+    if (g_isa[k].a == a && g_isa[k].b == b && (a || b)) {
+        g_isa_hits++;
+        return g_isa[k].r;
+    }
+    int r = Isa_orig(a, b);
+    g_isa[k].a = a;
+    g_isa[k].b = b;
+    g_isa[k].r = r;
+    g_isa_miss++;
+    return r;
+}
+
 /* 128: soft float helpers */
 #define VA_CLZ 0x9a0330   /* fastcall int clz(unsigned): bsr-based, 32 for 0 */
 #define VA_ISQRT 0x9a2150 /* cdecl unsigned isqrt(unsigned): floor(sqrt(x)), 16 rounds */
@@ -392,16 +555,25 @@ void cuts_install(int draw) {
     }
     if (g_cuts & 128)
         install_softfloat();
+    if (g_cuts & 512)
+        install_fhash();
+    if (g_cuts & 1024)
+        hook(VA_RELAX - 0x400000, (void *)Relax_hook, (void **)&Relax_orig, "A* relax");
+    if (g_cuts & 2048)
+        hook(VA_ISA - 0x400000, (void *)Isa_hook, (void **)&Isa_orig, "IsA");
     shim_log("cuts installed: %d", g_cuts);
 }
 
 void cuts_report(void) {
     if (g_cuts)
         shim_log("cuts/s: mapver hits=%ld miss=%ld paint skipped=%ld events reused=%ld new=%ld textures=%ld "
-                 "rings=%ld (orig %ld) cells hit=%ld miss=%ld",
+                 "rings=%ld (orig %ld) cells hit=%ld miss=%ld fhash hit=%ld miss=%ld relax=%ld early=%ld isa hit=%ld miss=%ld",
                  InterlockedExchange(&g_mv_hits, 0), InterlockedExchange(&g_mv_miss, 0),
                  InterlockedExchange(&g_paint_skipped, 0), InterlockedExchange(&g_evt_reused, 0),
                  InterlockedExchange(&g_evt_new, 0), InterlockedExchange(&g_tex_skipped, 0),
                  InterlockedExchange(&g_ring_calls, 0), InterlockedExchange(&g_ring_orig, 0),
-                 InterlockedExchange(&g_cell_hits, 0), InterlockedExchange(&g_cell_miss, 0));
+                 InterlockedExchange(&g_cell_hits, 0), InterlockedExchange(&g_cell_miss, 0),
+                 InterlockedExchange(&g_fh_hits, 0), InterlockedExchange(&g_fh_miss, 0),
+                 InterlockedExchange(&g_relax_n, 0), InterlockedExchange(&g_relax_early, 0),
+                 InterlockedExchange(&g_isa_hits, 0), InterlockedExchange(&g_isa_miss, 0));
 }

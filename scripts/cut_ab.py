@@ -29,6 +29,8 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+os.environ.pop("WAYLAND_DISPLAY", None)  # (nothing of ours on the user's desktop: games get Xvfbs of their own)
+os.environ["DISPLAY"] = ":65535"  # (no such display: anything Wine runs without its Xvfb fails instead of showing)
 
 import warcraftsim.runtime.instance as instance  # noqa: E402
 from warcraftsim.runtime.instance import Agent, BuiltinAI, GameInstance, GameSetup  # noqa: E402
@@ -252,6 +254,9 @@ def setup_for(replay: Path) -> tuple[GameSetup, list[dict] | None]:
 def cmd_play(a) -> int:
     replay = Path(a.replay).resolve()
     setup, live = setup_for(replay)
+    if live:  # (a recording of ours: exactly its steps, past each game's end when it had several)
+        a.steps = min(a.steps, len(live))
+        a.min_steps = max(a.min_steps, len(live) - 1)
     variants = []
     for spec in a.variant:
         name, _, rest = spec.partition(":")

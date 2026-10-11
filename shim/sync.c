@@ -196,7 +196,11 @@ static void handle_go(const char *line) {
     }
 }
 
+volatile DWORD g_step_tid; /* the thread that steps the game (the harness's mailbox call) */
+
 static void sync_point(void) {
+    if (!g_step_tid)
+        g_step_tid = GetCurrentThreadId();
     clock_main_thread(); /* (the thread that steps the game) */
     units_mark(4);
     EnterCriticalSection(&g_sync_lock);
