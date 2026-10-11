@@ -617,6 +617,39 @@ def test_inference_server_pipeline_answers_concurrent_games(tmp_path):
             server.terminate()
 
 
+def test_inference_server_as_a_thread(tmp_path):
+    """--infer-in-learner: the same server as a thread of the learner's process answers the games."""
+    import os
+    import threading
+    import torch.multiprocessing as mp
+    from warcraftsim.fullgame.model import FullGameNet
+    from warcraftsim.fullgame.selfplay import RemoteInference, SharedRows, inference_main, publish
+    torch.manual_seed(0)
+    net = FullGameNet(n_types=20, n_cur=10, n_orders=30, G=30, d=64, layers=1, memory=True).eval()
+    net.allowed[:] = True
+    publish(net, 4, tmp_path)
+    spec = SharedRows(str(tmp_path / "rows"), 4, 30, 30, 64, create=True).spec
+    pipes = [mp.get_context("spawn").Pipe() for _ in range(2)]
+    stop = threading.Event()
+    cfg = {"run_dir": str(tmp_path), "device": "cpu", "learner_pid": os.getpid(), "infer_batch": 8, "compile": False,
+           "max_past": 2, "shared_rows": spec, "infer_pipeline": 1}
+    server = threading.Thread(target=inference_main, args=(cfg, [b for _, b in pipes], stop, True), daemon=True)
+    server.start()
+    try:
+        infer = RemoteInference([a for a, _ in pipes], SharedRows(*spec), [0, 2])
+        rng = np.random.default_rng(0)
+        for n in (7, 3):
+            st = {"n": n, "n_own": 2, "ent": rng.normal(size=(n, fx.F)).astype(np.float32),
+                  "type": rng.integers(1, 20, n), "cur": rng.integers(0, 10, n),
+                  "glob": rng.normal(size=30).astype(np.float32), "avail": None, "h": None}
+            out = infer.request([("current", st)])
+            assert out[0]["version"] == 4 and len(out[0]["order"]) == 2 and np.isfinite(out[0]["value"])
+    finally:
+        stop.set()
+        server.join(timeout=20)
+    assert not server.is_alive()
+
+
 def test_inference_server_through_shared_rows(tmp_path):
     """The view steps and answers through shared memory (SharedRows), not pickled: a game's two sides
     in its rows, the same values (and memory states) as a direct call."""

@@ -129,7 +129,8 @@ class Inference:
 
     def __init__(self, nets: Nets, device, max_batch: int, compile_: bool = True, buckets: tuple[int, ...] | None = None,
                  thread: bool = True, entities: tuple[int, ...] = (fx.MAX_ENT,), shared: "SharedRows | None" = None,
-                 fuse: bool = False, bf16: bool = False):
+                 fuse: bool = False, bf16: bool = False, generator: torch.Generator | None = None,
+                 capture_mode: str = "global"):
         """`buckets`: the batch sizes its compiled calls pad to (the smallest that fits; default: just
         max_batch); `entities`: likewise the entity counts (a call padded 4 rows of ~47 entities to
         16 x 160: ~50 times the attention). `thread` False: no batching thread of its own (the
@@ -141,6 +142,10 @@ class Inference:
         self.fuse = fuse and device.type == "cuda"
         # bf16: the network's matmuls in bfloat16 (tensor cores); the sampling and log-probabilities stay fp32
         self.bf16 = bf16 and device.type == "cuda"
+        # generator: the sampling's random numbers (an inference thread in the learner's process: the learner's
+        # dropout uses the default one, and a capture in one thread must not see the other's draws);
+        # capture_mode "thread_local": the other thread's CUDA calls go on while a graph is captured
+        self.generator, self.capture_mode = generator, capture_mode
         self.buckets = tuple(sorted(buckets or (max_batch,)))
         self.entities = tuple(sorted(set(entities) | {fx.MAX_ENT}))
         self._hosts: dict[tuple, torch.Tensor] = {}
@@ -206,7 +211,7 @@ class Inference:
         if net not in self._fns:
             G, NO, d = net.config["G"], net.config["n_orders"], net.config["d"] if net.memory else 0
             ref = weakref.ref(net)  # (not the network itself: the entry would keep it alive)
-            bf16 = self.bf16
+            bf16, gen = self.bf16, self.generator
 
             def packed_act(x):
                 # one tensor in and one out: each copy to or from the GPU is a driver call of its own
@@ -220,7 +225,8 @@ class Inference:
                 a += 3 * E
                 n_own, avail = x[:, a].long(), x[:, a + 1:a + 1 + NO] > 0.5
                 with torch.autocast("cuda", dtype=torch.bfloat16, enabled=bf16, cache_enabled=False):
-                    out = act(ref(), ent, typ, cur, mask, glob, n_own, avail, *([x[:, a + 1 + NO:]] if d else []))
+                    out = act(ref(), ent, typ, cur, mask, glob, n_own, avail, x[:, a + 1 + NO:] if d else None,
+                              generator=gen)
                 return torch.cat([out["order"].float(), out["tgt"].float(), out["bx"].float(), out["by"].float(),
                                   out["logp"].float(), out["value"].float()[:, None], out["entropy"].float()[:, None]]
                                  + ([out["h"].float()] if d else []), 1)
@@ -240,7 +246,9 @@ class Inference:
                 fn(x)
             torch.cuda.synchronize()
             graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(graph):
+            if self.generator is not None:
+                graph.register_generator_state(self.generator)
+            with torch.cuda.graph(graph, capture_error_mode=self.capture_mode):
                 out = fn(x)
             per[host.shape] = (x, graph, out)
         return per[host.shape]
@@ -496,7 +504,7 @@ class PastNet:
 
 
 def launch_round(groups: dict, nets: Nets, infer: Inference, past: Inference, swap: PastNet, top: int,
-                 streams: dict | None) -> tuple[list, list]:
+                 streams: dict | None, priority: int = 0) -> tuple[list, list]:
     """Start a round's calls without waiting for them (-> [(its Inference, handle, the part's items, the
     network's version)], the streams to wait for). `groups`: network key -> [(pipe, index, view step)].
     `streams` (a dict the server keeps them in): every network its own CUDA stream (the current
@@ -515,7 +523,8 @@ def launch_round(groups: dict, nets: Nets, infer: Inference, past: Inference, sw
         if cuda:
             st = streams.get((live_key, key if live_key else slot))
             if st is None:
-                st = streams[(live_key, key if live_key else slot)] = torch.cuda.Stream(device=infer.device)
+                st = streams[(live_key, key if live_key else slot)] = torch.cuda.Stream(device=infer.device,
+                                                                                         priority=priority)
             if st not in used:  # (after the current stream's work: weights reloaded, snapshots loaded)
                 st.wait_stream(base)
                 used.append(st)
@@ -532,7 +541,35 @@ def launch_round(groups: dict, nets: Nets, infer: Inference, past: Inference, sw
     return calls, used
 
 
-def inference_main(cfg: dict, conns: list, stop) -> None:
+def warm_inference(nets: Nets, infer: Inference, past: Inference, swap: PastNet, keys: list[str]) -> None:
+    """Capture every shape's graph now (the current network's; each past snapshot slot's, for each
+    architecture among `keys`): an inference thread next to the learner must not capture later."""
+    def dummy(n: int, G: int) -> dict:
+        return {"n": n, "n_own": 1, "ent": np.zeros((n, fx.F), np.float32), "type": np.zeros(n, np.int64),
+                "cur": np.zeros(n, np.int64), "glob": np.zeros(G, np.float32), "avail": None, "h": None}
+    net = nets.current
+    G = net.config["G"]
+    for B in infer.buckets:
+        for E in infer.entities:
+            infer.begin(0)
+            infer._launch(net, [dummy(E, G)] * B)
+            infer.wait()
+    archs: dict[str, FullGameNet] = {}
+    for key in [None, *keys]:
+        src = net if key is None else nets.get(key)
+        archs.setdefault(json.dumps(src.config, sort_keys=True, default=str), src)
+    for src in archs.values():
+        for k in range(swap.slots):
+            slot_net = swap.get(f"warm:{id(src)}", src, k)
+            for B in past.buckets:
+                for E in past.entities:
+                    past.begin(0)
+                    past._launch(slot_net, [dummy(E, src.config["G"])] * B)
+                    past.wait()
+            swap.holding.pop(k, None)  # (nothing real in it yet)
+
+
+def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> None:
     """The inference server: every actor's network calls in one process. The games spent 53% of
     their time waiting for their actor's calls: four actors and the learner took turns on the GPU
     (a context each), and an actor's batches were mostly padding (its 8 games rarely ask at once).
@@ -540,23 +577,43 @@ def inference_main(cfg: dict, conns: list, stop) -> None:
     call ran goes into the next one (no waiting for more)."""
     import signal
     from multiprocessing.connection import wait
-    signal.signal(signal.SIGTERM, _exit)
-    _pin(cfg, "server")
-    torch.set_num_threads(2)
     device = torch.device(cfg["device"])
+    # in_thread: a thread of the learner's process (--infer-in-learner): one GPU context, so the learner's
+    # kernels and these run side by side instead of taking turns (WSL has no MPS); its own high-priority
+    # streams and its own random generator, and every graph captured before the loop starts
+    priority, generator, mode = 0, None, "global"
+    if in_thread:
+        alive = lambda: True  # noqa: E731
+        if device.type == "cuda":
+            priority = torch.cuda.Stream.priority_range()[1]
+            torch.cuda.set_stream(torch.cuda.Stream(device=device, priority=priority))
+            generator = torch.Generator(device=device)
+            generator.seed()
+            mode = "thread_local"
+    else:
+        signal.signal(signal.SIGTERM, _exit)
+        _pin(cfg, "server")
+        torch.set_num_threads(2)
+        alive = lambda: os.getppid() == cfg["learner_pid"]  # noqa: E731
     nets = Nets(cfg, device)
-    while nets.current is None and not stop.is_set() and os.getppid() == cfg["learner_pid"]:
+    while nets.current is None and not stop.is_set() and alive():
         time.sleep(1)
         nets.reload()
     top = cfg["infer_batch"]
     shared = SharedRows(*cfg["shared_rows"]) if cfg.get("shared_rows") else None
     fuse = bool(cfg.get("infer_fuse", 0))
     infer = Inference(nets, device, top, cfg["compile"], buckets=tuple(b for b in (8, 24, 64) if b <= top) or (top,),
-                      thread=False, entities=(48, 96), shared=shared, fuse=fuse)
+                      thread=False, entities=(48, 96), shared=shared, fuse=fuse, generator=generator, capture_mode=mode)
     past = Inference(nets, device, 16, cfg["compile"], buckets=(4, 16), thread=False, entities=(64,),
-                     shared=shared, fuse=fuse)  # past snapshots: few calls
+                     shared=shared, fuse=fuse, generator=generator, capture_mode=mode)  # past snapshots: few calls
     swap = PastNet(device, slots=cfg.get("infer_past_slots", 1))
     streams = {} if cfg.get("infer_streams", 0) else None
+    if in_thread and device.type == "cuda" and cfg.get("compile", True):
+        t0 = time.time()
+        league = Path(cfg["run_dir"]) / "league.json"
+        keys = [m["path"] for m in json.loads(league.read_text()).get("members", []) if m.get("path")] if league.exists() else []
+        warm_inference(nets, infer, past, swap, keys)
+        print(f"inference thread: graphs captured in {time.time() - t0:.0f} s", flush=True)
     def fresh():
         return {"calls": 0, "past": 0, "rows": 0, "busy": 0.0, "wait": 0.0, "idle": 0.0, "ents": 0, "ents_max": 0,
                 "rounds": 0, "t": time.time()}
@@ -603,7 +660,7 @@ def inference_main(cfg: dict, conns: list, stop) -> None:
         stats["rounds"] += 1
         stats["busy"] += time.time() - t0
 
-    while not stop.is_set() and os.getppid() == cfg["learner_pid"]:
+    while not stop.is_set() and alive():
         if time.time() - stats["t"] >= 10.0 and stats["calls"]:
             dt = time.time() - stats["t"]
             with open(stats_path, "a") as f:
@@ -654,7 +711,7 @@ def inference_main(cfg: dict, conns: list, stop) -> None:
                 groups.setdefault(key, []).append((c, k, st))
         infer.begin(bank)
         past.begin(bank)
-        calls, used = launch_round(groups, nets, infer, past, swap, top, streams)  # all started before the one wait
+        calls, used = launch_round(groups, nets, infer, past, swap, top, streams, priority)  # all started before the one wait
         events = []
         if device.type == "cuda":  # (recorded now: the next round's work on these streams comes after them)
             for st in used or [torch.cuda.current_stream()]:
@@ -1680,8 +1737,8 @@ class GraphedUpdate:
             self.net.allowed.copy_(allowed)
         self.opt.zero_grad(set_to_none=True)
         graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(graph, pool=self.pool):
-            out = self._step(s, sb)
+        with torch.cuda.graph(graph, pool=self.pool, capture_error_mode="thread_local"):  # (an inference thread
+            out = self._step(s, sb)                                                         # may run alongside)
         self.graphs[key] = (graph, s, sb, out)
         return self.graphs[key]
 
@@ -1855,6 +1912,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="1: one inference server makes every actor's network calls (one GPU context, batches over all "
                          "games); 0: each actor its own")
     ap.add_argument("--native-obs", type=int, default=1, help="observations parsed in C (warcraftsim.native)")
+    ap.add_argument("--infer-in-learner", type=int, default=0, help="the inference server as a thread of the learner's "
+                                                                     "process: one GPU context, no turns on the GPU")
     ap.add_argument("--infer-fuse", type=int, default=1, help="the inference server's calls compiled (fused kernels) "
                                                                "before their CUDA graphs are captured: 30%% less GPU a round")
     ap.add_argument("--infer-pipeline", type=int, default=1, help="the inference server reads and launches the "
@@ -2040,12 +2099,18 @@ def main(argv: list[str] | None = None) -> int:
                                         c["d"] if net.memory else 0, create=True).spec
     actors = [ctx.Process(target=actor_main, args=(w, cfg, out_q, stop, render_q, pipes[w] and [a for a, _ in pipes[w]]),
                           daemon=True) for w in range(args.actors)]
-    if args.central_inference:
+    infer_thread = None
+    if args.central_inference and args.infer_in_learner:
+        infer_thread = threading.Thread(target=inference_main, args=(cfg, [b for ps in pipes for _, b in ps], stop, True),
+                                        daemon=True, name="inference")
+    elif args.central_inference:
         actors.append(ctx.Process(target=inference_main, args=(cfg, [b for ps in pipes for _, b in ps], stop), daemon=True))
     if args.video_every > 0:
         actors.append(ctx.Process(target=render_main, args=(cfg, render_q, stop), daemon=True))
     for p in actors:
         p.start()
+    if infer_thread is not None:
+        infer_thread.start()
     _pin(cfg, "learner")  # (after the others started: they would inherit it)
     info.update(status="training", started=time.time())
     save_info()
