@@ -34,6 +34,8 @@
  */
 #include "w3shim.h"
 
+#include "MinHook.h"
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -47,7 +49,7 @@ enum {
     GetUnitCurrentOrder, IsUnitVisible, GetResourceAmount, IsUnitType, IsUnitHidden, IsUnitLoaded, UnitIsSleeping,
     IsUnitPaused, IsUnitIllusion, GetHeroXP, GetHeroSkillPoints, GetHeroLevel, UnitItemInSlot, GetItemTypeId,
     GetUnitAbilityLevel, BlzGetUnitAbilityCooldownRemaining, LoadBoolean, LoadInteger, SaveInteger, SaveBoolean,
-    HaveSavedInteger, Player, GroupRemoveUnit, FlushChildHashtable, N_NATIVES
+    HaveSavedInteger, Player, GroupRemoveUnit, FlushChildHashtable, ForGroup, N_NATIVES
 };
 static const struct {
     const char *name, *sig;
@@ -63,7 +65,7 @@ static const struct {
     {"BlzGetUnitAbilityCooldownRemaining", "(Hunit;I)R"}, {"LoadBoolean", "(Hhashtable;II)B;"},
     {"LoadInteger", "(Hhashtable;II)I;"}, {"SaveInteger", "(Hhashtable;III)V"}, {"SaveBoolean", "(Hhashtable;IIB)V"},
     {"HaveSavedInteger", "(Hhashtable;II)B"}, {"Player", "(I)Hplayer;"}, {"GroupRemoveUnit", "(Hgroup;Hunit;)V"},
-    {"FlushChildHashtable", "(Hhashtable;I)V"},
+    {"FlushChildHashtable", "(Hhashtable;I)V"}, {"ForGroup", "(Hgroup;C)V"},
 };
 static void *g_fn[N_NATIVES];
 static int g_ok; /* every native found: 1, or 2 to check the records against the harness's (W3SIM_UNITS=2) */
@@ -107,6 +109,35 @@ static float r2(int k, int a, int b) {
     float f;
     memcpy(&f, &bits, 4);
     return f;
+}
+
+/* W3SIM_CUTS & 32: the pure getters pass_unit and unit_record both call (GetUnitTypeId, IsUnitType(DEAD),
+ * GetOwningPlayer + GetPlayerId, IsUnitType(HERO), GetWidgetLife) called once per unit; GetPlayerId by the
+ * player's handle (a player's id and handle are fixed for a load of the map: forgotten at a game's first step).
+ * The calls that make handles (UnitItemInSlot) are made as before. */
+static int g_dedupe;
+static struct {
+    int u, typ, dead, owner, hero, have_hero;
+} g_cur;
+#define PID_CACHE 32
+static int g_pid_h[PID_CACHE], g_pid_v[PID_CACHE], g_npid;
+
+static int player_id(int h) {
+    for (int i = 0; i < g_npid; i++)
+        if (g_pid_h[i] == h)
+            return g_pid_v[i];
+    int v = ((N1)g_fn[GetPlayerId])(h);
+    if (h && g_npid < PID_CACHE) {
+        g_pid_h[g_npid] = h;
+        g_pid_v[g_npid++] = v;
+    }
+    return v;
+}
+
+static int owner_id(int u) {
+    if (!g_dedupe)
+        return ((N1)g_fn[GetPlayerId])(((N1)g_fn[GetOwningPlayer])(u));
+    return player_id(((N1)g_fn[GetOwningPlayer])(u));
 }
 
 /* a player's id as the controller sees it (the harness's W3S_Pid) */
@@ -204,7 +235,8 @@ static void tok(int v) {
 static void unit_record(int u) {
     /* (the order of the calls is W3S_SerUnit's: some of them make handles) */
     int flags = 0;
-    int hero = n2(IsUnitType, u, TYPE_HERO) != 0;
+    int same = g_dedupe && g_cur.u == u; /* (pass_unit's values for this unit) */
+    int hero = same && g_cur.have_hero ? g_cur.hero : n2(IsUnitType, u, TYPE_HERO) != 0;
     if (hero)
         flags += 1;
     if (n2(IsUnitType, u, TYPE_STRUCTURE))
@@ -225,15 +257,20 @@ static void unit_record(int u) {
         flags += 256;
     if (n1(IsUnitIllusion, u))
         flags += 512;
-    int dead = n2(IsUnitType, u, TYPE_DEAD) != 0;
-    if (dead || r1(GetWidgetLife, u) < 0.405f)
+    int dead = same ? g_cur.dead : n2(IsUnitType, u, TYPE_DEAD) != 0;
+    float life = 0;
+    if (g_dedupe) {
+        life = r1(GetWidgetLife, u);
+        if (dead || life < 0.405f)
+            flags += 1024;
+    } else if (dead || r1(GetWidgetLife, u) < 0.405f)
         flags += 1024;
     if (n2(IsUnitType, u, TYPE_FLYING))
         flags += 2048;
-    int typ = n1(GetUnitTypeId, u);
-    int owner = pid(n1(GetPlayerId, n1(GetOwningPlayer, u)));
+    int typ = same ? g_cur.typ : n1(GetUnitTypeId, u);
+    int owner = pid(same ? g_cur.owner : owner_id(u));
     int x = (int)r1(GetUnitX, u), y = (int)r1(GetUnitY, u), facing = (int)r1(GetUnitFacing, u);
-    int hp = (int)(r1(GetWidgetLife, u) + 0.5f);
+    int hp = (int)((g_dedupe ? life : r1(GetWidgetLife, u)) + 0.5f);
     int maxhp = (int)(r2(GetUnitState, u, STATE_MAX_LIFE) + 0.5f);
     int mana = (int)r2(GetUnitState, u, STATE_MANA), maxmana = (int)r2(GetUnitState, u, STATE_MAX_MANA);
     int order = n1(GetUnitCurrentOrder, u);
@@ -329,12 +366,21 @@ static void drop(int u) { /* out of the group of all units, its table entries wi
 
 /* a unit of the pass: W3S_EnumAdd (with pruning), W3S_CountDecisive / W3S_CountAlive, W3S_SerUnit */
 static void pass_unit(int u) {
-    if (n1(GetUnitTypeId, u) == 0) { /* removed from the game */
+    g_cur.u = 0;
+    int typ = n1(GetUnitTypeId, u);
+    if (typ == 0) { /* removed from the game */
         drop(u);
         return;
     }
     int dead = n2(IsUnitType, u, TYPE_DEAD) != 0;
-    int p = n1(GetPlayerId, n1(GetOwningPlayer, u));
+    int p = owner_id(u);
+    if (g_dedupe) {
+        g_cur.u = u;
+        g_cur.typ = typ;
+        g_cur.dead = dead;
+        g_cur.owner = p;
+        g_cur.have_hero = 0;
+    }
     if (!dead && p >= 0 && p < g_max_players && p < MAX_PLAYERS) {
         g_alive[p]++;
         if (n2(IsUnitType, u, TYPE_TOWNHALL))
@@ -344,9 +390,89 @@ static void pass_unit(int u) {
     }
     /* reported as dead already: dropped (heroes stay, they can be revived). As in the harness, its
      * record is still written this once (its stored hash went with its table entries). */
-    if (dead && !n2(IsUnitType, u, TYPE_HERO) && n3(LoadBoolean, g_ht, u, 4))
-        drop(u);
+    if (dead) {
+        int hero = n2(IsUnitType, u, TYPE_HERO) != 0;
+        if (g_dedupe) {
+            g_cur.hero = hero;
+            g_cur.have_hero = 1;
+        }
+        if (!hero && n3(LoadBoolean, g_ht, u, 4))
+            drop(u);
+    }
     unit_record(u);
+    g_cur.u = 0;
+}
+
+/* W3SIM_CUTS & 16: the pass's ForGroup(w3s_all, W3S_CPassEnum) without a JASS thread per unit. The native
+ * runs as before (the group's snapshot, the code's object, the checks of each unit, the enum unit's handle
+ * and its reference count: 0x5025c0, 0x502360); only its per-unit callback 0x5026a0 hands the enum unit's
+ * handle to pass_unit here instead of running the JASS function (whose only effect was that call:
+ * GetEnumUnit, GetHandleId and the mailbox native). */
+#define VA(x) ((void *)(g_base + ((x) - 0x400000)))
+#define VA_FORGROUP 0x4906f0    /* cdecl ForGroup(group, code) native */
+#define VA_ENUM_CB 0x5026a0     /* cdecl int cb(CUnit *, ctx {jass state, group, code object}) */
+#define VA_AGENT 0x4707f0       /* cdecl agent lookup(id1, id2) */
+#define VA_ENUM_PUSH 0x4ebf00   /* thiscall(state, slot, agent, 0): the enum unit (its handle referenced) */
+#define VA_ENUM_TOP 0x4ebc20    /* thiscall(state, slot): its handle (GetEnumUnit) */
+#define VA_ENUM_POP 0x4ebce0    /* thiscall(state, slot, 1): popped, the reference released */
+typedef void(__cdecl *ForGroupFn)(int, int);
+typedef int(__cdecl *EnumCbFn)(BYTE *, DWORD *);
+typedef BYTE *(__cdecl *AgentFn)(DWORD, DWORD);
+typedef void(__fastcall *EnumPushFn)(void *, void *, int, BYTE *, int);
+typedef int(__fastcall *EnumTopFn)(void *, void *, int);
+typedef int(__fastcall *EnumPopFn)(void *, void *, int, int);
+static ForGroupFn ForGroup_orig;
+static EnumCbFn EnumCb_orig;
+static int g_fg_pass;
+static long g_fg_units;
+
+static void __cdecl ForGroup_hook(int group, int code) {
+    if (g_ok == 1 && g_pass && g_all && group == g_all && g_ht && g_abil && !g_pending && !g_fg_pass) {
+        g_fg_pass = 1;
+        ForGroup_orig(group, code);
+        g_fg_pass = 0;
+        return;
+    }
+    ForGroup_orig(group, code);
+}
+
+static int __cdecl EnumCb_hook(BYTE *unit, DWORD *ctx) {
+    if (!g_fg_pass)
+        return EnumCb_orig(unit, ctx);
+    if (unit) { /* (0x5026a0's checks) */
+        BYTE *a = ((AgentFn)VA(VA_AGENT))(*(DWORD *)(unit + 0xc), *(DWORD *)(unit + 0x10));
+        if (a && *(DWORD *)(a + 0xc) == 0x2b61676c && *(DWORD *)(a + 0x20) == 0) {
+            void *st = (void *)(size_t)ctx[0];
+            ((EnumPushFn)VA(VA_ENUM_PUSH))(st, NULL, 10, unit, 0);
+            if (ctx[2]) {
+                int h = ((EnumTopFn)VA(VA_ENUM_TOP))(st, NULL, 10);
+                if (h) {
+                    g_fg_units++;
+                    pass_unit(h);
+                }
+            }
+            ((EnumPopFn)VA(VA_ENUM_POP))(st, NULL, 10, 1);
+        }
+    }
+    return 1;
+}
+
+static void install_fg_pass(void) {
+    BYTE *f = VA(VA_FORGROUP), *cb = VA(VA_ENUM_CB);
+    if (!(f[0] == 0x55 && f[1] == 0x8b && f[2] == 0xec && cb[0] == 0x55 && cb[1] == 0x8b && cb[2] == 0xec) ||
+        (BYTE *)g_fn[ForGroup] != f) {
+        shim_log("unit records: ForGroup pass: unexpected code, not installed");
+        return;
+    }
+    MH_STATUS st = MH_Initialize();
+    if (st != MH_OK && st != MH_ERROR_ALREADY_INITIALIZED)
+        return;
+    if (MH_CreateHook(f, (void *)ForGroup_hook, (void **)&ForGroup_orig) != MH_OK || MH_EnableHook(f) != MH_OK ||
+        MH_CreateHook(cb, (void *)EnumCb_hook, (void **)&EnumCb_orig) != MH_OK || MH_EnableHook(cb) != MH_OK) {
+        shim_log("unit records: ForGroup pass: hook failed");
+        return;
+    }
+    shim_log("unit records: the pass's ForGroup without JASS (W3SIM_CUTS & 16)");
 }
 
 /* W3SIM_PROFILE: where a step's time goes (mean ms per step, every 200 steps): GO -> the pass begins
@@ -378,6 +504,8 @@ int units_call(int key, int mbox, int *result) {
     if (key == mbox - 2) { /* a game's first step (after a reload the last game's tables are gone) */
         g_v_unit = 0;
         g_ht = g_abil = g_all = g_nseer = g_pending = g_pass = g_nremoved = g_rec_len = g_pair_first = g_paired = 0;
+        g_npid = 0;
+        g_cur.u = 0;
         *result = obs_capture_on() ? g_ok : 0;
         return 1;
     }
@@ -492,6 +620,14 @@ void units_install(void) {
     int mode = GetEnvironmentVariableA("W3SIM_UNITS", buf, sizeof buf) ? atoi(buf) : 1;
     g_prof = GetEnvironmentVariableA("W3SIM_PROFILE", buf, sizeof buf) && buf[0] >= '1';
     g_ok = found == N_NATIVES ? mode : 0;
+    if (g_ok == 1) {
+        int cuts = cuts_flags();
+        g_dedupe = (cuts & 32) != 0;
+        if (g_dedupe)
+            shim_log("unit records: getters once per unit, player ids by handle (W3SIM_CUTS & 32)");
+        if (cuts & 16)
+            install_fg_pass();
+    }
     if (g_ok)
         shim_log("unit records: %s (%d natives)", g_ok == 2 ? "checked against the harness's" : "written by the shim", found);
     else if (!mode)

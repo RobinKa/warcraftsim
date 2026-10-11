@@ -58,6 +58,7 @@ long sync_count(void); /* step syncs so far */
 long sync_frame_count(void); /* frames reported so far (frame capture) */
 void sync_phases(double secs, char *out, int cap); /* per-second phase totals since the last call */
 void sync_reset_wait_ticks(void);
+extern volatile LONG g_sync_waiting;
 void sync_frame(void); /* frame capture: report the presented frame, wait for the controller */
 void frame_capture_set(int on);
 int frame_capture_get(void);
@@ -92,4 +93,7 @@ long render_skipped(void);     /* draw calls skipped since the last call */
 void syncstat_install(void);   /* W3SIM_PROFILE=4: the game's synchronization calls by call site (syncstat.c) */
 void syncstat_report(double secs);
 void turbo_set(int ms);
+void cuts_install(int draw); /* W3SIM_CUTS (cuts.c) */
+int cuts_flags(void);
+void cuts_report(void);
 int turbo_get(void);

@@ -106,7 +106,7 @@ static int g_on;
 
 void syncstat_install(void) {
     char buf[8];
-    if (!GetEnvironmentVariableA("W3SIM_PROFILE", buf, sizeof buf) || buf[0] < '4' || buf[0] > '9')
+    if (!GetEnvironmentVariableA("W3SIM_PROFILE", buf, sizeof buf) || buf[0] < '4' || buf[0] > '9' || buf[0] == '5')
         return;
     HMODULE exe = (HMODULE)g_base;
     iat_hook(exe, "KERNEL32.dll", "SetEvent", SetEvent_hook, (void **)&SetEvent_orig);
