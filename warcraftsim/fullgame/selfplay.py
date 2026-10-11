@@ -33,6 +33,7 @@ import math
 import os
 import queue
 import random
+import struct
 import subprocess
 import sys
 import threading
@@ -408,6 +409,40 @@ class SharedRows:
         return res
 
 
+def pack_request(rid: int, items: list[tuple]) -> bytes:
+    """A game's request with shared rows: [(network key, entities, own units, row)] (csrc/infer_loop.cpp's format)."""
+    out = [struct.pack("<IB", rid & 0xFFFFFFFF, len(items))]
+    for key, n, n_own, row in items:
+        kb = key.encode()
+        out.append(struct.pack("<HHIH", n, n_own, row, len(kb)) + kb)
+    return b"".join(out)
+
+
+def unpack_request(msg: bytes) -> tuple[int, list[tuple]]:
+    rid, count = struct.unpack_from("<IB", msg)
+    at, items = 5, []
+    for _ in range(count):
+        n, n_own, row, kl = struct.unpack_from("<HHIH", msg, at)
+        items.append((msg[at + 10:at + 10 + kl].decode(), n, n_own, row))
+        at += 10 + kl
+    return rid, items
+
+
+def pack_reply(rid: int, answers: list) -> bytes:
+    """[(version, O, memory width) or None (no answer)] for a request's items."""
+    return struct.pack("<IB", rid & 0xFFFFFFFF, len(answers)) + b"".join(
+        struct.pack("<iHH", *(a if a is not None else (-2, 0, 0))) for a in answers)
+
+
+def unpack_reply(msg: bytes) -> tuple[int, list]:
+    rid, count = struct.unpack_from("<IB", msg)
+    out = []
+    for k in range(count):
+        v, o, w = struct.unpack_from("<iHH", msg, 5 + 8 * k)
+        out.append(None if v == -2 else (v, o, w))
+    return rid, out
+
+
 class RemoteInference:
     """An actor's side of the inference server (inference_main): the same request() as Inference, the
     calls made in one process for all the actors' games. Every game thread has a pipe of its own to
@@ -431,17 +466,18 @@ class RemoteInference:
                 (loc.conn, loc.row), loc.rid = self.free.pop(), 0
         loc.rid += 1
         sh = self.shared
-        if sh is not None:  # (a game's two sides at most: its two rows)
+        if sh is not None:  # (a game's two sides at most: its two rows; binary messages: pack_request)
             assert len(items) <= 2
             for k, (_, st) in enumerate(items):
                 sh.write(loc.row + k, st)
-            loc.conn.send((loc.rid, [(key, st["n"], int(st["n_own"]), loc.row + k) for k, (key, st) in enumerate(items)]))
+            loc.conn.send_bytes(pack_request(loc.rid, [(key, st["n"], int(st["n_own"]), loc.row + k)
+                                                       for k, (key, st) in enumerate(items)]))
         else:
             loc.conn.send((loc.rid, [(key, {f: st.get(f) for f in ST_FIELDS}) for key, st in items]))
         while True:
             if not loc.conn.poll(300):
                 raise RuntimeError("no answer from the inference server for 5 minutes")
-            rid, out = loc.conn.recv()
+            rid, out = unpack_reply(loc.conn.recv_bytes()) if sh is not None else loc.conn.recv()
             if rid == loc.rid:  # (not the answer to a request this thread gave up on)
                 break
         if sh is not None:
@@ -653,7 +689,7 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
                 asked[c][1][k] = res
         for c, answer in asked.items():
             try:
-                c.send(answer)
+                c.send_bytes(pack_reply(answer[0], answer[1])) if shared is not None else c.send(answer)
             except OSError:
                 if c in live:
                     live.remove(c)
@@ -698,7 +734,7 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
         groups: dict[str, list] = {}  # network -> [(pipe, item, view step)]
         for c in ready:
             try:
-                rid, items = c.recv()
+                rid, items = unpack_request(c.recv_bytes()) if shared is not None else c.recv()
             except (EOFError, OSError):  # its actor is gone
                 live.remove(c)
                 continue
@@ -1912,6 +1948,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="1: one inference server makes every actor's network calls (one GPU context, batches over all "
                          "games); 0: each actor its own")
     ap.add_argument("--native-obs", type=int, default=1, help="observations parsed in C (warcraftsim.native)")
+    ap.add_argument("--infer-native", type=int, default=0, help="the inference server's loop in C++ in the learner's "
+                                                                  "process (native_infer: one GPU context, no GIL)")
     ap.add_argument("--infer-in-learner", type=int, default=0, help="the inference server as a thread of the learner's "
                                                                      "process: one GPU context, no turns on the GPU")
     ap.add_argument("--infer-fuse", type=int, default=1, help="the inference server's calls compiled (fused kernels) "
@@ -2104,8 +2142,10 @@ def main(argv: list[str] | None = None) -> int:
                                         c["d"] if net.memory else 0, create=True).spec
     actors = [ctx.Process(target=actor_main, args=(w, cfg, out_q, stop, render_q, pipes[w] and [a for a, _ in pipes[w]]),
                           daemon=True) for w in range(args.actors)]
-    infer_thread = None
-    if args.central_inference and args.infer_in_learner:
+    infer_thread = native = None
+    if args.central_inference and args.infer_native:
+        pass  # (set up below, after the actors started: its graphs take ~1 minute)
+    elif args.central_inference and args.infer_in_learner:
         infer_thread = threading.Thread(target=inference_main, args=(cfg, [b for ps in pipes for _, b in ps], stop, True),
                                         daemon=True, name="inference")
     elif args.central_inference:
@@ -2116,6 +2156,10 @@ def main(argv: list[str] | None = None) -> int:
         p.start()
     if infer_thread is not None:
         infer_thread.start()
+    if args.central_inference and args.infer_native:  # the server's loop in C++ in this process (native_infer)
+        from .native_infer import NativeServer
+        native = NativeServer(cfg, [b for ps in pipes for _, b in ps], device)
+        native.start()
     _pin(cfg, "learner")  # (after the others started: they would inherit it)
     info.update(status="training", started=time.time())
     save_info()
@@ -2177,6 +2221,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         while agent_steps < args.timesteps:
+            if native is not None and native.failed():
+                raise RuntimeError(f"the native inference loop failed: {native.failed()}")
             t_collect = time.time()
             while len(buf) < args.batch_steps:
                 try:
@@ -2262,6 +2308,8 @@ def main(argv: list[str] | None = None) -> int:
             p.join(timeout=60)
             if p.is_alive():
                 p.terminate()
+        if native is not None:
+            native.stop()
         if shared_path:
             Path(shared_path).unlink(missing_ok=True)
     return 0
