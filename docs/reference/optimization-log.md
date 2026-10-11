@@ -1,6 +1,6 @@
 # Optimizations
 
-How a step of the real game became cheap enough to train on, what each fix bought, what limits throughput now, and what did not work. The numbers are from this machine: Ryzen 5950X (16 cores, 32 threads), 47 GB, RTX 3090, WSL2, WineHQ stable 11.0, llvmpipe.
+How a step of the real game became cheap enough to train on, what each fix bought, what limits throughput now, and what did not work. The numbers are from this machine: Ryzen 5950X (16 cores, 32 threads), 47 GB, RTX 3090, WSL2, WineHQ stable 11.0, llvmpipe; from 2026-10-11 the same machine under native Ubuntu 26.04 (60 GB, GE-Proton 10-34's Wine; see the section on the move).
 
 ## A game step
 
@@ -107,7 +107,7 @@ The run stays at 40. The game's main thread without drawing: the game's own code
 * The main thread spends ~95% of its wall time in `GameUpdate` (the turns; the step sync's wait inside it): with nothing drawn, little is left outside the simulation.
 * Wineserver requests (`W3SIM_WINEDEBUG=+server`): ~300 a step, most of them events (`event_op`, `select`, `create_event`, `close_handle`).
 * The game's own synchronization calls (`W3SIM_PROFILE=4`, shim/syncstat.c): ~3,800 a second a game, 85% from two call sites, one `SetEvent` (`exe+0x3c2add`) and one `ResetEvent` (`exe+0x3c1e46`) per 25 ms turn: the hand-off between the main thread and the thread that paces the turns. Only ~4.5% of the calls set an event already set or reset one already reset: skipping them saves nothing worth having.
-* What would remove most of the requests: Wine's ntsync (events in the kernel, no wineserver round trip), which needs `/dev/ntsync` (Linux 6.14; WSL runs 6.6), or the turn hand-off's events replaced in the shim. Proton's fsync does it on WSL's kernel (below).
+* What would remove most of the requests: Wine's ntsync (events in the kernel, no wineserver round trip), which needs `/dev/ntsync` (Linux 6.14; WSL runs 6.6), or the turn hand-off's events replaced in the shim. Proton's fsync does it on WSL's kernel (below). (Tried on native Linux on 2026-10-11: no gain over fsync, below.)
 
 ## Where a step's time goes with 40 games (2026-10-03, `fgself-12` at 47.9M)
 
@@ -240,6 +240,31 @@ A subagent explored REA (https://github.com/morluto/rea, an MCP server driving G
 * Hooks that keep the simulation identical (every unit's state over 400 steps, 22 playbacks): a memo of the map-version check behind `GetPlayerId` (a 14 KB copy, 20-40k times a second: -5.6% of the main thread's instructions) and no JPEG decoding of textures created during play (-5.1%); together ~6% less CPU a step. Skipping paint left the simulation identical but made the fog pass grow over a game (to 17% by step 700): not safe as is.
 * The harness's own share is the larger target and needs no engine patch: units.c walking the units itself, `GetPlayerId` cached per player, `UnitIsSleeping` only for neutral units, the rest of the step's serialization in C.
 * These pay off once the games are the limit again (now the GPU's turns between the learner and the inference server are).
+
+## Native Linux instead of WSL (2026-10-11)
+
+The same machine under native Ubuntu 26.04.1 (kernel 7.0, Python 3.14, torch 2.14 with CUDA 13, GE-Proton 10-34's Wine with fsync as before), `fgself-12` resumed from the same checkpoint with the same recipe and 48 games:
+
+| | steps/s | the learner's update | its wait for data | a round of the inference loop |
+|---|---|---|---|---|
+| WSL, the last 40 minutes (18:30-19:09) | 1,387 | 4.23 s | 1.69 s | 9.7 ms |
+| native Linux (21:25-21:55) | **1,854** | 3.01 s | 1.43 s | 9.9 ms |
+
+A game step costs less CPU: four games against four, each waiting 35 ms for its orders (`scripts/wine_sync_ab.py`), 7.4 ms of CPU a step against 9.2 ms in the same test on WSL. With 48 games, 29% of the CPU was idle and the learner waited for data: 60 games next (10 actors of 6).
+
+| Wine's synchronization (`scripts/wine_sync_ab.py`, 4 games each, 300 steps) | the game | wineserver | CPU a step | wall a step |
+|---|---|---|---|---|
+| fsync (`WINEFSYNC=1`) | 6.92 ms | 0.49 ms | 7.42 ms | 45.2 ms |
+| ntsync (`WINENTSYNC=1`, `/dev/ntsync` after `modprobe ntsync`) | 6.79 ms | 0.58 ms | 7.37 ms | 45.0 ms |
+
+ntsync is no better than fsync: fsync already keeps the waits out of the wineserver. `selfplay --ntsync 1` stays off.
+
+What the move broke, all fixed:
+
+* **CUDA graphs replayed side by side hung the GPU** (100% busy, ~170 W, forever). Graphs captured on one stream keep that stream's cuBLAS workspace, and CUDA 13's cuBLAS picks split-K kernels that count in it: two networks' graphs at once and one waited forever. Every network's graphs are now captured on a stream of their own (`Inference._capture`); `CUBLAS_WORKSPACE_CONFIG=:0:0` also avoids it.
+* **Python 3.14 starts processes by forkserver by default**: the cloning loss's data workers (a local function as their init) could not be pickled and the learner died at its first update. They are forked as before (`multiprocessing_context="fork"`).
+* **dynamo's limit of 8 compiles a function** (also on WSL): the fused calls past the 8th shape had run unfused. The limit is raised for the fused calls: rounds of `scripts/check_native_infer.py` 4.2 → 3.6 ms, the start's capture ~20-50 s.
+* The C++ loop's build finds CUDA 13's runtime (`nvidia/cu13/lib`; the `nvidia-cuda-crt` package gives the headers torch's extension build needs).
 
 ## Dead ends
 

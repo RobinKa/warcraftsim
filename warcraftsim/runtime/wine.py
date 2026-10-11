@@ -52,10 +52,12 @@ def proton_files(wine_bin: str | None) -> Path | None:
     return files if (files / "lib" / "vkd3d").is_dir() and (files / "share" / "default_pfx").is_dir() else None
 
 
-def use_wine(wine_bin: str, fsync: bool) -> None:
+def use_wine(wine_bin: str, fsync: bool, ntsync: bool = False) -> None:
     """This process and its children use another Wine: its own prefixes (in a runtime folder named after
     it: a prefix belongs to the Wine that made it) and, with `fsync`, its futex-based synchronization
-    (WINEFSYNC: Wine's events, mutexes and waits without a wineserver round trip; Proton builds only)."""
+    (WINEFSYNC: Wine's events, mutexes and waits without a wineserver round trip; Proton builds only).
+    `ntsync`: the same in the kernel's NT synchronization driver (WINENTSYNC; needs /dev/ntsync, Linux
+    6.14+: `modprobe ntsync`; used before fsync when both are on)."""
     wine_bin = str(Path(wine_bin).expanduser().resolve())
     files = proton_files(wine_bin)
     tag = files.parent.name if files else Path(wine_bin).parent.name
@@ -65,6 +67,7 @@ def use_wine(wine_bin: str, fsync: bool) -> None:
     os.environ["WARCRAFTSIM_RUNTIME"] = str(runtime)
     paths.RUNTIME_DIR = runtime
     os.environ["WINEFSYNC"] = "1" if fsync else "0"
+    os.environ["WINENTSYNC"] = "1" if ntsync else "0"
 
 
 def wine_env(prefix: Path, **extra: str) -> dict[str, str]:

@@ -7,9 +7,9 @@ The game's CPU sets the speed. The [optimization log](reference/optimization-log
 ```mermaid
 xychart-beta horizontal
   title "Whole-game self-play, agent steps per second"
-  x-axis ["start", "pipes not queues", "games niced", "one GPU wait", "CUDA graphs", "real resets", "cheaper render", "units in C", "padded less", "5 games a load", "bounded queue", "learner as CUDA graphs", "no drawing, 40 games", "8 actors of 5 games", "Wine with fsync", "fused inference", "inference loop in C++"]
-  y-axis "steps/s" 0 --> 1600
-  bar [560, 545, 595, 606, 607, 540, 644, 719, 800, 822, 840, 1000, 1110, 1200, 1280, 1430, 1490]
+  x-axis ["start", "pipes not queues", "games niced", "one GPU wait", "CUDA graphs", "real resets", "cheaper render", "units in C", "padded less", "5 games a load", "bounded queue", "learner as CUDA graphs", "no drawing, 40 games", "8 actors of 5 games", "Wine with fsync", "fused inference", "inference loop in C++", "native Linux"]
+  y-axis "steps/s" 0 --> 2000
+  bar [560, 545, 595, 606, 607, 540, 644, 719, 800, 822, 840, 1000, 1110, 1200, 1280, 1430, 1490, 1850]
 ```
 
 ## Where the time goes
@@ -39,10 +39,11 @@ flowchart LR
 9. 8 actor processes of 5 games (13% more steps/s: each actor's games had waited for its GIL); the inference server's view steps through shared memory and its calls on CUDA streams (rounds 12.5 → 7.4 ms).
 10. The inference server's calls compiled into fused kernels inside their CUDA graphs (30% less GPU a round; ~1,430 steps/s).
 11. The inference server's loop in C++ in the learner's process: one GPU context, no GIL (the learner's update 5.1 → 3.5 s; ~1,490 steps/s).
+12. Native Linux instead of WSL on the same machine (2026-10-11): a game step 7.4 instead of 9.2 ms of CPU, the learner's update 4.2 → 3.0 s; ~1,850 steps/s with 48 games (1,387 in WSL's last hour). Wine's ntsync gave nothing over fsync.
 
 ## What remains
 
-* The inference server: it shares the GPU with the learner (a process each: they take turns). In the learner's process on a high-priority stream it would not wait for the learner's kernels.
+* More games: with 48, 29% of the CPU was idle and the learner waited 1.4 s an update for data (on native Linux).
 * The learner's cloning loss: ~1/3 of an update for a ×0.02 term the distillation may make redundant (next experiment: without it).
 * The actors' features in C (~40% of an actor's CPU).
 * Other work on the machine: a headless Chrome from another project takes ~10 cores in bursts (throughput ~1,300 → ~1,000 steps/s while it runs).
