@@ -26,6 +26,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <deque>
 #include <map>
 #include <memory>
 #include <string>
@@ -40,8 +41,9 @@ struct Shape {
     at::cuda::CUDAGraph* graph = nullptr;
     float* x_dev = nullptr;
     float* out_dev = nullptr;
-    // pinned host buffers: [bank][k] (k: the k-th call of this shape in a round)
-    std::vector<float*> hin[2], hout[2];
+    // pinned host buffers: [bank][k] (k: the k-th call of this shape in a round; a bank per round in flight)
+    static constexpr int BANKS = 4;
+    std::vector<float*> hin[BANKS], hout[BANKS];
 };
 
 struct Group {  // the current network, or one past-snapshot slot of one architecture
@@ -279,10 +281,22 @@ class Loop {
         }
     }
 
+    bool done(const Pending& p) {
+        for (auto ev : p.events) {
+            cudaError_t e = cudaEventQuery(ev);
+            if (e == cudaErrorNotReady) return false;
+            C10_CUDA_CHECK(e);
+        }
+        return true;
+    }
+
+    // Event-driven: rounds in flight (up to BANKS - 1) are answered as their GPU work finishes, and new
+    // requests are read and launched meanwhile (one round in flight, answered before the next was read,
+    // left the loop waiting for the GPU half of the time).
     void loop() {
         auto device_guard = c10::cuda::CUDAGuard(live.stream->device_index());
         std::vector<pollfd> pfds;
-        std::unique_ptr<Pending> pending;
+        std::deque<std::unique_ptr<Pending>> inflight;
         int bank = 0;
         double t_round = 0, t_reload = now(), t_report = now();
         st_t = now();
@@ -295,27 +309,35 @@ class Loop {
                 report();
                 t_report = now();
             }
+            while (!inflight.empty() && done(*inflight.front())) {  // (in order: a game has one request at a time)
+                complete(*inflight.front());
+                inflight.pop_front();
+            }
             pfds.clear();
             for (int fd : fds) pfds.push_back({fd, short(fd >= 0 ? POLLIN : 0), 0});
             double t_idle = now();
-            int ready = ::poll(pfds.data(), pfds.size(), pending ? 0 : 100);
-            if (!pending) st_idle += now() - t_idle;
+            const bool full = int(inflight.size()) >= Shape::BANKS - 1;
+            int ready = full ? 0 : ::poll(pfds.data(), pfds.size(), inflight.empty() ? 100 : 0);
             if (ready <= 0) {
-                if (pending) {
-                    complete(*pending);
-                    pending.reset();
+                if (!inflight.empty()) {  // nothing new: wait a little for the GPU (or the oldest round, if full)
+                    if (full) {
+                        double t = now();
+                        complete(*inflight.front());
+                        inflight.pop_front();
+                        st_wait += now() - t;
+                    } else {
+                        ::poll(pfds.data(), pfds.size(), 0);
+                        std::this_thread::sleep_for(std::chrono::microseconds(200));
+                    }
+                } else {
+                    st_idle += now() - t_idle;
                 }
                 continue;
             }
-            // a round at most every `period` seconds (the round in flight answered meanwhile)
+            // a round at most every `period` seconds
             double pause = t_round + period - now();
             if (pause > 0) {
-                if (pending) {
-                    complete(*pending);
-                    pending.reset();
-                    pause = t_round + period - now();
-                }
-                if (pause > 0) std::this_thread::sleep_for(std::chrono::duration<double>(pause));
+                std::this_thread::sleep_for(std::chrono::duration<double>(pause));
                 for (auto& p : pfds) p.revents = 0;
                 ::poll(pfds.data(), pfds.size(), 0);
             }
@@ -411,11 +433,13 @@ class Loop {
                 C10_CUDA_CHECK(cudaEventRecord(ev, g->stream->stream()));
                 round->events.push_back(ev);
             }
-            if (pending) complete(*pending);
-            pending = std::move(round);
-            bank ^= 1;
+            inflight.push_back(std::move(round));
+            bank = (bank + 1) % Shape::BANKS;
         }
-        if (pending) complete(*pending);
+        while (!inflight.empty()) {
+            complete(*inflight.front());
+            inflight.pop_front();
+        }
     }
 };
 
