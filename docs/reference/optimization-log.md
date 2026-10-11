@@ -190,6 +190,18 @@ Measured a week later (2026-10-10, 15-minute windows, nothing else on the machin
 
 The same steps/s: the inference server was no longer the limit but the learner (an update of 8,192 steps 5.1-5.5 s of a ~6 s cycle). They stay on. Without the cloning loss (`--bc-coef 0`, an experiment on the learning side) an update takes 3.8-3.9 s and the learner waits ~2 s for data: the games and actors set the pace again (~1,350-1,500 steps/s).
 
+## The inference server's calls fused, the round period, bf16 (2026-10-11)
+
+The learner and the inference server are processes of their own on one GPU: on WSL they take turns on it (no MPS, no time-slice setting), so in the run an update took 5.7 s (2.24 s alone) and a round ~11 ms (~4.4 ms alone).
+
+| change (`scripts/bench_inference.py --fuse`, alone; then the run, 15 minutes) | a round alone | of it on the GPU | the run |
+|---|---|---|---|
+| fp32, as before | 4.86 ms | 2.94 ms | ~1,300-1,340 steps/s, rounds ~11 ms |
+| **calls compiled (`torch.compile`: fused kernels) inside their CUDA graphs** (`--infer-fuse`) | **3.77 ms** | **2.05 ms** | **1,431 steps/s**, rounds 7.4 ms, the update 5.1 s |
+| bf16 matmuls | 4.49 ms | 2.21 ms | (values off by up to 0.014: not used) |
+
+The fused calls give the same values to 1e-7 and draw new sampling noise at every replay; compiling takes ~1 minute at a start. A round at most every 8 ms instead of 4 (fewer, larger rounds: more GPU for the learner) gave 1,246 steps/s: the update fell 5.7 → 5.3 s, but the games waited twice as long for their orders. The pipeline now keeps the period too (it had launched rounds back to back). The KL term's clone with its weights in bf16: no faster (2.30 against 2.24 s an update).
+
 ## Dead ends
 
 * 8 actor processes of 4 games instead of 4 of 8 (627 against 644 steps/s).
