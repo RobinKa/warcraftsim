@@ -169,6 +169,7 @@ class Loop {
         while (pool.size() <= k) {
             float* p = nullptr;
             C10_CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&p), n * sizeof(float), cudaHostAllocDefault));
+            std::fill(p, p + n, 0.0f);  // (not zeroed by CUDA: may hold what a freed pinned block held)
             pool.push_back(p);
         }
         return pool[k];
@@ -199,10 +200,16 @@ class Loop {
             float* r = hin + i * W;
             const int n = std::max(1, std::min(it.n, E));
             const size_t row = it.row;
+            // the row's entities, then zeros up to the call's E: the buffer is pinned memory as cudaHostAlloc gave it
+            // or as an earlier call left it, and masked entities still go through the type and order embeddings
+            // (a stale unit type past the vocabulary failed a device-side assert in the fused call)
             std::memcpy(r + a_ent, ent + row * E_max * F, sizeof(float) * n * F);
+            std::fill(r + a_ent + size_t(n) * F, r + a_ent + size_t(E) * F, 0.0f);
             std::memcpy(r + a_glob, glob + row * G, sizeof(float) * G);
             std::memcpy(r + a_typ, typ + row * E_max, sizeof(float) * n);
+            std::fill(r + a_typ + n, r + a_typ + E, 0.0f);
             std::memcpy(r + a_cur, cur + row * E_max, sizeof(float) * n);
+            std::fill(r + a_cur + n, r + a_cur + E, 0.0f);
             std::fill(r + a_mask, r + a_mask + n, 1.0f);
             std::fill(r + a_mask + n, r + a_mask + E, 0.0f);
             r[a_own] = std::min(n_own_rows[row], float(O_max));

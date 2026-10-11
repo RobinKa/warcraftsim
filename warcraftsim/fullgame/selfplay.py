@@ -1457,6 +1457,16 @@ class League:
 
 # ---- the learner ----------------------------------------------------------------------------------
 
+def to_device(a, device) -> torch.Tensor:
+    """A host array on the device through pinned memory. From pageable memory the CUDA driver stages the
+    copy itself, synchronously, holding the context's lock while the stream's earlier kernels finish: the
+    inference loop in the learner's process waited ~4 ms a round on it during updates."""
+    x = torch.as_tensor(a)
+    if torch.device(device).type == "cuda":
+        x = x.pin_memory()
+    return x.to(device, non_blocking=True)
+
+
 def collate(steps: list[dict], device, width: int | None = None, with_labels: bool = False) -> dict:
     """A minibatch of steps as padded tensors. `width`: pad the entities to it (CUDA graphs: a few
     fixed shapes); `with_labels`: the advisor's label arrays even when no step has any."""
@@ -1480,7 +1490,7 @@ def collate(steps: list[dict], device, width: int | None = None, with_labels: bo
         for k in acts:
             acts[k][i, :o] = s[k]
         logp[i, :o] = s["logp"]
-    t = lambda a: torch.from_numpy(a).to(device, non_blocking=True)  # noqa: E731
+    t = lambda a: to_device(a, device)  # noqa: E731
     labels = {}
     if with_labels or any("y_order" in s for s in steps):  # the advisor's labels (on-policy distillation; others: none)
         labels = {"y_order": np.zeros((B, O), np.int64), **{k: np.full((B, O), -1, np.int64) for k in ("y_ptr", "y_x", "y_y")}}
@@ -1493,8 +1503,8 @@ def collate(steps: list[dict], device, width: int | None = None, with_labels: bo
         labels = {**{k: t(v) for k, v in labels.items()}, "y_has": t(has), "y_any": bool(has.any())}
     return {"ent": t(ent), "type": t(typ), "cur": t(cur), "mask": t(mask), "glob": t(glob), "n_own": t(n_own), **labels,
             **{k: t(v) for k, v in acts.items()}, "logp": t(logp), "avail": t(avail) if avail is not None else None,
-            "adv": torch.tensor([s["adv"] for s in steps], device=device, dtype=torch.float32),
-            "ret": torch.tensor([s["ret"] for s in steps], device=device, dtype=torch.float32),
+            "adv": t(np.array([s["adv"] for s in steps], np.float32)),
+            "ret": t(np.array([s["ret"] for s in steps], np.float32)),
             "own": torch.arange(O, device=device)[None] < t(n_own)[:, None]}
 
 
@@ -1535,12 +1545,12 @@ def collate_seq(seqs: list[list[dict]], device, width: int | None = None, B: int
            "avail": None, **{k: np.zeros(0, np.int16) for k in ("order", "tgt", "bx", "by")}}
     flat = [q[t] if t < len(q) else pad for q in seqs for t in range(T)]
     mb = collate(flat, device, width, with_labels=labels)
-    mb["valid"] = torch.tensor([t < len(q) for q in seqs for t in range(T)], device=device)
+    mb["valid"] = to_device(np.array([t < len(q) for q in seqs for t in range(T)], bool), device)
     d = next((len(q[0]["h"]) for q in seqs if q and q[0].get("h") is not None), None)
     h0 = None
     if d is not None:
-        h0 = torch.from_numpy(np.stack([q[0]["h"] if q and q[0].get("h") is not None else np.zeros(d, np.float32)
-                                        for q in seqs])).to(device)
+        h0 = to_device(np.stack([q[0]["h"] if q and q[0].get("h") is not None else np.zeros(d, np.float32)
+                                 for q in seqs]), device)
     mb["seq"] = (B, T, h0, None)
     return mb
 
@@ -1796,8 +1806,8 @@ class GraphedUpdate:
         if getattr(args, "opd_coef", 0.0) > 0:  # the advisor's orders become orders the unit type can get
             typ_y = [(s["type"][:s["n_own"]], s["y_order"]) for s in steps if "y_order" in s]
             if typ_y:
-                ty = torch.from_numpy(np.concatenate([a for a, _ in typ_y]).astype(np.int64)).to(device)
-                yy = torch.from_numpy(np.concatenate([c for _, c in typ_y]).astype(np.int64)).to(device)
+                ty = to_device(np.concatenate([a for a, _ in typ_y]).astype(np.int64), device)
+                yy = to_device(np.concatenate([c for _, c in typ_y]).astype(np.int64), device)
                 net.allowed[ty, yy] = True  # ("none" sets class 0: always allowed)
         if self.ref is not None:
             self.ref.allowed.copy_(net.allowed)
@@ -1819,6 +1829,8 @@ class GraphedUpdate:
                     if b["mask"].shape[1] < bw:  # (pad to the width)
                         b = {k: (torch.nn.functional.pad(v, (0, 0) * (v.dim() - 2) + (0, bw - v.shape[1]))
                                  if v.dim() >= 2 and v.shape[1] == b["mask"].shape[1] else v) for k, v in b.items()}
+                    b = {k: (v.contiguous().pin_memory() if isinstance(v, torch.Tensor) else v)  # (see to_device)
+                         for k, v in b.items()}
                     b["width"] = bw
                 key = (width, b["width"] if b is not None else 0, tuple(sorted(k for k, v in mb.items() if isinstance(v, torch.Tensor))))
                 if key in self.graphs:
