@@ -61,8 +61,10 @@ class NativeServer:
         fuse = bool(cfg.get("infer_fuse", 0))
         self.shared = SharedRows(*cfg["shared_rows"])
         self.infer = Inference(self.nets, device, top, True, buckets=tuple(b for b in (8, 24, 64) if b <= top) or (top,),
-                               thread=False, entities=(48, 96), fuse=fuse, generator=self.generator, capture_mode="thread_local")
-        self.past = Inference(self.nets, device, 16, True, buckets=(4, 16), thread=False, entities=(64,), fuse=fuse,
+                               thread=False, entities=tuple(cfg.get("infer_entities", (48, 96))), fuse=fuse,
+                               generator=self.generator, capture_mode="thread_local")
+        self.past = Inference(self.nets, device, 16, True, buckets=(4, 16), thread=False,
+                              entities=tuple(cfg.get("infer_past_entities", (64,))), fuse=fuse,
                               generator=self.generator, capture_mode="thread_local")
         self.swap = PastNet(device, slots=cfg.get("infer_past_slots", 1))
         t0 = time.time()

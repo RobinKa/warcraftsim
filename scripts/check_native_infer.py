@@ -38,6 +38,8 @@ def main() -> int:
     ap.add_argument("--data", type=Path, required=True)
     ap.add_argument("--games", type=int, default=24)
     ap.add_argument("--seconds", type=float, default=20)
+    ap.add_argument("--entities", default="48,96", help="selfplay --infer-entities")
+    ap.add_argument("--past-entities", default="64", help="selfplay --infer-past-entities")
     a = ap.parse_args()
     device = torch.device("cuda")
     tmp = Path(tempfile.mkdtemp(prefix="native_infer_"))
@@ -53,7 +55,8 @@ def main() -> int:
     pipes = [mp.get_context("spawn").Pipe() for _ in range(a.games)]
     cfg = {"run_dir": str(tmp), "device": "cuda", "learner_pid": os.getpid(), "infer_batch": 64, "compile": True,
            "max_past": 32, "shared_rows": spec, "infer_fuse": 1, "infer_past_slots": 4, "infer_period": 0.004,
-           "exploiter_share": 0}
+           "exploiter_share": 0, "infer_entities": [int(x) for x in a.entities.split(",")],
+           "infer_past_entities": [int(x) for x in a.past_entities.split(",")]}
     server = NativeServer(cfg, [b for _, b in pipes], device)
     server.start()
     remote = RemoteInference([x for x, _ in pipes], SharedRows(*spec), [2 * k for k in range(a.games)])

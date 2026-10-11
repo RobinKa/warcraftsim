@@ -646,8 +646,10 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
     shared = SharedRows(*cfg["shared_rows"]) if cfg.get("shared_rows") else None
     fuse = bool(cfg.get("infer_fuse", 0))
     infer = Inference(nets, device, top, cfg["compile"], buckets=tuple(b for b in (8, 24, 64) if b <= top) or (top,),
-                      thread=False, entities=(48, 96), shared=shared, fuse=fuse, generator=generator, capture_mode=mode)
-    past = Inference(nets, device, 16, cfg["compile"], buckets=(4, 16), thread=False, entities=(64,),
+                      thread=False, entities=tuple(cfg.get("infer_entities", (48, 96))), shared=shared, fuse=fuse,
+                      generator=generator, capture_mode=mode)
+    past = Inference(nets, device, 16, cfg["compile"], buckets=(4, 16), thread=False,
+                     entities=tuple(cfg.get("infer_past_entities", (64,))),
                      shared=shared, fuse=fuse, generator=generator, capture_mode=mode)  # past snapshots: few calls
     swap = PastNet(device, slots=cfg.get("infer_past_slots", 1))
     streams = {} if cfg.get("infer_streams", 0) else None
@@ -1961,6 +1963,9 @@ def main(argv: list[str] | None = None) -> int:
                                                                      "process: one GPU context, no turns on the GPU")
     ap.add_argument("--infer-fuse", type=int, default=1, help="the inference server's calls compiled (fused kernels) "
                                                                "before their CUDA graphs are captured: 30%% less GPU a round")
+    ap.add_argument("--infer-entities", default="48,96", help="the entity counts the current network's calls are "
+                                                               "padded to (each a CUDA graph per batch bucket; up to 160 always)")
+    ap.add_argument("--infer-past-entities", default="64", help="the same for the past snapshots' calls")
     ap.add_argument("--infer-pipeline", type=int, default=1, help="the inference server reads and launches the "
                                                                    "next round while the last one is on the GPU")
     ap.add_argument("--infer-shm", type=int, default=1, help="the games' view steps and answers through shared "
@@ -2124,6 +2129,8 @@ def main(argv: list[str] | None = None) -> int:
            "tie_break": args.tie_break, "tie_value": args.tie_value, "compile": bool(args.compile), "native_obs": bool(args.native_obs),
            "real_share": args.real_share, "infer_batch": 64, "infer_streams": args.infer_streams, "infer_pipeline": args.infer_pipeline,
            "infer_fuse": args.infer_fuse,
+           "infer_entities": [int(x) for x in args.infer_entities.split(",")],
+           "infer_past_entities": [int(x) for x in args.infer_past_entities.split(",")],
            "infer_past_slots": args.infer_past_slots, "game_nice": args.game_nice, "pairs": args.pairs,
            "exploiter_share": args.exploiter_share, "float_penalty": args.float_penalty,
            "infer_period": args.infer_period_ms / 1000.0,

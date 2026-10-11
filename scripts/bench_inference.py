@@ -48,6 +48,10 @@ def main() -> int:
     ap.add_argument("--rounds", type=int, default=300)
     ap.add_argument("--past", type=int, default=6, help="past snapshots to draw from")
     ap.add_argument("--slots", type=int, default=4)
+    ap.add_argument("--entities", default="48,96", help="the current network's padded entity counts (selfplay --infer-entities)")
+    ap.add_argument("--past-entities", default="64", help="the past snapshots' (--infer-past-entities)")
+    ap.add_argument("--compare", nargs=2, metavar=("LIVE", "PAST"), help="also these entity counts (e.g. 32,48,64,96 "
+                                                                        "32,48,64,96): the same answers, ms a round")
     ap.add_argument("--fuse", action="store_true", help="compare the compiled (fused) calls with the plain ones, "
                                                           "both side by side")
     a = ap.parse_args()
@@ -68,9 +72,12 @@ def main() -> int:
             groups[key] = [(None, i, rng.choice(steps)) for i in range(rng.randint(1, 6))]
         rounds.append(groups)
 
-    def run(parallel: bool, fuse: bool = False, bf16: bool = False) -> tuple[list, float]:
-        infer = Inference(nets, device, 64, True, buckets=(8, 24, 64), thread=False, entities=(48, 96), fuse=fuse, bf16=bf16)
-        past = Inference(nets, device, 16, True, buckets=(4, 16), thread=False, entities=(64,), fuse=fuse, bf16=bf16)
+    ents = lambda text: tuple(int(x) for x in text.split(","))  # noqa: E731
+
+    def run(parallel: bool, fuse: bool = False, bf16: bool = False, live_e: str = a.entities,
+            past_e: str = a.past_entities) -> tuple[list, float]:
+        infer = Inference(nets, device, 64, True, buckets=(8, 24, 64), thread=False, entities=ents(live_e), fuse=fuse, bf16=bf16)
+        past = Inference(nets, device, 16, True, buckets=(4, 16), thread=False, entities=ents(past_e), fuse=fuse, bf16=bf16)
         swap = PastNet(device, slots=a.slots if parallel else 1)
         streams = {} if parallel else None
         out, times = [], []
@@ -99,6 +106,14 @@ def main() -> int:
             print(f"two replays of the same round sampled {'the SAME orders (noise not redrawn)' if same else 'different orders'}")
         return out, 1000 * np.mean(times, axis=0)
 
+    if a.compare:  # fused, side by side: the given entity counts against these
+        base, t_base = run(True, fuse=True)
+        out, t = run(True, fuse=True, live_e=a.compare[0], past_e=a.compare[1])
+        worst = max(abs(x[0] - y[0]) + abs(x[1] - y[1]) for rs, rp in zip(base, out) for x, y in zip(rs, rp))
+        for name, tt in ((f"{a.entities} / {a.past_entities}", t_base), (f"{a.compare[0]} / {a.compare[1]}", t)):
+            print(f"entities {name}: {tt.sum():.2f} ms a round (launching {tt[0]:.2f}, GPU {tt[1]:.2f}, answers {tt[2]:.2f})")
+        print(f"largest difference in value + entropy {worst:.2e}")
+        return 0 if worst < 1e-3 else 1
     if a.fuse:  # fp32 plain (the reference), fused, bf16, fused bf16
         base, t_base = run(True)
         rows = sum(len(r) for r in base)
