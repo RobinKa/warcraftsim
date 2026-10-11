@@ -617,8 +617,13 @@ def inference_main(cfg: dict, conns: list, stop) -> None:
         # a round at most every cfg["infer_period"] seconds: every round takes the GPU from the learner
         # for a turn (260 rounds a second left it half of it), and what arrives meanwhile shares the round
         pause = t_round + cfg.get("infer_period", 0.0) - time.time()
-        if pause > 0 and pending is None:
-            time.sleep(pause)
+        if pause > 0:  # (the round in flight answered meanwhile: its games' requests may join this one)
+            if pending:
+                complete(pending)
+                pending = None
+                pause = t_round + cfg.get("infer_period", 0.0) - time.time()
+            if pause > 0:
+                time.sleep(pause)
             ready = wait(live, timeout=0)
         t_round = time.time()
         asked: dict = {}  # game pipe -> (its request's id, the answers)
