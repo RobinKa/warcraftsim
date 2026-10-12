@@ -81,7 +81,14 @@ C_STEP, C_ID, C_TYPE, C_OWNER, C_X, C_Y, C_FACING, C_HP, C_MAXHP, C_MANA, C_MAXM
     C_VIS, C_RESOURCE, C_HLEVEL, C_HXP, C_SKILLPTS = range(18)
 DEAD, STRUCTURE = 1024, 2
 FLAG_BITS = (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 2048)  # UnitFlags but DEAD
-F = 3 + 2 + 4 + len(FLAG_BITS) + 3 + 2 + 1 + 2 + 1  # 29: ... production (queued, busy), and a worker on lumber
+F0 = 3 + 2 + 4 + len(FLAG_BITS) + 3 + 2 + 1 + 2 + 1  # 29: ... production (queued, busy), and a worker on lumber
+# then (2026-10-12; a checkpoint from before gets zero weights for them, model.load): the hit points' change since
+# the view's last step (a unit being hit), and the position as sines and cosines at 5 frequencies (attention can
+# then compare two units' positions: cos(k(x_i - x_j)) is a product of the two units' features)
+A_HPD = F0
+POS_FREQS = (1, 2, 4, 8, 16)  # x and y in [-1, 1]: wavelengths from the map's width down to ~380 world units
+A_POS = A_HPD + 1
+F = A_POS + 4 * len(POS_FREQS)  # 50
 TYPE_CODE = 0x1000000  # order ids at or above this are unit / building / upgrade codes
 # events: a building's production (a = the building)
 TRAIN_START, TRAIN_FINISH, TRAIN_CANCEL = 5, 6, 7
@@ -176,7 +183,9 @@ def describe_spaces(vocab: dict, order_names: dict[int, str] | None = None, agen
     ent = (["own", "enemy", "neutral", "x (mirrored: own base left)", "y", "hp / max hp", "max hp / 1000",
             "mana / max mana", "max mana / 1000"] + [f"flag {b}" for b in FLAG_BITS]
            + ["hero level / 10", "resource / 12500 (mines)", "skill points / 3", "sin facing", "cos facing (mirrored)",
-              "has an order", "queued production / 5", "producing", "a worker on lumber"])
+              "has an order", "queued production / 5", "producing", "a worker on lumber",
+              "hit points' change since the last step / max hp"]
+           + [f"{f}({k}π{c})" for k in POS_FREQS for c in ("x", "y") for f in ("sin", "cos")])
     glob = (["gold / 1000", "lumber / 1000", "food used / 100", "food cap / 100", "upkeep / 2", "time (steps / 1800)"]
             + [f"own race: {r}" for r in RACES] + [f"enemy race: {r}" for r in RACES]
             + [f"upgrade {rawcode(u)} (level / 3)" for u in vocab["upgrades"]])
@@ -285,6 +294,9 @@ class Encoder:
         f[:, a + 3] = np.sin(rad)
         f[:, a + 4] = sign * np.cos(rad)
         f[:, a + 5] = sel[:, C_ORDER] != 0
+        for i, k in enumerate(POS_FREQS):
+            px, py = math.pi * k * f[:, 3], math.pi * k * f[:, 4]
+            f[:, A_POS + 4 * i:A_POS + 4 * i + 4] = np.stack([np.sin(px), np.cos(px), np.sin(py), np.cos(py)], 1)
         # production (buildings' current order stays 0 while they train): what the player queued, and
         # whether something is being made (View keeps both from its orders and the events)
         if production is not None:
@@ -431,6 +443,7 @@ class View:
         self.queued: dict[int, int] = {}  # building -> units / research ordered and not yet done
         self.busy: set[int] = set()  # buildings making something
         self.assign: dict[int, str] = {}  # own worker -> "gold" / "lumber": what its last orders sent it to
+        self.hp_last: dict[int, int] = {}  # unit -> its hit points at the last step it was in view
 
     def track_harvest(self, orders, st: dict, trees) -> None:
         """What each own worker harvests, from the step's recorded orders (step, unit, order, kind,
@@ -471,6 +484,10 @@ class View:
                     self.queued[a] -= 1
         sel, n_own, f, types, cur = enc.entities(rows, player, self.sign, (self.queued, self.busy),
                                                  {u for u, r in self.assign.items() if r == "lumber"})
+        ids, hp = sel[:, C_ID].tolist(), sel[:, C_HP]
+        last = np.array([self.hp_last.get(i, h) for i, h in zip(ids, hp.tolist())], np.float32)
+        f[:, A_HPD] = np.clip((hp - last) / np.maximum(sel[:, C_MAXHP], 1), -1.0, 1.0)  # (0: not in view the last step)
+        self.hp_last = dict(zip(ids, hp.tolist()))
         for r in events:  # research done (by one of the player's buildings)
             if r[1] == RESEARCH_FINISH and int(r[2]) in self.own_buildings and int(r[3]) in enc.upgrade_index:
                 self.upgrades[enc.upgrade_index[int(r[3])]] = r[4] / 3.0
