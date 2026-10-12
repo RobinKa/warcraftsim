@@ -35,6 +35,7 @@ static volatile LONG g_enabled;
 static LONG g_counter;
 static CRITICAL_SECTION g_sync_lock;
 static volatile LONGLONG g_wait_ticks;
+volatile LONG g_sync_waiting; /* the main thread waits for the controller (raw profiler) */
 static volatile LONG g_capture;
 static LONG g_frames;
 
@@ -195,7 +196,11 @@ static void handle_go(const char *line) {
     }
 }
 
+volatile DWORD g_step_tid; /* the thread that steps the game (the harness's mailbox call) */
+
 static void sync_point(void) {
+    if (!g_step_tid)
+        g_step_tid = GetCurrentThreadId();
     clock_main_thread(); /* (the thread that steps the game) */
     units_mark(4);
     EnterCriticalSection(&g_sync_lock);
@@ -213,6 +218,7 @@ static void sync_point(void) {
         return;
     }
     clock_freeze(1);
+    InterlockedExchange(&g_sync_waiting, 1);
     LONGLONG t0 = real_qpc_ticks();
     char msg[64];
     static char reply[sizeof g_rbuf];
@@ -234,6 +240,7 @@ static void sync_point(void) {
     g_t_go = real_qpc_ticks();
     g_phase = 0;
     g_wait_ticks += g_t_go - t0;
+    InterlockedExchange(&g_sync_waiting, 0);
     clock_freeze(0);
     LeaveCriticalSection(&g_sync_lock);
     units_mark(0);

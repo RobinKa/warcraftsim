@@ -185,6 +185,135 @@ static void sample_main(HANDLE th) {
         g_mod_samples[i]++;
 }
 
+
+/* W3SIM_PROFILE=5: raw samples of the main thread for function-level profiles (offline symbolization).
+ * Each sample: flags, EIP, ESP, EBP, EAX, real ms, step counter, module base of EIP, then the EBP chain's
+ * return addresses and the call-preceded return addresses found scanning the stack from ESP. Written to
+ * W3SIM_RAWPROF (a Windows path) once a second. Nothing that takes a lock runs while the thread is suspended. */
+#define RAW_WORDS 128
+#define RAW_CHAIN 32
+#define RAW_SCAN 88
+#define RAW_CAP 4096
+static DWORD g_raw[RAW_CAP][RAW_WORDS];
+static int g_raw_n;
+static HANDLE g_raw_file = INVALID_HANDLE_VALUE;
+static volatile DWORD g_stack_base;
+static DWORD g_text_lo, g_text_hi;
+static DWORD g_mod_base_seen[64];
+static int g_n_mod_seen;
+
+static int is_call_ret(DWORD a) {
+    if (a < g_text_lo + 8 || a >= g_text_hi)
+        return 0;
+    const BYTE *r = (const BYTE *)(size_t)a;
+    if (r[-5] == 0xE8)
+        return 1;
+    if (r[-6] == 0xFF && r[-5] == 0x15)
+        return 1; /* call [abs32] */
+    if (r[-6] == 0xFF && (r[-5] & 0xF8) == 0x90 && (r[-5] & 7) != 4)
+        return 1; /* call [reg+disp32] */
+    if (r[-7] == 0xFF && r[-6] == 0x94)
+        return 1; /* call [sib+disp32] */
+    if (r[-3] == 0xFF && (r[-2] & 0xF8) == 0x50 && (r[-2] & 7) != 4)
+        return 1; /* call [reg+disp8] */
+    if (r[-4] == 0xFF && r[-3] == 0x54)
+        return 1; /* call [sib+disp8] */
+    if (r[-2] == 0xFF && (r[-1] & 0xF8) == 0x10 && (r[-1] & 7) != 4 && (r[-1] & 7) != 5)
+        return 1; /* call [reg] */
+    if (r[-3] == 0xFF && r[-2] == 0x14)
+        return 1; /* call [sib] */
+    if (r[-2] == 0xFF && (r[-1] & 0xF8) == 0xD0)
+        return 1; /* call reg */
+    return 0;
+}
+
+static void raw_init(void) {
+    IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(g_base + ((IMAGE_DOS_HEADER *)g_base)->e_lfanew);
+    IMAGE_SECTION_HEADER *sec = IMAGE_FIRST_SECTION(nt);
+    for (int i = 0; i < nt->FileHeader.NumberOfSections; i++)
+        if (sec[i].Characteristics & IMAGE_SCN_MEM_EXECUTE) {
+            DWORD lo = (DWORD)(size_t)g_base + sec[i].VirtualAddress, hi = lo + sec[i].Misc.VirtualSize;
+            if (!g_text_lo || lo < g_text_lo)
+                g_text_lo = lo;
+            if (hi > g_text_hi)
+                g_text_hi = hi;
+        }
+    char path[MAX_PATH];
+    if (GetEnvironmentVariableA("W3SIM_RAWPROF", path, sizeof path))
+        g_raw_file = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, 0, NULL);
+    shim_log("rawprof: text %#lx-%#lx file %s", g_text_lo, g_text_hi,
+             g_raw_file != INVALID_HANDLE_VALUE ? "open" : "NOT open");
+}
+
+static void raw_flush(void) {
+    if (g_raw_file != INVALID_HANDLE_VALUE && g_raw_n) {
+        DWORD w;
+        WriteFile(g_raw_file, g_raw, g_raw_n * RAW_WORDS * 4, &w, NULL);
+    }
+    g_raw_n = 0;
+}
+
+static void raw_sample(HANDLE th) {
+    if (g_raw_n >= RAW_CAP)
+        raw_flush();
+    DWORD *rec = g_raw[g_raw_n];
+    CONTEXT ctx;
+    ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+    DWORD flags = g_sync_waiting ? 1 : 0;
+    if (SuspendThread(th) == (DWORD)-1)
+        return;
+    if (!GetThreadContext(th, &ctx)) {
+        ResumeThread(th);
+        return;
+    }
+    DWORD top = g_stack_base, esp = ctx.Esp;
+    int nc = 0, ns = 0;
+    if (top && esp < top && top - esp < (16u << 20)) {
+        /* EBP chain */
+        DWORD fp = ctx.Ebp;
+        while (nc < RAW_CHAIN && fp >= esp && fp + 8 <= top && !(fp & 3)) {
+            DWORD next = ((DWORD *)(size_t)fp)[0], ret = ((DWORD *)(size_t)fp)[1];
+            rec[8 + nc++] = ret;
+            if (next <= fp)
+                break;
+            fp = next;
+        }
+        /* call-preceded return addresses into the exe, from ESP up (at most 64 KB) */
+        DWORD lim = top - esp > 65536 ? esp + 65536 : top;
+        for (DWORD a = esp; a + 4 <= lim && ns < RAW_SCAN; a += 4) {
+            DWORD v = *(DWORD *)(size_t)a;
+            if (v >= g_text_lo && v < g_text_hi && is_call_ret(v))
+                rec[8 + RAW_CHAIN + ns++] = v;
+        }
+    }
+    flags |= g_sync_waiting ? 2 : 0;
+    ResumeThread(th);
+    rec[0] = flags | (nc << 8) | (ns << 16);
+    rec[1] = ctx.Eip;
+    rec[2] = ctx.Esp;
+    rec[3] = ctx.Ebp;
+    rec[4] = ctx.Eax;
+    rec[5] = (DWORD)(real_qpc_ticks() * 1000 / g_freq);
+    rec[6] = (DWORD)sync_count();
+    HMODULE mod = NULL;
+    if (!(ctx.Eip >= (DWORD)(size_t)g_base && ctx.Eip < g_text_hi) &&
+        GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCSTR)(size_t)ctx.Eip, &mod)) {
+        DWORD b = (DWORD)(size_t)mod;
+        int i;
+        for (i = 0; i < g_n_mod_seen && g_mod_base_seen[i] != b; i++)
+            ;
+        if (i == g_n_mod_seen && i < 64) {
+            char name[MAX_PATH];
+            GetModuleFileNameA(mod, name, sizeof name);
+            g_mod_base_seen[g_n_mod_seen++] = b;
+            shim_log("rawprof module %#lx %s", b, name);
+        }
+    }
+    rec[7] = (DWORD)(size_t)mod;
+    g_raw_n++;
+}
+
 static void report_samples(void) {
     char line[1024];
     int len = 0;
@@ -239,7 +368,10 @@ static DWORD WINAPI profile_thread(LPVOID arg) {
     /* W3SIM_PROFILE=1: time totals; 2: also sample the main thread's EIP every ~1 ms (costly:
      * every sample suspends the thread, a wineserver round trip). Rates are per real second. */
     int sampling = (int)(INT_PTR)arg == 2;
-    g_wait_stats = (int)(INT_PTR)arg >= 3;
+    int raw = (int)(INT_PTR)arg == 5;
+    if (raw)
+        raw_init();
+    g_wait_stats = (int)(INT_PTR)arg == 3 || (int)(INT_PTR)arg == 4;
     HANDLE th = NULL;
     LONGLONG t_last = now_qpc();
     for (int tick = 0;; tick++) {
@@ -253,6 +385,15 @@ static DWORD WINAPI profile_thread(LPVOID arg) {
             }
             if (tick % 2 == 1)
                 report_samples();
+        } else if (raw) {
+            for (int k = 0; k < 1000; k++) {
+                Sleep_real(1);
+                if (!th && g_game_tid)
+                    th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, g_game_tid);
+                if (th)
+                    raw_sample(th);
+            }
+            raw_flush();
         } else {
             Sleep_real(1000);
         }
@@ -270,6 +411,7 @@ static DWORD WINAPI profile_thread(LPVOID arg) {
         if (g_wait_stats)
             clock_report_waits(secs);
         syncstat_report(secs);
+        cuts_report();
     }
     return 0;
 }
@@ -298,6 +440,8 @@ static int __fastcall GameUpdate_hook(void *self, void *edx, DWORD now) {
     if (!g_profile)
         return GameUpdate_orig(self, edx, now);
     g_game_tid = GetCurrentThreadId();
+    if (!g_stack_base)
+        g_stack_base = (DWORD)(size_t)((NT_TIB *)NtCurrentTeb())->StackBase;
     LONGLONG t0 = now_qpc();
     int r = GameUpdate_orig(self, edx, now);
     g_t_update += now_qpc() - t0;
