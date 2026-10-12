@@ -318,6 +318,15 @@ In the run: **2,276 steps/s** (10:00-10:10, 48 games) against ~2,100; the learne
 
 Rejected by the study: remembering paths between searches (moving units change the search's inputs), faster soft-float arithmetic (the cost is the calls), the agent-id lookup (already an array), `UnitIsSleeping` only for neutral units (a charmed creep could differ). Left: the harness's JASS (~11% of the main thread), its native calls (~8%), the node lookup and open list of A* (~5%).
 
+## The learner's intake (2026-10-12)
+
+With 8 evaluation games, the last-order features and the opponent-aware value, the run fell to ~1,550-1,600 steps/s and the learner's update to ~4.4-4.7 s (3.3 s in the morning). py-spy on the learner's main thread (20 s): ~33% receiving and unpickling the actors' trajectories, of which the answers' arrays were `np.memmap` subclasses (`astype` keeps the subclass of the shared rows; unpickling them rebuilds memmaps); ~18% waiting for the cloning loss's batches from its 2 data workers; ~13% in the update's pauses for the inference loop (by design); and before that, the last-order features' per-unit loop ran in those workers even when `--features 50` zeroed it (an update alone 3.2 → 2.7 s once skipped).
+
+| `fgself-21` | steps/s | the update | its wait for data |
+|---|---|---|---|
+| before (20:28-20:32) | ~1,600 | 4.4 s | 0.65 s |
+| plain arrays from the shared rows, 4 cloning workers (20:48-21:00) | **2,001** | 3.48 s | 0.63 s |
+
 ## Dead ends
 
 * 8 actor processes of 4 games instead of 4 of 8 (627 against 644 steps/s).
