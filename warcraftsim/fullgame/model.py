@@ -165,14 +165,17 @@ def act(net: FullGameNet, ent, typ, cur, mask, glob, n_own, avail=None, h=None, 
     orders each unit type got in the demonstrations). -> order, tgt, bx, by, logp [N, O] (the
     action's log-probability per unit: order, plus the targets that order uses; 0 for padding)
     and value [N]; with memory the core's new state "h" [N, d] (`h`: the last one, None at a start).
-    `shared` [N] (bool): those rows sample with one noise vector for all their units (_gumbel_argmax)."""
+    `shared` [N] (bool): those rows sample their units' targets (unit, x, y) with one noise vector for all of
+    them (_gumbel_argmax); the order still with one each."""
     g, u = net.encode(ent, typ, cur, mask, glob)
     g, h = net.context(g, h)
     O = min(fx.MAX_OWN, u.shape[1])
     logits = net.order_logits(g, u[:, :O], typ, n_own, avail=avail)
     def sample(lg):
         return _gumbel_argmax(lg, generator, shared)
-    order = sample(logits)
+    # (the order itself with a draw of its own per unit: one draw for all made a side's similar units take a rare
+    # order together or not at all: every worker builds a farm, or none does; the A/B of 2026-10-12)
+    order = _gumbel_argmax(logits, generator)
     ptr, xl, z = net.target_logits(g, u, mask, order)
     tgt, bx = sample(ptr), sample(xl)
     yl = net.y_logits(z, bx)

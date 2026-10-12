@@ -1891,6 +1891,9 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--name", required=True)
     ap.add_argument("--init", type=Path, required=True, help="a behavior-cloned policy (fullgame/bc.py) or checkpoint")
+    ap.add_argument("--start-weights", type=Path, help="a new run's starting weights: another run's checkpoint (the "
+                                                      "lineage's parent; scripts/selfplay_fork.py); --init stays the "
+                                                      "KL anchor and the vocabulary")
     ap.add_argument("--memory", type=int, default=-1, help="1: the policy gets a memory core (a new one does nothing "
                                                             "at first), 0: none; -1: as --init")
     ap.add_argument("--runs", type=Path, default=RUNS)
@@ -1984,10 +1987,10 @@ def main(argv: list[str] | None = None) -> int:
                                                             "speedups of the game's own code; 1529: all verified ones, "
                                                             "~28%% less CPU a game step); 0: none")
     ap.add_argument("--shared-noise", type=float, default=0.0, help="this share of the games (per game, at random) "
-                                                                  "sample each policy side's units with one noise vector "
-                                                                  "a step (the same distributions, coordinated choices: "
-                                                                  "a group's target points had scattered); the episode "
-                                                                  "rows say which, for an A/B")
+                                                                  "sample each policy side's units' targets (unit, x, y) "
+                                                                  "with one noise vector a step (the same distributions, "
+                                                                  "coordinated choices: a group's target points had "
+                                                                  "scattered); the episode rows say which, for an A/B")
     ap.add_argument("--update-pause-ms", type=float, default=0.0, help="after each minibatch of the CUDA-graph update, "
                                                                      "wait for it and leave the GPU to the inference "
                                                                      "loop this long (during the update its rounds took "
@@ -2091,6 +2094,10 @@ def main(argv: list[str] | None = None) -> int:
     if ref is not None:
         for p in ref.parameters():
             p.requires_grad_(False)
+    if args.start_weights and not args.resume:  # a new run from another run's checkpoint (--init stays the anchor)
+        start, _ = load(args.start_weights, device, None if args.memory < 0 else bool(args.memory))
+        net.load_state_dict(start.state_dict())
+        del start
     graphed = bool(args.cuda_graphs) and device.type == "cuda" and bool(net.memory)
     opt = torch.optim.Adam(net.parameters(), lr=args.lr, eps=1e-5, capturable=graphed)
     # the main exploiter (--exploiter-share): a second network, from the run's starting weights
@@ -2101,7 +2108,8 @@ def main(argv: list[str] | None = None) -> int:
     slot, slot_lock = claim_slot(args.runs)
     races = list(fx.RACES) if args.races == "all" else args.races.split(",")
     ai = [d for d in args.ai.split(",") if d]
-    init_rel = os.path.relpath(args.init.resolve(), args.runs.resolve().parent)
+    # (the lineage's parent: the run the starting weights come from, else the anchor)
+    init_rel = os.path.relpath((args.start_weights or args.init).resolve(), args.runs.resolve().parent)
     info = {"name": args.name, "kind": "run", "trainer": "fullgame", "task": f"fullgame_{args.map}",
             "status": "launching", "created": time.time(), "timesteps": int(args.timesteps),
             "envs": args.actors * args.games_per_actor, "init_from": init_rel, "init_steps": 0,
@@ -2110,7 +2118,8 @@ def main(argv: list[str] | None = None) -> int:
             "config": {k: str(v) for k, v in vars(args).items()},
             "spaces": fx.describe_spaces(vocab, None if vocab.get("order_names") else fx.demo_order_names(args.runs),
                                          "two per game against itself or a past snapshot, one against the built-in AI"),
-            "inputs": {"init": str(args.init), "bc_data": [str(d) for d in (args.bc_data or [])],
+            "inputs": {"init": str(args.init), **({"start_weights": str(args.start_weights)} if args.start_weights else {}),
+                       "bc_data": [str(d) for d in (args.bc_data or [])],
                        **({"advisor": f"built-in AI ({args.opd_difficulty})"} if args.opd_share > 0 else {})},
             "launch": {"command": "python3 -m warcraftsim.fullgame.selfplay " + " ".join(sys.argv[1:] if argv is None else argv),
                        "argv": list(sys.argv[1:] if argv is None else argv), "git": git_info()}}

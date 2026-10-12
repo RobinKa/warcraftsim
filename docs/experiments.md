@@ -1,6 +1,6 @@
 # Experiments
 
-The main lessons, short. The [experiment log](reference/experiment-log.md) has the tables and the runs behind each one.
+The main lessons, short. The [experiment log](reference/experiment-log.md) has the tables and the runs behind each one; [ideas from AlphaStar and OpenAI Five](reference/ideas-from-alphastar-and-openai-five.md) ranks the next experiments.
 
 ## Real-game win rate, whole game
 
