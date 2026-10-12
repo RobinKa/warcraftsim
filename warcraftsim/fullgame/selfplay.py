@@ -1250,6 +1250,9 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
             shared = SharedRows(*cfg["shared_rows"]) if cfg.get("shared_rows") else None
             per = cfg["games_per_actor"] + cfg.get("eval_games_per_actor", 0)
             infer = RemoteInference(conns, shared, [2 * (wid * per + k) for k in range(len(conns))])
+        evals = cfg.get("eval_games_per_actor", 0)
+        if cfg.get("eval_games"):  # (--eval-games: that many in all, the first actors one more than the rest)
+            evals = cfg["eval_games"] // cfg["actors"] + (wid < cfg["eval_games"] % cfg["actors"])
         else:
             device = torch.device(cfg["device"])
             nets = Nets(cfg, device)
@@ -1258,7 +1261,7 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
                 nets.reload()
             infer = Inference(nets, device, 2 * cfg["games_per_actor"], cfg["compile"])
         threads = [threading.Thread(target=game_loop, args=(wid, k, cfg, infer, out_q, stop, render_q), daemon=True)
-                   for k in range(cfg["games_per_actor"] + cfg.get("eval_games_per_actor", 0))]
+                   for k in range(cfg["games_per_actor"] + evals)]
         for th in threads:
             th.start()
             time.sleep(2)  # launches spread out
@@ -1898,6 +1901,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="each actor's extra games that only evaluate: the real game against the built-in AI (normal "
                          "or insane, races at random), never advised, nothing trained on; episodes have eval: true "
                          "(the real-game yardstick sooner and steadier, the training's mix unchanged)")
+    ap.add_argument("--eval-games", type=int, default=0, help="evaluation games in all instead (as --eval-games-per-"
+                                                            "actor; 4: ~600 a hour, each actor's slot cost ~2.5%% of "
+                                                            "the training's throughput)")
     ap.add_argument("--target-temperature", type=float, help="the policy's target heads (unit, x, y) sample at this "
                                                             "temperature (model.FullGameNet, acting and training "
                                                             "alike; saved in its checkpoints); default: the "
@@ -2075,6 +2081,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--note", default="", help="the run's notes (notes.md); with --resume, why it was restarted (the "
                                                 "restart's marker on the dashboard's charts)")
     args = ap.parse_args(argv)
+    if args.eval_games:  # (in all: each actor's pipes and rows for the most any actor gets)
+        args.eval_games_per_actor = -(-args.eval_games // args.actors)
     args.device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     if args.wine:  # (before any game or child process: they read the environment)
         from ..runtime import wine
@@ -2208,7 +2216,7 @@ def main(argv: list[str] | None = None) -> int:
            "map": args.map, "handicap": args.handicap, "step_seconds": args.step_seconds,
            "max_minutes": args.max_minutes, "max_steps": int(args.max_minutes * 60 / args.step_seconds) + 20,
            "wait_floor_ms": args.wait_floor_ms, "games_per_actor": args.games_per_actor,
-           "eval_games_per_actor": args.eval_games_per_actor,
+           "eval_games_per_actor": args.eval_games_per_actor, "eval_games": args.eval_games,
            "games_per_process": args.games_per_process, "chunk": args.chunk, "gamma": args.gamma, "lam": args.lam,
            "seed": args.seed, "start_update": resumed["update"] if resumed else 0, "slot": slot,
            "video_every": args.video_every, "scripted_reset": bool(args.scripted_reset),
