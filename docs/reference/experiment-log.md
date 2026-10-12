@@ -944,6 +944,17 @@ First try, in `fgself-12` (11:18-11:28): half the games drew one noise vector a 
 
 **`fgself-18`** (from `fgself-14` at 13.6M, 16:30): `fgself-14`'s recipe (forward KL, `--features 50`: the last-order channels zeros, shared target noise 0.5) plus 4 evaluation games. Holding near 54% puts the decline on the last-order features.
 
+**Head to head** (`--eval-checkpoints`, 16:35-17:25 in `fgself-18`: its 8 evaluation games split at random between the current policy and three fixed checkpoints, the same conditions at the same time; ~275 games each against normal and insane):
+
+| policy | of the AI's record |
+|---|---|
+| `fgself-14`'s last (13.6M) | **59%** |
+| `fgself-18` now (`fgself-14`'s recipe without the last-order features) | **58%** |
+| `fgself-16`'s last (with the last-order features) | 39% |
+| `fgself-12`'s last (155.16M, the plateau) | 28% |
+
+`fgself-13` and `fgself-14` doubled the policy's record against the AI (28% → 59%); the last-order features undid much of it (39%); without them `fgself-18` holds the gain. Next head to head: `fgself-13`'s last against `fgself-12`'s and `fgself-14`'s, to see which run made the jump.
+
 Next, ranked with what AlphaStar and OpenAI Five found ([ideas](ideas-from-alphastar-and-openai-five.md)): forward KL to the anchor on every head (ours is reverse KL on the orders only), a temperature for the targets, features of each unit's own last order and hit-point history (branch `features-v2` has the hit-point change and sine/cosine positions), a value with both players' information.
 
 **A fairer yardstick: the AI's own record in the same matchups.** `duelfast` is far from balanced even for the built-in AI against itself (3,000 games, mixed matchups): night elf wins 81% (normal) / 75% (insane), orc 65% / 71%, undead 33% / 37%, human 22% / 19% (human vs night elf 8% / 6%, vs orc 15% / 6%). So a race's real-game win rate says as much about the map as about the policy. `scripts/real_games.py` now also counts, for real games against normal and insane, how many the AI itself would win in the same matchups: from 2026-10-03 18:36 to 2026-10-11 00:17 the learner won 195 of 896, the AI would win ~455 (**43% of the AI's record**; 45% in the last two hours before the anchor experiment). 100% is the built-in AI's level.
