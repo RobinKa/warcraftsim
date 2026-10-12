@@ -26,10 +26,14 @@ NEG = -1e9
 
 class FullGameNet(nn.Module):
     def __init__(self, n_types: int, n_cur: int, n_orders: int, G: int, d: int = 192, heads: int = 4,
-                 layers: int = 3, dropout: float = 0.0, memory: bool = False):
+                 layers: int = 3, dropout: float = 0.0, memory: bool = False, target_temperature: float = 1.0):
         super().__init__()
         self.config = dict(n_types=n_types, n_cur=n_cur, n_orders=n_orders, G=G, d=d, heads=heads, layers=layers,
-                           dropout=dropout, memory=memory)
+                           dropout=dropout, memory=memory, target_temperature=target_temperature)
+        # the target heads' logits (unit, x, y) divided by it, acting and training alike: < 1 samples a unit's
+        # target closer to its most likely one (AlphaStar samples at 0.8; a clone of a deterministic script
+        # spreads its targets from uncertainty, and a group's points scattered)
+        self.target_temperature = float(target_temperature)
         self.memory = memory
         if memory:  # the minGRU core: its gate and candidate from the token, the state into the context
             self.mem_in = nn.Linear(d, 2 * d)
@@ -119,13 +123,14 @@ class FullGameNet(nn.Module):
         O = order.shape[1]
         own = u[:, :O]
         z = self.cond(torch.cat([own + self.order_emb(order.long()), g.unsqueeze(1).expand_as(own)], -1))
-        ptr = torch.einsum("nod,ned->noe", self.query(z), self.key(u)) / math.sqrt(self.d)
+        t = self.target_temperature
+        ptr = torch.einsum("nod,ned->noe", self.query(z), self.key(u)) / (math.sqrt(self.d) * t)
         ptr = ptr.masked_fill(~mask.unsqueeze(1), NEG)
-        return ptr, self.point_x(z), z
+        return ptr, self.point_x(z) / t, z
 
     def y_logits(self, z, x):
         """The point's y logits [N, O, BINS] given its x bins [N, O]."""
-        return self.point_y(z + self.x_emb(x.clamp(min=0).long()))
+        return self.point_y(z + self.x_emb(x.clamp(min=0).long())) / self.target_temperature
 
     def value(self, g):
         return self.value_head(g).squeeze(-1)

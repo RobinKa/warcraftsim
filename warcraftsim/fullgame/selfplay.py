@@ -1889,6 +1889,10 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--name", required=True)
     ap.add_argument("--init", type=Path, required=True, help="a behavior-cloned policy (fullgame/bc.py) or checkpoint")
+    ap.add_argument("--target-temperature", type=float, help="the policy's target heads (unit, x, y) sample at this "
+                                                            "temperature (model.FullGameNet, acting and training "
+                                                            "alike; saved in its checkpoints); default: the "
+                                                            "checkpoint's (1.0 before)")
     ap.add_argument("--start-weights", type=Path, help="a new run's starting weights: another run's checkpoint (the "
                                                       "lineage's parent; scripts/selfplay_fork.py); --init stays the "
                                                       "KL anchor and the vocabulary")
@@ -2099,7 +2103,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.start_weights and not args.resume:  # a new run from another run's checkpoint (--init stays the anchor)
         start, _ = load(args.start_weights, device, None if args.memory < 0 else bool(args.memory))
         net.load_state_dict(start.state_dict())
+        net.target_temperature = start.target_temperature
+        net.config["target_temperature"] = start.target_temperature
         del start
+    if args.target_temperature is not None:  # (the policy's, saved with its checkpoints; the anchor keeps its own)
+        net.target_temperature = args.target_temperature
+        net.config["target_temperature"] = args.target_temperature
     graphed = bool(args.cuda_graphs) and device.type == "cuda" and bool(net.memory)
     opt = torch.optim.Adam(net.parameters(), lr=args.lr, eps=1e-5, capturable=graphed)
     # the main exploiter (--exploiter-share): a second network, from the run's starting weights
