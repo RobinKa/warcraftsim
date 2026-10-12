@@ -89,6 +89,13 @@ class BCAgent:
         accepted orders set what the workers harvest (View.assign)."""
         self.view.record_orders((c.unit, c.order, 0) for c, ok in zip(cmds, results)
                                 if ok and isinstance(c, ImmediateOrder))
+        # each unit's last order and its target (features.A_LAST), as the recorded orders give them
+        self.view.note_orders([(c.unit, getattr(c, "order", getattr(c, "building", 0)), 1, c.x, c.y, 0) if hasattr(c, "x")
+                               else (c.unit, c.order, 2, 0, 0, c.target) if hasattr(c, "target")
+                               else (c.unit, c.order, 0, 0, 0, 0)
+                               for c, ok in zip(cmds, results)
+                               if ok and hasattr(c, "unit") and (hasattr(c, "order") or hasattr(c, "building"))],
+                              self.t, self.trees)
         for c, ok, res in zip(cmds, results, getattr(self, "sent_resources", [])):
             unit = getattr(c, "unit", None)
             if ok and unit is not None:
