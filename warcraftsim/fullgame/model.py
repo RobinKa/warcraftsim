@@ -203,7 +203,26 @@ def evaluate(net: FullGameNet, ent, typ, cur, mask, glob, n_own, order, tgt, bx,
     yl = net.y_logits(z, bx)
     uses_ptr, uses_pt = net.uses(order)
     logp = _logp(logits, order) + uses_ptr * _logp(ptr, tgt) + uses_pt * (_logp(xl, bx) + _logp(yl, by))
-    return {"logp": logp, "entropy": _entropy(logits), "logits": logits, "value": net.value(g), "g": g, "u": u}
+    return {"logp": logp, "entropy": _entropy(logits), "logits": logits, "value": net.value(g), "g": g, "u": u,
+            "ptr": ptr, "xl": xl, "yl": yl, "uses_ptr": uses_ptr, "uses_pt": uses_pt}
+
+
+def anchor_kl(ev: dict, ev_ref: dict, mode: str = "reverse"):
+    """The KL term towards the anchor per unit [N, O]. "reverse": KL(policy || anchor) over the orders (as
+    before: its pull on an order is in proportion to the policy's own probability of it, so an order RL
+    drives towards 0 is no longer pulled back); "forward": KL(anchor || policy) over the orders (AlphaStar's
+    direction: a rare order the anchor gives keeps its weight); "forward-all": and over the target unit
+    and the point's x and y (y given the step's x), for the units whose order uses them."""
+    def kl(a, b):  # KL(softmax a || softmax b) over the last axis
+        la, lb = torch.log_softmax(a.float(), -1), torch.log_softmax(b.float(), -1)
+        return (la.exp() * (la - lb)).sum(-1)
+    if mode == "reverse":
+        return kl(ev["logits"], ev_ref["logits"])
+    out = kl(ev_ref["logits"], ev["logits"])
+    if mode == "forward-all":
+        out = out + ev["uses_ptr"] * kl(ev_ref["ptr"], ev["ptr"]) \
+            + ev["uses_pt"] * (kl(ev_ref["xl"], ev["xl"]) + kl(ev_ref["yl"], ev["yl"]))
+    return out
 
 
 def load(path, device="cpu", memory: bool | None = None) -> tuple[FullGameNet, dict]:

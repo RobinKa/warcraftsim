@@ -52,7 +52,7 @@ from .collect import claim_slot
 from .costs import order_costs
 from .trace import DEAD_FLAG, Production, material, trace_step, unit_values  # noqa: F401
 from .play import unit_rows
-from .model import FullGameNet, act, evaluate, load
+from .model import FullGameNet, act, anchor_kl, evaluate, load
 from ..rl.league import Member, pfsp_weight
 
 RUNS = Path(__file__).resolve().parents[2] / "runs"
@@ -1656,8 +1656,7 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
                     ev_ref = evaluate(ref, mb["ent"], mb["type"], mb["cur"], mb["mask"], mb["glob"], mb["n_own"],
                                       mb["order"], mb["tgt"], mb["bx"], mb["by"], mb["avail"],
                                       seq=seq if ref.memory else None)
-                lp, lp_ref = torch.log_softmax(ev["logits"].float(), -1), torch.log_softmax(ev_ref["logits"].float(), -1)
-                kl = (lp.exp() * (lp - lp_ref)).sum(-1)
+                kl = anchor_kl(ev, ev_ref, getattr(args, "ref_kl_mode", "reverse"))
                 ref_kl = (kl * own).sum() / n_units
                 # also while the value warms up: it shares the network's trunk, so training it alone
                 # moved the policy too (the KL to the clone doubled in the first five updates)
@@ -1735,8 +1734,7 @@ class GraphedUpdate:
                 with torch.no_grad():
                     ev_ref = evaluate(ref, s["ent"], s["type"], s["cur"], s["mask"], s["glob"], s["n_own"],
                                       s["order"], s["tgt"], s["bx"], s["by"], s["avail"], seq=seq if ref.memory else None)
-                lp, lp_ref = torch.log_softmax(ev["logits"].float(), -1), torch.log_softmax(ev_ref["logits"].float(), -1)
-                ref_kl = ((lp.exp() * (lp - lp_ref)).sum(-1) * own).sum() / n_units
+                ref_kl = (anchor_kl(ev, ev_ref, getattr(args, "ref_kl_mode", "reverse")) * own).sum() / n_units
                 loss = loss + args.ref_kl * ref_kl
             out["loss/ref_kl"] = ref_kl
             if getattr(args, "opd_coef", 0.0) > 0:
@@ -1979,6 +1977,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--vf-coef", type=float, default=0.5)
     ap.add_argument("--ent-coef", type=float, default=0.0)
     ap.add_argument("--ref-kl", type=float, default=0.05, help="the KL term towards the initial (cloned) policy")
+    ap.add_argument("--ref-kl-mode", default="reverse", choices=["reverse", "forward", "forward-all"],
+                    help="that term's direction and heads (model.anchor_kl): reverse KL over the orders (as before), "
+                         "forward KL over the orders (AlphaStar's direction: rare orders keep their weight), "
+                         "or forward over the orders and their targets")
     ap.add_argument("--value-warmup", type=int, default=-1, help="first updates: the value head only (default: 10, "
                                                                   "2 when BC trained the value head)")
     ap.add_argument("--max-grad-norm", type=float, default=1.0)
