@@ -19,6 +19,7 @@ from pathlib import Path
 import torch
 
 from . import features as fx
+from .model import arch_key
 
 _EXT = None
 
@@ -124,7 +125,7 @@ class NativeServer:
 
     def _snapshot(self, key: str):  # (from the loop's thread: a past snapshot it has not seen yet)
         src = self.nets.get(key)
-        arch = json.dumps(src.config, sort_keys=True, default=str)
+        arch = arch_key(src.config)
         flat = torch.cat([p.data.reshape(-1) for p in src.parameters()])
         buffers = list(src.buffers())
         torch.cuda.current_stream().synchronize()  # (made before the loop's streams copy from them)

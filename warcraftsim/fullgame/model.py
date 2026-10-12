@@ -14,6 +14,7 @@ plus a projection of the state (zero at first: a memory network starts as one wi
 
 from __future__ import annotations
 
+import json
 import math
 
 import torch
@@ -33,7 +34,8 @@ class FullGameNet(nn.Module):
         # the target heads' logits (unit, x, y) divided by it, acting and training alike: < 1 samples a unit's
         # target closer to its most likely one (AlphaStar samples at 0.8; a clone of a deterministic script
         # spreads its targets from uncertainty, and a group's points scattered)
-        self.target_temperature = float(target_temperature)
+        self.register_buffer("target_temp", torch.tensor(float(target_temperature)))  # (a buffer: CUDA graphs read
+        # it from memory, and a past snapshot copied into an inference slot brings its own)
         self.memory = memory
         if memory:  # the minGRU core: its gate and candidate from the token, the state into the context
             self.mem_in = nn.Linear(d, 2 * d)
@@ -123,14 +125,14 @@ class FullGameNet(nn.Module):
         O = order.shape[1]
         own = u[:, :O]
         z = self.cond(torch.cat([own + self.order_emb(order.long()), g.unsqueeze(1).expand_as(own)], -1))
-        t = self.target_temperature
+        t = self.target_temp
         ptr = torch.einsum("nod,ned->noe", self.query(z), self.key(u)) / (math.sqrt(self.d) * t)
         ptr = ptr.masked_fill(~mask.unsqueeze(1), NEG)
         return ptr, self.point_x(z) / t, z
 
     def y_logits(self, z, x):
         """The point's y logits [N, O, BINS] given its x bins [N, O]."""
-        return self.point_y(z + self.x_emb(x.clamp(min=0).long())) / self.target_temperature
+        return self.point_y(z + self.x_emb(x.clamp(min=0).long())) / self.target_temp
 
     def value(self, g):
         return self.value_head(g).squeeze(-1)
@@ -139,6 +141,12 @@ class FullGameNet(nn.Module):
         """Which targets each order uses: (pointer [N, O], point [N, O]) booleans."""
         kind = self.order_kind[order.long()]
         return kind == fx.UNIT, (kind == fx.POINT) | (kind == fx.TREE)
+
+
+def arch_key(config: dict) -> str:
+    """Networks that can share an inference slot (their weights copied in): the same shapes; the target
+    temperature is a buffer and comes with the weights."""
+    return json.dumps({k: v for k, v in config.items() if k != "target_temperature"}, sort_keys=True, default=str)
 
 
 def _logp(logits, x):
@@ -242,7 +250,7 @@ def load(path, device="cpu", memory: bool | None = None) -> tuple[FullGameNet, d
     if w is not None and w.shape[1] < fx.F:  # features added since (at the end): their weights start at 0
         state = {**state, "ent.weight": torch.cat([w, w.new_zeros(w.shape[0], fx.F - w.shape[1])], 1)}
     missing, unexpected = net.load_state_dict(state, strict=False)
-    if unexpected or any(not (k.startswith(("value_head.", "mem_")) or k == "order_kind") for k in missing):
+    if unexpected or any(not (k.startswith(("value_head.", "mem_")) or k in ("order_kind", "target_temp")) for k in missing):
         raise RuntimeError(f"{path}: missing {missing}, unexpected {unexpected}")
     if "order_kind" in missing and "vocab" in ck:  # fits from before it: from the vocabulary
         net.order_kind.copy_(torch.as_tensor([0] + [k[1] for k in ck["vocab"]["orders"]], device=net.order_kind.device))

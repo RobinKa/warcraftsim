@@ -52,7 +52,7 @@ from .collect import claim_slot
 from .costs import order_costs
 from .trace import DEAD_FLAG, Production, material, trace_step, unit_values  # noqa: F401
 from .play import unit_rows
-from .model import FullGameNet, act, anchor_kl, evaluate, load
+from .model import FullGameNet, act, anchor_kl, arch_key, evaluate, load
 from ..rl.league import Member, pfsp_weight
 
 RUNS = Path(__file__).resolve().parents[2] / "runs"
@@ -530,7 +530,7 @@ class PastNet:
     def get(self, key: str, src: FullGameNet, slot: int = 0) -> FullGameNet:
         if src not in self.flats:
             self.flats[src] = (torch.cat([p.data.reshape(-1) for p in src.parameters()]), list(src.buffers()),
-                               json.dumps(src.config, sort_keys=True, default=str))
+                               arch_key(src.config))
         flat, buffers, arch = self.flats[src]
         self.holding[slot] = key
         host = self.hosts.get((arch, slot))
@@ -605,7 +605,7 @@ def warm_inference(nets: Nets, infer: Inference, past: Inference, swap: PastNet,
     archs: dict[str, FullGameNet] = {}
     for key in [None, *keys]:
         src = net if key is None else nets.get(key)
-        archs.setdefault(json.dumps(src.config, sort_keys=True, default=str), src)
+        archs.setdefault(arch_key(src.config), src)
     for src in archs.values():
         for k in range(swap.slots):
             slot_net = swap.get(f"warm:{id(src)}", src, k)
@@ -2136,11 +2136,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.start_weights and not args.resume:  # a new run from another run's checkpoint (--init stays the anchor)
         start, _ = load(args.start_weights, device, None if args.memory < 0 else bool(args.memory))
         net.load_state_dict(start.state_dict())
-        net.target_temperature = start.target_temperature
-        net.config["target_temperature"] = start.target_temperature
+        net.config["target_temperature"] = start.config.get("target_temperature", 1.0)
         del start
     if args.target_temperature is not None:  # (the policy's, saved with its checkpoints; the anchor keeps its own)
-        net.target_temperature = args.target_temperature
+        net.target_temp.fill_(args.target_temperature)
         net.config["target_temperature"] = args.target_temperature
     graphed = bool(args.cuda_graphs) and device.type == "cuda" and bool(net.memory)
     opt = torch.optim.Adam(net.parameters(), lr=args.lr, eps=1e-5, capturable=graphed)

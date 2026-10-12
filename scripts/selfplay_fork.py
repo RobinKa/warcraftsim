@@ -36,6 +36,7 @@ def main() -> None:
     words = launch.get("argv") or launch["command"].split()[3:]
     stop(args.parent)
     weights = Path(args.weights) if args.weights else max((parent / "checkpoints").glob("[0-9]*.pt"))
+    weights = (weights if weights.is_absolute() else ROOT / weights).resolve()
     flags: list[list[str]] = []
     for w in words:  # [flag, values...] in order
         if w.startswith("--"):
