@@ -88,7 +88,13 @@ F0 = 3 + 2 + 4 + len(FLAG_BITS) + 3 + 2 + 1 + 2 + 1  # 29: ... production (queue
 A_HPD = F0
 POS_FREQS = (1, 2, 4, 8, 16)  # x and y in [-1, 1]: wavelengths from the map's width down to ~380 world units
 A_POS = A_HPD + 1
-F = A_POS + 4 * len(POS_FREQS)  # 50
+# then (features v3): an own unit's last order the player gave it (View.note_orders): its target relative to
+# the unit (a point, or the target unit where it is now; / 1536, mirrored), whether that was a point or a unit,
+# and how long ago (steps / 40, at most 1; 1 when it never got one). Where a unit is already sent: without it a
+# group's units could not see that they head for one point (their point orders scattered, fgself-13)
+A_LAST = A_POS + 4 * len(POS_FREQS)
+LAST_SCALE, LAST_AGE = 1536.0, 40.0
+F = A_LAST + 5  # 55
 TYPE_CODE = 0x1000000  # order ids at or above this are unit / building / upgrade codes
 # events: a building's production (a = the building)
 TRAIN_START, TRAIN_FINISH, TRAIN_CANCEL = 5, 6, 7
@@ -185,7 +191,9 @@ def describe_spaces(vocab: dict, order_names: dict[int, str] | None = None, agen
            + ["hero level / 10", "resource / 12500 (mines)", "skill points / 3", "sin facing", "cos facing (mirrored)",
               "has an order", "queued production / 5", "producing", "a worker on lumber",
               "hit points' change since the last step / max hp"]
-           + [f"{f}({k}π{c})" for k in POS_FREQS for c in ("x", "y") for f in ("sin", "cos")])
+           + [f"{f}({k}π{c})" for k in POS_FREQS for c in ("x", "y") for f in ("sin", "cos")]
+           + ["last order's target: dx / 1536 (mirrored)", "last order's target: dy / 1536", "last order: a point",
+              "last order: a unit", "last order: steps ago / 40"])
     glob = (["gold / 1000", "lumber / 1000", "food used / 100", "food cap / 100", "upkeep / 2", "time (steps / 1800)"]
             + [f"own race: {r}" for r in RACES] + [f"enemy race: {r}" for r in RACES]
             + [f"upgrade {rawcode(u)} (level / 3)" for u in vocab["upgrades"]])
@@ -359,8 +367,10 @@ class Encoder:
                 out[k][t] = y[k]
             if po is None:
                 view.record_orders((int(r[1]), int(r[2]), int(r[3])) for r, ok in zip(rows_t, paid) if ok)
+                view.note_orders((tuple(r[1:7]) for r, ok in zip(rows_t.tolist(), paid) if ok), t, trees)
             else:  # what the policy did (the game accepted it)
                 view.record_orders((int(r[1]), int(r[2]), int(r[3])) for r in po[pos[t]:pos[t + 1]])
+                view.note_orders((tuple(r[1:7]) for r in po[pos[t]:pos[t + 1]].tolist()), t, trees)
             view.track_harvest(rows_t if po is None else po[pos[t]:pos[t + 1]], st, trees)
         return out
 
@@ -444,6 +454,7 @@ class View:
         self.busy: set[int] = set()  # buildings making something
         self.assign: dict[int, str] = {}  # own worker -> "gold" / "lumber": what its last orders sent it to
         self.hp_last: dict[int, int] = {}  # unit -> its hit points at the last step it was in view
+        self.last_order: dict[int, tuple] = {}  # own unit -> (kind 0 none/1 point/2 unit, x, y, target, step)
 
     def track_harvest(self, orders, st: dict, trees) -> None:
         """What each own worker harvests, from the step's recorded orders (step, unit, order, kind,
@@ -461,6 +472,17 @@ class View:
                 self.assign.pop(unit, None)
             else:
                 self.assign[unit] = res
+
+    def note_orders(self, orders, t: int, trees: dict | None = None) -> None:
+        """The player's accepted orders of step t, (unit, order id, recorded kind 0 immediate / 1 point /
+        2 unit, x, y, target id): each unit's last one (the A_LAST features from step t + 1)."""
+        for unit, order, kind, x, y, target in orders:
+            if int(order) in DROPPED_ORDERS:
+                continue
+            if kind == 2 and trees and int(target) in trees:  # (a tree: the point it stands on)
+                kind, (x, y) = 1, trees[int(target)]
+            self.last_order[int(unit)] = ((1, float(x), float(y), 0, t) if kind == 1 else
+                                          (2, 0.0, 0.0, int(target), t) if kind == 2 else (0, 0.0, 0.0, 0, t))
 
     def record_orders(self, orders) -> None:
         """The player's orders of the last step (unit, order id, kind): train / research orders
@@ -488,6 +510,21 @@ class View:
         last = np.array([self.hp_last.get(i, h) for i, h in zip(ids, hp.tolist())], np.float32)
         f[:, A_HPD] = np.clip((hp - last) / np.maximum(sel[:, C_MAXHP], 1), -1.0, 1.0)  # (0: not in view the last step)
         self.hp_last = dict(zip(ids, hp.tolist()))
+        f[:n_own, A_LAST + 4] = 1.0  # (never ordered: long ago)
+        index = {u: k for k, u in enumerate(ids)}
+        for k in range(n_own):
+            lo = self.last_order.get(ids[k])
+            if lo is None:
+                continue
+            kind, x, y, target, t0 = lo
+            f[k, A_LAST + 4] = min(1.0, (t - t0) / LAST_AGE)
+            if kind == 2 and target in index:  # (a target out of sight: its kind only)
+                x, y = float(sel[index[target], C_X]), float(sel[index[target], C_Y])
+            if kind == 1 or (kind == 2 and target in index):
+                f[k, A_LAST] = np.clip(self.sign * (x - sel[k, C_X]) / LAST_SCALE, -2.0, 2.0)
+                f[k, A_LAST + 1] = np.clip((y - sel[k, C_Y]) / LAST_SCALE, -2.0, 2.0)
+            if kind:
+                f[k, A_LAST + 1 + kind] = 1.0
         for r in events:  # research done (by one of the player's buildings)
             if r[1] == RESEARCH_FINISH and int(r[2]) in self.own_buildings and int(r[3]) in enc.upgrade_index:
                 self.upgrades[enc.upgrade_index[int(r[3])]] = r[4] / 3.0
