@@ -437,11 +437,11 @@ def test_view_tracks_workers_on_lumber():
     rows[0, fx.C_ORDER], rows[0, fx.C_FLAGS], rows[0, fx.C_VIS] = fx.HARVEST, 4, 3
     me = np.array([0, 0, 50, 10, 1, 10, 0, 0, 0, 0, 0])
     st = view.step(rows, me, np.zeros((0, 5), np.int64), 0)
-    assert st["ent"][0, fx.F - 1] == 0
+    assert st["ent"][0, fx.F0 - 1] == 0
     view.track_harvest(np.array([[0, B, fx.SMART, 2, 0, 0, 777]]), st, {777: (100, 100)})  # smart on tree 777
     assert view.assign[B] == "lumber"
     st = view.step(rows, me, np.zeros((0, 5), np.int64), 1)
-    assert st["ent"][0, fx.F - 1] == 1  # the lumber feature
+    assert st["ent"][0, fx.F0 - 1] == 1  # the lumber feature
     view.track_harvest(np.array([[1, B, 851986, 1, 0, 0, 0]]), st, {777: (100, 100)})  # a move: no longer harvesting
     assert B not in view.assign
 
