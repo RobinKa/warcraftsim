@@ -27,10 +27,13 @@ NEG = -1e9
 
 class FullGameNet(nn.Module):
     def __init__(self, n_types: int, n_cur: int, n_orders: int, G: int, d: int = 192, heads: int = 4,
-                 layers: int = 3, dropout: float = 0.0, memory: bool = False, target_temperature: float = 1.0):
+                 layers: int = 3, dropout: float = 0.0, memory: bool = False, target_temperature: float = 1.0,
+                 priv: int = 0):
         super().__init__()
         self.config = dict(n_types=n_types, n_cur=n_cur, n_orders=n_orders, G=G, d=d, heads=heads, layers=layers,
-                           dropout=dropout, memory=memory, target_temperature=target_temperature)
+                           dropout=dropout, memory=memory, target_temperature=target_temperature, priv=priv)
+        # the global vector's last `priv` numbers: the whole game (features.View.priv), for the value alone
+        self.priv = int(priv)
         # the target heads' logits (unit, x, y) divided by it, acting and training alike: < 1 samples a unit's
         # target closer to its most likely one (AlphaStar samples at 0.8; a clone of a deterministic script
         # spreads its targets from uncertainty, and a group's points scattered)
@@ -46,7 +49,7 @@ class FullGameNet(nn.Module):
         self.ent = nn.Linear(fx.F, d)
         self.type_emb = nn.Embedding(n_types, d)
         self.cur_emb = nn.Embedding(n_cur, d)
-        self.glob = nn.Sequential(nn.Linear(G, d), nn.ReLU(), nn.Linear(d, d))
+        self.glob = nn.Sequential(nn.Linear(G - self.priv, d), nn.ReLU(), nn.Linear(d, d))
         layer = nn.TransformerEncoderLayer(d, heads, 4 * d, dropout=dropout, batch_first=True, norm_first=True)
         self.transformer = nn.TransformerEncoder(layer, layers, norm=nn.LayerNorm(d), enable_nested_tensor=False)
         self.order = nn.Sequential(nn.Linear(2 * d, d), nn.ReLU(), nn.Linear(d, n_orders))
@@ -63,13 +66,17 @@ class FullGameNet(nn.Module):
         # the value of the state for reinforcement learning (fullgame/selfplay.py; behavior cloning
         # leaves it untrained)
         self.value_head = nn.Sequential(nn.Linear(d, d), nn.ReLU(), nn.Linear(d, 1))
+        if self.priv:  # (added to the value head's input; zero at first: the value as before)
+            self.priv_proj = nn.Sequential(nn.Linear(self.priv, d), nn.ReLU(), nn.Linear(d, d))
+            nn.init.zeros_(self.priv_proj[2].weight)
+            nn.init.zeros_(self.priv_proj[2].bias)
         # each order class's kind (features.IMMEDIATE, POINT, ...: which target it takes)
         self.register_buffer("order_kind", torch.zeros(n_orders, dtype=torch.long))
 
     def encode(self, ent, typ, cur, mask, glob):
         """-> global token [N, d], entity tokens [N, E, d]."""
         x = self.ent(ent) + self.type_emb(typ) + self.cur_emb(cur)
-        tok = torch.cat([self.glob(glob).unsqueeze(1), x], 1)
+        tok = torch.cat([self.glob(glob[..., :glob.shape[-1] - self.priv]).unsqueeze(1), x], 1)
         pad = torch.cat([torch.zeros_like(mask[:, :1]), ~mask], 1)
         out = self.transformer(tok, src_key_padding_mask=pad)
         return out[:, 0], out[:, 1:]
@@ -134,7 +141,9 @@ class FullGameNet(nn.Module):
         """The point's y logits [N, O, BINS] given its x bins [N, O]."""
         return self.point_y(z + self.x_emb(x.clamp(min=0).long())) / self.target_temp
 
-    def value(self, g):
+    def value(self, g, glob=None):
+        if self.priv and glob is not None:  # (the privileged block: what the player does not see)
+            g = g + self.priv_proj(glob[..., -self.priv:].to(g.dtype))
         return self.value_head(g).squeeze(-1)
 
     def uses(self, order):
@@ -197,7 +206,7 @@ def act(net: FullGameNet, ent, typ, cur, mask, glob, n_own, avail=None, h=None, 
     own = torch.arange(O, device=ent.device)[None] < n_own[:, None]
     logp = _logp(logits, order) + uses_ptr * _logp(ptr, tgt) + uses_pt * (_logp(xl, bx) + _logp(yl, by))
     ent = (_entropy(logits) * own).sum(-1) / own.sum(-1).clamp(min=1)  # the order's, mean over own units
-    out = {"order": order, "tgt": tgt, "bx": bx, "by": by, "logp": logp * own, "value": net.value(g), "entropy": ent}
+    out = {"order": order, "tgt": tgt, "bx": bx, "by": by, "logp": logp * own, "value": net.value(g, glob), "entropy": ent}
     if net.memory:
         out["h"] = h
     return out
@@ -216,7 +225,7 @@ def evaluate(net: FullGameNet, ent, typ, cur, mask, glob, n_own, order, tgt, bx,
     yl = net.y_logits(z, bx)
     uses_ptr, uses_pt = net.uses(order)
     logp = _logp(logits, order) + uses_ptr * _logp(ptr, tgt) + uses_pt * (_logp(xl, bx) + _logp(yl, by))
-    return {"logp": logp, "entropy": _entropy(logits), "logits": logits, "value": net.value(g), "g": g, "u": u,
+    return {"logp": logp, "entropy": _entropy(logits), "logits": logits, "value": net.value(g, glob), "g": g, "u": u,
             "ptr": ptr, "xl": xl, "yl": yl, "uses_ptr": uses_ptr, "uses_pt": uses_pt}
 
 
@@ -244,13 +253,18 @@ def load(path, device="cpu", memory: bool | None = None) -> tuple[FullGameNet, d
     config = dict(ck["config"])
     if memory is not None:
         config["memory"] = memory
+    if "vocab" in ck:  # global features added since (the privileged block at the end): the value's, zero at first
+        G_now = fx.Encoder(ck["vocab"]).G
+        if config["G"] < G_now and not config.get("priv"):
+            config["priv"], config["G"] = G_now - config["G"], G_now
     net = FullGameNet(**config).to(device)
     state = ck["model"] if net.memory else {k: v for k, v in ck["model"].items() if not k.startswith("mem_")}
     w = state.get("ent.weight")
     if w is not None and w.shape[1] < fx.F:  # features added since (at the end): their weights start at 0
         state = {**state, "ent.weight": torch.cat([w, w.new_zeros(w.shape[0], fx.F - w.shape[1])], 1)}
     missing, unexpected = net.load_state_dict(state, strict=False)
-    if unexpected or any(not (k.startswith(("value_head.", "mem_")) or k in ("order_kind", "target_temp")) for k in missing):
+    if unexpected or any(not (k.startswith(("value_head.", "mem_", "priv_proj.")) or k in ("order_kind", "target_temp"))
+                         for k in missing):
         raise RuntimeError(f"{path}: missing {missing}, unexpected {unexpected}")
     if "order_kind" in missing and "vocab" in ck:  # fits from before it: from the vocabulary
         net.order_kind.copy_(torch.as_tensor([0] + [k[1] for k in ck["vocab"]["orders"]], device=net.order_kind.device))

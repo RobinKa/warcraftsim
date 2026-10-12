@@ -98,6 +98,12 @@ F = A_LAST + 5  # 55
 # the unit features in use (selfplay --features): channels from here on are zeros, so their weights get no
 # gradient and the network is as one without them (29: as before 2026-10-12, 50: without the last order)
 ACTIVE_F = F
+# the global vector's privileged block (the value head alone reads it, model.FullGameNet.value; AlphaStar's
+# value with the opponent's information was its largest RL ablation: 82% against 22%): the opponent's gold,
+# lumber, food used and cap, upkeep; then for each side (own, enemy), all its units seen or not: workers,
+# army units, buildings, heroes, the heroes' levels, the army's hit points and maximum, its centre (x mirrored, y)
+PRIV = 5 + 2 * 9
+HERO = 1
 TYPE_CODE = 0x1000000  # order ids at or above this are unit / building / upgrade codes
 # events: a building's production (a = the building)
 TRAIN_START, TRAIN_FINISH, TRAIN_CANCEL = 5, 6, 7
@@ -199,7 +205,12 @@ def describe_spaces(vocab: dict, order_names: dict[int, str] | None = None, agen
               "last order: a unit", "last order: steps ago / 40"])
     glob = (["gold / 1000", "lumber / 1000", "food used / 100", "food cap / 100", "upkeep / 2", "time (steps / 1800)"]
             + [f"own race: {r}" for r in RACES] + [f"enemy race: {r}" for r in RACES]
-            + [f"upgrade {rawcode(u)} (level / 3)" for u in vocab["upgrades"]])
+            + [f"upgrade {rawcode(u)} (level / 3)" for u in vocab["upgrades"]]
+            + [f"privileged (value only): opponent {k}" for k in ("gold / 1000", "lumber / 1000", "food used / 100",
+                                                                   "food cap / 100", "upkeep / 2")]
+            + [f"privileged (value only): {side} {k}" for side in ("own", "enemy")
+               for k in ("workers / 20", "army units / 30", "buildings / 30", "heroes / 3", "hero levels / 20",
+                         "army hp / 3000", "army max hp / 3000", "army centre x", "army centre y")])
     orders = ["none"] + [order_label(int(o), int(k), names) for o, k in vocab["orders"]]
     return {"observation": {"size": f"{enc.G} + up to {MAX_ENT} × {F}", "blocks": [
                 {"name": "global token", "rows": 1, "features": glob},
@@ -265,7 +276,8 @@ class Encoder:
         self.n_types, self.n_cur = len(self.type_index) + 1, len(self.cur_index) + 1
         self.n_orders = len(self.order_index) + 1
         self.order_kind = np.array([IMMEDIATE] + [k[1] for k in vocab["orders"]], np.int64)
-        self.G = 6 + 2 * len(RACES) + len(self.upgrade_index)
+        self.G0 = 6 + 2 * len(RACES) + len(self.upgrade_index)  # what the player knows
+        self.G = self.G0 + PRIV  # and what only the value reads (privileged: the whole game, see View.priv)
         # the lookups as sorted arrays (vectorized; per-entity dict lookups were most of a step's cost)
         self._type_keys, self._type_vals = _sorted_map(self.type_index)
         self._cur_keys, self._cur_vals = _sorted_map(self.cur_index)
@@ -355,7 +367,9 @@ class Encoder:
         for t in range(T):
             prow = pl[ps[t]:ps[t + 1]]
             me = prow[prow[:, 1] == player]
-            st = view.step(u[us[t]:us[t + 1]], me[0] if len(me) else None, ev[es[t]:es[t + 1]], t)
+            opp = prow[prow[:, 1] == 1 - player]
+            st = view.step(u[us[t]:us[t + 1]], me[0] if len(me) else None, ev[es[t]:es[t + 1]], t,
+                           opp[0] if len(opp) else None)
             n = st["n"]
             out["ent"][t, :n], out["type"][t, :n], out["cur"][t, :n] = st["ent"], st["type"], st["cur"]
             out["mask"][t, :n] = True
@@ -495,7 +509,28 @@ class View:
             if kind == 0 and order >= TYPE_CODE and unit in self.own_buildings:
                 self.queued[unit] = self.queued.get(unit, 0) + 1
 
-    def step(self, rows: np.ndarray, me: np.ndarray | None, events: np.ndarray, t: int) -> dict:
+    def priv(self, rows: np.ndarray, opp: np.ndarray | None) -> np.ndarray:
+        """The privileged block (PRIV): the opponent's player row (PLAYER_COLS) and every living unit."""
+        out = np.zeros(PRIV, np.float32)
+        if opp is not None:
+            _, _, gold, lumber, fu, fc, upkeep = opp[:7]
+            out[:5] = gold / 1000.0, lumber / 1000.0, fu / 100.0, fc / 100.0, upkeep / 2.0
+        alive = rows[:, C_FLAGS] & DEAD == 0
+        for i, who in enumerate((self.player, 1 - self.player)):
+            r = rows[alive & (rows[:, C_OWNER] == who)]
+            fl = r[:, C_FLAGS]
+            worker, struct, hero = fl & WORKER > 0, fl & STRUCTURE > 0, fl & HERO > 0
+            army = ~worker & ~struct
+            a = 5 + 9 * i
+            out[a:a + 7] = (worker.sum() / 20.0, army.sum() / 30.0, struct.sum() / 30.0, hero.sum() / 3.0,
+                            r[hero, C_HLEVEL].sum() / 20.0, r[army, C_HP].sum() / 3000.0, r[army, C_MAXHP].sum() / 3000.0)
+            if army.any():
+                out[a + 7] = self.sign * r[army, C_X].mean() / MAP_EXTENT
+                out[a + 8] = r[army, C_Y].mean() / MAP_EXTENT
+        return out
+
+    def step(self, rows: np.ndarray, me: np.ndarray | None, events: np.ndarray, t: int,
+             opp: np.ndarray | None = None) -> dict:
         """rows: this step's units (UNIT_COLS), me: the player's row (PLAYER_COLS) or None, events:
         this step's (step, kind, a, b, c)."""
         enc, player = self.enc, self.player
@@ -538,7 +573,8 @@ class View:
             g[:6] = gold / 1000.0, lumber / 1000.0, fu / 100.0, fc / 100.0, upkeep / 2.0, t / 1800.0
         g[6 + self.races[player]] = 1
         g[6 + len(RACES) + self.races[1 - player]] = 1
-        g[6 + 2 * len(RACES):] = self.upgrades
+        g[6 + 2 * len(RACES):enc.G0] = self.upgrades
+        g[enc.G0:] = self.priv(rows, opp)
         avail = None
         if enc.costs is not None:  # what the player can pay for now (orders beyond it are masked)
             c = enc.costs
