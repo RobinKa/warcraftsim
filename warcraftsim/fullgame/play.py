@@ -119,7 +119,10 @@ class BCAgent:
         me = (np.asarray([t, self.player, p.gold, p.lumber, p.food_used, p.food_cap, p.upkeep, p.gold_gathered,
                           p.lumber_gathered, p.structures, int(p.result)]) if p is not None else None)
         events = np.asarray([(t, int(e.kind), e.a, e.b, e.c) for e in obs.events], np.int64).reshape(-1, 5)
-        st = self.view.step(rows, me, events, t)
+        q = obs.players.get(1 - self.player)  # (the privileged block: the value only, features.View.priv)
+        opp = (np.asarray([t, 1 - self.player, q.gold, q.lumber, q.food_used, q.food_cap, q.upkeep]) if q is not None
+               else None)
+        st = self.view.step(rows, me, events, t, opp)
         sel = st["sel"][:st["n_own"]]  # the workers busy with a building order, and since when
         busy = {int(u) for u, f, o in zip(sel[:, fx.C_ID], sel[:, fx.C_FLAGS], sel[:, fx.C_ORDER])
                 if fx.building(int(f), int(o)) or (self.repair_builds and int(o) == REPAIR and int(f) & fx.WORKER)}

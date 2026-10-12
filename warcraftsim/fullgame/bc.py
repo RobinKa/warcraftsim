@@ -299,7 +299,7 @@ def losses(net: FullGameNet, b: dict, device, states: torch.Tensor | None = None
         loss = (_masked_ce(logits, y_order, w) + _masked_ce(ptr, y_ptr, w)
                 + 0.5 * (_masked_ce(xl, y_x, w) + _masked_ce(yl, y_y, w)))
         if value_coef:
-            value, ret = net.value(g).float(), b["ret"].float()
+            value, ret = net.value(g, b["glob"].float()).float(), b["ret"].float()
             if "valid" in b:
                 v = b["valid"].float()
                 loss = loss + value_coef * 0.5 * (((value - ret) ** 2) * v).sum() / v.sum().clamp(min=1)
@@ -316,7 +316,7 @@ def losses(net: FullGameNet, b: dict, device, states: torch.Tensor | None = None
     l_ptr = F_.cross_entropy(ptr[has_ptr], y_ptr[has_ptr]) if has_ptr.any() else logits.sum() * 0
     l_pt = (F_.cross_entropy(xl[has_pt], y_x[has_pt]) + F_.cross_entropy(yl[has_pt], y_y[has_pt])
             if has_pt.any() else logits.sum() * 0)
-    value, ret = net.value(g).float(), b["ret"].float()
+    value, ret = net.value(g, b["glob"].float()).float(), b["ret"].float()
     if "valid" in b:  # (padded steps: no value target)
         value, ret = value[b["valid"]], ret[b["valid"]]
     l_value = 0.5 * ((value - ret) ** 2).mean()
@@ -419,7 +419,7 @@ def main(argv: list[str] | None = None) -> int:
         net, _ = load(args.init, device)
         args.d, args.memory = net.config["d"], net.memory
     else:
-        net = FullGameNet(enc.n_types, enc.n_cur, enc.n_orders, enc.G, d=args.d, layers=args.layers,
+        net = FullGameNet(enc.n_types, enc.n_cur, enc.n_orders, enc.G, d=args.d, layers=args.layers, priv=fx.PRIV,
                           dropout=args.dropout, memory=args.memory).to(device)
         net.allowed[0] = True  # unknown unit types: any order
         net.order_kind.copy_(torch.as_tensor(enc.order_kind, device=device))
