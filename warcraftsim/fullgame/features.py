@@ -95,6 +95,9 @@ A_POS = A_HPD + 1
 A_LAST = A_POS + 4 * len(POS_FREQS)
 LAST_SCALE, LAST_AGE = 1536.0, 40.0
 F = A_LAST + 5  # 55
+# the unit features in use (selfplay --features): channels from here on are zeros, so their weights get no
+# gradient and the network is as one without them (29: as before 2026-10-12, 50: without the last order)
+ACTIVE_F = F
 TYPE_CODE = 0x1000000  # order ids at or above this are unit / building / upgrade codes
 # events: a building's production (a = the building)
 TRAIN_START, TRAIN_FINISH, TRAIN_CANCEL = 5, 6, 7
@@ -541,5 +544,7 @@ class View:
             gold, lumber, fu, fc = (int(me[2]), int(me[3]), int(me[4]), int(me[5])) if me is not None else (0, 0, 0, 0)
             avail = (c[:, 0] <= gold) & (c[:, 1] <= lumber) & ((c[:, 2] == 0) | (fu + c[:, 2] <= fc))
             avail[0] = True
+        if ACTIVE_F < F:
+            f[:, ACTIVE_F:] = 0.0
         return {"n": len(sel), "sel": sel, "n_own": n_own, "ent": f, "type": types, "cur": cur, "glob": g,
                 "index": {int(i): k for k, i in enumerate(sel[:, C_ID])}, "avail": avail}

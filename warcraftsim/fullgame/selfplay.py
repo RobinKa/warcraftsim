@@ -1242,6 +1242,7 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
     from ..runtime import reaper
     signal.signal(signal.SIGTERM, _exit)
     _pin(cfg, "games")
+    fx.ACTIVE_F = cfg.get("features", fx.F)  # (a spawned process: the learner's setting, --features)
     out_q.cancel_join_thread()  # exiting must not wait to flush trajectories nobody reads any more
     torch.set_num_threads(1)
     try:
@@ -1901,6 +1902,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="each actor's extra games that only evaluate: the real game against the built-in AI (normal "
                          "or insane, races at random), never advised, nothing trained on; episodes have eval: true "
                          "(the real-game yardstick sooner and steadier, the training's mix unchanged)")
+    ap.add_argument("--features", type=int, default=fx.F, help="the unit features in use (features.ACTIVE_F): the "
+                                                                "rest are zeros (29: as before 2026-10-12, 50: without "
+                                                                "the last order, 55: all)")
     ap.add_argument("--eval-games", type=int, default=0, help="evaluation games in all instead (as --eval-games-per-"
                                                             "actor; 4: ~600 a hour, each actor's slot cost ~2.5%% of "
                                                             "the training's throughput)")
@@ -2081,6 +2085,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--note", default="", help="the run's notes (notes.md); with --resume, why it was restarted (the "
                                                 "restart's marker on the dashboard's charts)")
     args = ap.parse_args(argv)
+    fx.ACTIVE_F = args.features  # (the cloning loss's data workers fork from here: they inherit it)
     if args.eval_games:  # (in all: each actor's pipes and rows for the most any actor gets)
         args.eval_games_per_actor = -(-args.eval_games // args.actors)
     args.device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -2225,6 +2230,7 @@ def main(argv: list[str] | None = None) -> int:
            "tie_break": args.tie_break, "tie_value": args.tie_value, "compile": bool(args.compile), "native_obs": bool(args.native_obs),
            "real_share": args.real_share, "infer_batch": 64, "infer_streams": args.infer_streams, "infer_pipeline": args.infer_pipeline,
            "infer_fuse": args.infer_fuse, "game_cuts": args.game_cuts, "shared_noise": args.shared_noise,
+           "features": args.features,
            "infer_entities": [int(x) for x in args.infer_entities.split(",")],
            "infer_past_entities": [int(x) for x in args.infer_past_entities.split(",")],
            "infer_past_slots": args.infer_past_slots, "game_nice": args.game_nice, "pairs": args.pairs,
