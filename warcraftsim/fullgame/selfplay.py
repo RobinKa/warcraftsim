@@ -2097,6 +2097,7 @@ def main(argv: list[str] | None = None) -> int:
                                                 "restart's marker on the dashboard's charts)")
     args = ap.parse_args(argv)
     fx.ACTIVE_F = args.features  # (the cloning loss's data workers fork from here: they inherit it)
+    os.environ["WARCRAFTSIM_FEATURES"] = str(args.features)  # (and processes started anew: actors, videos)
     if args.eval_games:  # (in all: each actor's pipes and rows for the most any actor gets)
         args.eval_games_per_actor = -(-args.eval_games // args.actors)
     args.device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")

@@ -17,6 +17,7 @@ For player p at step t:
 from __future__ import annotations
 
 import json
+import os
 import math
 from collections import Counter
 from pathlib import Path
@@ -97,7 +98,7 @@ LAST_SCALE, LAST_AGE = 1536.0, 40.0
 F = A_LAST + 5  # 55
 # the unit features in use (selfplay --features): channels from here on are zeros, so their weights get no
 # gradient and the network is as one without them (29: as before 2026-10-12, 50: without the last order)
-ACTIVE_F = F
+ACTIVE_F = int(os.environ.get("WARCRAFTSIM_FEATURES", F))  # (also from the environment: processes started anew)
 # the global vector's privileged block (the value head alone reads it, model.FullGameNet.value; AlphaStar's
 # value with the opponent's information was its largest RL ablation: 82% against 22%): the opponent's gold,
 # lumber, food used and cap, upkeep; then for each side (own, enemy), all its units seen or not: workers,
@@ -549,9 +550,10 @@ class View:
         last = np.array([self.hp_last.get(i, h) for i, h in zip(ids, hp.tolist())], np.float32)
         f[:, A_HPD] = np.clip((hp - last) / np.maximum(sel[:, C_MAXHP], 1), -1.0, 1.0)  # (0: not in view the last step)
         self.hp_last = dict(zip(ids, hp.tolist()))
-        f[:n_own, A_LAST + 4] = 1.0  # (never ordered: long ago)
-        index = {u: k for k, u in enumerate(ids)}
-        for k in range(n_own):
+        index = {u: k for k, u in enumerate(ids)} if self.active_f > A_LAST else {}
+        if self.active_f > A_LAST:  # (a per-unit loop: skipped when the run does not use them, --features)
+            f[:n_own, A_LAST + 4] = 1.0  # (never ordered: long ago)
+        for k in range(n_own if self.active_f > A_LAST else 0):
             lo = self.last_order.get(ids[k])
             if lo is None:
                 continue
