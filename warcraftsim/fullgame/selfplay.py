@@ -919,6 +919,7 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
     vocab = json.loads(Path(cfg["vocab"]).read_text())
     spec_path = Path(cfg["run_dir"]) / "league_spec.json"
     name = f"fgsp{cfg['slot']}_{wid}_{k}"
+    evaluating = k >= cfg["games_per_actor"]  # an evaluation slot (--eval-games-per-actor)
     while not stop.is_set() and os.getppid() == cfg["learner_pid"]:
         try:
             spec = json.loads(spec_path.read_text())
@@ -930,6 +931,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
             races[1] = races[0]
         side = rng.randrange(2)  # the learner's
         ai = _choose(rng, spec["launch"])  # {"kind": "agents"} or {"kind": "ai", "difficulty"[, "delay"]}
+        if evaluating:  # (--eval-games-per-actor: the yardstick only)
+            ai = {"kind": "ai", "difficulty": rng.choice(["normal", "insane"]), "real": True}
         adv = cfg.get("opd_difficulty", "normal")  # (an agent slot's AI: the advisor's, protocol.ShadowAI)
         slots = [Agent(races[0], handicap=cfg["handicap"], difficulty=adv), Agent(races[1], handicap=cfg["handicap"], difficulty=adv)]
         real = bool(ai.get("real"))  # the real game (the yardstick, no curriculum)
@@ -985,7 +988,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                             opp["tax"] = now["tax"]
                     # a video: the first game of a launch (its replay then holds just this game)
                     film = films and fresh and time.time() >= next_video
-                    ep = play_one(g, obs, cfg, vocab, races, side, opp, infer, out_q, wid, record=film)
+                    ep = play_one(g, obs, cfg, vocab, races, side, opp, infer, out_q, wid, record=film,
+                                  train=not evaluating)
                     if film:
                         next_video = time.time() + period
                         film_game(g, ep, cfg, wid, render_q)
@@ -999,7 +1003,7 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
 
 
 def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: dict, infer: Inference,
-             out_q, wid: int, record: bool = False) -> dict:
+             out_q, wid: int, record: bool = False, train: bool = True) -> dict:
     """One game from its first observation; `record`: also a trace for the video's panel
     (fullgame.overlay), in the returned episode row's "trace"."""
     from .play import BCAgent
@@ -1023,7 +1027,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         bots[s] = bot
         keys[s] = ("current" if s == side or opp["kind"] == "self" else "exploiter" if opp["kind"] == "exploiter"
                    else opp["path"])
-        if keys[s] == "current":
+        if keys[s] == "current" and train:  # (an evaluation game: no steps to train on)
             trajs[s] = Trajectory(cfg, out_q, {"worker": wid, "opponent": opp["name"]})
         elif keys[s] == "exploiter":  # (its steps train the exploiter: League, --exploiter-share)
             trajs[s] = Trajectory(cfg, out_q, {"worker": wid, "opponent": "main", "learner": "exploiter"})
@@ -1133,7 +1137,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         # games between agents: the share of the learner's income taken (< 0: of the opponent's)
         **({"balance_tax": opp["tax"] if opp["tax_side"] == side else -opp["tax"]} if "tax_side" in opp else {}),
         "prod": prod.row(side, obs), "opp_prod": prod.row(1 - side, obs), **({"advised": True} if advised else {}),
-        **({"shared_noise": shared_noise} if cfg.get("shared_noise", 0.0) > 0 else {})}
+        **({"shared_noise": shared_noise} if cfg.get("shared_noise", 0.0) > 0 else {}),
+        **({} if train else {"eval": True})}
     out_q.put({"episode": ep})
     if record:  # the video's panel: A = the learner's side
         who = {"self": "itself", "ai": "built-in AI"}.get(opp["kind"], opp["name"])
@@ -1243,7 +1248,7 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
         if conns is not None:  # the inference server makes the network calls (no GPU context here)
             sys.setswitchinterval(0.001)  # (a game thread woken by its answer waits for the GIL: 5 ms by default)
             shared = SharedRows(*cfg["shared_rows"]) if cfg.get("shared_rows") else None
-            per = cfg["games_per_actor"]
+            per = cfg["games_per_actor"] + cfg.get("eval_games_per_actor", 0)
             infer = RemoteInference(conns, shared, [2 * (wid * per + k) for k in range(len(conns))])
         else:
             device = torch.device(cfg["device"])
@@ -1253,7 +1258,7 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
                 nets.reload()
             infer = Inference(nets, device, 2 * cfg["games_per_actor"], cfg["compile"])
         threads = [threading.Thread(target=game_loop, args=(wid, k, cfg, infer, out_q, stop, render_q), daemon=True)
-                   for k in range(cfg["games_per_actor"])]
+                   for k in range(cfg["games_per_actor"] + cfg.get("eval_games_per_actor", 0))]
         for th in threads:
             th.start()
             time.sleep(2)  # launches spread out
@@ -1889,6 +1894,10 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--name", required=True)
     ap.add_argument("--init", type=Path, required=True, help="a behavior-cloned policy (fullgame/bc.py) or checkpoint")
+    ap.add_argument("--eval-games-per-actor", type=int, default=0,
+                    help="each actor's extra games that only evaluate: the real game against the built-in AI (normal "
+                         "or insane, races at random), never advised, nothing trained on; episodes have eval: true "
+                         "(the real-game yardstick sooner and steadier, the training's mix unchanged)")
     ap.add_argument("--target-temperature", type=float, help="the policy's target heads (unit, x, y) sample at this "
                                                             "temperature (model.FullGameNet, acting and training "
                                                             "alike; saved in its checkpoints); default: the "
@@ -2199,6 +2208,7 @@ def main(argv: list[str] | None = None) -> int:
            "map": args.map, "handicap": args.handicap, "step_seconds": args.step_seconds,
            "max_minutes": args.max_minutes, "max_steps": int(args.max_minutes * 60 / args.step_seconds) + 20,
            "wait_floor_ms": args.wait_floor_ms, "games_per_actor": args.games_per_actor,
+           "eval_games_per_actor": args.eval_games_per_actor,
            "games_per_process": args.games_per_process, "chunk": args.chunk, "gamma": args.gamma, "lam": args.lam,
            "seed": args.seed, "start_update": resumed["update"] if resumed else 0, "slot": slot,
            "video_every": args.video_every, "scripted_reset": bool(args.scripted_reset),
@@ -2226,13 +2236,14 @@ def main(argv: list[str] | None = None) -> int:
     # learner then trained on several updates late: 3 after ten minutes, and growing)
     out_q, stop, render_q = ctx.Queue(maxsize=max(32, args.batch_steps // args.chunk)), ctx.Event(), ctx.Queue()
     # a pipe per game to the inference server: [actor][game] -> (the game's end, the server's)
-    pipes = [[ctx.Pipe() for _ in range(args.games_per_actor)] if args.central_inference else None
-             for _ in range(args.actors)]
+    pipes = [[ctx.Pipe() for _ in range(args.games_per_actor + args.eval_games_per_actor)] if args.central_inference
+             else None for _ in range(args.actors)]
     shared_path = None
     if args.central_inference and args.infer_shm:  # the view steps and answers: two rows a game
         shared_path = f"/dev/shm/warcraftsim-{args.name}-{os.getpid()}.rows"
         c = net.config
-        cfg["shared_rows"] = SharedRows(shared_path, 2 * args.actors * args.games_per_actor, c["G"], c["n_orders"],
+        cfg["shared_rows"] = SharedRows(shared_path, 2 * args.actors * (args.games_per_actor + args.eval_games_per_actor),
+                                        c["G"], c["n_orders"],
                                         c["d"] if net.memory else 0, create=True).spec
     actors = [ctx.Process(target=actor_main, args=(w, cfg, out_q, stop, render_q, pipes[w] and [a for a, _ in pipes[w]]),
                           daemon=True) for w in range(args.actors)]
