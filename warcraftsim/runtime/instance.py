@@ -166,6 +166,10 @@ class GameSetup:
     # thread). A reload's loading screen cost 0.75 s of CPU on 32 threads and the stream's, 0.2 s in
     # the game's own thread (of 2.1 and 1.4 s for the reload; 32 games: 592 -> 638 game steps/s).
     render_threads: int | None = None
+    # Equivalent speedups of the game's own code (shim/cuts.c, W3SIM_CUTS bits; None: the environment's
+    # setting): the same simulation at every step (scripts/cut_ab.py), ~28% less CPU a step with 1529.
+    # The drawing-related bits (8, 256) act only with draw=False.
+    cuts: int | None = None
     # The game's niceness (its wine processes and wineserver). With as many games as cores, the
     # Python that answers them (an inference server, actors, a learner) waited for the CPU behind
     # them; games that yield to it get their answers sooner.
@@ -595,6 +599,8 @@ class GameInstance:
                             W3SIM_LOG=_winpath(log_path))
         if self.setup.render_threads is not None:
             env["LP_NUM_THREADS"] = str(self.setup.render_threads)
+        if self.setup.cuts is not None:
+            env["W3SIM_CUTS"] = str(self.setup.cuts)
         if not self.setup.device_drivers:  # (Plug and Play loads them even with their services disabled)
             env["WINEDLLOVERRIDES"] += ";winebus.sys,wineusb.sys,winebth.sys=d"
 

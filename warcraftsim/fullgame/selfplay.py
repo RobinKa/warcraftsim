@@ -948,7 +948,7 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                           draw=False,  # (nobody looks: videos are played back from the replays, drawing)
                           wait_floor_ms=cfg["wait_floor_ms"], melee_reset=agents_only and cfg["scripted_reset"],
                           native_obs=cfg["native_obs"], nice=cfg.get("game_nice", 0), d3d_thread=False,
-                          render_threads=0, pairs=cfg.get("pairs", 1))
+                          render_threads=0, pairs=cfg.get("pairs", 1), cuts=cfg.get("game_cuts") or None)
         per_launch = cfg["games_per_process"] * (cfg["agent_games_factor"] if agents_only else 1)
         try:
             with GameInstance(setup, name=name, timeout=120) as g:
@@ -1969,6 +1969,9 @@ def main(argv: list[str] | None = None) -> int:
                                                                   "2 when BC trained the value head)")
     ap.add_argument("--max-grad-norm", type=float, default=1.0)
     ap.add_argument("--bf16", type=int, default=1, help="the updates' matmuls in bfloat16")
+    ap.add_argument("--game-cuts", type=int, default=0, help="the training games' W3SIM_CUTS (shim/cuts.c: equivalent "
+                                                            "speedups of the game's own code; 1529: all verified ones, "
+                                                            "~28%% less CPU a game step); 0: none")
     ap.add_argument("--update-pause-ms", type=float, default=0.0, help="after each minibatch of the CUDA-graph update, "
                                                                      "wait for it and leave the GPU to the inference "
                                                                      "loop this long (during the update its rounds took "
@@ -2167,7 +2170,7 @@ def main(argv: list[str] | None = None) -> int:
            "actors": args.actors, "values": unit_values(), "shaping": args.shaping, "shaping_scale": args.shaping_scale,
            "tie_break": args.tie_break, "tie_value": args.tie_value, "compile": bool(args.compile), "native_obs": bool(args.native_obs),
            "real_share": args.real_share, "infer_batch": 64, "infer_streams": args.infer_streams, "infer_pipeline": args.infer_pipeline,
-           "infer_fuse": args.infer_fuse,
+           "infer_fuse": args.infer_fuse, "game_cuts": args.game_cuts,
            "infer_entities": [int(x) for x in args.infer_entities.split(",")],
            "infer_past_entities": [int(x) for x in args.infer_past_entities.split(",")],
            "infer_past_slots": args.infer_past_slots, "game_nice": args.game_nice, "pairs": args.pairs,
