@@ -87,6 +87,8 @@ def main() -> int:
     ap.add_argument("--since", help="HH:MM or 'YYYY-mm-dd HH:MM' (default: 24 hours ago)")
     ap.add_argument("--until", help="the end of the first window (default: now)")
     ap.add_argument("--recent", type=float, default=30.0, help="minutes for the recent window")
+    ap.add_argument("--split", help="an episode field (e.g. shared_noise, an A/B's flag): the first window's report "
+                                    "per value of it, and the ties per value")
     a = ap.parse_args()
     eps = [json.loads(line) for line in (RUNS / a.name / "episodes.jsonl").open()]
     now = time.time()
@@ -95,6 +97,15 @@ def main() -> int:
     hi = when(a.until) if a.until else now
     report([e for e in eps if lo < e["time"] <= hi], f"since {time.strftime('%Y-%m-%d %H:%M', time.localtime(lo))}"
            + (f" until {time.strftime('%Y-%m-%d %H:%M', time.localtime(hi))}" if a.until else ""), rates)
+    if a.split:  # an A/B within the window: each value's games apart
+        window = [e for e in eps if lo < e["time"] <= hi and a.split in e]
+        for v in sorted({str(e[a.split]) for e in window}):
+            part = [e for e in window if str(e[a.split]) == v]
+            report(part, f"{a.split} = {v}", rates)
+            for kind in ("self", "past"):
+                X = [e for e in part if e["opponent"].split(":")[0] == kind]
+                print(f"   against {kind}: {len(X)} games, {100 * sum(e['outcome'] == 0 for e in X) / max(1, len(X)):.0f}% ties")
+        return 0
     recent = [e for e in eps if e["time"] > now - 60 * a.recent]
     report(recent, f"last {a.recent:.0f} min", rates)
     curr = [e for e in recent if e["opponent"].startswith("script:") and "(real)" not in e["opponent"] and not e.get("advised")]

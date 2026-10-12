@@ -140,11 +140,18 @@ def _logp(logits, x):
     return torch.log_softmax(logits.float(), -1).gather(-1, x.long().unsqueeze(-1)).squeeze(-1)
 
 
-def _gumbel_argmax(logits, generator=None):
+def _gumbel_argmax(logits, generator=None, shared=None):
     """A sample from softmax(logits): the argmax of logits plus Gumbel noise (fewer kernels and no
     Python bookkeeping, unlike torch.distributions; the network calls are latency-bound). `generator`:
-    a random generator of the caller's (an inference thread next to a learner's: graph captures)."""
-    u = torch.rand(logits.shape, device=logits.device, generator=generator).clamp_(1e-10, 1.0 - 1e-7)
+    a random generator of the caller's (an inference thread next to a learner's: graph captures).
+    `shared` [N] (bool): those rows' units [N, O, C] draw with one noise vector for all of them (common
+    random numbers): each unit's own distribution is unchanged, but units that want about the same
+    choose the same (one target point for a group: with a draw each, a group's points scattered)."""
+    u = torch.rand(logits.shape, device=logits.device, generator=generator)
+    if shared is not None:
+        one = torch.rand((logits.shape[0], 1) + tuple(logits.shape[2:]), device=logits.device, generator=generator)
+        u = torch.where(shared.view((-1,) + (1,) * (logits.dim() - 1)), one.expand_as(u), u)
+    u = u.clamp_(1e-10, 1.0 - 1e-7)
     return (logits.float() - torch.log(-torch.log(u))).argmax(-1)
 
 
@@ -153,17 +160,18 @@ def _entropy(logits):
     return -(lp.exp() * lp).sum(-1)
 
 
-def act(net: FullGameNet, ent, typ, cur, mask, glob, n_own, avail=None, h=None, generator=None) -> dict:
+def act(net: FullGameNet, ent, typ, cur, mask, glob, n_own, avail=None, h=None, generator=None, shared=None) -> dict:
     """Sample every own unit's order and targets (the first O = min(MAX_OWN, E) entities; the
     orders each unit type got in the demonstrations). -> order, tgt, bx, by, logp [N, O] (the
     action's log-probability per unit: order, plus the targets that order uses; 0 for padding)
-    and value [N]; with memory the core's new state "h" [N, d] (`h`: the last one, None at a start)."""
+    and value [N]; with memory the core's new state "h" [N, d] (`h`: the last one, None at a start).
+    `shared` [N] (bool): those rows sample with one noise vector for all their units (_gumbel_argmax)."""
     g, u = net.encode(ent, typ, cur, mask, glob)
     g, h = net.context(g, h)
     O = min(fx.MAX_OWN, u.shape[1])
     logits = net.order_logits(g, u[:, :O], typ, n_own, avail=avail)
     def sample(lg):
-        return _gumbel_argmax(lg, generator)
+        return _gumbel_argmax(lg, generator, shared)
     order = sample(logits)
     ptr, xl, z = net.target_logits(g, u, mask, order)
     tgt, bx = sample(ptr), sample(xl)

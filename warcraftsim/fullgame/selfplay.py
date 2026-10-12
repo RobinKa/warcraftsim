@@ -231,9 +231,10 @@ class Inference:
                 typ, cur, mask = x[:, a:a + E].long(), x[:, a + E:a + 2 * E].long(), x[:, a + 2 * E:a + 3 * E] > 0.5
                 a += 3 * E
                 n_own, avail = x[:, a].long(), x[:, a + 1:a + 1 + NO] > 0.5
+                shared = x[:, a + 1] > 1.5  # (class 0, "none", always available: 2 marks a shared-noise game's row)
                 with torch.autocast("cuda", dtype=torch.bfloat16, enabled=bf16, cache_enabled=False):
                     out = act(ref(), ent, typ, cur, mask, glob, n_own, avail, x[:, a + 1 + NO:] if d else None,
-                              generator=gen)
+                              generator=gen, shared=shared)
                 return torch.cat([out["order"].float(), out["tgt"].float(), out["bx"].float(), out["by"].float(),
                                   out["logp"].float(), out["value"].float()[:, None], out["entropy"].float()[:, None]]
                                  + ([out["h"].float()] if d else []), 1)
@@ -311,6 +312,8 @@ class Inference:
                 glob[i], n_own[i] = st["glob"], min(st["n_own"], fx.MAX_OWN)
                 if st.get("avail") is not None:
                     avail[i] = st["avail"]
+                if st.get("shared_noise"):  # (see SharedRows.write)
+                    avail[i, 0] = 2.0
                 if d and st.get("h") is not None:  # (none: the game's start, zeros)
                     hs[i] = st["h"]
         own = n_own[:len(sts)].astype(np.int64)
@@ -402,6 +405,8 @@ class SharedRows:
         self.ent[r, :n], self.typ[r, :n], self.cur[r, :n] = st["ent"], st["type"], st["cur"]
         self.glob[r], self.n_own[r] = st["glob"], st["n_own"]
         self.avail[r] = st["avail"] if st.get("avail") is not None else 1.0
+        if st.get("shared_noise"):  # (class 0 is always available: 2 marks the row, see packed_act)
+            self.avail[r, 0] = 2.0
         h = st.get("h")
         self.h[r, :len(h) if h is not None else self.h.shape[1]] = h if h is not None else 0.0
 
@@ -1027,6 +1032,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     for s in advised:
         bots[s].repair_builds = True  # (a builder the advisor pulled away resumes with "repair")
     t, t0 = 0, time.time()
+    # --shared-noise: this share of the games sample every policy side's units with one noise vector a step
+    # (model._gumbel_argmax: the same marginals, coordinated choices); the episode row says which
+    shared_noise = random.random() < cfg.get("shared_noise", 0.0)
     values, scale = cfg["values"], cfg["shaping_scale"]
     mat = material(obs, values)
     pot = shaped(obs, mat, cfg.get("float_penalty", 0.0))
@@ -1056,6 +1064,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         live = [s for s in bots if sts[s] is not None]
         for s in live:
             sts[s]["h"] = bots[s].h
+            if shared_noise:
+                sts[s]["shared_noise"] = True
         results = infer.request([(keys[s], sts[s]) for s in live]) if live else []
         spans = {}
         for s, res in zip(live, results):
@@ -1122,14 +1132,15 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
            if "curriculum" in opp else {}),
         # games between agents: the share of the learner's income taken (< 0: of the opponent's)
         **({"balance_tax": opp["tax"] if opp["tax_side"] == side else -opp["tax"]} if "tax_side" in opp else {}),
-        "prod": prod.row(side, obs), "opp_prod": prod.row(1 - side, obs), **({"advised": True} if advised else {})}
+        "prod": prod.row(side, obs), "opp_prod": prod.row(1 - side, obs), **({"advised": True} if advised else {}),
+        **({"shared_noise": shared_noise} if cfg.get("shared_noise", 0.0) > 0 else {})}
     out_q.put({"episode": ep})
     if record:  # the video's panel: A = the learner's side
         who = {"self": "itself", "ai": "built-in AI"}.get(opp["kind"], opp["name"])
         other = (f"built-in AI {opp['name'].split('-', 1)[1]}" if opp["kind"] == "ai"
                  else "itself" if opp["kind"] == "self" else "its exploiter" if opp["kind"] == "exploiter"
                  else f"snapshot {opp['name']}")
-        ep["trace"] = {"steps": trace, "gamma": cfg["gamma"], "outcome": {str(s): v for s, v in outcome.items()},
+        ep["trace"] = {"steps": trace, "gamma": cfg["gamma"], "shared_noise": shared_noise, "outcome": {str(s): v for s, v in outcome.items()},
                        "title": f"{Path(cfg['run_dir']).name} · policy v{infer.nets.version} · vs {who}",
                        "sides": [{"player": side, "name": f"learner ({races[side]})", "kind": "agent"},
                                  {"player": 1 - side, "name": f"{other} ({races[1 - side]})",
@@ -1972,6 +1983,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--game-cuts", type=int, default=0, help="the training games' W3SIM_CUTS (shim/cuts.c: equivalent "
                                                             "speedups of the game's own code; 1529: all verified ones, "
                                                             "~28%% less CPU a game step); 0: none")
+    ap.add_argument("--shared-noise", type=float, default=0.0, help="this share of the games (per game, at random) "
+                                                                  "sample each policy side's units with one noise vector "
+                                                                  "a step (the same distributions, coordinated choices: "
+                                                                  "a group's target points had scattered); the episode "
+                                                                  "rows say which, for an A/B")
     ap.add_argument("--update-pause-ms", type=float, default=0.0, help="after each minibatch of the CUDA-graph update, "
                                                                      "wait for it and leave the GPU to the inference "
                                                                      "loop this long (during the update its rounds took "
@@ -2170,7 +2186,7 @@ def main(argv: list[str] | None = None) -> int:
            "actors": args.actors, "values": unit_values(), "shaping": args.shaping, "shaping_scale": args.shaping_scale,
            "tie_break": args.tie_break, "tie_value": args.tie_value, "compile": bool(args.compile), "native_obs": bool(args.native_obs),
            "real_share": args.real_share, "infer_batch": 64, "infer_streams": args.infer_streams, "infer_pipeline": args.infer_pipeline,
-           "infer_fuse": args.infer_fuse, "game_cuts": args.game_cuts,
+           "infer_fuse": args.infer_fuse, "game_cuts": args.game_cuts, "shared_noise": args.shared_noise,
            "infer_entities": [int(x) for x in args.infer_entities.split(",")],
            "infer_past_entities": [int(x) for x in args.infer_past_entities.split(",")],
            "infer_past_slots": args.infer_past_slots, "game_nice": args.game_nice, "pairs": args.pairs,
