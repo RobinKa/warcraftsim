@@ -118,7 +118,15 @@ def main() -> int:
                                  ref_kl=0.2, bc_coef=0.02, max_grad_norm=1.0, opd_coef=0.15)
     for kv in a.set:
         k, v = kv.split("=", 1)
-        setattr(args, k.replace("-", "_"), type(getattr(args, k.replace("-", "_"), 0.0))(v))
+        k = k.replace("-", "_")
+        if hasattr(args, k):
+            v = type(getattr(args, k))(v)
+        else:  # (a setting the namespace lacks: a number if it reads as one, else the text, e.g. ref_kl_mode=forward)
+            try:
+                v = float(v)
+            except ValueError:
+                pass
+        setattr(args, k, v)
     bc_set = bc.Steps(paths, vocab, a.bc_batch, unit_values(), costs, arrays=True)
 
     def bc_cycle():
