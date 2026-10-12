@@ -933,6 +933,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
         ai = _choose(rng, spec["launch"])  # {"kind": "agents"} or {"kind": "ai", "difficulty"[, "delay"]}
         if evaluating:  # (--eval-games-per-actor: the yardstick only)
             ai = {"kind": "ai", "difficulty": rng.choice(["normal", "insane"]), "real": True}
+            # which policy: the current one, or one of --eval-checkpoints (head to head, at the same time)
+            eval_key = rng.choice(["current"] + list(cfg.get("eval_checkpoints") or []))
         adv = cfg.get("opd_difficulty", "normal")  # (an agent slot's AI: the advisor's, protocol.ShadowAI)
         slots = [Agent(races[0], handicap=cfg["handicap"], difficulty=adv), Agent(races[1], handicap=cfg["handicap"], difficulty=adv)]
         real = bool(ai.get("real"))  # the real game (the yardstick, no curriculum)
@@ -978,6 +980,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                             opp["tax"], opp["tax_side"] = share, taxed
                     # on-policy distillation: the built-in AI advises the learner (never in the real game)
                     opp["advise"] = not real and rng.random() < cfg.get("opd_share", 0.0)
+                    if evaluating and eval_key != "current":
+                        opp["eval_key"] = eval_key
                     if curr:  # the curriculum's current knobs for this AI
                         now = next((x.get("by_race", {}).get(key, ai) for x in spec["launch"]
                                     if x.get("difficulty") == ai["difficulty"] and not x.get("real")), ai)
@@ -1027,6 +1031,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         bots[s] = bot
         keys[s] = ("current" if s == side or opp["kind"] == "self" else "exploiter" if opp["kind"] == "exploiter"
                    else opp["path"])
+        if s == side and opp.get("eval_key"):  # (an evaluation game of a listed checkpoint: --eval-checkpoints)
+            keys[s] = opp["eval_key"]
+            bot.view.active_f = fx.F  # (all features: a checkpoint's weights past its own are zeros)
         if keys[s] == "current" and train:  # (an evaluation game: no steps to train on)
             trajs[s] = Trajectory(cfg, out_q, {"worker": wid, "opponent": opp["name"]})
         elif keys[s] == "exploiter":  # (its steps train the exploiter: League, --exploiter-share)
@@ -1138,7 +1145,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"balance_tax": opp["tax"] if opp["tax_side"] == side else -opp["tax"]} if "tax_side" in opp else {}),
         "prod": prod.row(side, obs), "opp_prod": prod.row(1 - side, obs), **({"advised": True} if advised else {}),
         **({"shared_noise": shared_noise} if cfg.get("shared_noise", 0.0) > 0 else {}),
-        **({} if train else {"eval": True})}
+        **({} if train else {"eval": True, "eval_key": opp.get("eval_key") or "current"})}
     out_q.put({"episode": ep})
     if record:  # the video's panel: A = the learner's side
         who = {"self": "itself", "ai": "built-in AI"}.get(opp["kind"], opp["name"])
@@ -1905,6 +1912,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--features", type=int, default=fx.F, help="the unit features in use (features.ACTIVE_F): the "
                                                                 "rest are zeros (29: as before 2026-10-12, 50: without "
                                                                 "the last order, 55: all)")
+    ap.add_argument("--eval-checkpoints", type=Path, nargs="+", help="the evaluation games also play these "
+                                                                    "checkpoints (each game one of them or the current "
+                                                                    "policy, at random; episodes' eval_key): head to "
+                                                                    "head, at the same time")
     ap.add_argument("--eval-games", type=int, default=0, help="evaluation games in all instead (as --eval-games-per-"
                                                             "actor; 4: ~600 a hour, each actor's slot cost ~2.5%% of "
                                                             "the training's throughput)")
@@ -2230,7 +2241,7 @@ def main(argv: list[str] | None = None) -> int:
            "tie_break": args.tie_break, "tie_value": args.tie_value, "compile": bool(args.compile), "native_obs": bool(args.native_obs),
            "real_share": args.real_share, "infer_batch": 64, "infer_streams": args.infer_streams, "infer_pipeline": args.infer_pipeline,
            "infer_fuse": args.infer_fuse, "game_cuts": args.game_cuts, "shared_noise": args.shared_noise,
-           "features": args.features,
+           "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
            "infer_entities": [int(x) for x in args.infer_entities.split(",")],
            "infer_past_entities": [int(x) for x in args.infer_past_entities.split(",")],
            "infer_past_slots": args.infer_past_slots, "game_nice": args.game_nice, "pairs": args.pairs,
