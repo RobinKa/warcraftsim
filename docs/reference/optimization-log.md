@@ -297,6 +297,27 @@ Tried and dropped:
 
 **A bug found on the way**: the loop copied only a row's own entities into a call's input and left the padding as the pinned buffer held it. With recycled pinned memory a stale unit type failed a device-side assert in a fused call and killed the run; the padding is zeroed now.
 
+## The game's own code: equivalent speedups (2026-10-12, `--game-cuts`)
+
+A subagent profiled the game's main thread (Ghidra, a raw stack sampler in the shim, `perf stat -t`) and replaced hot code with faster code that gives the same results: `shim/cuts.c`, one `W3SIM_CUTS` bit each, checked with `scripts/cut_ab.py` (a replay played back once per variant at the same time; every unit, player, event, AI order and command result compared at every step with the live game and between variants).
+
+| bit | what | main thread, M instructions a step (with the others on) |
+|---|---|---|
+| 16 | the harness's units pass without a JASS thread per unit (`ForGroup` calls the pass directly) | -2.05 |
+| 64 | A*: each cell's ring check remembered for one search (90% were repeats; nothing in a search changes a cell's answer) | -1.72 |
+| 1 | the map-version check behind `GetPlayerId` memoised | -1.32 |
+| 256 | paint at most every 50 steps (drawing off) | -1.0 |
+| 1024 | A*'s heuristic computed only when used | -0.87 |
+| 32 | `units.c`: pure getters once per unit, player ids by handle | -0.21 |
+| 128 | soft-float helpers: clz as `lzcnt`, isqrt as `floor(sqrt(double))` (checked over all 2^32 inputs) | ai -0.82 |
+| 8 | textures without pixels (drawing off) | -0.29 |
+
+All on (`--game-cuts 1529`): a self-play replay 28.4 → 19.3 M instructions a step (-32%), main-thread CPU 5.92 → 4.24 ms (-28%). Parity: 21 replays (~22,700 steps: seven race pairs, several games per map load, scripted agents over 20 minutes, eight fgself-12 self-play replays) and, on master's build, three more (the old shim, the new one off, and 1529 alike at every step). Not covered: the 5th game's full reload, drawing on, many hours. Left out: 2048 (a type-check cache: little gain, delicate), 4 (an event pool: nothing), 512 (nothing), 2 (paint off entirely: the fog's list grows).
+
+In the run: **2,276 steps/s** (10:00-10:10, 48 games) against ~2,100; the learner is the limit now (an update 3.1 s, its wait 0.5 s), with a quarter of the CPU idle.
+
+Rejected by the study: remembering paths between searches (moving units change the search's inputs), faster soft-float arithmetic (the cost is the calls), the agent-id lookup (already an array), `UnitIsSleeping` only for neutral units (a charmed creep could differ). Left: the harness's JASS (~11% of the main thread), its native calls (~8%), the node lookup and open list of A* (~5%).
+
 ## Dead ends
 
 * 8 actor processes of 4 games instead of 4 of 8 (627 against 644 steps/s).
