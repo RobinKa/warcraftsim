@@ -1984,7 +1984,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--bc-winners", type=int, default=0, help="the cloning loss: only the side that won each game")
     ap.add_argument("--bc-max-minutes", type=float, default=0.0, help="the cloning loss: only games decided within this many minutes")
     ap.add_argument("--bc-workers", type=int, default=4, help="the cloning loss's data workers (2 kept the learner "
-                                                                 "waiting ~18% of its time)")
+                                                                 "waiting ~18%% of its time)")
     ap.add_argument("--opd-share", type=float, default=0.0,
                     help="on-policy distillation: the share of games (not the real game) in which the built-in AI "
                          "advises the learner's side (protocol.ShadowAI: its orders are labels, undone); the "
