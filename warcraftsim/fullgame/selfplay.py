@@ -958,7 +958,7 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
         side = rng.randrange(2)  # the learner's
         ai = _choose(rng, spec["launch"])  # {"kind": "agents"} or {"kind": "ai", "difficulty"[, "delay"]}
         if evaluating:  # (--eval-games-per-actor: the yardstick only)
-            ai = {"kind": "ai", "difficulty": rng.choice(["normal", "insane"]), "real": True}
+            ai = {"kind": "ai", "difficulty": rng.choice(cfg.get("eval_ai") or ["normal", "insane"]), "real": True}
             # which policy: the current one, or one of --eval-checkpoints (head to head, at the same time)
             eval_key = rng.choice(["current"] + list(cfg.get("eval_checkpoints") or []))
         adv = cfg.get("opd_difficulty", "normal")  # (an agent slot's AI: the advisor's, protocol.ShadowAI)
@@ -2041,6 +2041,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--eval-games", type=int, default=0, help="evaluation games in all instead (as --eval-games-per-"
                                                             "actor; 4: ~600 a hour, each actor's slot cost ~2.5%% of "
                                                             "the training's throughput)")
+    ap.add_argument("--eval-ai", default="normal,insane", help="the evaluation games' built-in AI, one of these at "
+                                                              "random (a name twice: twice as often)")
     ap.add_argument("--target-temperature", type=float, help="the policy's target heads (unit, x, y) sample at this "
                                                             "temperature (model.FullGameNet, acting and training "
                                                             "alike; saved in its checkpoints); default: the "
@@ -2379,6 +2381,7 @@ def main(argv: list[str] | None = None) -> int:
            "infer_fuse": args.infer_fuse, "game_cuts": args.game_cuts, "shared_noise": args.shared_noise,
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
+           "eval_ai": [d for d in args.eval_ai.split(",") if d],
            "infer_entities": [int(x) for x in args.infer_entities.split(",")],
            "infer_past_entities": [int(x) for x in args.infer_past_entities.split(",")],
            "infer_past_slots": args.infer_past_slots, "game_nice": args.game_nice, "pairs": args.pairs,
