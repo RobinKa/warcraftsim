@@ -127,6 +127,9 @@ def main() -> int:
             except ValueError:
                 pass
         setattr(args, k, v)
+    if getattr(args, "upgo", 0.0) > 0:  # (UPGO's advantages: random too)
+        for s in steps:
+            s["uadv"] = float(np.random.normal())
     bc_set = bc.Steps(paths, vocab, a.bc_batch, unit_values(), costs, arrays=True)
 
     def bc_cycle():

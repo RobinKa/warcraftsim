@@ -843,6 +843,15 @@ class Trajectory:
                 ahead = dict(zip(ids.tolist(), g.tolist()))
                 s["ladv"] = g - g.mean() if len(g) else g  # (relative to the step's other units: the team's
                 # credit stays the step's advantage)
+        if self.cfg.get("upgo", 0.0) > 0:  # UPGO (AlphaStar): the return that follows the trajectory while the
+            # actions after did at least as well as the value expected (Q >= V), else bootstraps from the value
+            boot = self.steps[-1]["value"] if bootstrap else 0.0
+            g, v1, q1 = boot, boot, -np.inf  # (the next step's UPGO return, value and action's value; the
+            for s in reversed(steps):            # chunk's end bootstraps)
+                G = s["reward"] if s["done"] else s["reward"] + gamma * (g if q1 >= v1 else v1)
+                s["uadv"] = G - s["value"]
+                q1 = s["reward"] + (0.0 if s["done"] else gamma * v1)
+                g, v1 = G, s["value"]
         if steps:
             self.out_q.put({"steps": steps, "info": self.info})
         self.steps = self.steps[-1:] if bootstrap else []
@@ -1524,6 +1533,12 @@ def _ladv_std(steps: list[dict]) -> float:
     return float(np.concatenate(parts).std()) + 1e-8 if parts else 1.0
 
 
+def _uadv_stats(steps: list[dict]) -> tuple[float, float]:
+    """The UPGO advantages' mean and spread over a batch (0, 1 when there are none)."""
+    u = np.array([s["uadv"] for s in steps if "uadv" in s], np.float32)
+    return (float(u.mean()), float(u.std()) + 1e-8) if len(u) else (0.0, 1.0)
+
+
 def unit_rewards(own: np.ndarray, rows: np.ndarray, events, values: dict, scale: float) -> np.ndarray:
     """Each own unit's reward of its own for the step just taken (--unit-credit; OpenAI Five's per-hero
     reward): the material it lost or regained (its value times the change of its hit points' fraction;
@@ -1589,6 +1604,8 @@ def collate(steps: list[dict], device, width: int | None = None, with_labels: bo
                 ladv[i, :o] = s["ladv"][:o]
     return {"ent": t(ent), "type": t(typ), "cur": t(cur), "mask": t(mask), "glob": t(glob), "n_own": t(n_own), **labels,
             **({"ladv": t(ladv)} if ladv is not None else {}),
+            **({"uadv": t(np.array([s.get("uadv", 0.0) for s in steps], np.float32))}  # (--upgo)
+               if any("uadv" in s for s in steps) else {}),
             **{k: t(v) for k, v in acts.items()}, "logp": t(logp), "avail": t(avail) if avail is not None else None,
             "adv": t(np.array([s["adv"] for s in steps], np.float32)),
             "ret": t(np.array([s["ret"] for s in steps], np.float32)),
@@ -1680,6 +1697,7 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
     advs = np.array([s["adv"] for s in steps], np.float32)
     mean, std = float(advs.mean()), float(advs.std()) + 1e-8
     lstd = _ladv_std(steps)
+    umean, ustd = _uadv_stats(steps)
     if getattr(args, "opd_coef", 0.0) > 0:  # the advisor's orders become orders the unit type can get (as cloning's do)
         typ_y = [(s["type"][:s["n_own"]], s["y_order"]) for s in steps if "y_order" in s]
         if typ_y:
@@ -1717,6 +1735,8 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
             adv = ((mb["adv"] - mean) / std)[:, None]
             if "ladv" in mb and getattr(args, "unit_credit", 0.0) > 0:  # (each unit's own share: --unit-credit)
                 adv = adv + args.unit_credit * mb["ladv"] / lstd
+            if "uadv" in mb and getattr(args, "upgo", 0.0) > 0:  # (UPGO's share: --upgo)
+                adv = adv + args.upgo * ((mb["uadv"] - umean) / ustd)[:, None]
             log_ratio = (ev["logp"] - mb["logp"]) * own
             ratio = log_ratio.exp()
             pg = -(torch.min(ratio * adv, ratio.clamp(1 - args.clip, 1 + args.clip) * adv) * own).sum() / n_units
@@ -1789,6 +1809,7 @@ class GraphedUpdate:
         self.std = torch.ones((), device=device)
         self.pg_coef = torch.ones((), device=device)
         self.lstd = torch.ones((), device=device)  # (the units' own advantages' spread: --unit-credit)
+        self.umean, self.ustd = torch.zeros((), device=device), torch.ones((), device=device)  # (--upgo)
 
     def _step(self, s: dict, b: dict | None) -> dict:
         """One minibatch's step on the static inputs `s` (and the cloning batch `b`): no GPU syncs."""
@@ -1803,6 +1824,8 @@ class GraphedUpdate:
             adv = ((s["adv"] - self.mean) / self.std)[:, None]
             if "ladv" in s and getattr(args, "unit_credit", 0.0) > 0:  # (each unit's own share: --unit-credit)
                 adv = adv + args.unit_credit * s["ladv"] / self.lstd
+            if "uadv" in s and getattr(args, "upgo", 0.0) > 0:  # (UPGO's share: --upgo)
+                adv = adv + args.upgo * ((s["uadv"] - self.umean) / self.ustd)[:, None]
             log_ratio = (ev["logp"] - s["logp"]) * own
             ratio = log_ratio.exp()
             pg = -(torch.min(ratio * adv, ratio.clamp(1 - args.clip, 1 + args.clip) * adv) * own).sum() / n_units
@@ -1894,6 +1917,9 @@ class GraphedUpdate:
         self.mean.fill_(float(advs.mean()))
         self.std.fill_(float(advs.std()) + 1e-8)
         self.lstd.fill_(_ladv_std(steps))
+        um, us = _uadv_stats(steps)
+        self.umean.fill_(um)
+        self.ustd.fill_(us)
         self.pg_coef.fill_(0.0 if warmup else 1.0)
         if getattr(args, "opd_coef", 0.0) > 0:  # the advisor's orders become orders the unit type can get
             typ_y = [(s["type"][:s["n_own"]], s["y_order"]) for s in steps if "y_order" in s]
@@ -2096,6 +2122,10 @@ def main(argv: list[str] | None = None) -> int:
                                                                  "relative to the step's other units, normalised); 0: "
                                                                  "the step's advantage for all its units")
     ap.add_argument("--unit-gamma", type=float, default=0.8, help="the discount of that share's return (0.8: ~5 steps)")
+    ap.add_argument("--upgo", type=float, default=0.0, help="each step's advantage also gets this much of its UPGO "
+                                                          "advantage (AlphaStar: the return follows the trajectory "
+                                                          "while the actions after did at least as well as the value "
+                                                          "expected, else the value; normalised); 0: off")
     ap.add_argument("--shared-noise", type=float, default=0.0, help="this share of the games (per game, at random) "
                                                                   "sample each policy side's units' targets (unit, x, y) "
                                                                   "with one noise vector a step (the same distributions, "
@@ -2315,7 +2345,7 @@ def main(argv: list[str] | None = None) -> int:
            "tie_break": args.tie_break, "tie_value": args.tie_value, "compile": bool(args.compile), "native_obs": bool(args.native_obs),
            "real_share": args.real_share, "infer_batch": 64, "infer_streams": args.infer_streams, "infer_pipeline": args.infer_pipeline,
            "infer_fuse": args.infer_fuse, "game_cuts": args.game_cuts, "shared_noise": args.shared_noise,
-           "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma,
+           "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
            "infer_entities": [int(x) for x in args.infer_entities.split(",")],
            "infer_past_entities": [int(x) for x in args.infer_past_entities.split(",")],

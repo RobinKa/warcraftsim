@@ -35,6 +35,26 @@ def test_trajectory_gae_chunks_and_terminal_reward():
     assert steps[-1]["done"] and not steps[0]["done"]
 
 
+def test_trajectory_upgo():
+    q = _Q()
+    tr = Trajectory({"chunk": 2, "gamma": 0.5, "lam": 1.0, "upgo": 1.0}, q, {})
+    for v in (0.0, 0.0, 0.8, 0.0):
+        tr.add(*_step(v))
+    tr.end(1.0)
+    steps = [s for msg in q for s in msg["steps"]]
+    # the first chunk bootstraps from 0.8 (0.4), then step 1's action did better than its value (Q 0.4 >= V 0):
+    # step 0 follows it (0.2); the second chunk: step 3 wins (1.0) and step 2 follows it (0.5 - 0.8)
+    assert [round(s["uadv"], 4) for s in steps] == [0.2, 0.4, -0.3, 1.0]
+    q = _Q()
+    tr = Trajectory({"chunk": 10, "gamma": 0.5, "lam": 1.0, "upgo": 1.0}, q, {})
+    for v in (0.5, 0.0, 0.8, 0.0):
+        tr.add(*_step(v))
+    tr.end(1.0)
+    steps = [s for msg in q for s in msg["steps"]]
+    # step 2's action did worse than its value (Q 0 < V 0.8): step 1 bootstraps from V 0.8, not its return
+    assert [round(s["uadv"], 4) for s in steps] == [-0.3, 0.4, -0.3, 1.0]
+
+
 def test_league_spec(tmp_path):
     lg = League(tmp_path, ["normal"], {"ai": 0.25, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard")
     spec = lg.spec()
