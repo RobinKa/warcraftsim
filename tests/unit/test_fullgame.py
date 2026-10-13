@@ -937,3 +937,14 @@ def test_checkpoint_keeps_adam_state(tmp_path):
     assert fresh.param_groups[0]["lr"] == 5e-5
     assert torch.equal(fresh.state[net.weight]["exp_avg"], opt.state[net.weight]["exp_avg"])
     assert not load_optimizer(torch.optim.Adam(net.parameters()), tmp_path / f"{10:016d}.pt", "cpu", 5e-5)
+
+
+def test_set_dropout():
+    from warcraftsim.fullgame.model import FullGameNet
+    from warcraftsim.fullgame.selfplay import set_dropout
+
+    net = FullGameNet(n_types=5, n_cur=5, n_orders=7, G=4, d=16, heads=2, layers=1, dropout=0.1)
+    set_dropout(net, 0.0)
+    assert all(m.p == 0.0 for m in net.modules() if isinstance(m, torch.nn.Dropout))
+    assert all(m.dropout == 0.0 for m in net.modules() if isinstance(m, torch.nn.MultiheadAttention))
+    assert net.config["dropout"] == 0.0

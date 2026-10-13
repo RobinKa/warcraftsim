@@ -1985,6 +1985,19 @@ class GraphedUpdate:
         return {k: float(torch.stack([o[k] for o in outs]).float().mean()) for k in outs[0]} if outs else {}
 
 
+def set_dropout(net: torch.nn.Module, p: float) -> None:
+    """Every dropout of the network at p (the transformer's: attention, residual, feed-forward), saved
+    with its config. The actors act in eval mode, without dropout; trained with it, an update's ratios
+    and KL count the dropout's noise (--rl-dropout)."""
+    for m in net.modules():
+        if isinstance(m, torch.nn.Dropout):
+            m.p = p
+        elif isinstance(m, torch.nn.MultiheadAttention):
+            m.dropout = p
+    if isinstance(getattr(net, "config", None), dict):
+        net.config["dropout"] = p
+
+
 def save_checkpoint(path: Path, net: FullGameNet, opt, vocab: dict, agent_steps: int, update: int, keep_opt: int = 3) -> None:
     """A checkpoint, and Adam's state next to it (<steps>.adam; the newest `keep_opt` kept): a fork or a
     resume from it goes on with the optimizer's moments instead of fresh ones (a fresh Adam's first steps
@@ -2051,6 +2064,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--eval-games", type=int, default=0, help="evaluation games in all instead (as --eval-games-per-"
                                                             "actor; 4: ~600 a hour, each actor's slot cost ~2.5%% of "
                                                             "the training's throughput)")
+    ap.add_argument("--rl-dropout", type=float, default=-1.0, help="the network's dropout in the updates (the actors "
+                                                                 "act without; -1: the checkpoint's, 0.1 from cloning)")
     ap.add_argument("--eval-ai", default="normal,insane", help="the evaluation games' built-in AI, one of these at "
                                                               "random (a name twice: twice as often)")
     ap.add_argument("--target-temperature", type=float, help="the policy's target heads (unit, x, y) sample at this "
@@ -2287,6 +2302,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.target_temperature is not None:  # (the policy's, saved with its checkpoints; the anchor keeps its own)
         net.target_temp.fill_(args.target_temperature)
         net.config["target_temperature"] = args.target_temperature
+    if args.rl_dropout >= 0:  # the updates' dropout (the actors act without: eval mode)
+        set_dropout(net, args.rl_dropout)
     graphed = bool(args.cuda_graphs) and device.type == "cuda" and bool(net.memory)
     opt = torch.optim.Adam(net.parameters(), lr=args.lr, eps=1e-5, capturable=graphed)
     if args.start_weights and not args.resume:
