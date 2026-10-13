@@ -1023,6 +1023,10 @@ The runs since `fgself-15` had updates of ~4.6 s instead of ~3.5: the last-order
 
 **`fgself-32`** (from `fgself-31`'s 5.92M, 15:58, with its Adam state: the first fork that carries it): UPGO ×1.0. Evaluation games: the current policy against `fgself-31`'s 5.92M (its start) and `fgself-27`'s 6.67M.
 
+`fgself-32` (UPGO ×1.0, 15:58-16:57, ~320-340 evaluation games each): the current policy **111%** of the AI's record (normal 156%, insane **73%**), `fgself-31`'s 5.92M (its start) 94% (134%, 58%), `fgself-27`'s 6.67M 82%. Ties 5%. A gain of ~17 points, rising over the hour (98%, 110%, 122% by 20-minute windows). No fork dip with Adam's state carried.
+
+**`fgself-33`** (from `fgself-32`'s 6.41M, 16:58, with its Adam state): the anchor moved to the UPGO policy (`--init` = `fgself-32`'s 6.41M; it was `fgself-24`'s 6.22M, ~60% of the AI's record). UPGO ×1.0. Evaluation games: the current policy against `fgself-32`'s 6.41M (its start and anchor) and `fgself-27`'s 6.67M.
+
 Next, ranked with what AlphaStar and OpenAI Five found ([ideas](ideas-from-alphastar-and-openai-five.md)): forward KL to the anchor on every head (ours is reverse KL on the orders only), a temperature for the targets, features of each unit's own last order and hit-point history (branch `features-v2` has the hit-point change and sine/cosine positions), a value with both players' information.
 
 **A fairer yardstick: the AI's own record in the same matchups.** `duelfast` is far from balanced even for the built-in AI against itself (3,000 games, mixed matchups): night elf wins 81% (normal) / 75% (insane), orc 65% / 71%, undead 33% / 37%, human 22% / 19% (human vs night elf 8% / 6%, vs orc 15% / 6%). So a race's real-game win rate says as much about the map as about the policy. `scripts/real_games.py` now also counts, for real games against normal and insane, how many the AI itself would win in the same matchups: from 2026-10-03 18:36 to 2026-10-11 00:17 the learner won 195 of 896, the AI would win ~455 (**43% of the AI's record**; 45% in the last two hours before the anchor experiment). 100% is the built-in AI's level.

@@ -59,6 +59,6 @@ A subagent read the papers in full: AlphaStar (Nature 2019, its Methods, Fig. 3,
 
 Already in progress: shared sampling noise for the targets (`fgself-13`), and hit-point-change and sine/cosine position features (branch `features-v2`).
 
-Results so far (2026-10-13, share of the AI's record on evaluation games, head to head): #2 forward KL on every head **28% → ~69%** (with a moving anchor and training against insane, ~88%); #1 target temperature, #3 features (hit points, positions: none; last orders: worse), #5 the two-player value, #8 team spirit (`fgself-30`): no gain; #6 **UPGO ×0.5: 79% → 102%** (`fgself-31`).
+Results so far (2026-10-13, share of the AI's record on evaluation games, head to head): #2 forward KL on every head **28% → ~69%** (with a moving anchor and training against insane, ~88%); #1 target temperature, #3 features (hit points, positions: none; last orders: worse), #5 the two-player value, #8 team spirit (`fgself-30`): no gain; #6 **UPGO ×0.5: 79% → 102%** (`fgself-31`), ×1.0 on from there: 94% → 111% (`fgself-32`).
 
 Sources: [AlphaStar (DeepMind's PDF)](https://storage.googleapis.com/deepmind-media/research/alphastar/AlphaStar_unformatted.pdf), its [supplementary data](https://static-content.springer.com/esm/art%3A10.1038%2Fs41586-019-1724-z/MediaObjects/41586_2019_1724_MOESM2_ESM.zip), [OpenAI Five, arXiv 1912.06680](https://arxiv.org/abs/1912.06680), [SC2LE, arXiv 1708.04782](https://arxiv.org/abs/1708.04782).
