@@ -1975,6 +1975,35 @@ class GraphedUpdate:
         return {k: float(torch.stack([o[k] for o in outs]).float().mean()) for k in outs[0]} if outs else {}
 
 
+def save_checkpoint(path: Path, net: FullGameNet, opt, vocab: dict, agent_steps: int, update: int, keep_opt: int = 3) -> None:
+    """A checkpoint, and Adam's state next to it (<steps>.adam; the newest `keep_opt` kept): a fork or a
+    resume from it goes on with the optimizer's moments instead of fresh ones (a fresh Adam's first steps
+    are ~lr per weight whatever the gradient: forks lost ~10 points of the AI's record in their first
+    20 minutes)."""
+    torch.save({"model": net.state_dict(), "config": net.config, "vocab": vocab, "agent_steps": agent_steps,
+                "update": update}, path)
+    torch.save(opt.state_dict(), path.with_suffix(".adam"))
+    for old in sorted(path.parent.glob("[0-9]*.adam"))[:-keep_opt]:
+        old.unlink(missing_ok=True)
+
+
+def load_optimizer(opt, checkpoint: Path, device, lr: float) -> bool:
+    """Adam's state saved with `checkpoint` (save_checkpoint), if there is one that fits; this run's lr."""
+    path = Path(checkpoint).with_suffix(".adam")
+    if not path.exists():
+        return False
+    capturable = [g.get("capturable", False) for g in opt.param_groups]
+    try:
+        opt.load_state_dict(torch.load(path, map_location=device, weights_only=False))
+    except (ValueError, RuntimeError, KeyError) as e:
+        print(f"note: Adam's state in {path} does not fit ({e}); a fresh one", flush=True)
+        return False
+    for g, c in zip(opt.param_groups, capturable):
+        g["lr"], g["capturable"] = lr, c
+    print(f"Adam's state from {path}", flush=True)
+    return True
+
+
 def publish(net: FullGameNet, version: int, run_dir: Path, name: str = "current.pt") -> None:
     tmp = run_dir / f"{name}.tmp"
     torch.save({"model": {k: v.detach().cpu() for k, v in net.state_dict().items()}, "config": net.config,
@@ -2248,6 +2277,8 @@ def main(argv: list[str] | None = None) -> int:
         net.config["target_temperature"] = args.target_temperature
     graphed = bool(args.cuda_graphs) and device.type == "cuda" and bool(net.memory)
     opt = torch.optim.Adam(net.parameters(), lr=args.lr, eps=1e-5, capturable=graphed)
+    if args.start_weights and not args.resume:
+        load_optimizer(opt, args.start_weights, device, args.lr)
     # the main exploiter (--exploiter-share): a second network, from the run's starting weights
     # (as AlphaStar's from the supervised agent), trained on its games against the learner alone
     x_init = {k: v.detach().clone() for k, v in net.state_dict().items()} if args.exploiter_share > 0 else None
@@ -2282,6 +2313,7 @@ def main(argv: list[str] | None = None) -> int:
         if src:
             last = torch.load(src, map_location=device, weights_only=False)
             net.load_state_dict(last["model"])
+            load_optimizer(opt, src, device, args.lr)
         resumed = {"steps": rows[-1]["agent_steps"] if rows else 0, "update": rows[-1]["epoch"] if rows else 0,
                    "episodes": sum(1 for _ in open(run_dir / "episodes.jsonl")) if (run_dir / "episodes.jsonl").exists() else 0,
                    "checkpoint": Path(src).name if src else None,
@@ -2511,12 +2543,10 @@ def main(argv: list[str] | None = None) -> int:
                 native.loop.learner_busy = 0
             if update % args.snapshot_every == 0:
                 path = run_dir / "checkpoints" / f"{agent_steps:016d}.pt"
-                torch.save({"model": net.state_dict(), "config": net.config, "vocab": vocab, "agent_steps": agent_steps,
-                            "update": update}, path)
+                save_checkpoint(path, net, opt, vocab, agent_steps, update)
                 league.add_snapshot(path, agent_steps)
             elif update % args.checkpoint_every == 0:
-                torch.save({"model": net.state_dict(), "config": net.config, "vocab": vocab, "agent_steps": agent_steps,
-                            "update": update}, run_dir / "checkpoints" / f"{agent_steps:016d}.pt")
+                save_checkpoint(run_dir / "checkpoints" / f"{agent_steps:016d}.pt", net, opt, vocab, agent_steps, update)
             league.write()
             now = time.time()
             if x_stats:  # the exploiter's last update
@@ -2542,8 +2572,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         info["finished"] = time.time()
         save_info()
-        torch.save({"model": net.state_dict(), "config": net.config, "vocab": vocab, "agent_steps": agent_steps,
-                    "update": update}, run_dir / "checkpoints" / f"{agent_steps:016d}.pt")
+        save_checkpoint(run_dir / "checkpoints" / f"{agent_steps:016d}.pt", net, opt, vocab, agent_steps, update)
         stop.set()
         for p in actors:
             p.join(timeout=60)

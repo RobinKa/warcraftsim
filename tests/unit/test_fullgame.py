@@ -919,3 +919,21 @@ def test_a_restarted_run_draws_other_launches():
     assert draws(a, 1, 2) != draws(a, 2, 1) and draws(a, 0, 16) != draws(a, 1, 0)
     assert draws(a, 1, 2) != draws({"seed": 0, "start_update": 101}, 1, 2)
     assert draws({"seed": 0}, 1, 2) == draws({"seed": 0, "start_update": 0}, 1, 2)
+
+
+def test_checkpoint_keeps_adam_state(tmp_path):
+    from warcraftsim.fullgame.selfplay import load_optimizer, save_checkpoint
+
+    net = torch.nn.Linear(3, 2)
+    net.config = {}
+    opt = torch.optim.Adam(net.parameters(), lr=1e-3)
+    for steps in (10, 20, 30, 40):
+        net(torch.randn(4, 3)).sum().backward()
+        opt.step()
+        save_checkpoint(tmp_path / f"{steps:016d}.pt", net, opt, {}, steps, steps, keep_opt=2)
+    assert sorted(p.name for p in tmp_path.glob("*.adam")) == [f"{30:016d}.adam", f"{40:016d}.adam"]
+    fresh = torch.optim.Adam(net.parameters(), lr=5e-5)
+    assert load_optimizer(fresh, tmp_path / f"{40:016d}.pt", "cpu", 5e-5)
+    assert fresh.param_groups[0]["lr"] == 5e-5
+    assert torch.equal(fresh.state[net.weight]["exp_avg"], opt.state[net.weight]["exp_avg"])
+    assert not load_optimizer(torch.optim.Adam(net.parameters()), tmp_path / f"{10:016d}.pt", "cpu", 5e-5)
