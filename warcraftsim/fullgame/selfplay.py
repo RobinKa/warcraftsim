@@ -806,6 +806,8 @@ class Trajectory:
                            "avail": st.get("avail"),
                            "h": st.get("h"),  # the memory's state going in (None: the game's start, or none)
                            "done": False, "version": res["version"]})
+        if self.cfg.get("unit_credit", 0.0) > 0:  # (--unit-credit: each own unit's id, for its local reward)
+            self.steps[-1]["ids"] = st["sel"][:self.steps[-1]["n_own"], fx.C_ID].astype(np.int64)
         if len(self.steps) > self.cfg["chunk"]:
             self.flush(bootstrap=True)
 
@@ -827,6 +829,20 @@ class Trajectory:
             adv = delta + gamma * lam * nonterminal * adv
             s["adv"], s["ret"] = adv, adv + s["value"]
             next_v = s["value"]
+        if self.cfg.get("unit_credit", 0.0) > 0:  # each own unit's short return of its own (unit_rewards), by id
+            gl, ahead = self.cfg.get("unit_gamma", 0.8), {}
+            for s in reversed(steps):
+                ids = s.get("ids")
+                if ids is None:
+                    continue
+                if s["done"]:
+                    ahead = {}
+                loc = s.get("local")
+                g = np.array([(loc[k] if loc is not None else 0.0) + gl * ahead.get(int(u), 0.0)
+                              for k, u in enumerate(ids.tolist())], np.float32)
+                ahead = dict(zip(ids.tolist(), g.tolist()))
+                s["ladv"] = g - g.mean() if len(g) else g  # (relative to the step's other units: the team's
+                # credit stays the step's advantage)
         if steps:
             self.out_q.put({"steps": steps, "info": self.info})
         self.steps = self.steps[-1:] if bootstrap else []
@@ -1044,6 +1060,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     for s in advised:
         bots[s].repair_builds = True  # (a builder the advisor pulled away resumes with "repair")
     t, t0 = 0, time.time()
+    own_rows: dict[int, np.ndarray] = {}  # each trained side's own units at its last recorded step (--unit-credit)
     # --shared-noise: this share of the games sample every policy side's units with one noise vector a step
     # (model._gumbel_argmax: the same marginals, coordinated choices); the episode row says which
     shared_noise = random.random() < cfg.get("shared_noise", 0.0)
@@ -1072,6 +1089,11 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         held = {s: obs.players.get(s) for s in advised}  # (the labels count what the player could pay for)
         held = {s: np.asarray([t, s, p.gold, p.lumber, p.food_used, p.food_cap, p.upkeep]) for s, p in held.items() if p}
         rows = unit_rows(obs, t)  # once for both sides
+        if cfg.get("unit_credit", 0.0) > 0 and t > 0:  # each own unit's reward of its own for the last step
+            for s, tr in trajs.items():
+                last = tr.steps[-1] if tr.steps else None
+                if last is not None and last.get("ids") is not None and "local" not in last and s in own_rows:
+                    last["local"] = unit_rewards(own_rows[s], rows, obs.events, values, scale)
         sts = {s: bot.observe(obs, t, rows) for s, bot in bots.items()}
         live = [s for s in bots if sts[s] is not None]
         for s in live:
@@ -1089,6 +1111,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             cmds += c
             if s in trajs:
                 trajs[s].add(sts[s], res)
+                own_rows[s] = sts[s]["sel"][:min(sts[s]["n_own"], fx.MAX_OWN)]  # (its local reward: next step)
                 phi[s] = (pot[s] - pot[1 - s]) / scale
         if record:
             chose = {s: Counter(fx.order_label(*bots[s].orders[int(c)], names) for c in r["order"] if c)
@@ -1495,6 +1518,34 @@ def to_device(a, device) -> torch.Tensor:
     return x.to(device, non_blocking=True)
 
 
+def _ladv_std(steps: list[dict]) -> float:
+    """The spread of the units' own advantages over a batch (1 when there are none)."""
+    parts = [s["ladv"] for s in steps if s.get("ladv") is not None and len(s["ladv"])]
+    return float(np.concatenate(parts).std()) + 1e-8 if parts else 1.0
+
+
+def unit_rewards(own: np.ndarray, rows: np.ndarray, events, values: dict, scale: float) -> np.ndarray:
+    """Each own unit's reward of its own for the step just taken (--unit-credit; OpenAI Five's per-hero
+    reward): the material it lost or regained (its value times the change of its hit points' fraction;
+    buildings do not count, their hit points grow as they are built), plus the material of the enemy units
+    it killed (DEATH events' killer), over the shaping's scale. `own`: the step's own unit rows (features'
+    columns), `rows`: every unit after the step."""
+    now = {int(r[fx.C_ID]): r for r in rows}
+    out = np.zeros(len(own), np.float32)
+    index = {int(u): k for k, u in enumerate(own[:, fx.C_ID].tolist())}
+    for k, r in enumerate(own):
+        if int(r[fx.C_FLAGS]) & fx.STRUCTURE:
+            continue
+        v, m = values.get(str(int(r[fx.C_TYPE])), 0), max(int(r[fx.C_MAXHP]), 1)
+        after = now.get(int(r[fx.C_ID]))
+        hp1 = 0 if after is None or int(after[fx.C_FLAGS]) & fx.DEAD else int(after[fx.C_HP])
+        out[k] += v * (hp1 - int(r[fx.C_HP])) / m
+    for e in events:
+        if int(e.kind) == 1 and int(e.b) in index:  # (EventKind.DEATH: a dead, b killer, c its type)
+            out[index[int(e.b)]] += values.get(str(int(e.c)), 0)
+    return out / scale
+
+
 def collate(steps: list[dict], device, width: int | None = None, with_labels: bool = False) -> dict:
     """A minibatch of steps as padded tensors. `width`: pad the entities to it (CUDA graphs: a few
     fixed shapes); `with_labels`: the advisor's label arrays even when no step has any."""
@@ -1529,7 +1580,15 @@ def collate(steps: list[dict], device, width: int | None = None, with_labels: bo
                 for k in labels:
                     labels[k][i, :s["n_own"]] = s[k]
         labels = {**{k: t(v) for k, v in labels.items()}, "y_has": t(has), "y_any": bool(has.any())}
+    ladv = None
+    if any(s.get("ladv") is not None for s in steps):  # (--unit-credit: each own unit's share of the credit)
+        ladv = np.zeros((B, O), np.float32)
+        for i, s in enumerate(steps):
+            if s.get("ladv") is not None:
+                o = min(len(s["ladv"]), O)
+                ladv[i, :o] = s["ladv"][:o]
     return {"ent": t(ent), "type": t(typ), "cur": t(cur), "mask": t(mask), "glob": t(glob), "n_own": t(n_own), **labels,
+            **({"ladv": t(ladv)} if ladv is not None else {}),
             **{k: t(v) for k, v in acts.items()}, "logp": t(logp), "avail": t(avail) if avail is not None else None,
             "adv": t(np.array([s["adv"] for s in steps], np.float32)),
             "ret": t(np.array([s["ret"] for s in steps], np.float32)),
@@ -1620,6 +1679,7 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
     of demonstrations (bc.Steps) whose cloning loss joins each minibatch's, times args.bc_coef."""
     advs = np.array([s["adv"] for s in steps], np.float32)
     mean, std = float(advs.mean()), float(advs.std()) + 1e-8
+    lstd = _ladv_std(steps)
     if getattr(args, "opd_coef", 0.0) > 0:  # the advisor's orders become orders the unit type can get (as cloning's do)
         typ_y = [(s["type"][:s["n_own"]], s["y_order"]) for s in steps if "y_order" in s]
         if typ_y:
@@ -1655,6 +1715,8 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
             own = mb["own"].float()
             n_units = own.sum().clamp(min=1)
             adv = ((mb["adv"] - mean) / std)[:, None]
+            if "ladv" in mb and getattr(args, "unit_credit", 0.0) > 0:  # (each unit's own share: --unit-credit)
+                adv = adv + args.unit_credit * mb["ladv"] / lstd
             log_ratio = (ev["logp"] - mb["logp"]) * own
             ratio = log_ratio.exp()
             pg = -(torch.min(ratio * adv, ratio.clamp(1 - args.clip, 1 + args.clip) * adv) * own).sum() / n_units
@@ -1726,6 +1788,7 @@ class GraphedUpdate:
         self.mean = torch.zeros((), device=device)
         self.std = torch.ones((), device=device)
         self.pg_coef = torch.ones((), device=device)
+        self.lstd = torch.ones((), device=device)  # (the units' own advantages' spread: --unit-credit)
 
     def _step(self, s: dict, b: dict | None) -> dict:
         """One minibatch's step on the static inputs `s` (and the cloning batch `b`): no GPU syncs."""
@@ -1738,6 +1801,8 @@ class GraphedUpdate:
             own = s["own"].float()
             n_units = own.sum().clamp(min=1)
             adv = ((s["adv"] - self.mean) / self.std)[:, None]
+            if "ladv" in s and getattr(args, "unit_credit", 0.0) > 0:  # (each unit's own share: --unit-credit)
+                adv = adv + args.unit_credit * s["ladv"] / self.lstd
             log_ratio = (ev["logp"] - s["logp"]) * own
             ratio = log_ratio.exp()
             pg = -(torch.min(ratio * adv, ratio.clamp(1 - args.clip, 1 + args.clip) * adv) * own).sum() / n_units
@@ -1828,6 +1893,7 @@ class GraphedUpdate:
         advs = np.array([s["adv"] for s in steps], np.float32)
         self.mean.fill_(float(advs.mean()))
         self.std.fill_(float(advs.std()) + 1e-8)
+        self.lstd.fill_(_ladv_std(steps))
         self.pg_coef.fill_(0.0 if warmup else 1.0)
         if getattr(args, "opd_coef", 0.0) > 0:  # the advisor's orders become orders the unit type can get
             typ_y = [(s["type"][:s["n_own"]], s["y_order"]) for s in steps if "y_order" in s]
@@ -2024,6 +2090,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--game-cuts", type=int, default=0, help="the training games' W3SIM_CUTS (shim/cuts.c: equivalent "
                                                             "speedups of the game's own code; 1529: all verified ones, "
                                                             "~28%% less CPU a game step); 0: none")
+    ap.add_argument("--unit-credit", type=float, default=0.0, help="each own unit's advantage also gets this much of "
+                                                                 "a share of its own (OpenAI Five's team spirit: the "
+                                                                 "material it lost and killed over the next few steps, "
+                                                                 "relative to the step's other units, normalised); 0: "
+                                                                 "the step's advantage for all its units")
+    ap.add_argument("--unit-gamma", type=float, default=0.8, help="the discount of that share's return (0.8: ~5 steps)")
     ap.add_argument("--shared-noise", type=float, default=0.0, help="this share of the games (per game, at random) "
                                                                   "sample each policy side's units' targets (unit, x, y) "
                                                                   "with one noise vector a step (the same distributions, "
@@ -2243,6 +2315,7 @@ def main(argv: list[str] | None = None) -> int:
            "tie_break": args.tie_break, "tie_value": args.tie_value, "compile": bool(args.compile), "native_obs": bool(args.native_obs),
            "real_share": args.real_share, "infer_batch": 64, "infer_streams": args.infer_streams, "infer_pipeline": args.infer_pipeline,
            "infer_fuse": args.infer_fuse, "game_cuts": args.game_cuts, "shared_noise": args.shared_noise,
+           "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
            "infer_entities": [int(x) for x in args.infer_entities.split(",")],
            "infer_past_entities": [int(x) for x in args.infer_past_entities.split(",")],
