@@ -154,8 +154,9 @@ class FullGameNet(nn.Module):
 
 def arch_key(config: dict) -> str:
     """Networks that can share an inference slot (their weights copied in): the same shapes; the target
-    temperature is a buffer and comes with the weights."""
-    return json.dumps({k: v for k, v in config.items() if k != "target_temperature"}, sort_keys=True, default=str)
+    temperature is a buffer and comes with the weights, and dropout does nothing at inference."""
+    return json.dumps({k: v for k, v in config.items() if k not in ("target_temperature", "dropout")}, sort_keys=True,
+                      default=str)
 
 
 def _logp(logits, x):
