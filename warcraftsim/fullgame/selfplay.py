@@ -913,7 +913,7 @@ def game_rng(cfg: dict, wid: int, k: int) -> random.Random:
     launches (on a day of 15 restarts, 43 launches of the real game for human against the normal AI
     and 6 for orc). So is the run's name: forks (all from update 0) drew the same evaluation games
     in the same order, and the current policy got the same matchups in every fork."""
-    return random.Random(f"{cfg['seed']}/{Path(cfg['run_dir']).name}/{cfg.get('start_update', 0)}/{wid}/{k}")
+    return random.Random(f"{cfg['seed']}/{Path(cfg.get('run_dir', '')).name}/{cfg.get('start_update', 0)}/{wid}/{k}")
 
 
 def matchup(mirror: bool, race: str, opp: str) -> str:
