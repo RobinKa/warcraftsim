@@ -911,8 +911,9 @@ def game_rng(cfg: dict, wid: int, k: int) -> random.Random:
     """A game thread's draws (races, sides, kinds of launches, opponents). The update the run starts
     from is part of the seed: seeded by the thread alone, every restart of a run began with the same
     launches (on a day of 15 restarts, 43 launches of the real game for human against the normal AI
-    and 6 for orc)."""
-    return random.Random(f"{cfg['seed']}/{cfg.get('start_update', 0)}/{wid}/{k}")
+    and 6 for orc). So is the run's name: forks (all from update 0) drew the same evaluation games
+    in the same order, and the current policy got the same matchups in every fork."""
+    return random.Random(f"{cfg['seed']}/{Path(cfg['run_dir']).name}/{cfg.get('start_update', 0)}/{wid}/{k}")
 
 
 def matchup(mirror: bool, race: str, opp: str) -> str:
@@ -946,6 +947,7 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
     spec_path = Path(cfg["run_dir"]) / "league_spec.json"
     name = f"fgsp{cfg['slot']}_{wid}_{k}"
     evaluating = k >= cfg["games_per_actor"]  # an evaluation slot (--eval-games-per-actor)
+    paired: list[tuple] = []  # an evaluation slot's next launches: one matchup for every policy in turn
     while not stop.is_set() and os.getppid() == cfg["learner_pid"]:
         try:
             spec = json.loads(spec_path.read_text())
@@ -958,9 +960,17 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
         side = rng.randrange(2)  # the learner's
         ai = _choose(rng, spec["launch"])  # {"kind": "agents"} or {"kind": "ai", "difficulty"[, "delay"]}
         if evaluating:  # (--eval-games-per-actor: the yardstick only)
-            ai = {"kind": "ai", "difficulty": rng.choice(cfg.get("eval_ai") or ["normal", "insane"]), "real": True}
-            # which policy: the current one, or one of --eval-checkpoints (head to head, at the same time)
-            eval_key = rng.choice(["current"] + list(cfg.get("eval_checkpoints") or []))
+            # which policy: the current one, or one of --eval-checkpoints (head to head, at the same time).
+            # Each matchup (races, sides, the AI's difficulty) is played by every policy in turn: drawn
+            # apart, the policies' matchups differed (the AI's mean record in them 0.45 against 0.50),
+            # and the AI-record share depends on the mix.
+            if not paired:
+                keys = ["current"] + list(cfg.get("eval_checkpoints") or [])
+                rng.shuffle(keys)
+                diff = rng.choice(cfg.get("eval_ai") or ["normal", "insane"])
+                paired = [(list(races), side, diff, key) for key in keys]
+            races, side, diff, eval_key = paired.pop(0)
+            ai = {"kind": "ai", "difficulty": diff, "real": True}
         adv = cfg.get("opd_difficulty", "normal")  # (an agent slot's AI: the advisor's, protocol.ShadowAI)
         slots = [Agent(races[0], handicap=cfg["handicap"], difficulty=adv), Agent(races[1], handicap=cfg["handicap"], difficulty=adv)]
         real = bool(ai.get("real"))  # the real game (the yardstick, no curriculum)

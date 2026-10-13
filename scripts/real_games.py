@@ -44,6 +44,28 @@ def difficulty(e: dict) -> str:
     return next((d for d in ("easy", "normal", "insane") if d in e["opponent"]), "?")
 
 
+def standardised(eps: list[dict], field: str, rates: dict) -> tuple[dict, int]:
+    """Each value of `field`'s AI-record share on one matchup mix: its win rate in each matchup (race,
+    opponent's race, difficulty) that every value played, weighted by the matchup's games over all
+    values, over the AI's record on that mix. (Drawn apart, the values' matchups differ, and a share
+    depends on the mix: the policy is far above the AI's record as human, near it as night elf.)
+    -> ({value: share %}, games counted)."""
+    cell = lambda e: (e["race"], e["opponent_race"], difficulty(e))  # noqa: E731
+    t: dict = {}
+    for e in eps:
+        if "(real)" in e["opponent"] and rates.get(cell(e)) is not None:
+            a = t.setdefault((str(e[field]), cell(e)), [0, 0])
+            a[0] += e["outcome"] > 0
+            a[1] += 1
+    vals = sorted({v for v, _ in t})
+    common = [c for c in {c for _, c in t} if all((v, c) in t for v in vals)]
+    w = {c: sum(t[(v, c)][1] for v in vals) for c in common}
+    ai = sum(w[c] * rates[c] for c in common)
+    if not ai:
+        return {}, 0
+    return {v: 100 * sum(w[c] * t[(v, c)][0] / t[(v, c)][1] for c in common) / ai for v in vals}, sum(w.values())
+
+
 def tier2(prod: dict) -> bool:
     return any(k in prod["built"] or k in prod["trained"] for k in TIER2)
 
@@ -105,6 +127,10 @@ def main() -> int:
             for kind in ("self", "past"):
                 X = [e for e in part if e["opponent"].split(":")[0] == kind]
                 print(f"   against {kind}: {len(X)} games, {100 * sum(e['outcome'] == 0 for e in X) / max(1, len(X)):.0f}% ties")
+        shares, n = standardised(window, a.split, rates)
+        if shares:
+            print(f"== on one matchup mix ({n} games in the matchups every value played): "
+                  + ", ".join(f"{v} {s:.0f}%" for v, s in shares.items()))
         return 0
     recent = [e for e in eps if e["time"] > now - 60 * a.recent]
     report(recent, f"last {a.recent:.0f} min", rates)
