@@ -1039,6 +1039,24 @@ The runs since `fgself-15` had updates of ~4.6 s instead of ~3.5: the last-order
 
 **`fgself-36`** (from `fgself-33`'s 6.25M, 19:59, with its Adam state): the best line on, the anchor moved again (`--init` = `fgself-33`'s 6.25M). UPGO ×1.0, lr 3e-5. Evaluation games (2/3 against insane): the current policy against `fgself-33`'s 6.25M (its start and anchor) and `fgself-35`'s last (6.25M).
 
+`fgself-36` (the anchor moved again, 19:59-21:07): the current policy 94% of the AI's record (normal 161%, insane 66%; 214 games), `fgself-33`'s 6.25M (its start) 84% (301), `fgself-35`'s last 85% (ties 11%; 279). On one matchup mix (below): 84%, 79%, 83%. No clear gain; by 20-minute windows 98%, 96%, 83%.
+
+**The evaluation games repeated in every fork.** The games' random draws were seeded by the thread and the update the run started from, and every fork starts from update 0: all forks drew the same evaluation games in the same order (`fgself-34`, `-35` and `-36`: the current policy 256-266 games a hour, the AI's mean record in its matchups 0.450-0.456, against 0.49-0.51 for the checkpoints; the current policy also played fewer launches, 107 against 141-154). The AI-record share depends on the matchup mix (the policy is far above the AI's record as human, near it as night elf). Re-scored on one matchup mix (each matchup that every policy played, weighted by its games over all of them; `real_games.py --split` now prints it), the verdicts since `fgself-30` hold within a few points:
+
+| run | current | its start | the other |
+|---|---|---|---|
+| `fgself-30` (credit per unit) | 84% | 91% | 72% |
+| `fgself-31` (UPGO ×0.5) | **102%** | 79% | 72% |
+| `fgself-32` (UPGO ×1.0) | **108%** | 92% | 80% |
+| `fgself-33` (anchor moved) | 112% | 106% | 81% |
+| `fgself-34` (UPGO ×2.0) | 85% | 81% | 64% |
+| `fgself-35` (lr 6e-5) | 101% | 93% | 71% |
+| `fgself-36` (anchor moved) | 84% | 78% | 83% |
+
+(Bootstrapped 90% intervals are about ±9 points each.) Now each evaluation slot plays a matchup (races, sides, difficulty) with every policy in turn, and the run's name is part of the seed.
+
+**`fgself-37`** (from `fgself-36`'s 6.25M, 21:08, with its Adam state): half the KL to the anchor (`--ref-kl 0.1`, forward over every head; was 0.2): the anchor is now a strong policy, not a clone. Evaluation games paired on matchups (2/3 against insane): the current policy against `fgself-36`'s last (its start) and `fgself-33`'s 6.25M (the anchor).
+
 Next, ranked with what AlphaStar and OpenAI Five found ([ideas](ideas-from-alphastar-and-openai-five.md)): forward KL to the anchor on every head (ours is reverse KL on the orders only), a temperature for the targets, features of each unit's own last order and hit-point history (branch `features-v2` has the hit-point change and sine/cosine positions), a value with both players' information.
 
 **A fairer yardstick: the AI's own record in the same matchups.** `duelfast` is far from balanced even for the built-in AI against itself (3,000 games, mixed matchups): night elf wins 81% (normal) / 75% (insane), orc 65% / 71%, undead 33% / 37%, human 22% / 19% (human vs night elf 8% / 6%, vs orc 15% / 6%). So a race's real-game win rate says as much about the map as about the policy. `scripts/real_games.py` now also counts, for real games against normal and insane, how many the AI itself would win in the same matchups: from 2026-10-03 18:36 to 2026-10-11 00:17 the learner won 195 of 896, the AI would win ~455 (**43% of the AI's record**; 45% in the last two hours before the anchor experiment). 100% is the built-in AI's level.
