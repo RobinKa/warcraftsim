@@ -948,3 +948,20 @@ def test_set_dropout():
     assert all(m.p == 0.0 for m in net.modules() if isinstance(m, torch.nn.Dropout))
     assert all(m.dropout == 0.0 for m in net.modules() if isinstance(m, torch.nn.MultiheadAttention))
     assert net.config["dropout"] == 0.0
+
+
+def test_material_counts_hero_levels():
+    from types import SimpleNamespace
+
+    from warcraftsim.fullgame.trace import material
+
+    ua = np.zeros((3, 32), np.int32)
+    ua[:, 1] = [10, 20, 10]  # types: a hero type (10), a footman type (20)
+    ua[:, 2] = [0, 0, 1]  # owners
+    ua[:, 6], ua[:, 7] = [500, 420, 250], [500, 420, 500]  # hit points, maximum
+    ua[:, 14] = [3, 0, 5]  # hero levels (0: not a hero)
+    obs = SimpleNamespace(unit_array=ua)
+    values = {"10": 525, "20": 135}
+    assert material(obs, values) == {0: 660.0, 1: 262.5}
+    # level 3: two levels above the first; the enemy's level-5 hero at half its hit points
+    assert material(obs, values, 100.0) == {0: 860.0, 1: 0.5 * (525 + 400)}

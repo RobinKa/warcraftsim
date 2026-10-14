@@ -19,8 +19,10 @@ def trace_step(t: int, obs: Observation, material: dict, orders: dict, **policy)
     return row
 
 
-def material(obs, values: dict) -> dict[int, float]:
-    """What each player's living units and buildings cost, times their hit points left: {0: .., 1: ..}."""
+def material(obs, values: dict, hero_level: float = 0.0) -> dict[int, float]:
+    """What each player's living units and buildings cost, times their hit points left: {0: .., 1: ..}.
+    `hero_level`: a hero also counts this much for each level above the first (its cost alone does not
+    grow as it levels; a dead hero counts nothing until it is revived)."""
     out = {0: 0.0, 1: 0.0}
     ua = getattr(obs, "unit_array", None)
     if ua is not None and len(ua):  # native observations: vectorized
@@ -29,13 +31,16 @@ def material(obs, values: dict) -> dict[int, float]:
         a = ua[live]
         types, inv = np.unique(a[:, 1], return_inverse=True)
         v = np.array([values.get(str(t), 0) for t in types.tolist()], float)[inv]
+        if hero_level:  # (column 14: the hero's level, 0 for other units)
+            v = v + hero_level * np.maximum(a[:, 14] - 1, 0)
         hp = np.where(a[:, 7] > 0, a[:, 6] / np.maximum(a[:, 7], 1), 1.0)
         for p in (0, 1):
             out[p] = float((v * hp)[a[:, 2] == p].sum())
         return out
     for u in obs.units:
         if u.owner in (0, 1) and not int(u.flags) & DEAD_FLAG:
-            out[u.owner] += values.get(str(u.type_id), 0) * (u.hp / u.max_hp if u.max_hp > 0 else 1.0)
+            v = values.get(str(u.type_id), 0) + hero_level * max(int(getattr(u, "hero_level", 0) or 0) - 1, 0)
+            out[u.owner] += v * (u.hp / u.max_hp if u.max_hp > 0 else 1.0)
     return out
 
 

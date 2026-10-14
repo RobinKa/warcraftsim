@@ -1084,7 +1084,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     # (model._gumbel_argmax: the same marginals, coordinated choices); the episode row says which
     shared_noise = random.random() < cfg.get("shared_noise", 0.0)
     values, scale = cfg["values"], cfg["shaping_scale"]
-    mat = material(obs, values)
+    mat = material(obs, values, cfg.get("hero_level_value", 0.0))
     pot = shaped(obs, mat, cfg.get("float_penalty", 0.0))
     phi = {s: (pot[s] - pot[1 - s]) / scale for s in trajs}  # at the last recorded state
     ret = {s: 0.0 for s in trajs}
@@ -1146,7 +1146,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             bots[s].accepted(cmds[a:b], obs.command_results[a:b])
         t += 1
         prod.step(obs)
-        mat = material(obs, values)
+        mat = material(obs, values, cfg.get("hero_level_value", 0.0))
         pot = shaped(obs, mat, cfg.get("float_penalty", 0.0))
         if obs.game_over or t >= cfg["max_steps"]:
             break
@@ -2241,6 +2241,9 @@ def main(argv: list[str] | None = None) -> int:
                          "3.4 cores (the game at 960x540 on a software renderer, in real time)")
     ap.add_argument("--shaping", type=float, default=1.0, help="weight of the material-lead reward shaping (0: none)")
     ap.add_argument("--shaping-scale", type=float, default=2000.0, help="material (gold + lumber cost) worth 1 of potential")
+    ap.add_argument("--hero-level-value", type=float, default=0.0, help="the shaping's material: a hero also counts this "
+                                                                       "much for each level above the first (its cost "
+                                                                       "alone does not grow as it levels)")
     ap.add_argument("--float-penalty", type=float, default=0.0,
                     help="the shaping's potential counts the gold and lumber a player holds at minus this (0: not at "
                          "all): spending is credited at the order")
@@ -2407,6 +2410,7 @@ def main(argv: list[str] | None = None) -> int:
            "real_share": args.real_share, "infer_batch": 64, "infer_streams": args.infer_streams, "infer_pipeline": args.infer_pipeline,
            "infer_fuse": args.infer_fuse, "game_cuts": args.game_cuts, "shared_noise": args.shared_noise,
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
+           "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
            "eval_ai": [d for d in args.eval_ai.split(",") if d],
            "infer_entities": [int(x) for x in args.infer_entities.split(",")],
