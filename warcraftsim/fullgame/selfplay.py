@@ -2068,6 +2068,9 @@ def main(argv: list[str] | None = None) -> int:
                                                                  "act without; -1: the checkpoint's, 0.1 from cloning)")
     ap.add_argument("--eval-ai", default="normal,insane", help="the evaluation games' built-in AI, one of these at "
                                                               "random (a name twice: twice as often)")
+    ap.add_argument("--order-temperature", type=float, help="the policy's order head samples at this temperature, "
+                                                            "acting and training alike (saved with its checkpoints; "
+                                                            "default: the starting weights')")
     ap.add_argument("--target-temperature", type=float, help="the policy's target heads (unit, x, y) sample at this "
                                                             "temperature (model.FullGameNet, acting and training "
                                                             "alike; saved in its checkpoints); default: the "
@@ -2304,10 +2307,14 @@ def main(argv: list[str] | None = None) -> int:
         else:
             net.load_state_dict(start.state_dict())
             net.config["target_temperature"] = start.config.get("target_temperature", 1.0)
+            net.config["order_temperature"] = start.config.get("order_temperature", 1.0)
         del start
     if args.target_temperature is not None:  # (the policy's, saved with its checkpoints; the anchor keeps its own)
         net.target_temp.fill_(args.target_temperature)
         net.config["target_temperature"] = args.target_temperature
+    if args.order_temperature is not None:  # (alike, the order head's)
+        net.order_temp.fill_(args.order_temperature)
+        net.config["order_temperature"] = args.order_temperature
     if args.rl_dropout >= 0:  # the updates' dropout (the actors act without: eval mode)
         set_dropout(net, args.rl_dropout)
     graphed = bool(args.cuda_graphs) and device.type == "cuda" and bool(net.memory)

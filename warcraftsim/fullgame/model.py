@@ -25,18 +25,25 @@ from . import features as fx
 NEG = -1e9
 
 
+def _order_temp_default(state, prefix, *_):
+    state.setdefault(prefix + "order_temp", torch.tensor(1.0))
+
+
 class FullGameNet(nn.Module):
     def __init__(self, n_types: int, n_cur: int, n_orders: int, G: int, d: int = 192, heads: int = 4,
                  layers: int = 3, dropout: float = 0.0, memory: bool = False, target_temperature: float = 1.0,
-                 priv: int = 0):
+                 priv: int = 0, order_temperature: float = 1.0):
         super().__init__()
         self.config = dict(n_types=n_types, n_cur=n_cur, n_orders=n_orders, G=G, d=d, heads=heads, layers=layers,
-                           dropout=dropout, memory=memory, target_temperature=target_temperature, priv=priv)
+                           dropout=dropout, memory=memory, target_temperature=target_temperature, priv=priv,
+                           order_temperature=order_temperature)
         # the global vector's last `priv` numbers: the whole game (features.View.priv), for the value alone
         self.priv = int(priv)
         # the target heads' logits (unit, x, y) divided by it, acting and training alike: < 1 samples a unit's
         # target closer to its most likely one (AlphaStar samples at 0.8; a clone of a deterministic script
         # spreads its targets from uncertainty, and a group's points scattered)
+        self.register_buffer("order_temp", torch.tensor(float(order_temperature)))  # (the order head's, alike;
+        self._register_load_state_dict_pre_hook(_order_temp_default)                # checkpoints from before it: 1)
         self.register_buffer("target_temp", torch.tensor(float(target_temperature)))  # (a buffer: CUDA graphs read
         # it from memory, and a past snapshot copied into an inference slot brings its own)
         self.memory = memory
@@ -116,7 +123,7 @@ class FullGameNet(nn.Module):
         learns it: a mask there made unseen pairs, e.g. of upgraded buildings, infinitely wrong)."""
         O = u.shape[1]
         own = u[:, :O]
-        logits = self.order(torch.cat([own, g.unsqueeze(1).expand_as(own)], -1))
+        logits = self.order(torch.cat([own, g.unsqueeze(1).expand_as(own)], -1)) / self.order_temp
         is_own = torch.arange(O, device=u.device)[None] < n_own[:, None]
         allowed = is_own.unsqueeze(-1).expand_as(logits).clone()
         if by_type:
@@ -155,7 +162,8 @@ class FullGameNet(nn.Module):
 def arch_key(config: dict) -> str:
     """Networks that can share an inference slot (their weights copied in): the same shapes; the target
     temperature is a buffer and comes with the weights, and dropout does nothing at inference."""
-    return json.dumps({k: v for k, v in config.items() if k not in ("target_temperature", "dropout")}, sort_keys=True,
+    return json.dumps({k: v for k, v in config.items() if k not in ("target_temperature", "order_temperature", "dropout")},
+                      sort_keys=True,
                       default=str)
 
 
