@@ -72,7 +72,9 @@ class NativeServer:
         t0 = time.time()
         league = Path(cfg["run_dir"]) / "league.json"
         keys = [m["path"] for m in json.loads(league.read_text()).get("members", []) if m.get("path")] if league.exists() else []
-        warm_inference(self.nets, self.infer, self.past, self.swap, keys)
+        # (and the evaluation checkpoints: each architecture gets its slots here, a grown network's anchor and
+        # older checkpoints another than the current one's)
+        warm_inference(self.nets, self.infer, self.past, self.swap, keys + list(cfg.get("eval_checkpoints") or []))
         print(f"native inference: graphs captured in {time.time() - t0:.0f} s", flush=True)
         self.arch_ids: dict[str, int] = {}
         self.kept: dict[str, tuple] = {}  # past snapshots' weights the loop copies from (kept alive here)

@@ -663,7 +663,7 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
         t0 = time.time()
         league = Path(cfg["run_dir"]) / "league.json"
         keys = [m["path"] for m in json.loads(league.read_text()).get("members", []) if m.get("path")] if league.exists() else []
-        warm_inference(nets, infer, past, swap, keys)
+        warm_inference(nets, infer, past, swap, keys + list(cfg.get("eval_checkpoints") or []))
         print(f"inference thread: graphs captured in {time.time() - t0:.0f} s", flush=True)
     def fresh():
         return {"calls": 0, "past": 0, "rows": 0, "busy": 0.0, "wait": 0.0, "idle": 0.0, "ents": 0, "ents_max": 0,
@@ -2299,8 +2299,11 @@ def main(argv: list[str] | None = None) -> int:
             p.requires_grad_(False)
     if args.start_weights and not args.resume:  # a new run from another run's checkpoint (--init stays the anchor)
         start, _ = load(args.start_weights, device, None if args.memory < 0 else bool(args.memory))
-        net.load_state_dict(start.state_dict())
-        net.config["target_temperature"] = start.config.get("target_temperature", 1.0)
+        if arch_key(start.config) != arch_key(net.config):  # a grown network (scripts/grow_model.py): its own
+            net = start                                     # shapes (the anchor keeps the init's)
+        else:
+            net.load_state_dict(start.state_dict())
+            net.config["target_temperature"] = start.config.get("target_temperature", 1.0)
         del start
     if args.target_temperature is not None:  # (the policy's, saved with its checkpoints; the anchor keeps its own)
         net.target_temp.fill_(args.target_temperature)

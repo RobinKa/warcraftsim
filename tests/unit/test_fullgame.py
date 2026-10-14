@@ -965,3 +965,28 @@ def test_material_counts_hero_levels():
     assert material(obs, values) == {0: 660.0, 1: 262.5}
     # level 3: two levels above the first; the enemy's level-5 hero at half its hit points
     assert material(obs, values, 100.0) == {0: 860.0, 1: 0.5 * (525 + 400)}
+
+
+def test_grow_model_plays_as_before():
+    import importlib.util
+    from pathlib import Path
+
+    from warcraftsim.fullgame.model import FullGameNet
+
+    spec = importlib.util.spec_from_file_location("grow_model", Path(__file__).parents[2] / "scripts" / "grow_model.py")
+    gm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gm)
+    torch.manual_seed(0)
+    net = FullGameNet(n_types=5, n_cur=5, n_orders=7, G=6, d=16, heads=2, layers=1, memory=True).eval()
+    opt = torch.optim.Adam(net.parameters())
+    net.value_head[-1].bias.sum().backward()
+    opt.step()
+    big = gm.grow(net, 3)
+    ent, typ, cur = torch.randn(2, 4, fx.F), torch.randint(0, 5, (2, 4)), torch.randint(0, 5, (2, 4))
+    mask, glob = torch.ones(2, 4, dtype=torch.bool), torch.randn(2, 6)
+    with torch.no_grad():
+        assert torch.allclose(net.encode(ent, typ, cur, mask, glob)[1], big.encode(ent, typ, cur, mask, glob)[1], atol=1e-5)
+    state = gm.grow_adam(opt.state_dict(), net, big)
+    opt2 = torch.optim.Adam(big.parameters())
+    opt2.load_state_dict(state)
+    assert torch.equal(opt2.state[big.value_head[-1].bias]["exp_avg"], opt.state[net.value_head[-1].bias]["exp_avg"])
