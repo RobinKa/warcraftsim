@@ -95,7 +95,9 @@ def report(eps: list[dict], label: str, rates: dict | None = None) -> None:
         D = [e for e in real if difficulty(e) == d]
         if not D:
             continue
-        m = lambda k, side="prod": sum(e[side][k] for e in D) / len(D)  # noqa: E731
+        def m(k: str, side: str = "prod") -> float:  # (a game over before its first minute has no food then)
+            v = [e[side][k] for e in D if e[side].get(k) is not None]
+            return sum(v) / max(len(v), 1)
         t2 = lambda side: 100 * sum(tier2(e[side]) for e in D) / len(D)  # noqa: E731
         wpm = lambda side: sum(e[side]["workers"] for e in D) / sum(e["game_time"] / 60 for e in D)  # noqa: E731
         print(f"   {d:6s} (learner vs AI): food at 1 min {m('food_1min'):.1f} vs {m('food_1min', 'opp_prod'):.1f}, "
