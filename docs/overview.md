@@ -8,7 +8,7 @@ warcraftsim trains agents on the real Warcraft III 1.29, headless under Wine. Py
 |---|---|---|
 | Micro fights | 91% against the scripted opponent. League self-play: 82%, and 79% against the 91% policy | `--trainer torch` |
 | Whole game, `duelrush` (2-minute games) | **79%** against the built-in AI, all 16 matchups | `fgself-10` |
-| Whole game, `duelfast` (6-minute games) | on evaluation games (the real game against normal and insane, nothing trained on), **~110% of what the built-in AI itself wins** in the same matchups (against normal ~170%, against insane ~80%), with forward KL to the anchor over every head, the anchor moved to the policy's own recent checkpoint, training against insane, UPGO and no dropout in the updates (2026-10-13; ~28-32% on the 12th's morning) | `fgself-40` (running) |
+| Whole game, `duelfast` (6-minute games) | on evaluation games (the real game against normal and insane, nothing trained on), **~110% of what the built-in AI itself wins** in the same matchups (against normal ~170%, against insane ~80%: more than half its games against insane won), with forward KL to the anchor over every head, the anchor moved to the policy's own recent checkpoint, training against insane, UPGO and no dropout in the updates (2026-10-13; ~28-32% on the 12th's morning) | `fgself-41` (running) |
 | The real game (Echo Isles) | not started | |
 
 ## How we make a whole-game agent
