@@ -23,11 +23,10 @@ def _num(row: dict, key: str) -> int:
 
 def order_costs(vocab: dict, map_name: str = "duelrush") -> np.ndarray:
     """[n_orders, 3]: gold, lumber and food of each order class (row 0: no order)."""
-    from ..data.duelmap import Rules, parse_duel_name
+    from ..data.duelmap import map_rules
     from ..data.mpq import GameArchives
     from ..data.objects import parse_slk
-    parsed = parse_duel_name(map_name)
-    rules = parsed[1] if parsed else Rules()
+    rules = map_rules(map_name)
     with GameArchives() as g:
         units = {r.get("unitBalanceID"): r for r in parse_slk(g.read("Units\\UnitBalance.slk").decode("latin-1"))}
         upgrades = {r.get("upgradeid"): r for r in parse_slk(g.read("Units\\UpgradeData.slk").decode("latin-1"))}

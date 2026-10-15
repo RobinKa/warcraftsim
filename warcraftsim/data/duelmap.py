@@ -539,3 +539,74 @@ def duel_map_path(name: str, pairs: int = 1) -> Path:
         if not out.exists():
             make_duel_map(src, out, size, rules, base_x, pairs)
     return out
+
+
+# Echo Isles itself (the real map, its terrain, creeps, mines and expansions) under other rules: "echofast"
+# plays it by FAST's (what the duelfast policy learned), "echoP" P% of the way from FAST to the game's own
+# (hit points, times and costs in between; "echo100" is the real game), to anneal a policy to the real rules.
+ECHO_ISLES = "(2)EchoIsles"
+
+
+def parse_echo_name(name: str) -> tuple[str, Rules] | None:
+    """"echofast" -> (Echo Isles, FAST), "echoP" (P 0-100) -> (Echo Isles, P% of the way from FAST to the
+    game's rules); else None."""
+    m = re.fullmatch(r"echo(fast|\d{1,3})", name)
+    if not m:
+        return None
+    t = 0.0 if m.group(1) == "fast" else int(m.group(1)) / 100
+    if t > 1:
+        raise ValueError("echoP: P is a percentage, 0-100")
+    if t == 0:
+        return ECHO_ISLES, FAST
+    if t == 1:
+        return ECHO_ISLES, Rules()
+
+    def toward(v: float) -> float:
+        return round(v + (1.0 - v) * t, 4)
+
+    return ECHO_ISLES, Rules(hp=toward(FAST.hp), time=toward(FAST.time), cost=toward(FAST.cost))
+
+
+def map_rules(name: str) -> Rules:
+    """The rules a map name plays by: a duel map's, an Echo Isles variant's, else the game's own."""
+    d = parse_duel_name(name)
+    if d is not None:
+        return d[1]
+    e = parse_echo_name(name)
+    return e[1] if e is not None else Rules()
+
+
+def echo_map_path(name: str) -> Path:
+    """The cached Echo Isles variant for an "echo..." name (built on first use)."""
+    from .mapbuild import stock_map_path
+
+    src_name, rules = parse_echo_name(name)
+    src = stock_map_path(src_name)
+    if rules == Rules():
+        return src
+    version = "v1" + ("_t" if TABLES_IN_MAP else "")
+    out = paths.CACHE_DIR / "maps" / f"echo{rules.tag}_{version}.w3x"
+    with _lock:
+        if not out.exists():
+            make_rules_map(src, out, rules)
+    return out
+
+
+def make_rules_map(source: str | Path, dest: str | Path, rules: Rules) -> Path:
+    """A copy of `source` (its terrain, units and script) playing by `rules`: the game's tables with the
+    rules' values and its gameplay constants in the map (rules_files). Rules that need the map script
+    (the day's speed, the starting resources) are not supported here."""
+    if (rules.day * rules.speed, rules.start) != (1.0, 1.0):
+        raise ValueError("make_rules_map: the day's speed and the starting resources need the duel maps' script")
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(f".{dest.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    shutil.copyfile(source, tmp)
+    try:
+        with MpqArchive(tmp, writable=True) as m:
+            for name, data in rules_files(rules, TABLES_IN_MAP).items():
+                m.write(name, data)
+        tmp.replace(dest)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return dest

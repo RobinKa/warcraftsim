@@ -317,9 +317,11 @@ class GameSetup:
         key = {"map": self.map, "harness": harness,
                "source": hashlib.sha1((source or harness_source()).encode()).hexdigest(),
                "tables": hashlib.sha1(tables.encode()).hexdigest()}
-        from ..data.duelmap import duel_map_path, parse_duel_name
+        from ..data.duelmap import duel_map_path, echo_map_path, parse_duel_name, parse_echo_name
         if parse_duel_name(self.map) is not None:  # a generated map: its version (the file's name) too
             key["generated"] = duel_map_path(self.map, self.pairs).name
+        elif parse_echo_name(self.map) is not None:
+            key["generated"] = echo_map_path(self.map).name
         blob = json.dumps(key, sort_keys=True)
         return hashlib.sha1(blob.encode()).hexdigest()[:12]
 
