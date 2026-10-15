@@ -399,10 +399,16 @@ def main(argv: list[str] | None = None) -> int:
     enc = fx.Encoder(vocab)
     from .trace import unit_values
     values = unit_values()
+    map_name = fx.load_game(train[0])["meta"].get("map", "duelrush")
+    from ..data.duelmap import parse_duel_name
+    if parse_duel_name(map_name) is None:  # another map than the duel maps: its own frame (the loader workers
+        from ..data.mapbuild import stock_map_path  # fork from here and inherit it)
+        fx.set_geometry(*fx.map_geometry(stock_map_path(map_name)))
+        print(f"map frame ({map_name}): centre ({fx.MAP_CX:g}, {fx.MAP_CY:g}), half-width {fx.MAP_EXTENT:g}", flush=True)
     costs = None
     if args.avail_mask:
         from .costs import order_costs
-        costs = order_costs(vocab, fx.load_game(train[0])["meta"].get("map", "duelrush"))
+        costs = order_costs(vocab, map_name)
     info = {"kind": "bc", "name": args.name, "created": time.time(), "task": "fullgame", "policy": "built-in AI",
             "status": "fitting", "data": " ".join(map(str, args.data)), "games": {"train": len(train), "val": len(val)},
             "vocab": {"types": enc.n_types, "orders": enc.n_orders, "upgrades": len(enc.upgrade_index)},
