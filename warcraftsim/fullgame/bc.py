@@ -465,6 +465,9 @@ def main(argv: list[str] | None = None) -> int:
             train_stats.append(st)
             n += 1
             step += 1
+            if n % 2000 == 0:  # (an epoch of whole games can take an hour: how far it is)
+                print(f"epoch {epoch}: {n} batches, {time.time() - t0:.0f} s, order loss "
+                      f"{float(np.mean([x['loss_order'] for x in train_stats[-2000:]])):.3f}", flush=True)
         total_batches = total_batches or n * args.epochs
         net.eval()
         with torch.no_grad():
