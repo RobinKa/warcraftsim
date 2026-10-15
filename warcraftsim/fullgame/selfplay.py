@@ -1293,6 +1293,7 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
     signal.signal(signal.SIGTERM, _exit)
     _pin(cfg, "games")
     fx.ACTIVE_F = cfg.get("features", fx.F)  # (a spawned process: the learner's setting, --features)
+    fx.set_geometry(*cfg.get("map_geometry", (fx.MAP_CX, fx.MAP_CY, fx.MAP_EXTENT)))  # (and the map's frame)
     out_q.cancel_join_thread()  # exiting must not wait to flush trajectories nobody reads any more
     torch.set_num_threads(1)
     try:
@@ -2264,6 +2265,11 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     fx.ACTIVE_F = args.features  # (the cloning loss's data workers fork from here: they inherit it)
     os.environ["WARCRAFTSIM_FEATURES"] = str(args.features)  # (and processes started anew: actors, videos)
+    from ..data.duelmap import parse_duel_name
+    if parse_duel_name(args.map) is None:  # another map than the duel maps: its own frame for the positions
+        from ..data.mapbuild import stock_map_path    # and point targets (features.set_geometry; the actors
+        fx.set_geometry(*fx.map_geometry(stock_map_path(args.map)))  # inherit it through the environment)
+        print(f"map frame: centre ({fx.MAP_CX:g}, {fx.MAP_CY:g}), half-width {fx.MAP_EXTENT:g}", flush=True)
     if args.eval_games:  # (in all: each actor's pipes and rows for the most any actor gets)
         args.eval_games_per_actor = -(-args.eval_games // args.actors)
     args.device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -2423,6 +2429,7 @@ def main(argv: list[str] | None = None) -> int:
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
            "eval_ai": [d for d in args.eval_ai.split(",") if d],
+           "map_geometry": [fx.MAP_CX, fx.MAP_CY, fx.MAP_EXTENT],
            "infer_entities": [int(x) for x in args.infer_entities.split(",")],
            "infer_past_entities": [int(x) for x in args.infer_past_entities.split(",")],
            "infer_past_slots": args.infer_past_slots, "game_nice": args.game_nice, "pairs": args.pairs,

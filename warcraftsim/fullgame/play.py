@@ -152,8 +152,7 @@ class BCAgent:
             if self.committed(unit):
                 continue  # on its way to build, or building: another order would cancel it
             self.last_sent.append((oid, kind))
-            x = float(self.view.sign * fx.bin_center(int(bx[i])))
-            y = float(fx.bin_center(int(by[i])))
+            x, y = fx.bins_world(int(bx[i]), int(by[i]), self.view.sign)
             if kind == fx.IMMEDIATE:
                 out.append(ImmediateOrder(unit, oid))
             elif kind == fx.SKILL:

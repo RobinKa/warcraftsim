@@ -24,8 +24,36 @@ from pathlib import Path
 
 import numpy as np
 
-MAP_EXTENT = 3072.0  # half the duel map's width
-BINS = 128  # point targets: 48 units per bin
+# the map's frame: positions are offsets from its centre (MAP_CX, MAP_CY) over its half-width
+# (MAP_EXTENT), x mirrored for the player on the right; point targets are BINS bins across it. The
+# duel maps': centre 0, 3072 (48 units a bin). set_geometry for another map (map_geometry: from its
+# start locations and bounds); from the environment too (processes started anew).
+MAP_CX, MAP_CY, MAP_EXTENT = (tuple(float(v) for v in os.environ["WARCRAFTSIM_MAP_GEOMETRY"].split(","))
+                              if os.environ.get("WARCRAFTSIM_MAP_GEOMETRY") else (0.0, 0.0, 3072.0))
+BINS = 128
+
+
+def set_geometry(cx: float, cy: float, extent: float) -> None:
+    global MAP_CX, MAP_CY, MAP_EXTENT
+    MAP_CX, MAP_CY, MAP_EXTENT = float(cx), float(cy), float(extent)
+    os.environ["WARCRAFTSIM_MAP_GEOMETRY"] = f"{MAP_CX},{MAP_CY},{MAP_EXTENT}"
+
+
+def map_geometry(path) -> tuple[float, float, float]:
+    """A map's frame (centre x, y, half-width) for a map with its two bases left and right (the view
+    mirrors x only): x between its first two start locations (each base mirrors onto the other), y the
+    middle of its camera bounds, the half-width the farthest those reach from the centre, rounded up to
+    256. (The duel maps keep the default frame their policies learned: 0, 0, 3072.)"""
+    from ..data.mpq import MpqArchive
+    from ..data.w3i import parse_w3i
+
+    with MpqArchive(path) as m:
+        info = parse_w3i(m.read("war3map.w3i"))
+    a, b = info.players[0], info.players[1]
+    xs, ys = info.camera_bounds[0::2], info.camera_bounds[1::2]
+    cx, cy = (a.start_x + b.start_x) / 2, (min(ys) + max(ys)) / 2
+    reach = max(max(abs(x - cx) for x in xs), max(abs(y - cy) for y in ys))
+    return cx, cy, math.ceil(reach / 256) * 256
 MAX_ENT, MAX_OWN = 160, 96
 MOVE, AIMOVE = 851986, 851988  # the AI's own move order is played back as a move
 # orders that are not decisions: internal ones the AI gives to most units (851974, 852660), and
@@ -257,11 +285,23 @@ def _lookup(x: np.ndarray, keys: np.ndarray, vals: np.ndarray) -> np.ndarray:
 
 
 def _bin(v: np.ndarray) -> np.ndarray:
+    """An offset from the map's centre (mirrored) -> its bin."""
     return np.clip(((v + MAP_EXTENT) / (2 * MAP_EXTENT) * BINS).astype(np.int64), 0, BINS - 1)
 
 
 def bin_center(b: np.ndarray | int) -> np.ndarray | float:
+    """A bin -> the offset from the map's centre at its middle."""
     return (np.asarray(b) + 0.5) / BINS * 2 * MAP_EXTENT - MAP_EXTENT
+
+
+def world_bins(x, y, sign: float) -> tuple[np.ndarray, np.ndarray]:
+    """A point in the world -> its x and y bins in a player's (mirrored) view."""
+    return _bin(np.asarray(sign * (np.asarray(x) - MAP_CX))), _bin(np.asarray(np.asarray(y) - MAP_CY))
+
+
+def bins_world(bx: int, by: int, sign: float) -> tuple[float, float]:
+    """x and y bins in a player's view -> the point in the world."""
+    return float(MAP_CX + sign * bin_center(int(bx))), float(MAP_CY + bin_center(int(by)))
 
 
 class Encoder:
@@ -287,7 +327,7 @@ class Encoder:
     def side(units_step0: np.ndarray, player: int) -> float:
         """-1 if the player's base is on the right (its view is mirrored), else 1."""
         own = units_step0[(units_step0[:, C_OWNER] == player) & (units_step0[:, C_FLAGS] & STRUCTURE > 0)]
-        return -1.0 if len(own) and own[:, C_X].mean() > 0 else 1.0
+        return -1.0 if len(own) and own[:, C_X].mean() > MAP_CX else 1.0
 
     def entities(self, rows: np.ndarray, player: int, sign: float, production=None,
                  lumber: set[int] | None = None) -> tuple[np.ndarray, ...]:
@@ -303,8 +343,8 @@ class Encoder:
         f[:n_own, 0] = 1
         f[n_own:n_own + len(enemy), 1] = 1
         f[n_own + len(enemy):, 2] = 1
-        f[:, 3] = sign * sel[:, C_X] / MAP_EXTENT
-        f[:, 4] = sel[:, C_Y] / MAP_EXTENT
+        f[:, 3] = sign * (sel[:, C_X] - MAP_CX) / MAP_EXTENT
+        f[:, 4] = (sel[:, C_Y] - MAP_CY) / MAP_EXTENT
         f[:, 5] = sel[:, C_HP] / np.maximum(sel[:, C_MAXHP], 1)
         f[:, 6] = sel[:, C_MAXHP] / 1000.0
         f[:, 7] = np.where(sel[:, C_MAXMANA] > 0, sel[:, C_MANA] / np.maximum(sel[:, C_MAXMANA], 1), 0)
@@ -426,8 +466,7 @@ class Encoder:
                 y["y_ptr"][k] = index[target]
             elif lab[1] in (POINT, TREE):
                 x, yy = (trees[target] if lab[1] == TREE else (int(r[4]), int(r[5])))
-                y["y_x"][k] = _bin(np.array(view.sign * x))
-                y["y_y"][k] = _bin(np.array(yy))
+                y["y_x"][k], y["y_y"][k] = world_bins(x, yy, view.sign)
         return y, paid
 
 
@@ -526,8 +565,8 @@ class View:
             out[a:a + 7] = (worker.sum() / 20.0, army.sum() / 30.0, struct.sum() / 30.0, hero.sum() / 3.0,
                             r[hero, C_HLEVEL].sum() / 20.0, r[army, C_HP].sum() / 3000.0, r[army, C_MAXHP].sum() / 3000.0)
             if army.any():
-                out[a + 7] = self.sign * r[army, C_X].mean() / MAP_EXTENT
-                out[a + 8] = r[army, C_Y].mean() / MAP_EXTENT
+                out[a + 7] = self.sign * (r[army, C_X].mean() - MAP_CX) / MAP_EXTENT
+                out[a + 8] = (r[army, C_Y].mean() - MAP_CY) / MAP_EXTENT
         return out
 
     def step(self, rows: np.ndarray, me: np.ndarray | None, events: np.ndarray, t: int,
