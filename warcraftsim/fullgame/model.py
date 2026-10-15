@@ -32,11 +32,11 @@ def _order_temp_default(state, prefix, *_):
 class FullGameNet(nn.Module):
     def __init__(self, n_types: int, n_cur: int, n_orders: int, G: int, d: int = 192, heads: int = 4,
                  layers: int = 3, dropout: float = 0.0, memory: bool = False, target_temperature: float = 1.0,
-                 priv: int = 0, order_temperature: float = 1.0):
+                 priv: int = 0, order_temperature: float = 1.0, bins: int = 128):
         super().__init__()
         self.config = dict(n_types=n_types, n_cur=n_cur, n_orders=n_orders, G=G, d=d, heads=heads, layers=layers,
                            dropout=dropout, memory=memory, target_temperature=target_temperature, priv=priv,
-                           order_temperature=order_temperature)
+                           order_temperature=order_temperature, bins=bins)
         # the global vector's last `priv` numbers: the whole game (features.View.priv), for the value alone
         self.priv = int(priv)
         # the target heads' logits (unit, x, y) divided by it, acting and training alike: < 1 samples a unit's
@@ -64,9 +64,10 @@ class FullGameNet(nn.Module):
         self.cond = nn.Sequential(nn.Linear(2 * d, d), nn.ReLU(), nn.LayerNorm(d))
         self.query = nn.Linear(d, d)
         self.key = nn.Linear(d, d)
-        self.point_x = nn.Linear(d, fx.BINS)
-        self.x_emb = nn.Embedding(fx.BINS, d)  # y is chosen given x (sampled apart, they paired the
-        self.point_y = nn.Sequential(nn.Linear(d, d), nn.ReLU(), nn.Linear(d, fx.BINS))  # x of one spot with the y of another)
+        self.bins = bins  # point targets' bins (features.BINS of the map it plays: scripts/grow_bins.py)
+        self.point_x = nn.Linear(d, bins)
+        self.x_emb = nn.Embedding(bins, d)  # y is chosen given x (sampled apart, they paired the
+        self.point_y = nn.Sequential(nn.Linear(d, d), nn.ReLU(), nn.Linear(d, bins))  # x of one spot with the y of another)
         # which orders each unit type got in the demonstrations (filled while training; row 0:
         # unknown types, any)
         self.register_buffer("allowed", torch.zeros(n_types, n_orders, dtype=torch.bool))

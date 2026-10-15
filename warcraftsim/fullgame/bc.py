@@ -404,7 +404,7 @@ def main(argv: list[str] | None = None) -> int:
     if parse_duel_name(map_name) is None:  # another map than the duel maps: its own frame (the loader workers
         from ..data.mapbuild import stock_map_path  # fork from here and inherit it)
         fx.set_geometry(*fx.map_geometry(stock_map_path(map_name)))
-        print(f"map frame ({map_name}): centre ({fx.MAP_CX:g}, {fx.MAP_CY:g}), half-width {fx.MAP_EXTENT:g}", flush=True)
+        print(f"map frame ({map_name}): starts {fx.STARTS}, point bins over +-{fx.BIN_RANGE:g} ({fx.BINS})", flush=True)
     costs = None
     if args.avail_mask:
         from .costs import order_costs
@@ -424,9 +424,11 @@ def main(argv: list[str] | None = None) -> int:
         from .model import load
         net, _ = load(args.init, device)
         args.d, args.memory = net.config["d"], net.memory
+        if net.bins != fx.BINS:
+            raise SystemExit(f"{args.init} has {net.bins} point bins, this map's frame {fx.BINS}: scripts/grow_bins.py")
     else:
         net = FullGameNet(enc.n_types, enc.n_cur, enc.n_orders, enc.G, d=args.d, layers=args.layers, priv=fx.PRIV,
-                          dropout=args.dropout, memory=args.memory).to(device)
+                          dropout=args.dropout, memory=args.memory, bins=fx.BINS).to(device)
         net.allowed[0] = True  # unknown unit types: any order
         net.order_kind.copy_(torch.as_tensor(enc.order_kind, device=device))
     opt = torch.optim.AdamW(net.parameters(), lr=args.lr, weight_decay=1e-4)

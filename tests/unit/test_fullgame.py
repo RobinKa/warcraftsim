@@ -990,3 +990,54 @@ def test_grow_model_plays_as_before():
     opt2 = torch.optim.Adam(big.parameters())
     opt2.load_state_dict(state)
     assert torch.equal(opt2.state[big.value_head[-1].bias]["exp_avg"], opt.state[net.value_head[-1].bias]["exp_avg"])
+
+
+def test_frame_is_the_duel_maps_old_one_by_default():
+    rng = np.random.default_rng(0)
+    x, y = rng.uniform(-3000, 3000, 50), rng.uniform(-3000, 3000, 50)
+    for sign in (1.0, -1.0):
+        fx_, fy_ = fx.frame_xy(x, y, sign)
+        assert np.allclose(fx_, sign * x / 3072.0) and np.allclose(fy_, y / 3072.0)
+        bx, by = fx.world_bins(x, y, sign)
+        old = lambda v: np.clip(((v + 3072.0) / 6144.0 * 128).astype(np.int64), 0, 127)  # noqa: E731
+        assert (bx == old(sign * x)).all() and (by == old(y)).all()
+        wx, wy = fx.bins_world(int(bx[0]), int(by[0]), sign)
+        assert abs(wx - x[0]) <= 24.1 and abs(wy - y[0]) <= 24.1
+
+
+def test_frame_anchored_at_own_start_on_a_larger_map():
+    saved = (fx.STARTS, fx.BIN_RANGE)
+    try:
+        fx.set_geometry(((-5184.0, 2944.0), (4672.0, 2944.0)), 3.25)
+        assert fx.BINS == 416
+        for sign, (ox, oy) in ((1.0, (-5184.0, 2944.0)), (-1.0, (4672.0, 2944.0))):
+            px, py = fx.frame_xy(ox + 300 * sign, oy - 200, sign)  # (in front of its base, a little south)
+            assert np.isclose(px, -2300 / 3072 + 300 / 3072) and np.isclose(py, -200 / 3072)
+            bx, by = fx.world_bins(ox + 300 * sign, oy - 200, sign)
+            wx, wy = fx.bins_world(int(bx), int(by), sign)
+            assert abs(wx - (ox + 300 * sign)) <= 24.1 and abs(wy - (oy - 200)) <= 24.1
+    finally:
+        fx.set_geometry(*saved)
+        import os
+        os.environ.pop("WARCRAFTSIM_MAP_GEOMETRY", None)
+
+
+def test_grow_bins_plays_as_before():
+    import importlib.util
+    from pathlib import Path
+
+    from warcraftsim.fullgame.model import FullGameNet
+
+    spec = importlib.util.spec_from_file_location("grow_bins", Path(__file__).parents[2] / "scripts" / "grow_bins.py")
+    gb = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gb)
+    torch.manual_seed(0)
+    net = FullGameNet(n_types=5, n_cur=5, n_orders=7, G=6, d=16, heads=2, layers=1, memory=True).eval()
+    big, off = gb.grow(net, 416)
+    assert off == 144 and big.bins == 416
+    z = torch.randn(3, 2, 16)
+    x = torch.randint(0, 128, (3, 2))
+    with torch.no_grad():
+        assert torch.allclose(net.point_x(z), big.point_x(z)[..., off:off + 128])
+        assert torch.allclose(net.y_logits(z, x), big.y_logits(z, x + off)[..., off:off + 128], atol=1e-5)
+        assert torch.softmax(big.point_x(z), -1)[..., :off].sum(-1).max() < 0.05

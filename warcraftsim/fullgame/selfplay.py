@@ -1293,7 +1293,7 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
     signal.signal(signal.SIGTERM, _exit)
     _pin(cfg, "games")
     fx.ACTIVE_F = cfg.get("features", fx.F)  # (a spawned process: the learner's setting, --features)
-    fx.set_geometry(*cfg.get("map_geometry", (fx.MAP_CX, fx.MAP_CY, fx.MAP_EXTENT)))  # (and the map's frame)
+    fx.set_geometry(*cfg.get("map_geometry", (fx.STARTS, fx.BIN_RANGE)))  # (and the map's frame)
     out_q.cancel_join_thread()  # exiting must not wait to flush trajectories nobody reads any more
     torch.set_num_threads(1)
     try:
@@ -2269,7 +2269,7 @@ def main(argv: list[str] | None = None) -> int:
     if parse_duel_name(args.map) is None:  # another map than the duel maps: its own frame for the positions
         from ..data.mapbuild import stock_map_path    # and point targets (features.set_geometry; the actors
         fx.set_geometry(*fx.map_geometry(stock_map_path(args.map)))  # inherit it through the environment)
-        print(f"map frame: centre ({fx.MAP_CX:g}, {fx.MAP_CY:g}), half-width {fx.MAP_EXTENT:g}", flush=True)
+        print(f"map frame: starts {fx.STARTS}, point bins over +-{fx.BIN_RANGE:g} ({fx.BINS})", flush=True)
     if args.eval_games:  # (in all: each actor's pipes and rows for the most any actor gets)
         args.eval_games_per_actor = -(-args.eval_games // args.actors)
     args.device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -2321,6 +2321,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.order_temperature is not None:  # (alike, the order head's)
         net.order_temp.fill_(args.order_temperature)
         net.config["order_temperature"] = args.order_temperature
+    for what, n in [("the starting weights" if args.start_weights else "--init", net), ("the anchor (--init)", ref)] + \
+            [(str(c), FullGameNet(**torch.load(c, map_location="cpu", weights_only=False)["config"]))
+             for c in args.eval_checkpoints or []]:
+        if n is not None and n.bins != fx.BINS:  # (their point targets must be this map's bins)
+            raise SystemExit(f"{what} has {n.bins} point bins, {args.map}'s frame {fx.BINS}: scripts/grow_bins.py")
     if args.rl_dropout >= 0:  # the updates' dropout (the actors act without: eval mode)
         set_dropout(net, args.rl_dropout)
     graphed = bool(args.cuda_graphs) and device.type == "cuda" and bool(net.memory)
@@ -2429,7 +2434,7 @@ def main(argv: list[str] | None = None) -> int:
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
            "eval_ai": [d for d in args.eval_ai.split(",") if d],
-           "map_geometry": [fx.MAP_CX, fx.MAP_CY, fx.MAP_EXTENT],
+           "map_geometry": [fx.STARTS, fx.BIN_RANGE],
            "infer_entities": [int(x) for x in args.infer_entities.split(",")],
            "infer_past_entities": [int(x) for x in args.infer_past_entities.split(",")],
            "infer_past_slots": args.infer_past_slots, "game_nice": args.game_nice, "pairs": args.pairs,
