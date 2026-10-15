@@ -2488,7 +2488,7 @@ def main(argv: list[str] | None = None) -> int:
     updater = GraphedUpdate(net, ref, opt, args, device) if graphed else None
     if args.bc_data:  # demonstrations for the auxiliary cloning loss, encoded by loader workers, epoch after epoch
         from .bc import Steps, as_is
-        bc_paths = sorted(p for d in args.bc_data for p in d.glob("game*.npz"))
+        bc_paths = sorted(p for d in args.bc_data for p in d.glob("game*.npz") if ".tmp" not in p.name)
         bc_set = Steps(bc_paths, vocab, args.bc_batch, cfg["values"], order_costs(vocab, args.map), arrays=True,
                        winners=bool(args.bc_winners), max_minutes=args.bc_max_minutes)
 

@@ -386,7 +386,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--note", default="")
     args = ap.parse_args(argv)
     args.device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-    paths = sorted(p for d in args.data for p in d.glob("game*.npz"))
+    paths = sorted(p for d in args.data for p in d.glob("game*.npz") if ".tmp" not in p.name)  # (not one being written)
     if args.max_games:
         paths = paths[:args.max_games]
     random.Random(0).shuffle(paths)
