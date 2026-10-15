@@ -179,7 +179,7 @@ class Sequences(torch.utils.data.IterableDataset):
         games, pending = iter(paths), []
 
         def side():  # the next game side's arrays, or None when the games are used up
-            if not pending:
+            while not pending:  # (a game can give no side: a tie, with --winners-only)
                 p = next(games, None)
                 if p is None:
                     return None
