@@ -23,6 +23,7 @@ What the move needs and has:
 * **A clone of the real rules for the anchor.** Built-in AI games on Echo Isles (`runs/fullgame/demos-echo-1`: normal and insane, all races, ~600 games an hour, 18-35 game minutes each). An anchor of other rules kept their habits (`fgself-11` from `duelrush`).
 * **A curriculum of rules on Echo Isles itself** (the user's suggestion): `echofast` (duelfast's rules in the real map), then `echoP`, P% of the way to the game's own rules.
 * **The frame.** Positions relative to the player's own start at the duel maps' scale, the stretch between the bases squeezed to the duel maps' 4,600: the base areas and the enemy base look as on duelfast. Zero-shot under the real rules the duelfast policy won 0 of 58; on `echofast` scaled to the map's size 0 of 66 (builds in the trees), anchored 0 of 89 (attacks mid-map), anchored and squeezed 33 of 73 in its first minutes.
+* **The real rules.** The annealing steps did not adapt within an hour each (`echo25`: 37% against 43%, 52% against 52%), so a clone of the real rules came first: the best `echofast` policy fine-tuned on the AI's winning sides of 1,500 Echo Isles games. From it, RL in the real game (`fgself-60`, 2026-10-15 18:13): its economy matches the AI's, its fights do not yet (3 of its first 54 games against insane won).
 * **Not yet:** items, shops, mercenaries, the tavern (their units and orders are outside the vocabulary: unknown types, no orders to buy).
 
 ## What is missing
