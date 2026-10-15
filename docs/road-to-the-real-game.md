@@ -21,6 +21,8 @@ What the move needs and has:
 * **The map's frame.** Positions and point targets were in the duel map's frame (centre 0, half-width 3072). Each map has its own now (`features.map_geometry`): Echo Isles' centre (-256, -256), half-width 7168 (112 units a point bin). Its bases are left and right, as the view's mirroring expects.
 * **The game's rules.** Costs follow the map (`costs.order_costs`); both sides at full strength (`--handicap 100`, duelfast's 50 halved both sides' hit points).
 * **A clone of the real rules for the anchor.** Built-in AI games on Echo Isles (`runs/fullgame/demos-echo-1`: normal and insane, all races, ~600 games an hour, 18-35 game minutes each). An anchor of other rules kept their habits (`fgself-11` from `duelrush`).
+* **A curriculum of rules on Echo Isles itself** (the user's suggestion): `echofast` (duelfast's rules in the real map), then `echoP`, P% of the way to the game's own rules.
+* **The frame.** Positions relative to the player's own start at the duel maps' scale, the stretch between the bases squeezed to the duel maps' 4,600: the base areas and the enemy base look as on duelfast. Zero-shot under the real rules the duelfast policy won 0 of 58; on `echofast` scaled to the map's size 0 of 66 (builds in the trees), anchored 0 of 89 (attacks mid-map), anchored and squeezed 33 of 73 in its first minutes.
 * **Not yet:** items, shops, mercenaries, the tavern (their units and orders are outside the vocabulary: unknown types, no orders to buy).
 
 ## What is missing

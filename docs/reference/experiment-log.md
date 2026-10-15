@@ -1139,6 +1139,18 @@ Its first launch died at once: with the dropout changed in its config, its evalu
 
 **`fullgame-echo-1`** (behaviour cloning, 11:33): the duelfast 5-layer policy (`fgself-52`'s last) fine-tuned on the built-in AI's winning sides on Echo Isles (`demos-echo-1`, 1,019 games at its start; 6 epochs, lr 1e-4). Its loader failed on a tie's game at first (no winning side with `--winners-only`: fixed). The clone becomes the next runs' start and anchor.
 
+**A curriculum of rules instead** (the user, 2026-10-15: "start with halved costs and faster production, and anneal to the real rules later ... as long as we stay on echo isles"). The clone was stopped (its first launch had also read a game the collection was still writing: fixed). Echo Isles under other rules: `--map echofast` (duelfast's rules in the real map: its tables in the map, `data/duelmap.py`) and `echoP` (P% of the way to the game's rules; `echo100` is the real game).
+
+**`fgself-54`** (`echofast`, `--handicap 50`, from `fgself-52`'s last, 12:29): still 0 of 66 against insane, behind from the first minute (food 10.6 at one minute against 24). Its build orders were refused: in a test game 5 of 67 barracks orders taken (on duelfast 2 of 3). The map frame scaled to Echo Isles' size put every learned offset 2.3 times as far from the base, in the trees.
+
+**The frame, anchored.** Each player now sees positions relative to its own start location at the duel maps' scale, its base where duelfast's left base was (on the duel maps exactly the frame of before). Point bins reach over the whole map (the network's `bins`; `scripts/grow_bins.py` widens a checkpoint's: the old bins in place, the new outer ones the nearest edge's row 10 lower; a constant low bias first let the outer bins win where every old logit was low, builds 10,000 units north and south).
+
+**`fgself-55`** (12:42, anchored frame, 416 bins): it played a real game (tier 2 in 86 of 89, 95 army units to the AI's 49, 2.0 heroes to 2.7) but won none of 89 against insane and tied 41: its attacks went to the enemy base's old place, 4,600 units out, mid-map on Echo Isles (9,856).
+
+**The frame, squeezed.** Between the bases x is squeezed to the duel maps' 4,600 (as is within 1,500 of either base; ~200 units a bin mid-map): the enemy base is where duelfast's was. 352 bins.
+
+**`fgself-56`** (12:52): in its first minutes **33 of 73 games against insane won** (15 tied), 4 of 19 against the untaxed AI; 100 army units to the AI's 38, 32 kills for 56 lost. Evaluation games against insane on `echofast`: the current policy against its start (the widened `fgself-52`'s last).
+
 Next, ranked with what AlphaStar and OpenAI Five found ([ideas](ideas-from-alphastar-and-openai-five.md)): forward KL to the anchor on every head (ours is reverse KL on the orders only), a temperature for the targets, features of each unit's own last order and hit-point history (branch `features-v2` has the hit-point change and sine/cosine positions), a value with both players' information.
 
 **A fairer yardstick: the AI's own record in the same matchups.** `duelfast` is far from balanced even for the built-in AI against itself (3,000 games, mixed matchups): night elf wins 81% (normal) / 75% (insane), orc 65% / 71%, undead 33% / 37%, human 22% / 19% (human vs night elf 8% / 6%, vs orc 15% / 6%). So a race's real-game win rate says as much about the map as about the policy. `scripts/real_games.py` now also counts, for real games against normal and insane, how many the AI itself would win in the same matchups: from 2026-10-03 18:36 to 2026-10-11 00:17 the learner won 195 of 896, the AI would win ~455 (**43% of the AI's record**; 45% in the last two hours before the anchor experiment). 100% is the built-in AI's level.
