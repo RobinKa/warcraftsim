@@ -35,6 +35,10 @@ import numpy as np
 # too (processes started anew).
 SCALE = 3072.0
 ANCHOR_X = -2300.0 / SCALE
+DUEL_D = 4600.0  # the duel maps' distance between the bases
+NEAR = 1500.0  # around either base the duel maps' scale; between them x is squeezed to DUEL_D (a larger map's
+# enemy base where the duel maps' was: the duelfast policy's attacks went to its old place, mid-map, and 41 of
+# its first 89 games on Echo Isles tied)
 BINS_PER_UNIT = 64
 STARTS: tuple[tuple[float, float], tuple[float, float]] = ((-2300.0, 0.0), (2300.0, 0.0))  # left, right
 MAP_CX = 0.0  # the line between the bases (Encoder.side)
@@ -63,10 +67,30 @@ def own_start(sign: float) -> tuple[float, float]:
     return STARTS[0] if sign > 0 else STARTS[1]
 
 
+def _squeeze(d):
+    """A distance in front of the own base -> the duel maps' (piecewise linear: as is within NEAR of either
+    base, the stretch between them squeezed to the duel maps' length)."""
+    d = np.asarray(d, dtype=np.float64)
+    D = STARTS[1][0] - STARTS[0][0]
+    if abs(D - DUEL_D) < 1e-6:
+        return d
+    k = (DUEL_D - 2 * NEAR) / (D - 2 * NEAR)
+    return np.where(d <= NEAR, d, np.where(d >= D - NEAR, d - (D - DUEL_D), NEAR + (d - NEAR) * k))
+
+
+def _unsqueeze(e):
+    e = np.asarray(e, dtype=np.float64)
+    D = STARTS[1][0] - STARTS[0][0]
+    if abs(D - DUEL_D) < 1e-6:
+        return e
+    k = (DUEL_D - 2 * NEAR) / (D - 2 * NEAR)
+    return np.where(e <= NEAR, e, np.where(e >= DUEL_D - NEAR, e + (D - DUEL_D), NEAR + (e - NEAR) / k))
+
+
 def frame_xy(x, y, sign: float):
     """World positions -> a player's frame (arrays or numbers)."""
     ox, oy = own_start(sign)
-    return sign * (np.asarray(x) - ox) / SCALE + ANCHOR_X, (np.asarray(y) - oy) / SCALE
+    return _squeeze(sign * (np.asarray(x) - ox)) / SCALE + ANCHOR_X, (np.asarray(y) - oy) / SCALE
 
 
 def map_geometry(path) -> tuple[tuple, float]:
@@ -79,12 +103,17 @@ def map_geometry(path) -> tuple[tuple, float]:
         info = parse_w3i(m.read("war3map.w3i"))
     starts = tuple(sorted((p.start_x, p.start_y) for p in info.players[:2]))
     xs, ys = info.camera_bounds[0::2], info.camera_bounds[1::2]
-    reach = 0.0
-    for sign, (ox, oy) in ((1.0, starts[0]), (-1.0, starts[1])):
-        for x in xs:
-            reach = max(reach, abs(sign * (x - ox) / SCALE + ANCHOR_X))
-        for y in ys:
-            reach = max(reach, abs((y - oy) / SCALE))
+    saved = STARTS
+    globals()["STARTS"] = starts  # (frame_xy with this map's bases)
+    try:
+        reach = 0.0
+        for sign in (1.0, -1.0):
+            for x in xs:
+                for y in ys:
+                    fx_, fy_ = frame_xy(x, y, sign)
+                    reach = max(reach, abs(float(fx_)), abs(float(fy_)))
+    finally:
+        globals()["STARTS"] = saved
     return starts, max(1.0, math.ceil(reach * 4) / 4)
 
 
@@ -337,7 +366,8 @@ def world_bins(x, y, sign: float) -> tuple[np.ndarray, np.ndarray]:
 def bins_world(bx: int, by: int, sign: float) -> tuple[float, float]:
     """x and y bins in a player's view -> the point in the world."""
     ox, oy = own_start(sign)
-    return float(ox + sign * (bin_center(int(bx)) - ANCHOR_X) * SCALE), float(oy + bin_center(int(by)) * SCALE)
+    return (float(ox + sign * _unsqueeze((bin_center(int(bx)) - ANCHOR_X) * SCALE)),
+            float(oy + bin_center(int(by)) * SCALE))
 
 
 class Encoder:
