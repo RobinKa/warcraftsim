@@ -4,14 +4,24 @@ The goal: a policy that plays a real 1v1 on a ladder map with the game's own rul
 
 ```mermaid
 flowchart LR
-  A["duelrush<br/>79%"]:::done --> B["duelfast<br/>ties, banks money"]:::now
-  B --> C["duel<br/>game's rules, small map"]:::todo
-  C --> D["Echo Isles<br/>real map"]:::todo
+  A["duelrush<br/>79%"]:::done --> B["duelfast<br/>80% of games won against insane"]:::done
+  B --> D["Echo Isles<br/>real map, game's rules"]:::now
   D --> P["People"]:::todo
   classDef done fill:#1d3a2a,stroke:#4cc38a,color:#d7dee6
   classDef now fill:#3a321d,stroke:#e0a33a,color:#d7dee6
   classDef todo fill:#1d252e,stroke:#4a5868,color:#8795a3
 ```
+
+## Where it stands (2026-10-15)
+
+On `duelfast` the policy beats the built-in insane AI without a handicap on either side beyond the map's own rules: 80% of its evaluation games against insane (random races), every matchup above the AI's own record (the mirrors: human 93%, orc 98%, night elf 100%, undead 62%; the hardest, undead against orc, 47% where the AI itself wins 23%). The user's next step: the real game on the real Echo Isles map.
+
+What the move needs and has:
+
+* **The map's frame.** Positions and point targets were in the duel map's frame (centre 0, half-width 3072). Each map has its own now (`features.map_geometry`): Echo Isles' centre (-256, -256), half-width 7168 (112 units a point bin). Its bases are left and right, as the view's mirroring expects.
+* **The game's rules.** Costs follow the map (`costs.order_costs`); both sides at full strength (`--handicap 100`, duelfast's 50 halved both sides' hit points).
+* **A clone of the real rules for the anchor.** Built-in AI games on Echo Isles (`runs/fullgame/demos-echo-1`: normal and insane, all races, ~600 games an hour, 18-35 game minutes each). An anchor of other rules kept their habits (`fgself-11` from `duelrush`).
+* **Not yet:** items, shops, mercenaries, the tavern (their units and orders are outside the vocabulary: unknown types, no orders to buy).
 
 ## What is missing
 
