@@ -18,7 +18,8 @@ sys.path.insert(0, 'scripts')
 from collections import Counter
 from throughput import when
 from real_games import ai_rates, difficulty
-rates = ai_rates(); lo = when(sys.argv[2])
+from real_games import ai_games_for, run_map
+rates = ai_rates(ai_games_for(run_map(sys.argv[1]))); lo = when(sys.argv[2])
 eps = [json.loads(l) for l in open(f'runs/{sys.argv[1]}/episodes.jsonl')]
 eps = [e for e in eps if e['time'] > lo and e.get('eval')]
 for k in sorted({e['eval_key'] for e in eps}):

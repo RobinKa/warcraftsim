@@ -22,13 +22,34 @@ TIER2 = ("hkee", "ostr", "unp1", "etoa")  # keep, stronghold, halls of the dead,
 # the built-in AI against itself on duelfast (3,000 games, both sides normal or both insane): how often a race
 # wins a matchup. duelfast is far from balanced (mixed matchups: night elf ~78%, orc ~68%, undead ~35%, human ~20%).
 AI_GAMES = Path(__file__).resolve().parents[1] / "runs" / "fullgame" / "demos-fast-1" / "games.jsonl"
+# Echo Isles under the game's rules (1,500 games, normal and insane, each side's drawn apart; ~620 decided
+# between equals): its races are far apart too, and not as on duelfast: the AI as human wins 14% of its mixed
+# insane games there, as undead 88%
+ECHO_AI_GAMES = Path(__file__).resolve().parents[1] / "runs" / "fullgame" / "demos-echo-1" / "games.jsonl"
 
 
-def ai_rates() -> dict:
-    """(race, opponent's race, difficulty) -> the AI's win rate there (mirrors 0.5)."""
+def ai_games_for(map_name: str | None) -> Path:
+    """The built-in AI's games on a run's map, for its record there (duelfast's for the duel maps and the
+    Echo Isles variants with other rules)."""
+    return ECHO_AI_GAMES if map_name in ("(2)EchoIsles", "EchoIsles", "echo100") else AI_GAMES
+
+
+def run_map(name: str) -> str | None:
+    """A run's --map (its last launch's)."""
+    try:
+        argv = json.loads((RUNS / name / "run.json").read_text())["launch"]["argv"]
+        return argv[argv.index("--map") + 1] if "--map" in argv else None
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def ai_rates(games: Path | None = None) -> dict:
+    """(race, opponent's race, difficulty) -> the AI's win rate there (mirrors 0.5), from `games` (default:
+    duelfast's)."""
     tab: dict = defaultdict(lambda: [0, 0])
-    if AI_GAMES.exists():
-        for line in AI_GAMES.open():
+    path = games or AI_GAMES
+    if path.exists():
+        for line in path.open():
             g = json.loads(line)
             d = g["difficulties"]
             if d[0] != d[1] or g.get("winner") is None:
@@ -37,7 +58,7 @@ def ai_rates() -> dict:
                 k = (g["races"][s], g["races"][1 - s], d[0])
                 tab[k][0] += g["winner"] == s
                 tab[k][1] += 1
-    return {k: 0.5 if k[0] == k[1] else w / n for k, (w, n) in tab.items() if n >= 20}
+    return {k: 0.5 if k[0] == k[1] else w / n for k, (w, n) in tab.items() if n >= 10}
 
 
 def difficulty(e: dict) -> str:
@@ -117,7 +138,7 @@ def main() -> int:
     eps = [json.loads(line) for line in (RUNS / a.name / "episodes.jsonl").open()]
     now = time.time()
     lo = when(a.since) if a.since else now - 86400
-    rates = ai_rates()
+    rates = ai_rates(ai_games_for(run_map(a.name)))
     hi = when(a.until) if a.until else now
     report([e for e in eps if lo < e["time"] <= hi], f"since {time.strftime('%Y-%m-%d %H:%M', time.localtime(lo))}"
            + (f" until {time.strftime('%Y-%m-%d %H:%M', time.localtime(hi))}" if a.until else ""), rates)
