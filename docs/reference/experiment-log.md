@@ -1221,6 +1221,12 @@ Its first launch died at once: with the dropout changed in its config, its evalu
 
 **`fgself-71`** (from `fgself-69`'s last, 19:17): no penalty on unspent resources (`--float-penalty 0`, was 0.5, from when the duelfast policy hoarded): in the real game the AI holds 3,000-6,500 gold and lumber at a time (saving for tech), the policy 700-1,800, and a gathered resource lowered the potential until spent. The cloning loss off. Evaluation games against insane under the real rules: the current policy against `fgself-69`'s last.
 
+`fgself-71` (19:17-20:15, ~217 paired games each against the untaxed insane AI): the current policy **won 64%** (117% of the AI's own record), `fgself-69`'s last (its start) **69%** (128%). Worse: it held more (~1,540 against ~1,210) and its undead gathered a little more lumber (86 against 62 a game minute, 15 of 52 won against 12 of 52), but its human fell (11 of 43 against 22 of 45). Back to 0.5.
+
+A harvest order to a ghoul works and the features mark it a lumber worker: the policy just stopped giving it (the clone had it from the AI; RL on duelfast's cheap rules wore it away).
+
+**`fgself-72`** (from `fgself-69`'s last, 20:15): a stronger cloning loss on the AI's undead alone (`--bc-coef 0.1`, five times `fgself-70`'s, the same 439 games; `--bc-batch 32`), for undead's lumber. Evaluation games against insane under the real rules: the current policy against `fgself-69`'s last.
+
 Next, ranked with what AlphaStar and OpenAI Five found ([ideas](ideas-from-alphastar-and-openai-five.md)): forward KL to the anchor on every head (ours is reverse KL on the orders only), a temperature for the targets, features of each unit's own last order and hit-point history (branch `features-v2` has the hit-point change and sine/cosine positions), a value with both players' information.
 
 **A fairer yardstick: the AI's own record in the same matchups.** `duelfast` is far from balanced even for the built-in AI against itself (3,000 games, mixed matchups): night elf wins 81% (normal) / 75% (insane), orc 65% / 71%, undead 33% / 37%, human 22% / 19% (human vs night elf 8% / 6%, vs orc 15% / 6%). So a race's real-game win rate says as much about the map as about the policy. `scripts/real_games.py` now also counts, for real games against normal and insane, how many the AI itself would win in the same matchups: from 2026-10-03 18:36 to 2026-10-11 00:17 the learner won 195 of 896, the AI would win ~455 (**43% of the AI's record**; 45% in the last two hours before the anchor experiment). 100% is the built-in AI's level.
