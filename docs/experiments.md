@@ -27,6 +27,8 @@ xychart-beta
 | A deeper network (5 layers, grown from 3 so that it starts as the old one) | 148% → 156% |
 | On Echo Isles: positions from the own base at the duel maps' scale | 0 → 49% of games against insane |
 | A horizon for 25-minute games (γ 0.9997) | 55% → 59% of games |
+| A wider search for a free building spot (up to 768 units) | undead's builds taken 25% → 79%, 57% → 62% of games |
+| Half the reward shaping (the material lead), so the win weighs more | 62% → 72% of games, human 34% → 53%, undead 32% → 49% |
 
 ## What did not help
 
