@@ -79,6 +79,11 @@ Before the mailbox, actions went through a file the harness loaded with `Preload
   * `turbo` (engine turn pacing bypass: `W3SIM_TURBO_MS`) exists but did not help at 0.25 s steps.
 * **Launching.** `-graphicsapi Null` crashes 1.29. The minimum working window is 800x600 (400x300 hangs). The game must be started with a proper working directory: the launcher uses `C:\Warcraft III`, since `.wgc` map paths are relative to it.
 * **WSLg.** `/tmp/.X11-unix` is read-only, so Xvfb listens only on the abstract socket. Readiness is checked in `/proc/net/unix`.
+* **Rules in a stock map** (2026-10-15). The game's unit, upgrade and ability tables (`Units\UnitBalance.slk` and the others) and its gameplay constants (`war3mapMisc.txt`), written into a copy of Echo Isles, change the rules there as on the duel maps (`echofast`: duelfast's hit points, times and costs in the real map). The built-in AI plays them as usual.
+* **Pairs of players** (`--pairs`, several games a map load) need extra start locations, which only the generated duel maps have. Echo Isles has two: one pair a load.
+* **Building placement on Echo Isles.** Its bases are ringed by trees and cliffs. A build order at a spot where the building does not fit is refused (the harness then tries rings of spots up to 256 away). A policy's learned spots from the flat duel map mostly fit only when the frame kept the duel maps' scale around the base (in a frame scaled to the map's size: 5 of 67 barracks orders taken).
+* **A game the built-in AI never starts.** About 1 game in 28,000 ends within its first second with the learner the winner: the AI's player never comes in. Its row has no food at one minute.
+* **No automatic camera in 1.29 replays.** The game's replay viewer has none: the renderer moves the camera itself (`video.Director`: the fight, else the players' armies and bases in turn).
 
 ## Offsets used by the shim (1.29.2.9231, sha256 3f2ed012…0eed)
 

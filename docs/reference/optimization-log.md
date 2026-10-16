@@ -327,6 +327,28 @@ With 8 evaluation games, the last-order features and the opponent-aware value, t
 | before (20:28-20:32) | ~1,600 | 4.4 s | 0.65 s |
 | plain arrays from the shared rows, 4 cloning workers (20:48-21:00) | **2,001** | 3.48 s | 0.63 s |
 
+## Recipe changes that changed the speed (2026-10-14)
+
+The policy came to beat the built-in AI, so its teachers went. Each was a recipe experiment ([experiment log](experiment-log.md)), and each made the run faster:
+
+| change | steps/s | the learner's update |
+|---|---|---|
+| before (`fgself-47`, 8 evaluation games) | ~1,870 | 3.7 s |
+| no advice from the built-in AI (`--opd-share 0`: no shadow AI in the games, no labels) | ~2,030 | 3.4 s |
+| no cloning loss (`--bc-coef 0`: no cloning batches in the updates) | **~2,220** | 2.4 s |
+
+The learner then waited ~1.3 s for each batch: the games set the speed again.
+
+## The real game on Echo Isles (2026-10-15/16)
+
+| setting | steps/s | the learner's update |
+|---|---|---|
+| `echofast` (duelfast's rules on Echo Isles, 352 point bins, 5 layers) | ~1,600 | 3.8 s |
+| the real rules (`echo100`, games up to 40 minutes) | ~1,500-1,650 | 3.9-4.1 s |
+| the cloning loss on the AI's Echo Isles games (×0.02; tried and dropped) | ~1,220 | 6.2 s |
+
+Echo Isles has more units in view than the duel maps (creeps, expansions, larger armies), so a step costs the actors and the learner more. ~2,200 games an hour, ~16 game minutes each on average.
+
 ## Dead ends
 
 * 8 actor processes of 4 games instead of 4 of 8 (627 against 644 steps/s).
@@ -341,7 +363,7 @@ With 8 evaluation games, the last-order features and the opponent-aware value, t
 ## What is left
 
 * **Longer steps on longer games.** Half the step's CPU is per step (harness, sync, Python), half is simulation; 1 s steps would give ~1.4× the game time per CPU, at the cost of half the decisions.
-* **The learner**: the cloning loss's calls (~18% of an update: many small batches), the clone's forward for the KL term (~5%), a compiled update.
+* **The learner**: the anchor's forward for the KL term (~5% of an update), a compiled update. (The cloning loss is off since 2026-10-14.)
 * **The video renderer**: 3.4 cores while it renders.
 * **wineserver**: ~10% of a step.
 

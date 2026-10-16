@@ -4,7 +4,7 @@ One network plays one side. It sees the game from its own player's view, as a se
 
 ## The full network
 
-E is the number of units in view (at most 160). O is the number of own units (at most 96). Width d = 192.
+E is the number of units in view (at most 160). O is the number of own units (at most 96). Width d = 192. B is the number of point bins: 128 on the duel maps, 352 on Echo Isles.
 
 ```mermaid
 flowchart TB
@@ -13,6 +13,7 @@ flowchart TB
     TY["unit type ids<br/>[E] of 147"]
     CO["current order ids<br/>[E] of 156"]
     PL["player numbers<br/>[80]"]
+    PV["whole-game numbers<br/>[23], the value only"]
   end
   F --> LF["Linear 29→192"]
   TY --> ET["Embedding 147×192"]
@@ -24,12 +25,13 @@ flowchart TB
   PL --> MP["Linear 80→192 · ReLU · Linear 192→192"] --> PT["player token [192]"]
   PT --> SEQ["tokens [1+E, 192]<br/>padding masked"]
   UT --> SEQ
-  SEQ --> TR["Transformer encoder × 3<br/>pre-norm · 4 heads · feed-forward 768 · dropout 0.1<br/>then a final LayerNorm"]
+  SEQ --> TR["Transformer encoder × 5<br/>pre-norm · 4 heads · feed-forward 768<br/>then a final LayerNorm"]
   TR --> G["g: player token out [192]"]
   TR --> U["u: unit tokens out [E, 192]"]
   G --> MEM["minGRU (optional)<br/>a, c = Linear 192→384 of g · z = sigmoid of a<br/>h = (1−z)·h + z·c, carried to the next step<br/>context = g + Linear 192→192 of h (starts at 0)"]
   MEM --> C["context c [192]"]
   C --> VH["Value head<br/>Linear 192→192 · ReLU · Linear 192→1"] --> V["value"]
+  PV --> PP["Linear 23→192 · ReLU · Linear 192→192<br/>(starts at 0)"] --> VH
   U --> OI["for each own unit i: concat u_i, c [384]"]
   C --> OI
   OI --> OH["Order head<br/>Linear 384→192 · ReLU · Linear 192→399"] --> MSK["mask: the unit type's orders,<br/>what the player can pay for · class 0 = none"] --> O1["order o_i [O]"]
@@ -43,7 +45,7 @@ flowchart TB
     K["keys: Linear 192→192 of every u_j"] --> PTR
   end
   subgraph PNT["Point head: x, then y given x"]
-    PX["x: Linear 192→128<br/>→ x bin"] --> XE["Embedding 128×192 of the x bin"] --> PY["y: z_i + it · Linear 192→192 · ReLU · Linear 192→128<br/>→ y bin"]
+    PX["x: Linear 192→B<br/>→ x bin"] --> XE["Embedding B×192 of the x bin"] --> PY["y: z_i + it · Linear 192→192 · ReLU · Linear 192→B<br/>→ y bin"]
   end
   Z --> Q
   U --> K
@@ -53,7 +55,9 @@ flowchart TB
 
 * The tokens are a set. There is no position encoding: a unit's position is its x, y numbers.
 * The order decides which target heads count: a unit (pointer), a point (x then y), or none.
-* Each head samples with the Gumbel-max trick.
+* Each head samples with the Gumbel-max trick, at temperature 1 (a lower order temperature made the policy passive).
+* The network had 3 layers until `fgself-51`. `scripts/grow_model.py` adds layers that start as the identity, so a grown network plays as before. `scripts/grow_bins.py` adds point bins for a larger map in the same way.
+* Dropout (0.1) is on for behaviour cloning only. The self-play updates run without it (`--rl-dropout 0`), as the actors play.
 
 ## Token channels
 
@@ -66,7 +70,7 @@ A unit token is the sum of three parts:
 | index | channel |
 |---|---|
 | 0, 1, 2 | side: own, enemy, neutral (as this player sees it) |
-| 3, 4 | position x, y ÷ 3072 (x mirrored, so the own base is always on the left) |
+| 3, 4 | position x, y relative to the own start ÷ 3072 (x mirrored, so the own base is always on the left; on Echo Isles the stretch between the bases is shorter, so the enemy base is where the duel maps had it) |
 | 5, 6 | hit points ÷ maximum, maximum ÷ 1000 |
 | 7, 8 | mana ÷ maximum, maximum ÷ 1000 |
 | 9 – 19 | flags: hero, building, worker, under construction, hidden, loaded, sleeping, paused, summoned, illusion, flying |
@@ -79,6 +83,8 @@ A unit token is the sum of three parts:
 | 27 | own building: it makes something now |
 | 28 | own worker: sent to cut lumber |
 
+The features have 26 more channels (hit-point change, sine and cosine of the position, each unit's last order). They are zero in use (`--features 29`): they did not help.
+
 The **player token** has 80 numbers:
 
 | index | channel |
@@ -87,6 +93,8 @@ The **player token** has 80 numbers:
 | 6 – 9 | own race: human, orc, undead, night elf (one-hot) |
 | 10 – 13 | enemy race, the same |
 | 14 – 79 | the player's level of each of 66 upgrades |
+
+The **value head** also reads 23 numbers of the whole game that the player does not see: the enemy's gold, lumber and supply, and for both players their workers, army, buildings, heroes, hero levels, army hit points and where the army is. The policy never sees them.
 
 **How players differ:** only by the side channels. The view is always from "my" side, so "own" means this player. The two races sit in the player token. Position is the x, y numbers, not a token index. The transformer treats the units as a set, so their order does not matter.
 

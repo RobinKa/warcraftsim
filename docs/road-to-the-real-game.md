@@ -4,42 +4,43 @@ The goal: a policy that plays a real 1v1 on a ladder map with the game's own rul
 
 ```mermaid
 flowchart LR
-  A["duelrush<br/>79%"]:::done --> B["duelfast<br/>80% of games won against insane"]:::done
-  B --> D["Echo Isles<br/>real map, game's rules"]:::now
+  A["duelrush<br/>79%"]:::done --> B["duelfast<br/>80% of games against insane"]:::done
+  B --> D["Echo Isles, the real game<br/>~65-70% against insane"]:::now
   D --> P["People"]:::todo
   classDef done fill:#1d3a2a,stroke:#4cc38a,color:#d7dee6
   classDef now fill:#3a321d,stroke:#e0a33a,color:#d7dee6
   classDef todo fill:#1d252e,stroke:#4a5868,color:#8795a3
 ```
 
-## Where it stands (2026-10-15)
+## Where it stands (2026-10-16)
 
-On `duelfast` the policy beats the built-in insane AI without a handicap on either side beyond the map's own rules: 80% of its evaluation games against insane (random races), every matchup above the AI's own record (the mirrors: human 93%, orc 98%, night elf 100%, undead 62%; the hardest, undead against orc, 47% where the AI itself wins 23%). The user's next step: the real game on the real Echo Isles map.
+The policy plays the real game on Echo Isles: the game's own rules, both sides at full strength, against the insane AI with no handicap. It wins ~65-70% of those games.
 
-What the move needs and has:
+How it got there:
 
-* **The map's frame.** Positions and point targets were in the duel map's frame (centre 0, half-width 3072). Each map has its own now (`features.map_geometry`): Echo Isles' centre (-256, -256), half-width 7168 (112 units a point bin). Its bases are left and right, as the view's mirroring expects.
-* **The game's rules.** Costs follow the map (`costs.order_costs`); both sides at full strength (`--handicap 100`, duelfast's 50 halved both sides' hit points).
-* **A clone of the real rules for the anchor.** Built-in AI games on Echo Isles (`runs/fullgame/demos-echo-1`: normal and insane, all races, ~600 games an hour, 18-35 game minutes each). An anchor of other rules kept their habits (`fgself-11` from `duelrush`).
-* **A curriculum of rules on Echo Isles itself** (the user's suggestion): `echofast` (duelfast's rules in the real map), then `echoP`, P% of the way to the game's own rules.
-* **The frame.** Positions relative to the player's own start at the duel maps' scale, the stretch between the bases squeezed to the duel maps' 4,600: the base areas and the enemy base look as on duelfast. Zero-shot under the real rules the duelfast policy won 0 of 58; on `echofast` scaled to the map's size 0 of 66 (builds in the trees), anchored 0 of 89 (attacks mid-map), anchored and squeezed 33 of 73 in its first minutes.
-* **The real rules.** The annealing steps did not adapt within an hour each (`echo25`: 37% against 43%, 52% against 52%), so a clone of the real rules came first: the best `echofast` policy fine-tuned on the AI's winning sides of 1,500 Echo Isles games. From it, RL in the real game (`fgself-60`, 2026-10-15 18:13). But its evaluation games showed the clone winning none of 40 against insane in the real game, while the `echofast` policy, as it is, won 22 of 45 (49%): the frame was what mattered, not the rules, and cloning undid the policy's fighting. The real game goes on from the `echofast` policy (`fgself-61`).
-* **Not yet:** items, shops, mercenaries, the tavern (their units and orders are outside the vocabulary: unknown types, no orders to buy).
+* **The frame mattered most.** Each player sees positions relative to its own start, at the duel maps' scale. The stretch between the bases is shorter in the view, so the enemy base is where the duel maps had it. With this frame, the duelfast policy won 49% in the real game at once. Without it, it won none.
+* **The rules mattered little.** The duelfast policy, trained on half costs and three times faster production, played the real rules nearly as well.
+* **A clone of the AI's real games did not help.** It undid the policy's fighting and lost every game.
+* **A longer horizon** (γ 0.9997) fits the 25-minute games: 55% → 59%.
+
+## How it loses
+
+* Long games: it builds many workers and cheap units and loses the late fights.
+* Heroes: 0.6-1.0 a game against the AI's ~1.7. As human it builds its altar in two games of three.
+* Races: orc and night elf win ~80%, human and undead ~25%.
 
 ## What is missing
 
 | area | gap | first step |
 |---|---|---|
-| Rules | each map change needs a new clone on the new rules | clone first, then RL with the KL term to that clone |
-| Map | no expansions, items, shops, tavern, mercenaries | add them to a duel map, one at a time |
+| Heroes | fewer heroes than the AI, few levels | a reason to build them: shaping did not help yet |
+| Map | no items, shops, tavern, mercenaries | item features and orders |
 | Seeing | no terrain, trees or memory of buildings out of sight | a coarse map grid as input. The memory core is on. |
 | Acting | every unit, every half second: no APM limit | an APM cap before games against people |
-| Items | no inventory, no buying, no item use | item features and orders |
-| Credit | 25-minute games are 3,000 decisions a side | longer horizons, "when to act next" outputs |
-| Rare decisions | production and hero orders get noisy credit | separate credit for them, or a stronger cloning loss |
+| Credit | 25-minute games are ~3,000 decisions a side | "when to act next" outputs |
 | Data | all demonstrations come from the built-in AI | human replays, played back through the harness |
 
 ## Compute
 
-* About 850 agent steps per second on this machine (16 cores, one RTX 3090).
-* A real 25-minute game is about 6,000 agent steps. That is about 500 games per hour.
+* About 1,500-1,650 agent steps per second in the real game (32 threads, one RTX 3090).
+* About 2,200 games an hour. A game lasts ~16 game minutes on average: wins ~12, losses ~25.

@@ -1,35 +1,46 @@
 # Experiments
 
-The main lessons, short. The [experiment log](reference/experiment-log.md) has the tables and the runs behind each one; [ideas from AlphaStar and OpenAI Five](reference/ideas-from-alphastar-and-openai-five.md) ranks the next experiments.
+The main lessons, short. The [experiment log](reference/experiment-log.md) has every run, its numbers and why it ran. [Ideas from AlphaStar and OpenAI Five](reference/ideas-from-alphastar-and-openai-five.md) ranks the ideas we took from the papers.
 
-## Real-game win rate, whole game
+## The duelfast line
 
 ```mermaid
 xychart-beta
-  title "Wins against the built-in AI in the real game"
-  x-axis ["clone", "fgself-8", "fgself-9", "fgself-10", "fgself-11", "fgself-12"]
-  y-axis "%" 0 --> 100
-  bar [19, 30, 75, 79, 1, 1]
+  title "Share of the built-in AI's own record, evaluation games (approximate)"
+  x-axis ["fgself-12", "fgself-23", "fgself-27", "fgself-31", "fgself-32", "fgself-39", "fgself-48", "fgself-51"]
+  y-axis "%" 0 --> 170
+  bar [30, 69, 88, 102, 111, 109, 152, 156]
 ```
 
-The clone, `fgself-8`, `fgself-9` and `fgself-10` played `duelrush`. `fgself-11` and `fgself-12` played `duelfast`, with longer games and normal-speed combat.
+100% is the built-in AI's own level in the same matchups. The runs measured different matchup mixes, so the bars are approximate.
 
 ## What worked
 
-| lesson | evidence |
+| change | head to head |
 |---|---|
-| Start from a clone of a good player. RL from scratch learns no team tactics. | micro: 58% → 91% from a fitted script |
-| Keep the policy near the clone with a KL term. | without it, `fgself-7` became worse against the AI at once |
-| Collect demonstrations from the policy's own states (DAgger). Use them as an extra loss, not as a fine-tune. | human and orc 5% → 37% |
-| A curriculum against the AI: tax its income, not give the learner hit points or a late enemy. | a late enemy taught the learner to rush an idle AI |
-| Compare per-game statistics (heroes, research, food) by game kind, not only win rates. | the reset bug: agents' games had 0.1 heroes |
+| Forward KL to the anchor over every action head (not reverse KL on the orders only) | 28% → 54% → 69% |
+| Move the anchor to a recent checkpoint of the policy | +11 points, twice |
+| Train against insane, not normal | insane 34% → 45% |
+| UPGO (credit that a later bad action does not cancel) | 79% → 102% → 111% |
+| No dropout in the updates (the actors play without it) | 93% → 109% |
+| No advice and no cloning loss from the built-in AI, once the policy beats it | 137% → 152%, and 18% more steps a second |
+| A deeper network (5 layers, grown from 3 so that it starts as the old one) | 148% → 156% |
+| On Echo Isles: positions from the own base at the duel maps' scale | 0 → 49% of games against insane |
+| A horizon for 25-minute games (γ 0.9997) | 55% → 59% of games |
+
+## What did not help
+
+* Larger learning rates (twice as large: worse, twice) and larger batches.
+* Shaping for hero levels, credit per unit, a smaller unspent-money penalty, more real games in training.
+* Sampling at temperature 0.8: the policy gave fewer orders and lost (71% against 136%).
+* A clone of the AI's games under the real rules: it lost every game. Cloning undid the policy's fighting.
+* Annealing the rules from duelfast to the real game: the policy did not need it.
 
 ## What went wrong
 
 | problem | cause |
 |---|---|
-| Games between agents had no heroes for 9 runs | a scripted reset was not a new game. The engine kept counting removed heroes. |
-| The `duelrush` policy kept rush habits on `duelfast` | its KL term held it to the rush policy |
-| `duelfast` curriculum games end in ties | the policy banks its money and does not attack to win |
-| The curriculum hid a slow opening | the taxed AI had 7 food at one minute; the real AI has 21 against the policy's 15 |
-| RL lowers the chance of production and hero orders | all units of a step share one advantage, so rare orders get noisy credit |
+| Every fork measured the same evaluation games | a fixed seed. The seed now includes the run's name, and the policies play the same matchups. |
+| Forks lost ~10 points in their first 20 minutes | a fresh Adam optimizer. Checkpoints now keep its state. |
+| On Echo Isles the policy built in the trees and attacked mid-map | the map frame scaled positions to the map's size. The frame now keeps the base area and the enemy base where the duel maps had them. |
+| Games between agents had no heroes for 9 runs | a scripted reset was not a new game |
