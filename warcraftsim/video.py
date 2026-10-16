@@ -123,47 +123,77 @@ def _fit_view(obs: Observation) -> tuple[tuple[float, float], float] | None:
 
 
 # A large map's director (whole games whose units do not fit in one view: Echo Isles' bases ~10,000
-# apart, where the centre of all units was mid-map, at the farthest zoom, with nothing in it): the
-# fight (units with an enemy unit within ENGAGED of them), else the learner's army (or the larger one),
-# else the learner's workers (its base: the opening), else where it was.
+# apart, where the centre of all units was mid-map, at the farthest zoom, with nothing in it). Fights
+# first (units with an enemy unit within ENGAGED of them); between fights it cycles through shots: the
+# learner's army, its base, the opponent's army, its base (the learner's held longer; a player without an
+# army: its base), each held a while, so both players and their bases get seen.
 ENGAGED = 900.0  # an enemy this near: the unit fights
 FOCUS_CELL = 1500.0  # the fight's area: around the cell with the most fighting units
 STICK = 0.6  # the current fight keeps the camera while it has this share of the biggest one's fighters
 CUT = 4000.0  # a target this far: cut there, not pan across the map
+SHOTS = (("army", 0, 24), ("base", 0, 14), ("army", 1, 16), ("base", 1, 10))  # (what, 0 learner / 1 opponent, steps)
 
 
-def _director(obs: Observation, cam: tuple[float, float], prefer: int | None = None) -> tuple[tuple[float, float], list] | None:
-    """(the focus point, the units to fit in view) for a whole game too spread for one view; `prefer`:
-    the player whose army and base it shows when nobody fights (the learner)."""
-    units = [u for u in obs.units if u.alive and not u.is_structure and u.owner in obs.players]
-    if not units:
+class Director:
+    """The camera's focus for a whole game too spread for one view: (point, units to fit) a step."""
+
+    def __init__(self, learner: int | None, players: list[int]):
+        self.learner = learner if learner is not None else (players[0] if players else 0)
+        self.opponent = next((p for p in players if p != self.learner), 1 - self.learner)
+        self.shot, self.held = 0, 0
+
+    def focus(self, obs: Observation, cam: tuple[float, float]) -> tuple[tuple[float, float], list] | None:
+        units = [u for u in obs.units if u.alive and u.owner in obs.players]
+        mobile = [u for u in units if not u.is_structure]
+        sides: dict = {}  # (each player's units and buildings: a unit at an enemy building fights too, a raid)
+        for u in units:
+            sides.setdefault(u.owner, []).append(u)
+        engaged = [u for u in mobile if any((v.x - u.x) ** 2 + (v.y - u.y) ** 2 <= ENGAGED * ENGAGED
+                                            for o, vs in sides.items() if o != u.owner for v in vs)]
+        if engaged:  # a fight: the area with the most fighters, the current one kept while it is near as big
+            cells: dict = {}
+            for u in engaged:
+                cells.setdefault((round(u.x / FOCUS_CELL), round(u.y / FOCUS_CELL)), []).append(u)
+            best = max(cells.values(), key=len)
+            bx, by = sum(u.x for u in best) / len(best), sum(u.y for u in best) / len(best)
+
+            def near(cx: float, cy: float) -> list:
+                return [u for u in engaged if abs(u.x - cx) <= FOCUS_CELL and abs(u.y - cy) <= FOCUS_CELL]
+            here = near(*cam)
+            group = here if here and len(here) >= STICK * len(near(bx, by)) else near(bx, by)
+            return _centre(group), group
+        for _ in range(len(SHOTS)):  # no fight: the current shot, or the next one that shows something
+            what, who, steps = SHOTS[self.shot]
+            player = self.learner if who == 0 else self.opponent
+            if self.held >= steps:
+                self.shot, self.held = (self.shot + 1) % len(SHOTS), 0
+                continue
+            group = self._shot(what, player, units)
+            if group:
+                self.held += 1
+                return _centre(group), group
+            self.shot, self.held = (self.shot + 1) % len(SHOTS), 0
         return None
-    sides = {}
-    for u in units:
-        sides.setdefault(u.owner, []).append(u)
-    engaged = []
-    for u in units:
-        r2 = ENGAGED * ENGAGED
-        if any((v.x - u.x) ** 2 + (v.y - u.y) ** 2 <= r2 for o, vs in sides.items() if o != u.owner for v in vs):
-            engaged.append(u)
-    if engaged:
-        def near(cx: float, cy: float) -> list:
-            return [u for u in engaged if abs(u.x - cx) <= FOCUS_CELL and abs(u.y - cy) <= FOCUS_CELL]
+
+    @staticmethod
+    def _shot(what: str, player: int, units: list) -> list:
+        mine = [u for u in units if u.owner == player]
+        if what == "army":
+            group = [u for u in mine if not u.is_structure and not u.is_worker]
+        else:  # its base: the area with the most of its buildings
+            group = [u for u in mine if u.is_structure]
+        if not group:
+            return []
         cells: dict = {}
-        for u in engaged:
-            cells.setdefault((round(u.x / FOCUS_CELL), round(u.y / FOCUS_CELL)), []).append(u)
+        for u in group:
+            cells.setdefault((round(u.x / (2 * FOCUS_CELL)), round(u.y / (2 * FOCUS_CELL))), []).append(u)
         best = max(cells.values(), key=len)
-        bx, by = sum(u.x for u in best) / len(best), sum(u.y for u in best) / len(best)
-        here = near(*cam)
-        group = here if len(here) >= STICK * len(near(bx, by)) and here else near(bx, by)
-    else:  # no fight: the learner's army (not workers), or the larger one; else its workers (the opening)
-        armies = {o: [u for u in vs if not u.is_worker] for o, vs in sides.items()}
-        army = armies.get(prefer) or max(armies.values(), key=len)
-        if not army:
-            army = sides.get(prefer) or max(sides.values(), key=len)
-        ax, ay = sum(u.x for u in army) / len(army), sum(u.y for u in army) / len(army)
-        group = [u for u in army if abs(u.x - ax) <= 2 * FOCUS_CELL and abs(u.y - ay) <= 2 * FOCUS_CELL] or army
-    return (sum(u.x for u in group) / len(group), sum(u.y for u in group) / len(group)), group
+        cx, cy = _centre(best)
+        return [u for u in group if abs(u.x - cx) <= 2 * FOCUS_CELL and abs(u.y - cy) <= 2 * FOCUS_CELL] or best
+
+
+def _centre(group: list) -> tuple[float, float]:
+    return sum(u.x for u in group) / len(group), sum(u.y for u in group) / len(group)
 
 
 def _follow_target(obs: Observation, player: int | None) -> tuple[float, float] | None:
@@ -264,7 +294,7 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
         # every frame (it projects positions relative to the camera, at the default zoom)
         follow_fight = follow_player is None and (setup.scenario is not None or fit_all)
         sides = getattr(overlay, "sides", None) or []  # (a self-play game's panel: its first side is the learner)
-        prefer = sides[0]["player"] if sides else None
+        director = Director(sides[0]["player"] if sides else None, [s["player"] for s in sides] or sorted(obs.players))
         cam = setup.scenario.resolved_center() if setup.scenario is not None else (0.0, 0.0)
         dist = ZOOM_DEFAULT
         last = None
@@ -275,7 +305,7 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
             target = _follow_target(obs, follow_player) if follow else None
             cam_from = cam
             fit = _fit_view(obs) if follow_fight and zoom else None
-            if fit is not None and fit[1] >= ZOOM_MAX and setup.scenario is None and (d := _director(obs, cam, prefer)):
+            if fit is not None and fit[1] >= ZOOM_MAX and setup.scenario is None and (d := director.focus(obs, cam)):
                 # a whole game too spread for one view: the director's focus, its units in view; a far
                 # target is a cut
                 (cx, cy), group = d
