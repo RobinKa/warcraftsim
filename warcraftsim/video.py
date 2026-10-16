@@ -122,6 +122,50 @@ def _fit_view(obs: Observation) -> tuple[tuple[float, float], float] | None:
     return ((max(xs) + min(xs)) / 2, (max(ys) + min(ys)) / 2), min(want, ZOOM_MAX)
 
 
+# A large map's director (whole games whose units do not fit in one view: Echo Isles' bases ~10,000
+# apart, where the centre of all units was mid-map, at the farthest zoom, with nothing in it): the
+# fight (units with an enemy unit within ENGAGED of them), else the learner's army (or the larger one),
+# else the learner's workers (its base: the opening), else where it was.
+ENGAGED = 900.0  # an enemy this near: the unit fights
+FOCUS_CELL = 1500.0  # the fight's area: around the cell with the most fighting units
+STICK = 0.6  # the current fight keeps the camera while it has this share of the biggest one's fighters
+CUT = 4000.0  # a target this far: cut there, not pan across the map
+
+
+def _director(obs: Observation, cam: tuple[float, float], prefer: int | None = None) -> tuple[tuple[float, float], list] | None:
+    """(the focus point, the units to fit in view) for a whole game too spread for one view; `prefer`:
+    the player whose army and base it shows when nobody fights (the learner)."""
+    units = [u for u in obs.units if u.alive and not u.is_structure and u.owner in obs.players]
+    if not units:
+        return None
+    sides = {}
+    for u in units:
+        sides.setdefault(u.owner, []).append(u)
+    engaged = []
+    for u in units:
+        r2 = ENGAGED * ENGAGED
+        if any((v.x - u.x) ** 2 + (v.y - u.y) ** 2 <= r2 for o, vs in sides.items() if o != u.owner for v in vs):
+            engaged.append(u)
+    if engaged:
+        def near(cx: float, cy: float) -> list:
+            return [u for u in engaged if abs(u.x - cx) <= FOCUS_CELL and abs(u.y - cy) <= FOCUS_CELL]
+        cells: dict = {}
+        for u in engaged:
+            cells.setdefault((round(u.x / FOCUS_CELL), round(u.y / FOCUS_CELL)), []).append(u)
+        best = max(cells.values(), key=len)
+        bx, by = sum(u.x for u in best) / len(best), sum(u.y for u in best) / len(best)
+        here = near(*cam)
+        group = here if len(here) >= STICK * len(near(bx, by)) and here else near(bx, by)
+    else:  # no fight: the learner's army (not workers), or the larger one; else its workers (the opening)
+        armies = {o: [u for u in vs if not u.is_worker] for o, vs in sides.items()}
+        army = armies.get(prefer) or max(armies.values(), key=len)
+        if not army:
+            army = sides.get(prefer) or max(sides.values(), key=len)
+        ax, ay = sum(u.x for u in army) / len(army), sum(u.y for u in army) / len(army)
+        group = [u for u in army if abs(u.x - ax) <= 2 * FOCUS_CELL and abs(u.y - ay) <= 2 * FOCUS_CELL] or army
+    return (sum(u.x for u in group) / len(group), sum(u.y for u in group) / len(group)), group
+
+
 def _follow_target(obs: Observation, player: int | None) -> tuple[float, float] | None:
     units = [u for u in obs.units if u.alive and not u.is_structure
              and (u.owner == player if player is not None else u.owner in obs.players)]
@@ -219,6 +263,8 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
         # needed to show every unit (harnesses with op 84); a drawn overlay is told where it is on
         # every frame (it projects positions relative to the camera, at the default zoom)
         follow_fight = follow_player is None and (setup.scenario is not None or fit_all)
+        sides = getattr(overlay, "sides", None) or []  # (a self-play game's panel: its first side is the learner)
+        prefer = sides[0]["player"] if sides else None
         cam = setup.scenario.resolved_center() if setup.scenario is not None else (0.0, 0.0)
         dist = ZOOM_DEFAULT
         last = None
@@ -228,7 +274,21 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
             commands = decode_commands((inst._playback or {}).get(f"{inst._proc_episode}:{obs.seq}", []))
             target = _follow_target(obs, follow_player) if follow else None
             cam_from = cam
-            if follow_fight and zoom and (fit := _fit_view(obs)) is not None:
+            fit = _fit_view(obs) if follow_fight and zoom else None
+            if fit is not None and fit[1] >= ZOOM_MAX and setup.scenario is None and (d := _director(obs, cam, prefer)):
+                # a whole game too spread for one view: the director's focus, its units in view; a far
+                # target is a cut
+                (cx, cy), group = d
+                gx, gy = [u.x for u in group], [u.y for u in group]
+                want = min(ZOOM_MAX, ZOOM_DEFAULT * max(1.0, ((max(gx) - min(gx)) / 2 + ZOOM_MARGIN) / ZOOM_HALF_W,
+                                                         ((max(gy) - min(gy)) / 2 + ZOOM_MARGIN) / ZOOM_HALF_H))
+                dist += (ZOOM_OUT_GAIN if want > dist else FOLLOW_GAIN) * (want - dist)
+                cy -= ZOOM_Y_OFFSET * dist / ZOOM_DEFAULT
+                if (cx - cam[0]) ** 2 + (cy - cam[1]) ** 2 > CUT * CUT:
+                    target = cam = (cx, cy)
+                else:
+                    target = cam = (cam[0] + FOLLOW_GAIN * (cx - cam[0]), cam[1] + FOLLOW_GAIN * (cy - cam[1]))
+            elif fit is not None:
                 (cx, cy), want = fit
                 dist += (ZOOM_OUT_GAIN if want > dist else FOLLOW_GAIN) * (want - dist)
                 cy -= ZOOM_Y_OFFSET * dist / ZOOM_DEFAULT
