@@ -27,7 +27,7 @@ How it got there:
 
 * Long games: it builds many workers and cheap units and loses the late fights.
 * Heroes: 0.6-1.0 a game against the AI's ~1.7. As human it builds its altar in two games of three.
-* Races: orc and night elf win ~80%, human and undead ~25-45%. Many of undead's and night elf's builds were refused on Echo Isles' terrain (undead 25 of 100 in a test game, its ziggurats off the blight). A wider search for a free spot (up to 768 units) took 79% (2026-10-16).
+* Races: orc and night elf win ~80%, human and undead ~25-45%. Many of undead's and night elf's builds were refused on Echo Isles' terrain (undead 25 of 100 in a test game, its ziggurats off the blight). A wider search for a free spot (up to 768 units) took 79% (2026-10-16). Against the AI's own record on Echo Isles (as undead it wins 88% of its mixed games, as human 14%) undead is the weak race: it gathers 83 lumber a minute against the AI's 213. Its ghouls are its lumber workers and its first fighters, and the policy fights with them.
 
 ## What is missing
 
