@@ -9,7 +9,7 @@ warcraftsim trains agents on the real Warcraft III 1.29, headless under Wine. Py
 | Micro fights | 91% against the scripted opponent. League self-play: 82%, and 79% against the 91% policy | `--trainer torch` |
 | Whole game, `duelrush` (2-minute games) | **79%** against the built-in AI, all 16 matchups | `fgself-10` |
 | Whole game, `duelfast` (6-minute games) | **80% of its games against the insane AI won.** Every matchup is above the AI's own record. | `fgself-51` |
-| **The real game on Echo Isles** (the game's rules, full strength) | **~65-70% of its games against the insane AI won**, with no handicap on the AI. Human and undead are the weak races. | `fgself-67` (running), best `fgself-62` |
+| **The real game on Echo Isles** (the game's rules, full strength) | **~65-70% of its games against the insane AI won**, with no handicap on the AI. Human and undead are the weak races. | `fgself-68` (running), best `fgself-62` |
 
 The yardstick is the evaluation games: the real game against the built-in AI, which the policy does not train on. Each policy in a run plays the same matchups (paired), so a run compares its policies directly.
 
