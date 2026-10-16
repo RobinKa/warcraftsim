@@ -1113,9 +1113,17 @@ class Dashboard:
         def seg_name(name: str, k: int) -> str:
             return name if k == 0 else f"{name}@{segs[name][k]['steps']}"
 
-        def node_of(path: str | None) -> str | None:  # a checkpoint or data path -> the run it belongs to (a
-            if not path:                               # checkpoint: the part of the run that wrote it)
+        def node_of(path: str | None, depth: int = 0) -> str | None:  # a checkpoint or data path -> the run it
+            if not path:                               # belongs to (a checkpoint: the part of the run that wrote it)
                 return None
+            side = (self.runs_dir.parent / str(path)).with_suffix(".json") if str(path).endswith(".pt") else None
+            if side is not None and depth < 8 and side.exists():  # a derived checkpoint (grown, a variant: its
+                try:                                                # sidecar names the one it came from)
+                    src = json.loads(side.read_text()).get("from")
+                    if src:
+                        return node_of(src, depth + 1)
+                except (OSError, ValueError):
+                    pass
             parts = Path(str(path)).parts
             if "runs" not in parts:
                 return None

@@ -12,6 +12,7 @@ the new rows).
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -103,6 +104,7 @@ def main() -> int:
     a.out.parent.mkdir(parents=True, exist_ok=True)
     torch.save({**ck, "model": {k: v.detach().cpu() for k, v in big.state_dict().items()}, "config": big.config,
                 "bins_from": str(a.src)}, a.out)
+    a.out.with_suffix(".json").write_text(json.dumps({"from": str(a.src), "how": f"{fx.BINS} point bins"}))  # (the lineage)
     adam = a.src.with_suffix(".adam")
     if adam.exists():
         torch.save(grow_adam(torch.load(adam, map_location="cpu", weights_only=False), net, big, off),

@@ -8,6 +8,7 @@ effect on play head to head against the original, in the same run's paired games
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import torch
@@ -28,6 +29,7 @@ def main() -> int:
         model["target_temp"], config["target_temperature"] = torch.tensor(a.target), a.target
     a.out.parent.mkdir(parents=True, exist_ok=True)
     torch.save({**ck, "model": model, "config": config, "variant_of": str(a.src)}, a.out)
+    a.out.with_suffix(".json").write_text(json.dumps({"from": str(a.src), "how": "other temperatures"}))  # (the lineage)
     print(f"{a.out}: order temperature {config.get('order_temperature', 1.0)}, target {config.get('target_temperature', 1.0)}")
     return 0
 
