@@ -1136,23 +1136,30 @@ endfunction
 // 91 spawn unit      player unittype x y  (debug)
 // 99 restart game
 // A build order at (x, y), or else at the first spot nearby where the building fits: rings of
-// 8 spots 64, 128, 192 and 256 away (a policy's point is a 48-unit bin; half its builds were
-// refused where the building did not fit).
+// spots 64, 128, ... 768 away, 8 a ring up to 256, 16 beyond (a policy's point is a 48-unit bin;
+// half its builds were refused where the building did not fit. On Echo Isles, with spots learned
+// on a flat duel map, rings up to 256 took a quarter of undead's builds: its ziggurats 8 of 67,
+// off the blight; a night elf altar 1 of 25).
 function W3S_Build takes unit u, integer t, real x, real y returns boolean
     local integer r = 0
     local integer a
+    local integer n
     local real d
     if IssueBuildOrderById(u, t, x, y) then
         return true
     endif
     loop
         set r = r + 1
-        exitwhen r > 4
+        exitwhen r > 12
         set d = 64.0 * r
+        set n = 8
+        if r > 4 then
+            set n = 16
+        endif
         set a = 0
         loop
-            exitwhen a >= 8
-            if IssueBuildOrderById(u, t, x + d * Cos(a * 0.785398), y + d * Sin(a * 0.785398)) then
+            exitwhen a >= n
+            if IssueBuildOrderById(u, t, x + d * Cos(a * 6.283185 / n), y + d * Sin(a * 6.283185 / n)) then
                 return true
             endif
             set a = a + 1
