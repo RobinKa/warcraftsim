@@ -958,6 +958,11 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
         if cfg["mirror"]:  # both sides the same race (balanced by construction)
             races[1] = races[0]
         side = rng.randrange(2)  # the learner's
+        if cfg.get("learner_races") and not evaluating:  # (--learner-races: the learner's race weighted, training only)
+            names, weights = zip(*cfg["learner_races"].items())
+            races[side] = rng.choices(names, weights)[0]
+            if cfg["mirror"]:
+                races[1 - side] = races[side]
         ai = _choose(rng, spec["launch"])  # {"kind": "agents"} or {"kind": "ai", "difficulty"[, "delay"]}
         if evaluating:  # (--eval-games-per-actor: the yardstick only)
             # which policy: the current one, or one of --eval-checkpoints (head to head, at the same time).
@@ -2098,6 +2103,9 @@ def main(argv: list[str] | None = None) -> int:
                          "launches; with 0.75 and 4, 43%% of the games are against the AI)")
     ap.add_argument("--map", default="duelrush")
     ap.add_argument("--races", default="all")
+    ap.add_argument("--learner-races", default="", help="the learner's race in training games, weighted (e.g. "
+                                                        "human:2,undead:2,orc:1,nightelf:1; evaluation games stay "
+                                                        "uniform); '': as --races")
     ap.add_argument("--mirror", type=int, default=1, help="both sides play the same race (on duelrush the races "
                                                            "are far from balanced: night elf beat the others 96%%)")
     ap.add_argument("--exploiter-share", type=float, default=0.0,
@@ -2418,6 +2426,7 @@ def main(argv: list[str] | None = None) -> int:
             x_update, x_since = xck["version"], xck.get("since", 0)
         publish(xnet, x_update, run_dir, "exploiter.pt")
     cfg = {"run_dir": str(run_dir), "device": str(device), "vocab": str(run_dir / "vocab.json"), "races": races,
+           "learner_races": {k: float(v) for k, v in (kv.split(":") for kv in args.learner_races.split(",") if kv)},
            "map": args.map, "handicap": args.handicap, "step_seconds": args.step_seconds,
            "max_minutes": args.max_minutes, "max_steps": int(args.max_minutes * 60 / args.step_seconds) + 20,
            "wait_floor_ms": args.wait_floor_ms, "games_per_actor": args.games_per_actor,
