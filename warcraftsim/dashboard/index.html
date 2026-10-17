@@ -966,7 +966,7 @@ const SECTIONS = [
     ["c-lopd", "Agreeing with the advisor", "the learner's most likely order = the built-in AI's (its orders, not none) · the share of steps advised",
       [TR("opd/acc", "agrees", "#4cc38a"), TR("opd/steps", "steps advised", "#8795a3")], { ymin: 0, ymax: 1, hideEmpty: true }],
     ["c-lref", "KL to the reference", "how far the policy moved from its reference (the fitted script, the clone)", [TR("loss/ref_kl", "KL", "#f56ed2")], { ymin: 0, empty: "no reference policy" }],
-    ["c-gnoise", "Gradient noise scale", "agent steps: the critical batch size's estimate (B_simple, McCandlish et al. 2018), against the batch an update takes (--batch-steps)",
+    ["c-gnoise", "Gradient noise scale (critical batch size)", "agent steps (B_simple, McCandlish et al. 2018), measured every 10 updates at fixed weights. Compare it with the batch of one Adam step, the minibatch (--minibatch, 256 steps): far above it, each step is mostly noise but the samples are used well (more, smaller steps); far below it, a step's batch wastes samples",
       [TR("grad/noise_scale", "noise scale", "#e0a33a")], { ymin: 0, hideEmpty: true }],
     ["c-gnorm", "Gradient norm", "a minibatch's, before the clip (--max-grad-norm)", [TR("grad_norm", "norm", "#539bf5")], { ymin: 0, hideEmpty: true }],
   ]],
