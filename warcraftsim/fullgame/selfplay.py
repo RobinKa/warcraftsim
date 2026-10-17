@@ -2534,6 +2534,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="minutes between game videos (0: none; the actors take turns). Rendering one takes ~6 minutes of "
                          "3.4 cores (the game at 960x540 on a software renderer, in real time)")
     ap.add_argument("--shaping", type=float, default=1.0, help="weight of the material-lead reward shaping (0: none)")
+    ap.add_argument("--ref-update", type=int, default=0, help="every this many updates the KL anchor becomes the current "
+                    "policy (a rolling anchor: the KL still stops sudden jumps, but no longer pulls back to the start's "
+                    "habits; 0: the anchor stays --init)")
     ap.add_argument("--shaping-anneal", type=int, default=0, help="updates over which the shaping's weight falls to 0 "
                     "(linearly, from this run's start; 0: it stays): a game keeps the weight it started with, so its "
                     "potential still goes back to 0 at its end")
@@ -2625,6 +2628,8 @@ def main(argv: list[str] | None = None) -> int:
         if n is not None and n.config["G"] != G:  # (a run's rows have one width: the inference loop packs them alike)
             raise SystemExit(f"{what} reads {n.config['G']} global numbers, the run's {G} (a strategy block of "
                              f"{fx.ZDIM}): scripts/grow_strategy.py")
+    if args.ref_update > 0 and ref is not None and arch_key(ref.config) != arch_key(net.config):
+        raise SystemExit("--ref-update copies the policy into the anchor: --init must have the starting weights' architecture")
     if args.z_pool and not fx.ZDIM:
         raise SystemExit("--z-pool needs a network with a strategy block: scripts/grow_strategy.py")
     if args.rl_dropout >= 0:  # the updates' dropout (the actors act without: eval mode)
@@ -2952,6 +2957,9 @@ def main(argv: list[str] | None = None) -> int:
                 league.add_snapshot(path, agent_steps)
             elif update % args.checkpoint_every == 0:
                 save_checkpoint(run_dir / "checkpoints" / f"{agent_steps:016d}.pt", net, opt, vocab, agent_steps, update)
+            if args.ref_update > 0 and ref is not None and update % args.ref_update == 0:  # --ref-update: a rolling
+                ref.load_state_dict(net.state_dict())  # anchor (in place: the CUDA graphs keep their weights' addresses)
+                print(f"the anchor moved to update {update}", flush=True)
             if args.shaping_anneal > 0:  # the shaping's weight to 0 over --shaping-anneal updates of this run
                 league.shaping = shaping_now(args, update)
             league.write()
