@@ -76,3 +76,25 @@ def test_lineage_links_runs_fits_and_collections(tmp_path):
         ("a", "b", "start"), ("b", "bc/c", "start"), ("fullgame/demos-x", "bc/c", "data"), ("a", "fullgame/demos-x", "policy"),
         ("a", "m", "played")}
     assert {n["name"]: n["kind"] for n in L["nodes"]}["a"] == "selfplay"
+
+
+def test_summary_titles_a_lineage_box(tmp_path):
+    """summary.txt (what a run changed, in a few words): its box's subtitle in the lineage and a row below
+    "started from"; the page writes it (one line, empty removes it) and only in a run's directory."""
+    import json as j
+
+    from warcraftsim.dashboard.server import Dashboard
+    runs = tmp_path / "runs"
+    for name, extra in (("a", {}), ("b", {"init_from": "runs/a/checkpoints/1.pt"})):
+        (runs / name).mkdir(parents=True)
+        (runs / name / "run.json").write_text(j.dumps({"name": name, "kind": "run", "task": "fullgame_duelfast",
+                                                       "status": "stopped", **extra}))
+    (runs / "b" / "summary.txt").write_text("half the shaping\n")
+    d = Dashboard(runs)
+    nodes = {n["name"]: n for n in d.lineage()["nodes"]}
+    assert nodes["b"]["title"] == "half the shaping" and nodes["a"]["title"] == ""
+    rows = [k for k, _ in nodes["b"]["about"]["rows"]]
+    assert rows[rows.index("started from") + 1] == "change"
+    assert d.set_title("a", "  more\n games ") and (runs / "a" / "summary.txt").read_text() == "more games\n"
+    assert d.set_title("a", "") and not (runs / "a" / "summary.txt").exists()
+    assert not d.set_title("../a", "x") and not d.set_title("nope", "x") and not d.set_title("b", "x" * 200)

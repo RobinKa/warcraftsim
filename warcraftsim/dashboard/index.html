@@ -213,8 +213,9 @@ table.runs tr.shown td { background:var(--panel2); }
 .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
 .panel h3 { margin:0 0 8px; font-size:12px; font-weight:600; color:var(--muted); display:flex; justify-content:space-between; gap:8px; }
 .panel h3 span { font-weight:400; }
-#notes { width:100%; min-height:74px; resize:vertical; background:var(--bg); color:var(--text); border:1px solid var(--line);
+#notes, #runsummary { width:100%; min-height:74px; resize:vertical; background:var(--bg); color:var(--text); border:1px solid var(--line);
   border-radius:6px; padding:6px 8px; font:inherit; }
+#runsummary { min-height:0; margin-bottom:6px; padding:4px 8px; }
 .panel .row { display:flex; gap:8px; align-items:center; margin-top:6px; font-size:12px; color:var(--muted); }
 .panel button, .copy { background:var(--panel2); border:1px solid var(--line); border-radius:5px; color:var(--text);
   padding:2px 9px; font:inherit; font-size:12px; cursor:pointer; }
@@ -261,6 +262,7 @@ body.page-view main { padding:18px 28px 40px; }
 .lineage .hint { position:absolute; left:10px; bottom:8px; z-index:3; font-size:11px; color:var(--muted); pointer-events:none; }
 .lineage .graph g.node { cursor:pointer; }
 .lineage .graph g.node:hover rect { stroke-width:2.5px !important; }
+.lineage .graph g.node small.k { opacity:.6; }  /* (a box's kind and steps, below what it changed) */
 .lineage .key span { display:inline-flex; align-items:center; gap:5px; margin-right:12px; }
 .lineage .key i { width:12px; height:12px; border-radius:3px; display:inline-block; }
 .lineage .ekey span { display:inline-flex; align-items:center; gap:5px; margin-right:12px; }
@@ -737,7 +739,7 @@ try {
 const typeShown = r => !runUI.types.size || runUI.types.has(runType(r));
 function listedRuns() {
   const words = runUI.filter.trim().toLowerCase().split(/\s+/).filter(Boolean);  // every word must match
-  const text = r => [r.name, r.task, r.sweep ? r.sweep.options || "base" : "", r.notes || "",
+  const text = r => [r.name, r.task, r.sweep ? r.sweep.options || "base" : "", r.title || "", r.notes || "",
                      r.parent ? `${r.parent.name} ${parentShort(r.parent)}` : ""].join(" ").toLowerCase();
   return state.runs.filter(r => typeShown(r) && (!words.length || words.every(w => text(r).includes(w)))
     && (!runUI.only || state.compare.has(r.name) || r.name === state.selected));
@@ -964,6 +966,9 @@ const SECTIONS = [
     ["c-lopd", "Agreeing with the advisor", "the learner's most likely order = the built-in AI's (its orders, not none) · the share of steps advised",
       [TR("opd/acc", "agrees", "#4cc38a"), TR("opd/steps", "steps advised", "#8795a3")], { ymin: 0, ymax: 1, hideEmpty: true }],
     ["c-lref", "KL to the reference", "how far the policy moved from its reference (the fitted script, the clone)", [TR("loss/ref_kl", "KL", "#f56ed2")], { ymin: 0, empty: "no reference policy" }],
+    ["c-gnoise", "Gradient noise scale", "agent steps: the critical batch size's estimate (B_simple, McCandlish et al. 2018), against the batch an update takes (--batch-steps)",
+      [TR("grad/noise_scale", "noise scale", "#e0a33a")], { ymin: 0, hideEmpty: true }],
+    ["c-gnorm", "Gradient norm", "a minibatch's, before the clip (--max-grad-norm)", [TR("grad_norm", "norm", "#539bf5")], { ymin: 0, hideEmpty: true }],
   ]],
   ["League", [
     ["c-lg-script", "Against the scripts", "the learner's win rate per epoch (draws count half)",
@@ -1088,7 +1093,7 @@ function renderMain() {
         ["overview", "Overview", `<div class="cards" id="cards"></div>
           <div class="about">
             <div class="panel"><h3>Notes<span id="notestate"></span></h3>
-              <textarea id="notes" placeholder="what this run tests and what came of it (runs/${esc(info.name)}/notes.md)"></textarea>
+              ${SUMMARY_FIELD}<textarea id="notes" placeholder="what this run tests and what came of it (runs/${esc(info.name)}/notes.md)"></textarea>
               <div class="row"><button id="savenotes">save</button><span>Ctrl+Enter saves</span></div></div>
             <div class="panel"><h3>Lineage</h3><dl class="facts" id="lineage"></dl></div>
           </div>`],
@@ -1410,7 +1415,7 @@ function renderBC(d) {
         ["overview", "Overview", `<div class="cards" id="cards"></div>
           <div class="about">
             <div class="panel"><h3>Notes<span id="notestate"></span></h3>
-              <textarea id="notes" placeholder="what this dataset is for (runs/bc/${esc(info.dataset)}/notes.md)"></textarea>
+              ${SUMMARY_FIELD}<textarea id="notes" placeholder="what this dataset is for (runs/bc/${esc(info.dataset)}/notes.md)"></textarea>
               <div class="row"><button id="savenotes">save</button><span>Ctrl+Enter saves</span></div></div>
             <div class="panel"><h3>Lineage</h3><dl class="facts" id="lineage"></dl></div>
           </div>`],
@@ -1487,7 +1492,7 @@ function overviewHtml(info, what) {
   return `<div class="cards" id="cards"></div>
     <div class="about">
       <div class="panel"><h3>Notes<span id="notestate"></span></h3>
-        <textarea id="notes" placeholder="${esc(what)}"></textarea>
+        ${SUMMARY_FIELD}<textarea id="notes" placeholder="${esc(what)}"></textarea>
         <div class="row"><button id="savenotes">save</button><span>Ctrl+Enter saves</span></div></div>
       <div class="panel"><h3>Details</h3><dl class="facts" id="lineage"></dl></div>
     </div>`;
@@ -1930,9 +1935,11 @@ function renderLineageGraph() {
     const s = (n.note || "").replace(/\s+/g, " ").trim().split(/: |; | \(|\. /)[0];
     return s.length > 30 ? s.slice(0, 29).replace(/\s+\S*$/, "") + "…" : s || "restarted";
   };
-  const label = n => n.kind === "restart"
+  const short = t => t.length > 44 ? t.slice(0, 43).replace(/\s+\S*$/, "") + "…" : t;  // (the panel has it whole)
+  const label = n => n.kind === "restart"  // a box: its name, what it changed (summary.txt, a restart's title), then what it is
     ? `${n.run.replace(/^(bc|fullgame)\//, "")} ↻ ${fmt(n.steps, 0)}<br/><small>${esc(title(n))}</small>`
-    : `${n.name.replace(/^(bc|fullgame)\//, "")}<br/><small>${(LINEAGE_KINDS[n.kind] || [n.kind])[0]}${steps(n)}${n.status === "training" ? " · training" : ""}</small>`;
+    : `${n.name.replace(/^(bc|fullgame)\//, "")}${n.title ? `<br/><small>${esc(short(n.title))}</small>` : ""}` +
+      `<br/><small class="k">${(LINEAGE_KINDS[n.kind] || [n.kind])[0]}${steps(n)}${n.status === "training" ? " · training" : ""}</small>`;
   const detail = n => n.kind === "restart" ? restartDetail(n) : nodeDetail(n);
   const nodeDetail = n => {  // the hover panel of a run, fit, collection or match: when, facts, notes
     const a = n.about || {};
@@ -1949,7 +1956,8 @@ function renderLineageGraph() {
     (n.changes && n.changes.length ? `<div class="ch">${n.changes.map(c => `<div>+ ${esc(c)}</div>`).join("")}</div>` : "") +
     (n.note ? `<div class="nt">${esc(n.note)}</div>` : "") + `<div class="hint2">click to open the run</div>`;
   const lines = ["flowchart LR"];
-  for (const n of shown) lines.push(`  ${id.get(n.name)}["${label(n).replace(/"/g, "'")}"]:::${LINEAGE_KINDS[n.kind] ? n.kind : "run"}`);
+  const quoted = s => s.replace(/"/g, "'").replace(/&#39;/g, "#39;");  // (mermaid's own entity for ': "&#39;" showed as "&'")
+  for (const n of shown) lines.push(`  ${id.get(n.name)}["${quoted(label(n))}"]:::${LINEAGE_KINDS[n.kind] ? n.kind : "run"}`);
   const arrow = w => w === "data" ? "-.->" : w === "policy" ? "==>" : w === "played" ? "-.-" : "-->";
   const byWhy = {};  // each kind of arrow its colour (linkStyle: by the arrows' order)
   edges.forEach((e, i) => { lines.push(`  ${id.get(e.from)} ${arrow(e.why)} ${id.get(e.to)}`); (byWhy[e.why] = byWhy[e.why] || []).push(i); });
@@ -2094,17 +2102,29 @@ function bindGo(root) {
   root.querySelectorAll("[data-go]").forEach(a => a.onclick = () => openRun(a.dataset.go));
   root.querySelectorAll("[data-gosweep]").forEach(a => a.onclick = () => openSweep(a.dataset.gosweep));
 }
-// the notes box of a run's page (default) or a sweep's (url, onSaved)
+// a run's few words above its notes (summary.txt): what it changed, the subtitle of its box in the lineage
+const SUMMARY_FIELD = `<input id="runsummary" maxlength="120" placeholder="what it changes, in a few words (summary.txt: its box in the lineage)">`;
+// the notes box of a run's page (default) or a sweep's (url, onSaved); a run's has its summary above
 function setupNotes(info, url, onSaved) {
-  const box = document.getElementById("notes"), st = document.getElementById("notestate");
+  const box = document.getElementById("notes"), st = document.getElementById("notestate"), sum = document.getElementById("runsummary");
   box.value = info.notes || ""; ui.notesDirty = false; st.textContent = "";
   const name = info.name;
+  let said = info.title || "";
+  if (sum) sum.value = said;
   const save = async () => {
     st.textContent = "saving…";
     try {
       const r = await fetch(url || "/api/runs/" + encodeURIComponent(name) + "/notes", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ notes: box.value }) });
       if (!r.ok) throw new Error((await r.json()).error || r.status);
+      if (sum && sum.value.trim() !== said) {  // (its few words: only when they changed)
+        const q = await fetch("/api/runs/" + encodeURIComponent(name) + "/summary", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ summary: sum.value }) });
+        if (!q.ok) throw new Error((await q.json()).error || q.status);
+        said = sum.value.trim();
+        if (state.data[name]) state.data[name].info.title = said;
+        const run = state.runs.find(r => r.name === name); if (run) run.title = said;
+      }
       ui.notesDirty = false; st.textContent = "saved";
       if (onSaved) onSaved();
       else {
@@ -2116,6 +2136,7 @@ function setupNotes(info, url, onSaved) {
   };
   box.oninput = () => { ui.notesDirty = true; st.textContent = "unsaved"; };
   box.onkeydown = e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); } };
+  if (sum) { sum.oninput = box.oninput; sum.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); save(); } }; }
   document.getElementById("savenotes").onclick = save;
 }
 function renderLineage(d) {

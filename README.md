@@ -291,7 +291,7 @@ Each run writes `runs/<name>/`, which the dashboard shows live:
 The dashboard (`python -m warcraftsim dashboard`) shows:
 * the run list: runs, sweeps as collapsible groups (a checkbox compares all of a sweep's runs), and behavior cloning datasets. Each run shows its parent and the first line of its notes; the filter matches names, tasks, sweep options, notes and parents, and toggles list only some kinds (training, self-play, matches, BC micro, BC whole game, demos);
 * per run, in tabs:
-  * **Overview**: progress cards, notes (editable), and lineage: what it started from (random weights, another run's checkpoint, or a fitted script), the chain back from there, its sweep, and the runs started from it;
+  * **Overview**: progress cards, notes and a few words on what the run changes (`summary.txt`; both editable), and lineage: what it started from (random weights, another run's checkpoint, or a fitted script), the chain back from there, its sweep, and the runs started from it;
   * **Outcomes**: win rate, win/draw/loss, return, episode length;
   * **Behaviour** (from the actions the policy sent): the action mix, targeting (focus fire, attacks on the weakest enemy, invalid targets), damage dealt and taken, kills and losses;
   * **Learning**: value calibration (predicted V(s₀) against the actual return of video episodes), PPO losses, entropy, KL and clip fraction;
@@ -305,7 +305,7 @@ The dashboard (`python -m warcraftsim dashboard`) shows:
 * per sweep: its description, where its runs started from, a table of its runs, its launch command;
 * per behavior cloning dataset: the demonstrations (outcomes, action mix, combat), the fit per epoch (loss, accuracy, recall and precision per unit order), evaluations, and the runs started from it.
 
-The **Lineage** view draws what every run, cloning fit, demonstration collection and match came from (started from, fitted on, its policy played the games, played in the match), whole game or micro. It is computed from the runs' own records (`run.json`, `bc.json`, `collect.json`) and follows new runs while open; it pans and zooms (drag, wheel, pinch, buttons, keys, double-click to fit), and a box opens its run. The **Docs** view shows and edits `docs/`.
+The **Lineage** view draws what every run, cloning fit, demonstration collection and match came from (started from, fitted on, its policy played the games, played in the match), whole game or micro. Each box names what that run changed in a few words (its `summary.txt`, written by `selfplay.py --title` or on its Overview; a restart's title), and hovering it shows its notes. It is computed from the runs' own records (`run.json`, `bc.json`, `collect.json`) and follows new runs while open; it pans and zooms (drag, wheel, pinch, buttons, keys, double-click to fit), and a box opens its run. The **Docs** view shows and edits `docs/`.
 
 Compared runs share the charts: one colour and line style per run. Each page has its own address (`/run/<name>?tab=…&compare=…`, `/sweep/<group>`, `/doc/<name>`), so the browser's back and forward buttons work and links can be shared.
 

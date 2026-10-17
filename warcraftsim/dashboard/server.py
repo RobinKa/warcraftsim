@@ -8,7 +8,9 @@ self-contained page. Episodes are placed on the trainer's step axis by their tim
 
 Lineage: a run started from a checkpoint (run.json init_from) has a parent, another run or a
 behavior-cloning dataset (runs/bc/<name>, its meta.json); the parent lists it as a child. Notes
-live in runs/<name>/notes.md (train.py --note; POST /api/runs/<name>/notes edits them).
+live in runs/<name>/notes.md (train.py --note; POST /api/runs/<name>/notes edits them), and what the
+run changed, in a few words, in runs/<name>/summary.txt (selfplay.py --title; POST
+/api/runs/<name>/summary): the subtitle of its box in the lineage.
 Behavior cloning datasets (runs/bc/<name>: bc.json, meta.json, episodes-*.jsonl, fit.jsonl,
 evals.jsonl; warcraftsim.puffer.bc) are runs named bc/<name> of kind "bc". evals.jsonl in a run's
 directory (bc eval of its checkpoints) shows with the run.
@@ -37,7 +39,7 @@ TRAIN_KEYS = ("agent_steps", "SPS", "epoch", "uptime", "env/win_rate", "env/loss
               "env/episode_length", "env/n", "loss/policy", "loss/value", "loss/entropy", "loss/kl",
               "loss/old_kl", "loss/clipfrac", "loss/bc", "importance", "perf/rollout", "perf/eval_env", "perf/eval_model",
               "perf/eval_copy", "perf/train", "util/gpu_percent", "util/vram_used_gb", "util/cpu_mem_gb", "time",
-              "loss/ref_kl", "lr", "loss/opd", "opd/acc", "opd/steps")
+              "loss/ref_kl", "lr", "loss/opd", "opd/acc", "opd/steps", "grad_norm", "grad/noise_scale")
 # per-episode series (rolling means): name -> value of an episode row (None: not recorded)
 EPISODE_SERIES = {
     "win_rate": lambda e: 1.0 if e.get("outcome", 0) > 0 else 0.0,
@@ -260,6 +262,7 @@ def _binned_columns(xs: list[float], cols: np.ndarray, n: int | None = None) -> 
 
 MAX_POINTS = 600
 MAX_NOTES = 64 * 1024
+MAX_TITLE = 120  # a run's summary.txt: a few words (the box in the lineage shows it)
 MAX_DOC = 512 * 1024
 DOC_NAME = __import__("re").compile(r"((reference|proposals|related)/)?[a-z0-9][a-z0-9-]{0,63}")
 DOC_GROUPS = ("", "proposals", "related", "reference")  # the tab's sections: docs/*.md, then docs/<group>/*.md
@@ -725,16 +728,44 @@ class Dashboard:
         except (FileNotFoundError, UnicodeDecodeError):
             return ""
 
-    def set_notes(self, name: str, text: str) -> bool:
+    def title(self, d: Path) -> str:
+        """What a run changed, in a few words (summary.txt, one line: selfplay.py --title, or the page): the
+        subtitle of its box in the lineage; its notes say why and what came of it."""
+        try:
+            return " ".join((d / "summary.txt").read_text().split())[:MAX_TITLE]
+        except (FileNotFoundError, NotADirectoryError, UnicodeDecodeError):
+            return ""
+
+    def _notes_dir(self, name: str) -> Path | None:
+        """The directory of a run, a cloning fit (bc/<name>) or a collection (fullgame/<name>), where its
+        notes and summary are written; None for any other name (nothing is written outside them)."""
         d = (self._bc_dir(name) if name.startswith("bc/") else self._collect_dir(name) if name.startswith("fullgame/")
              else self.runs_dir / name)
-        if d is None or len(text) > MAX_NOTES or not (
-                d.parent in (self.runs_dir / "bc", self.runs_dir / "fullgame")
-                or (d.parent == self.runs_dir and (d / "run.json").exists())):
+        if d is None or not (d.parent in (self.runs_dir / "bc", self.runs_dir / "fullgame")
+                             or (d.parent == self.runs_dir and (d / "run.json").exists())):
+            return None
+        return d
+
+    def set_notes(self, name: str, text: str) -> bool:
+        d = self._notes_dir(name)
+        if d is None or len(text) > MAX_NOTES:
             return False
         tmp = d / "notes.md.tmp"
         tmp.write_text(text)
         tmp.replace(d / "notes.md")
+        return True
+
+    def set_title(self, name: str, text: str) -> bool:
+        """Writes a run's summary.txt (one line; an empty one removes it)."""
+        d, text = self._notes_dir(name), " ".join(text.split())
+        if d is None or len(text) > MAX_TITLE:
+            return False
+        if not text:
+            (d / "summary.txt").unlink(missing_ok=True)
+            return True
+        tmp = d / "summary.txt.tmp"
+        tmp.write_text(text + "\n")
+        tmp.replace(d / "summary.txt")
         return True
 
     # ---- behavior cloning datasets ----------------------------------------------------------------
@@ -854,7 +885,7 @@ class Dashboard:
             return None
         info = self._bc_info(d)
         if info.get("task") == "fullgame":  # a whole-game fit (fullgame/bc.py)
-            info["notes"] = self.notes(d)
+            info["notes"], info["title"] = self.notes(d), self.title(d)
             info["spaces"] = _fullgame_spaces(d, self.runs_dir)
             if info["spaces"]:
                 info["spaces"] = {**info["spaces"], "from_current_code": False,
@@ -877,7 +908,7 @@ class Dashboard:
             return {"kind": "bc", "info": info, "fit": self.cache.read(d / "fit.jsonl"), "plays": plays, "checkpoints": ck,
                     "summary": self._bc_summary(d), "media": _latest_media(d, media),
                     "replay_hint": "the clone against the built-in AI (fullgame/play.py --videos)"}
-        info["notes"] = self.notes(d)
+        info["notes"], info["title"] = self.notes(d), self.title(d)
         info["spaces"] = _spaces({**info, "obs_size": info.get("obs_size") or info["meta"].get("obs_size"),
                                   "act_sizes": info.get("act_sizes") or info["meta"].get("act_sizes")})
         info["children"] = sorted(r["name"] for r in self._runs_from(name))
@@ -951,7 +982,7 @@ class Dashboard:
         if d is None:
             return None
         info = self._collect_info(d)
-        info["notes"] = self.notes(d)
+        info["notes"], info["title"] = self.notes(d), self.title(d)
         info["used_by"] = sorted(b["name"] for b in self.bc_runs()
                                  if any(Path(x).name == d.name for x in str(b.get("data", "")).split()))
         rows = self.cache.read(d / "games.jsonl") if (d / "games.jsonl").exists() else []
@@ -1090,6 +1121,9 @@ class Dashboard:
             add("task", r.get("task"))
             add("started from", node_of(r.get("init_from")) or r.get("init_from"))
             add("restarts", len(r.get("resumes") or []) if isinstance(r.get("resumes"), list) else None)
+        if r.get("title"):  # what it changed: below what it started from (the policy that played, for a collection)
+            at = next((i + 1 for i, (k, _) in enumerate(rows) if k in ("started from", "policy")), 0)
+            rows.insert(at, ["change", str(r["title"])])
         return {"created": r.get("created"), "finished": r.get("finished"), "status": r.get("status"),
                 "notes": str(r.get("notes") or "")[:600], "rows": rows}
 
@@ -1172,7 +1206,7 @@ class Dashboard:
             result = (r.get("real_game") or {}).get("wins") if isinstance(r.get("real_game"), dict) else None
             about = self._about(r, kind, s, node_of)
             nodes.append({"name": r["name"], "kind": kind if kind != "run" or not task.startswith("fullgame") else "selfplay", "about": about,
-                          "track": track, "status": r.get("status"), "win_rate": s.get("win_rate_100"),
+                          "title": r.get("title") or "", "track": track, "status": r.get("status"), "win_rate": s.get("win_rate_100"),
                           "steps": s.get("agent_steps"), "result": result, "restarts": len(segs.get(r["name"], [])) - 1 if r["name"] in segs else 0})
             par = r.get("parent")
             src = node_of(r.get("init_from")) if r["name"] in segs or r.get("init_from") else None
@@ -1247,6 +1281,7 @@ class Dashboard:
         out += self.collections()
         for info in out:
             info["notes"] = self.notes(self.runs_dir / info.get("name", ""))
+            info["title"] = self.title(self.runs_dir / info.get("name", ""))
             for k in ("description", "command", "spaces"):  # the list doesn't show these: less to send
                 info.pop(k, None)
         self._lineage(out)
@@ -1275,7 +1310,7 @@ class Dashboard:
         if not (d / "run.json").exists() or d.parent != self.runs_dir:
             return None
         info = json.loads((d / "run.json").read_text())
-        info["notes"] = self.notes(d)
+        info["notes"], info["title"] = self.notes(d), self.title(d)
         info["spaces"] = _spaces(info, d, self.runs_dir)
         info["parent"] = self.parent(info)
         info["children"] = sorted(r["name"] for r in self._runs_from(name))
@@ -1408,6 +1443,18 @@ def make_handler(dash: Dashboard, docs: Docs | None = None):
                 name = path[len("/api/runs/"):-len("/notes")]
                 if not isinstance(text, str) or not dash.set_notes(name, text):
                     return self._json({"error": "no such run, or notes too long"}, 400)
+                return self._json({"ok": True})
+            if path.startswith("/api/runs/") and path.endswith("/summary"):  # its few words (summary.txt)
+                length = int(self.headers.get("Content-Length") or 0)
+                if length > MAX_TITLE * 8:
+                    return self._json({"error": "too long"}, 413)
+                try:
+                    text = json.loads(self.rfile.read(length) or b"{}").get("summary", "")
+                except (json.JSONDecodeError, AttributeError):
+                    return self._json({"error": "expected {\"summary\": text}"}, 400)
+                name = path[len("/api/runs/"):-len("/summary")]
+                if not isinstance(text, str) or not dash.set_title(name, text):
+                    return self._json({"error": f"no such run, or longer than {MAX_TITLE} characters"}, 400)
                 return self._json({"ok": True})
             if path.startswith("/api/docs/"):
                 length = int(self.headers.get("Content-Length") or 0)
