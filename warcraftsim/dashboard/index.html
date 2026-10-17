@@ -1164,6 +1164,9 @@ function renderMain() {
     ["Episodes", fmt(s.episodes || 0, 0)],
     ["Trainer SPS", fmt(last.SPS || 0, 0)],
     ...(info.trainer === "fullgame" ? [
+      ...(info.remote_eval ? [["Evaluation worker", (() => { const r = info.remote_eval, m = r.age / 60, down = r.fallback && r.age > r.fallback;
+        return down ? `<span style="color:var(--bad, #e5534b)">silent ${m.toFixed(0)} min</span> <small>· this machine's fallback plays the evaluation games</small>`
+          : `${m < 1 ? "up" : `last game ${m.toFixed(0)} min ago`} <small>· the laptop plays the evaluation games${r.fallback ? " · this machine's wait" : ""}</small>`; })()]] : []),
       ["Real game", info.real_game ? `${(100 * info.real_game.wins).toFixed(0)}% <small>won · ${(100 * info.real_game.ties).toFixed(0)}% tied · last ${info.real_game.games} ${info.real_game.evaluation ? "evaluation games" : "vs the built-in AI"}${Object.entries(info.real_game.vs || {}).map(([k, v]) => ` · ${esc(k)}: ${(100 * v).toFixed(0)}%`).join("")}</small>` : "–"],
       ["Games", `${info.envs} <small>at once</small>`],
       ["Trained", dur(info.trained_seconds || elapsed) + (info.resumes ? ` <small>${info.resumes.length + 1} sessions</small>` : "")],

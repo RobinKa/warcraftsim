@@ -48,6 +48,16 @@ def log(*a) -> None:
     print(time.strftime("%Y-%m-%d %H:%M:%S"), *a, flush=True)
 
 
+def notify(title: str, body: str, urgent: bool = False) -> None:
+    """A desktop notification on this machine (the user's session; urgent ones stay until dismissed): the
+    worker's host going away or coming back. Best effort: no session, no notification."""
+    try:
+        subprocess.run(["notify-send", "-a", "warcraftsim", "-u", "critical" if urgent else "normal", title, body],
+                       timeout=10, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
 class Host:
     def __init__(self, host: str, repo: str):
         self.host, self.repo = host, repo  # repo: the repository there, relative to its home
@@ -285,10 +295,13 @@ class Manager:
         if st is None:
             if not self.away:
                 log(f"{a.host} does not answer: trying again every {a.every:.0f} s")
+                notify(f"Evaluation worker down ({a.host})", "No answer from the laptop. The run's own evaluation games "
+                       "take over after 5 minutes without its games (--eval-fallback).", urgent=True)
             self.away = True
             return True
         if self.away:
             log(f"{a.host} is back (worker {st['active']})")
+            notify(f"Evaluation worker back ({a.host})", "The laptop answers again: its evaluation games resume.")
             self.away = False
         if self.run is not None:  # (its rows first: a stop or a switch below must not lose them)
             self.pull(st)

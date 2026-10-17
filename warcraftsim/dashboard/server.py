@@ -1400,6 +1400,13 @@ class Dashboard:
         if fullgame:
             info["trained_seconds"] = _trained_seconds(train_rows)
             info["real_game"] = _real_game(episodes)
+            argv = [str(x) for x in (info.get("launch") or {}).get("argv") or []]
+            try:  # the remote evaluation worker (scripts/remote_eval.py marks each arrival of its games)
+                info["remote_eval"] = {"age": time.time() - (d / "remote-eval.alive").stat().st_mtime,
+                                       "fallback": next((float(v) for x, v in zip(argv, argv[1:]) if x == "--eval-fallback"),
+                                                        0.0)}
+            except FileNotFoundError:
+                pass
         return {
             "production": production,
             "matchups": matchups,
