@@ -339,15 +339,17 @@ The policy came to beat the built-in AI, so its teachers went. Each was a recipe
 
 The learner then waited ~1.3 s for each batch: the games set the speed again.
 
-## The real game on Echo Isles (2026-10-15/16)
+## The real game on Echo Isles (2026-10-15/17)
 
 | setting | steps/s | the learner's update |
 |---|---|---|
 | `echofast` (duelfast's rules on Echo Isles, 352 point bins, 5 layers) | ~1,600 | 3.8 s |
 | the real rules (`echo100`, games up to 40 minutes) | ~1,500-1,650 | 3.9-4.1 s |
 | the cloning loss on the AI's Echo Isles games (×0.02; tried and dropped) | ~1,220 | 6.2 s |
+| the cloning loss on the AI's undead games only (`fgself-70`, dropped) | 16% fewer | |
+| `fgself-75` (2026-10-17 10:01-10:31: 8 actors of 6 games, 8 evaluation games) | 1,610 | 4.0 s, waiting 1.1 s for data, staleness 1.5 |
 
-Echo Isles has more units in view than the duel maps (creeps, expansions, larger armies), so a step costs the actors and the learner more. ~2,200 games an hour, ~16 game minutes each on average.
+Echo Isles has more units in view than the duel maps (creeps, expansions, larger armies), so a step costs the actors and the learner more. ~3,400 games an hour (2026-10-17), ~15 game minutes each on average: the wins are short (~10 minutes), the losses long (~26).
 
 ## Dead ends
 

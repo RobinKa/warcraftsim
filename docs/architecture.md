@@ -37,7 +37,7 @@ flowchart LR
 ```
 
 * One GPU context holds the learner and the inference loop. The loop has no Python in its hot path.
-* A video follows the fight, else cycles between the two players' armies and bases.
+* The video director (`video.Director`) moves the camera in whole-game replays, because 1.29's replays have no automatic camera. It follows the largest fight, raids on buildings too. Between fights it rotates: the learner's army, its base, the opponent's army, its base.
 
 ## One step
 
@@ -58,5 +58,5 @@ sequenceDiagram
 
 * A reload by `RestartGame` gives a new game. A reset by script does not: the engine keeps counting removed heroes.
 * Several pairs of players in one map load (`--pairs`) work only on the duel maps. Echo Isles has two start locations: one pair.
-* A build order that does not fit is tried again on rings of spots up to 256 units away, in the same step.
+* A build order that does not fit is tried again on rings of spots up to 768 units away, in the same step (up to 256 until 2026-10-16: Echo Isles refused most of undead's builds).
 * The game runs only as the 32-bit Legacy 1.29 build. The shim's offsets are for that build.

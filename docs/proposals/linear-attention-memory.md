@@ -43,7 +43,7 @@ flowchart LR
 * The inference server keeps ~110 KB of state per game instead of 768 bytes.
 * A unit needs a stable key to overwrite its own memory. The game reuses unit ids after a unit dies.
 * Memory has not helped yet. In cloning, order accuracy was 59.8–60.2% with memory and 61.4% without it.
-* Today's problems (ties, money not spent, rare orders) are not memory problems.
+* The problems when this was written (ties, money not spent, rare orders) were not memory problems. Neither are those of 2026-10-17: one strategy (an early rush), few heroes, undead's lumber.
 
 ## Plan
 

@@ -98,9 +98,9 @@ The **value head** also reads 23 numbers of the whole game that the player does 
 
 **How players differ:** only by the side channels. The view is always from "my" side, so "own" means this player. The two races sit in the player token. Position is the x, y numbers, not a token index. The transformer treats the units as a set, so their order does not matter.
 
-## Memory (optional): a minGRU across steps
+## Memory: a minGRU across steps
 
-The transformer looks across units within one step. The minGRU looks across steps, on one vector: the player token's output `g`.
+The transformer looks across units within one step. The minGRU looks across steps, on one vector: the player token's output `g`. It is an option (`--memory 1`), on in every self-play run since `fgself-11`.
 
 ```mermaid
 flowchart LR

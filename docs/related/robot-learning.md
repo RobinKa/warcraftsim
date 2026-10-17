@@ -1,6 +1,8 @@
 # Robot learning
 
-Robot learning has our problem: clone an expert, then improve the clone with RL. This page lists the ideas from 2017–2025 that fit our open problems.
+Robot learning has our problem: clone an expert, then improve the clone with RL. This page lists the ideas from 2017–2025 that fit our open problems. Each source links its paper.
+
+The problems are from 2026-10-03, when a clone of the built-in AI on the duel maps was the policy. Two are solved since: the policy attacks and beats the insane AI, and the value sees the whole game (an asymmetric critic). Rare orders are still a problem: the policy builds fewer heroes than the AI.
 
 ## Our problems and the ideas
 
@@ -25,6 +27,6 @@ flowchart LR
 
 ## What does not fit
 
-* **Vision-language-action models** (RT-2, OpenVLA, π0): their strength is a pretrained image and language model. We have no images, and a 7B model is too slow for 850 steps a second.
-* **Diffusion and flow policies**: they model continuous actions. Our orders are classes.
-* **Off-policy Q-learning** (RLPD, Cal-QL, Q-chunking): a Q-function over the orders of all units is hard to learn. Our cloning loss already mixes the demonstrations into RL.
+* **Vision-language-action models** (RT-2, 2023, [2307.15818](https://arxiv.org/abs/2307.15818) · OpenVLA, 2024, [2406.09246](https://arxiv.org/abs/2406.09246) · π0, 2024, [2410.24164](https://arxiv.org/abs/2410.24164)): their strength is a pretrained image and language model. We have no images, and a 7B model is too slow for ~1,600 steps a second.
+* **Diffusion and flow policies** (Diffusion Policy, 2023, [2303.04137](https://arxiv.org/abs/2303.04137)): they model continuous actions. Our orders are classes.
+* **Off-policy Q-learning** (RLPD, 2023, [2302.02948](https://arxiv.org/abs/2302.02948) · Cal-QL, 2023, [2303.05479](https://arxiv.org/abs/2303.05479) · Q-chunking, 2025, [2507.07969](https://arxiv.org/abs/2507.07969)): a Q-function over the orders of all units is hard to learn. Our cloning loss mixed the demonstrations into RL. It is off since 2026-10-14: the policy beats its teacher.

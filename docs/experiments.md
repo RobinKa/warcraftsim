@@ -2,6 +2,8 @@
 
 The main lessons, short. The [experiment log](reference/experiment-log.md) has every run, its numbers and why it ran. [Ideas from AlphaStar and OpenAI Five](reference/ideas-from-alphastar-and-openai-five.md) ranks the ideas we took from the papers.
 
+Each experiment is a new run, forked from a checkpoint (`scripts/selfplay_fork.py`). The fork starts with its parent's league and gets a title of a few words (`--title`, `runs/<run>/summary.txt`). The dashboard's lineage shows the forks with their titles.
+
 ## The duelfast line
 
 ```mermaid
@@ -13,6 +15,18 @@ xychart-beta
 ```
 
 100% is the built-in AI's own level in the same matchups. The runs measured different matchup mixes, so the bars are approximate.
+
+## The real game on Echo Isles
+
+```mermaid
+xychart-beta
+  title "Games won against the untaxed insane AI, each run's evaluation games"
+  x-axis ["fgself-56 as is", "fgself-61", "fgself-62", "fgself-68", "fgself-69", "fgself-73"]
+  y-axis "%" 0 --> 100
+  bar [49, 47, 59, 62, 71, 72]
+```
+
+Each run plays its own matchups, so compare within a run: in `fgself-73`'s games its policy won 72% and its start 62%. Running: `fgself-75` (a quarter of the shaping), level after 30 minutes.
 
 ## What worked
 
@@ -36,6 +50,8 @@ xychart-beta
 * Shaping for hero levels, credit per unit, a smaller unspent-money penalty, more real games in training.
 * Sampling at temperature 0.8: the policy gave fewer orders and lost (71% against 136%).
 * A clone of the AI's games under the real rules: it lost every game. Cloning undid the policy's fighting.
+* A cloning loss on the AI's real games, all of them or undead's only: level at ×0.02, worse at ×0.1.
+* More self-play (half the games against itself): worse. More training games as the weak races: level.
 * Annealing the rules from duelfast to the real game: the policy did not need it.
 
 ## What went wrong

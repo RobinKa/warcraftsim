@@ -14,7 +14,7 @@ xychart-beta horizontal
 
 ## Where the time goes
 
-The bars from "learner intake" on are with 8 evaluation games running beside the 48 training games (the learner intake made it ~25% faster in the same setting). The real game on Echo Isles runs at ~1,500-1,650 steps/s: its games have more units.
+The bars from "learner intake" on are with 8 evaluation games running beside the 48 training games (the learner intake made it ~25% faster in the same setting). The real game on Echo Isles runs at ~1,600 steps/s (`fgself-75`: 1,614 on 2026-10-17): its games have more units.
 
 ```mermaid
 flowchart LR
