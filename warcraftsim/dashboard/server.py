@@ -1318,7 +1318,7 @@ class Dashboard:
             info["launch"] = {"run_command": _rebuilt_command(info), "rebuilt": True}
         train_rows = self.cache.read(d / "train.jsonl")
         # (a NaN or infinity is no JSON: the page would never load; the learner once wrote a NaN noise scale)
-        train = [{k: v for k, v in r.items() if (k in TRAIN_KEYS or k.startswith(("league/", "curriculum/", "balance/")))
+        train = [{k: v for k, v in r.items() if (k in TRAIN_KEYS or k.startswith(("league/", "curriculum/", "balance/", "grad/")))
                   and not (isinstance(v, float) and not np.isfinite(v))} for r in train_rows]
         episodes = self._merged(d, "episodes")
         series = self._series.setdefault(d, _EpisodeSeries())

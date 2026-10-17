@@ -1733,15 +1733,87 @@ def _masked_ce(logits: torch.Tensor, y: torch.Tensor, weight: torch.Tensor) -> t
     return (ce * has.flatten()).sum() / has.sum().clamp(min=1)
 
 
-def noise_parts(small2: torch.Tensor, acc: list[torch.Tensor], k: int, b: float) -> dict:
-    """A batch's parts of the gradient noise scale (NoiseScale) from k minibatch gradients at the same
-    weights: `small2` the mean of their squared norms (unclipped, ~b agent steps each), `acc` their sum.
-    With |G_B|^2 = |G|^2 + tr(S)/B for a batch of B steps, the two batch sizes (b and k*b) give
-    unbiased estimates of |G|^2 (the true gradient's) and tr(S) (one step's gradient noise)."""
-    big2 = torch.stack(torch._foreach_norm(acc)).float().pow(2).sum() / (k * k)
-    small2 = float(small2)
-    big2 = float(big2)
-    return {"grad/g2": (k * big2 - small2) / (k - 1), "grad/trace": (small2 - big2) * k * b / (k - 1)}
+# the network's parts for their own noise scales (NoiseMeter): parameter name prefixes
+NOISE_GROUPS = (("input", ("ent.", "type_emb.", "cur_emb.", "glob.", "priv_proj.")), ("memory", ("mem_",)),
+                *((f"layer {i}", (f"transformer.layers.{i}.",)) for i in range(16)),
+                ("order head", ("order.", "order_emb.")),
+                ("target heads", ("cond.", "query.", "key.", "point_x.", "x_emb.", "point_y.")), ("value head", ("value_head.",)))
+
+
+def noise_group(name: str) -> str:
+    return next((g for g, pre in NOISE_GROUPS if name.startswith(pre)), "other")
+
+
+class NoiseMeter:
+    """A measurement pass's gradients (ppo_update(measure=True)) per key ("all": the whole loss; "term
+    <name>": one of its terms), per weight tensor: the sum of the minibatches' squared norms and the
+    sum of their gradients, plain and in Adam's metric (each gradient divided by Adam's denominator,
+    sqrt(v / (1 - beta2^t)) + eps: the direction Adam steps in; the weights stay put, so the sum's
+    preconditioned norm is the preconditioned sum's). parts() gives |G|^2 (the true gradient's) and
+    tr(S) (one step's gradient noise) for the whole network and per part (NOISE_GROUPS): with |G_B|^2 =
+    |G|^2 + tr(S)/B for a batch of B steps, the minibatches (b steps) and their mean (k*b) give
+    unbiased estimates of both."""
+
+    def __init__(self, net: FullGameNet, opt):
+        named = list(net.named_parameters())
+        self.params = [p for _, p in named]
+        groups = [noise_group(n) for n, _ in named]
+        self.groups = {g: torch.tensor([x == g for x in groups], device=self.params[0].device) for g in dict.fromkeys(groups)}
+        hp = opt.param_groups[0]
+        self.denom = []  # (a weight without Adam's state yet: out of Adam's metric)
+        for p in self.params:
+            st = opt.state.get(p, {})
+            t = float(st["step"]) if "step" in st else 0.0
+            self.denom.append((st["exp_avg_sq"] / (1 - hp["betas"][1] ** t)).sqrt() + hp["eps"]
+                              if "exp_avg_sq" in st and t > 0 else None)
+        self.adam = torch.tensor([d is not None for d in self.denom], device=self.params[0].device)
+        self.acc: dict[str, list] = {}
+        self.sq: dict[str, torch.Tensor] = {}
+        self.sqa: dict[str, torch.Tensor] = {}
+        self.k: dict[str, int] = {}
+
+    def add(self, key: str, grads) -> None:
+        if key not in self.acc:
+            self.acc[key] = [torch.zeros_like(p) for p in self.params]
+            self.sq[key], self.sqa[key] = (torch.zeros(len(self.params), device=self.params[0].device) for _ in range(2))
+            self.k[key] = 0
+        idx = [i for i, g in enumerate(grads) if g is not None]
+        g = [grads[i].float() for i in idx]
+        torch._foreach_add_([self.acc[key][i] for i in idx], g)
+        ix = torch.tensor(idx, device=self.sq[key].device)
+        self.sq[key][ix] += torch.stack(torch._foreach_norm(g)).pow(2)
+        ia = [j for j, i in enumerate(idx) if self.denom[i] is not None]
+        if ia:
+            pre = torch._foreach_div([g[j] for j in ia], [self.denom[idx[j]] for j in ia])
+            self.sqa[key][ix[ia]] += torch.stack(torch._foreach_norm(pre)).pow(2)
+        self.k[key] += 1
+
+    def parts(self, b: float) -> dict[str, tuple[float, float]]:
+        """{name: (|G|^2, tr(S))}: "all" and "all adam", "group <part>" (plain), "term <name>" (plain)."""
+        out = {}
+        for key, acc in self.acc.items():
+            k = self.k[key]
+            if k < 2:
+                continue
+            big = torch.stack(torch._foreach_norm(acc)).pow(2) / (k * k)
+            small = self.sq[key] / k
+            ia = [i for i, d in enumerate(self.denom) if d is not None]
+            bigA = torch.zeros_like(big)
+            if ia:
+                bigA[ia] = torch.stack(torch._foreach_norm(torch._foreach_div([acc[i] for i in ia],
+                                                                              [self.denom[i] for i in ia]))).pow(2) / (k * k)
+
+            def pair(sm: torch.Tensor, bg: torch.Tensor) -> tuple[float, float]:
+                sm, bg = float(sm), float(bg)
+                return (k * bg - sm) / (k - 1), (sm - bg) * k * b / (k - 1)
+            if key == "all":
+                out["all"] = pair(small.sum(), big.sum())
+                out["all adam"] = pair((self.sqa[key] / k)[self.adam].sum(), bigA[self.adam].sum())
+                for g, m in self.groups.items():
+                    out[f"group {g}"] = pair(small[m].sum(), big[m].sum())
+            else:
+                out[key] = pair(small.sum(), big.sum())
+        return out
 
 
 class NoiseScale:
@@ -1755,22 +1827,40 @@ class NoiseScale:
     with its start's bias corrected), then divided: one batch's |G|^2 can be < 0."""
 
     def __init__(self, decay: float = 0.9):
-        self.decay, self.n, self.g2, self.trace = decay, 0, 0.0, 0.0
+        self.decay = decay
+        self.mean: dict[str, list] = {}  # name -> [measurements, |G|^2's mean, tr(S)'s mean]
 
-    def add(self, g2: float, trace: float) -> dict:
-        self.n += 1
-        self.g2 = self.decay * self.g2 + (1 - self.decay) * g2
-        self.trace = self.decay * self.trace + (1 - self.decay) * trace
-        fix = 1 - self.decay ** self.n
-        return {"grad/noise_scale": (self.trace / fix) / (self.g2 / fix)} if self.g2 > 0 else {}  # (else none yet)
+    def add(self, parts: dict[str, tuple[float, float]], minibatch: int) -> dict:
+        """The noise scales from a measurement's parts (NoiseMeter.parts) as train.jsonl keys: the whole
+        network's (grad/noise_scale; in Adam's metric grad/noise_scale_adam), a step's signal to noise
+        (grad/snr: the minibatch over the noise scale), each part's (grad/noise_group/<part>) and each
+        loss term's (grad/noise_term/<term>); a scale whose |G|^2 averages <= 0 is left out (none yet)."""
+        out = {}
+        if "all" in parts:
+            out["grad/g2"], out["grad/trace"] = parts["all"]
+        for name, (g2, tr) in parts.items():
+            m = self.mean.setdefault(name, [0, 0.0, 0.0])
+            m[0] += 1
+            m[1] = self.decay * m[1] + (1 - self.decay) * g2
+            m[2] = self.decay * m[2] + (1 - self.decay) * tr
+            if m[1] <= 0:
+                continue
+            scale = m[2] / m[1]  # (the start's bias, 1 - decay^n, is the same in both: it cancels)
+            key = ("grad/noise_scale" if name == "all" else "grad/noise_scale_adam" if name == "all adam"
+                   else f"grad/noise_group/{name[6:]}" if name.startswith("group ") else f"grad/noise_term/{name[5:]}")
+            out[key] = scale
+            if name == "all":
+                out["grad/snr"] = minibatch / scale
+        return out
 
 
 def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict], args, warmup: bool, device,
-               chunks: list[list[dict]] | None = None, bc_iter=None, measure: bool = False) -> dict:
+               chunks: list[list[dict]] | None = None, bc_iter=None, measure: bool = False, terms: bool = False) -> dict:
     """PPO epochs over the steps; for a network with memory over sequences cut from `chunks` (the
     actors' pieces of trajectories, in order), from the states the actors had. `bc_iter`: batches
     of demonstrations (bc.Steps) whose cloning loss joins each minibatch's, times args.bc_coef.
-    `measure`: one pass and no steps, only the gradient noise's parts at these weights (noise_parts)."""
+    `measure`: one pass and no steps, only the gradient noise's parts at these weights (NoiseMeter.parts;
+    `terms`: also each loss term's, a backward pass each)."""
     advs = np.array([s["adv"] for s in steps], np.float32)
     mean, std = float(advs.mean()), float(advs.std()) + 1e-8
     lstd = _ladv_std(steps)
@@ -1793,8 +1883,7 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
     per_mb = max(1, args.minibatch // args.seq_len)
     sizes = np.array([s["n"] for s in steps])
     params = list(net.parameters())
-    acc = [torch.zeros_like(p) for p in params] if measure else None  # (NoiseScale)
-    small2: list[torch.Tensor] = []
+    meter = NoiseMeter(net, opt) if measure else None
     for epoch in range(1 if measure else args.epochs):
         if seqs is None:
             batches = (collate([steps[i] for i in idx], device)
@@ -1852,13 +1941,26 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
                 loss = loss + args.bc_coef * l_bc
                 stats.setdefault("loss/bc", []).append(l_bc.detach())
             autocast.__exit__(None, None, None)
+            if meter is not None:  # (the gradients at these weights, unclipped; no step)
+                if terms:  # each term's, and the whole loss's as their sum
+                    named = {"value": args.vf_coef * v_loss}
+                    if not warmup:
+                        named["policy"] = pg
+                    if ref is not None and args.ref_kl > 0:
+                        named["kl"] = args.ref_kl * ref_kl
+                    if args.ent_coef or getattr(args, "opd_coef", 0.0) > 0 or (bc_iter is not None and args.bc_coef > 0):
+                        named["other"] = loss - sum(named.values())
+                    grads = {n: torch.autograd.grad(v, params, retain_graph=True, allow_unused=True) for n, v in named.items()}
+                    for n, g in grads.items():
+                        meter.add(f"term {n}", g)
+                    whole = [None if all(g[i] is None for g in grads.values()) else
+                             sum(g[i] for g in grads.values() if g[i] is not None) for i in range(len(params))]
+                else:
+                    whole = torch.autograd.grad(loss, params, allow_unused=True)
+                meter.add("all", whole)
+                continue
             opt.zero_grad(set_to_none=True)
             loss.backward()
-            if acc is not None:  # (the gradients, unclipped: noise_parts; no step)
-                pairs = [(a, p.grad) for a, p in zip(acc, params) if p.grad is not None]
-                torch._foreach_add_([a for a, _ in pairs], [g for _, g in pairs])
-                small2.append(torch.stack(torch._foreach_norm([g for _, g in pairs])).float().pow(2).sum())
-                continue
             gn = torch.nn.utils.clip_grad_norm_(net.parameters(), args.max_grad_norm)
             opt.step()
             with torch.no_grad():
@@ -1868,9 +1970,8 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
                          ("loss/clipfrac", clipfrac), ("loss/ref_kl", ref_kl), ("grad_norm", gn)):
                 stats.setdefault(k, []).append(v.detach())
     net.eval()
-    if acc is not None:
-        opt.zero_grad(set_to_none=True)
-        return noise_parts(torch.stack(small2).mean(), acc, len(small2), len(steps) / len(small2)) if len(small2) > 1 else {}
+    if meter is not None:
+        return meter.parts(len(steps) / max(1, meter.k.get("all", 1)))
     return {k: float(torch.stack(v).float().mean()) for k, v in stats.items()}
 
 
@@ -2283,7 +2384,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-grad-norm", type=float, default=1.0)
     ap.add_argument("--noise-scale", type=int, default=10, help="every this many updates, the gradient noise scale "
                     "(grad/noise_scale, in agent steps: the critical batch size's estimate; NoiseScale) from an extra "
-                    "pass over the batch without steps (0: never)")
+                    "pass over the batch without steps (0: never); also per part of the network and in Adam's metric")
+    ap.add_argument("--noise-terms", type=int, default=50, help="every this many updates (a multiple of --noise-scale), "
+                    "the noise scale of each loss term too (policy, value, KL: a backward pass each)")
     ap.add_argument("--bf16", type=int, default=1, help="the updates' matmuls in bfloat16")
     ap.add_argument("--game-cuts", type=int, default=0, help="the training games' W3SIM_CUTS (shim/cuts.c: equivalent "
                                                             "speedups of the game's own code; 1529: all verified ones, "
@@ -2733,9 +2836,9 @@ def main(argv: list[str] | None = None) -> int:
             measured = {}
             if args.noise_scale > 0 and update % args.noise_scale == 0:  # (at the weights the update starts from)
                 t_noise = time.time()
-                measured = ppo_update(net, ref, opt, steps, args, warmup, device, batch_chunks, None, measure=True)
-                if "grad/g2" in measured:
-                    measured.update(noise.add(measured["grad/g2"], measured["grad/trace"]), **{"perf/noise": time.time() - t_noise})
+                parts = ppo_update(net, ref, opt, steps, args, warmup, device, batch_chunks, None, measure=True,
+                                   terms=args.noise_terms > 0 and update % args.noise_terms == 0)
+                measured = {**noise.add(parts, args.minibatch), "perf/noise": time.time() - t_noise}
             if updater is not None:
                 try:
                     stats = updater.update(steps, batch_chunks, warmup, bc_iter)

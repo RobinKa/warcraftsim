@@ -813,8 +813,9 @@ def test_ppo_update_runs_on_minibatches_by_size(memory):
     chunks = [steps[a:a + 8] for a in range(0, 24, 8)] if memory else None  # (three games' pieces)
     ref.allowed[:, 1:] = False  # (orders only the learner may give: the cloning loss allows more as it goes)
     held = {k: v.detach().clone() for k, v in net.state_dict().items()}
-    parts = ppo_update(net, ref, opt, steps, args, False, torch.device("cpu"), chunks, measure=True)
-    assert set(parts) == {"grad/g2", "grad/trace"} and all(np.isfinite(v) for v in parts.values())
+    parts = ppo_update(net, ref, opt, steps, args, False, torch.device("cpu"), chunks, measure=True, terms=True)
+    assert {"all", "all adam", "group value head", "term policy", "term value", "term kl"} <= set(parts)
+    assert all(np.isfinite(v) for pair in parts.values() for v in pair)
     assert all(torch.equal(v, net.state_dict()[k]) for k, v in held.items())  # (a measurement takes no step)
     out = ppo_update(net, ref, opt, steps, args, False, torch.device("cpu"), chunks)
     assert {"loss/policy", "loss/value", "loss/entropy", "loss/kl", "loss/clipfrac", "loss/ref_kl", "grad_norm",
@@ -1077,18 +1078,29 @@ def test_league_inherited_by_a_fork(tmp_path):
 
 
 def test_gradient_noise_scale():
-    """noise_parts and NoiseScale on gradients drawn as G + noise / sqrt(b) (per-step noise S = I * s2):
-    |G|^2 and tr(S) come out unbiased, their averaged ratio is B_simple = tr(S) / |G|^2."""
-    from warcraftsim.fullgame.selfplay import NoiseScale, noise_parts
+    """NoiseMeter and NoiseScale on gradients drawn as G + noise / sqrt(b) (per-step noise S = I * s2):
+    |G|^2 and tr(S) come out unbiased, their averaged ratio is B_simple = tr(S) / |G|^2; in Adam's metric
+    with the same denominator for every weight the same; the one part ("other") the whole."""
+    from warcraftsim.fullgame.selfplay import NoiseMeter, NoiseScale
     g = torch.Generator().manual_seed(0)
     d, k, b, s2 = 1000, 32, 256.0, 4.0
     G = torch.randn(d, generator=g) * 0.05  # |G|^2 ~ 2.5, tr(S) = 4000: B_simple ~ 1600
+    net = torch.nn.Module()
+    net.w = torch.nn.Parameter(torch.zeros(d))
+    opt = torch.optim.Adam(net.parameters())
+    net.w.grad = torch.ones(d)
+    opt.step()  # (Adam's state: the same v for every weight)
     ns, out = NoiseScale(), {}
     for _ in range(200):
-        mbs = G + torch.randn(k, d, generator=g) * (s2 / b) ** 0.5
-        parts = noise_parts((mbs ** 2).sum(1).mean(), [mbs.sum(0)], k, b)
-        out = ns.add(parts["grad/g2"], parts["grad/trace"])
-    assert out["grad/noise_scale"] == pytest.approx(d * s2 / float((G ** 2).sum()), rel=0.1)
+        meter = NoiseMeter(net, opt)
+        for row in G + torch.randn(k, d, generator=g) * (s2 / b) ** 0.5:
+            meter.add("all", [row])
+        out = ns.add(meter.parts(b), minibatch=256)
+    want = d * s2 / float((G ** 2).sum())
+    assert out["grad/noise_scale"] == pytest.approx(want, rel=0.1)
+    assert out["grad/noise_scale_adam"] == pytest.approx(out["grad/noise_scale"], rel=1e-3)
+    assert out["grad/noise_group/other"] == pytest.approx(out["grad/noise_scale"], rel=1e-6)
+    assert out["grad/snr"] == pytest.approx(256 / out["grad/noise_scale"])
 
 
 def test_exploiter_versions_served_as_snapshots(tmp_path):
