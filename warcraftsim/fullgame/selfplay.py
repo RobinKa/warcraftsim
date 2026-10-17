@@ -43,6 +43,7 @@ import types
 import weakref
 from collections import Counter
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import torch
@@ -1444,6 +1445,41 @@ class League:
                 continue
             m.wins, m.losses, m.draws = row.get("wins", 0.0), row.get("losses", 0.0), row.get("draws", 0.0)
             m.recent = list(row.get("recent") or [])
+        self._restore_levels(summary)
+        if self.exploiter is not None and summary.get("exploiter"):
+            x = summary["exploiter"]
+            self.exploiter.wins, self.exploiter.losses, self.exploiter.draws = x.get("wins", 0.0), x.get("losses", 0.0), x.get("draws", 0.0)
+            self.exploiter.recent = list(x.get("recent") or [])
+            self.exploiter_resets = summary.get("exploiter_resets", 0)
+        me = summary.get("self") or {}
+        self.self_member.wins, self.self_member.losses = me.get("wins", 0.0), me.get("losses", 0.0)
+        self.self_member.draws, self.self_member.recent = me.get("draws", 0.0), list(me.get("recent") or [])
+
+    def inherit(self, summary: dict, run: str, usable: Callable[[str], bool]) -> list[str]:
+        """A new run takes over the league of `run` (its league.json: a fork starts with its parent's
+        opponents, not a league of one): its past snapshots that `usable` takes (this map's point
+        bins, the run's orders), with their records (PFSP weighs them at once), and its curriculum
+        levels and balance (the parent's last levels fit the fork's start, its weights). Snapshots
+        are renamed "past:<run>/<steps>" (steps count per run); those named after a run keep their
+        names. The records against the built-in AI and itself stay the parent's (the new run's
+        charts start clean). Returns the members taken."""
+        taken = []
+        for row in summary.get("members", []):
+            if not row.get("path") or row["name"] in self.scripts or row["name"] in self.real or not usable(row["path"]):
+                continue
+            kind, _, rest = row["name"].partition(":")
+            m = Member(row["name"] if "/" in rest else f"{kind}:{run}/{rest}", path=row["path"], steps=row.get("steps", 0))
+            m.wins, m.losses, m.draws = row.get("wins", 0.0), row.get("losses", 0.0), row.get("draws", 0.0)
+            m.recent = list(row.get("recent") or [])
+            self.past.append(m)
+            taken.append(m.name)
+        if len(self.past) > self.max_past - 1:  # (room for the new run's own first snapshot; the first kept)
+            del self.past[1:len(self.past) - self.max_past + 2]
+        self._restore_levels(summary)
+        return [m.name for m in self.past]
+
+    def _restore_levels(self, summary: dict) -> None:
+        """The curriculum levels and the balance between races from a league.json."""
         for n, v in (summary.get("level") or {}).items():  # "script:ai-X|race" (runs from before races: every race)
             name, _, race = n.partition("|")
             if not race:
@@ -1456,14 +1492,6 @@ class League:
                 if key in self.level:
                     self.level[key] = v
         self.balance.update({k: v for k, v in (summary.get("balance") or {}).items() if k in self.balance})
-        if self.exploiter is not None and summary.get("exploiter"):
-            x = summary["exploiter"]
-            self.exploiter.wins, self.exploiter.losses, self.exploiter.draws = x.get("wins", 0.0), x.get("losses", 0.0), x.get("draws", 0.0)
-            self.exploiter.recent = list(x.get("recent") or [])
-            self.exploiter_resets = summary.get("exploiter_resets", 0)
-        me = summary.get("self") or {}
-        self.self_member.wins, self.self_member.losses = me.get("wins", 0.0), me.get("losses", 0.0)
-        self.self_member.draws, self.self_member.recent = me.get("draws", 0.0), list(me.get("recent") or [])
 
     def spec(self, real_share: float = 0.0) -> dict:
         """What the actors draw from: per launch built-in AI or agents; per agent game an opponent.
@@ -2159,6 +2187,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--self-share", type=float, default=0.5, help="of the agent games: against itself")
     ap.add_argument("--snapshot-every", type=int, default=20, help="updates between league snapshots")
     ap.add_argument("--max-past", type=int, default=12)
+    ap.add_argument("--league-from", help="a new run starts with this run's league (a name under --runs, or its directory): "
+                    "its past snapshots that fit (this map's point bins, the same orders) with their records, "
+                    "and its curriculum levels and balance (scripts/selfplay_fork.py: the parent's)")
     ap.add_argument("--pfsp", default="hard")
     ap.add_argument("--batch-steps", type=int, default=8192, help="agent steps per update")
     ap.add_argument("--minibatch", type=int, default=256)
@@ -2267,7 +2298,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--resume", action="store_true", help="continue the run --name: its latest checkpoint, league and counts")
     ap.add_argument("--resume-weights", type=Path, help="with --resume: this checkpoint's weights instead of the latest's "
                                                         "(a roll back; scripts/selfplay_restart.py --weights)")
-    ap.add_argument("--title", default="", help="with --resume: the restart's short name (the lineage's subtitle)")
+    ap.add_argument("--title", default="", help="a new run's change in a few words (summary.txt: the lineage shows it); "
+                    "with --resume: the restart's short name (the lineage's subtitle)")
     ap.add_argument("--note", default="", help="the run's notes (notes.md); with --resume, why it was restarted (the "
                                                 "restart's marker on the dashboard's charts)")
     args = ap.parse_args(argv)
@@ -2401,6 +2433,8 @@ def main(argv: list[str] | None = None) -> int:
     save_info()
     if args.note and resumed is None:  # (resuming, it is the restart's note: a marker on the dashboard's charts)
         (run_dir / "notes.md").write_text(args.note + "\n")
+    if args.title and resumed is None:
+        (run_dir / "summary.txt").write_text(args.title + "\n")
 
     league = League(run_dir, ai, {"ai": args.ai_share, "self": args.self_share, "past": 1.0 - args.self_share},
                     args.max_past, args.pfsp,
@@ -2413,9 +2447,19 @@ def main(argv: list[str] | None = None) -> int:
     if resumed is not None and (run_dir / "league.json").exists():
         league.restore(json.loads((run_dir / "league.json").read_text()))
     else:
+        if args.league_from:  # (a fork: its parent's opponents, then its own start)
+            src = Path(args.league_from) if Path(args.league_from).is_dir() else args.runs / args.league_from
+
+            def usable(path: str) -> bool:
+                if not Path(path).exists():
+                    return False
+                c = torch.load(path, map_location="cpu", weights_only=False)
+                return c["config"].get("bins", 128) == fx.BINS and c.get("vocab") == vocab
+            taken = league.inherit(json.loads((src / "league.json").read_text()), src.name, usable)
+            print(f"league from {src.name}: {len(taken)} past snapshots ({', '.join(taken)})", flush=True)
         first = run_dir / "checkpoints" / f"{0:016d}.pt"
         torch.save({**ck, "model": net.state_dict(), "config": net.config, "vocab": vocab, "agent_steps": 0}, first)
-        league.add_snapshot(first, 0)  # the clone itself: the first past opponent
+        league.add_snapshot(first, 0)  # the clone itself (a fork: its start), a past opponent
     league.write()
     publish(net, resumed["update"] if resumed else 0, run_dir)
     x_update = x_since = 0  # the exploiter's updates (its weights' version), and since its last restart

@@ -44,7 +44,7 @@ flowchart LR
 
 * **The built-in AI** (normal, insane). The real game against it is the yardstick.
 * **A curriculum**: the AI loses a share of its income until the learner wins half its games.
-* **Itself and past snapshots.** Between races, the stronger race pays a tax.
+* **Itself and past snapshots.** Between races, the stronger race pays a tax. A new run forked from another starts with its parent's past snapshots, their records and the curriculum's levels (`--league-from`), not a league of one.
 * **You**: `fullgame/versus.py` opens the game in a window.
 
 ## Rewards

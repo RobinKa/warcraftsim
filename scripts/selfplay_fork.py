@@ -1,9 +1,12 @@
 """Start a new self-play run from another run's latest checkpoint (an experiment: the dashboard's lineage
 shows it as the parent's child): stop the parent, take the flags of its last launch (run.json), some
 changed, and launch the new run with the parent's checkpoint as its starting weights (--start-weights;
---init stays the KL anchor). The new run starts its own league and curriculum and counts its steps from 0.
+--init stays the KL anchor). The new run takes over the parent's league (--league-from: its past snapshots
+with their records, its curriculum levels and balance; --league none: a league of its own from scratch)
+and counts its steps from 0.
 
-    python3 scripts/selfplay_fork.py fgself-12 fgself-13 --note "what changes and why" [--set shared-noise=0.5]
+    python3 scripts/selfplay_fork.py fgself-12 fgself-13 --title "the change in a few words" \
+        --note "what changes and why" [--set shared-noise=0.5]
 """
 
 from __future__ import annotations
@@ -25,6 +28,9 @@ def main() -> None:
     ap.add_argument("parent")
     ap.add_argument("child")
     ap.add_argument("--note", required=True, help="the new run's notes: what it changes and why (notes.md)")
+    ap.add_argument("--title", default="", help="the change in a few words (summary.txt: the lineage's line for it)")
+    ap.add_argument("--league", help="the run whose league the new one starts with (default: the parent's; none: "
+                    "its own)")
     ap.add_argument("--set", action="append", default=[], help="flag=value (without the dashes); flag= drops it")
     ap.add_argument("--weights", help="the parent's checkpoint to start from (default: its latest)")
     args = ap.parse_args()
@@ -44,14 +50,16 @@ def main() -> None:
         elif flags:
             flags[-1].append(w)
     flags = [f for f in flags if f[0] not in ("--name", "--note", "--title", "--resume", "--resume-weights",
-                                               "--start-weights")]
+                                               "--start-weights", "--league-from")]
     for s in args.set:
         k, _, v = s.partition("=")
         flags = [f for f in flags if f[0] != f"--{k}"]
         if v:
             flags.append([f"--{k}", *v.split()])
     argv = [sys.executable, "-m", "warcraftsim.fullgame.selfplay", "--name", args.child,
-            *[w for f in flags for w in f], "--start-weights", str(weights.relative_to(ROOT)), "--note", args.note]
+            *[w for f in flags for w in f], "--start-weights", str(weights.relative_to(ROOT)), "--note", args.note,
+            *(["--title", args.title] if args.title else []),
+            *(["--league-from", args.league or args.parent] if (args.league or "") != "none" else [])]
     with open(ROOT / "runs" / f"{args.child}.log", "a") as log:
         subprocess.Popen(argv, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     print(f"{args.child} from {weights.relative_to(ROOT)}:", " ".join(shlex.quote(a) for a in argv[3:]))

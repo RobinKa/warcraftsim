@@ -7,6 +7,7 @@ torch = pytest.importorskip("torch")
 
 from warcraftsim.fullgame import features as fx  # noqa: E402
 from warcraftsim.fullgame.selfplay import League, Trajectory  # noqa: E402
+from warcraftsim.rl.league import Member  # noqa: E402
 
 
 class _Q(list):
@@ -1041,3 +1042,30 @@ def test_grow_bins_plays_as_before():
         assert torch.allclose(net.point_x(z), big.point_x(z)[..., off:off + 128])
         assert torch.allclose(net.y_logits(z, x), big.y_logits(z, x + off)[..., off:off + 128], atol=1e-5)
         assert torch.softmax(big.point_x(z), -1)[..., :off].sum(-1).max() < 0.05
+
+
+def test_league_inherited_by_a_fork(tmp_path):
+    """A fork starts with its parent's league: the past snapshots that fit, renamed after the
+    parent (steps count per run), with their records; the curriculum levels; room kept for the
+    fork's own first snapshot, the parent's first kept."""
+    parent = tmp_path / "fgself-1"
+    parent.mkdir()
+    lg = League(parent, ["normal"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=3, pfsp="hard",
+                curriculum=(0.3, 0.1, 0.9, 100), mode="tax")
+    lg.past = [Member(f"past:{s}", path=str(parent / f"{s}.pt"), steps=s) for s in (0, 10, 20, 30)]
+    lg.past[1].wins, lg.past[1].recent = 3.0, [1.0, 1.0, 1.0]
+    lg.past.append(Member("past:fgself-0/5", path=str(parent / "old.pt"), steps=5))
+    lg.curriculum("script:ai-normal", 1.0)
+    lg.write()
+    child = League(tmp_path / "fgself-2", ["normal"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=3,
+                   pfsp="hard", curriculum=(0.3, 0.1, 0.9, 100), mode="tax")
+    names = child.inherit(json.loads((parent / "league.json").read_text()), "fgself-1",
+                          lambda p: not p.endswith("20.pt"))
+    assert names == ["past:fgself-1/0", "past:fgself-0/5"]  # (the first, the newest; 20 didn't fit)
+    full = League(tmp_path / "fgself-3", ["normal"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=9,
+                  pfsp="hard", curriculum=(0.3, 0.1, 0.9, 100), mode="tax")
+    full.inherit(json.loads((parent / "league.json").read_text()), "fgself-1", lambda p: True)
+    m = full.member("past:fgself-1/10")
+    assert m is not None and m.wins == 3.0 and m.recent == [1.0, 1.0, 1.0]
+    assert full.level[("script:ai-normal", "")] == pytest.approx(0.2)
+    assert full.scripts["script:ai-normal"].games == 0  # (the records against the AI stay the parent's)
