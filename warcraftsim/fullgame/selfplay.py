@@ -1762,7 +1762,7 @@ class NoiseScale:
         self.g2 = self.decay * self.g2 + (1 - self.decay) * g2
         self.trace = self.decay * self.trace + (1 - self.decay) * trace
         fix = 1 - self.decay ** self.n
-        return {"grad/noise_scale": (self.trace / fix) / (self.g2 / fix) if self.g2 > 0 else float("nan")}
+        return {"grad/noise_scale": (self.trace / fix) / (self.g2 / fix)} if self.g2 > 0 else {}  # (else none yet)
 
 
 def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict], args, warmup: bool, device,
