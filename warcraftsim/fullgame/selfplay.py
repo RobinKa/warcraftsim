@@ -1246,6 +1246,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                  else "itself" if opp["kind"] == "self" else "its exploiter" if opp["kind"] == "exploiter"
                  else f"snapshot {opp['name']}")
         ep["trace"] = {"steps": trace, "gamma": cfg["gamma"], "shared_noise": shared_noise, "outcome": {str(s): v for s, v in outcome.items()},
+                       # (the video's panel: the value without the shaping's potential, overlay.FullGameOverlay)
+                       "shaping": {"weight": cfg["shaping"], "scale": scale, "penalty": cfg.get("float_penalty", 0.0)},
                        "title": f"{Path(cfg['run_dir']).name} · policy v{infer.nets.version} · vs {who}",
                        "sides": [{"player": side, "name": f"learner ({races[side]})", "kind": "agent"},
                                  {"player": 1 - side, "name": f"{other} ({races[1 - side]})",

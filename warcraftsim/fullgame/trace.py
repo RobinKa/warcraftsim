@@ -6,6 +6,23 @@ from __future__ import annotations
 from ..protocol import Observation
 
 DEAD_FLAG = 1024  # the unit flags' dead bit (an int test, not an enum operation: per unit per step)
+HERO_FLAG = 1  # (protocol.UnitFlags.HERO)
+
+
+def heroes(obs: Observation) -> dict[str, list]:
+    """Each player's heroes: [type, level, alive, [each ability slot's level (data.abilities order)]]."""
+    from .features import rawcode
+    out: dict[str, list] = {"0": [], "1": []}
+    ua = getattr(obs, "unit_array", None)
+    if ua is not None:  # (native observations: columns of native.py; the abilities' levels at 23, 25, 27, 29)
+        for r in ua[(ua[:, 11] & HERO_FLAG) > 0].tolist():
+            if r[2] in (0, 1):
+                out[str(r[2])].append([rawcode(r[1]), r[14], int(not r[11] & DEAD_FLAG), r[23:31:2]])
+        return out
+    for u in obs.units:
+        if u.is_hero and u.owner in (0, 1):
+            out[str(u.owner)].append([u.type, u.hero_level, int(u.alive), [lv for lv, _ in u.abilities]])
+    return out
 
 
 def trace_step(t: int, obs: Observation, material: dict, orders: dict, **policy) -> dict:
@@ -13,7 +30,7 @@ def trace_step(t: int, obs: Observation, material: dict, orders: dict, **policy)
     `policy`: value / reward / entropy, each {player: float} (the players a policy controls)."""
     res = {str(p): [s.gold, s.lumber, s.food_used, s.food_cap] for p, s in obs.players.items() if p in (0, 1)}
     row = {"t": t, "game_time": round(obs.game_time, 2), "material": {str(p): round(v) for p, v in material.items()},
-           "res": res, "orders": {str(p): dict(c) for p, c in orders.items()}}
+           "res": res, "orders": {str(p): dict(c) for p, c in orders.items()}, "heroes": heroes(obs)}
     for k, v in policy.items():
         row[k] = {str(p): round(float(x), 4) for p, x in v.items()}
     return row
