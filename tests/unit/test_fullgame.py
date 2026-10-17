@@ -485,7 +485,7 @@ def test_steps_shuffle_buffer_pays_out_every_step_once(monkeypatch):
     from warcraftsim.fullgame import bc
     sides = {}
 
-    def side(enc, game, player, values):
+    def side(enc, game, player, values, z=None):
         n = 30 + 7 * ((game + player) % 3)
         out = {k: np.zeros((n, 2), np.float32) for k in bc.KEYS}
         out["n_own"] = (1000 * (2 * game + player) + np.arange(n)).astype(np.int64)  # (which step of which side)
