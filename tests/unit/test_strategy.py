@@ -101,3 +101,17 @@ def test_grow_strategy_plays_as_before():
     m = opt2.state[big.glob[0].weight]["exp_avg"]
     assert m.shape == big.glob[0].weight.shape and not m[:, 30:].any()
     assert np.allclose(m[:, :30].numpy(), opt.state[net.glob[0].weight]["exp_avg"].numpy())
+
+
+def test_hindsight_finds_each_sides_own_strategy():
+    """A demonstration game's sides' own strategies from the pool: the built-in AI's by the game's file and
+    side, people's by the replay and the players' slots (a converted replay's meta "source")."""
+    pool = {"items": {}, "strategies": [
+        {"race": "orc", "t": {"obar": 50.0}, "game": "demos-x/game00001.npz", "player": 1},
+        {"race": "human", "t": {"hbar": 60.0}, "replay": "123.w3g", "slot": 4},
+        {"race": "orc", "t": {"oalt": 70.0}, "replay": "123.w3g", "slot": 1}]}
+    ai = strategy.hindsight(pool, Path("runs/fullgame/demos-x/game00001.npz"), {})
+    assert list(ai) == [1] and ai[1]["t"] == {"obar": 50.0}
+    people = strategy.hindsight(pool, Path("runs/fullgame/demos-h/game00000.npz"),
+                                {"source": {"replay": "123.w3g", "slots": [1, 4]}})
+    assert people[0]["race"] == "orc" and people[1]["race"] == "human"

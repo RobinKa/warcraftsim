@@ -30,6 +30,7 @@ import torch
 import torch.nn.functional as F_
 
 from . import features as fx
+from . import strategy
 from .model import FullGameNet
 
 KEYS = ("ent", "type", "cur", "mask", "n_own", "glob", "y_order", "y_ptr", "y_x", "y_y", "ret", "avail")
@@ -58,12 +59,12 @@ def returns(game: dict, player: int, values: dict, reward: dict = REWARD) -> np.
     return out
 
 
-def side_data(enc: fx.Encoder, game: dict, player: int, values: dict) -> dict:
+def side_data(enc: fx.Encoder, game: dict, player: int, values: dict, z: np.ndarray | None = None) -> dict:
     """A game from `player`'s side: the encoded steps and their returns. In a takeover game
     (collect.py --policy) the side a policy played until the built-in AI took it over starts at
     the takeover: the steps before it have the policy's orders, not the AI's (the encoder still runs
     through them, for what the player queued and researched)."""
-    out = enc.encode(game, player)
+    out = enc.encode(game, player, z)
     out["ret"] = returns(game, player, values)
     tk = game["meta"].get("takeover")
     if tk and tk["player"] == player and tk["step"] > 0:
@@ -107,11 +108,16 @@ class Steps(torch.utils.data.IterableDataset):
     """Shuffled batches of steps from the games (both sides), encoded by the loader workers."""
 
     def __init__(self, paths: list[Path], vocab: dict, batch: int, values: dict, costs=None, buffer_steps: int = 8192,
-                 seed: int = 0, arrays: bool = False, winners: bool = False, max_minutes: float = 0.0):
+                 seed: int = 0, arrays: bool = False, winners: bool = False, max_minutes: float = 0.0,
+                 strategies: dict | None = None):
         """`arrays`: numpy batches (with a loader's collate_fn=as_is they cross to its process as bytes:
-        a tensor crosses as a shared-memory file of its own, ~15 ms for a batch's twelve)."""
+        a tensor crosses as a shared-memory file of its own, ~15 ms for a batch's twelve). `strategies`
+        (a strategy pool, fullgame/strategy.py): each side's own strategy as the input (strategy.hindsight;
+        the sides without one left out)."""
         self.paths, self.vocab, self.batch, self.buffer_steps, self.seed = paths, vocab, batch, buffer_steps, seed
         self.values, self.costs, self.arrays = values, costs, arrays
+        self.strategies = strategies
+        self.zdim = fx.ZDIM  # (the loader's workers: a process started anew reads the strategy block's size here)
         self.winners, self.max_minutes = winners, max_minutes  # (sides_of)
         self.epoch = 0
 
@@ -125,6 +131,7 @@ class Steps(torch.utils.data.IterableDataset):
         rng = random.Random(self.seed * 1000 + self.epoch * 100 + wid)
         paths = self.paths[wid::nw]
         rng.shuffle(paths)
+        fx.set_z(self.zdim)
         enc = fx.Encoder(self.vocab, self.costs)
         pick = np.random.default_rng(rng.randrange(1 << 30))
         cap = max(self.buffer_steps, self.batch)
@@ -138,8 +145,12 @@ class Steps(torch.utils.data.IterableDataset):
 
         for p in paths:
             game = fx.load_game(p)
+            own = strategy.hindsight(self.strategies, p, game["meta"]) if self.strategies is not None else None
             for player in sides_of(game, self.winners, self.max_minutes):
-                out = side_data(enc, game, player, self.values)
+                if own is not None and player not in own:
+                    continue
+                z = strategy.vector(own[player], self.strategies["items"][own[player]["race"]]) if own else None
+                out = side_data(enc, game, player, self.values, z)
                 if not buf:
                     buf = {k: np.zeros((cap,) + out[k].shape[1:], out[k].dtype) for k in KEYS}
                 n, at = len(out["n_own"]), 0

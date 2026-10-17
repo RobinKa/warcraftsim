@@ -456,7 +456,7 @@ class Encoder:
     def view(self, player: int, sign: float, races: list[int]) -> "View":
         return View(self, player, sign, races)
 
-    def encode(self, game: dict, player: int) -> dict:
+    def encode(self, game: dict, player: int, z: np.ndarray | None = None) -> dict:
         """The whole game from `player`'s side: arrays over its steps (padded to MAX_ENT). With costs:
         orders the player couldn't pay for at the step are no labels and queue nothing (the AI retries
         its train orders until it can afford them: 61% of its train and research orders were attempts
@@ -464,7 +464,8 @@ class Encoder:
         nothing within 2 steps at a building that wasn't busy (refused for tech or the hero limit);
         and "avail" is each step's availability mask. The side a policy played with the built-in AI
         advising it (collect.py --shadow): the AI's orders are the labels, the policy's own orders
-        ("policy_orders") what the features count (queues, workers on lumber)."""
+        ("policy_orders") what the features count (queues, workers on lumber). `z`: the strategy block's input
+        (strategy.vector; none: zeros)."""
         meta = game["meta"]
         T = meta["steps"] + 1
         u, pl, ev, od = game["units"], game["players"], game["events"], game["orders"]
@@ -482,6 +483,7 @@ class Encoder:
                "y_x": np.full((T, MAX_OWN), -1, np.int16), "y_y": np.full((T, MAX_OWN), -1, np.int16),
                "avail": np.ones((T, self.n_orders), bool)}
         view = self.view(player, sign, races)
+        view.z = z  # (a strategy as the input: bc's hindsight targets)
         for t in range(T):
             prow = pl[ps[t]:ps[t + 1]]
             me = prow[prow[:, 1] == player]

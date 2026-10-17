@@ -58,7 +58,7 @@ def from_demos(path: Path) -> list[dict]:
     result = meta.get("result") or {}
     races = meta["races"]
     return [{"race": races[p], "opp": races[1 - p], "src": "ai", "won": result.get(str(p)) == "VICTORY",
-             "t": _first_times(made[p])} for p in (0, 1)]
+             "t": _first_times(made[p]), "game": f"{path.parent.name}/{path.name}", "player": p} for p in (0, 1)]
 
 
 def from_replays(stats: Path) -> list[dict]:
@@ -76,7 +76,7 @@ def from_replays(stats: Path) -> list[dict]:
             pairs = [(code, t_ms / 1000.0 + CLICK_LAG) for t_ms, kind, code, *_ in b["build"]
                      if kind in ("train", "build", "hero", "research", "upgrade")]
             out.append({"race": races[i], "opp": races[1 - i], "src": "human", "won": bool(b.get("won")),
-                        "t": _first_times(pairs)})
+                        "t": _first_times(pairs), "replay": r.get("file"), "slot": b.get("slot")})
     return out
 
 
@@ -93,6 +93,24 @@ def build_pool(strategies: list[dict], min_items: int = 5) -> dict:
         if len(t) >= min_items:
             kept.append({**s, "t": t})
     return {"slots": SLOTS, "horizon": HORIZON, "items": items, "strategies": kept}
+
+
+def hindsight(pool: dict, path: Path, meta: dict) -> dict[int, dict]:
+    """A demonstration game's sides' own strategies (what each made and when: the target it followed, in
+    hindsight; an auxiliary cloning loss with it as the input teaches the policy what a strategy means, as
+    AlphaStar's supervised policy learned with each replay's own): the pool's entries of that game, the
+    built-in AI's by the game's file, people's by its replay and the players' slots. A side the pool left
+    out (too few items) has none."""
+    if "_games" not in pool:  # (an index, once)
+        pool["_games"] = {(s.get("game"), s.get("player")): s for s in pool["strategies"] if "game" in s}
+        pool["_replays"] = {(s.get("replay"), s.get("slot")): s for s in pool["strategies"] if "replay" in s}
+    src = meta.get("source") or {}
+    if src.get("replay"):
+        slots = src.get("slots") or []
+        return {p: pool["_replays"][(src["replay"], slots[p])] for p in (0, 1)
+                if p < len(slots) and (src["replay"], slots[p]) in pool["_replays"]}
+    key = f"{Path(path).parent.name}/{Path(path).name}"
+    return {p: pool["_games"][(key, p)] for p in (0, 1) if (key, p) in pool["_games"]}
 
 
 def vector(strategy: dict | None, items: list[str]) -> np.ndarray:

@@ -2401,6 +2401,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--bc-coef", type=float, default=0.02)
     ap.add_argument("--bc-batch", type=int, default=256)
     ap.add_argument("--bc-winners", type=int, default=0, help="the cloning loss: only the side that won each game")
+    ap.add_argument("--bc-z", type=int, default=1, help="with --z-pool: the cloning loss's sides with their own strategy "
+                    "as the input (strategy.hindsight: what each made and when; AlphaStar's supervised policy learned "
+                    "what a strategy means so), the sides the pool lacks left out")
     ap.add_argument("--bc-max-minutes", type=float, default=0.0, help="the cloning loss: only games decided within this many minutes")
     ap.add_argument("--bc-workers", type=int, default=4, help="the cloning loss's data workers (2 kept the learner "
                                                                  "waiting ~18%% of its time)")
@@ -2799,7 +2802,8 @@ def main(argv: list[str] | None = None) -> int:
         from .bc import Steps, as_is
         bc_paths = sorted(p for d in args.bc_data for p in d.glob("game*.npz") if ".tmp" not in p.name)
         bc_set = Steps(bc_paths, vocab, args.bc_batch, cfg["values"], order_costs(vocab, args.map), arrays=True,
-                       winners=bool(args.bc_winners), max_minutes=args.bc_max_minutes)
+                       winners=bool(args.bc_winners), max_minutes=args.bc_max_minutes,
+                       strategies=strategy_pool(cfg) if args.z_pool and args.bc_z else None)
 
         def bc_cycle():
             epoch = 0
