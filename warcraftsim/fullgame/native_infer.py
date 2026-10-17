@@ -50,7 +50,6 @@ class NativeServer:
     def __init__(self, cfg: dict, conns: list, device, split=None):
         from .selfplay import Inference, Nets, PastNet, SharedRows, warm_inference
         assert cfg.get("shared_rows"), "--infer-native needs --infer-shm 1"
-        assert not cfg.get("exploiter_share"), "--infer-native serves the current network and past snapshots only"
         self.cfg, self.conns, self.device = cfg, conns, device
         self.split = split  # (gpu_split.GpuSplit: the loop's streams in its part of the GPU)
         self.nets = Nets(cfg, device)
@@ -132,6 +131,10 @@ class NativeServer:
         buffers = list(src.buffers())
         torch.cuda.current_stream().synchronize()  # (made before the loop's streams copy from them)
         self.kept[key] = (flat, buffers)
+        xdir = str(Path(self.cfg["run_dir"]) / "exploiter")
+        old = sorted(k for k in self.kept if k.startswith(xdir))[:-40]  # (the exploiter's versions past the
+        for k in old:                                                    # newest 40: no game plays them now)
+            del self.kept[k]
         if arch not in self.arch_ids:
             raise RuntimeError(f"a past snapshot of an architecture without slots: {key}")
         return self.arch_ids[arch], [(flat.data_ptr(), flat.numel() * flat.element_size())] + \

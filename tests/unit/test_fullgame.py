@@ -1085,3 +1085,17 @@ def test_gradient_noise_scale():
         parts = noise_parts((mbs ** 2).sum(1).mean(), [mbs.sum(0)], k, b)
         out = ns.add(parts["grad/g2"], parts["grad/trace"])
     assert out["grad/noise_scale"] == pytest.approx(d * s2 / float((G ** 2).sum()), rel=0.1)
+
+
+def test_exploiter_versions_served_as_snapshots(tmp_path):
+    """The exploiter's weights as numbered files (the newest few kept) and exploiter.json naming the
+    newest: an exploiter game plays that file like a past snapshot."""
+    from warcraftsim.fullgame.selfplay import exploiter_key, publish_exploiter
+    net = _net(True)
+    for v in range(5):
+        publish_exploiter(net, v, tmp_path, {}, keep=3)
+    assert [p.name for p in sorted((tmp_path / "exploiter").glob("*.pt"))] == ["00000002.pt", "00000003.pt", "00000004.pt"]
+    key = exploiter_key({"run_dir": str(tmp_path)})
+    assert key.endswith("00000004.pt")
+    ck = torch.load(key, weights_only=False)
+    assert ck["version"] == 4 and ck["config"] == net.config and set(ck["model"]) == set(net.state_dict())

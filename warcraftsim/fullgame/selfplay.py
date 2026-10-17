@@ -1071,14 +1071,14 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         bot = BCAgent(None, vocab, s, None, costs=cfg.get("costs_array"))
         bot.begin(obs, race_ix)
         bots[s] = bot
-        keys[s] = ("current" if s == side or opp["kind"] == "self" else "exploiter" if opp["kind"] == "exploiter"
+        keys[s] = ("current" if s == side or opp["kind"] == "self" else exploiter_key(cfg) if opp["kind"] == "exploiter"
                    else opp["path"])
         if s == side and opp.get("eval_key"):  # (an evaluation game of a listed checkpoint: --eval-checkpoints)
             keys[s] = opp["eval_key"]
             bot.view.active_f = fx.F  # (all features: a checkpoint's weights past its own are zeros)
         if keys[s] == "current" and train:  # (an evaluation game: no steps to train on)
             trajs[s] = Trajectory(cfg, out_q, {"worker": wid, "opponent": opp["name"]})
-        elif keys[s] == "exploiter":  # (its steps train the exploiter: League, --exploiter-share)
+        elif opp["kind"] == "exploiter" and s != side:  # (its steps train the exploiter: League, --exploiter-share)
             trajs[s] = Trajectory(cfg, out_q, {"worker": wid, "opponent": "main", "learner": "exploiter"})
     # the built-in AI advises the learner's sides (opp["advise"]): its orders label their steps
     advised = [s for s in trajs if keys[s] == "current"] if opp.get("advise") else []
@@ -2130,6 +2130,32 @@ def publish(net: FullGameNet, version: int, run_dir: Path, name: str = "current.
     tmp.replace(run_dir / name)
 
 
+def publish_exploiter(xnet: FullGameNet, version: int, run_dir: Path, vocab: dict, keep: int = 40) -> None:
+    """The exploiter's weights as a numbered file (exploiter/<version>.pt, the newest `keep` kept) and
+    exploiter.json naming the newest: an exploiter game plays the version named at its start, served
+    like a past snapshot (by path: the native inference loop serves the current network and
+    snapshots; a new path is loaded once). `keep` covers the longest game (40 game minutes, ~3 wall
+    minutes) many times over: the loop copies a snapshot's weights from the learner's copy, which
+    NativeServer drops for versions past the newest `keep`."""
+    xdir = run_dir / "exploiter"
+    xdir.mkdir(exist_ok=True)
+    path = xdir / f"{version:08d}.pt"
+    tmp = path.with_suffix(".tmp")
+    torch.save({"model": {k: v.detach().cpu() for k, v in xnet.state_dict().items()}, "config": xnet.config,
+                "vocab": vocab, "version": version}, tmp)
+    tmp.replace(path)
+    tmp = run_dir / "exploiter.json.tmp"
+    tmp.write_text(json.dumps({"version": version, "path": str(path)}))
+    tmp.replace(run_dir / "exploiter.json")
+    for old in sorted(xdir.glob("[0-9]*.pt"))[:-keep]:
+        old.unlink(missing_ok=True)
+
+
+def exploiter_key(cfg: dict) -> str:
+    """The exploiter's newest weights (publish_exploiter): an exploiter game's key for its whole length."""
+    return json.loads((Path(cfg["run_dir"]) / "exploiter.json").read_text())["path"]
+
+
 def git_info() -> dict:
     root = Path(__file__).resolve().parents[2]
     try:
@@ -2440,7 +2466,7 @@ def main(argv: list[str] | None = None) -> int:
     # (as AlphaStar's from the supervised agent), trained on its games against the learner alone
     x_init = {k: v.detach().clone() for k, v in net.state_dict().items()} if args.exploiter_share > 0 else None
     xnet = copy.deepcopy(net) if x_init is not None else None
-    xopt = torch.optim.Adam(xnet.parameters(), lr=args.lr, eps=1e-5) if xnet is not None else None
+    xopt = torch.optim.Adam(xnet.parameters(), lr=args.lr, eps=1e-5, capturable=graphed) if xnet is not None else None
     slot, slot_lock = claim_slot(args.runs)
     races = list(fx.RACES) if args.races == "all" else args.races.split(",")
     ai = [d for d in args.ai.split(",") if d]
@@ -2533,6 +2559,7 @@ def main(argv: list[str] | None = None) -> int:
             xnet.load_state_dict(xck["model"])
             x_update, x_since = xck["version"], xck.get("since", 0)
         publish(xnet, x_update, run_dir, "exploiter.pt")
+        publish_exploiter(xnet, x_update, run_dir, vocab)
     cfg = {"run_dir": str(run_dir), "device": str(device), "vocab": str(run_dir / "vocab.json"), "races": races,
            "learner_races": {k: float(v) for k, v in (kv.split(":") for kv in args.learner_races.split(",") if kv)},
            "map": args.map, "handicap": args.handicap, "step_seconds": args.step_seconds,
@@ -2609,6 +2636,9 @@ def main(argv: list[str] | None = None) -> int:
     bc_iter = None
     updater = GraphedUpdate(net, ref, opt, args, device) if graphed else None
     noise = NoiseScale()  # (--noise-scale)
+    # the exploiter's updates as CUDA graphs too (eager, an update of 4,096 steps took the learner ~3-5 s
+    # every ~15 s: a quarter of its time)
+    x_updater = GraphedUpdate(xnet, ref, xopt, args, device) if graphed and xnet is not None else None
     if args.bc_data:  # demonstrations for the auxiliary cloning loss, encoded by loader workers, epoch after epoch
         from .bc import Steps, as_is
         bc_paths = sorted(p for d in args.bc_data for p in d.glob("game*.npz") if ".tmp" not in p.name)
@@ -2637,8 +2667,17 @@ def main(argv: list[str] | None = None) -> int:
         """A PPO update of the exploiter on its steps (no cloning loss: it is to find what beats the
         learner, not to play like the AI), then a restart when it beats the learner often enough
         (its weights join the league) or has not in --exploiter-timeout updates."""
-        nonlocal xbuf, xchunks, x_update, x_since, xopt, x_stats
-        x_stats = ppo_update(xnet, ref, xopt, xbuf, args, x_since < args.value_warmup, device, xchunks, None)
+        nonlocal xbuf, xchunks, x_update, x_since, xopt, x_stats, x_updater
+        x_stats = None
+        if x_updater is not None:
+            try:
+                x_stats = x_updater.update(xbuf, xchunks, x_since < args.value_warmup, None)
+            except Exception:  # noqa: BLE001 (the eager update from here on)
+                traceback.print_exc()
+                print("the exploiter's CUDA-graph update failed: the eager one from now on", flush=True)
+                x_updater = None
+        if x_stats is None:
+            x_stats = ppo_update(xnet, ref, xopt, xbuf, args, x_since < args.value_warmup, device, xchunks, None)
         xbuf, xchunks = [], []
         x_update += 1
         x_since += 1
@@ -2652,14 +2691,21 @@ def main(argv: list[str] | None = None) -> int:
                 league.add_snapshot(path, agent_steps, name=f"exploiter:{agent_steps}")
             print(f"exploiter restarts after {x_since} updates (its score against the learner: "
                   f"{'-' if score is None else f'{score:.2f}'})", flush=True)
-            xnet.load_state_dict(x_init)
-            xopt = torch.optim.Adam(xnet.parameters(), lr=args.lr, eps=1e-5)
+            xnet.load_state_dict(x_init)  # (in place: the graphs keep their weights' addresses)
+            if x_updater is not None:  # (Adam's state zeroed in place, alike: a fresh optimizer)
+                for st in xopt.state.values():
+                    for v in st.values():
+                        if isinstance(v, torch.Tensor):
+                            v.zero_()
+            else:
+                xopt = torch.optim.Adam(xnet.parameters(), lr=args.lr, eps=1e-5)
             xm.recent = []
             league.exploiter_resets += 1
             x_since = 0
         torch.save({"model": {k: v.detach().cpu() for k, v in xnet.state_dict().items()}, "config": xnet.config,
                     "version": x_update, "since": x_since}, run_dir / "exploiter.pt.tmp")
         (run_dir / "exploiter.pt.tmp").replace(run_dir / "exploiter.pt")
+        publish_exploiter(xnet, x_update, run_dir, vocab)
         league.write()
 
     try:
