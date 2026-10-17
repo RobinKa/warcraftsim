@@ -190,6 +190,16 @@ F = A_LAST + 5  # 55
 # the unit features in use (selfplay --features): channels from here on are zeros, so their weights get no
 # gradient and the network is as one without them (29: as before 2026-10-12, 50: without the last order)
 ACTIVE_F = int(os.environ.get("WARCRAFTSIM_FEATURES", F))  # (also from the environment: processes started anew)
+# the global vector's strategy block (strategy conditioning, fullgame/strategy.py: the policy's target strategy,
+# zeros for none), between what the player knows and the privileged block; 0: none (a run's networks all
+# have it or none: set_z from the run's network)
+ZDIM = int(os.environ.get("WARCRAFTSIM_Z", 0))
+
+
+def set_z(n: int) -> None:
+    global ZDIM
+    ZDIM = int(n)
+    os.environ["WARCRAFTSIM_Z"] = str(ZDIM)  # (processes started anew: videos)
 # the global vector's privileged block (the value head alone reads it, model.FullGameNet.value; AlphaStar's
 # value with the opponent's information was its largest RL ablation: 82% against 22%): the opponent's gold,
 # lumber, food used and cap, upkeep; then for each side (own, enemy), all its units seen or not: workers,
@@ -298,6 +308,7 @@ def describe_spaces(vocab: dict, order_names: dict[int, str] | None = None, agen
     glob = (["gold / 1000", "lumber / 1000", "food used / 100", "food cap / 100", "upkeep / 2", "time (steps / 1800)"]
             + [f"own race: {r}" for r in RACES] + [f"enemy race: {r}" for r in RACES]
             + [f"upgrade {rawcode(u)} (level / 3)" for u in vocab["upgrades"]]
+            + [f"strategy: slot {k} {w}" for w in ("made", "time / horizon") for k in range(ZDIM // 2)]
             + [f"privileged (value only): opponent {k}" for k in ("gold / 1000", "lumber / 1000", "food used / 100",
                                                                    "food cap / 100", "upkeep / 2")]
             + [f"privileged (value only): {side} {k}" for side in ("own", "enemy")
@@ -384,7 +395,8 @@ class Encoder:
         self.n_orders = len(self.order_index) + 1
         self.order_kind = np.array([IMMEDIATE] + [k[1] for k in vocab["orders"]], np.int64)
         self.G0 = 6 + 2 * len(RACES) + len(self.upgrade_index)  # what the player knows
-        self.G = self.G0 + PRIV  # and what only the value reads (privileged: the whole game, see View.priv)
+        self.ZD = ZDIM  # the target strategy (strategy.vector; none: zeros)
+        self.G = self.G0 + self.ZD + PRIV  # and what only the value reads (privileged: the whole game, see View.priv)
         # the lookups as sorted arrays (vectorized; per-entity dict lookups were most of a step's cost)
         self._type_keys, self._type_vals = _sorted_map(self.type_index)
         self._cur_keys, self._cur_vals = _sorted_map(self.cur_index)
@@ -571,6 +583,7 @@ class View:
     def __init__(self, enc: Encoder, player: int, sign: float, races: list[int]):
         self.enc, self.player, self.sign, self.races = enc, player, sign, races
         self.active_f = ACTIVE_F  # (an evaluation game sets F: every checkpoint has zero weights past its own)
+        self.z: np.ndarray | None = None  # the target strategy (strategy.vector; the encoder's ZD numbers)
         self.upgrades = np.zeros(len(enc.upgrade_index), np.float32)
         self.own_buildings: set[int] = set()
         self.queued: dict[int, int] = {}  # building -> units / research ordered and not yet done
@@ -679,7 +692,9 @@ class View:
         g[6 + self.races[player]] = 1
         g[6 + len(RACES) + self.races[1 - player]] = 1
         g[6 + 2 * len(RACES):enc.G0] = self.upgrades
-        g[enc.G0:] = self.priv(rows, opp)
+        if self.z is not None and enc.ZD:
+            g[enc.G0:enc.G0 + enc.ZD] = self.z
+        g[enc.G0 + enc.ZD:] = self.priv(rows, opp)
         avail = None
         if enc.costs is not None:  # what the player can pay for now (orders beyond it are masked)
             c = enc.costs

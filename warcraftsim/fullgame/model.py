@@ -32,11 +32,11 @@ def _order_temp_default(state, prefix, *_):
 class FullGameNet(nn.Module):
     def __init__(self, n_types: int, n_cur: int, n_orders: int, G: int, d: int = 192, heads: int = 4,
                  layers: int = 3, dropout: float = 0.0, memory: bool = False, target_temperature: float = 1.0,
-                 priv: int = 0, order_temperature: float = 1.0, bins: int = 128):
+                 priv: int = 0, order_temperature: float = 1.0, bins: int = 128, z: int = 0):
         super().__init__()
         self.config = dict(n_types=n_types, n_cur=n_cur, n_orders=n_orders, G=G, d=d, heads=heads, layers=layers,
                            dropout=dropout, memory=memory, target_temperature=target_temperature, priv=priv,
-                           order_temperature=order_temperature, bins=bins)
+                           order_temperature=order_temperature, bins=bins, **({"z": z} if z else {}))
         # the global vector's last `priv` numbers: the whole game (features.View.priv), for the value alone
         self.priv = int(priv)
         # the target heads' logits (unit, x, y) divided by it, acting and training alike: < 1 samples a unit's
@@ -84,7 +84,9 @@ class FullGameNet(nn.Module):
     def encode(self, ent, typ, cur, mask, glob):
         """-> global token [N, d], entity tokens [N, E, d]."""
         x = self.ent(ent) + self.type_emb(typ) + self.cur_emb(cur)
-        tok = torch.cat([self.glob(glob[..., :glob.shape[-1] - self.priv]).unsqueeze(1), x], 1)
+        # (what the player knows, and the strategy block of a network with one: config G less the privileged
+        # block; one without reads only what it knows when a run's rows have a strategy block)
+        tok = torch.cat([self.glob(glob[..., :self.config["G"] - self.priv]).unsqueeze(1), x], 1)
         pad = torch.cat([torch.zeros_like(mask[:, :1]), ~mask], 1)
         out = self.transformer(tok, src_key_padding_mask=pad)
         return out[:, 0], out[:, 1:]

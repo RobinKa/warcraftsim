@@ -166,6 +166,7 @@ def worker_main(wid: int, cfg: dict, games: int, keys: dict, host: str, q, stop)
     signal.signal(signal.SIGTERM, _exit)
     fx.ACTIVE_F = cfg["features"]
     fx.set_geometry(*cfg["map_geometry"])
+    fx.set_z(cfg.get("z_dim", 0))
     torch.set_num_threads(1)
     sys.setswitchinterval(0.001)  # (a game thread woken by its answer waits for the GIL: 5 ms by default)
     try:
@@ -237,6 +238,9 @@ def main(argv: list[str] | None = None) -> int:
         from ..data.mapbuild import stock_map_path
         fx.set_geometry(*fx.map_geometry(stock_map_path(cfg["map"])))
     cfg["map_geometry"] = [fx.STARTS, fx.BIN_RANGE]
+    first = newest_checkpoint(run_dir)  # the run's networks' strategy block (selfplay: the rows' width)
+    cfg["z_dim"] = torch.load(first, map_location="cpu", weights_only=False)["config"].get("z", 0) if first else 0
+    fx.set_z(cfg["z_dim"])
     vocab = json.loads(Path(cfg["vocab"]).read_text())
     from .costs import order_costs
     from .trace import unit_values

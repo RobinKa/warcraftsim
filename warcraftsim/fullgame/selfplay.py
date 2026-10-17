@@ -49,6 +49,7 @@ import numpy as np
 import torch
 
 from . import features as fx
+from . import strategy as strat
 from .collect import claim_slot
 from .costs import order_costs
 from .trace import DEAD_FLAG, Production, material, trace_step, unit_values  # noqa: F401
@@ -1048,6 +1049,19 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
             time.sleep(2)
 
 
+_POOLS: dict[str, dict] = {}
+
+
+def strategy_pool(cfg: dict) -> dict | None:
+    """The run's strategies (--z-pool: fullgame/strategy.py), read once per process."""
+    path = cfg.get("z_pool")
+    if not path:
+        return None
+    if path not in _POOLS:
+        _POOLS[path] = json.loads(Path(path).read_text())
+    return _POOLS[path]
+
+
 def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: dict, infer: Inference,
              out_q, wid: int, record: bool = False, train: bool = True) -> dict:
     """One game from its first observation; `record`: also a trace for the video's panel
@@ -1080,6 +1094,19 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             trajs[s] = Trajectory(cfg, out_q, {"worker": wid, "opponent": opp["name"]})
         elif opp["kind"] == "exploiter" and s != side:  # (its steps train the exploiter: League, --exploiter-share)
             trajs[s] = Trajectory(cfg, out_q, {"worker": wid, "opponent": "main", "learner": "exploiter"})
+    # strategy conditioning (--z-pool): --z-share of the learner's trained sides play toward a strategy drawn for
+    # their race (and their opponent's, when the pool has some): the global vector's strategy block, and a
+    # reward for the items made by now, theirs against the strategy's (strategy.mismatch); none in evaluation
+    zs: dict[int, dict] = {}
+    pool = strategy_pool(cfg) if train else None
+    for s in trajs if pool is not None else ():
+        if keys[s] == "current" and random.random() < cfg.get("z_share", 0.5):  # (not the exploiter's sides)
+            st = strat.sample(pool, races[s], races[1 - s], random, bool(cfg.get("z_winners", 1)))
+            if st is not None:
+                zs[s] = st
+                bots[s].view.z = strat.vector(st, pool["items"][races[s]])
+    made = {s: {} for s in zs}  # each item's first game second, of the sides with a strategy
+    zphi = {s: 0.0 for s in zs}  # their strategy potentials at the last recorded step
     # the built-in AI advises the learner's sides (opp["advise"]): its orders label their steps
     advised = [s for s in trajs if keys[s] == "current"] if opp.get("advise") else []
     for s in advised:
@@ -1152,6 +1179,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             bots[s].accepted(cmds[a:b], obs.command_results[a:b])
         t += 1
         prod.step(obs)
+        for s in zs:  # (what each side with a strategy has made: its items' first times)
+            for code in (*prod.trained[s], *prod.built[s], *prod.research[s]):
+                made[s].setdefault(code, obs.game_time)
         mat = material(obs, values, cfg.get("hero_level_value", 0.0))
         pot = shaped(obs, mat, cfg.get("float_penalty", 0.0))
         if obs.game_over or t >= cfg["max_steps"]:
@@ -1159,6 +1189,10 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         for s, tr in trajs.items():  # shaping: gamma * phi(s') - phi(s), for the step just taken
             if s in spans and tr.steps:  # (it recorded a step this time)
                 r = cfg["shaping"] * (cfg["gamma"] * (pot[s] - pot[1 - s]) / scale - phi[s])
+                if s in zs:  # the strategy's potential (not returned at the end: following it pays)
+                    z_new = -cfg.get("z_reward", 0.0) * strat.mismatch(made[s], zs[s], pool["items"][races[s]], obs.game_time)
+                    r += cfg["gamma"] * z_new - zphi[s]
+                    zphi[s] = z_new
                 if tr.steps:
                     tr.steps[-1]["reward"] += r
                     ret[s] += r
@@ -1194,6 +1228,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"balance_tax": opp["tax"] if opp["tax_side"] == side else -opp["tax"]} if "tax_side" in opp else {}),
         "prod": prod.row(side, obs), "opp_prod": prod.row(1 - side, obs), **({"advised": True} if advised else {}),
         **({"shared_noise": shared_noise} if cfg.get("shared_noise", 0.0) > 0 else {}),
+        **({"z": zs[side]["src"] + (" won" if zs[side]["won"] else ""), "z_items": len(zs[side]["t"]),
+            "z_miss": strat.mismatch(made[side], zs[side], pool["items"][races[side]], obs.game_time)} if side in zs else {}),
         **({} if train else {"eval": True, "eval_key": opp.get("eval_key") or "current"})}
     out_q.put({"episode": ep})
     if record:  # the video's panel: A = the learner's side
@@ -1300,6 +1336,7 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
     _pin(cfg, "games")
     fx.ACTIVE_F = cfg.get("features", fx.F)  # (a spawned process: the learner's setting, --features)
     fx.set_geometry(*cfg.get("map_geometry", (fx.STARTS, fx.BIN_RANGE)))  # (and the map's frame)
+    fx.set_z(cfg.get("z_dim", 0))  # (and the global vector's strategy block)
     out_q.cancel_join_thread()  # exiting must not wait to flush trajectories nobody reads any more
     torch.set_num_threads(1)
     try:
@@ -2307,6 +2344,14 @@ def main(argv: list[str] | None = None) -> int:
                                                         "uniform); '': as --races")
     ap.add_argument("--mirror", type=int, default=1, help="both sides play the same race (on duelrush the races "
                                                            "are far from balanced: night elf beat the others 96%%)")
+    ap.add_argument("--z-pool", type=Path, help="strategy conditioning (AlphaStar's z): the strategies "
+                    "(fullgame/strategy.py) a trained side's target is drawn from; the network needs a strategy block "
+                    "(scripts/grow_strategy.py)")
+    ap.add_argument("--z-share", type=float, default=0.5, help="the share of the learner's trained sides given a "
+                    "strategy (the rest and every evaluation game: none)")
+    ap.add_argument("--z-reward", type=float, default=0.02, help="the strategy reward: its potential is minus this "
+                    "per item of the race's list made by one of the side and its strategy by now, not both")
+    ap.add_argument("--z-winners", type=int, default=1, help="draw the strategies of players who won (if any)")
     ap.add_argument("--exploiter-share", type=float, default=0.0,
                     help="AlphaStar's main exploiter: this share of launches are games between the learner and a "
                          "second network that trains only against it (League; 0: none)")
@@ -2541,11 +2586,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.order_temperature is not None:  # (alike, the order head's)
         net.order_temp.fill_(args.order_temperature)
         net.config["order_temperature"] = args.order_temperature
+    fx.set_z(net.config.get("z", 0))  # the global vector's strategy block (scripts/grow_strategy.py), as the policy's
+    G = fx.Encoder(vocab).G
     for what, n in [("the starting weights" if args.start_weights else "--init", net), ("the anchor (--init)", ref)] + \
             [(str(c), FullGameNet(**torch.load(c, map_location="cpu", weights_only=False)["config"]))
              for c in args.eval_checkpoints or []]:
         if n is not None and n.bins != fx.BINS:  # (their point targets must be this map's bins)
             raise SystemExit(f"{what} has {n.bins} point bins, {args.map}'s frame {fx.BINS}: scripts/grow_bins.py")
+        if n is not None and n.config["G"] != G:  # (a run's rows have one width: the inference loop packs them alike)
+            raise SystemExit(f"{what} reads {n.config['G']} global numbers, the run's {G} (a strategy block of "
+                             f"{fx.ZDIM}): scripts/grow_strategy.py")
+    if args.z_pool and not fx.ZDIM:
+        raise SystemExit("--z-pool needs a network with a strategy block: scripts/grow_strategy.py")
     if args.rl_dropout >= 0:  # the updates' dropout (the actors act without: eval mode)
         set_dropout(net, args.rl_dropout)
     graphed = bool(args.cuda_graphs) and device.type == "cuda" and bool(net.memory)
@@ -2634,7 +2686,8 @@ def main(argv: list[str] | None = None) -> int:
                 if not Path(path).exists():
                     return False
                 c = torch.load(path, map_location="cpu", weights_only=False)
-                return c["config"].get("bins", 128) == fx.BINS and c.get("vocab") == vocab
+                return (c["config"].get("bins", 128) == fx.BINS and c.get("vocab") == vocab
+                        and c["config"]["G"] == net.config["G"])  # (the run's rows' width: a strategy block or none)
             taken = league.inherit(json.loads((src / "league.json").read_text()), src.name, usable)
             print(f"league from {src.name}: {len(taken)} past snapshots ({', '.join(taken)})", flush=True)
         first = run_dir / "checkpoints" / f"{0:016d}.pt"
@@ -2677,6 +2730,8 @@ def main(argv: list[str] | None = None) -> int:
            "avail_mask": bool(args.avail_mask),
            "opd_share": args.opd_share, "opd_difficulty": args.opd_difficulty,
            "costs": order_costs(vocab, args.map).tolist() if args.avail_mask else None, "max_past": args.max_past,
+           "z_dim": fx.ZDIM, "z_pool": str(args.z_pool) if args.z_pool else "", "z_share": args.z_share,
+           "z_reward": args.z_reward, "z_winners": args.z_winners,
            "order_names": vocab.get("order_names") or {str(k): v for k, v in fx.demo_order_names(args.runs).items()}}
     if args.pin and (os.cpu_count() or 0) >= 16:
         # the learner's Python is what bounds an update, and the inference server what the games wait
