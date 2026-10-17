@@ -35,7 +35,7 @@ The frame mattered most: positions relative to the own start, at the duel maps' 
 | Seeing | no terrain, trees or memory of buildings out of sight | a coarse map grid as input. The memory core is on. |
 | Acting | every unit, every half second: no APM limit | an APM cap before games against people |
 | Credit | 25-minute games are ~3,000 decisions a side | "when to act next" outputs |
-| Data | all demonstrations come from the built-in AI | human replays, played back through the harness |
+| Data | the demonstrations come from the built-in AI. People's 1.29 replays play back in our client in step ([human replays](reference/human-replays.md)): all 95 stock-map Echo Isles 1v1s converted (24 hours of play); 2,591 replays parsed for build orders | clone people on Echo Isles; strategy statistics (build orders, unit mixes) for conditioning |
 
 ## Next (2026-10-17)
 

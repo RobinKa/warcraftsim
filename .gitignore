@@ -9,4 +9,5 @@ runs/
 *.w3x
 *.w3m
 *.w3g
+!tests/fixtures/*.w3g
 *.wgc

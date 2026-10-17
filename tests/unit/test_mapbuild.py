@@ -74,3 +74,45 @@ def test_pairs_of_players_per_game(echo_script):
     assert out.count("call MeleeStartingUnits()") == 1  # (the harness's reset of the same players)
     one = inject_harness(echo_script, HarnessConfig(step_seconds=0.5, agent_players=(0,)))
     assert "constant integer W3S_CFG_PAIRS = 1" in one and "call W3S_StartingUnits()" not in one[one.index("function Trig_Melee_Initialization_Actions"):]
+
+
+def test_observer_injection(echo_script):
+    """The observing harness (people's replays): the map's own melee code stays as it is."""
+    from warcraftsim.data.mapbuild import inject_observer
+    _pjass_available()
+    out = inject_observer(echo_script, HarnessConfig(step_seconds=0.5), upgrades=("Rhme", "Rome"))
+    assert "call MeleeStartingAI(" in out and "call MeleeInitVictoryDefeat(" in out
+    assert "W3S_StartingAI" not in out and "call W3S_Upgrade('Rome')" in out
+    main = out[out.index("function main takes nothing returns nothing"):]
+    assert main.index("call RunInitializationTriggers(") < main.index("call W3S_Init()") < main.index("endfunction")
+    pjass_check(out)
+
+
+def test_observer_makes_nothing_in_a_step():
+    """w3obs.j: a replay's later units keep their object ids only if a step makes no object (every one
+    is made in W3S_Init, between its probes) and nothing changes the game: no unit or player natives,
+    no randomness, no event triggers (each firing makes objects)."""
+    import re
+    from warcraftsim.data.mapbuild import observer_source
+    src = observer_source()
+    bodies = dict(re.findall(r"^function (\w+) takes .*?$(.*?)^endfunction", src, re.M | re.S))
+    makes = re.compile(r"\b(Create\w+|InitHashtable|Condition|Filter|GetWorldBounds|Rect|Location|TimerStart|"
+                       r"TriggerRegister\w+|TriggerAdd\w+|EnumDestructablesInRect)\s*\(")
+    changes = re.compile(r"\b(IssueOrder|Issue\w+Order|SetPlayerState|SetUnit\w+|KillUnit|RemoveUnit|UnitAdd\w+|"
+                         r"GetRandom\w+|PickMeleeAI|RestartGame|EndGame|DestroyTrigger|CreateUnit\w*)\s*\(")
+    called = {"W3S_Step"}
+    todo = ["W3S_Step"]
+    while todo:  # every function a step calls (directly or as a callback)
+        for name in re.findall(r"\b(W3S_\w+)\b", bodies[todo.pop()]):
+            if name in bodies and name not in called:
+                called.add(name)
+                todo.append(name)
+    assert "W3S_Init" not in called and {"W3S_CPass", "W3S_WriteObs", "W3S_PollResearch"} <= called
+    for name in called:
+        assert not makes.search(bodies[name]), name
+    for name, body in bodies.items():
+        assert not changes.search(body), name
+    init = bodies["W3S_Init"]
+    assert init.strip().startswith("set w3s_probe0 = CreateGroup()")
+    last = max(m.start() for m in makes.finditer(init))  # (the last object made: the second probe)
+    assert last == init.index("set w3s_probe1 = CreateGroup()") + len("set w3s_probe1 = ")

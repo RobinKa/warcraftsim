@@ -77,6 +77,12 @@ int units_call(int key, int mbox, int *result);
 void units_verify_token(const char *s);
 void units_mark(int phase); /* W3SIM_PROFILE: a step's phases (0 GO, 3 the observation ends, 4 the sync) */
 
+#ifdef W3SIM_REPLAY
+/* replay.c (the replay build, make replay): object ids of units and of the harness's probes, buildings' state */
+int replay_unit_flags(int u, int flags);
+int replay_call(int key, int mbox, int *result);
+#endif
+
 /* audio.c (W3SIM_AUDIO=1) */
 void audio_install(void);
 /* the audio played during a captured frame of `seconds`; 0 if there is no audio device */

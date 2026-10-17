@@ -267,6 +267,9 @@ static void unit_record(int u) {
         flags += 1024;
     if (n2(IsUnitType, u, TYPE_FLYING))
         flags += 2048;
+#ifdef W3SIM_REPLAY
+    flags |= replay_unit_flags(u, flags); /* (the replay build: buildings' state; the unit's object ids reported) */
+#endif
     int typ = same ? g_cur.typ : n1(GetUnitTypeId, u);
     int owner = pid(same ? g_cur.owner : owner_id(u));
     int x = (int)r1(GetUnitX, u), y = (int)r1(GetUnitY, u), facing = (int)r1(GetUnitFacing, u);
@@ -501,6 +504,10 @@ void units_mark(int phase) { /* 0: GO; 1: the pass begins; 2: it ends; 3: the ob
 /* the harness's calls (see the top); `key`: the tech id it asked for. Returns 1 if the call was one of them. */
 int units_call(int key, int mbox, int *result) {
     *result = 0;
+#ifdef W3SIM_REPLAY
+    if (replay_call(key, mbox, result))
+        return 1;
+#endif
     if (key == mbox - 2) { /* a game's first step (after a reload the last game's tables are gone) */
         g_v_unit = 0;
         g_ht = g_abil = g_all = g_nseer = g_pending = g_pass = g_nremoved = g_rec_len = g_pair_first = g_paired = 0;

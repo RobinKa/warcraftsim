@@ -81,6 +81,7 @@ GameInstance ── TCP 127.0.0.1 ───────────────�
    python3 -m venv .venv && .venv/bin/pip install cmake && .venv/bin/pip install -e ".[rl,video,dev]"
    scripts/build_native.sh     # StormLib (MPQ), pjass (JASS checker)
    make -C shim                # w3shim.dll, w3launch.exe
+   make -C shim replay         # its build for people's replays (docs/reference/human-replays.md)
    .venv/bin/python -m warcraftsim setup
    ```
 

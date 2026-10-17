@@ -230,6 +230,9 @@ class GameSetup:
     # takes over and the process that was running is parked as the next spare; the relaunch
     # after the replay was saved resumes it with an in-game restart. Neither costs a load.
     scenario_spare: bool = False
+    # Another build of w3shim to load (None: build/shim): people's replays play back with the replay
+    # build (build/shim-replay: shim/replay.c, fullgame/replays.py)
+    shim_dir: str | None = None
 
     def __post_init__(self):
         self.slots = tuple(self.slots)
@@ -326,10 +329,11 @@ class GameSetup:
         return hashlib.sha1(blob.encode()).hexdigest()[:12]
 
 
-def _shim_files() -> tuple[Path, Path]:
-    dll, launcher = SHIM_DIR / "w3shim.dll", SHIM_DIR / "w3launch.exe"
+def _shim_files(shim_dir: str | os.PathLike | None = None) -> tuple[Path, Path]:
+    d = Path(shim_dir) if shim_dir else SHIM_DIR
+    dll, launcher = d / "w3shim.dll", d / "w3launch.exe"
     if not (dll.exists() and launcher.exists()):
-        raise FileNotFoundError(f"w3shim not built in {SHIM_DIR}; run `make -C shim`")
+        raise FileNotFoundError(f"w3shim not built in {d}; run `make -C shim`" + (" replay" if shim_dir else ""))
     return dll, launcher
 
 
@@ -582,7 +586,7 @@ class GameInstance:
     _loadfile: str | None = None
 
     def _launch_once(self) -> Observation:
-        dll, launcher = _shim_files()
+        dll, launcher = _shim_files(self.setup.shim_dir)
         self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server.bind(("127.0.0.1", 0))
         self._server.listen(1)

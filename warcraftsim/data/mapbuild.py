@@ -212,6 +212,56 @@ def lambda_repl(text: str):
     return lambda _m: text
 
 
+def observer_source() -> str:
+    return resources.files("warcraftsim.harness").joinpath("w3obs.j").read_text()
+
+
+def observer_upgrades() -> tuple[str, ...]:
+    """Every upgrade of the game (UpgradeData.slk): the observing harness polls their levels."""
+    from .objects import parse_slk
+    with GameArchives() as g:
+        rows = parse_slk(g.read("Units\\UpgradeData.slk").decode("latin-1"))
+    return tuple(sorted({r["upgradeid"] for r in rows if len(r.get("upgradeid", "")) == 4}))
+
+
+def inject_observer(script: str, cfg: HarnessConfig, harness: str | None = None,
+                    upgrades: tuple[str, ...] | None = None) -> str:
+    """The map script with the observing harness (w3obs.j) injected: its globals and functions, and
+    `call W3S_Init()` at the end of main. Nothing of the map's own code changes: a replay of a game
+    recorded on the stock map (people's games) re-simulates it from the map, so its melee
+    initialization (MeleeStartingAI, MeleeInitVictoryDefeat) must run as it did. From `cfg`: the step
+    and whether to send the trees, the order and hero ability tables; `upgrades` (default: the
+    game's, observer_upgrades) the research levels it polls."""
+    j = script.replace("\r\n", "\n")
+    src = harness or observer_source()
+    m = re.search(r"^globals\n(.*?)^endglobals\n", src, re.M | re.S)
+    if not m:
+        raise MapBuildError("observer has no globals block")
+    glob, body = m.group(1), src[m.end():]
+    for name, decl in {"W3S_CFG_STEP_S": f"constant real W3S_CFG_STEP_S = {cfg.step_seconds:.4f}",
+                       "W3S_CFG_SEND_DESTRUCTABLES": "constant boolean W3S_CFG_SEND_DESTRUCTABLES = "
+                                                     + ("true" if cfg.send_destructables else "false")}.items():
+        glob, n = re.subn(rf"^\s*constant \w+ {name} = .*$", "    " + decl, glob, flags=re.M)
+        if n != 1:
+            raise MapBuildError(f"observer config {name} not found")
+    orders = "\n".join(f'    call W3S_Order("{name}")' for name in cfg.resolved_order_names())
+    polled = "\n".join(f"    call W3S_Upgrade('{u}')" for u in (observer_upgrades() if upgrades is None else upgrades))
+    for marker, code in (("ORDERS", orders), ("HERO_ABILITIES", cfg.hero_abilities_code()), ("UPGRADES", polled)):
+        body, n = re.subn(rf"^\s*// @{marker}@\s*$", lambda _m, c=code: c, body, flags=re.M)
+        if n != 1:
+            raise MapBuildError(f"observer {marker} marker not found")
+
+    def sub_once(pattern: str, repl, text: str, what: str) -> str:
+        out, n = re.subn(pattern, repl, text, count=1, flags=re.M)
+        if n != 1:
+            raise MapBuildError(f"map script: {what} not found")
+        return out
+
+    j = sub_once(r"^endglobals\s*$", lambda_repl(glob + "endglobals\n" + body), j, "globals block")
+    return sub_once(r"^(\s*call RunInitializationTriggers\(\s*\)\s*)$", r"\1\n    call W3S_Init()", j,
+                    "RunInitializationTriggers call in main")
+
+
 def game_scripts() -> tuple[Path, Path]:
     """common.j and Blizzard.j from the game archives (cached)."""
     out = paths.CACHE_DIR / "game" / "Scripts"
@@ -272,8 +322,10 @@ def stock_map_path(name: str) -> Path:
     return candidates[0]
 
 
-def build_map(source: str | Path, dest: str | Path, cfg: HarnessConfig, check: bool = True) -> Path:
-    """Copy `source` to `dest` with the harness injected into war3map.j."""
+def build_map(source: str | Path, dest: str | Path, cfg: HarnessConfig, check: bool = True,
+              observer: bool = False) -> Path:
+    """Copy `source` to `dest` with the harness injected into war3map.j (`observer`: the observing
+    harness instead, inject_observer)."""
     src = stock_map_path(str(source)) if not Path(source).exists() else Path(source)
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -282,7 +334,7 @@ def build_map(source: str | Path, dest: str | Path, cfg: HarnessConfig, check: b
     try:
         with MpqArchive(tmp, writable=True) as m:
             script = m.read("war3map.j").decode("latin-1")
-            out = inject_harness(script, cfg)
+            out = inject_observer(script, cfg) if observer else inject_harness(script, cfg)
             if check:
                 pjass_check(out)
             m.write("war3map.j", out.replace("\n", "\r\n").encode("latin-1"))
