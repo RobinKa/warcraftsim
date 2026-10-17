@@ -1734,11 +1734,10 @@ def _masked_ce(logits: torch.Tensor, y: torch.Tensor, weight: torch.Tensor) -> t
 
 
 def noise_parts(small2: torch.Tensor, acc: list[torch.Tensor], k: int, b: float) -> dict:
-    """One update's parts of the gradient noise scale (NoiseScale) from its first epoch: `small2` the
-    mean of its k minibatches' squared gradient norms (unclipped, ~b agent steps each), `acc` the sum
-    of their gradients. With |G_B|^2 = |G|^2 + tr(S)/B for a batch of B steps, the two batch sizes (b
-    and k*b) give unbiased estimates of |G|^2 (the true gradient's) and tr(S) (one step's gradient
-    noise)."""
+    """A batch's parts of the gradient noise scale (NoiseScale) from k minibatch gradients at the same
+    weights: `small2` the mean of their squared norms (unclipped, ~b agent steps each), `acc` their sum.
+    With |G_B|^2 = |G|^2 + tr(S)/B for a batch of B steps, the two batch sizes (b and k*b) give
+    unbiased estimates of |G|^2 (the true gradient's) and tr(S) (one step's gradient noise)."""
     big2 = torch.stack(torch._foreach_norm(acc)).float().pow(2).sum() / (k * k)
     small2 = float(small2)
     big2 = float(big2)
@@ -1749,12 +1748,13 @@ class NoiseScale:
     """The gradient noise scale B_simple = tr(S) / |G|^2 (McCandlish et al. 2018, "An Empirical Model
     of Large-Batch Training", appendix A), in agent steps: the batch beyond which a larger one buys
     proportionally fewer steps (the critical batch size's estimate; OpenAI Five sized its batches by
-    it). Each update's |G|^2 and tr(S) (noise_parts) are averaged over updates first (an exponential
-    mean with its start's bias corrected), then divided: one update's |G|^2 can be < 0. The first
-    epoch's Adam steps move the weights between its minibatches (lr 3e-5, ~32 steps): their mean
-    gradient comes out a little shorter, B_simple a little too large."""
+    it). Measured every --noise-scale updates on the batch at the weights it starts from, an extra pass
+    without steps (ppo_update(measure=True)): measured over the update's first epoch instead, Adam's
+    steps between the minibatches made their gradients partly cancel, and |G|^2 came out < 0 in 95% of
+    fgself-76's updates. The measurements' |G|^2 and tr(S) are averaged first (an exponential mean
+    with its start's bias corrected), then divided: one batch's |G|^2 can be < 0."""
 
-    def __init__(self, decay: float = 0.95):
+    def __init__(self, decay: float = 0.9):
         self.decay, self.n, self.g2, self.trace = decay, 0, 0.0, 0.0
 
     def add(self, g2: float, trace: float) -> dict:
@@ -1766,10 +1766,11 @@ class NoiseScale:
 
 
 def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict], args, warmup: bool, device,
-               chunks: list[list[dict]] | None = None, bc_iter=None) -> dict:
+               chunks: list[list[dict]] | None = None, bc_iter=None, measure: bool = False) -> dict:
     """PPO epochs over the steps; for a network with memory over sequences cut from `chunks` (the
     actors' pieces of trajectories, in order), from the states the actors had. `bc_iter`: batches
-    of demonstrations (bc.Steps) whose cloning loss joins each minibatch's, times args.bc_coef."""
+    of demonstrations (bc.Steps) whose cloning loss joins each minibatch's, times args.bc_coef.
+    `measure`: one pass and no steps, only the gradient noise's parts at these weights (noise_parts)."""
     advs = np.array([s["adv"] for s in steps], np.float32)
     mean, std = float(advs.mean()), float(advs.std()) + 1e-8
     lstd = _ladv_std(steps)
@@ -1792,9 +1793,9 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
     per_mb = max(1, args.minibatch // args.seq_len)
     sizes = np.array([s["n"] for s in steps])
     params = list(net.parameters())
-    acc = [torch.zeros_like(p) for p in params] if getattr(args, "noise_scale", 0) else None  # (NoiseScale)
+    acc = [torch.zeros_like(p) for p in params] if measure else None  # (NoiseScale)
     small2: list[torch.Tensor] = []
-    for epoch in range(args.epochs):
+    for epoch in range(1 if measure else args.epochs):
         if seqs is None:
             batches = (collate([steps[i] for i in idx], device)
                        for idx in minibatches(sizes, args.minibatch, args.pad_groups))
@@ -1853,12 +1854,12 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
             autocast.__exit__(None, None, None)
             opt.zero_grad(set_to_none=True)
             loss.backward()
-            if acc is not None and epoch == 0:  # (the first epoch's gradients, unclipped: noise_parts)
+            if acc is not None:  # (the gradients, unclipped: noise_parts; no step)
                 pairs = [(a, p.grad) for a, p in zip(acc, params) if p.grad is not None]
                 torch._foreach_add_([a for a, _ in pairs], [g for _, g in pairs])
+                small2.append(torch.stack(torch._foreach_norm([g for _, g in pairs])).float().pow(2).sum())
+                continue
             gn = torch.nn.utils.clip_grad_norm_(net.parameters(), args.max_grad_norm)
-            if acc is not None and epoch == 0:
-                small2.append(gn.detach().float() ** 2)
             opt.step()
             with torch.no_grad():
                 approx_kl = (((ratio - 1) - log_ratio) * own).sum() / n_units
@@ -1867,10 +1868,10 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
                          ("loss/clipfrac", clipfrac), ("loss/ref_kl", ref_kl), ("grad_norm", gn)):
                 stats.setdefault(k, []).append(v.detach())
     net.eval()
-    out = {k: float(torch.stack(v).float().mean()) for k, v in stats.items()}
-    if acc is not None and len(small2) > 1:
-        out.update(noise_parts(torch.stack(small2).mean(), acc, len(small2), len(steps) / len(small2)))
-    return out
+    if acc is not None:
+        opt.zero_grad(set_to_none=True)
+        return noise_parts(torch.stack(small2).mean(), acc, len(small2), len(steps) / len(small2)) if len(small2) > 1 else {}
+    return {k: float(torch.stack(v).float().mean()) for k, v in stats.items()}
 
 
 WIDTHS = (32, 48, 64, 96, 128, fx.MAX_ENT)  # the padded entity counts the update's CUDA graphs are captured for
@@ -1897,9 +1898,6 @@ class GraphedUpdate:
         self.pg_coef = torch.ones((), device=device)
         self.lstd = torch.ones((), device=device)  # (the units' own advantages' spread: --unit-credit)
         self.umean, self.ustd = torch.zeros((), device=device), torch.ones((), device=device)  # (--upgo)
-        # the first epoch's gradients summed (NoiseScale): acc_on 1 in the first epoch's steps, else 0
-        self.acc = [torch.zeros_like(p) for p in net.parameters()] if getattr(args, "noise_scale", 0) else None
-        self.acc_on = torch.zeros((), device=device)
 
     def _step(self, s: dict, b: dict | None) -> dict:
         """One minibatch's step on the static inputs `s` (and the cloning batch `b`): no GPU syncs."""
@@ -1943,9 +1941,6 @@ class GraphedUpdate:
                 loss = loss + args.bc_coef * l_bc
                 out["loss/bc"] = l_bc
         loss.backward()
-        if self.acc is not None:  # (unclipped)
-            pairs = [(a, p.grad) for a, p in zip(self.acc, net.parameters()) if p.grad is not None]
-            torch._foreach_add_([a for a, _ in pairs], torch._foreach_mul([g for _, g in pairs], self.acc_on))
         out["grad_norm"] = torch.nn.utils.clip_grad_norm_(net.parameters(), args.max_grad_norm, foreach=True)
         self.opt.step()
         with torch.no_grad():
@@ -1982,7 +1977,6 @@ class GraphedUpdate:
         state = {id(p): {k: v.clone() for k, v in self.opt.state[p].items() if isinstance(v, torch.Tensor)}
                  for p in params if p in self.opt.state}
         allowed = self.net.allowed.clone()
-        acc = [a.clone() for a in self.acc] if self.acc is not None else []
         side = torch.cuda.Stream()
         side.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(side):
@@ -1998,8 +1992,6 @@ class GraphedUpdate:
                     if isinstance(v, torch.Tensor):  # (as before; a state the warm-up made: zero)
                         v.copy_(state[id(p)][k]) if id(p) in state and k in state[id(p)] else v.zero_()
             self.net.allowed.copy_(allowed)
-            for a, v in zip(self.acc or [], acc):  # (the warm-up's gradients out of the epoch's sum)
-                a.copy_(v)
         self.opt.zero_grad(set_to_none=True)
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(graph, pool=self.pool, capture_error_mode="thread_local"):  # (an inference thread
@@ -2032,7 +2024,7 @@ class GraphedUpdate:
         outs: list[dict] = []
 
         def prepared():  # the minibatches made on the CPU (their copies to the GPU queued)
-            for epoch in range(args.epochs):
+            for _ in range(args.epochs):
                 widths = np.array([max(s["n"] for s in q) for q in seqs])
                 for idx in minibatches(widths, per_mb, args.pad_groups):
                     width = _width(int(widths[idx].max()))
@@ -2049,18 +2041,13 @@ class GraphedUpdate:
                              for k, v in b.items()}
                         b["width"] = bw
                     yield (width, b["width"] if b is not None else 0,
-                           tuple(sorted(k for k, v in mb.items() if isinstance(v, torch.Tensor)))), mb, b, epoch
+                           tuple(sorted(k for k, v in mb.items() if isinstance(v, torch.Tensor)))), mb, b
 
         pause = getattr(args, "update_pause_ms", 0)
-        if self.acc is not None:
-            torch._foreach_zero_(self.acc)
-        first: list[torch.Tensor] = []  # (the first epoch's gradient norms)
         batches = prepared()
         nxt = next(batches, None)
         while nxt is not None:
-            key, mb, b, epoch = nxt
-            if self.acc is not None:
-                self.acc_on.fill_(1.0 if epoch == 0 else 0.0)
+            key, mb, b = nxt
             if key in self.graphs:
                 graph, s, sb, out = self.graphs[key]
                 self._fill(s, mb, sb, b)
@@ -2068,17 +2055,12 @@ class GraphedUpdate:
                 graph, s, sb, out = self._capture(key, mb, b)
             graph.replay()
             outs.append({k: v.detach().clone() for k, v in out.items()})
-            if epoch == 0:
-                first.append(outs[-1]["grad_norm"])
             nxt = next(batches, None)  # (made while the GPU runs this one)
             if pause > 0 and nxt is not None:  # then the GPU to the inference loop for a moment (--update-pause-ms)
                 torch.cuda.current_stream().synchronize()
                 time.sleep(pause / 1000)
         net.eval()
-        res = {k: float(torch.stack([o[k] for o in outs]).float().mean()) for k in outs[0]} if outs else {}
-        if self.acc is not None and len(first) > 1:
-            res.update(noise_parts(torch.stack(first).float().pow(2).mean(), self.acc, len(first), len(steps) / len(first)))
-        return res
+        return {k: float(torch.stack([o[k] for o in outs]).float().mean()) for k in outs[0]} if outs else {}
 
 
 def set_dropout(net: torch.nn.Module, p: float) -> None:
@@ -2299,8 +2281,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--value-warmup", type=int, default=-1, help="first updates: the value head only (default: 10, "
                                                                   "2 when BC trained the value head)")
     ap.add_argument("--max-grad-norm", type=float, default=1.0)
-    ap.add_argument("--noise-scale", type=int, default=1, help="log the gradient noise scale (grad/noise_scale, in "
-                    "agent steps: the critical batch size's estimate; NoiseScale) from each update's first epoch")
+    ap.add_argument("--noise-scale", type=int, default=10, help="every this many updates, the gradient noise scale "
+                    "(grad/noise_scale, in agent steps: the critical batch size's estimate; NoiseScale) from an extra "
+                    "pass over the batch without steps (0: never)")
     ap.add_argument("--bf16", type=int, default=1, help="the updates' matmuls in bfloat16")
     ap.add_argument("--game-cuts", type=int, default=0, help="the training games' W3SIM_CUTS (shim/cuts.c: equivalent "
                                                             "speedups of the game's own code; 1529: all verified ones, "
@@ -2747,6 +2730,12 @@ def main(argv: list[str] | None = None) -> int:
             stats = None
             if native is not None:  # (the inference loop's statistics: rounds during the update apart)
                 native.loop.learner_busy = 1
+            measured = {}
+            if args.noise_scale > 0 and update % args.noise_scale == 0:  # (at the weights the update starts from)
+                t_noise = time.time()
+                measured = ppo_update(net, ref, opt, steps, args, warmup, device, batch_chunks, None, measure=True)
+                if "grad/g2" in measured:
+                    measured.update(noise.add(measured["grad/g2"], measured["grad/trace"]), **{"perf/noise": time.time() - t_noise})
             if updater is not None:
                 try:
                     stats = updater.update(steps, batch_chunks, warmup, bc_iter)
@@ -2756,8 +2745,7 @@ def main(argv: list[str] | None = None) -> int:
                     updater = None
             if stats is None:
                 stats = ppo_update(net, ref, opt, steps, args, warmup, device, batch_chunks, bc_iter)
-            if "grad/g2" in stats:
-                stats.update(noise.add(stats["grad/g2"], stats["grad/trace"]))
+            stats.update(measured)
             update += 1
             agent_steps += len(steps)
             publish(net, update, run_dir)
