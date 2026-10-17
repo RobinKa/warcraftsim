@@ -1042,6 +1042,11 @@ class Dashboard:
         path = Path(init)
         if not path.is_absolute():  # given relative to the repository (runs/...), or a run name
             path = self.runs_dir.parent / path
+        for _ in range(5):  # a derived checkpoint (grown, a variant: its .json sidecar's "from"), as the lineage's node_of
+            src = (_read_json(path.with_suffix(".json")) or {}).get("from") if path.suffix == ".pt" else None
+            if not src:
+                break
+            init, path = src, (Path(src) if Path(src).is_absolute() else self.runs_dir.parent / src)
         try:
             parts = path.resolve().relative_to(self.runs_dir.resolve()).parts
         except ValueError:
