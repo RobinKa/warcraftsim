@@ -1308,16 +1308,16 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
             shared = SharedRows(*cfg["shared_rows"]) if cfg.get("shared_rows") else None
             per = cfg["games_per_actor"] + cfg.get("eval_games_per_actor", 0)
             infer = RemoteInference(conns, shared, [2 * (wid * per + k) for k in range(len(conns))])
-        evals = cfg.get("eval_games_per_actor", 0)
-        if cfg.get("eval_games"):  # (--eval-games: that many in all, the first actors one more than the rest)
-            evals = cfg["eval_games"] // cfg["actors"] + (wid < cfg["eval_games"] % cfg["actors"])
-        else:
+        else:  # (the actor's own network calls on the GPU)
             device = torch.device(cfg["device"])
             nets = Nets(cfg, device)
             while nets.current is None and not stop.is_set() and os.getppid() == cfg["learner_pid"]:
                 time.sleep(1)
                 nets.reload()
             infer = Inference(nets, device, 2 * cfg["games_per_actor"], cfg["compile"])
+        evals = cfg.get("eval_games_per_actor", 0)
+        if cfg.get("eval_games"):  # (--eval-games: that many in all, the first actors one more than the rest)
+            evals = cfg["eval_games"] // cfg["actors"] + (wid < cfg["eval_games"] % cfg["actors"])
         threads = [threading.Thread(target=game_loop, args=(wid, k, cfg, infer, out_q, stop, render_q), daemon=True)
                    for k in range(cfg["games_per_actor"] + evals)]
         for th in threads:
