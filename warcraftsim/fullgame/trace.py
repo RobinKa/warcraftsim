@@ -36,10 +36,15 @@ def trace_step(t: int, obs: Observation, material: dict, orders: dict, **policy)
     return row
 
 
-def material(obs, values: dict, hero_level: float = 0.0) -> dict[int, float]:
+WORKER_IDS = {int.from_bytes(c.encode(), "big") for c in ("hpea", "opeo", "uaco", "ewsp")}  # (type ids)
+
+
+def material(obs, values: dict, hero_level: float = 0.0, worker_cap: int = 0) -> dict[int, float]:
     """What each player's living units and buildings cost, times their hit points left: {0: .., 1: ..}.
     `hero_level`: a hero also counts this much for each level above the first (its cost alone does not
-    grow as it levels; a dead hero counts nothing until it is revived)."""
+    grow as it levels; a dead hero counts nothing until it is revived). `worker_cap`: a player's workers
+    count only as much as that many of them (their value times cap / their number when more): in long
+    losses the learner made ~33 workers to the AI's ~19, and every one raised the shaping's potential."""
     out = {0: 0.0, 1: 0.0}
     ua = getattr(obs, "unit_array", None)
     if ua is not None and len(ua):  # native observations: vectorized
@@ -51,13 +56,22 @@ def material(obs, values: dict, hero_level: float = 0.0) -> dict[int, float]:
         if hero_level:  # (column 14: the hero's level, 0 for other units)
             v = v + hero_level * np.maximum(a[:, 14] - 1, 0)
         hp = np.where(a[:, 7] > 0, a[:, 6] / np.maximum(a[:, 7], 1), 1.0)
+        if worker_cap:
+            work = np.isin(a[:, 1], list(WORKER_IDS))
+            for p in (0, 1):
+                n = int((work & (a[:, 2] == p)).sum())
+                if n > worker_cap:
+                    v = np.where(work & (a[:, 2] == p), v * worker_cap / n, v)
         for p in (0, 1):
             out[p] = float((v * hp)[a[:, 2] == p].sum())
         return out
-    for u in obs.units:
-        if u.owner in (0, 1) and not int(u.flags) & DEAD_FLAG:
-            v = values.get(str(u.type_id), 0) + hero_level * max(int(getattr(u, "hero_level", 0) or 0) - 1, 0)
-            out[u.owner] += v * (u.hp / u.max_hp if u.max_hp > 0 else 1.0)
+    live = [u for u in obs.units if u.owner in (0, 1) and not int(u.flags) & DEAD_FLAG]
+    n = {p: sum(u.type_id in WORKER_IDS for u in live if u.owner == p) for p in (0, 1)}
+    for u in live:
+        v = values.get(str(u.type_id), 0) + hero_level * max(int(getattr(u, "hero_level", 0) or 0) - 1, 0)
+        if worker_cap and u.type_id in WORKER_IDS and n[u.owner] > worker_cap:
+            v *= worker_cap / n[u.owner]
+        out[u.owner] += v * (u.hp / u.max_hp if u.max_hp > 0 else 1.0)
     return out
 
 

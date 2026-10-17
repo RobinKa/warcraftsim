@@ -1129,3 +1129,17 @@ def test_shaping_anneal_in_the_league_spec(tmp_path):
     assert "shaping" not in lg.spec()
     lg.shaping = 0.25
     assert lg.spec()["shaping"] == 0.25
+
+
+def test_material_worker_cap():
+    """--worker-cap: a player's workers count only as much as that many of them in the shaping's material."""
+    import types
+
+    from warcraftsim.fullgame.trace import material
+    code = lambda s: int.from_bytes(s.encode(), "big")  # noqa: E731
+    unit = lambda t, owner: types.SimpleNamespace(owner=owner, flags=0, type_id=code(t), hp=10, max_hp=10, hero_level=0)  # noqa: E731
+    obs = types.SimpleNamespace(units=[unit("hpea", 0) for _ in range(30)] + [unit("hfoo", 0), unit("hpea", 1)])
+    values = {str(code("hpea")): 75, str(code("hfoo")): 135}
+    assert material(obs, values) == {0: 30 * 75 + 135, 1: 75}
+    capped = material(obs, values, worker_cap=20)
+    assert capped[0] == pytest.approx(20 * 75 + 135) and capped[1] == 75

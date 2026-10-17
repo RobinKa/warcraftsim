@@ -1128,7 +1128,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     shared_noise = random.random() < cfg.get("shared_noise", 0.0)
     values, scale = cfg["values"], cfg["shaping_scale"]
     shaping = opp.get("shaping", cfg["shaping"])  # (the potential goes back to 0 with the weight it was paid with)
-    mat = material(obs, values, cfg.get("hero_level_value", 0.0))
+    mat = material(obs, values, cfg.get("hero_level_value", 0.0), cfg.get("worker_cap", 0))
     pot = shaped(obs, mat, cfg.get("float_penalty", 0.0))
     phi = {s: (pot[s] - pot[1 - s]) / scale for s in trajs}  # at the last recorded state
     ret = {s: 0.0 for s in trajs}
@@ -1193,7 +1193,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         for s in zs:  # (what each side with a strategy has made: its items' first times)
             for code in (*prod.trained[s], *prod.built[s], *prod.research[s]):
                 made[s].setdefault(code, obs.game_time)
-        mat = material(obs, values, cfg.get("hero_level_value", 0.0))
+        mat = material(obs, values, cfg.get("hero_level_value", 0.0), cfg.get("worker_cap", 0))
         pot = shaped(obs, mat, cfg.get("float_penalty", 0.0))
         if obs.game_over or t >= cfg["max_steps"]:
             break
@@ -2537,6 +2537,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--ref-update", type=int, default=0, help="every this many updates the KL anchor becomes the current "
                     "policy (a rolling anchor: the KL still stops sudden jumps, but no longer pulls back to the start's "
                     "habits; 0: the anchor stays --init)")
+    ap.add_argument("--worker-cap", type=int, default=0, help="the shaping's material counts a player's workers only as "
+                    "much as this many (0: all; trace.material)")
     ap.add_argument("--shaping-anneal", type=int, default=0, help="updates over which the shaping's weight falls to 0 "
                     "(linearly, from this run's start; 0: it stays): a game keeps the weight it started with, so its "
                     "potential still goes back to 0 at its end")
@@ -2766,7 +2768,7 @@ def main(argv: list[str] | None = None) -> int:
            "avail_mask": bool(args.avail_mask),
            "opd_share": args.opd_share, "opd_difficulty": args.opd_difficulty,
            "costs": order_costs(vocab, args.map).tolist() if args.avail_mask else None, "max_past": args.max_past,
-           "eval_fallback": args.eval_fallback, "z_dim": fx.ZDIM, "z_pool": str(args.z_pool) if args.z_pool else "", "z_share": args.z_share,
+           "eval_fallback": args.eval_fallback, "worker_cap": args.worker_cap, "z_dim": fx.ZDIM, "z_pool": str(args.z_pool) if args.z_pool else "", "z_share": args.z_share,
            "z_reward": args.z_reward, "z_winners": args.z_winners,
            "order_names": vocab.get("order_names") or {str(k): v for k, v in fx.demo_order_names(args.runs).items()}}
     if args.pin and (os.cpu_count() or 0) >= 16:
