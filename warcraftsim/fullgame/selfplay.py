@@ -1033,6 +1033,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                     opp["advise"] = not real and rng.random() < cfg.get("opd_share", 0.0)
                     if evaluating and eval_key != "current":
                         opp["eval_key"] = eval_key
+                    if "shaping" in spec:  # (--shaping-anneal: the weight now, the game's for its whole length)
+                        opp["shaping"] = spec["shaping"]
                     if curr:  # the curriculum's current knobs for this AI
                         now = next((x.get("by_race", {}).get(key, ai) for x in spec["launch"]
                                     if x.get("difficulty") == ai["difficulty"] and not x.get("real")), ai)
@@ -1125,6 +1127,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     # (model._gumbel_argmax: the same marginals, coordinated choices); the episode row says which
     shared_noise = random.random() < cfg.get("shared_noise", 0.0)
     values, scale = cfg["values"], cfg["shaping_scale"]
+    shaping = opp.get("shaping", cfg["shaping"])  # (the potential goes back to 0 with the weight it was paid with)
     mat = material(obs, values, cfg.get("hero_level_value", 0.0))
     pot = shaped(obs, mat, cfg.get("float_penalty", 0.0))
     phi = {s: (pot[s] - pot[1 - s]) / scale for s in trajs}  # at the last recorded state
@@ -1196,7 +1199,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             break
         for s, tr in trajs.items():  # shaping: gamma * phi(s') - phi(s), for the step just taken
             if s in spans and tr.steps:  # (it recorded a step this time)
-                r = cfg["shaping"] * (cfg["gamma"] * (pot[s] - pot[1 - s]) / scale - phi[s])
+                r = shaping * (cfg["gamma"] * (pot[s] - pot[1 - s]) / scale - phi[s])
                 if s in zs:  # the strategy's potential (not returned at the end: following it pays)
                     z_new = -cfg.get("z_reward", 0.0) * strat.mismatch(made[s], zs[s], pool["items"][races[s]], obs.game_time)
                     r += cfg["gamma"] * z_new - zphi[s]
@@ -1217,7 +1220,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         # potential back to 0 (so the shaping only moves credit around and sums to ~0 over a game)
         terminal = (outcome[s] if outcome[s] != 0.0
                     else cfg.get("tie_value", 0.0) + cfg["tie_break"] * math.tanh(2.0 * lead[s]))
-        last = terminal - cfg["shaping"] * phi.get(s, 0.0)
+        last = terminal - shaping * phi.get(s, 0.0)
         tr.end(last)
         ret[s] += last
         if record and trace:
@@ -1247,7 +1250,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                  else f"snapshot {opp['name']}")
         ep["trace"] = {"steps": trace, "gamma": cfg["gamma"], "shared_noise": shared_noise, "outcome": {str(s): v for s, v in outcome.items()},
                        # (the video's panel: the value without the shaping's potential, overlay.FullGameOverlay)
-                       "shaping": {"weight": cfg["shaping"], "scale": scale, "penalty": cfg.get("float_penalty", 0.0)},
+                       "shaping": {"weight": shaping, "scale": scale, "penalty": cfg.get("float_penalty", 0.0)},
                        "title": f"{Path(cfg['run_dir']).name} · policy v{infer.nets.version} · vs {who}",
                        "sides": [{"player": side, "name": f"learner ({races[side]})", "kind": "agent"},
                                  {"player": 1 - side, "name": f"{other} ({races[1 - side]})",
@@ -1432,6 +1435,7 @@ class League:
         self.exploiter_share = exploiter_share
         self.exploiter = Member("exploiter") if exploiter_share > 0 else None
         self.exploiter_resets = 0
+        self.shaping: float | None = None  # (--shaping-anneal: the shaping's weight now, in the spec)
 
     def matchup(self, race: str, opp: str) -> str:
         return matchup(self.mirror, race, opp)
@@ -1564,7 +1568,8 @@ class League:
             total = sum(w) or 1.0
             agents += [{"name": m.name, "kind": "past", "path": m.path, "p": self.shares["past"] * x / total}
                        for m, x in zip(self.past, w)]
-        return {"launch": launch, "agents": agents, **({"balance": self.balance_taxes()} if self.balance else {})}
+        return {"launch": launch, "agents": agents, **({"balance": self.balance_taxes()} if self.balance else {}),
+                **({"shaping": self.shaping} if self.shaping is not None else {})}
 
     def write(self) -> None:
         spec = self.run_dir / "league_spec.json"
@@ -2260,6 +2265,11 @@ def publish(net: FullGameNet, version: int, run_dir: Path, name: str = "current.
     tmp.replace(run_dir / name)
 
 
+def shaping_now(args, update: int) -> float:
+    """--shaping-anneal: the shaping's weight at this run's `update` (linearly to 0)."""
+    return round(args.shaping * max(0.0, 1.0 - update / args.shaping_anneal), 4)
+
+
 def publish_exploiter(xnet: FullGameNet, version: int, run_dir: Path, vocab: dict, keep: int = 40) -> None:
     """The exploiter's weights as a numbered file (exploiter/<version>.pt, the newest `keep` kept) and
     exploiter.json naming the newest: an exploiter game plays the version named at its start, served
@@ -2524,6 +2534,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="minutes between game videos (0: none; the actors take turns). Rendering one takes ~6 minutes of "
                          "3.4 cores (the game at 960x540 on a software renderer, in real time)")
     ap.add_argument("--shaping", type=float, default=1.0, help="weight of the material-lead reward shaping (0: none)")
+    ap.add_argument("--shaping-anneal", type=int, default=0, help="updates over which the shaping's weight falls to 0 "
+                    "(linearly, from this run's start; 0: it stays): a game keeps the weight it started with, so its "
+                    "potential still goes back to 0 at its end")
     ap.add_argument("--shaping-scale", type=float, default=2000.0, help="material (gold + lumber cost) worth 1 of potential")
     ap.add_argument("--hero-level-value", type=float, default=0.0, help="the shaping's material: a hero also counts this "
                                                                        "much for each level above the first (its cost "
@@ -2692,6 +2705,8 @@ def main(argv: list[str] | None = None) -> int:
                     balance=(args.balance_step, args.balance_max) if args.balance_step > 0 else None,
                     exploiter_share=args.exploiter_share, tie=args.curriculum_tie)
     league.real_share = args.real_share
+    if args.shaping_anneal > 0:  # (the games from the start: the weight at this run's update)
+        league.shaping = shaping_now(args, resumed["update"] if resumed else 0)
     if resumed is not None and (run_dir / "league.json").exists():
         league.restore(json.loads((run_dir / "league.json").read_text()))
     else:
@@ -2937,6 +2952,8 @@ def main(argv: list[str] | None = None) -> int:
                 league.add_snapshot(path, agent_steps)
             elif update % args.checkpoint_every == 0:
                 save_checkpoint(run_dir / "checkpoints" / f"{agent_steps:016d}.pt", net, opt, vocab, agent_steps, update)
+            if args.shaping_anneal > 0:  # the shaping's weight to 0 over --shaping-anneal updates of this run
+                league.shaping = shaping_now(args, update)
             league.write()
             now = time.time()
             if x_stats:  # the exploiter's last update

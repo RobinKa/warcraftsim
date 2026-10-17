@@ -1115,3 +1115,17 @@ def test_exploiter_versions_served_as_snapshots(tmp_path):
     assert key.endswith("00000004.pt")
     ck = torch.load(key, weights_only=False)
     assert ck["version"] == 4 and ck["config"] == net.config and set(ck["model"]) == set(net.state_dict())
+
+
+def test_shaping_anneal_in_the_league_spec(tmp_path):
+    """--shaping-anneal: the weight falls linearly to 0 over that many updates and reaches the games through the
+    league's spec (each game keeps the weight it started with)."""
+    import types
+
+    from warcraftsim.fullgame.selfplay import shaping_now
+    args = types.SimpleNamespace(shaping=0.5, shaping_anneal=100)
+    assert [shaping_now(args, u) for u in (0, 50, 100, 150)] == [0.5, 0.25, 0.0, 0.0]
+    lg = League(tmp_path, ["insane"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard")
+    assert "shaping" not in lg.spec()
+    lg.shaping = 0.25
+    assert lg.spec()["shaping"] == 0.25
