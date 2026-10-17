@@ -950,7 +950,15 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
     name = f"fgsp{cfg['slot']}_{wid}_{k}"
     evaluating = k >= cfg["games_per_actor"]  # an evaluation slot (--eval-games-per-actor)
     paired: list[tuple] = []  # an evaluation slot's next launches: one matchup for every policy in turn
+    alive = Path(cfg["run_dir"]) / "remote-eval.alive"  # (scripts/remote_eval.py: its games still arrive)
     while not stop.is_set() and os.getppid() == cfg["learner_pid"]:
+        if evaluating and cfg.get("eval_fallback", 0) > 0:  # --eval-fallback: another machine plays them while
+            try:                                            # its games keep coming; these only when they stop
+                if time.time() - alive.stat().st_mtime < cfg["eval_fallback"]:
+                    time.sleep(15)
+                    continue
+            except FileNotFoundError:
+                pass
         try:
             spec = json.loads(spec_path.read_text())
         except (FileNotFoundError, json.JSONDecodeError):
@@ -2344,6 +2352,9 @@ def main(argv: list[str] | None = None) -> int:
                                                         "uniform); '': as --races")
     ap.add_argument("--mirror", type=int, default=1, help="both sides play the same race (on duelrush the races "
                                                            "are far from balanced: night elf beat the others 96%%)")
+    ap.add_argument("--eval-fallback", type=float, default=0.0, help="seconds: the evaluation games here wait while "
+                    "another machine's games keep arriving (scripts/remote_eval.py marks remote-eval.alive) and play "
+                    "when none came for this long (0: they always play)")
     ap.add_argument("--z-pool", type=Path, help="strategy conditioning (AlphaStar's z): the strategies "
                     "(fullgame/strategy.py) a trained side's target is drawn from; the network needs a strategy block "
                     "(scripts/grow_strategy.py)")
@@ -2730,7 +2741,7 @@ def main(argv: list[str] | None = None) -> int:
            "avail_mask": bool(args.avail_mask),
            "opd_share": args.opd_share, "opd_difficulty": args.opd_difficulty,
            "costs": order_costs(vocab, args.map).tolist() if args.avail_mask else None, "max_past": args.max_past,
-           "z_dim": fx.ZDIM, "z_pool": str(args.z_pool) if args.z_pool else "", "z_share": args.z_share,
+           "eval_fallback": args.eval_fallback, "z_dim": fx.ZDIM, "z_pool": str(args.z_pool) if args.z_pool else "", "z_share": args.z_share,
            "z_reward": args.z_reward, "z_winners": args.z_winners,
            "order_names": vocab.get("order_names") or {str(k): v for k, v in fx.demo_order_names(args.runs).items()}}
     if args.pin and (os.cpu_count() or 0) >= 16:

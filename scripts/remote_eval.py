@@ -268,6 +268,7 @@ class Manager:
         if rows:
             with mine.open("a") as f:
                 f.writelines(rows)
+            (mine.parent / "remote-eval.alive").touch()  # (the run's own evaluation games wait while it is fresh: --eval-fallback)
             log(f"{len(rows)} games from {self.a.name} ({have + len(rows)} in all)")
 
     def cycle(self) -> bool:

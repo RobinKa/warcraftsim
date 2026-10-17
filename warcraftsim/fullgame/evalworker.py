@@ -113,6 +113,7 @@ def run_config(run_dir: Path, host: str, games: int, start_update) -> tuple[dict
     from . import features as fx
     races = list(fx.RACES) if c.get("races", "all") == "all" else c["races"].split(",")
     cfg = {"run_dir": str(run_dir), "vocab": str(run_dir / "vocab.json"), "map": c["map"], "races": races,
+           "eval_fallback": 0,  # (the worker always plays: it is the other machine)
            "learner_races": {}, "mirror": _flag(c.get("mirror", 0)), "handicap": num("handicap", 100, int),
            "step_seconds": num("step_seconds", 0.5), "max_minutes": num("max_minutes", 40.0),
            "wait_floor_ms": num("wait_floor_ms", 5, int), "games_per_process": num("games_per_process", 2, int),
