@@ -1021,6 +1021,17 @@ const SECTIONS = [
     ["c-pr-kills", "Kills and losses per game", "the learner's, in games against the built-in AI",
       [EP("p_kills", "kills", "#4cc38a"), EP("p_lost", "losses", "#e5534b")], { ymin: 0, xfit: true, only: "fullgame", empty: "recorded by games since the Production tab (older ones don't have it)" }],
   ]],
+  ["Strategy", [
+    ["c-z-miss", "Following the target", "items made by the learner or its target by the game's end, not both (of the race's 64)",
+      [EP("z_miss", "all targets", "#e0a33a"), EP("z_miss_human", "people's", "#4cc38a"), EP("z_miss_ai", "the AI's", "#539bf5"),
+       EP("z_items", "the target's items", "#8795a3")], { ymin: 0, xfit: true, only: "fullgame", hideEmpty: true, empty: "no target strategies (--z-pool)" }],
+    ["c-z-win", "Wins with and without a target", "training games against the built-in AI",
+      [EP("z_win", "with a target", "#4cc38a"), EP("noz_win", "without", "#8795a3")], { ymin: 0, ymax: 1, xfit: true, only: "fullgame", hideEmpty: true }],
+    ["c-z-t2", "Tier 2 with and without a target", "share of those games with a tier-2 hall",
+      [EP("z_t2", "with a target", "#4cc38a"), EP("noz_t2", "without", "#8795a3")], { ymin: 0, ymax: 1, xfit: true, only: "fullgame", hideEmpty: true }],
+    ["c-z-share", "Games with a target", "share of the training games (--z-share of the learner's sides)",
+      [EP("z_share", "with a target", "#e0a33a")], { ymin: 0, ymax: 1, xfit: true, only: "fullgame", hideEmpty: true }],
+  ]],
   ["System", [
     ["c-sps", "Throughput", "trainer SPS · game time vs real time",
       [TR("SPS", "trainer SPS", "#e0a33a"), ["br", "game_x_realtime", "game × realtime", "#4cc38a"]], { ymin: 0 }],

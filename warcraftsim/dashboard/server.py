@@ -65,6 +65,25 @@ EPISODE_SERIES.update({  # whole-game self-play, over all its games (the Behavio
     "f_kills": lambda e: (e.get("prod") or {}).get("kills"),
     "f_lost": lambda e: (e.get("prod") or {}).get("lost"),
 })
+TIER2 = ("hkee", "ostr", "unp1", "etoa")  # (the tier-2 halls: a game that built one teched)
+
+
+def _vs_ai(e: dict) -> bool:
+    return not e.get("eval") and str(e.get("opponent", "")).startswith("script:")
+
+
+EPISODE_SERIES.update({  # strategy conditioning (selfplay --z-pool): the training games' target strategies (the Strategy tab)
+    "z_share": lambda e: (1.0 if "z" in e else 0.0) if not e.get("eval") else None,
+    "z_miss": lambda e: e.get("z_miss"),
+    "z_miss_human": lambda e: e.get("z_miss") if str(e.get("z", "")).startswith("human") else None,
+    "z_miss_ai": lambda e: e.get("z_miss") if str(e.get("z", "")).startswith("ai") else None,
+    "z_items": lambda e: e.get("z_items"),
+    "z_win": lambda e: (1.0 if e.get("outcome", 0) > 0 else 0.0) if "z" in e and _vs_ai(e) else None,
+    "noz_win": lambda e: (1.0 if e.get("outcome", 0) > 0 else 0.0) if "z" not in e and _vs_ai(e) and "prod" in e else None,
+    "z_t2": lambda e: float(any(c in ((e.get("prod") or {}).get("built") or {}) for c in TIER2)) if "z" in e and _vs_ai(e) else None,
+    "noz_t2": lambda e: (float(any(c in ((e.get("prod") or {}).get("built") or {}) for c in TIER2))
+                         if "z" not in e and _vs_ai(e) and "prod" in e else None),
+})
 PROD_SCALARS = ("army", "workers", "heroes", "food_1min", "max_food", "held", "gold", "lumber", "kills", "lost")
 
 
