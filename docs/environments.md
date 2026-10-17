@@ -51,5 +51,6 @@ flowchart LR
 ## Rewards
 
 * +1 for a win, −1 for a loss. A tie gives a small reward for a lead in material.
-* Shaping gives the change in material lead (what living units and buildings cost) at every step. In the best recipe for the real game it counts half (`--shaping 0.5`): the win weighs more, and the policy won more. `fgself-75` tries a quarter. An option also counts the heroes' levels.
+* Shaping gives the change in material lead (what living units and buildings cost) at every step. It is potential-based, so over a game it adds up to ~0 ([reward shaping](related/reward-shaping.md)). In the best recipe for the real game it counts half (`--shaping 0.5`): the win weighs more, and the policy won more. A quarter was level (`fgself-75`). An option also counts the heroes' levels.
+* With strategy conditioning, a trained side with a target strategy also loses a little reward for each item where it and its target differ (`--z-reward`).
 * The discount looks ~28 minutes ahead in the real game (γ 0.9997), ~8 minutes on the duel maps.
