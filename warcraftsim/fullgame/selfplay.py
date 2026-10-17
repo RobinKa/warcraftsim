@@ -2315,6 +2315,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="the exploiter's score against the learner (its last 50 games) at which its weights join the "
                          "league and it starts over from the run's starting weights")
     ap.add_argument("--exploiter-timeout", type=int, default=300, help="updates after which it starts over anyway")
+    ap.add_argument("--exploiter-publish", type=int, default=8,
+                    help="the exploiter's updates between the versions new games play (and at a restart): a version a "
+                         "game is each another network for the inference loop to run; one every update (~18 s) "
+                         "kept ~10 in play and saturated the loop (the main policy's steps 1,600 -> 750 a second)")
     ap.add_argument("--balance-step", type=float, default=0.02,
                     help="without --mirror: how far a game of the learner against itself moves the tax between "
                          "its two races (League: the winner's income taxed more, towards a 50%% score; 0: no tax)")
@@ -2791,7 +2795,8 @@ def main(argv: list[str] | None = None) -> int:
         torch.save({"model": {k: v.detach().cpu() for k, v in xnet.state_dict().items()}, "config": xnet.config,
                     "version": x_update, "since": x_since}, run_dir / "exploiter.pt.tmp")
         (run_dir / "exploiter.pt.tmp").replace(run_dir / "exploiter.pt")
-        publish_exploiter(xnet, x_update, run_dir, vocab)
+        if x_since == 0 or x_update % args.exploiter_publish == 0:  # (a version for new games: see the flag)
+            publish_exploiter(xnet, x_update, run_dir, vocab)
         league.write()
 
     try:
