@@ -39,6 +39,38 @@ flowchart LR
 * One GPU context holds the learner and the inference loop. The loop has no Python in its hot path.
 * The video director (`video.Director`) moves the camera in whole-game replays, because 1.29's replays have no automatic camera. It follows the largest fight, raids on buildings too. Between fights it rotates: the learner's army, its base, the opponent's army, its base.
 
+## A remote evaluation worker
+
+A verdict needs ~300 evaluation games a policy. The run's own 8 make ~400 an hour, so another machine plays more of them (`fullgame/evalworker.py`, managed from the run's machine by `scripts/remote_eval.py`). The laptop's 16 make ~790 an hour: a verdict in ~30 minutes.
+
+```mermaid
+flowchart LR
+  subgraph MAIN["The run's machine"]
+    L["Learner<br/>a checkpoint every ~2 min"]
+    M["scripts/remote_eval.py<br/>a look every minute"]
+    E["the run's episodes.jsonl<br/>+ episodes-remote.jsonl"]
+  end
+  subgraph LAP["laptop-wsl (WSL2)"]
+    W["evalworker: 8 processes of 2 games<br/>their own inference (GPU)"]
+  end
+  L --> M
+  M -- "code, run.json, vocab.json, checkpoints (rsync)" --> W
+  W -- "new rows (ssh)" --> M
+  M --> E
+```
+
+* The worker plays the run's own evaluation games: `selfplay.game_loop`'s evaluation slots and `play_one`, set up from `run.json`'s config. Every policy plays each matchup in turn, as in the run.
+* Its "current" is the run's newest checkpoint, a few minutes behind the learner's live weights. The other policies are the run's `--eval-checkpoints`.
+* Its draws are seeded by the run's name, the worker's name and where it started: other matchups than the run machine's.
+* Its rows are the learner's evaluation rows plus `host` and `version` (the update "current" played with). `real_games.py`, `run_status.sh` and the dashboard read them with the run's own; `real_games.py --split host` shows them apart, `--no-remote` leaves them out.
+* The manager runs the worker as a systemd user service there. It starts it again when it died or the machine came back, and stops it when the run ends or another run is live. A restart of the run with other settings for its evaluation games, or a worker started anew, gets this tree's code.
+* A machine for it: the repository in `~/warcraftsim` with a venv (torch), GE-Proton's Wine in `~/wc3/ge` and the game in `~/wc3/legacy-1.29` (copied), `scripts/build_native.sh` (StormLib, pjass), and the 32-bit libraries the [engine notes](reference/engine-notes.md) list. The manager copies the shim.
+
+```
+scripts/remote_eval.py --host robin@laptop-wsl [--run fgself-76] [--games 16]   # in the background
+scripts/remote_eval.py --host robin@laptop-wsl --status | --stop
+```
+
 ## One step
 
 ```mermaid

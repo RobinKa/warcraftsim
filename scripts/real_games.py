@@ -3,7 +3,11 @@ time and in the last 30 minutes: wins by difficulty and by the learner's race, a
 tempo against the AI (food at one minute, heroes, tier 2, workers a game minute, kills per unit lost);
 then the unadvised curriculum games and the ties against itself and past snapshots.
 
-    python3 scripts/real_games.py fgself-12 --since "2026-10-03 18:36" [--recent 30]
+    python3 scripts/real_games.py fgself-12 --since "2026-10-03 18:36" [--recent 30] [--split host]
+
+The games are those of episodes.jsonl and of episodes-remote*.jsonl (evaluation games another machine
+played for the run: fullgame/evalworker.py, scripts/remote_eval.py; their rows have "host", the run's own
+none: --split host shows them apart, its own as "main"; --no-remote leaves them out).
 """
 
 from __future__ import annotations
@@ -74,8 +78,8 @@ def standardised(eps: list[dict], field: str, rates: dict) -> tuple[dict, int]:
     cell = lambda e: (e["race"], e["opponent_race"], difficulty(e))  # noqa: E731
     t: dict = {}
     for e in eps:
-        if "(real)" in e["opponent"] and rates.get(cell(e)) is not None:
-            a = t.setdefault((str(e[field]), cell(e)), [0, 0])
+        if "(real)" in e["opponent"] and rates.get(cell(e)) is not None and value(e, field) is not None:
+            a = t.setdefault((value(e, field), cell(e)), [0, 0])
             a[0] += e["outcome"] > 0
             a[1] += 1
     vals = sorted({v for v, _ in t})
@@ -85,6 +89,27 @@ def standardised(eps: list[dict], field: str, rates: dict) -> tuple[dict, int]:
     if not ai:
         return {}, 0
     return {v: 100 * sum(w[c] * t[(v, c)][0] / t[(v, c)][1] for c in common) / ai for v in vals}, sum(w.values())
+
+
+def episodes(name: str, remote: bool = True) -> list[dict]:
+    """A run's episode rows: episodes.jsonl, and the evaluation games other machines played for it
+    (episodes-remote*.jsonl, rows with "host"), by time."""
+    run = RUNS / name
+    eps = []
+    for f in [run / "episodes.jsonl"] + (sorted(run.glob("episodes-remote*.jsonl")) if remote else []):
+        for line in f.open() if f.exists() else []:
+            try:
+                eps.append(json.loads(line))
+            except ValueError:  # (a line being written, or damaged)
+                pass
+    return sorted(eps, key=lambda e: e["time"])
+
+
+def value(e: dict, field: str) -> str | None:
+    """An episode's value of a --split field (the host: "main" for the run's own games)."""
+    if field == "host":
+        return str(e.get("host", "main"))
+    return str(e[field]) if field in e else None
 
 
 def tier2(prod: dict) -> bool:
@@ -134,8 +159,9 @@ def main() -> int:
     ap.add_argument("--recent", type=float, default=30.0, help="minutes for the recent window")
     ap.add_argument("--split", help="an episode field (e.g. shared_noise, an A/B's flag): the first window's report "
                                     "per value of it, and the ties per value")
+    ap.add_argument("--no-remote", action="store_true", help="the run's own games only (not episodes-remote*.jsonl's)")
     a = ap.parse_args()
-    eps = [json.loads(line) for line in (RUNS / a.name / "episodes.jsonl").open()]
+    eps = episodes(a.name, remote=not a.no_remote)
     now = time.time()
     lo = when(a.since) if a.since else now - 86400
     rates = ai_rates(ai_games_for(run_map(a.name)))
@@ -143,9 +169,9 @@ def main() -> int:
     report([e for e in eps if lo < e["time"] <= hi], f"since {time.strftime('%Y-%m-%d %H:%M', time.localtime(lo))}"
            + (f" until {time.strftime('%Y-%m-%d %H:%M', time.localtime(hi))}" if a.until else ""), rates)
     if a.split:  # an A/B within the window: each value's games apart
-        window = [e for e in eps if lo < e["time"] <= hi and a.split in e]
-        for v in sorted({str(e[a.split]) for e in window}):
-            part = [e for e in window if str(e[a.split]) == v]
+        window = [e for e in eps if lo < e["time"] <= hi and value(e, a.split) is not None]
+        for v in sorted({value(e, a.split) for e in window}):
+            part = [e for e in window if value(e, a.split) == v]
             report(part, f"{a.split} = {v}", rates)
             for kind in ("self", "past"):
                 X = [e for e in part if e["opponent"].split(":")[0] == kind]

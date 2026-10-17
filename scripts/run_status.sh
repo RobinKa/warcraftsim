@@ -1,7 +1,8 @@
 #!/bin/bash
 # A self-play run's status at a glance: alive, errors since its graphs were captured, the last update,
 # steps/s over the last 30 minutes, the head-to-head evaluation games since SINCE (each policy's wins,
-# ties and AI-record share by 20-minute windows; the last line of real_games.py: the share on one mix).
+# ties and AI-record share by 20-minute windows; the last line of real_games.py: the share on one mix), with
+# the games other machines played for the run (episodes-remote*.jsonl: scripts/remote_eval.py) and how many each made.
 #   scripts/run_status.sh fgself-65 "2026-10-16 09:07"
 cd "$(dirname "$0")/.."
 RUN=$1; SINCE=$2
@@ -18,10 +19,10 @@ sys.path.insert(0, 'scripts')
 from collections import Counter
 from throughput import when
 from real_games import ai_rates, difficulty
-from real_games import ai_games_for, run_map
+from real_games import ai_games_for, episodes, run_map
 rates = ai_rates(ai_games_for(run_map(sys.argv[1]))); lo = when(sys.argv[2])
-eps = [json.loads(l) for l in open(f'runs/{sys.argv[1]}/episodes.jsonl')]
-eps = [e for e in eps if e['time'] > lo and e.get('eval')]
+eps = [e for e in episodes(sys.argv[1]) if e['time'] > lo and e.get('eval')]
+print('evaluation games by host:', dict(Counter(e.get('host', 'main') for e in eps)))
 for k in sorted({e['eval_key'] for e in eps}):
     X = [e for e in eps if e['eval_key'] == k]; c = Counter(e['outcome'] for e in X); win = []
     for a in range(0, 240, 20):
