@@ -155,6 +155,8 @@ class Manager:
         self.t_push = 0.0
         self.gone_since: float | None = None  # the run's learner not seen since
         self.away = False
+        self.misses = 0  # the host's unanswered looks in a row
+        self.notified = False  # the user was told it is down (then also that it is back)
 
     def remote(self, rel: str = "") -> str:
         return f"{self.a.remote_dir}/runs/{self.run}/{rel}"
@@ -295,13 +297,22 @@ class Manager:
         if st is None:
             if not self.away:
                 log(f"{a.host} does not answer: trying again every {a.every:.0f} s")
-                notify(f"Evaluation worker down ({a.host})", "No answer from the laptop. The run's own evaluation games "
-                       "take over after 5 minutes without its games (--eval-fallback).", urgent=True)
             self.away = True
+            self.misses += 1
+            # (the user is told only of an outage: 3 looks in a row unanswered, ~3 minutes; a slow answer while the
+            # laptop is busy, or the worker restarting for a new run, popped the warning up before)
+            if self.misses >= 3 and not self.notified:
+                notify(f"Evaluation worker down ({a.host})", f"No answer from the laptop for {self.misses} minutes. The "
+                       "run's own evaluation games take over after 5 minutes without its games (--eval-fallback).",
+                       urgent=True)
+                self.notified = True
             return True
+        self.misses = 0
         if self.away:
             log(f"{a.host} is back (worker {st['active']})")
-            notify(f"Evaluation worker back ({a.host})", "The laptop answers again: its evaluation games resume.")
+            if self.notified:
+                notify(f"Evaluation worker back ({a.host})", "The laptop answers again: its evaluation games resume.")
+                self.notified = False
             self.away = False
         if self.run is not None:  # (its rows first: a stop or a switch below must not lose them)
             self.pull(st)
