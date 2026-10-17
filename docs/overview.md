@@ -9,14 +9,14 @@ warcraftsim trains agents on the real Warcraft III 1.29, headless under Wine. Py
 | Micro fights | 91% against the scripted opponent. League self-play: 82%, and 79% against the 91% policy. | `--trainer torch` |
 | Whole game, `duelrush` (2-minute games) | **79%** against the built-in AI, all 16 matchups. | `fgself-10` |
 | Whole game, `duelfast` (6-minute games) | **80%** of its games against the insane AI won. Every matchup is above the AI's own record. | `fgself-51` |
-| **The real game on Echo Isles** (the game's rules, no handicap) | **~77% of its games against the insane AI won** (~1,900 evaluation games): ~150% of the AI's own record on Echo Isles. Human ~48%, undead ~63%, orc and night elf ~95%. | best `fgself-73`, `fgself-77` running |
+| **The real game on Echo Isles** (the game's rules, no handicap) | **~82% of its games against the insane AI won** (~380 evaluation games, against ~74% for the previous best): ~166% of the AI's own record on Echo Isles. Human ~64%, undead ~63%, orc and night elf ~95%. | best `fgself-77`, `fgself-78` running |
 
 The yardstick is the evaluation games: the real game against the built-in AI, which the policy does not train on. Each policy in a run plays the same matchups (paired), so a run compares its policies directly.
 
 ## Next (2026-10-17)
 
-1. `fgself-77`: a quarter of the KL to the anchor. The gradient noise measurements show a clean pull to the anchor and a very noisy policy gradient. This can hold each new run at its start.
-2. A strategy for each game: a target build order and unit mix, with a small reward to follow it, so that the policy also techs. Human replays add more strategies: build orders from any game version, demonstrations from 1.29's.
+1. `fgself-78`: a target strategy for half the training games (strategy conditioning), from the built-in AI's games and people's replays, with a small reward to follow it.
+2. Less pull to the anchor helped (`fgself-77`): the next runs keep it at a quarter.
 3. A main exploiter (`fgself-76`) did not help: it never beat the main policy in 70% of its games.
 
 [The road to the real game](road-to-the-real-game.md) has the details.
