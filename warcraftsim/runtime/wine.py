@@ -94,6 +94,9 @@ def wine_env(prefix: Path, **extra: str) -> dict[str, str]:
     # never the desktop's Wayland: on native Linux the session's WAYLAND_DISPLAY (and DISPLAY=:0) would put Wine's
     # windows on the user's screen (on WSL they went to WSLg); games and Wine's tools draw into an Xvfb of ours
     env.pop("WAYLAND_DISPLAY", None)
+    # and no X display unless one of ours is given: a call without one (wineserver -k at a run's end) inherited the
+    # session's DISPLAY=:0, and a game window once appeared on the user's screen at a fork
+    env.pop("DISPLAY", None)
     env.update(extra)
     return env
 
