@@ -985,7 +985,11 @@ const SECTIONS = [
       [["epp", "oloss/"]], { ymin: 0, ymax: 1, empty: "no games with a result", hideEmpty: true, opponents: true }],
     ["c-lg-exploit", "The main exploiter", "its win rate against the main learner's current policy (it restarts from the main learner above --exploiter-reset or below --exploiter-reset-low)",
       [TR("league/exploiter_vs_main", "exploiter vs main", "#f47067"), TR("league/exploiter_resets", "resets", "#8795a3")], { ymin: 0, empty: "no exploiter (--torch.exploiters=1, fullgame --exploiter-share)", hideEmpty: true }],
-    ["c-lg-real", "The real game by race", "games won against the untaxed AI (easy, normal), 40+ games a point",
+    ["c-lg-eval", "Evaluation games: head to head", "games won against the untaxed AI by each policy (the current one and --eval-checkpoints), the same matchups, 40+ games a point",
+      [["epp", "ehead/"]], { ymin: 0, ymax: 1, empty: "no evaluation games (--eval-games)", hideEmpty: true }],
+    ["c-lg-evrace", "Evaluation games by race", "the current policy's games won against the untaxed AI, 40+ games a point",
+      [["epp", "ewin/"]], { ymin: 0, ymax: 1, hideEmpty: true, matchups: true }],
+    ["c-lg-real", "Untaxed training games by race", "training games won against the untaxed AI (a curriculum's --real-share), 40+ games a point",
       [["epp", "rwin/"]], { ymin: 0, ymax: 1, empty: "no real games (a curriculum's --real-share)", hideEmpty: true, matchups: true }],
     ["c-lg-balance", "The tax between races", "agents' games: the first race's income taken (< 0: the second's)",
       [["trp", "balance/", " tax"]], { ymin: -1, ymax: 1, empty: "mirror matchups, or no tax between races (--balance-step)", hideEmpty: true, matchups: true }],
@@ -1160,7 +1164,7 @@ function renderMain() {
     ["Episodes", fmt(s.episodes || 0, 0)],
     ["Trainer SPS", fmt(last.SPS || 0, 0)],
     ...(info.trainer === "fullgame" ? [
-      ["Real game", info.real_game ? `${(100 * info.real_game.wins).toFixed(0)}% <small>won · ${(100 * info.real_game.ties).toFixed(0)}% tied · last ${info.real_game.games} vs the built-in AI</small>` : "–"],
+      ["Real game", info.real_game ? `${(100 * info.real_game.wins).toFixed(0)}% <small>won · ${(100 * info.real_game.ties).toFixed(0)}% tied · last ${info.real_game.games} ${info.real_game.evaluation ? "evaluation games" : "vs the built-in AI"}${Object.entries(info.real_game.vs || {}).map(([k, v]) => ` · ${esc(k)}: ${(100 * v).toFixed(0)}%`).join("")}</small>` : "–"],
       ["Games", `${info.envs} <small>at once</small>`],
       ["Trained", dur(info.trained_seconds || elapsed) + (info.resumes ? ` <small>${info.resumes.length + 1} sessions</small>` : "")],
     ] : [
@@ -1768,8 +1772,12 @@ function renderMatchups(d) {
   const aiTax = (a, b) => diffs.map(x => last[`curriculum/ai-${x} ${a}/${b} level`] ?? last[`curriculum/ai-${x} ${a} level`])
     .some(v => v) ? ` · the AI's curriculum level now: ${diffs.map(x => `${x} ${(last[`curriculum/ai-${x} ${a}/${b} level`] ?? last[`curriculum/ai-${x} ${a} level`] ?? 0).toFixed(2)}`).join(", ")}` : "";
   const real = M["real" + (diff && M["real " + diff] ? " " + diff : "")];
+  const evals = Object.keys(M).filter(k => k.startsWith("eval ")).sort((a, b) => (a === "eval current" ? -1 : b === "eval current" ? 1 : a.localeCompare(b)));
   const panels = [
-    [real, `The real game against the built-in AI${diff && M["real " + diff] ? ` (${diff})` : ""}`, "no tax, no handicap: the run's yardstick", null],
+    ...evals.map(k => [M[k], k === "eval current" ? "Evaluation games: the current policy" : `Evaluation games: ${k.slice(5)}`,
+      k === "eval current" ? "the real game against the untaxed AI, nothing trained on them: the run's yardstick"
+        : "the same matchups by a fixed checkpoint (--eval-checkpoints): the head to head", null]),
+    [real, `Training games against the untaxed AI${diff && M["real " + diff] ? ` (${diff})` : ""}`, "no tax, no handicap (--real-share of the AI games); the learner trains on them", null],
     [M.self, "Against itself", "both sides the learner, so the races alone differ (each game counted from both sides); the stronger race's income taxed", balance],
     [M.curriculum, "Curriculum games against the built-in AI", "the AI's income taxed by the matchup's curriculum level", aiTax],
     [M.past, "Against past snapshots", "the learner's race by the snapshot's (taxed between races as against itself)", null],

@@ -100,13 +100,34 @@ def _trained_seconds(rows: list[dict]) -> float:
     return total + last
 
 
+def _eval_name(e: dict) -> str | None:
+    """An evaluation game's policy (selfplay --eval-games: the real game, nothing trained on it): "current", or an
+    --eval-checkpoints file as "<run>/<steps>" (a run's checkpoint) or its file name; None: not an evaluation game."""
+    if not e.get("eval"):
+        return None
+    k = str(e.get("eval_key") or "current")
+    if k == "current":
+        return k
+    p = Path(k)
+    return f"{p.parent.parent.name}/{p.stem.lstrip('0') or '0'}" if p.parent.name == "checkpoints" else p.stem
+
+
 def _real_game(episodes: list[dict], n: int = 100) -> dict | None:
-    """Whole-game self-play: the last `n` real games against the built-in AI (no curriculum)."""
-    real = [e for e in episodes if "(real)" in str(e.get("opponent", ""))][-n:]
+    """Whole-game self-play: the last `n` evaluation games of the current policy (the yardstick), with each
+    evaluation checkpoint's last `n` ("vs"); a run without them: its last `n` real games against the built-in AI
+    (untaxed training games)."""
+    ev = [e for e in episodes if _eval_name(e) == "current"][-n:]
+    real = ev or [e for e in episodes if "(real)" in str(e.get("opponent", ""))][-n:]
     if not real:
         return None
+    vs = {}
+    for e in episodes:
+        k = _eval_name(e)
+        if k and k != "current":
+            vs.setdefault(k, []).append(e.get("outcome", 0) > 0)
     return {"games": len(real), "wins": sum(e.get("outcome", 0) > 0 for e in real) / len(real),
-            "ties": sum(e.get("outcome", 0) == 0 for e in real) / len(real)}
+            "ties": sum(e.get("outcome", 0) == 0 for e in real) / len(real), "evaluation": bool(ev),
+            "vs": {k: sum(v[-n:]) / len(v[-n:]) for k, v in vs.items()}}
 
 
 MATCHUP_RACES = ("human", "orc", "undead", "nightelf")
@@ -117,6 +138,9 @@ SERIES_KEYS = tuple(EPISODE_SERIES)
 def _matchup_kind(e: dict) -> list[str]:
     """The kinds of whole-game self-play game an episode counts for in the matchup tables."""
     o = str(e.get("opponent", ""))
+    ev = _eval_name(e)
+    if ev:  # (an evaluation game: its policy's own table, not the training games')
+        return ["eval " + ev]
     if "(real)" in o:
         return ["real", "real " + o.split("-", 1)[-1].split()[0]]
     if o.startswith("script:"):
@@ -194,7 +218,13 @@ class _EpisodeSeries:
                     self.games.setdefault(k, []).append(g)
                     self.totals.setdefault(k, np.zeros((4, 4, 3), np.int64))[g] += 1
                 o = str(e.get("opponent", ""))
-                key = (f"rwin/{r}" if "(real)" in o else f"cwin/{o.split(':', 1)[1]} {r}/{b}" if o.startswith("script:") else None)
+                ev = _eval_name(e)  # (evaluation games: the current policy's by race, and each policy's head to head)
+                key = (f"ewin/{r}" if ev == "current" else None if ev else f"rwin/{r}" if "(real)" in o
+                       else f"cwin/{o.split(':', 1)[1]} {r}/{b}" if o.startswith("script:") else None)
+                if ev:
+                    rows, vals = self.extra.setdefault(f"ehead/{ev}", ([], []))
+                    rows.append(n0 + i)
+                    vals.append(1.0 if x > 0 else 0.0)
                 if key:
                     rows, vals = self.extra.setdefault(key, ([], []))
                     rows.append(n0 + i)
