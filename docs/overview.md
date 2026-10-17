@@ -9,15 +9,15 @@ warcraftsim trains agents on the real Warcraft III 1.29, headless under Wine. Py
 | Micro fights | 91% against the scripted opponent. League self-play: 82%, and 79% against the 91% policy. | `--trainer torch` |
 | Whole game, `duelrush` (2-minute games) | **79%** against the built-in AI, all 16 matchups. | `fgself-10` |
 | Whole game, `duelfast` (6-minute games) | **80%** of its games against the insane AI won. Every matchup is above the AI's own record. | `fgself-51` |
-| **The real game on Echo Isles** (the game's rules, no handicap) | **72% of its games against the insane AI won**: ~140% of the AI's own record on Echo Isles. Human 53%, undead 49%, orc and night elf ~95%. | best `fgself-73`, `fgself-75` running |
+| **The real game on Echo Isles** (the game's rules, no handicap) | **~77% of its games against the insane AI won** (~1,900 evaluation games): ~150% of the AI's own record on Echo Isles. Human ~48%, undead ~63%, orc and night elf ~95%. | best `fgself-73`, `fgself-77` running |
 
 The yardstick is the evaluation games: the real game against the built-in AI, which the policy does not train on. Each policy in a run plays the same matchups (paired), so a run compares its policies directly.
 
 ## Next (2026-10-17)
 
-1. Finish `fgself-75`: a quarter of the reward shaping.
-2. An exploiter league: AlphaStar's exploiters against the policy's one strategy, an early rush of tier-1 units.
-3. A strategy for each game: a target build order and unit mix, with a small reward to follow it, so that the policy also techs. Human replays add more strategies: build orders from any game version, demonstrations from 1.29's.
+1. `fgself-77`: a quarter of the KL to the anchor. The gradient noise measurements show a clean pull to the anchor and a very noisy policy gradient. This can hold each new run at its start.
+2. A strategy for each game: a target build order and unit mix, with a small reward to follow it, so that the policy also techs. Human replays add more strategies: build orders from any game version, demonstrations from 1.29's.
+3. A main exploiter (`fgself-76`) did not help: it never beat the main policy in 70% of its games.
 
 [The road to the real game](road-to-the-real-game.md) has the details.
 
