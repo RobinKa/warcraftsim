@@ -21,12 +21,12 @@ xychart-beta
 ```mermaid
 xychart-beta
   title "Games won against the untaxed insane AI, each run's evaluation games"
-  x-axis ["fgself-56 as is", "fgself-61", "fgself-62", "fgself-68", "fgself-69", "fgself-73"]
+  x-axis ["fgself-56 as is", "fgself-61", "fgself-62", "fgself-68", "fgself-69", "fgself-73", "fgself-77", "fgself-78"]
   y-axis "%" 0 --> 100
-  bar [49, 47, 59, 62, 71, 72]
+  bar [49, 47, 59, 62, 71, 72, 82, 89]
 ```
 
-Each run plays its own matchups, so compare within a run: in `fgself-73`'s games its policy won 72% and its start 62%. Running: `fgself-75` (a quarter of the shaping), level after 30 minutes.
+Each run plays its own matchups, so compare within a run: in `fgself-78`'s games after 16:55 its policy won 89% and its start (`fgself-77`'s last) 84%. A quarter of the KL's pull (`fgself-77`) and strategy conditioning (`fgself-78`) made the last two gains.
 
 ## What worked
 
