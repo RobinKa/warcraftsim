@@ -1177,7 +1177,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     zs: dict[int, dict] = {}
     pool = strategy_pool(cfg) if train else None
     for s in trajs if pool is not None else ():
-        if keys[s] == "current" and random.random() < cfg.get("z_share", 0.5):  # (not the exploiter's sides)
+        if keys[s] == "current" and (random.random() < cfg.get("z_share", 0.5) or (record and s == side)):  # (not the
+            # exploiter's sides; a filmed game's learner always: its video shows how it plays a target)
             st = strat.sample(pool, races[s], races[1 - s], random, bool(cfg.get("z_winners", 1)), cfg.get("z_src", ""))
             if st is not None:
                 zs[s] = target(cfg, bots[s].view, strat.scaled(st, cfg.get("z_time_scale", 1.0)), pool, races[s], vocab)
@@ -1349,6 +1350,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                        # (the video's panel: the value without the shaping's potential, overlay.FullGameOverlay)
                        "shaping": {"weight": shaping, "scale": scale, "penalty": cfg.get("float_penalty", 0.0)},
                        "title": f"{Path(cfg['run_dir']).name} · policy v{infer.nets.version} · vs {who}",
+                       # (the learner's target strategy, if it had one: the panel shows it, made and due)
+                       **({"target": {"t": dict(zs[side]["t"]), "made": dict(made[side]), "src": zs[side].get("src", ""),
+                                      "enforced": bool(cfg.get("z_enforce"))}} if side in zs else {}),
                        "sides": [{"player": side, "name": f"learner ({races[side]})", "kind": "agent"},
                                  {"player": 1 - side, "name": f"{other} ({races[1 - side]})",
                                   "kind": "ai" if opp["kind"] == "ai" else "agent"}]}

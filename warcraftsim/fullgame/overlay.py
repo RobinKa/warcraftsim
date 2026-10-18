@@ -46,6 +46,7 @@ class FullGameOverlay:
         self.sides = trace["sides"]  # [{"player", "name", "kind"}] for players 0 and 1
         self.title = trace.get("title", "")
         self.outcome = {int(k): v for k, v in (trace.get("outcome") or {}).items()}
+        self.target = trace.get("target")  # the learner's target strategy (its items' times, and when each was made)
         gamma = trace.get("gamma", 0.997)
         keys = [str(s["player"]) for s in self.sides]
         col = lambda name: np.array([[r.get(name, {}).get(k, np.nan) for k in keys] for r in self.steps],  # noqa: E731
@@ -194,6 +195,8 @@ class FullGameOverlay:
                     y = self._wrapped(d, f"{'AB'[i]}: {_name(code)} {level}{'' if alive else ' (dead)'}: {learned}",
                                       x0, x1, y, color) + 2
             y += 4
+        if self.target:  # A's target: each item made (by when), due and missing, or still to come
+            y = self._target(d, x0, x1, y, row.get("game_time", obs.game_time)) + 4
         # this step's orders (and the last second's, so they stay readable)
         d.text((x0, y), "orders (this step and the one before)", font=self.f_small, fill=DIM)
         y += 15
@@ -211,6 +214,29 @@ class FullGameOverlay:
                         " / ".join(f"{self.entropy[t, i]:.2f}" for i in range(len(self.sides))
                                    if np.isfinite(self.entropy[t, i])))
         return img
+
+    def _target(self, d: ImageDraw.ImageDraw, x0: int, x1: int, y: int, now: float) -> int:
+        """A's target build order at game second `now`: made (bright, ✓), due and missing (red, ✗), to come (dim)."""
+        tg = self.target
+        src = {"human": "a person's game", "ai": "the AI's game"}.get(tg.get("src", ""), "a game")
+        d.text((x0, y), f"A's target build ({src}): ✓ made · ✗ due, missing · later", font=self.f_small, fill=DIM)
+        y += 15
+        made = tg.get("made") or {}
+        x = x0
+        for code, due in sorted(tg["t"].items(), key=lambda kv: kv[1]):
+            m = made.get(code)
+            if m is not None and m <= now:
+                text, color = f"{_name(code)} ✓", SIDE_COLORS[0]
+            elif due <= now:
+                text, color = f"{_name(code)} ✗", (232, 96, 80)
+            else:
+                text, color = _name(code), DIM
+            w = d.textlength(text + "  ", font=self.f_small)
+            if x + w > x1 and x > x0:
+                x, y = x0, y + 14
+            d.text((x, y), text, font=self.f_small, fill=color)
+            x += w
+        return y + 14
 
     def _wrapped(self, d: ImageDraw.ImageDraw, text: str, x0: int, x1: int, y: int, color) -> int:
         words, line = text.split(" "), ""
