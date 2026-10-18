@@ -303,8 +303,8 @@ class Manager:
             # laptop is busy, or the worker restarting for a new run, popped the warning up before)
             if self.misses >= 3 and not self.notified:
                 notify(f"Evaluation worker down ({a.host})", f"No answer from the laptop for {self.misses} minutes. The "
-                       "run's own evaluation games take over after 5 minutes without its games (--eval-fallback).",
-                       urgent=True)
+                       "run's own evaluation games take over (--eval-fallback). If WSL is up, run `ssh {a.host}` once: "
+                       "Tailscale SSH may want its periodic browser check.", urgent=True)
                 self.notified = True
             return True
         self.misses = 0
