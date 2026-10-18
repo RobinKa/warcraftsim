@@ -161,7 +161,7 @@ If you use warcraftsim in your work, please cite it (GitHub's "Cite this reposit
 ```bibtex
 @software{kahlow2026warcraftsim,
   author = {Kahlow, Robin},
-  title  = {{warcraftsim} - {Self-play} reinforcement learning on {Warcraft III}},
+  title  = {{warcraftsim} - {Self-play} reinforcement learning in {Warcraft III}},
   year   = {2026},
   url    = {https://github.com/RobinKa/warcraftsim}
 }
