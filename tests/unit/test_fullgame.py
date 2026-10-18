@@ -378,6 +378,11 @@ def test_curriculum_late_start_only(tmp_path):
                 curriculum=(0.0, 0.1, 180.0, 50), mode="delay", floor=-0.5)
     hp.curriculum("script:ai-normal", 1.0)
     assert hp.knobs("script:ai-normal")["delay"] == 0.0  # (only the tax goes below 0)
+    bonus.write()
+    fork = League(tmp_path, ["normal"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard",
+                  curriculum=(0.0, 0.1, 0.9, 50), mode="tax")
+    fork.restore(json.loads((tmp_path / "league.json").read_text()))
+    assert fork.knobs("script:ai-normal")["tax"] == 0.0  # (a fork without a floor: no bonus from its parent)
 
 
 def test_curriculum_real_game_yardstick(tmp_path):

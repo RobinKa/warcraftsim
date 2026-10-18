@@ -1546,7 +1546,7 @@ class League:
                 keys = [(name, race)]
             for key in keys:
                 if key in self.level:
-                    self.level[key] = v
+                    self.level[key] = min(1.0, max(self.floor, v))  # (a parent's bonus levels: this run's floor)
         self.balance.update({k: v for k, v in (summary.get("balance") or {}).items() if k in self.balance})
 
     def spec(self, real_share: float = 0.0) -> dict:
