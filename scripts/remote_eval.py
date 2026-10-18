@@ -107,7 +107,8 @@ def run_info(run: str) -> dict | None:
 SETTINGS = ("map", "handicap", "step_seconds", "max_minutes", "wait_floor_ms", "games_per_process", "agent_games_factor",
             "pairs", "scripted_reset", "native_obs", "game_nice", "game_cuts", "features", "eval_ai", "eval_checkpoints",
             "races", "mirror", "opd_difficulty", "shared_noise", "float_penalty", "hero_level_value", "shaping",
-            "shaping_scale", "gamma", "tie_break", "tie_value", "avail_mask", "infer_entities", "seed", "wine", "fsync", "ntsync")
+            "shaping_scale", "gamma", "tie_break", "tie_value", "avail_mask", "infer_entities", "seed", "wine", "fsync", "ntsync",
+            "eval_z", "z_pool", "z_src", "z_enforce", "z_time_scale")
 
 
 def launch_key(info: dict) -> str:
@@ -222,7 +223,9 @@ class Manager:
         if missing:
             log(f"evaluation checkpoints missing here: {missing}")
             return False
-        if not self.h.rsync([f"runs/{self.run}/run.json", f"runs/{self.run}/vocab.json"] + evals):
+        pool = (info.get("config") or {}).get("z_pool") or ""  # (--eval-z: the strategies, as the run's)
+        pool = [pool] if pool and not Path(pool).is_absolute() and (ROOT / pool).exists() else []
+        if not self.h.rsync([f"runs/{self.run}/run.json", f"runs/{self.run}/vocab.json"] + evals + pool):
             return False
         self.pushed = []
         self.push_checkpoint(force=True)

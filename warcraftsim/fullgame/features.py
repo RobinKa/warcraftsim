@@ -586,6 +586,8 @@ class View:
         self.enc, self.player, self.sign, self.races = enc, player, sign, races
         self.active_f = ACTIVE_F  # (an evaluation game sets F: every checkpoint has zero weights past its own)
         self.z: np.ndarray | None = None  # the target strategy (strategy.vector; the encoder's ZD numbers)
+        self.zmask: np.ndarray | None = None  # --z-enforce: the orders the target allows (strategy.allowed)
+        self.zmask_until = 0  # ... until this step (the strategies' horizon)
         self.upgrades = np.zeros(len(enc.upgrade_index), np.float32)
         self.own_buildings: set[int] = set()
         self.queued: dict[int, int] = {}  # building -> units / research ordered and not yet done
@@ -703,6 +705,8 @@ class View:
             gold, lumber, fu, fc = (int(me[2]), int(me[3]), int(me[4]), int(me[5])) if me is not None else (0, 0, 0, 0)
             avail = (c[:, 0] <= gold) & (c[:, 1] <= lumber) & ((c[:, 2] == 0) | (fu + c[:, 2] <= fc))
             avail[0] = True
+        if self.zmask is not None and t < self.zmask_until:  # (--z-enforce: only the target's items)
+            avail = self.zmask.copy() if avail is None else avail & self.zmask
         if self.active_f < F:
             f[:, self.active_f:] = 0.0
         return {"n": len(sel), "sel": sel, "n_own": n_own, "ent": f, "type": types, "cur": cur, "glob": g,

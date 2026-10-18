@@ -980,7 +980,7 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
             # apart, the policies' matchups differed (the AI's mean record in them 0.45 against 0.50),
             # and the AI-record share depends on the mix.
             if not paired:
-                keys = ["current"] + list(cfg.get("eval_checkpoints") or [])
+                keys = ["current"] + (["current+z"] if cfg.get("eval_z") else []) + list(cfg.get("eval_checkpoints") or [])
                 rng.shuffle(keys)
                 diff = rng.choice(cfg.get("eval_ai") or ["normal", "insane"])
                 paired = [(list(races), side, diff, key) for key in keys]
@@ -1072,6 +1072,16 @@ def strategy_pool(cfg: dict) -> dict | None:
     return _POOLS[path]
 
 
+def target(cfg: dict, view, st: dict, pool: dict, race: str, vocab: dict) -> dict:
+    """A side's target strategy `st` in its view: the input (strategy.vector) and, with --z-enforce, the
+    orders it allows for the strategies' horizon (strategy.allowed) -> `st`."""
+    view.z = strat.vector(st, pool["items"][race])
+    if cfg.get("z_enforce"):
+        view.zmask = strat.allowed(st, pool["items"][race], vocab["orders"])
+        view.zmask_until = int(strat.HORIZON * cfg.get("z_time_scale", 1.0) / cfg["step_seconds"])
+    return st
+
+
 def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: dict, infer: Inference,
              out_q, wid: int, record: bool = False, train: bool = True) -> dict:
     """One game from its first observation; `record`: also a trace for the video's panel
@@ -1098,7 +1108,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         keys[s] = ("current" if s == side or opp["kind"] == "self" else exploiter_key(cfg) if opp["kind"] == "exploiter"
                    else opp["path"])
         if s == side and opp.get("eval_key"):  # (an evaluation game of a listed checkpoint: --eval-checkpoints)
-            keys[s] = opp["eval_key"]
+            keys[s] = "current" if opp["eval_key"] == "current+z" else opp["eval_key"]
             bot.view.active_f = fx.F  # (all features: a checkpoint's weights past its own are zeros)
         if keys[s] == "current" and train:  # (an evaluation game: no steps to train on)
             trajs[s] = Trajectory(cfg, out_q, {"worker": wid, "opponent": opp["name"]})
@@ -1113,8 +1123,12 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         if keys[s] == "current" and random.random() < cfg.get("z_share", 0.5):  # (not the exploiter's sides)
             st = strat.sample(pool, races[s], races[1 - s], random, bool(cfg.get("z_winners", 1)), cfg.get("z_src", ""))
             if st is not None:
-                zs[s] = st
-                bots[s].view.z = strat.vector(st, pool["items"][races[s]])
+                zs[s] = target(cfg, bots[s].view, strat.scaled(st, cfg.get("z_time_scale", 1.0)), pool, races[s], vocab)
+    if opp.get("eval_key") == "current+z":  # (--eval-z: the current policy's evaluation games with a target, AlphaStar's
+        pool = strategy_pool(cfg)              # z at test time: drawn as in training, winners of the matchup first)
+        st = strat.sample(pool, races[side], races[1 - side], random, True, cfg.get("z_src", "")) if pool else None
+        if st is not None:
+            zs[side] = target(cfg, bots[side].view, strat.scaled(st, cfg.get("z_time_scale", 1.0)), pool, races[side], vocab)
     made = {s: {} for s in zs}  # each item's first game second, of the sides with a strategy
     zphi = {s: 0.0 for s in zs}  # their strategy potentials at the last recorded step
     # the built-in AI advises the learner's sides (opp["advise"]): its orders label their steps
@@ -2380,6 +2394,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--z-reward", type=float, default=0.02, help="the strategy reward: its potential is minus this "
                     "per item of the race's list made by one of the side and its strategy by now, not both")
     ap.add_argument("--z-winners", type=int, default=1, help="draw the strategies of players who won (if any)")
+    ap.add_argument("--z-enforce", type=int, default=0, help="with --z-pool: a side with a target may only train, "
+                    "build and research the target's items (and workers and supply) for the strategies' horizon "
+                    "(the availability mask; strategy.allowed)")
+    ap.add_argument("--z-time-scale", type=float, default=1.0, help="the targets' times scaled (faster rules: e.g. 0.45 "
+                    "on echofast, half costs and a third of the build times)")
+    ap.add_argument("--eval-z", type=int, default=0, help="with --z-pool: the current policy also plays evaluation "
+                    "games with a target strategy (eval_key current+z: the same weights, paired on the same matchups)")
     ap.add_argument("--z-src", default="", choices=["", "human", "ai"], help="draw only the strategies of people's "
                     "replays (human) or of the built-in AI's games (ai); default: both")
     ap.add_argument("--exploiter-share", type=float, default=0.0,
@@ -2779,7 +2800,8 @@ def main(argv: list[str] | None = None) -> int:
            "opd_share": args.opd_share, "opd_difficulty": args.opd_difficulty,
            "costs": order_costs(vocab, args.map).tolist() if args.avail_mask else None, "max_past": args.max_past,
            "eval_fallback": args.eval_fallback, "worker_cap": args.worker_cap, "z_dim": fx.ZDIM, "z_pool": str(args.z_pool) if args.z_pool else "", "z_share": args.z_share,
-           "z_reward": args.z_reward, "z_winners": args.z_winners, "z_src": args.z_src,
+           "z_reward": args.z_reward, "z_winners": args.z_winners, "z_src": args.z_src, "eval_z": args.eval_z,
+           "z_enforce": args.z_enforce, "z_time_scale": args.z_time_scale,
            "order_names": vocab.get("order_names") or {str(k): v for k, v in fx.demo_order_names(args.runs).items()}}
     if args.pin and (os.cpu_count() or 0) >= 16:
         # the learner's Python is what bounds an update, and the inference server what the games wait

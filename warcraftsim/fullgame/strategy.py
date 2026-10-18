@@ -127,6 +127,31 @@ def vector(strategy: dict | None, items: list[str]) -> np.ndarray:
     return z
 
 
+# made whatever the target: each race's workers and supply (a target without farms would block itself)
+ALWAYS = frozenset({"hpea", "opeo", "uaco", "ewsp", "hhou", "otrb", "uzig", "emow"})
+
+
+def allowed(strategy: dict, items: list[str], orders: list) -> np.ndarray:
+    """--z-enforce: [1 + n_orders] bool, the order classes a side playing toward `strategy` may give (row 0:
+    no order): a train / build / research order of one of the race's `items` only when the strategy makes
+    it (or it is a worker or supply); every other order (moves, attacks, harvesting, spells, items
+    outside the list) stays."""
+    from . import features as fx
+    keep = set(strategy["t"]) | ALWAYS
+    listed = set(items)
+    out = np.ones(len(orders) + 1, bool)
+    for c, (oid, kind) in enumerate(orders, start=1):
+        if oid >= fx.TYPE_CODE and kind in (fx.IMMEDIATE, fx.POINT):
+            code = fx.rawcode(oid)
+            out[c] = code not in listed or code in keep
+    return out
+
+
+def scaled(strategy: dict, scale: float) -> dict:
+    """`strategy` with its items' times scaled (--z-time-scale: faster rules reach each item sooner)."""
+    return strategy if scale == 1.0 else {**strategy, "t": {k: v * scale for k, v in strategy["t"].items()}}
+
+
 def mismatch(made: dict[str, float], strategy: dict, items: list[str], now: float) -> int:
     """The race's items made by game second `now` (up to HORIZON) by one of the player (`made`: each
     item's first time) and the strategy, not both."""

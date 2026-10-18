@@ -40,6 +40,19 @@ def test_pool_vector_and_mismatch():
     assert strategy.mismatch({"hbar": 50.0, "halt": 80.0, "hkee": 290.0}, won, items, 5000.0) == 0
 
 
+def test_enforced_target_allows_only_its_items():
+    """--z-enforce: train / build / research orders of the race's listed items only when the target makes
+    them (workers and supply always); other orders and unlisted items stay; the times scale."""
+    code = lambda s: int.from_bytes(s.encode(), "big")  # noqa: E731
+    pool = _pool()
+    won = next(s for s in pool["strategies"] if s["won"] and s["race"] == "human")  # barracks, altar, keep
+    orders = [[851983, fx.UNIT], [code("hbar"), fx.POINT], [code("hlum"), fx.POINT], [code("hpea"), fx.IMMEDIATE],
+              [code("hhou"), fx.POINT], [code("hkee"), fx.IMMEDIATE], [code("hgry"), fx.IMMEDIATE]]
+    ok = strategy.allowed(won, pool["items"]["human"], orders)
+    assert ok.tolist() == [True, True, True, False, True, True, True, True]  # (no lumber mill; gryphons unlisted)
+    assert strategy.scaled(won, 0.5)["t"]["hkee"] == 150.0 and strategy.scaled(won, 1.0) is won
+
+
 def test_sample_prefers_the_matchup_and_winners():
     pool = _pool()
     rng = random.Random(0)
