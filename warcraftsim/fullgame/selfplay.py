@@ -1041,7 +1041,7 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                         opp["curriculum"] = now.get("level", 0.0)
                         if late:
                             opp["start"] = int(round(now.get("delay", 0.0) / cfg["step_seconds"]))
-                        if now.get("tax", 0.0) > 0:
+                        if now.get("tax", 0.0) != 0:  # (< 0: a bonus, --curriculum-floor)
                             opp["tax"] = now["tax"]
                     # a video: the first game of a launch (its replay then holds just this game)
                     film = films and fresh and time.time() >= next_video
@@ -1385,7 +1385,7 @@ class League:
     def __init__(self, run_dir: Path, ai: list[str], shares: dict, max_past: int, pfsp: str,
                  curriculum: tuple[float, float, float, int] | None = None, mode: str = "hp",
                  races: tuple[str, ...] = ("",), mirror: bool = True, balance: tuple[float, float] | None = None,
-                 exploiter_share: float = 0.0, tie: float = 0.0):
+                 exploiter_share: float = 0.0, tie: float = 0.0, floor: float = 0.0):
         """`curriculum`: (start level, step, the knob at level 1, base handicap): games against the
         built-in AI get easier or harder towards a 50% score, a level per difficulty in [0, 1] that
         a loss raises by `step`, a win lowers (a tie leaves it). At 0 the game is the real one; None:
@@ -1398,6 +1398,10 @@ class League:
           came before the AI started.
         * "tax": the AI plays from the start, but loses this share of what it gathers (and of its
           starting gold and lumber), up to the knob (e.g. 0.9): a poorer opponent, nothing idle.
+        `floor` < 0 (mode "tax"): the level goes on below 0 as the learner keeps winning, and the
+        tax turns into a bonus: the AI gets that share of what it gathers on top (level -0.5 at a
+        knob of 0.9: 45% more income), a richer opponent and longer games. The real game's launches
+        never have one.
         A level per difficulty and learner's race (`races`): one per difficulty settled where night
         elf games (96% won) balanced human and orc ones (7-14%), and neither end taught anything.
         Without `mirror` matchups, a level per difficulty and matchup ("human/nightelf": the learner
@@ -1421,6 +1425,7 @@ class League:
         self.run_dir, self.shares, self.max_past, self.pfsp = run_dir, shares, max_past, pfsp
         self.scripts = {f"script:ai-{d}": Member(f"script:ai-{d}") for d in ai}
         self.rule, self.mode, self.races, self.tie = curriculum, mode, tuple(races), tie
+        self.floor = floor if mode == "tax" else 0.0
         self.mirror = mirror
         self.keys = self.races if mirror else tuple(matchup(False, a, b) for a in self.races for b in self.races)
         self.level = {(n, k): curriculum[0] for n in self.scripts for k in self.keys} if curriculum else {}
@@ -1458,7 +1463,7 @@ class League:
         key = (name, race)
         if key in self.level:
             move = -outcome if outcome != 0 else self.tie  # (a win lowers it, a loss raises it)
-            self.level[key] = min(1.0, max(0.0, self.level[key] + self.rule[1] * move))
+            self.level[key] = min(1.0, max(self.floor, self.level[key] + self.rule[1] * move))
 
     def balanced(self, race: str, opp: str, outcome: float) -> None:
         """A game of the learner against itself, `race` against `opp`, ended (`outcome` for `race`)."""
@@ -2409,6 +2414,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--curriculum-delay", type=float, default=120.0,
                     help="the knob at level 1: the AI's late start (seconds; modes hp and delay) or the share of "
                          "its income taken (mode tax, e.g. 0.9)")
+    ap.add_argument("--curriculum-floor", type=float, default=0.0,
+                    help="mode tax: the lowest level; below 0 the tax becomes a bonus to the AI's income (its share "
+                         "the level times --curriculum-delay), so a learner that keeps winning meets a richer AI")
     ap.add_argument("--bc-data", type=Path, nargs="*", default=[],
                     help="demonstration collections (e.g. takeover games from the policy's own states) whose cloning "
                          "loss joins each PPO minibatch, times --bc-coef")
@@ -2712,7 +2720,7 @@ def main(argv: list[str] | None = None) -> int:
                                 if args.curriculum >= 0 else None), mode=args.curriculum_mode, races=tuple(races),
                     mirror=bool(args.mirror),
                     balance=(args.balance_step, args.balance_max) if args.balance_step > 0 else None,
-                    exploiter_share=args.exploiter_share, tie=args.curriculum_tie)
+                    exploiter_share=args.exploiter_share, tie=args.curriculum_tie, floor=args.curriculum_floor)
     league.real_share = args.real_share
     if args.shaping_anneal > 0:  # (the games from the start: the weight at this run's update)
         league.shaping = shaping_now(args, resumed["update"] if resumed else 0)

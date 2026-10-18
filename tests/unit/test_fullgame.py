@@ -363,6 +363,21 @@ def test_curriculum_late_start_only(tmp_path):
     tax = League(tmp_path, ["normal"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard",
                  curriculum=(0.5, 0.1, 0.9, 50), mode="tax")
     assert tax.knobs("script:ai-normal") == {"handicap": 50, "delay": 0.0, "tax": 0.45}  # the AI keeps 55% of its income
+    for _ in range(20):
+        tax.curriculum("script:ai-normal", 1.0)
+    assert tax.knobs("script:ai-normal")["tax"] == 0.0  # (no floor: the real game at most)
+    bonus = League(tmp_path, ["normal"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard",
+                   curriculum=(0.0, 0.1, 0.9, 50), mode="tax", floor=-0.5)
+    for _ in range(3):
+        bonus.curriculum("script:ai-normal", 1.0)
+    assert bonus.knobs("script:ai-normal")["tax"] == -0.27  # the AI gets 27% more of what it gathers
+    for _ in range(20):
+        bonus.curriculum("script:ai-normal", 1.0)
+    assert bonus.knobs("script:ai-normal")["tax"] == -0.45  # (at the floor)
+    hp = League(tmp_path, ["normal"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard",
+                curriculum=(0.0, 0.1, 180.0, 50), mode="delay", floor=-0.5)
+    hp.curriculum("script:ai-normal", 1.0)
+    assert hp.knobs("script:ai-normal")["delay"] == 0.0  # (only the tax goes below 0)
 
 
 def test_curriculum_real_game_yardstick(tmp_path):
