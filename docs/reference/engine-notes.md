@@ -113,3 +113,7 @@ The layout of these was documented by the MIT-licensed `pwang724/wc3env` project
 * **Replays in the stock client.** Agent orders are not in the `.w3g`; they are in the command log next to it.
   * Recording agent orders as engine actions would need the command-packet path (wc3env's approach): selection plus order packets sent as the local player's network actions.
   * Game-cache syncs (`SyncStoredInteger`) are not recorded in single-player replays; tested and ruled out.
+
+## The insane AI gathers twice as much
+
+The built-in AI on insane gets double income from the engine; nothing in its scripts (`common.ai`, `human.ai`, ...) or the game's data tables says so. Measured on Echo Isles, insane against normal of the same race, 5 game minutes (2026-10-18): orc insane 5,600 gold gathered while its mine lost 2,820 (ratio 1.99), normal 2,820 from 2,840 (0.99); human insane 5,600 gold and 2,222 lumber, normal 2,790 and 1,129 with the same 16 workers; night elf insane 5,700 gold and 1,830 lumber, normal 2,860 and 890 with 17 workers. The evaluation games keep this: the "untaxed insane AI" is the game's own insane AI, with its double income. The curriculum's tax takes its share of the doubled income.
