@@ -1253,11 +1253,29 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                      for s, r in zip(live, results) if r is not None}
             trace.append(trace_step(t, obs, mat, chose, value={s: r["value"] for s, r in zip(live, results) if r},
                                     entropy={s: r["entropy"] for s, r in zip(live, results) if r}))
+        built = {}
         for s, b in builders.items():  # (--z-build: after the agents' orders, so a worker it takes is taken)
-            cmds += b.commands(obs, made[s], t, cfg["step_seconds"])
+            c = b.commands(obs, made[s], t, cfg["step_seconds"])
+            if c and cfg.get("z_build_labels") and s in trajs and s in spans and obs.players.get(s) is not None:
+                q = obs.players[s]
+                built[s] = (len(cmds), c, np.asarray([t, s, q.gold, q.lumber, q.food_used, q.food_cap, q.upkeep]))
+            cmds += c
         if late is not None and t == opp["start"]:  # the built-in AI takes over its side (after the bots' orders)
             cmds.append(StartAI(late))
         obs = g.step(cmds)
+        for s, (at, c, me) in built.items():  # (--z-build-labels: the builder's accepted orders label the side's step)
+            ok = obs.command_results[at:at + len(c)]
+            rows = np.asarray([(t, x.unit, getattr(x, "building", getattr(x, "order", 0)), 1 if hasattr(x, "x") else 0,
+                                int(getattr(x, "x", 0)), int(getattr(x, "y", 0)), 0) for x, a in zip(c, ok) if a],
+                              np.int64).reshape(-1, 7)
+            if len(rows) and trajs[s].steps:
+                later = np.asarray([(t + 1, int(e.kind), e.a, e.b, e.c) for e in obs.events], np.int64).reshape(-1, 5)
+                y, _ = bots[s].enc.step_labels(bots[s].view, sts[s], rows, me, later, bots[s].trees)
+                if (y["y_order"] > 0).any():
+                    step = trajs[s].steps[-1]
+                    for k, v in y.items():
+                        step[k] = v[:step["n_own"]]
+                    step["y_only"] = True
         if advised:  # the advisor's orders of the step just taken: the labels of the step recorded
             label_step(obs, t, advised, spans, sts, held, bots, trajs)
         for s, (a, b) in spans.items():
@@ -1766,13 +1784,14 @@ def collate(steps: list[dict], device, width: int | None = None, with_labels: bo
     labels = {}
     if with_labels or any("y_order" in s for s in steps):  # the advisor's labels (on-policy distillation; others: none)
         labels = {"y_order": np.zeros((B, O), np.int64), **{k: np.full((B, O), -1, np.int64) for k in ("y_ptr", "y_x", "y_y")}}
-        has = np.zeros(B, bool)
+        has, only = np.zeros(B, bool), np.zeros(B, bool)
         for i, s in enumerate(steps):
             if "y_order" in s:
                 has[i] = True
+                only[i] = bool(s.get("y_only", False))
                 for k in labels:
                     labels[k][i, :s["n_own"]] = s[k]
-        labels = {**{k: t(v) for k, v in labels.items()}, "y_has": t(has), "y_any": bool(has.any())}
+        labels = {**{k: t(v) for k, v in labels.items()}, "y_has": t(has), "y_only": t(only), "y_any": bool(has.any())}
     ladv = None
     if any(s.get("ladv") is not None for s in steps):  # (--unit-credit: each own unit's share of the credit)
         ladv = np.zeros((B, O), np.float32)
@@ -1844,6 +1863,8 @@ def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast) -> tuple[torch.
     likes most."""
     own = mb["own"] & mb["y_has"][:, None]
     y = mb["y_order"]
+    if "y_only" in mb:  # (--z-build-labels: those steps label only the units the builder ordered)
+        own = own & ((y > 0) | ~mb["y_only"][:, None])
     lp = torch.log_softmax(ev["logits"].float(), -1)
     lp_y = lp.gather(-1, y.unsqueeze(-1)).squeeze(-1)
     ok = (own & (lp_y > -1e4)).float()  # (an order the unit can't get now: none of its business)
@@ -2463,6 +2484,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--z-build", type=int, default=0, help="with --z-pool: the harness starts the target's due "
                     "buildings (a worker near the town hall) and heroes (at the altar) that the agent leaves undone "
                     "(TargetBuilder; training and current+z evaluation games)")
+    ap.add_argument("--z-build-labels", type=int, default=0, help="with --z-build and --opd-coef > 0: the builder's "
+                    "accepted orders label the agent's step for the distillation loss (only the units it ordered), so the "
+                    "agent learns to make its target's buildings and heroes itself")
     ap.add_argument("--z-time-scale", type=float, default=1.0, help="the targets' times scaled (faster rules: e.g. 0.45 "
                     "on echofast, half costs and a third of the build times)")
     ap.add_argument("--eval-z", type=int, default=0, help="with --z-pool: the current policy also plays evaluation "
@@ -2867,7 +2891,7 @@ def main(argv: list[str] | None = None) -> int:
            "costs": order_costs(vocab, args.map).tolist() if args.avail_mask else None, "max_past": args.max_past,
            "eval_fallback": args.eval_fallback, "worker_cap": args.worker_cap, "z_dim": fx.ZDIM, "z_pool": str(args.z_pool) if args.z_pool else "", "z_share": args.z_share,
            "z_reward": args.z_reward, "z_winners": args.z_winners, "z_src": args.z_src, "eval_z": args.eval_z,
-           "z_enforce": args.z_enforce, "z_time_scale": args.z_time_scale, "z_build": args.z_build,
+           "z_enforce": args.z_enforce, "z_time_scale": args.z_time_scale, "z_build": args.z_build, "z_build_labels": args.z_build_labels,
            "order_names": vocab.get("order_names") or {str(k): v for k, v in fx.demo_order_names(args.runs).items()}}
     if args.pin and (os.cpu_count() or 0) >= 16:
         # the learner's Python is what bounds an update, and the inference server what the games wait
