@@ -1863,17 +1863,20 @@ def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast) -> tuple[torch.
     likes most."""
     own = mb["own"] & mb["y_has"][:, None]
     y = mb["y_order"]
-    if "y_only" in mb:  # (--z-build-labels: those steps label only the units the builder ordered)
-        own = own & ((y > 0) | ~mb["y_only"][:, None])
     lp = torch.log_softmax(ev["logits"].float(), -1)
     lp_y = lp.gather(-1, y.unsqueeze(-1)).squeeze(-1)
-    ok = (own & (lp_y > -1e4)).float()  # (an order the unit can't get now: none of its business)
-    l_order = -(lp_y * ok).sum() / ok.sum().clamp(min=1)
+    every = (own & (lp_y > -1e4)).float()  # (an order the unit can't get now: none of its business)
+    if "y_only" in mb:  # (--z-build-labels: those steps label only the units the builder ordered, and each
+        own = own & ((y > 0) | ~mb["y_only"][:, None])  # counts as one of all the step's own units: averaged over
+    ok = (own & (lp_y > -1e4)).float()                   # the labelled ones alone, a rare label pulled the policy away)
+    denom = every.sum().clamp(min=1)
+    l_order = -(lp_y * ok).sum() / denom
     ptr, xl, z = net.target_logits(ev["g"], ev["u"], mb["mask"], y)  # (in the caller's autocast)
     yl = net.y_logits(z, mb["y_x"])
     # (masked means, not boolean indexing: every index or any() was a wait for the GPU)
-    l_ptr = _masked_ce(ptr, mb["y_ptr"], ok)
-    l_pt = _masked_ce(xl, mb["y_x"], ok) + _masked_ce(yl, mb["y_y"], ok)
+    share = ok.sum() / denom
+    l_ptr = _masked_ce(ptr, mb["y_ptr"], ok) * share
+    l_pt = (_masked_ce(xl, mb["y_x"], ok) + _masked_ce(yl, mb["y_y"], ok)) * share
     with torch.no_grad():
         issued = ok * (y > 0)
         acc = ((lp[..., 1:].argmax(-1) + 1 == y) * issued).sum() / issued.sum().clamp(min=1)
