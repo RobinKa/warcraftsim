@@ -9,13 +9,13 @@ warcraftsim trains agents on the real Warcraft III 1.29, headless under Wine. Py
 | Micro fights | 91% against the scripted opponent. League self-play: 82%, and 79% against the 91% policy. | `--trainer torch` |
 | Whole game, `duelrush` (2-minute games) | **79%** against the built-in AI, all 16 matchups. | `fgself-10` |
 | Whole game, `duelfast` (6-minute games) | **80%** of its games against the insane AI won. Every matchup is above the AI's own record. | `fgself-51` |
-| **The real game on Echo Isles** (the game's rules, no handicap) | **~89% of its games against the insane AI won** (~500 evaluation games, against ~84% for the previous best): ~179% of the AI's own record on Echo Isles. Night elf ~99%, orc ~88%, human ~85%, undead ~82%. | best `fgself-78` (now: `fgself-86`) |
+| **The real game on Echo Isles** (the game's rules, no handicap) | **~89% of its games against the insane AI won** (~500 evaluation games, against ~84% for the previous best): ~179% of the AI's own record on Echo Isles. Night elf ~99%, orc ~88%, human ~85%, undead ~82%. | best `fgself-78` (now: `fgself-87`) |
 
 The yardstick is the evaluation games: the real game against the built-in AI, which the policy does not train on. Each policy in a run plays the same matchups (paired), so a run compares its policies directly.
 
 ## Next (2026-10-18)
 
-1. `fgself-86`: a deeper network, 8 layers instead of 5, grown from the best line's checkpoint so it starts playing as before. Before it: a richer AI in training (`fgself-85`: the insane AI with 90% more income still lost ~85%; human collapsed, worse), target strategies from people only (`fgself-84`, level), workers capped in the material shaping (`fgself-83`, level).
+1. `fgself-87`: a deeper network, 8 layers instead of 5, grown from `fgself-78`'s last so it starts playing as before, with `fgself-78`'s own recipe. Every run since `fgself-79` started from `fgself-79`'s last with its stronger strategy reward (0.05), and every one had a weaker human (8-20 points behind, more workers): their "level" verdicts hid the other races' gains. Before it: a richer AI in training (`fgself-85`: the insane AI with 90% more income still lost ~85%; human collapsed, worse), target strategies from people only (`fgself-84`, level), workers capped in the material shaping (`fgself-83`, level).
 2. Strategy conditioning (`fgself-78`) and a quarter of the anchor's pull (`fgself-77`) helped. The material shaping still helps: without it the policy lost ~5 points (`fgself-81`), and with a rolling anchor orc collapsed (`fgself-82`).
 3. Did not help: more reward for following the target (`fgself-79`), a cloning loss to teach the targets (`fgself-80`, worse), a main exploiter (`fgself-76`).
 
