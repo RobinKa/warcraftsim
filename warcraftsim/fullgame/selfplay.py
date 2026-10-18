@@ -1258,13 +1258,15 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             c = b.commands(obs, made[s], t, cfg["step_seconds"])
             if c and cfg.get("z_build_labels") and s in trajs and s in spans and obs.players.get(s) is not None:
                 q = obs.players[s]
-                built[s] = (len(cmds), c, np.asarray([t, s, q.gold, q.lumber, q.food_used, q.food_cap, q.upkeep]))
-            cmds += c
+                built[s] = (len(cmds) if cfg.get("z_build", 0) != 2 else None, c,
+                            np.asarray([t, s, q.gold, q.lumber, q.food_used, q.food_cap, q.upkeep]))
+            if cfg.get("z_build", 0) != 2:  # (--z-build 2: a teacher only, its orders labels and never carried out)
+                cmds += c
         if late is not None and t == opp["start"]:  # the built-in AI takes over its side (after the bots' orders)
             cmds.append(StartAI(late))
         obs = g.step(cmds)
         for s, (at, c, me) in built.items():  # (--z-build-labels: the builder's accepted orders label the side's step)
-            ok = obs.command_results[at:at + len(c)]
+            ok = obs.command_results[at:at + len(c)] if at is not None else [True] * len(c)
             rows = np.asarray([(t, x.unit, getattr(x, "building", getattr(x, "order", 0)), 1 if hasattr(x, "x") else 0,
                                 int(getattr(x, "x", 0)), int(getattr(x, "y", 0)), 0) for x, a in zip(c, ok) if a],
                               np.int64).reshape(-1, 7)
@@ -2486,7 +2488,8 @@ def main(argv: list[str] | None = None) -> int:
                     "(the availability mask; strategy.allowed)")
     ap.add_argument("--z-build", type=int, default=0, help="with --z-pool: the harness starts the target's due "
                     "buildings (a worker near the town hall) and heroes (at the altar) that the agent leaves undone "
-                    "(TargetBuilder; training and current+z evaluation games)")
+                    "(TargetBuilder; training and current+z evaluation games); 2: a teacher only, its orders labels for "
+                    "--z-build-labels and never carried out (the agent has to make its target itself)")
     ap.add_argument("--z-build-labels", type=int, default=0, help="with --z-build and --opd-coef > 0: the builder's "
                     "accepted orders label the agent's step for the distillation loss (only the units it ordered), so the "
                     "agent learns to make its target's buildings and heroes itself")
