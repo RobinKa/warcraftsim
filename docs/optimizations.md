@@ -12,6 +12,8 @@ xychart-beta horizontal
   bar [560, 545, 595, 606, 607, 540, 644, 719, 800, 822, 840, 1000, 1110, 1200, 1280, 1430, 1490, 1850, 2150, 2280, 2000, 2030, 2220]
 ```
 
+The starting point already ran the game as fast as the CPU allows (the shim's virtual clock came first, with the micro work). In real time a game gives 2 decisions a second per side: at 560 steps/s on 32 games, each game ran ~9× faster than real time. Now ~48 games each run ~15× faster: ~1,470 game steps a second, ~3,300 games and ~730 hours of game time an hour (`fgself-83`, 2026-10-18).
+
 ## Where the time goes
 
 The bars from "learner intake" on are with 8 evaluation games running beside the 48 training games (the learner intake made it ~25% faster in the same setting). The real game on Echo Isles runs at ~1,600 steps/s (`fgself-75`: 1,614 on 2026-10-17): its games have more units.
