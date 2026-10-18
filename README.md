@@ -1,5 +1,7 @@
 # warcraftsim
 
+> **Blog post:** [Beating Warcraft III's insane AI with self-play reinforcement learning on one desktop](https://warlock.ai/blog/warcraftsim-1/), the story of how the agent learned, with videos and diagrams.
+
 Reinforcement learning on the **real Warcraft III** (Legacy TFT 1.29.2) under Wine on Linux, driven step by step from Python. Nothing is reimplemented: the game's own engine runs every unit, spell, building and AI script, headless and many times faster than real time.
 
 The agent plays the **whole game** (economy, buildings, tech, armies, heroes) on the ladder map **Echo Isles** under the game's own rules. It wins **~85–89% of its games against the built-in AI at its hardest setting** (insane, no handicap), about **1.8× the built-in AI's own record** in the same matchups.
