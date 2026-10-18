@@ -154,6 +154,19 @@ python -m warcraftsim dashboard
 | Related work | [AlphaStar](docs/related/alphastar.md), [OpenAI Five](docs/related/openai-five.md), [reward shaping](docs/related/reward-shaping.md), [robot learning](docs/related/robot-learning.md) |
 | Reference | [experiment log](docs/reference/experiment-log.md), [engine notes](docs/reference/engine-notes.md), [optimization log](docs/reference/optimization-log.md), [human replays](docs/reference/human-replays.md), [ideas from AlphaStar and OpenAI Five](docs/reference/ideas-from-alphastar-and-openai-five.md), [usage](docs/reference/usage.md) |
 
+## Citation
+
+If you use warcraftsim in your work, please cite it (GitHub's "Cite this repository" button gives other formats):
+
+```bibtex
+@software{kahlow2026warcraftsim,
+  author = {Kahlow, Robin},
+  title  = {{warcraftsim} - {Self-play} reinforcement learning on {Warcraft III}},
+  year   = {2026},
+  url    = {https://github.com/RobinKa/warcraftsim}
+}
+```
+
 ## License
 
 MIT (see `LICENSE`). The submodules in `third_party/` keep their own licenses (PufferLib and StormLib: MIT; MinHook and pjass: BSD 2-Clause). Warcraft III and its game data belong to Blizzard Entertainment and are not part of this repository; replays and videos of your runs stay in `runs/`, which is not committed.
