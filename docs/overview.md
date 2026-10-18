@@ -9,13 +9,13 @@ warcraftsim trains agents on the real Warcraft III 1.29, headless under Wine. Py
 | Micro fights | 91% against the scripted opponent. League self-play: 82%, and 79% against the 91% policy. | `--trainer torch` |
 | Whole game, `duelrush` (2-minute games) | **79%** against the built-in AI, all 16 matchups. | `fgself-10` |
 | Whole game, `duelfast` (6-minute games) | **80%** of its games against the insane AI won. Every matchup is above the AI's own record. | `fgself-51` |
-| **The real game on Echo Isles** (the game's rules, no handicap) | **~89% of its games against the insane AI won** (~500 evaluation games, against ~84% for the previous best): ~179% of the AI's own record on Echo Isles. Night elf ~99%, orc ~88%, human ~85%, undead ~82%. | best `fgself-78` (paused: `fgself-83`) |
+| **The real game on Echo Isles** (the game's rules, no handicap) | **~89% of its games against the insane AI won** (~500 evaluation games, against ~84% for the previous best): ~179% of the AI's own record on Echo Isles. Night elf ~99%, orc ~88%, human ~85%, undead ~82%. | best `fgself-78` (now: `fgself-84`) |
 
 The yardstick is the evaluation games: the real game against the built-in AI, which the policy does not train on. Each policy in a run plays the same matchups (paired), so a run compares its policies directly.
 
-## Next (2026-10-17)
+## Next (2026-10-18)
 
-1. Resume `fgself-83`: the material shaping with workers counted only up to 20. Paused after 45 minutes, not judged.
+1. `fgself-84`: target strategies from people's replays only (`--z-src human`). The cap on workers in the material shaping (`fgself-83`) was level to slightly worse: 83% against 87%.
 2. Strategy conditioning (`fgself-78`) and a quarter of the anchor's pull (`fgself-77`) helped. The material shaping still helps: without it the policy lost ~5 points (`fgself-81`), and with a rolling anchor orc collapsed (`fgself-82`).
 3. Did not help: more reward for following the target (`fgself-79`), a cloning loss to teach the targets (`fgself-80`, worse), a main exploiter (`fgself-76`).
 

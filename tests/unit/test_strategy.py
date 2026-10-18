@@ -47,6 +47,9 @@ def test_sample_prefers_the_matchup_and_winners():
     assert strategy.sample(pool, "human", "undead", rng)["won"]  # (a winner over the matchup)
     assert not strategy.sample(pool, "human", "undead", rng, winners=False)["won"]
     assert strategy.sample(pool, "undead", "orc", rng) is None
+    assert strategy.sample(pool, "human", "undead", rng, src="ai")["src"] == "ai"  # (only the AI's: its loser)
+    assert strategy.sample(pool, "human", "undead", rng, src="human")["opp"] == "orc"
+    assert strategy.sample(pool, "orc", "human", rng, src="human") is None
 
 
 def test_strategy_block_in_the_global_vector():

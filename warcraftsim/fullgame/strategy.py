@@ -134,10 +134,11 @@ def mismatch(made: dict[str, float], strategy: dict, items: list[str], now: floa
     return sum((made.get(c, 1e9) <= now) != (strategy["t"].get(c, 1e9) <= now) for c in items)
 
 
-def sample(pool: dict, race: str, opp: str, rng: random.Random, winners: bool = True) -> dict | None:
+def sample(pool: dict, race: str, opp: str, rng: random.Random, winners: bool = True, src: str = "") -> dict | None:
     """A strategy of `race`, against `opp` when the pool has some (else any opponent), won ones when
-    `winners` and there are any."""
-    mine = [s for s in pool["strategies"] if s["race"] == race]
+    `winners` and there are any; only those of one source when `src` ("human": people's replays, "ai": the
+    built-in AI's games)."""
+    mine = [s for s in pool["strategies"] if s["race"] == race and (not src or s["src"] == src)]
     tiers = [[s for s in mine if s["opp"] == opp and s["won"]], [s for s in mine if s["won"]]] if winners else []
     tiers += [[s for s in mine if s["opp"] == opp], mine]
     return next((rng.choice(c) for c in tiers if c), None)

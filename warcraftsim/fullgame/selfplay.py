@@ -1111,7 +1111,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     pool = strategy_pool(cfg) if train else None
     for s in trajs if pool is not None else ():
         if keys[s] == "current" and random.random() < cfg.get("z_share", 0.5):  # (not the exploiter's sides)
-            st = strat.sample(pool, races[s], races[1 - s], random, bool(cfg.get("z_winners", 1)))
+            st = strat.sample(pool, races[s], races[1 - s], random, bool(cfg.get("z_winners", 1)), cfg.get("z_src", ""))
             if st is not None:
                 zs[s] = st
                 bots[s].view.z = strat.vector(st, pool["items"][races[s]])
@@ -2375,6 +2375,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--z-reward", type=float, default=0.02, help="the strategy reward: its potential is minus this "
                     "per item of the race's list made by one of the side and its strategy by now, not both")
     ap.add_argument("--z-winners", type=int, default=1, help="draw the strategies of players who won (if any)")
+    ap.add_argument("--z-src", default="", choices=["", "human", "ai"], help="draw only the strategies of people's "
+                    "replays (human) or of the built-in AI's games (ai); default: both")
     ap.add_argument("--exploiter-share", type=float, default=0.0,
                     help="AlphaStar's main exploiter: this share of launches are games between the learner and a "
                          "second network that trains only against it (League; 0: none)")
@@ -2769,7 +2771,7 @@ def main(argv: list[str] | None = None) -> int:
            "opd_share": args.opd_share, "opd_difficulty": args.opd_difficulty,
            "costs": order_costs(vocab, args.map).tolist() if args.avail_mask else None, "max_past": args.max_past,
            "eval_fallback": args.eval_fallback, "worker_cap": args.worker_cap, "z_dim": fx.ZDIM, "z_pool": str(args.z_pool) if args.z_pool else "", "z_share": args.z_share,
-           "z_reward": args.z_reward, "z_winners": args.z_winners,
+           "z_reward": args.z_reward, "z_winners": args.z_winners, "z_src": args.z_src,
            "order_names": vocab.get("order_names") or {str(k): v for k, v in fx.demo_order_names(args.runs).items()}}
     if args.pin and (os.cpu_count() or 0) >= 16:
         # the learner's Python is what bounds an update, and the inference server what the games wait
