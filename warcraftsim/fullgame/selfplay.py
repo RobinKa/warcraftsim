@@ -1072,6 +1072,63 @@ def strategy_pool(cfg: dict) -> dict | None:
     return _POOLS[path]
 
 
+HALLS = {int.from_bytes(c.encode(), "big") for c in
+         ("htow", "hkee", "hcas", "ogre", "ostr", "ofrt", "unpl", "unp1", "unp2", "etol", "etoa", "etoe")}
+ALTARS = {int.from_bytes(c.encode(), "big") for c in ("halt", "oalt", "uaod", "eate")}
+
+
+class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below with the other commands)
+    """--z-build: for a side playing toward a target strategy, the harness starts what the agent leaves
+    undone: each target building due by now (its time in the strategy) and not yet made, with a worker
+    near the side's town hall, and each due hero at its altar, at most one a step, when the player can
+    pay for it; the game refuses what it lacks the prerequisites for, and an item is tried again only
+    after 20 steps. Everything else stays the agent's."""
+
+    def __init__(self, cfg: dict, vocab: dict, side: int, st: dict, rng: random.Random):
+        self.side, self.st, self.rng = side, st, rng
+        self.costs = cfg.get("costs_array")
+        self.cls = {(int(o), int(k)): c for c, (o, k) in enumerate(vocab["orders"], start=1)}
+        self.tried: dict[str, int] = {}
+
+    def commands(self, obs, made: dict, t: int, step_s: float) -> list:
+        from ..protocol import Build, ImmediateOrder
+        p = obs.players.get(self.side)
+        if p is None:
+            return []
+        now = obs.game_time
+        due = sorted((t0, c) for c, t0 in self.st["t"].items() if t0 <= now and c not in made and t - self.tried.get(c, -99) >= 20)
+        if not due:
+            return []
+        mine = [u for u in obs.units if u.owner == self.side and u.alive]
+        hall = next((u for u in mine if u.type_id in HALLS), None)
+        for _, c in due:
+            code = int.from_bytes(c.encode(), "big")
+            if c[0].isupper():  # a hero: at an altar
+                k = self.cls.get((code, fx.IMMEDIATE))
+                altar = next((u for u in mine if u.type_id in ALTARS), None)
+                if k is None or altar is None or not self._affords(k, p):
+                    continue
+                self.tried[c] = t
+                return [ImmediateOrder(altar.id, code)]
+            k = self.cls.get((code, fx.POINT))
+            if k is None or hall is None or not self._affords(k, p):  # (not a building, or not yet)
+                continue
+            workers = [u for u in mine if u.is_worker and not u.is_structure]
+            if not workers:
+                return []
+            w = min(workers, key=lambda u: (u.x - hall.x) ** 2 + (u.y - hall.y) ** 2)
+            a, r = self.rng.uniform(0, 2 * math.pi), self.rng.uniform(450, 800)
+            self.tried[c] = t
+            return [Build(w.id, code, hall.x + r * math.cos(a), hall.y + r * math.sin(a))]
+        return []
+
+    def _affords(self, k: int, p) -> bool:
+        if self.costs is None:
+            return True
+        g, l, f = (int(v) for v in self.costs[k])
+        return p.gold >= g and p.lumber >= l and (f == 0 or p.food_used + f <= p.food_cap)
+
+
 def target(cfg: dict, view, st: dict, pool: dict, race: str, vocab: dict) -> dict:
     """A side's target strategy `st` in its view: the input (strategy.vector) and, with --z-enforce, the
     orders it allows for the strategies' horizon (strategy.allowed) -> `st`."""
@@ -1130,6 +1187,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         if st is not None:
             zs[side] = target(cfg, bots[side].view, strat.scaled(st, cfg.get("z_time_scale", 1.0)), pool, races[side], vocab)
     made = {s: {} for s in zs}  # each item's first game second, of the sides with a strategy
+    builders = {s: TargetBuilder(cfg, vocab, s, zs[s], random.Random()) for s in zs} if cfg.get("z_build") else {}
     zphi = {s: 0.0 for s in zs}  # their strategy potentials at the last recorded step
     # the built-in AI advises the learner's sides (opp["advise"]): its orders label their steps
     advised = [s for s in trajs if keys[s] == "current"] if opp.get("advise") else []
@@ -1195,6 +1253,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                      for s, r in zip(live, results) if r is not None}
             trace.append(trace_step(t, obs, mat, chose, value={s: r["value"] for s, r in zip(live, results) if r},
                                     entropy={s: r["entropy"] for s, r in zip(live, results) if r}))
+        for s, b in builders.items():  # (--z-build: after the agents' orders, so a worker it takes is taken)
+            cmds += b.commands(obs, made[s], t, cfg["step_seconds"])
         if late is not None and t == opp["start"]:  # the built-in AI takes over its side (after the bots' orders)
             cmds.append(StartAI(late))
         obs = g.step(cmds)
@@ -1254,7 +1314,10 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         "prod": prod.row(side, obs), "opp_prod": prod.row(1 - side, obs), **({"advised": True} if advised else {}),
         **({"shared_noise": shared_noise} if cfg.get("shared_noise", 0.0) > 0 else {}),
         **({"z": zs[side]["src"] + (" won" if zs[side]["won"] else ""), "z_items": len(zs[side]["t"]),
-            "z_miss": strat.mismatch(made[side], zs[side], pool["items"][races[side]], obs.game_time)} if side in zs else {}),
+            "z_miss": strat.mismatch(made[side], zs[side], pool["items"][races[side]], obs.game_time),
+            # (which: the strategy's items due by now and not made; made and not in it)
+            "z_missed": sorted(c for c, t0 in zs[side]["t"].items() if t0 <= min(obs.game_time, strat.HORIZON) and made[side].get(c, 1e9) > min(obs.game_time, strat.HORIZON)),
+            "z_extra": sorted(c for c, t0 in made[side].items() if t0 <= min(obs.game_time, strat.HORIZON) and zs[side]["t"].get(c, 1e9) > min(obs.game_time, strat.HORIZON) and c in pool["items"][races[side]])} if side in zs else {}),
         **({} if train else {"eval": True, "eval_key": opp.get("eval_key") or "current"})}
     out_q.put({"episode": ep})
     if record:  # the video's panel: A = the learner's side
@@ -2397,6 +2460,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--z-enforce", type=int, default=0, help="with --z-pool: a side with a target may only train, "
                     "build and research the target's items (and workers and supply) for the strategies' horizon "
                     "(the availability mask; strategy.allowed)")
+    ap.add_argument("--z-build", type=int, default=0, help="with --z-pool: the harness starts the target's due "
+                    "buildings (a worker near the town hall) and heroes (at the altar) that the agent leaves undone "
+                    "(TargetBuilder; training and current+z evaluation games)")
     ap.add_argument("--z-time-scale", type=float, default=1.0, help="the targets' times scaled (faster rules: e.g. 0.45 "
                     "on echofast, half costs and a third of the build times)")
     ap.add_argument("--eval-z", type=int, default=0, help="with --z-pool: the current policy also plays evaluation "
@@ -2801,7 +2867,7 @@ def main(argv: list[str] | None = None) -> int:
            "costs": order_costs(vocab, args.map).tolist() if args.avail_mask else None, "max_past": args.max_past,
            "eval_fallback": args.eval_fallback, "worker_cap": args.worker_cap, "z_dim": fx.ZDIM, "z_pool": str(args.z_pool) if args.z_pool else "", "z_share": args.z_share,
            "z_reward": args.z_reward, "z_winners": args.z_winners, "z_src": args.z_src, "eval_z": args.eval_z,
-           "z_enforce": args.z_enforce, "z_time_scale": args.z_time_scale,
+           "z_enforce": args.z_enforce, "z_time_scale": args.z_time_scale, "z_build": args.z_build,
            "order_names": vocab.get("order_names") or {str(k): v for k, v in fx.demo_order_names(args.runs).items()}}
     if args.pin and (os.cpu_count() or 0) >= 16:
         # the learner's Python is what bounds an update, and the inference server what the games wait

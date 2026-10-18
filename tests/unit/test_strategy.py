@@ -131,3 +131,27 @@ def test_hindsight_finds_each_sides_own_strategy():
     people = strategy.hindsight(pool, Path("runs/fullgame/demos-h/game00000.npz"),
                                 {"source": {"replay": "123.w3g", "slots": [1, 4]}})
     assert people[0]["race"] == "orc" and people[1]["race"] == "human"
+
+
+def test_target_builder_starts_due_buildings_and_heroes():
+    """--z-build: a due, affordable target building goes to the worker nearest the town hall, a due hero to
+    the altar; items made, not yet due or tried in the last 20 steps are left alone."""
+    import random as _random
+    from types import SimpleNamespace as NS
+    from warcraftsim.fullgame import selfplay as sp
+    code = lambda s: int.from_bytes(s.encode(), "big")  # noqa: E731
+    vocab = {"orders": [[code("hbar"), fx.POINT], [code("Hamg"), fx.IMMEDIATE], [code("hfoo"), fx.IMMEDIATE]]}
+    cfg = {"costs_array": np.asarray([[0, 0, 0], [160, 60, 0], [425, 100, 5], [135, 0, 2]])}
+    st = {"t": {"hbar": 50.0, "Hamg": 60.0, "hfoo": 70.0, "hlum": 500.0}}
+    b = sp.TargetBuilder(cfg, vocab, 0, st, _random.Random(0))
+    unit = lambda i, tid, x, y, worker=False, struct=False: NS(id=i, owner=0, alive=True, type_id=code(tid), x=x, y=y,  # noqa: E731
+                                                              is_worker=worker, is_structure=struct)
+    units = [unit(1, "htow", 0, 0, struct=True), unit(2, "halt", 300, 0, struct=True),
+             unit(3, "hpea", 900, 0, worker=True), unit(4, "hpea", 100, 0, worker=True)]
+    obs = NS(players={0: NS(gold=1000, lumber=500, food_used=10, food_cap=20)}, units=units, game_time=65.0)
+    c = b.commands(obs, {}, 10, 0.5)
+    assert len(c) == 1 and c[0].unit == 4 and c[0].building == code("hbar")
+    c = b.commands(obs, {}, 11, 0.5)  # (the barracks tried: the hero next)
+    assert len(c) == 1 and c[0].unit == 2 and c[0].order == code("Hamg")
+    assert b.commands(obs, {}, 12, 0.5) == []  # (a footman is not a building or a hero; the lumber mill not due)
+    assert b.commands(obs, {"hbar": 1.0, "Hamg": 2.0}, 40, 0.5) == []
