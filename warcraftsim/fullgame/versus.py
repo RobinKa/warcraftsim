@@ -42,13 +42,26 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--temperature", type=float, default=1.0)
     ap.add_argument("--device", default="cpu", help="where the policy runs (a GPU is not needed for one game)")
     ap.add_argument("--seed", type=int)
+    ap.add_argument("--wine", default="", help="another Wine's bin folder (e.g. GE-Proton's files/bin, as the "
+                    "self-play runs use; runtime.wine.use_wine)")
+    ap.add_argument("--fsync", type=int, default=1, help="with --wine (a Proton build): futex-based synchronization")
     args = ap.parse_args(argv)
+    if args.wine:  # (before any game: the games read the environment)
+        from ..runtime import wine
+        wine.use_wine(args.wine, bool(args.fsync))
     rng = random.Random(args.seed)
     pick = (lambda r: rng.choice(fx.RACES) if r == "random" else r)  # noqa: E731
     you, agent = pick(args.you), pick(args.agent)
     side = args.side if args.side is not None else rng.randrange(2)
     device = torch.device(args.device)
     net, ck = load(args.checkpoint, device)
+    fx.set_z(net.config.get("z", 0))  # (a strategy-conditioned network reads a strategy block: none given, zeros)
+    from ..data.duelmap import parse_duel_name
+    if parse_duel_name(args.map) is None:  # (another map's frame, as selfplay's: Echo Isles' starts and point bins)
+        from ..data.mapbuild import stock_map_path
+        fx.set_geometry(*fx.map_geometry(stock_map_path(args.map)))
+    if net.bins != fx.BINS:
+        raise SystemExit(f"{args.checkpoint} has {net.bins} point bins, {args.map}'s frame {fx.BINS}: another map's policy")
     vocab = ck["vocab"]
     w, h = (int(v) for v in args.window.lower().split("x"))
     slots = [Human(you, handicap=args.handicap), Agent(agent, handicap=args.handicap)]
