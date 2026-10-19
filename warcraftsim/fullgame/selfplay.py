@@ -977,6 +977,12 @@ def run_branch(wid: int, k: int, cfg: dict, vocab: dict, infer: Inference, out_q
     return True
 
 
+def state_print(obs) -> int:
+    """The game's state as a number (every unit's type, owner, position and hit points): a branch's replay
+    must reach its source's."""
+    return hash(tuple(sorted((u.type_id, u.owner, u.x, u.y, u.hp) for u in obs.units)))
+
+
 def release_group(games: list[tuple[dict, dict]], coef: float) -> None:
     """GRPO: each game's held trajectories (trained side -> Trajectory, its return from the branch) go to
     the learner, every advantage plus `coef` times the return less the mean of the group's (that side's)."""
@@ -1383,6 +1389,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     replay = grpo.get("replay") if grpo else None
     source = grpo.get("source", 0) if grpo else 0
     rec = {"cmds": [], "spans": [], "res": [], "t": source} if source else None
+    same = None  # (a branch: whether its replay reached its source's state)
     race_ix = [fx.RACES.index(r) if r in fx.RACES else 0 for r in races]
     bots: dict[int, BCAgent] = {}
     keys: dict[int, str] = {}
@@ -1479,12 +1486,15 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         sts = {s: bot.observe(obs, t, rows) for s, bot in bots.items()}
         replaying = replay is not None and t < replay["t"]
         if replay is not None and t == replay["t"]:  # (the branch: the memory as it was, the strategy's potential)
+            same = state_print(obs) == replay["print"]
+            if not same:  # (the replay did not reach its source's state: the game is not what it was)
+                print(f"actor {wid}: grpo branch at step {t}: not its source's state", flush=True)
             for s, h in replay["h"].items():
                 bots[s].h = h
             for s in zs:
                 zphi[s] = -cfg.get("z_reward", 0.0) * strat.mismatch(made[s], zs[s], pool["items"][races[s]], obs.game_time)
         if rec is not None and t == rec["t"]:
-            rec["h"] = {s: bots[s].h for s in bots}
+            rec["h"], rec["print"] = {s: bots[s].h for s in bots}, state_print(obs)
         live = [s for s in bots if sts[s] is not None]
         for s in live:
             sts[s]["h"] = bots[s].h
@@ -1615,7 +1625,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             # (which: the strategy's items due by now and not made; made and not in it)
             "z_missed": sorted(c for c, t0 in zs[side]["t"].items() if t0 <= min(obs.game_time, strat.horizon(zs[side])) and made[side].get(c, 1e9) > min(obs.game_time, strat.horizon(zs[side]))),
             "z_extra": sorted(c for c, t0 in made[side].items() if t0 <= min(obs.game_time, strat.horizon(zs[side])) and zs[side]["t"].get(c, 1e9) > min(obs.game_time, strat.horizon(zs[side])) and c in pool["items"][races[side]])} if side in zs else {}),
-        **({"branch": round(replay["t"] * cfg["step_seconds"])} if replay is not None else {}),
+        **({"branch": round(replay["t"] * cfg["step_seconds"]), "branch_same": same} if replay is not None else {}),
         **({} if train else {"eval": True, "eval_key": opp.get("eval_key") or "current"})}
     out_q.put({"episode": ep})
     if grpo is not None:
