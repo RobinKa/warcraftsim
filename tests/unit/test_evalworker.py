@@ -169,3 +169,9 @@ def test_run_config_has_what_the_games_read(tmp_path):
     cfg, _ = evalworker.run_config(_run(tmp_path), "laptop", 2, 0)
     main_sets = {"values", "costs", "costs_array", "map_geometry", "device", "slot", "learner_pid", "actors"}
     assert read - set(cfg) - main_sets == set()
+    (tmp_path / "b").mkdir()
+    run = _run(tmp_path / "b")
+    data = json.loads((run / "run.json").read_text())
+    data["config"]["z_build"] = "2"  # (the builder a teacher only: a number, not a flag)
+    (run / "run.json").write_text(json.dumps(data))
+    assert evalworker.run_config(run, "laptop", 2, 0)[0]["z_build"] == 2

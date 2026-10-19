@@ -791,11 +791,13 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
 
 
 class Trajectory:
-    """One trained side's steps; complete chunks (GAE with the values it acted with) go to the learner."""
+    """One trained side's steps; complete chunks (GAE with the values it acted with) go to the learner.
+    `hold` (GRPO, a branch of a game): every step is kept until release() adds the group's advantage."""
 
-    def __init__(self, cfg: dict, out_q, info: dict):
+    def __init__(self, cfg: dict, out_q, info: dict, hold: bool = False):
         self.cfg, self.out_q, self.info = cfg, out_q, info
         self.steps: list[dict] = []
+        self.hold, self.bonus = hold, 0.0
 
     def add(self, st: dict, res: dict) -> None:
         n = st["n"]
@@ -810,14 +812,21 @@ class Trajectory:
                            "done": False, "version": res["version"]})
         if self.cfg.get("unit_credit", 0.0) > 0:  # (--unit-credit: each own unit's id, for its local reward)
             self.steps[-1]["ids"] = st["sel"][:self.steps[-1]["n_own"], fx.C_ID].astype(np.int64)
-        if len(self.steps) > self.cfg["chunk"]:
+        if len(self.steps) > self.cfg["chunk"] and not self.hold:
             self.flush(bootstrap=True)
 
     def end(self, reward: float) -> None:
         if self.steps:
             self.steps[-1]["reward"] = reward
             self.steps[-1]["done"] = True
-            self.flush(bootstrap=False)
+            if not self.hold:
+                self.flush(bootstrap=False)
+
+    def release(self, bonus: float) -> None:
+        """GRPO: a held game's steps go to the learner, each advantage plus `bonus` (the game's return
+        less its group's mean: the branches of one state that differ only by the actions sampled)."""
+        self.bonus = bonus
+        self.flush(bootstrap=False)
 
     def flush(self, bootstrap: bool) -> None:
         """GAE over the steps (the last one only bootstraps the value when the game goes on)."""
@@ -829,7 +838,7 @@ class Trajectory:
             nonterminal = 0.0 if s["done"] else 1.0
             delta = s["reward"] + gamma * next_v * nonterminal - s["value"]
             adv = delta + gamma * lam * nonterminal * adv
-            s["adv"], s["ret"] = adv, adv + s["value"]
+            s["adv"], s["ret"] = adv + self.bonus, adv + s["value"]
             next_v = s["value"]
         if self.cfg.get("unit_credit", 0.0) > 0:  # each own unit's short return of its own (unit_rewards), by id
             gl, ahead = self.cfg.get("unit_gamma", 0.8), {}
@@ -854,8 +863,8 @@ class Trajectory:
                 s["uadv"] = G - s["value"]
                 q1 = s["reward"] + (0.0 if s["done"] else gamma * v1)
                 g, v1 = G, s["value"]
-        if steps:
-            self.out_q.put({"steps": steps, "info": self.info})
+        for i in range(0, len(steps), self.cfg["chunk"]):  # (a held game's: in pieces)
+            self.out_q.put({"steps": steps[i:i + self.cfg["chunk"]], "info": self.info})
         self.steps = self.steps[-1:] if bootstrap else []
 
 
@@ -933,6 +942,51 @@ def balance_tax(spec: dict, races: list[str]) -> tuple[int, float]:
     return (0 if t > 0 else 1), abs(t)
 
 
+_BRANCHES: list[dict] = []  # GRPO (--grpo-share): this actor's open groups (its game slots are threads)
+_BRANCH_LOCK = threading.Lock()
+
+
+def run_branch(wid: int, k: int, cfg: dict, vocab: dict, infer: Inference, out_q, name: str) -> bool:
+    """GRPO: one branch of an open group of this actor's, if there is one (a slot's game between agents,
+    replayed in a fresh launch to its branch step and played on with new samples). When the group's last
+    branch ends its held steps go to the learner, each game's advantages plus its return from the branch
+    less the group's mean (per trained side). -> whether it played one."""
+    from ..runtime.instance import GameInstance
+    with _BRANCH_LOCK:
+        job = next((j for j in _BRANCHES if j["left"] > 0), None)
+        if job is None:
+            return False
+        job["left"] -= 1
+    got = None
+    try:
+        with GameInstance(job["setup"], name=name, timeout=120) as g:
+            obs = g.start()
+            grpo = {"replay": job["record"]}
+            play_one(g, obs, cfg, vocab, job["races"], job["side"], copy.deepcopy(job["opp"]), infer, out_q, wid,
+                     grpo=grpo)
+            got = (grpo["trajs"], grpo["ret"])
+    except Exception as e:  # noqa: BLE001 (the group goes on without it)
+        print(f"actor {wid}/{k}: branch: {type(e).__name__}: {e}", flush=True)
+    with _BRANCH_LOCK:
+        job["done"].append(got)
+        last = len(job["done"]) == job["n"]
+        if last:
+            _BRANCHES.remove(job)
+    if last:
+        release_group([d for d in job["done"] if d is not None], cfg.get("grpo_coef", 1.0))
+    return True
+
+
+def release_group(games: list[tuple[dict, dict]], coef: float) -> None:
+    """GRPO: each game's held trajectories (trained side -> Trajectory, its return from the branch) go to
+    the learner, every advantage plus `coef` times the return less the mean of the group's (that side's)."""
+    for s in {s for trajs, _ in games for s in trajs}:
+        rs = [(trajs[s], ret[s]) for trajs, ret in games if s in trajs]
+        mean = sum(r for _, r in rs) / len(rs)
+        for tr, r in rs:
+            tr.release(coef * (r - mean) if len(rs) > 1 else 0.0)
+
+
 def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render_q) -> None:
     from ..runtime.instance import Agent, BuiltinAI, GameInstance, GameSetup
     from .play import BCAgent
@@ -959,6 +1013,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                     continue
             except FileNotFoundError:
                 pass
+        if not evaluating and cfg.get("grpo_share", 0.0) > 0 and run_branch(wid, k, cfg, vocab, infer, out_q, name):
+            continue  # (a branch of another slot's game first: its group waits for it)
         try:
             spec = json.loads(spec_path.read_text())
         except (FileNotFoundError, json.JSONDecodeError):
@@ -1000,6 +1056,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
             if curr:  # (the handicap is the launch's: the level when it started)
                 slots[side] = Agent(races[side], handicap=int(ai.get("handicap", cfg["handicap"])), difficulty=adv)
         agents_only = ai["kind"] != "ai"
+        # GRPO's sources: games between agents with a seed (the built-in AI's games do not replay)
+        seeded = agents_only and not evaluating and cfg.get("grpo_share", 0.0) > 0
         # a restart goes on to the next pair of players (--pairs), or reloads the map (1 s).
         # (--scripted-reset: games without the built-in AI reset by script for the same players instead,
         # 0.1 s, but not to a new game: see GameSetup.melee_reset)
@@ -1009,7 +1067,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                           draw=False,  # (nobody looks: videos are played back from the replays, drawing)
                           wait_floor_ms=cfg["wait_floor_ms"], melee_reset=agents_only and cfg["scripted_reset"],
                           native_obs=cfg["native_obs"], nice=cfg.get("game_nice", 0), d3d_thread=False,
-                          render_threads=0, pairs=cfg.get("pairs", 1), cuts=cfg.get("game_cuts") or None)
+                          render_threads=0, pairs=cfg.get("pairs", 1), cuts=cfg.get("game_cuts") or None,
+                          seed=rng.randint(1, cfg.get("grpo_seeds", 8)) if seeded else 0)
         per_launch = cfg["games_per_process"] * (cfg["agent_games_factor"] if agents_only else 1)
         try:
             with GameInstance(setup, name=name, timeout=120) as g:
@@ -1045,8 +1104,17 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                             opp["tax"] = now["tax"]
                     # a video: the first game of a launch (its replay then holds just this game)
                     film = films and fresh and time.time() >= next_video
+                    # GRPO: the first game of a launch (a fresh start, as the branches' launches) may be a source
+                    grpo = ({"source": int(rng.uniform(*cfg["grpo_branch"]) / cfg["step_seconds"])}
+                            if seeded and n == 0 and not film and rng.random() < cfg["grpo_share"] else None)
+                    src_opp = copy.deepcopy(opp) if grpo else None
                     ep = play_one(g, obs, cfg, vocab, races, side, opp, infer, out_q, wid, record=film,
-                                  train=not evaluating)
+                                  train=not evaluating, grpo=grpo)
+                    if grpo and grpo.get("record"):  # (it reached its branch step: a group of branches from there)
+                        with _BRANCH_LOCK:
+                            _BRANCHES.append({"setup": setup, "record": grpo["record"], "races": list(races),
+                                              "side": side, "opp": src_opp, "left": cfg["grpo_group"],
+                                              "n": cfg["grpo_group"], "done": []})
                     if film:
                         next_video = time.time() + period
                         film_game(g, ep, cfg, wid, render_q)
@@ -1300,12 +1368,19 @@ def target(cfg: dict, view, st: dict, pool: dict, race: str, vocab: dict) -> dic
 
 
 def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: dict, infer: Inference,
-             out_q, wid: int, record: bool = False, train: bool = True) -> dict:
+             out_q, wid: int, record: bool = False, train: bool = True, grpo: dict | None = None) -> dict:
     """One game from its first observation; `record`: also a trace for the video's panel
-    (fullgame.overlay), in the returned episode row's "trace"."""
+    (fullgame.overlay), in the returned episode row's "trace". `grpo` (--grpo-share, a seeded game between
+    agents): {"source": t} records the game's commands up to step t and the memory then (grpo["record"]);
+    {"replay": record} replays them to t without asking the policy (the game is deterministic: the same
+    state) and plays on from there, its trained sides' steps held (grpo["trajs"], their returns from t in
+    grpo["ret"]) for the group's advantage (game_loop)."""
     from .play import BCAgent
 
     from ..protocol import SetResources, ShadowAI, StartAI
+    replay = grpo.get("replay") if grpo else None
+    source = grpo.get("source", 0) if grpo else 0
+    rec = {"cmds": [], "spans": [], "res": [], "t": source} if source else None
     race_ix = [fx.RACES.index(r) if r in fx.RACES else 0 for r in races]
     bots: dict[int, BCAgent] = {}
     keys: dict[int, str] = {}
@@ -1328,7 +1403,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             keys[s] = "current" if opp["eval_key"] == "current+z" else opp["eval_key"]
             bot.view.active_f = fx.F  # (all features: a checkpoint's weights past its own are zeros)
         if keys[s] == "current" and train:  # (an evaluation game: no steps to train on)
-            trajs[s] = Trajectory(cfg, out_q, {"worker": wid, "opponent": opp["name"]})
+            trajs[s] = Trajectory(cfg, out_q, {"worker": wid, "opponent": opp["name"]}, hold=replay is not None)
         elif opp["kind"] == "exploiter" and s != side:  # (its steps train the exploiter: League, --exploiter-share)
             trajs[s] = Trajectory(cfg, out_q, {"worker": wid, "opponent": "main", "learner": "exploiter"})
     # strategy conditioning (--z-pool): --z-share of the learner's trained sides play toward a strategy drawn for
@@ -1336,7 +1411,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     # reward for the items made by now, theirs against the strategy's (strategy.mismatch); none in evaluation
     zs: dict[int, dict] = {}
     pool = strategy_pool(cfg) if train else None
-    for s in trajs if pool is not None else ():
+    for s in trajs if pool is not None and replay is None else ():
         if keys[s] == "current" and (random.random() < cfg.get("z_share", 0.5) or (record and s == side)):  # (not the
             # exploiter's sides; a filmed game's learner always: its video shows how it plays a target)
             st = strat.sample(pool, races[s], races[1 - s], random, bool(cfg.get("z_winners", 1)), cfg.get("z_src", ""))
@@ -1347,6 +1422,10 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         st = strat.sample(pool, races[side], races[1 - side], random, True, cfg.get("z_src", "")) if pool else None
         if st is not None:
             zs[side] = target(cfg, bots[side].view, strat.scaled(st, cfg.get("z_time_scale", 1.0)), pool, races[side], vocab)
+    if replay is not None:  # (the source's targets)
+        zs = {s: target(cfg, bots[s].view, st, pool, races[s], vocab) for s, st in replay["zs"].items()}
+    if rec is not None:
+        rec["zs"] = dict(zs)
     made = {s: {} for s in zs}  # each item's first game second, of the sides with a strategy
     builders = {s: TargetBuilder(cfg, vocab, s, zs[s], random.Random()) for s in zs} if cfg.get("z_build") else {}
     zphi = {s: 0.0 for s in zs}  # their strategy potentials at the last recorded step
@@ -1358,7 +1437,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     own_rows: dict[int, np.ndarray] = {}  # each trained side's own units at its last recorded step (--unit-credit)
     # --shared-noise: this share of the games sample every policy side's units with one noise vector a step
     # (model._gumbel_argmax: the same marginals, coordinated choices); the episode row says which
-    shared_noise = random.random() < cfg.get("shared_noise", 0.0)
+    shared_noise = random.random() < cfg.get("shared_noise", 0.0) if replay is None else replay["shared_noise"]
+    if rec is not None:
+        rec["shared_noise"] = shared_noise
     values, scale = cfg["values"], cfg["shaping_scale"]
     shaping = opp.get("shaping", cfg["shaping"])  # (the potential goes back to 0 with the weight it was paid with)
     mat = material(obs, values, cfg.get("hero_level_value", 0.0), cfg.get("worker_cap", 0))
@@ -1394,12 +1475,20 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             if s in bots:
                 bots[s].view.reserve = b.reserve
         sts = {s: bot.observe(obs, t, rows) for s, bot in bots.items()}
+        replaying = replay is not None and t < replay["t"]
+        if replay is not None and t == replay["t"]:  # (the branch: the memory as it was, the strategy's potential)
+            for s, h in replay["h"].items():
+                bots[s].h = h
+            for s in zs:
+                zphi[s] = -cfg.get("z_reward", 0.0) * strat.mismatch(made[s], zs[s], pool["items"][races[s]], obs.game_time)
+        if rec is not None and t == rec["t"]:
+            rec["h"] = {s: bots[s].h for s in bots}
         live = [s for s in bots if sts[s] is not None]
         for s in live:
             sts[s]["h"] = bots[s].h
             if shared_noise:
                 sts[s]["shared_noise"] = True
-        results = infer.request([(keys[s], sts[s]) for s in live]) if live else []
+        results = infer.request([(keys[s], sts[s]) for s in live]) if live and not replaying else []
         spans = {}
         for s, res in zip(live, results):
             if res is None:
@@ -1430,6 +1519,14 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                 cmds += c
         if late is not None and t == opp["start"]:  # the built-in AI takes over its side (after the bots' orders)
             cmds.append(StartAI(late))
+        if replaying:  # (the source's commands, which its spans index; what they send workers to harvest)
+            cmds, spans, given, built = replay["cmds"][t], replay["spans"][t], {}, {}
+            for s_, res_ in replay["res"][t].items():
+                bots[s_].sent_resources = res_
+        elif rec is not None and t < rec["t"]:
+            rec["cmds"].append(list(cmds))
+            rec["spans"].append(dict(spans))
+            rec["res"].append({s_: list(bots[s_].sent_resources) for s_ in spans})
         obs = g.step(cmds)
         for s, at in given.items():  # (the builder's log: its order accepted?)
             if obs.command_results[at]:
@@ -1516,8 +1613,13 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             # (which: the strategy's items due by now and not made; made and not in it)
             "z_missed": sorted(c for c, t0 in zs[side]["t"].items() if t0 <= min(obs.game_time, strat.horizon(zs[side])) and made[side].get(c, 1e9) > min(obs.game_time, strat.horizon(zs[side]))),
             "z_extra": sorted(c for c, t0 in made[side].items() if t0 <= min(obs.game_time, strat.horizon(zs[side])) and zs[side]["t"].get(c, 1e9) > min(obs.game_time, strat.horizon(zs[side])) and c in pool["items"][races[side]])} if side in zs else {}),
+        **({"branch": round(replay["t"] * cfg["step_seconds"])} if replay is not None else {}),
         **({} if train else {"eval": True, "eval_key": opp.get("eval_key") or "current"})}
     out_q.put({"episode": ep})
+    if grpo is not None:
+        if rec is not None and "h" in rec and t > rec["t"] + 20:  # (the game reached its branch with a minute to go)
+            grpo["record"] = rec
+        grpo["trajs"], grpo["ret"] = trajs, ret
     if record:  # the video's panel: A = the learner's side
         who = {"self": "itself", "ai": "built-in AI"}.get(opp["kind"], opp["name"])
         other = (f"built-in AI {opp['name'].split('-', 1)[1]}" if opp["kind"] == "ai"
@@ -2667,6 +2769,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--z-enforce", type=int, default=0, help="with --z-pool: a side with a target may only train, "
                     "build and research the target's items (and workers and supply) for the strategies' horizon "
                     "(the availability mask; strategy.allowed)")
+    ap.add_argument("--grpo-share", type=float, default=0.0, help="GRPO from mid-game branches: this share of the "
+                    "training games between agents (the first of a launch, seeded: such games replay exactly) are a "
+                    "source; at a random step in --grpo-branch, --grpo-group fresh games replay its commands to "
+                    "there and play on with new samples, and each branch's advantages get --grpo-coef times its "
+                    "return from the branch less its group's mean (engine notes: determinism; run_branch)")
+    ap.add_argument("--grpo-group", type=int, default=4, help="branches per group")
+    ap.add_argument("--grpo-coef", type=float, default=1.0, help="the group-relative return's weight in a branch's advantages")
+    ap.add_argument("--grpo-seeds", type=int, default=8, help="the seeds games between agents draw from (a built map each)")
+    ap.add_argument("--grpo-branch", default="60-480", help="the branch step's range, game seconds")
     ap.add_argument("--z-build", type=int, default=0, help="with --z-pool: the harness starts the target's due "
                     "items that the agent leaves undone, and what they need first (TargetBuilder, the tech tree: "
                     "buildings with a worker near the town hall; units, heroes, research and tiers at an idle "
@@ -3080,6 +3191,8 @@ def main(argv: list[str] | None = None) -> int:
            "eval_fallback": args.eval_fallback, "worker_cap": args.worker_cap, "z_dim": fx.ZDIM, "z_pool": str(args.z_pool) if args.z_pool else "", "z_share": args.z_share,
            "z_reward": args.z_reward, "z_winners": args.z_winners, "z_src": args.z_src, "eval_z": args.eval_z,
            "z_enforce": args.z_enforce, "z_time_scale": args.z_time_scale, "z_build": args.z_build, "z_build_labels": args.z_build_labels,
+           "grpo_share": args.grpo_share, "grpo_group": args.grpo_group, "grpo_coef": args.grpo_coef,
+           "grpo_seeds": args.grpo_seeds, "grpo_branch": [float(x) for x in args.grpo_branch.split("-")],
            "order_names": vocab.get("order_names") or {str(k): v for k, v in fx.demo_order_names(args.runs).items()}}
     if args.pin and (os.cpu_count() or 0) >= 16:
         # the learner's Python is what bounds an update, and the inference server what the games wait

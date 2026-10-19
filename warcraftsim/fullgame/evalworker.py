@@ -122,7 +122,11 @@ def run_config(run_dir: Path, host: str, games: int, start_update) -> tuple[dict
            "game_nice": num("game_nice", 10, int), "game_cuts": num("game_cuts", 0, int) or None,
            "features": num("features", fx.F, int), "eval_ai": [d for d in c.get("eval_ai", "normal,insane").split(",") if d],
            "eval_checkpoints": list(local), "eval_z": _flag(c.get("eval_z", 0)),
-           "z_pool": c.get("z_pool") or "", "z_src": c.get("z_src") or "", "z_enforce": _flag(c.get("z_enforce", 0)), "z_build": _flag(c.get("z_build", 0)),
+           "z_pool": c.get("z_pool") or "", "z_src": c.get("z_src") or "", "z_enforce": _flag(c.get("z_enforce", 0)),
+           # (a number: 2 is the builder as a teacher only, never carrying out; as a flag it was True, == 1, and the
+           # worker's current+z games had the builder carry out the target until 2026-10-19)
+           "z_build": num("z_build", 0, int),
+           "grpo_share": 0.0, "grpo_group": 4, "grpo_branch": [60.0, 480.0],  # (evaluation games never branch)
            "z_time_scale": num("z_time_scale", 1.0), "opd_share": 0.0, "opd_difficulty": c.get("opd_difficulty", "normal"),
            "shared_noise": num("shared_noise", 0.0), "float_penalty": num("float_penalty", 0.0),
            "hero_level_value": num("hero_level_value", 0.0), "shaping": num("shaping", 0.0),
