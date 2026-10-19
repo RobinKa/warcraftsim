@@ -1107,6 +1107,7 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         self.last = ""
         self.refused: Counter = Counter()  # its orders the game refused, per item (carried out: --z-build 1)
         self.why: list = []  # the refused orders' context (the episode row's z_refusals: the first 40)
+        self.agent_now: set = set()
         self.ctx: list = []
 
     def observe(self, obs) -> None:
@@ -1136,15 +1137,12 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
                     self.started.pop(c, None)
 
     def commands(self, obs, made: dict, t: int, step_s: float, ordered=()) -> list:
-        """`ordered`: the agent's commands this step (what they make counts as tried: the game refuses the
-        same hero or next tier twice)."""
+        """`ordered`: the agent's commands this step (the game refuses the same hero or next tier twice: the
+        builder's order is then no refusal of its own)."""
         from . import techtree
         from ..protocol import UnitFlags
         self.observe(obs)
-        for x in ordered:
-            o = getattr(x, "building", None) or getattr(x, "order", 0)
-            if o >= fx.TYPE_CODE:
-                self.tried[fx.rawcode(o)] = t
+        self.agent_now = {fx.rawcode(o) for x in ordered if (o := getattr(x, "building", None) or getattr(x, "order", 0)) >= fx.TYPE_CODE}
         p = obs.players.get(self.side)
         if p is None:
             return []
@@ -1372,7 +1370,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         for s, at in given.items():  # (the builder's log: its order accepted?)
             if obs.command_results[at]:
                 builders[s].log[builders[s].last][1] += 1
-            else:
+            elif builders[s].last not in builders[s].agent_now:  # (not a duplicate of the agent's own)
                 builders[s].refused[builders[s].last] += 1
                 if len(builders[s].why) < 40 and builders[s].ctx[:1] == [builders[s].last]:
                     builders[s].why.append([round(obs.game_time)] + builders[s].ctx)
