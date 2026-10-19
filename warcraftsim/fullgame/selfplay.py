@@ -1077,6 +1077,7 @@ HALLS = {int.from_bytes(c.encode(), "big") for c in
 AT_MINES = {"htow", "ogre", "unpl", "etol", "ugol", "egol"}  # (with a hall already: an expansion)
 WORKER_TYPES = {"human": "hpea", "orc": "opeo", "undead": "uaco", "nightelf": "ewsp"}
 SUPPLY_TYPES = {"human": "hhou", "orc": "otrb", "undead": "uzig", "nightelf": "emow"}
+CANCEL = 851976  # a building's queue: its last unit
 
 
 class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below with the other commands)
@@ -1086,7 +1087,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
     it), the first of those it can start. A building with the worker nearest the town hall (one outside a
     mine; with none, a worker first); a unit, hero, research or a hall's next tier at a building that makes
     it, an idle one first (else a unit or research queued; the game refuses an upgrade or a hero behind
-    others: a hall training workers takes its next tier only between them). Out of supply, a farm first
+    others, so for its next tier a hall training workers has their queue cancelled, or, taught, gets the
+    upgrade as its label). Out of supply, a farm first
     (a unit ordered then waits in its building's queue, never starting, and blocks a next tier behind it). At most one a step, when the player can pay for it; an order that
     starts nothing is given again after 20 steps, and after three refusals not that game. The game's
     events tell what is under way (the agent's own orders too) and which buildings are busy (a building's
@@ -1095,6 +1097,7 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
     def __init__(self, cfg: dict, vocab: dict, side: int, st: dict, rng: random.Random):
         from . import techtree
         self.side, self.st, self.rng, self.race = side, st, rng, st["race"]
+        self.teach = cfg.get("z_build", 0) == 2  # (its orders labels only: a busy building's decision too)
         self.costs = cfg.get("costs_array")
         self.cls = {(int(o), int(k)): c for c, (o, k) in enumerate(vocab["orders"], start=1)}
         self.tree = techtree.tree()
@@ -1166,12 +1169,12 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             item = self.next_step(c, have, {u.type for u in done}, heroes, t)
             if item is None:
                 continue
-            cmd = self.order(item, obs, mine, done, p, t)
-            if cmd is not None:  # (`item`, or a worker to build it)
-                got = self._name(cmd)
+            cmds = self.order(item, obs, mine, done, p, t)
+            if cmds:  # (`item`, or a worker to build it; the order last)
+                got = self._name(cmds[-1])
                 self.tried[got], self.last = t, got
                 self.log.setdefault(got, [0, 0])[0] += 1
-                return [cmd]
+                return cmds
         return []
 
     def resume(self, obs, t: int):
@@ -1216,9 +1219,12 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
                     return n
         return None
 
-    def order(self, c: str, obs, mine: list, done: list, p, t: int = 0):
-        """The command that starts `c` (Build or ImmediateOrder), if the side can pay for it now; a building
-        without a free worker (all in a mine: a night elf's five wisps in theirs): a worker first."""
+    def order(self, c: str, obs, mine: list, done: list, p, t: int = 0) -> list | None:
+        """The commands that start `c` (a Build or an ImmediateOrder), if the side can pay for it now; a
+        building without a free worker (all in a mine: a night elf's five wisps in theirs): a worker first.
+        A next tier at a hall training workers: carried out, the workers' queue cancelled first (the game
+        takes no upgrade behind them, and a hall trains them back to back); taught, the upgrade alone (the
+        hall's decision to learn)."""
         from . import techtree
         from ..protocol import Build, ImmediateOrder
         code = int.from_bytes(c.encode(), "big")
@@ -1235,16 +1241,20 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             at = hall or workers[0]
             w = min(workers, key=lambda u: (u.x - at.x) ** 2 + (u.y - at.y) ** 2)
             a, r = self.rng.uniform(0, 2 * math.pi), self.rng.uniform(450, 800)
-            return Build(w.id, code, at.x + r * math.cos(a), at.y + r * math.sin(a))
+            return [Build(w.id, code, at.x + r * math.cos(a), at.y + r * math.sin(a))]
         if (k := self.cls.get((code, fx.IMMEDIATE))) is not None:  # trained, researched or upgraded to
             makers = set(self.tree.makers.get(c, ()))
             at = [u for u in done if u.type in makers]  # an idle one, else queued (a barracks training units);
-            queue = not techtree.is_hero(c) and c not in self.upgraded  # (the game takes neither behind others)
-            b = next((u for u in at if u.id not in self.busy), at[0] if at and queue else None)
+            queue = self.teach or (not techtree.is_hero(c) and c not in self.upgraded)  # (the game takes
+            b = next((u for u in at if u.id not in self.busy), at[0] if at and queue else None)  # neither behind)
+            cancel = []
+            if b is None and c in self.upgraded:  # (a hall training workers: their queue cancelled first)
+                b = next((u for u in at if set(self.busy[u.id]) <= set(WORKER_TYPES.values())), None)
+                cancel = [ImmediateOrder(b.id, CANCEL)] * 6 if b is not None else []
             if b is not None:  # (a refusal's context: item, gold, lumber, food, cap, maker, busy with)
                 self.ctx = [c, p.gold, p.lumber, p.food_used, p.food_cap, b.type, ",".join(self.busy.get(b.id, ()))]
             if b is not None and self._affords(k, p):
-                return ImmediateOrder(b.id, code)
+                return cancel + [ImmediateOrder(b.id, code)]
         return None
 
     @staticmethod
@@ -1388,7 +1398,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         for s, b in builders.items():  # (--z-build: after the agents' orders, so a worker it takes is taken)
             c = b.commands(obs, made[s], t, cfg["step_seconds"], cmds[spans[s][0]:spans[s][1]] if s in spans else ())
             if c and cfg.get("z_build", 0) != 2:
-                given[s] = len(cmds)
+                given[s] = len(cmds) + len(c) - 1  # (its order: last, after a queue's cancels)
             if c and cfg.get("z_build_labels") and s in trajs and s in spans and obs.players.get(s) is not None:
                 q = obs.players[s]
                 built[s] = (len(cmds) if cfg.get("z_build", 0) != 2 else None, c,
