@@ -1112,6 +1112,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         self.why: list = []  # the refused orders' context (the episode row's z_refusals: the first 40)
         self.agent_now: set = set()
         self.frames: dict[int, tuple[int, int]] = {}  # its buildings under construction -> (hit points, since)
+        self.blocked: dict[str, Counter] = {}  # item -> why it was not ordered, per step (the episode row)
+        self.why_not = ""
         self.ctx: list = []
 
     def observe(self, obs) -> None:
@@ -1169,7 +1171,10 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             item = self.next_step(c, have, {u.type for u in done}, heroes, t)
             if item is None:
                 continue
+            self.why_not = ""
             cmds = self.order(item, obs, mine, done, p, t)
+            if not cmds and self.why_not:
+                self.blocked.setdefault(item, Counter())[self.why_not] += 1
             if cmds:  # (`item`, or a worker to build it; the order last)
                 got = self._name(cmds[-1])
                 self.tried[got], self.last = t, got
@@ -1234,6 +1239,7 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             workers = [u for u in mine if u.is_worker and not u.is_structure and not fx.building(int(u.flags), u.order)
                        and not u.flags & (UnitFlags.HIDDEN | UnitFlags.LOADED)]  # (not in a mine: refused)
             if not workers:
+                self.why_not = "no worker"
                 w = WORKER_TYPES.get(self.race)
                 return self.order(w, obs, mine, done, p, t) if w and t - self.tried.get(w, -99) >= 20 else None
             if not self._affords(k, p):
@@ -1255,6 +1261,7 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
                 self.ctx = [c, p.gold, p.lumber, p.food_used, p.food_cap, b.type, ",".join(self.busy.get(b.id, ()))]
             if b is not None and self._affords(k, p):
                 return cancel + [ImmediateOrder(b.id, code)]
+            self.why_not = self.why_not or ("busy" if at else "no maker")
         return None
 
     @staticmethod
@@ -1266,7 +1273,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         if self.costs is None:
             return True
         g, l, f = (int(v) for v in self.costs[k])
-        return p.gold >= g and p.lumber >= l and (f == 0 or p.food_used + f <= p.food_cap)
+        self.why_not = "gold" if p.gold < g else "lumber" if p.lumber < l else "food" if f and p.food_used + f > p.food_cap else ""
+        return not self.why_not
 
 
 def target(cfg: dict, view, st: dict, pool: dict, race: str, vocab: dict) -> dict:
@@ -1484,7 +1492,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"balance_tax": opp["tax"] if opp["tax_side"] == side else -opp["tax"]} if "tax_side" in opp else {}),
         "prod": prod.row(side, obs), "opp_prod": prod.row(1 - side, obs), **({"advised": True} if advised else {}),
         **({"shared_noise": shared_noise} if cfg.get("shared_noise", 0.0) > 0 else {}),
-        **({"z_build": builders[side].log, "z_refusals": builders[side].why} if side in builders else {}),
+        **({"z_build": builders[side].log, "z_refusals": builders[side].why,
+            "z_blocked": {c: dict(v) for c, v in builders[side].blocked.items()}} if side in builders else {}),
         **({"z_t": {c: round(v) for c, v in zs[side]["t"].items()},
             "z_made": {c: round(v) for c, v in made[side].items()}} if side in zs else {}),
         **({"z": zs[side]["src"] + (" won" if zs[side]["won"] else ""), "z_items": len(zs[side]["t"]),
