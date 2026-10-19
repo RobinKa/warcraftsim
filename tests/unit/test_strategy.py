@@ -288,17 +288,22 @@ def test_research_is_not_a_hero(monkeypatch):
 
 
 def test_target_builder_queues_skips_expansions_and_gives_up(monkeypatch):
-    """A busy town hall (training workers) still takes its next tier, queued; a second town hall (an
-    expansion) is the agent's; an item the game refused three times is left for the game."""
+    """A unit or research queues at a busy building, an upgrade (the game refuses it behind others) waits
+    for the hall to be idle; a second town hall (an expansion) is the agent's; an item the game refused
+    three times is left for the game."""
     P, I = fx.POINT, fx.IMMEDIATE
-    b = _builder(monkeypatch, {"t": {"htow": 5.0, "hkee": 10.0, "hbar": 20.0}},
-                 [("htow", P), ("hkee", I), ("hbar", P)])
-    units = [(1, "htow", 0, 0), (3, "hpea", 100, 0)]
-    b.busy[1] = ("hpea",)
-    c = b.commands(_obs(units), {}, 10, 0.5)
+    b = _builder(monkeypatch, {"t": {"htow": 5.0, "hkee": 10.0, "hfoo": 12.0, "hbar": 20.0}},
+                 [("htow", P), ("hkee", I), ("hfoo", I), ("hbar", P)])
+    units = [(1, "htow", 0, 0), (2, "hbar", 300, 0), (3, "hpea", 100, 0)]
+    b.busy[1], b.busy[2] = ("hpea",), ("hfoo",)
+    c = b.commands(_obs(units), {"hbar": 1.0}, 10, 0.5)
+    assert c[0].unit == 2 and c[0].order == _code("hfoo")  # (queued; not the keep behind a peasant)
+    del b.busy[1]
+    c = b.commands(_obs(units), {"hbar": 1.0}, 11, 0.5)
     assert c[0].unit == 1 and c[0].order == _code("hkee")
     b.refused["hbar"] = 3
-    assert b.commands(_obs(units), {}, 11, 0.5) == []  # (no expansion; the barracks given up)
+    done = {"hkee": 1.0, "hfoo": 2.0}
+    assert b.commands(_obs([(1, "htow", 0, 0), (3, "hpea", 100, 0)]), done, 40, 0.5) == []  # (no expansion; the barracks given up)
 
 
 def test_upgrade_costs_the_difference():

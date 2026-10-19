@@ -1084,7 +1084,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
     way, or, while the player lacks what it needs (the tech tree: a requirement, or a building that makes
     it), the first of those it can start. A building with the worker nearest the town hall (one outside a
     mine; with none, a worker first); a unit, hero, research or a hall's next tier at a building that makes
-    it, an idle one first (else queued). At most one a step, when the player can pay for it; an order that
+    it, an idle one first (else a unit or research queued; the game refuses an upgrade or a hero behind
+    others: a hall training workers takes its next tier only between them). At most one a step, when the player can pay for it; an order that
     starts nothing is given again after 20 steps, and after three refusals not that game. The game's
     events tell what is under way (the agent's own orders too) and which buildings are busy (a building's
     current order reads 0 while it trains). Expansions and everything else stay the agent's."""
@@ -1095,6 +1096,7 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         self.costs = cfg.get("costs_array")
         self.cls = {(int(o), int(k)): c for c, (o, k) in enumerate(vocab["orders"], start=1)}
         self.tree = techtree.tree()
+        self.upgraded = {to for tos in self.tree.upgrades.values() for to in tos}  # (a keep, a guard tower)
         self.tried: dict[str, int] = {}
         self.started: dict[str, float] = {}  # items under way -> since (game time)
         self.busy: dict[int, tuple[str, ...]] = {}  # the side's buildings at work -> what they make
@@ -1102,6 +1104,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         self.log: dict[str, list[int]] = {}  # item -> [orders given, accepted by the game] (the episode row)
         self.last = ""
         self.refused: Counter = Counter()  # its orders the game refused, per item (carried out: --z-build 1)
+        self.why: list = []  # the refused orders' context (the episode row's z_refusals: the first 40)
+        self.ctx: list = []
 
     def observe(self, obs) -> None:
         """The items the side started, finished or cancelled in the step just taken (its events)."""
@@ -1180,6 +1184,7 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
     def order(self, c: str, obs, mine: list, done: list, p, t: int = 0):
         """The command that starts `c` (Build or ImmediateOrder), if the side can pay for it now; a building
         without a free worker (all in a mine: a night elf's five wisps in theirs): a worker first."""
+        from . import techtree
         from ..protocol import Build, ImmediateOrder
         code = int.from_bytes(c.encode(), "big")
         if (k := self.cls.get((code, fx.POINT))) is not None:  # a building: the worker nearest the hall
@@ -1198,8 +1203,11 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             return Build(w.id, code, at.x + r * math.cos(a), at.y + r * math.sin(a))
         if (k := self.cls.get((code, fx.IMMEDIATE))) is not None:  # trained, researched or upgraded to
             makers = set(self.tree.makers.get(c, ()))
-            at = [u for u in done if u.type in makers]  # an idle one, else queued (a hall training workers)
-            b = next((u for u in at if u.id not in self.busy), at[0] if at else None)
+            at = [u for u in done if u.type in makers]  # an idle one, else queued (a barracks training units);
+            queue = not techtree.is_hero(c) and c not in self.upgraded  # (the game takes neither behind others)
+            b = next((u for u in at if u.id not in self.busy), at[0] if at and queue else None)
+            if b is not None:  # (a refusal's context: item, gold, lumber, food, cap, maker, busy with)
+                self.ctx = [c, p.gold, p.lumber, p.food_used, p.food_cap, b.type, ",".join(self.busy.get(b.id, ()))]
             if b is not None and self._affords(k, p):
                 return ImmediateOrder(b.id, code)
         return None
@@ -1355,6 +1363,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                 builders[s].log[builders[s].last][1] += 1
             else:
                 builders[s].refused[builders[s].last] += 1
+                if len(builders[s].why) < 40 and builders[s].ctx[:1] == [builders[s].last]:
+                    builders[s].why.append([round(obs.game_time)] + builders[s].ctx)
         for s, (at, c, me) in built.items():  # (--z-build-labels: the builder's accepted orders label the side's step)
             ok = obs.command_results[at:at + len(c)] if at is not None else [True] * len(c)
             rows = np.asarray([(t, x.unit, getattr(x, "building", getattr(x, "order", 0)), 1 if hasattr(x, "x") else 0,
@@ -1423,7 +1433,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"balance_tax": opp["tax"] if opp["tax_side"] == side else -opp["tax"]} if "tax_side" in opp else {}),
         "prod": prod.row(side, obs), "opp_prod": prod.row(1 - side, obs), **({"advised": True} if advised else {}),
         **({"shared_noise": shared_noise} if cfg.get("shared_noise", 0.0) > 0 else {}),
-        **({"z_build": builders[side].log} if side in builders else {}),
+        **({"z_build": builders[side].log, "z_refusals": builders[side].why} if side in builders else {}),
         **({"z_t": {c: round(v) for c, v in zs[side]["t"].items()},
             "z_made": {c: round(v) for c, v in made[side].items()}} if side in zs else {}),
         **({"z": zs[side]["src"] + (" won" if zs[side]["won"] else ""), "z_items": len(zs[side]["t"]),
