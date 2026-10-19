@@ -225,6 +225,21 @@ def _step_slices(col: np.ndarray, steps: int) -> np.ndarray:
     return np.searchsorted(col, np.arange(steps + 1), side="left")
 
 
+def affordable(costs: np.ndarray, gold: int, lumber: int, fu: int, fc: int, reserve=None) -> np.ndarray:
+    """[n_orders + 1] bool: the order classes the player can pay for (row 0, no order: always). `reserve`
+    (order class, gold, lumber), --z-build: what the target's next item needs is kept from the others
+    (the item itself as before; free orders stay)."""
+    c = costs
+    avail = (c[:, 0] <= gold) & (c[:, 1] <= lumber) & ((c[:, 2] == 0) | (fu + c[:, 2] <= fc))
+    if reserve is not None:
+        k, rg, rl = reserve
+        keep = avail[k]
+        avail &= ((c[:, 0] <= max(0, gold - rg)) & (c[:, 1] <= max(0, lumber - rl))) | (c[:, :2].sum(1) == 0)
+        avail[k] = keep
+    avail[0] = True
+    return avail
+
+
 def relabel(order: int, kind: int, target_known: bool, target_is_tree: bool) -> tuple[int, int] | None:
     """A recorded order as (order id, kind) of the vocabulary, None: not a decision to learn."""
     if order in DROPPED_ORDERS:
@@ -588,6 +603,9 @@ class View:
         self.z: np.ndarray | None = None  # the target strategy (strategy.vector; the encoder's ZD numbers)
         self.zmask: np.ndarray | None = None  # --z-enforce: the orders the target allows (strategy.allowed)
         self.zmask_until = 0  # ... until this step (the strategies' horizon)
+        # --z-build: the gold and lumber saved for the target's next item (its order class, its cost) that
+        # the other orders may not spend (the policy spent all on units, and a next tier never came)
+        self.reserve: tuple[int, int, int] | None = None
         self.upgrades = np.zeros(len(enc.upgrade_index), np.float32)
         self.own_buildings: set[int] = set()
         self.queued: dict[int, int] = {}  # building -> units / research ordered and not yet done
@@ -703,8 +721,7 @@ class View:
         if enc.costs is not None:  # what the player can pay for now (orders beyond it are masked)
             c = enc.costs
             gold, lumber, fu, fc = (int(me[2]), int(me[3]), int(me[4]), int(me[5])) if me is not None else (0, 0, 0, 0)
-            avail = (c[:, 0] <= gold) & (c[:, 1] <= lumber) & ((c[:, 2] == 0) | (fu + c[:, 2] <= fc))
-            avail[0] = True
+            avail = affordable(c, gold, lumber, fu, fc, self.reserve)
         if self.zmask is not None and t < self.zmask_until:  # (--z-enforce: only the target's items)
             avail = self.zmask.copy() if avail is None else avail & self.zmask
         if self.active_f < F:

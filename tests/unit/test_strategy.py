@@ -348,3 +348,11 @@ def test_target_builder_resumes_a_stalled_frame(monkeypatch):
     assert c[0].order == REPAIR and c[0].target == 2 and c[0].unit == 4
     altar.hp = 150  # (progress again: nothing)
     assert b.commands(obs, {}, 45, 0.5) == []
+
+
+def test_affordable_keeps_the_reserve():
+    """--z-build: the target's next item's cost is kept from the other orders; the item and free orders stay."""
+    costs = np.asarray([[0, 0, 0], [0, 0, 0], [80, 30, 0], [160, 105, 0], [70, 0, 2]])  # none, move, barracks, keep, footman
+    assert fx.affordable(costs, 200, 120, 10, 20).tolist() == [True, True, True, True, True]
+    assert fx.affordable(costs, 200, 120, 10, 20, (3, 160, 105)).tolist() == [True, True, False, True, False]
+    assert fx.affordable(costs, 100, 50, 10, 20, (3, 160, 105)).tolist() == [True, True, False, False, False]

@@ -1114,6 +1114,7 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         self.frames: dict[int, tuple[int, int]] = {}  # its buildings under construction -> (hit points, since)
         self.blocked: dict[str, Counter] = {}  # item -> why it was not ordered, per step (the episode row)
         self.why_not = ""
+        self.reserve: tuple[int, int, int] | None = None  # (order class, gold, lumber): saved for (View.reserve)
         self.ctx: list = []
 
     def observe(self, obs) -> None:
@@ -1162,11 +1163,13 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         if p.food_cap < 100 and p.food_used + 2 > p.food_cap and food not in self.started:  # blocks it
             due.insert(0, (0.0, food))  # (a next tier is refused behind it): supply first
         if not due:
+            self.reserve = None
             return []
         mine = [u for u in obs.units if u.owner == self.side and u.alive]
         done = [u for u in mine if u.is_structure and not u.flags & UnitFlags.CONSTRUCTING]
         have = techtree.counts_as({u.type for u in done} | {c for c in made if c[0] == "R"}, self.race)
         heroes = len({c for c in (*made, *self.started) if techtree.is_hero(c)})
+        save = None
         for _, c in due:
             item = self.next_step(c, have, {u.type for u in done}, heroes, t)
             if item is None:
@@ -1175,11 +1178,16 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             cmds = self.order(item, obs, mine, done, p, t)
             if not cmds and self.why_not:
                 self.blocked.setdefault(item, Counter())[self.why_not] += 1
+                if self.why_not in ("gold", "lumber") and save is None:  # (the first one short of money)
+                    k = self._class(item)
+                    save = (k, int(self.costs[k][0]), int(self.costs[k][1]))
             if cmds:  # (`item`, or a worker to build it; the order last)
                 got = self._name(cmds[-1])
                 self.tried[got], self.last = t, got
                 self.log.setdefault(got, [0, 0])[0] += 1
+                self.reserve = save
                 return cmds
+        self.reserve = save
         return []
 
     def resume(self, obs, t: int):
@@ -1263,6 +1271,10 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
                 return cancel + [ImmediateOrder(b.id, code)]
             self.why_not = self.why_not or ("busy" if at else "no maker")
         return None
+
+    def _class(self, c: str) -> int:
+        code = int.from_bytes(c.encode(), "big")
+        return self.cls.get((code, fx.POINT)) or self.cls.get((code, fx.IMMEDIATE)) or 0
 
     @staticmethod
     def _name(cmd) -> str:
@@ -1378,6 +1390,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                 last = tr.steps[-1] if tr.steps else None
                 if last is not None and last.get("ids") is not None and "local" not in last and s in own_rows:
                     last["local"] = unit_rewards(own_rows[s], rows, obs.events, values, scale)
+        for s, b in builders.items():  # (--z-build: the agent's orders leave the target's next item's cost)
+            if s in bots:
+                bots[s].view.reserve = b.reserve
         sts = {s: bot.observe(obs, t, rows) for s, bot in bots.items()}
         live = [s for s in bots if sts[s] is not None]
         for s in live:
