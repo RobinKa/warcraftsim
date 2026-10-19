@@ -327,3 +327,21 @@ def test_target_builder_builds_supply_when_blocked(monkeypatch):
     assert c[0].building == _code("hhou")
     obs.players[0].food_used = 10
     assert b.commands(obs, {}, 11, 0.5)[0].order == _code("hkee")
+
+
+def test_target_builder_resumes_a_stalled_frame(monkeypatch):
+    """A human building whose worker was taken away stays an unfinished frame: after 20 steps without hit
+    points gained the nearest free worker resumes it (the repair order)."""
+    from warcraftsim.fullgame.play import REPAIR
+    from warcraftsim.protocol import UnitFlags
+    b = _builder(monkeypatch, {"t": {}}, [("hbar", fx.POINT)])
+    obs = _obs([(1, "htow", 0, 0), (2, "halt", 500, 0), (3, "hpea", 100, 0), (4, "hpea", 450, 0)])
+    altar = obs.units[1]
+    altar.flags |= UnitFlags.CONSTRUCTING
+    altar.hp = 100
+    assert b.commands(obs, {}, 0, 0.5) == []
+    assert b.commands(obs, {}, 19, 0.5) == []
+    c = b.commands(obs, {}, 20, 0.5)
+    assert c[0].order == REPAIR and c[0].target == 2 and c[0].unit == 4
+    altar.hp = 150  # (progress again: nothing)
+    assert b.commands(obs, {}, 45, 0.5) == []

@@ -1108,6 +1108,7 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         self.refused: Counter = Counter()  # its orders the game refused, per item (carried out: --z-build 1)
         self.why: list = []  # the refused orders' context (the episode row's z_refusals: the first 40)
         self.agent_now: set = set()
+        self.frames: dict[int, tuple[int, int]] = {}  # its buildings under construction -> (hit points, since)
         self.ctx: list = []
 
     def observe(self, obs) -> None:
@@ -1146,6 +1147,10 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         p = obs.players.get(self.side)
         if p is None:
             return []
+        if (cmd := self.resume(obs, t)) is not None:
+            self.last = "resume"
+            self.log.setdefault("resume", [0, 0])[0] += 1
+            return [cmd]
         now = obs.game_time
         due = sorted((t0, c) for c, t0 in self.st["t"].items() if t0 <= now and c not in made and c not in self.started)
         food = SUPPLY_TYPES.get(self.race)  # out of supply: a unit ordered waits in its building's queue and
@@ -1163,11 +1168,32 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
                 continue
             cmd = self.order(item, obs, mine, done, p, t)
             if cmd is not None:  # (`item`, or a worker to build it)
-                got = fx.rawcode(cmd.building if hasattr(cmd, "building") else cmd.order)
+                got = self._name(cmd)
                 self.tried[got], self.last = t, got
                 self.log.setdefault(got, [0, 0])[0] += 1
                 return [cmd]
         return []
+
+    def resume(self, obs, t: int):
+        """A human's or orc's building left unfinished (its worker taken away: no hit points gained for 20
+        steps; the game keeps the frame, so the item stays under way): the nearest free worker resumes it."""
+        from ..protocol import TargetOrder, UnitFlags
+        from .play import REPAIR
+        if self.race not in ("human", "orc"):
+            return None
+        frames = {u.id: u for u in obs.units if u.owner == self.side and u.alive and u.flags & UnitFlags.CONSTRUCTING}
+        self.frames = {i: (u.hp, t if u.hp > self.frames.get(i, (-1, t))[0] else self.frames[i][1])
+                       for i, u in frames.items()}
+        stalled = [frames[i] for i, (_, since) in self.frames.items() if t - since >= 20]
+        workers = [u for u in obs.units if u.owner == self.side and u.alive and u.is_worker and not u.is_structure
+                   and not fx.building(int(u.flags), u.order) and u.order != REPAIR
+                   and not u.flags & (UnitFlags.HIDDEN | UnitFlags.LOADED)]
+        if not stalled or not workers:
+            return None
+        f = stalled[0]
+        w = min(workers, key=lambda u: (u.x - f.x) ** 2 + (u.y - f.y) ** 2)
+        self.frames[f.id] = (f.hp, t)  # (another try in 20 steps if it still gains nothing)
+        return TargetOrder(w.id, REPAIR, f.id)
 
     def next_step(self, c: str, have: set, types: set, heroes: int, t: int, depth: int = 0) -> str | None:
         """The item to start toward `c` now: `c` when the player has what it needs (`have`: techtree.counts_as;
@@ -1220,6 +1246,11 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             if b is not None and self._affords(k, p):
                 return ImmediateOrder(b.id, code)
         return None
+
+    @staticmethod
+    def _name(cmd) -> str:
+        o = cmd.building if hasattr(cmd, "building") else cmd.order
+        return fx.rawcode(o) if o >= fx.TYPE_CODE else str(o)
 
     def _affords(self, k: int, p) -> bool:
         if self.costs is None:
@@ -1376,9 +1407,10 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                     builders[s].why.append([round(obs.game_time)] + builders[s].ctx)
         for s, (at, c, me) in built.items():  # (--z-build-labels: the builder's accepted orders label the side's step)
             ok = obs.command_results[at:at + len(c)] if at is not None else [True] * len(c)
-            rows = np.asarray([(t, x.unit, getattr(x, "building", getattr(x, "order", 0)), 1 if hasattr(x, "x") else 0,
-                                int(getattr(x, "x", 0)), int(getattr(x, "y", 0)), 0) for x, a in zip(c, ok) if a],
-                              np.int64).reshape(-1, 7)
+            rows = np.asarray([(t, x.unit, getattr(x, "building", getattr(x, "order", 0)),
+                                1 if hasattr(x, "x") else 2 if hasattr(x, "target") else 0,
+                                int(getattr(x, "x", 0)), int(getattr(x, "y", 0)), getattr(x, "target", 0))
+                               for x, a in zip(c, ok) if a], np.int64).reshape(-1, 7)
             if len(rows) and trajs[s].steps:
                 later = np.asarray([(t + 1, int(e.kind), e.a, e.b, e.c) for e in obs.events], np.int64).reshape(-1, 5)
                 y, _ = bots[s].enc.step_labels(bots[s].view, sts[s], rows, me, later, bots[s].trees)
