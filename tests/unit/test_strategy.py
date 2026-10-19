@@ -285,3 +285,17 @@ def test_research_is_not_a_hero(monkeypatch):
     b.started["Rhde"] = 0.0
     c = b.commands(_obs([(1, "htow", 0, 0), (2, "halt", 300, 0)], t=20.0), {"Hpal": 5.0}, 10, 0.5)
     assert c[0].unit == 1 and c[0].order == _code("hkee")  # (the second hero needs the keep, not the castle)
+
+
+def test_target_builder_queues_skips_expansions_and_gives_up(monkeypatch):
+    """A busy town hall (training workers) still takes its next tier, queued; a second town hall (an
+    expansion) is the agent's; an item the game refused three times is left for the game."""
+    P, I = fx.POINT, fx.IMMEDIATE
+    b = _builder(monkeypatch, {"t": {"htow": 5.0, "hkee": 10.0, "hbar": 20.0}},
+                 [("htow", P), ("hkee", I), ("hbar", P)])
+    units = [(1, "htow", 0, 0), (3, "hpea", 100, 0)]
+    b.busy[1] = ("hpea",)
+    c = b.commands(_obs(units), {}, 10, 0.5)
+    assert c[0].unit == 1 and c[0].order == _code("hkee")
+    b.refused["hbar"] = 3
+    assert b.commands(_obs(units), {}, 11, 0.5) == []  # (no expansion; the barracks given up)

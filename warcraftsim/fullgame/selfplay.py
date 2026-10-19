@@ -1074,8 +1074,7 @@ def strategy_pool(cfg: dict) -> dict | None:
 
 HALLS = {int.from_bytes(c.encode(), "big") for c in
          ("htow", "hkee", "hcas", "ogre", "ostr", "ofrt", "unpl", "unp1", "unp2", "etol", "etoa", "etoe")}
-GOLD_MINE = int.from_bytes(b"ngol", "big")
-AT_MINES = {"htow", "ogre", "unpl", "etol", "ugol", "egol"}  # (an expansion: at a free gold mine)
+AT_MINES = {"htow", "ogre", "unpl", "etol", "ugol", "egol"}  # (with a hall already: an expansion)
 WORKER_TYPES = {"human": "hpea", "orc": "opeo", "undead": "uaco", "nightelf": "ewsp"}
 
 
@@ -1083,11 +1082,12 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
     """--z-build: for a side playing toward a target strategy, the harness starts what the agent leaves
     undone: the earliest target item due by now (its time in the strategy) that is neither made nor under
     way, or, while the player lacks what it needs (the tech tree: a requirement, or a building that makes
-    it), the first of those it can start. A building with the worker nearest the town hall; a unit, hero,
-    research or a hall's next tier at an idle building that makes it. At most one a step, when the player
-    can pay for it; an order that starts nothing is given again after 20 steps. The game's events tell
-    what is under way (the agent's own orders too), and which buildings are busy (a building's current
-    order reads 0 while it trains). Everything else stays the agent's."""
+    it), the first of those it can start. A building with the worker nearest the town hall (one outside a
+    mine; with none, a worker first); a unit, hero, research or a hall's next tier at a building that makes
+    it, an idle one first (else queued). At most one a step, when the player can pay for it; an order that
+    starts nothing is given again after 20 steps, and after three refusals not that game. The game's
+    events tell what is under way (the agent's own orders too) and which buildings are busy (a building's
+    current order reads 0 while it trains). Expansions and everything else stay the agent's."""
 
     def __init__(self, cfg: dict, vocab: dict, side: int, st: dict, rng: random.Random):
         from . import techtree
@@ -1101,6 +1101,7 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         self.site: dict[int, str] = {}  # its buildings under construction -> their types
         self.log: dict[str, list[int]] = {}  # item -> [orders given, accepted by the game] (the episode row)
         self.last = ""
+        self.refused: Counter = Counter()  # its orders the game refused, per item (carried out: --z-build 1)
 
     def observe(self, obs) -> None:
         """The items the side started, finished or cancelled in the step just taken (its events)."""
@@ -1160,8 +1161,10 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         `types`: its finished buildings, one of which must make `c`), else a missing need's own next step;
         None while every missing need is under way or was tried in the last 20 steps, or none can be made."""
         from . import techtree
-        if c in self.started or t - self.tried.get(c, -99) < 20:
-            return None
+        if c in self.started or t - self.tried.get(c, -99) < 20 or self.refused[c] >= 3:
+            return None  # (under way, just tried, or refused three times: tech or a spot the game won't take)
+        if c in AT_MINES and types & {h for tiers in techtree.TIERS.values() for h in tiers}:
+            return None  # an expansion: the agent's (its gold mine is guarded by creeps)
         miss = techtree.missing(c, self.race, have, heroes if techtree.is_hero(c) else 0, self.tree)
         makers = self.tree.makers.get(c)
         if makers and not types & set(makers) and (int.from_bytes(c.encode(), "big"), fx.POINT) not in self.cls:
@@ -1177,10 +1180,9 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
     def order(self, c: str, obs, mine: list, done: list, p, t: int = 0):
         """The command that starts `c` (Build or ImmediateOrder), if the side can pay for it now; a building
         without a free worker (all in a mine: a night elf's five wisps in theirs): a worker first."""
-        from ..protocol import Build, ImmediateOrder, TargetOrder
+        from ..protocol import Build, ImmediateOrder
         code = int.from_bytes(c.encode(), "big")
-        on_mine = self.cls.get((code, fx.UNIT)) if c in AT_MINES else None  # (an undead's haunted mine: on it)
-        if (k := self.cls.get((code, fx.POINT), on_mine)) is not None:  # a building: the worker nearest the hall
+        if (k := self.cls.get((code, fx.POINT))) is not None:  # a building: the worker nearest the hall
             from ..protocol import UnitFlags
             hall = next((u for u in done if u.type_id in HALLS), None)
             workers = [u for u in mine if u.is_worker and not u.is_structure and not fx.building(int(u.flags), u.order)
@@ -1192,26 +1194,12 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
                 return None
             at = hall or workers[0]
             w = min(workers, key=lambda u: (u.x - at.x) ** 2 + (u.y - at.y) ** 2)
-            if c in AT_MINES and hall is not None:  # an expansion: at the free gold mine nearest the hall
-                halls = [u for u in mine if u.type_id in HALLS]
-                mines = [u for u in obs.units if u.type_id == GOLD_MINE and u.alive  # (in the fog: no gold shown)
-                         and (c in ("ugol", "egol") or min((u.x - h.x) ** 2 + (u.y - h.y) ** 2 for h in halls) > 1200 ** 2)]
-                if not mines:
-                    return None
-                m = min(mines, key=lambda u: (u.x - at.x) ** 2 + (u.y - at.y) ** 2)
-                if self.cls.get((code, fx.POINT)) is None:
-                    return TargetOrder(w.id, code, m.id)
-                if c in ("ugol", "egol"):  # (on the mine)
-                    return Build(w.id, code, m.x, m.y)
-                d = max(1.0, math.hypot(at.x - m.x, at.y - m.y))  # (a hall: on the mine's side toward home)
-                return Build(w.id, code, m.x + 550 * (at.x - m.x) / d, m.y + 550 * (at.y - m.y) / d)
-            if self.cls.get((code, fx.POINT)) is None:
-                return None
             a, r = self.rng.uniform(0, 2 * math.pi), self.rng.uniform(450, 800)
             return Build(w.id, code, at.x + r * math.cos(a), at.y + r * math.sin(a))
         if (k := self.cls.get((code, fx.IMMEDIATE))) is not None:  # trained, researched or upgraded to
             makers = set(self.tree.makers.get(c, ()))
-            b = next((u for u in done if u.type in makers and u.id not in self.busy), None)
+            at = [u for u in done if u.type in makers]  # an idle one, else queued (a hall training workers)
+            b = next((u for u in at if u.id not in self.busy), at[0] if at else None)
             if b is not None and self._affords(k, p):
                 return ImmediateOrder(b.id, code)
         return None
@@ -1365,12 +1353,13 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         for s, at in given.items():  # (the builder's log: its order accepted?)
             if obs.command_results[at]:
                 builders[s].log[builders[s].last][1] += 1
+            else:
+                builders[s].refused[builders[s].last] += 1
         for s, (at, c, me) in built.items():  # (--z-build-labels: the builder's accepted orders label the side's step)
             ok = obs.command_results[at:at + len(c)] if at is not None else [True] * len(c)
-            rows = np.asarray([(t, x.unit, getattr(x, "building", getattr(x, "order", 0)),
-                                1 if hasattr(x, "x") else 2 if hasattr(x, "target") else 0,
-                                int(getattr(x, "x", 0)), int(getattr(x, "y", 0)), getattr(x, "target", 0))
-                               for x, a in zip(c, ok) if a], np.int64).reshape(-1, 7)
+            rows = np.asarray([(t, x.unit, getattr(x, "building", getattr(x, "order", 0)), 1 if hasattr(x, "x") else 0,
+                                int(getattr(x, "x", 0)), int(getattr(x, "y", 0)), 0) for x, a in zip(c, ok) if a],
+                              np.int64).reshape(-1, 7)
             if len(rows) and trajs[s].steps:
                 later = np.asarray([(t + 1, int(e.kind), e.a, e.b, e.c) for e in obs.events], np.int64).reshape(-1, 5)
                 y, _ = bots[s].enc.step_labels(bots[s].view, sts[s], rows, me, later, bots[s].trees)
