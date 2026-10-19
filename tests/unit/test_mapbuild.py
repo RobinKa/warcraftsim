@@ -116,3 +116,13 @@ def test_observer_makes_nothing_in_a_step():
     assert init.strip().startswith("set w3s_probe0 = CreateGroup()")
     last = max(m.start() for m in makes.finditer(init))  # (the last object made: the second probe)
     assert last == init.index("set w3s_probe1 = CreateGroup()") + len("set w3s_probe1 = ")
+
+
+def test_seed_first_in_main(echo_script):
+    """A fixed seed goes in before Blizzard's and the melee initialization (the built-in AI draws at once)."""
+    _pjass_available()
+    out = inject_harness(echo_script, HarnessConfig(step_seconds=0.5, agent_players=(0, 1), seed=1234))
+    main = out[out.index("function main takes nothing returns nothing"):]
+    assert main.index("call SetRandomSeed(1234)") < main.index("call InitBlizzard(")
+    assert "SetRandomSeed" not in inject_harness(echo_script, HarnessConfig(step_seconds=0.5, agent_players=(0, 1)))
+    pjass_check(out)

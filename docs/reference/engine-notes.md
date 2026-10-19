@@ -117,3 +117,15 @@ The layout of these was documented by the MIT-licensed `pwang724/wc3env` project
 ## The insane AI gathers twice as much
 
 The built-in AI on insane gets double income from the engine; nothing in its scripts (`common.ai`, `human.ai`, ...) or the game's data tables says so. Measured on Echo Isles, insane against normal of the same race, 5 game minutes (2026-10-18): orc insane 5,600 gold gathered while its mine lost 2,820 (ratio 1.99), normal 2,820 from 2,840 (0.99); human insane 5,600 gold and 2,222 lumber, normal 2,790 and 1,129 with the same 16 workers; night elf insane 5,700 gold and 1,830 lumber, normal 2,860 and 890 with 17 workers. The evaluation games keep this: the "untaxed insane AI" is the game's own insane AI, with its double income. The curriculum's tax takes its share of the doubled income.
+
+## Determinism (2026-10-19)
+
+Measured on `echofast` (`GameSetup.seed`: `SetRandomSeed` first thing in the map's `main`; games side by side, the units' types, owners, positions and hit points compared every step):
+
+* Without a seed, two identical games (an idle agent against the normal AI) differ from step 4.
+* The start locations on Echo Isles are drawn before the map's script runs: the seed does not fix them (a game's spawns match another's half the time).
+* With a seed and the same spawns, **games between agents with the same orders are identical** (3 games, 300 steps of harvesting and walking across the map). The engine is deterministic.
+* **The built-in AI is not**: with a seed, AI against AI differed from step 26, an idle agent against the AI from step 36. Its script threads seem to run on the wall clock.
+
+So games can be replayed and branched mid-game only between agents (self-play, past snapshots), with the spawns fixed or matched.
+

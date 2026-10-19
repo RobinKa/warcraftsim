@@ -66,6 +66,7 @@ class HarnessConfig:
     record_orders: bool = False  # observations carry the built-in AI players' orders (Observation.issued)
     melee_reset: str = ""  # melee: the map's function that makes its units; restarts then stay in the game
     pairs: int = 1  # games per load of the map, each with two players of its own (see the harness's W3S_CFG_PAIRS)
+    seed: int = 0  # the game's random seed, set first thing in main (0: the game's own)
 
     hero_abilities: dict[str, tuple[str, ...]] | None = None  # hero type -> ability per slot
 
@@ -204,6 +205,9 @@ def inject_harness(script: str, cfg: HarnessConfig, harness: str | None = None) 
     # end of main: the line after RunInitializationTriggers
     j = sub_once(r"^(\s*call RunInitializationTriggers\(\s*\)\s*)$", r"\1\n    call W3S_Init()", j,
                  "RunInitializationTriggers call in main")
+    if cfg.seed:  # (before Blizzard's and the melee initialization: the built-in AI draws from it at once)
+        j = sub_once(r"^(\s*)(call InitBlizzard\(\s*\)\s*)$", rf"\1call SetRandomSeed({int(cfg.seed)})\n\1\2", j,
+                     "InitBlizzard call in main")
     return j
 
 

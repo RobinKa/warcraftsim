@@ -194,6 +194,9 @@ class GameSetup:
     # script (0.1 s) and only the last game's reloads the map: for new players the engine has no
     # state left over (its count of their heroes, the built-in AI's towns). At most 6.
     pairs: int = 1
+    # melee: the game's random seed (SetRandomSeed first thing in main; 0: the game's own, a new one each
+    # game). Two games with one seed and the same orders play alike (GRPO from mid-game branches)
+    seed: int = 0
     # melee: restarts reload the map in the running game (the engine's RestartGame, as the menu's
     # Restart: the loading screen and everything anew, built-in AI included; duelrush and duel 1 s
     # (3 and 1.9 s with "Allow Local Files", duelrush 5 s with its rules as object data), instead of
@@ -272,7 +275,8 @@ class GameSetup:
                     raise ValueError("melee_reset: the built-in AI does not survive a restart in the game")
                 reset = "W3S_DuelCreeps"
             return HarnessConfig(self.step_seconds, self.agent_players, self.max_game_seconds,
-                                 victory=self.victory, record_orders=self.record_ai_orders, melee_reset=reset)
+                                 victory=self.victory, record_orders=self.record_ai_orders, melee_reset=reset,
+                                 seed=self.seed)
         sc = self.scenario
         cx, cy = sc.resolved_center()
         return HarnessConfig(
@@ -314,7 +318,7 @@ class GameSetup:
         # the tables generated from game data are part of the built script too
         tables = json.dumps([cfg.resolved_order_names(), cfg.resolved_hero_abilities()], sort_keys=True)
         harness = asdict(cfg)
-        for k_, default in (("record_orders", False), ("melee_reset", ""), ("pairs", 1)):  # keys from before them stay the same
+        for k_, default in (("record_orders", False), ("melee_reset", ""), ("pairs", 1), ("seed", 0)):  # keys from before them stay the same
             if harness[k_] == default:
                 del harness[k_]
         key = {"map": self.map, "harness": harness,
