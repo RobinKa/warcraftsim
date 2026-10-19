@@ -133,25 +133,133 @@ def test_hindsight_finds_each_sides_own_strategy():
     assert people[0]["race"] == "orc" and people[1]["race"] == "human"
 
 
-def test_target_builder_starts_due_buildings_and_heroes():
-    """--z-build: a due, affordable target building goes to the worker nearest the town hall, a due hero to
-    the altar; items made, not yet due or tried in the last 20 steps are left alone."""
+TREE = """[htow]
+Upgrade=hkee
+Trains=hpea
+[hkee]
+Upgrade=hcas
+Trains=hpea
+[halt]
+Trains=Hamg,Hpal
+[hbar]
+Trains=hfoo,hkni
+Researches=Rhde
+[hbla]
+Requires=htow
+[hkni]
+Requires=hlum,hcas,hbla
+[Hamg]
+Requirescount=3
+Requires=
+Requires1=hkee
+Requires2=hcas
+[Rhde]
+Requires=hbla
+"""
+
+
+def _builder(monkeypatch, st, orders):
     import random as _random
-    from types import SimpleNamespace as NS
     from warcraftsim.fullgame import selfplay as sp
+    from warcraftsim.fullgame import techtree
+    monkeypatch.setattr(techtree, "tree", lambda: techtree.parse([TREE]))
+    vocab = {"orders": [[_code(c), k] for c, k in orders]}
+    cfg = {"costs_array": np.asarray([[0, 0, 0]] + [[100, 50, 0]] * len(orders))}
+    return sp.TargetBuilder(cfg, vocab, 0, {"race": "human", **st}, _random.Random(0))
+
+
+def _code(s):
+    return int.from_bytes(s.encode(), "big")
+
+
+def _obs(units, t=65.0, events=(), gold=1000):
+    from types import SimpleNamespace as NS
+    from warcraftsim.protocol import UnitFlags
+    us = [NS(id=i, owner=0, alive=True, type_id=_code(tid), type=tid, x=x, y=y, order=0,
+             flags=(UnitFlags.STRUCTURE if tid[0] == "h" and tid != "hpea" else 0) | (UnitFlags.WORKER if tid == "hpea" else 0),
+             is_worker=tid == "hpea", is_structure=tid[0] == "h" and tid != "hpea") for i, tid, x, y in units]
+    return NS(players={0: NS(gold=gold, lumber=500, food_used=10, food_cap=20)}, units=us, game_time=t,
+              events=[NS(kind=k, a=a, b=_code(b) if isinstance(b, str) else b, c=0) for k, a, b in events])
+
+
+def test_techtree_parses_makers_needs_and_upgrades():
+    from warcraftsim.fullgame import techtree
+    t = techtree.parse([TREE])
+    assert t.makers["hfoo"] == ("hbar",) and t.makers["hkee"] == ("htow",) and t.upgrades["htow"] == ("hkee",)
+    assert t.needs["Hamg"] == ((), ("hkee",), ("hcas",))
+    have = techtree.counts_as({"hcas", "hbar"}, "human")
+    assert {"htow", "hkee"} <= have
+    assert techtree.missing("hkni", "human", have, t=t) == ["hlum", "hbla"]
+    assert techtree.missing("Hamg", "human", techtree.counts_as({"htow"}, "human"), level=1, t=t) == ["hkee"]
+    assert techtree.resolve("TALT", "orc") == "oalt" and techtree.resolve("TWN2", "undead") == "unp1"
+    # what a target with knights makes on the way (the --z-enforce mask lets those through too)
+    assert techtree.closure({"hkni"}, "human", t) == {"hkni", "hlum", "hcas", "hbla", "hbar", "hkee", "htow"}
+    assert techtree.closure({"Hamg"}, "human", t) == {"Hamg", "halt"}
+    assert techtree.closure({"Hamg", "Hpal"}, "human", t) == {"Hamg", "Hpal", "halt", "hkee", "htow"}
+
+
+def test_target_builder_starts_due_items_at_their_makers(monkeypatch):
+    """--z-build: a due, affordable target building goes to the worker nearest the town hall, a hero to the
+    altar, a unit to its building; items made, not yet due or tried in the last 20 steps are left alone."""
+    P, I = fx.POINT, fx.IMMEDIATE
+    b = _builder(monkeypatch, {"t": {"hbar": 50.0, "Hamg": 60.0, "hfoo": 62.0, "hlum": 500.0}},
+                 [("hbar", P), ("Hamg", I), ("hfoo", I), ("hlum", P)])
+    units = [(1, "htow", 0, 0), (2, "halt", 300, 0), (3, "hpea", 900, 0), (4, "hpea", 100, 0)]
+    c = b.commands(_obs(units), {}, 10, 0.5)
+    assert len(c) == 1 and c[0].unit == 4 and c[0].building == _code("hbar")
+    c = b.commands(_obs(units), {}, 11, 0.5)  # (the barracks tried: the hero next)
+    assert len(c) == 1 and c[0].unit == 2 and c[0].order == _code("Hamg")
+    assert b.commands(_obs(units), {}, 12, 0.5) == []  # (no barracks for the footman; the lumber mill not due)
+    c = b.commands(_obs(units + [(5, "hbar", 500, 0)]), {"hbar": 1.0, "Hamg": 2.0}, 40, 0.5)
+    assert len(c) == 1 and c[0].unit == 5 and c[0].order == _code("hfoo")
+    assert b.commands(_obs(units, gold=50), {}, 60, 0.5) == []  # (nothing it can pay for)
+
+
+def test_target_builder_starts_what_an_item_needs_first(monkeypatch):
+    """A due knight without a castle, blacksmith or lumber mill: the builder starts its needs (a lumber mill
+    first, the keep the castle comes from), not what is under way, and the knight once it can."""
+    P, I = fx.POINT, fx.IMMEDIATE
+    b = _builder(monkeypatch, {"t": {"hkni": 60.0}},
+                 [("hlum", P), ("hbla", P), ("hkee", I), ("hcas", I), ("hkni", I)])
+    units = [(1, "htow", 0, 0), (2, "hbar", 300, 0), (3, "hpea", 100, 0)]
+    c = b.commands(_obs(units), {}, 10, 0.5)
+    assert c[0].building == _code("hlum")
+    c = b.commands(_obs(units), {}, 11, 0.5)  # (the lumber mill tried: the keep the castle comes from)
+    assert c[0].unit == 1 and c[0].order == _code("hkee")
+    c = b.commands(_obs(units), {}, 12, 0.5)
+    assert c[0].building == _code("hbla")
+    # the keep under way (an upgrade's start names the type upgraded from): the town hall busy, nothing more
+    assert b.commands(_obs(units, events=[(11, 1, "htow")]), {}, 13, 0.5) == []
+    assert "hkee" in b.started and 1 in b.busy
+    b.commands(_obs(units, events=[(12, 1, "hkee")]), {}, 14, 0.5)  # (finished)
+    assert "hkee" not in b.started and 1 not in b.busy
+    done = [(1, "hcas", 0, 0), (2, "hbar", 300, 0), (3, "hpea", 100, 0), (4, "hlum", 0, 600), (5, "hbla", 600, 0)]
+    c = b.commands(_obs(done), {"hkee": 1.0, "hcas": 2.0, "hlum": 3.0, "hbla": 4.0}, 50, 0.5)
+    assert c[0].unit == 2 and c[0].order == _code("hkni")
+
+
+def test_rescale_people_horizon_and_orderable():
+    """People's times onto the AI's rules: per race the ratio of the medians, no item earlier than the AI's
+    10% quantile, the game's end scaled too; a strategy covers only its game (horizon); items the
+    vocabulary cannot order are dropped."""
+    ai = [{"race": "human", "src": "ai", "t": {"hbar": 40.0 + i, "halt": 30.0 + i}} for i in range(20)]
+    hu = [{"race": "human", "src": "human", "t": {"hbar": 100.0, "halt": 20.0, "hhou": 5.0}, "end": 600.0} for _ in range(20)]
+    f = strategy.rescale_people(ai + hu, 0.1)
+    assert 0.4 < f["human"] < 2.0
+    assert hu[0]["t"]["hbar"] == pytest.approx(100.0 * f["human"])
+    assert hu[0]["t"]["halt"] >= 30.0 + 1.9  # (clamped: the AI's 10% quantile)
+    assert hu[0]["end"] == pytest.approx(600.0 * f["human"], abs=0.1)
+    assert strategy.horizon(hu[0]) == hu[0]["end"] and strategy.horizon({"t": {}}) == strategy.HORIZON
+    assert strategy.mismatch({"hbar": 1.0}, {"t": {}, "end": 0.5}, ["hbar"], 100.0) == 0  # (past its game)
+    assert strategy.scaled({"t": {"hbar": 100.0}}, 0.5)["end"] == strategy.HORIZON * 0.5
     code = lambda s: int.from_bytes(s.encode(), "big")  # noqa: E731
-    vocab = {"orders": [[code("hbar"), fx.POINT], [code("Hamg"), fx.IMMEDIATE], [code("hfoo"), fx.IMMEDIATE]]}
-    cfg = {"costs_array": np.asarray([[0, 0, 0], [160, 60, 0], [425, 100, 5], [135, 0, 2]])}
-    st = {"t": {"hbar": 50.0, "Hamg": 60.0, "hfoo": 70.0, "hlum": 500.0}}
-    b = sp.TargetBuilder(cfg, vocab, 0, st, _random.Random(0))
-    unit = lambda i, tid, x, y, worker=False, struct=False: NS(id=i, owner=0, alive=True, type_id=code(tid), x=x, y=y,  # noqa: E731
-                                                              is_worker=worker, is_structure=struct)
-    units = [unit(1, "htow", 0, 0, struct=True), unit(2, "halt", 300, 0, struct=True),
-             unit(3, "hpea", 900, 0, worker=True), unit(4, "hpea", 100, 0, worker=True)]
-    obs = NS(players={0: NS(gold=1000, lumber=500, food_used=10, food_cap=20)}, units=units, game_time=65.0)
-    c = b.commands(obs, {}, 10, 0.5)
-    assert len(c) == 1 and c[0].unit == 4 and c[0].building == code("hbar")
-    c = b.commands(obs, {}, 11, 0.5)  # (the barracks tried: the hero next)
-    assert len(c) == 1 and c[0].unit == 2 and c[0].order == code("Hamg")
-    assert b.commands(obs, {}, 12, 0.5) == []  # (a footman is not a building or a hero; the lumber mill not due)
-    assert b.commands(obs, {"hbar": 1.0, "Hamg": 2.0}, 40, 0.5) == []
+    assert strategy.orderable({"orders": [[code("hbar"), fx.POINT], [851983, fx.POINT]]}) == {"hbar"}
+
+
+def test_consistent_puts_items_after_their_needs(monkeypatch):
+    from warcraftsim.fullgame import techtree
+    t = techtree.parse([TREE])
+    st = {"race": "human", "t": {"hbar": 90.0, "hfoo": 60.0, "Hpal": 50.0, "Hamg": 70.0, "hkee": 100.0, "htow": 0.0}}
+    strategy.consistent(st, t)
+    assert st["t"]["hfoo"] == 90.0  # (after its barracks)
+    assert st["t"]["Hpal"] == 50.0 and st["t"]["Hamg"] == 100.0  # (the second hero: after the keep)

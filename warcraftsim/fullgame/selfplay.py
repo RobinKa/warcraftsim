@@ -1074,53 +1074,125 @@ def strategy_pool(cfg: dict) -> dict | None:
 
 HALLS = {int.from_bytes(c.encode(), "big") for c in
          ("htow", "hkee", "hcas", "ogre", "ostr", "ofrt", "unpl", "unp1", "unp2", "etol", "etoa", "etoe")}
-ALTARS = {int.from_bytes(c.encode(), "big") for c in ("halt", "oalt", "uaod", "eate")}
+GOLD_MINE = int.from_bytes(b"ngol", "big")
 
 
 class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below with the other commands)
     """--z-build: for a side playing toward a target strategy, the harness starts what the agent leaves
-    undone: each target building due by now (its time in the strategy) and not yet made, with a worker
-    near the side's town hall, and each due hero at its altar, at most one a step, when the player can
-    pay for it; the game refuses what it lacks the prerequisites for, and an item is tried again only
-    after 20 steps. Everything else stays the agent's."""
+    undone: the earliest target item due by now (its time in the strategy) that is neither made nor under
+    way, or, while the player lacks what it needs (the tech tree: a requirement, or a building that makes
+    it), the first of those it can start. A building with the worker nearest the town hall; a unit, hero,
+    research or a hall's next tier at an idle building that makes it. At most one a step, when the player
+    can pay for it; an order that starts nothing is given again after 20 steps. The game's events tell
+    what is under way (the agent's own orders too), and which buildings are busy (a building's current
+    order reads 0 while it trains). Everything else stays the agent's."""
 
     def __init__(self, cfg: dict, vocab: dict, side: int, st: dict, rng: random.Random):
-        self.side, self.st, self.rng = side, st, rng
+        from . import techtree
+        self.side, self.st, self.rng, self.race = side, st, rng, st["race"]
         self.costs = cfg.get("costs_array")
         self.cls = {(int(o), int(k)): c for c, (o, k) in enumerate(vocab["orders"], start=1)}
+        self.tree = techtree.tree()
         self.tried: dict[str, int] = {}
+        self.started: dict[str, float] = {}  # items under way -> since (game time)
+        self.busy: dict[int, tuple[str, ...]] = {}  # the side's buildings at work -> what they make
+        self.site: dict[int, str] = {}  # its buildings under construction -> their types
+
+    def observe(self, obs) -> None:
+        """The items the side started, finished or cancelled in the step just taken (its events)."""
+        from .features import rawcode
+        now = obs.game_time
+        for c in [c for c, t0 in self.started.items() if now - t0 > 240]:  # (lost track: one destroyed unfinished)
+            del self.started[c]
+        if not obs.events:
+            return
+        owner = {u.id: u.owner for u in obs.units}
+        for e in obs.events:
+            k = int(e.kind)
+            if owner.get(e.a) != self.side:
+                continue
+            if k == 2:  # construction: a=structure, b=type
+                self.site[e.a] = rawcode(e.b)
+                self.started[rawcode(e.b)] = now
+            elif k in (5, 8, 11):  # training, research, upgrade (b: the type upgraded from)
+                made = self.tree.upgrades.get(rawcode(e.b), ()) if k == 11 else (rawcode(e.b),)
+                self.busy[e.a] = made
+                self.started.update(dict.fromkeys(made, now))
+            elif k in (3, 4) or (k == 1 and e.a in self.site):  # finished, cancelled or destroyed
+                self.started.pop(self.site.pop(e.a, ""), None)
+            elif k in (6, 7, 9, 10, 12, 13) or k == 1:
+                for c in self.busy.pop(e.a, ()):
+                    self.started.pop(c, None)
 
     def commands(self, obs, made: dict, t: int, step_s: float) -> list:
-        from ..protocol import Build, ImmediateOrder
+        from . import techtree
+        from ..protocol import UnitFlags
+        self.observe(obs)
         p = obs.players.get(self.side)
         if p is None:
             return []
         now = obs.game_time
-        due = sorted((t0, c) for c, t0 in self.st["t"].items() if t0 <= now and c not in made and t - self.tried.get(c, -99) >= 20)
+        due = sorted((t0, c) for c, t0 in self.st["t"].items() if t0 <= now and c not in made and c not in self.started)
         if not due:
             return []
         mine = [u for u in obs.units if u.owner == self.side and u.alive]
-        hall = next((u for u in mine if u.type_id in HALLS), None)
+        done = [u for u in mine if u.is_structure and not u.flags & UnitFlags.CONSTRUCTING]
+        have = techtree.counts_as({u.type for u in done} | {c for c in made if c[0] == "R"}, self.race)
+        heroes = len({c for c in (*made, *self.started) if c[0].isupper()})
         for _, c in due:
-            code = int.from_bytes(c.encode(), "big")
-            if c[0].isupper():  # a hero: at an altar
-                k = self.cls.get((code, fx.IMMEDIATE))
-                altar = next((u for u in mine if u.type_id in ALTARS), None)
-                if k is None or altar is None or not self._affords(k, p):
-                    continue
-                self.tried[c] = t
-                return [ImmediateOrder(altar.id, code)]
-            k = self.cls.get((code, fx.POINT))
-            if k is None or hall is None or not self._affords(k, p):  # (not a building, or not yet)
+            item = self.next_step(c, have, {u.type for u in done}, heroes, t)
+            if item is None:
                 continue
-            workers = [u for u in mine if u.is_worker and not u.is_structure]
-            if not workers:
-                return []
-            w = min(workers, key=lambda u: (u.x - hall.x) ** 2 + (u.y - hall.y) ** 2)
-            a, r = self.rng.uniform(0, 2 * math.pi), self.rng.uniform(450, 800)
-            self.tried[c] = t
-            return [Build(w.id, code, hall.x + r * math.cos(a), hall.y + r * math.sin(a))]
+            cmd = self.order(item, obs, mine, done, p)
+            if cmd is not None:
+                self.tried[item] = t
+                return [cmd]
         return []
+
+    def next_step(self, c: str, have: set, types: set, heroes: int, t: int, depth: int = 0) -> str | None:
+        """The item to start toward `c` now: `c` when the player has what it needs (`have`: techtree.counts_as;
+        `types`: its finished buildings, one of which must make `c`), else a missing need's own next step;
+        None while every missing need is under way or was tried in the last 20 steps, or none can be made."""
+        from . import techtree
+        if c in self.started or t - self.tried.get(c, -99) < 20:
+            return None
+        miss = techtree.missing(c, self.race, have, heroes if c[0].isupper() else 0, self.tree)
+        makers = self.tree.makers.get(c)
+        if makers and not types & set(makers) and (int.from_bytes(c.encode(), "big"), fx.POINT) not in self.cls:
+            miss.append(makers[0])  # (nothing that makes it: the first type that does)
+        if not miss:
+            return c
+        if depth < 4:
+            for m in miss:
+                if (n := self.next_step(m, have, types, heroes, t, depth + 1)) is not None:
+                    return n
+        return None
+
+    def order(self, c: str, obs, mine: list, done: list, p):
+        """The command that starts `c` (Build or ImmediateOrder), if the side can pay for it now."""
+        from ..protocol import Build, ImmediateOrder
+        code = int.from_bytes(c.encode(), "big")
+        if (k := self.cls.get((code, fx.POINT))) is not None:  # a building: the worker nearest the hall
+            hall = next((u for u in done if u.type_id in HALLS), None)
+            workers = [u for u in mine if u.is_worker and not u.is_structure and not fx.building(int(u.flags), u.order)]
+            if not workers or not self._affords(k, p):
+                return None
+            at = hall or workers[0]
+            w = min(workers, key=lambda u: (u.x - at.x) ** 2 + (u.y - at.y) ** 2)
+            if c == "egol":  # (an entangled mine: on the gold mine nearest the hall)
+                mines = [u for u in obs.units if u.type_id == GOLD_MINE and u.alive]
+                if not mines:
+                    return None
+                m = min(mines, key=lambda u: (u.x - at.x) ** 2 + (u.y - at.y) ** 2)
+                return Build(w.id, code, m.x, m.y)
+            a, r = self.rng.uniform(0, 2 * math.pi), self.rng.uniform(450, 800)
+            return Build(w.id, code, at.x + r * math.cos(a), at.y + r * math.sin(a))
+        if (k := self.cls.get((code, fx.IMMEDIATE))) is not None:  # trained, researched or upgraded to
+            makers = set(self.tree.makers.get(c, ()))
+            b = next((u for u in done if u.type in makers and u.id not in self.busy), None)
+            if b is not None and self._affords(k, p):
+                return ImmediateOrder(b.id, code)
+        return None
 
     def _affords(self, k: int, p) -> bool:
         if self.costs is None:
@@ -1135,7 +1207,7 @@ def target(cfg: dict, view, st: dict, pool: dict, race: str, vocab: dict) -> dic
     view.z = strat.vector(st, pool["items"][race])
     if cfg.get("z_enforce"):
         view.zmask = strat.allowed(st, pool["items"][race], vocab["orders"])
-        view.zmask_until = int(strat.HORIZON * cfg.get("z_time_scale", 1.0) / cfg["step_seconds"])
+        view.zmask_until = int(strat.horizon(st) / cfg["step_seconds"])  # (`st` scaled: --z-time-scale)
     return st
 
 
@@ -1337,8 +1409,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"z": zs[side]["src"] + (" won" if zs[side]["won"] else ""), "z_items": len(zs[side]["t"]),
             "z_miss": strat.mismatch(made[side], zs[side], pool["items"][races[side]], obs.game_time),
             # (which: the strategy's items due by now and not made; made and not in it)
-            "z_missed": sorted(c for c, t0 in zs[side]["t"].items() if t0 <= min(obs.game_time, strat.HORIZON) and made[side].get(c, 1e9) > min(obs.game_time, strat.HORIZON)),
-            "z_extra": sorted(c for c, t0 in made[side].items() if t0 <= min(obs.game_time, strat.HORIZON) and zs[side]["t"].get(c, 1e9) > min(obs.game_time, strat.HORIZON) and c in pool["items"][races[side]])} if side in zs else {}),
+            "z_missed": sorted(c for c, t0 in zs[side]["t"].items() if t0 <= min(obs.game_time, strat.horizon(zs[side])) and made[side].get(c, 1e9) > min(obs.game_time, strat.horizon(zs[side]))),
+            "z_extra": sorted(c for c, t0 in made[side].items() if t0 <= min(obs.game_time, strat.horizon(zs[side])) and zs[side]["t"].get(c, 1e9) > min(obs.game_time, strat.horizon(zs[side])) and c in pool["items"][races[side]])} if side in zs else {}),
         **({} if train else {"eval": True, "eval_key": opp.get("eval_key") or "current"})}
     out_q.put({"episode": ep})
     if record:  # the video's panel: A = the learner's side
