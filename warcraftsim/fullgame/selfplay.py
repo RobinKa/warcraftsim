@@ -1097,6 +1097,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         self.started: dict[str, float] = {}  # items under way -> since (game time)
         self.busy: dict[int, tuple[str, ...]] = {}  # the side's buildings at work -> what they make
         self.site: dict[int, str] = {}  # its buildings under construction -> their types
+        self.log: dict[str, list[int]] = {}  # item -> [orders given, accepted by the game] (the episode row)
+        self.last = ""
 
     def observe(self, obs) -> None:
         """The items the side started, finished or cancelled in the step just taken (its events)."""
@@ -1145,7 +1147,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
                 continue
             cmd = self.order(item, obs, mine, done, p)
             if cmd is not None:
-                self.tried[item] = t
+                self.tried[item], self.last = t, item
+                self.log.setdefault(item, [0, 0])[0] += 1
                 return [cmd]
         return []
 
@@ -1326,9 +1329,11 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                      for s, r in zip(live, results) if r is not None}
             trace.append(trace_step(t, obs, mat, chose, value={s: r["value"] for s, r in zip(live, results) if r},
                                     entropy={s: r["entropy"] for s, r in zip(live, results) if r}))
-        built = {}
+        built, given = {}, {}
         for s, b in builders.items():  # (--z-build: after the agents' orders, so a worker it takes is taken)
             c = b.commands(obs, made[s], t, cfg["step_seconds"])
+            if c and cfg.get("z_build", 0) != 2:
+                given[s] = len(cmds)
             if c and cfg.get("z_build_labels") and s in trajs and s in spans and obs.players.get(s) is not None:
                 q = obs.players[s]
                 built[s] = (len(cmds) if cfg.get("z_build", 0) != 2 else None, c,
@@ -1338,6 +1343,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         if late is not None and t == opp["start"]:  # the built-in AI takes over its side (after the bots' orders)
             cmds.append(StartAI(late))
         obs = g.step(cmds)
+        for s, at in given.items():  # (the builder's log: its order accepted?)
+            if obs.command_results[at]:
+                builders[s].log[builders[s].last][1] += 1
         for s, (at, c, me) in built.items():  # (--z-build-labels: the builder's accepted orders label the side's step)
             ok = obs.command_results[at:at + len(c)] if at is not None else [True] * len(c)
             rows = np.asarray([(t, x.unit, getattr(x, "building", getattr(x, "order", 0)), 1 if hasattr(x, "x") else 0,
@@ -1406,6 +1414,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"balance_tax": opp["tax"] if opp["tax_side"] == side else -opp["tax"]} if "tax_side" in opp else {}),
         "prod": prod.row(side, obs), "opp_prod": prod.row(1 - side, obs), **({"advised": True} if advised else {}),
         **({"shared_noise": shared_noise} if cfg.get("shared_noise", 0.0) > 0 else {}),
+        **({"z_build": builders[side].log} if side in builders else {}),
+        **({"z_t": {c: round(v) for c, v in zs[side]["t"].items()},
+            "z_made": {c: round(v) for c, v in made[side].items()}} if side in zs else {}),
         **({"z": zs[side]["src"] + (" won" if zs[side]["won"] else ""), "z_items": len(zs[side]["t"]),
             "z_miss": strat.mismatch(made[side], zs[side], pool["items"][races[side]], obs.game_time),
             # (which: the strategy's items due by now and not made; made and not in it)
@@ -2563,8 +2574,9 @@ def main(argv: list[str] | None = None) -> int:
                     "build and research the target's items (and workers and supply) for the strategies' horizon "
                     "(the availability mask; strategy.allowed)")
     ap.add_argument("--z-build", type=int, default=0, help="with --z-pool: the harness starts the target's due "
-                    "buildings (a worker near the town hall) and heroes (at the altar) that the agent leaves undone "
-                    "(TargetBuilder; training and current+z evaluation games); 2: a teacher only, its orders labels for "
+                    "items that the agent leaves undone, and what they need first (TargetBuilder, the tech tree: "
+                    "buildings with a worker near the town hall; units, heroes, research and tiers at an idle "
+                    "building; training and current+z evaluation games); 2: a teacher only, its orders labels for "
                     "--z-build-labels and never carried out (the agent has to make its target itself)")
     ap.add_argument("--z-build-labels", type=int, default=0, help="with --z-build and --opd-coef > 0: the builder's "
                     "accepted orders label the agent's step for the distillation loss (only the units it ordered), so the "
