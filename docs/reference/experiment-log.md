@@ -1333,7 +1333,11 @@ More fixes, each found in the games' logs (what the builder gave, what the game 
 | 11:32 (frames resumed) | 12.7 | 4.3 |
 | 12:06 (the cost reserved) | 13.3 | **2.1** |
 
-Of the 2.1, ~0.3 are expansions (left to the agent). Evaluation games since 12:06 (~80 each, `echofast` against insane): `current` 75%, `current+z` (a target, the builder carrying out) 36%, `fgself-78`'s last 49%. The targets can be followed now; the agent does not yet win with them.
+Of the 2.1, ~0.3 are expansions (left to the agent).
+
+`fgself-94` (12:06-12:56, ~390 paired games each on `echofast` against insane): `current` **72%**, `current+z` (a target, the builder carrying out) **39%** (by 20-minute windows 79/73/97% of the AI's record), `fgself-78`'s last **42%**. With the builder 82-85% of the due items were made; the agent made 43-47% of those itself, flat for 50 minutes of training on the builder's labels. **The targets can be followed; the agent does not follow them on its own yet.**
+
+**`fgself-95`** (from `fgself-94`'s last with its Adam state, 12:56): the builder only teaches (`--z-build 2`): its orders are labels, never carried out; a busy building's decision is labelled too (a hall's next tier while it trains workers). The cost of the target's next item stays reserved from the agent's other orders. The question: does the agent follow its targets on its own, and at what cost in wins?
 
 **How the best policy wins and loses** (`fgself-73`'s policy: its own run's 347 evaluation games and its last checkpoint's 141 in `fgself-74`: 488 games against the untaxed insane AI, 356 won). One strategy: an early rush of tier-1 units. The median win came at 9.7 game minutes, 206 of the 356 wins within 10 minutes, and only 38% of the wins reached tier 2. The losses were long (23.7 minutes on average), with tier-1 units and many workers (56 a lost game against the AI's 14, army units 89 against 38). Heroes 1.0 a game against the AI's 1.5. Undead's lumber (83 a game minute against the AI's 213, `fgself-69`/`-70`) is still its weak point.
 
