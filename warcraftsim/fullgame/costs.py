@@ -4,7 +4,10 @@ and 53% of the time, mostly for that).
 
 Costs come from the game's tables (UnitBalance.slk, UpgradeData.slk) scaled by the map's rules
 (a duel map's Rules.cost; duelmap.rules_files scales them the same way). Food is the unit's
-food use. Orders that aren't a unit, building or upgrade cost nothing.
+food use. Orders that aren't a unit, building or upgrade cost nothing. A building upgraded from
+another (a keep from a town hall, a guard tower from a scout tower: techtree's "Upgrade") costs the
+difference: the table holds both together (a keep 705 gold, its upgrade 320), and until 2026-10-19
+the mask held a policy's next tier back until it had both.
 """
 
 from __future__ import annotations
@@ -26,7 +29,9 @@ def order_costs(vocab: dict, map_name: str = "duelrush") -> np.ndarray:
     from ..data.duelmap import map_rules
     from ..data.mpq import GameArchives
     from ..data.objects import parse_slk
+    from .techtree import tree
     rules = map_rules(map_name)
+    base = {to: frm for frm, tos in tree().upgrades.items() for to in tos}  # (an upgrade -> its building)
     with GameArchives() as g:
         units = {r.get("unitBalanceID"): r for r in parse_slk(g.read("Units\\UnitBalance.slk").decode("latin-1"))}
         upgrades = {r.get("upgradeid"): r for r in parse_slk(g.read("Units\\UpgradeData.slk").decode("latin-1"))}
@@ -42,6 +47,9 @@ def order_costs(vocab: dict, map_name: str = "duelrush") -> np.ndarray:
         if code in units:
             r = units[code]
             out[c] = (scaled(_num(r, "goldcost")), scaled(_num(r, "lumbercost")), _num(r, "fused"))
+            if base.get(code) in units:  # an upgrade: the difference (each scaled, as the map's tables)
+                b = units[base[code]]
+                out[c, :2] -= (scaled(_num(b, "goldcost")), scaled(_num(b, "lumbercost")))
         elif code in upgrades:  # the first level's cost (later levels cost more: then the game refuses)
             r = upgrades[code]
             out[c] = (scaled(_num(r, "goldbase")), scaled(_num(r, "lumberbase")), 0)

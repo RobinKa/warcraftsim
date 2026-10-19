@@ -299,3 +299,14 @@ def test_target_builder_queues_skips_expansions_and_gives_up(monkeypatch):
     assert c[0].unit == 1 and c[0].order == _code("hkee")
     b.refused["hbar"] = 3
     assert b.commands(_obs(units), {}, 11, 0.5) == []  # (no expansion; the barracks given up)
+
+
+def test_upgrade_costs_the_difference():
+    """The game's table holds an upgraded building's cost with its base's (a keep: 705 gold); the order
+    costs the difference (320), which the availability mask and the builder must use."""
+    from warcraftsim.fullgame.costs import order_costs
+    vocab = {"orders": [[_code("htow"), fx.POINT], [_code("hkee"), fx.IMMEDIATE], [_code("hcas"), fx.IMMEDIATE],
+                        [_code("hgtw"), fx.IMMEDIATE]]}
+    c = order_costs(vocab, "(2)EchoIsles")
+    assert c[1].tolist() == [385, 205, 0] and c[2].tolist() == [320, 210, 0] and c[3].tolist() == [360, 210, 0]
+    assert c[4].tolist() == [70, 50, 0]
