@@ -1014,6 +1014,9 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
     spec_path = Path(cfg["run_dir"]) / "league_spec.json"
     name = f"fgsp{cfg['slot']}_{wid}_{k}"
     evaluating = k >= cfg["games_per_actor"]  # an evaluation slot (--eval-games-per-actor)
+    if evaluating and cfg.get("eval_map"):  # (--eval-map: its games on another map, with its costs and strategies)
+        cfg = {**cfg, "map": cfg["eval_map"], "z_pool": cfg.get("eval_z_pool") or cfg.get("z_pool"),
+               "costs_array": np.asarray(cfg["eval_costs"], np.int64) if cfg.get("eval_costs") else None}
     paired: list[tuple] = []  # an evaluation slot's next launches: one matchup for every policy in turn
     alive = Path(cfg["run_dir"]) / "remote-eval.alive"  # (scripts/remote_eval.py: its games still arrive)
     while not stop.is_set() and os.getppid() == cfg["learner_pid"]:
@@ -2789,6 +2792,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--z-enforce", type=int, default=0, help="with --z-pool: a side with a target may only train, "
                     "build and research the target's items (and workers and supply) for the strategies' horizon "
                     "(the availability mask; strategy.allowed)")
+    ap.add_argument("--eval-map", default="", help="the evaluation games' map, if not the training's (e.g. train on "
+                    "echofast, evaluate on (2)EchoIsles: the real game); the same map frame")
+    ap.add_argument("--eval-z-pool", type=Path, default=None, help="with --eval-map: the strategies its current+z games "
+                    "draw from (default --z-pool)")
     ap.add_argument("--grpo-share", type=float, default=0.0, help="GRPO from mid-game branches: this share of the "
                     "training games between agents (the first of a launch, seeded: such games replay exactly) are a "
                     "source; at a random step in --grpo-branch, --grpo-group fresh games replay its commands to "
@@ -3213,6 +3220,8 @@ def main(argv: list[str] | None = None) -> int:
            "z_enforce": args.z_enforce, "z_time_scale": args.z_time_scale, "z_build": args.z_build, "z_build_labels": args.z_build_labels,
            "grpo_share": args.grpo_share, "grpo_group": args.grpo_group, "grpo_coef": args.grpo_coef,
            "grpo_seeds": args.grpo_seeds, "grpo_branch": [float(x) for x in args.grpo_branch.split("-")],
+           "eval_map": args.eval_map, "eval_z_pool": str(args.eval_z_pool) if args.eval_z_pool else "",
+           "eval_costs": order_costs(vocab, args.eval_map).tolist() if args.eval_map and args.avail_mask else None,
            "order_names": vocab.get("order_names") or {str(k): v for k, v in fx.demo_order_names(args.runs).items()}}
     if args.pin and (os.cpu_count() or 0) >= 16:
         # the learner's Python is what bounds an update, and the inference server what the games wait

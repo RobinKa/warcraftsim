@@ -108,7 +108,7 @@ SETTINGS = ("map", "handicap", "step_seconds", "max_minutes", "wait_floor_ms", "
             "pairs", "scripted_reset", "native_obs", "game_nice", "game_cuts", "features", "eval_ai", "eval_checkpoints",
             "races", "mirror", "opd_difficulty", "shared_noise", "float_penalty", "hero_level_value", "shaping",
             "shaping_scale", "gamma", "tie_break", "tie_value", "avail_mask", "infer_entities", "seed", "wine", "fsync", "ntsync",
-            "eval_z", "z_pool", "z_src", "z_enforce", "z_time_scale", "z_build")
+            "eval_z", "z_pool", "z_src", "z_enforce", "z_time_scale", "z_build", "eval_map", "eval_z_pool")
 
 
 def launch_key(info: dict) -> str:
@@ -223,8 +223,9 @@ class Manager:
         if missing:
             log(f"evaluation checkpoints missing here: {missing}")
             return False
-        pool = (info.get("config") or {}).get("z_pool") or ""  # (--eval-z: the strategies, as the run's)
-        pool = [pool] if pool and not Path(pool).is_absolute() and (ROOT / pool).exists() else []
+        c = info.get("config") or {}  # (--eval-z: the strategies, as the run's; --eval-z-pool: the evaluation map's)
+        pool = [q for q in {c.get("z_pool") or "", c.get("eval_z_pool") or ""}
+                if q and q != "None" and not Path(q).is_absolute() and (ROOT / q).exists()]
         if not self.h.rsync([f"runs/{self.run}/run.json", f"runs/{self.run}/vocab.json"] + evals + pool):
             return False
         self.pushed = []
