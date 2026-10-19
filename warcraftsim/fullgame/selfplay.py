@@ -1075,6 +1075,8 @@ def strategy_pool(cfg: dict) -> dict | None:
 HALLS = {int.from_bytes(c.encode(), "big") for c in
          ("htow", "hkee", "hcas", "ogre", "ostr", "ofrt", "unpl", "unp1", "unp2", "etol", "etoa", "etoe")}
 GOLD_MINE = int.from_bytes(b"ngol", "big")
+AT_MINES = {"htow", "ogre", "unpl", "etol", "ugol", "egol"}  # (an expansion: at a free gold mine)
+WORKER_TYPES = {"human": "hpea", "orc": "opeo", "undead": "uaco", "nightelf": "ewsp"}
 
 
 class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below with the other commands)
@@ -1140,15 +1142,16 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         mine = [u for u in obs.units if u.owner == self.side and u.alive]
         done = [u for u in mine if u.is_structure and not u.flags & UnitFlags.CONSTRUCTING]
         have = techtree.counts_as({u.type for u in done} | {c for c in made if c[0] == "R"}, self.race)
-        heroes = len({c for c in (*made, *self.started) if c[0].isupper()})
+        heroes = len({c for c in (*made, *self.started) if techtree.is_hero(c)})
         for _, c in due:
             item = self.next_step(c, have, {u.type for u in done}, heroes, t)
             if item is None:
                 continue
-            cmd = self.order(item, obs, mine, done, p)
-            if cmd is not None:
-                self.tried[item], self.last = t, item
-                self.log.setdefault(item, [0, 0])[0] += 1
+            cmd = self.order(item, obs, mine, done, p, t)
+            if cmd is not None:  # (`item`, or a worker to build it)
+                got = fx.rawcode(cmd.building if hasattr(cmd, "building") else cmd.order)
+                self.tried[got], self.last = t, got
+                self.log.setdefault(got, [0, 0])[0] += 1
                 return [cmd]
         return []
 
@@ -1159,7 +1162,7 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         from . import techtree
         if c in self.started or t - self.tried.get(c, -99) < 20:
             return None
-        miss = techtree.missing(c, self.race, have, heroes if c[0].isupper() else 0, self.tree)
+        miss = techtree.missing(c, self.race, have, heroes if techtree.is_hero(c) else 0, self.tree)
         makers = self.tree.makers.get(c)
         if makers and not types & set(makers) and (int.from_bytes(c.encode(), "big"), fx.POINT) not in self.cls:
             miss.append(makers[0])  # (nothing that makes it: the first type that does)
@@ -1171,23 +1174,39 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
                     return n
         return None
 
-    def order(self, c: str, obs, mine: list, done: list, p):
-        """The command that starts `c` (Build or ImmediateOrder), if the side can pay for it now."""
-        from ..protocol import Build, ImmediateOrder
+    def order(self, c: str, obs, mine: list, done: list, p, t: int = 0):
+        """The command that starts `c` (Build or ImmediateOrder), if the side can pay for it now; a building
+        without a free worker (all in a mine: a night elf's five wisps in theirs): a worker first."""
+        from ..protocol import Build, ImmediateOrder, TargetOrder
         code = int.from_bytes(c.encode(), "big")
-        if (k := self.cls.get((code, fx.POINT))) is not None:  # a building: the worker nearest the hall
+        on_mine = self.cls.get((code, fx.UNIT)) if c in AT_MINES else None  # (an undead's haunted mine: on it)
+        if (k := self.cls.get((code, fx.POINT), on_mine)) is not None:  # a building: the worker nearest the hall
+            from ..protocol import UnitFlags
             hall = next((u for u in done if u.type_id in HALLS), None)
-            workers = [u for u in mine if u.is_worker and not u.is_structure and not fx.building(int(u.flags), u.order)]
-            if not workers or not self._affords(k, p):
+            workers = [u for u in mine if u.is_worker and not u.is_structure and not fx.building(int(u.flags), u.order)
+                       and not u.flags & (UnitFlags.HIDDEN | UnitFlags.LOADED)]  # (not in a mine: refused)
+            if not workers:
+                w = WORKER_TYPES.get(self.race)
+                return self.order(w, obs, mine, done, p, t) if w and t - self.tried.get(w, -99) >= 20 else None
+            if not self._affords(k, p):
                 return None
             at = hall or workers[0]
             w = min(workers, key=lambda u: (u.x - at.x) ** 2 + (u.y - at.y) ** 2)
-            if c == "egol":  # (an entangled mine: on the gold mine nearest the hall)
-                mines = [u for u in obs.units if u.type_id == GOLD_MINE and u.alive]
+            if c in AT_MINES and hall is not None:  # an expansion: at the free gold mine nearest the hall
+                halls = [u for u in mine if u.type_id in HALLS]
+                mines = [u for u in obs.units if u.type_id == GOLD_MINE and u.alive  # (in the fog: no gold shown)
+                         and (c in ("ugol", "egol") or min((u.x - h.x) ** 2 + (u.y - h.y) ** 2 for h in halls) > 1200 ** 2)]
                 if not mines:
                     return None
                 m = min(mines, key=lambda u: (u.x - at.x) ** 2 + (u.y - at.y) ** 2)
-                return Build(w.id, code, m.x, m.y)
+                if self.cls.get((code, fx.POINT)) is None:
+                    return TargetOrder(w.id, code, m.id)
+                if c in ("ugol", "egol"):  # (on the mine)
+                    return Build(w.id, code, m.x, m.y)
+                d = max(1.0, math.hypot(at.x - m.x, at.y - m.y))  # (a hall: on the mine's side toward home)
+                return Build(w.id, code, m.x + 550 * (at.x - m.x) / d, m.y + 550 * (at.y - m.y) / d)
+            if self.cls.get((code, fx.POINT)) is None:
+                return None
             a, r = self.rng.uniform(0, 2 * math.pi), self.rng.uniform(450, 800)
             return Build(w.id, code, at.x + r * math.cos(a), at.y + r * math.sin(a))
         if (k := self.cls.get((code, fx.IMMEDIATE))) is not None:  # trained, researched or upgraded to
@@ -1348,9 +1367,10 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                 builders[s].log[builders[s].last][1] += 1
         for s, (at, c, me) in built.items():  # (--z-build-labels: the builder's accepted orders label the side's step)
             ok = obs.command_results[at:at + len(c)] if at is not None else [True] * len(c)
-            rows = np.asarray([(t, x.unit, getattr(x, "building", getattr(x, "order", 0)), 1 if hasattr(x, "x") else 0,
-                                int(getattr(x, "x", 0)), int(getattr(x, "y", 0)), 0) for x, a in zip(c, ok) if a],
-                              np.int64).reshape(-1, 7)
+            rows = np.asarray([(t, x.unit, getattr(x, "building", getattr(x, "order", 0)),
+                                1 if hasattr(x, "x") else 2 if hasattr(x, "target") else 0,
+                                int(getattr(x, "x", 0)), int(getattr(x, "y", 0)), getattr(x, "target", 0))
+                               for x, a in zip(c, ok) if a], np.int64).reshape(-1, 7)
             if len(rows) and trajs[s].steps:
                 later = np.asarray([(t + 1, int(e.kind), e.a, e.b, e.c) for e in obs.events], np.int64).reshape(-1, 5)
                 y, _ = bots[s].enc.step_labels(bots[s].view, sts[s], rows, me, later, bots[s].trees)

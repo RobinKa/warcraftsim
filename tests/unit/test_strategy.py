@@ -263,3 +263,25 @@ def test_consistent_puts_items_after_their_needs(monkeypatch):
     strategy.consistent(st, t)
     assert st["t"]["hfoo"] == 90.0  # (after its barracks)
     assert st["t"]["Hpal"] == 50.0 and st["t"]["Hamg"] == 100.0  # (the second hero: after the keep)
+
+
+def test_owners_at_the_event_step_with_reused_ids():
+    """The game reuses a dead unit's id: an event's owner is the one at its step, not the id's last."""
+    units = np.zeros((5, 18), np.int64)
+    units[:, :4] = [[0, 7, 0, 0], [5, 7, 0, 0], [20, 7, 0, 1], [30, 7, 0, 1], [3, 8, 0, 1]]
+    events = np.asarray([[6, 3, 7, 0, 0], [25, 3, 7, 0, 0], [3, 3, 8, 0, 0], [3, 3, 9, 0, 0]])
+    assert strategy.owners_at(units, events) == [0, 1, 1, -1]
+    assert strategy.of_race("hbar", "human") and strategy.of_race("Rhme", "human") and not strategy.of_race("hhou", "undead")
+    assert strategy.of_race("Udea", "undead") and not strategy.of_race("Rome", "nightelf")
+
+
+def test_research_is_not_a_hero(monkeypatch):
+    """Research ids are upper case too: a research under way must not count as a hero (the second hero then
+    asked for the third tier)."""
+    from warcraftsim.fullgame import techtree
+    assert techtree.is_hero("Hamg") and techtree.is_hero("Ekee") and not techtree.is_hero("Rhde")
+    P, I = fx.POINT, fx.IMMEDIATE
+    b = _builder(monkeypatch, {"t": {"Hamg": 10.0}}, [("Hamg", I), ("hkee", I)])
+    b.started["Rhde"] = 0.0
+    c = b.commands(_obs([(1, "htow", 0, 0), (2, "halt", 300, 0)], t=20.0), {"Hpal": 5.0}, 10, 0.5)
+    assert c[0].unit == 1 and c[0].order == _code("hkee")  # (the second hero needs the keep, not the castle)

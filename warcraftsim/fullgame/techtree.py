@@ -58,6 +58,11 @@ def tree() -> Tree:
                       for r in RACE_FILES.values() for k in ("Unit", "Upgrade")])
 
 
+def is_hero(code: str) -> bool:
+    """A hero's id: upper case, as research's ("R...") is too."""
+    return code[:1].isupper() and code[0] != "R"
+
+
 def resolve(code: str, race: str) -> str:
     """A requirement's generic code as the race's: any altar ("TALT"), any hall from tier 2 ("TWN2") or 3."""
     if code == "TALT":
@@ -92,7 +97,7 @@ def closure(items, race: str, t: Tree | None = None) -> set[str]:
     of `items` makes, the first building type that does: what a player making `items` makes on the way."""
     t = t or tree()
     items = set(items)
-    heroes = sum(c[:1].isupper() for c in items)
+    heroes = sum(is_hero(c) for c in items)
     out: set[str] = set()
     todo = list(items)
     while todo:
@@ -101,7 +106,7 @@ def closure(items, race: str, t: Tree | None = None) -> set[str]:
             continue
         out.add(c)
         per = t.needs.get(c, ())
-        for need in per[:max(heroes, 1)] if c[:1].isupper() else per[:1]:
+        for need in per[:max(heroes, 1)] if is_hero(c) else per[:1]:
             todo += [resolve(r, race) for r in need]
         makers = t.makers.get(c, ())
         if makers and not items & set(makers):

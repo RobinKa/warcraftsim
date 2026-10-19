@@ -44,17 +44,42 @@ def _first_times(pairs) -> dict[str, float]:
     return out
 
 
+def owners_at(units: np.ndarray, events: np.ndarray) -> list[int]:
+    """Each event's unit's (column 2) owner at the event's step, from the nearest row of that unit at or
+    before it (else after): the game reuses a dead unit's id, so a whole game's last owner of an id gave
+    one player's buildings to the other (a human's barracks in undead strategies)."""
+    order = np.lexsort((units[:, 0], units[:, 1]))
+    ids, steps, own = units[order, 1], units[order, 0], units[order, 3]
+    out = []
+    for step, a in zip(events[:, 0].tolist(), events[:, 2].tolist()):
+        lo, hi = np.searchsorted(ids, a, "left"), np.searchsorted(ids, a, "right")
+        if lo == hi:
+            out.append(-1)
+            continue
+        k = lo + int(np.searchsorted(steps[lo:hi], step, "right")) - 1
+        out.append(int(own[max(k, lo)]))
+    return out
+
+
+RACE_LETTER = {"human": "h", "orc": "o", "undead": "u", "nightelf": "e"}
+
+
+def of_race(code: str, race: str) -> bool:
+    """A melee item of `race` (its id's letter: units and buildings first, heroes upper case, research
+    after the R)."""
+    return (code[1] if code[0] == "R" else code[0]).lower() == RACE_LETTER[race]
+
+
 def from_demos(path: Path) -> list[dict]:
     """The two players' strategies of one demonstration game (collect.py's .npz)."""
     from .features import rawcode
     z = np.load(path, allow_pickle=True)
     meta = json.loads(str(z["meta"]))
     units, ev, dt = z["units"], z["events"], float(meta.get("step_seconds", 0.5))
-    owner = dict(zip(units[:, 1].tolist(), units[:, 3].tolist()))  # (step id type owner ...)
     made: dict[int, list] = {0: [], 1: []}
-    for step, kind, a, b, c in ev.tolist():
-        if kind in MADE_EVENTS and owner.get(a) in (0, 1):
-            made[owner[a]].append((rawcode(c if kind == 6 else b), step * dt))
+    for (step, kind, a, b, c), p in zip(ev.tolist(), owners_at(units, ev)):
+        if kind in MADE_EVENTS and p in (0, 1):
+            made[p].append((rawcode(c if kind == 6 else b), step * dt))
     result = meta.get("result") or {}
     races = meta["races"]
     diff = meta.get("difficulties") or [None, None]
@@ -99,7 +124,7 @@ def consistent(strategy: dict, tree=None) -> dict:
     from . import techtree
     tree = tree or techtree.tree()
     t = strategy["t"]
-    heroes = sorted((v, c) for c, v in t.items() if c[:1].isupper())
+    heroes = sorted((v, c) for c, v in t.items() if techtree.is_hero(c))
     place = {c: i for i, (_, c) in enumerate(heroes)}
     for _ in range(4):
         changed = False
@@ -150,11 +175,12 @@ def build_pool(strategies: list[dict], min_items: int = 5, keep: set[str] | None
     items = dict(items or {})
     for race in [r for r in RACES if r not in items]:
         n = Counter(code for s in strategies if s["race"] == race for code, t in s["t"].items()
-                    if t <= HORIZON and (keep is None or code in keep))
+                    if t <= HORIZON and (keep is None or code in keep) and of_race(code, race))
         items[race] = [code for code, _ in n.most_common(SLOTS)]
     kept = []
     for s in strategies:
-        t = {code: round(v, 1) for code, v in s["t"].items() if v <= HORIZON and code in items[s["race"]]}
+        t = {code: round(v, 1) for code, v in s["t"].items()
+             if v <= HORIZON and code in items[s["race"]] and of_race(code, s["race"])}
         if len(t) >= min_items:
             kept.append({**s, "t": t})
     return {"slots": SLOTS, "horizon": HORIZON, "items": items, "strategies": kept}
