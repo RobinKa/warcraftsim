@@ -315,3 +315,15 @@ def test_upgrade_costs_the_difference():
     c = order_costs(vocab, "(2)EchoIsles")
     assert c[1].tolist() == [385, 205, 0] and c[2].tolist() == [320, 210, 0] and c[3].tolist() == [360, 210, 0]
     assert c[4].tolist() == [70, 50, 0]
+
+
+def test_target_builder_builds_supply_when_blocked(monkeypatch):
+    """Out of supply a unit ordered waits in its building's queue and blocks a next tier: a farm first."""
+    P, I = fx.POINT, fx.IMMEDIATE
+    b = _builder(monkeypatch, {"t": {"hkee": 10.0}}, [("hhou", P), ("hkee", I)])
+    obs = _obs([(1, "htow", 0, 0), (3, "hpea", 100, 0)])
+    obs.players[0].food_used = 20
+    c = b.commands(obs, {}, 10, 0.5)
+    assert c[0].building == _code("hhou")
+    obs.players[0].food_used = 10
+    assert b.commands(obs, {}, 11, 0.5)[0].order == _code("hkee")

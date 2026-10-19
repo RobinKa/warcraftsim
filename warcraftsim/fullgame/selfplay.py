@@ -1076,6 +1076,7 @@ HALLS = {int.from_bytes(c.encode(), "big") for c in
          ("htow", "hkee", "hcas", "ogre", "ostr", "ofrt", "unpl", "unp1", "unp2", "etol", "etoa", "etoe")}
 AT_MINES = {"htow", "ogre", "unpl", "etol", "ugol", "egol"}  # (with a hall already: an expansion)
 WORKER_TYPES = {"human": "hpea", "orc": "opeo", "undead": "uaco", "nightelf": "ewsp"}
+SUPPLY_TYPES = {"human": "hhou", "orc": "otrb", "undead": "uzig", "nightelf": "emow"}
 
 
 class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below with the other commands)
@@ -1085,7 +1086,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
     it), the first of those it can start. A building with the worker nearest the town hall (one outside a
     mine; with none, a worker first); a unit, hero, research or a hall's next tier at a building that makes
     it, an idle one first (else a unit or research queued; the game refuses an upgrade or a hero behind
-    others: a hall training workers takes its next tier only between them). At most one a step, when the player can pay for it; an order that
+    others: a hall training workers takes its next tier only between them). Out of supply, a farm first
+    (a unit ordered then waits in its building's queue, never starting, and blocks a next tier behind it). At most one a step, when the player can pay for it; an order that
     starts nothing is given again after 20 steps, and after three refusals not that game. The game's
     events tell what is under way (the agent's own orders too) and which buildings are busy (a building's
     current order reads 0 while it trains). Expansions and everything else stay the agent's."""
@@ -1133,15 +1135,24 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
                 for c in self.busy.pop(e.a, ()):
                     self.started.pop(c, None)
 
-    def commands(self, obs, made: dict, t: int, step_s: float) -> list:
+    def commands(self, obs, made: dict, t: int, step_s: float, ordered=()) -> list:
+        """`ordered`: the agent's commands this step (what they make counts as tried: the game refuses the
+        same hero or next tier twice)."""
         from . import techtree
         from ..protocol import UnitFlags
         self.observe(obs)
+        for x in ordered:
+            o = getattr(x, "building", None) or getattr(x, "order", 0)
+            if o >= fx.TYPE_CODE:
+                self.tried[fx.rawcode(o)] = t
         p = obs.players.get(self.side)
         if p is None:
             return []
         now = obs.game_time
         due = sorted((t0, c) for c, t0 in self.st["t"].items() if t0 <= now and c not in made and c not in self.started)
+        food = SUPPLY_TYPES.get(self.race)  # out of supply: a unit ordered waits in its building's queue and
+        if p.food_cap < 100 and p.food_used + 2 > p.food_cap and food not in self.started:  # blocks it
+            due.insert(0, (0.0, food))  # (a next tier is refused behind it): supply first
         if not due:
             return []
         mine = [u for u in obs.units if u.owner == self.side and u.alive]
@@ -1346,7 +1357,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                                     entropy={s: r["entropy"] for s, r in zip(live, results) if r}))
         built, given = {}, {}
         for s, b in builders.items():  # (--z-build: after the agents' orders, so a worker it takes is taken)
-            c = b.commands(obs, made[s], t, cfg["step_seconds"])
+            c = b.commands(obs, made[s], t, cfg["step_seconds"], cmds[spans[s][0]:spans[s][1]] if s in spans else ())
             if c and cfg.get("z_build", 0) != 2:
                 given[s] = len(cmds)
             if c and cfg.get("z_build_labels") and s in trajs and s in spans and obs.players.get(s) is not None:
