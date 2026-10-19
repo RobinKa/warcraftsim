@@ -127,5 +127,7 @@ Measured on `echofast` (`GameSetup.seed`: `SetRandomSeed` first thing in the map
 * With a seed and the same spawns, **games between agents with the same orders are identical** (3 games, 300 steps of harvesting and walking across the map). The engine is deterministic.
 * **The built-in AI is not**: with a seed, AI against AI differed from step 26, an idle agent against the AI from step 36. Its script threads seem to run on the wall clock.
 
-So games can be replayed and branched mid-game only between agents (self-play, past snapshots).
+* **Neutral units are not either**: the critters wander apart from ~5 s (seeded games now start without them), and fights with creeps differ from the first blows (agents attack-moving to the nearest creeps: apart at 13 s). Like the built-in AI, their decisions seem to run per drawn frame, not per game tick.
+
+So games can be replayed and branched mid-game only between agents (self-play, past snapshots), and only until the first fight with creeps: in `fgself-96` about half the branches reached their source's state.
 

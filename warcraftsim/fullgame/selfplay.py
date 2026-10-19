@@ -964,7 +964,7 @@ def run_branch(wid: int, k: int, cfg: dict, vocab: dict, infer: Inference, out_q
             grpo = {"replay": job["record"]}
             play_one(g, obs, cfg, vocab, job["races"], job["side"], copy.deepcopy(job["opp"]), infer, out_q, wid,
                      grpo=grpo)
-            got = (grpo["trajs"], grpo["ret"])
+            got = (grpo["trajs"], grpo["ret"], bool(grpo.get("same")))
     except Exception as e:  # noqa: BLE001 (the group goes on without it)
         print(f"actor {wid}/{k}: branch: {type(e).__name__}: {e}", flush=True)
     with _BRANCH_LOCK:
@@ -983,16 +983,19 @@ def state_print(obs) -> int:
     return hash(tuple(sorted((u.type_id, u.owner, u.x, u.y, u.hp) for u in obs.units if u.owner in (0, 1))))
 
 
-def release_group(games: list[tuple[dict, dict]], coef: float) -> None:
-    """GRPO: each game's held trajectories (trained side -> Trajectory, its return from the branch) go to
-    the learner, every advantage plus `coef` times the return less the mean of the group's (that side's)."""
-    for s in {s for trajs, _ in games for s in trajs}:
-        rs = [(trajs[s], ret[s]) for trajs, ret in games if s in trajs]
-        mean = sum(r for _, r in rs) / len(rs)
-        print(f"grpo group: side {s}, returns {' '.join(f'{r:+.2f}' for _, r in rs)}, steps "
-              f"{' '.join(str(len(tr.steps)) for tr, _ in rs)}", flush=True)
-        for tr, r in rs:
-            tr.release(coef * (r - mean) if len(rs) > 1 else 0.0)
+def release_group(games: list[tuple[dict, dict, bool]], coef: float) -> None:
+    """GRPO: each game's held trajectories (trained side -> Trajectory, its return from the branch, whether
+    its replay reached the source's state) go to the learner, every advantage plus `coef` times the return
+    less the mean of the group's (that side's) exact branches. A branch that is not exact gets nothing
+    added: its game was another (fights with creeps do not replay alike, engine notes), and needs two."""
+    for s in {s for trajs, _, _ in games for s in trajs}:
+        rs = [(trajs[s], ret[s], same) for trajs, ret, same in games if s in trajs]
+        exact = [r for _, r, same in rs if same]
+        mean = sum(exact) / len(exact) if exact else 0.0
+        print(f"grpo group: side {s}, returns {' '.join(f'{r:+.2f}' + ('' if same else '?') for _, r, same in rs)}, "
+              f"steps {' '.join(str(len(tr.steps)) for tr, _, _ in rs)}", flush=True)
+        for tr, r, same in rs:
+            tr.release(coef * (r - mean) if same and len(exact) > 1 else 0.0)
 
 
 def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render_q) -> None:
@@ -1632,6 +1635,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({} if train else {"eval": True, "eval_key": opp.get("eval_key") or "current"})}
     out_q.put({"episode": ep})
     if grpo is not None:
+        grpo["same"] = same
         if rec is not None and "h" in rec and t > rec["t"] + 20:  # (the game reached its branch with a minute to go)
             grpo["record"] = rec
         grpo["trajs"], grpo["ret"] = trajs, ret

@@ -35,9 +35,9 @@ def test_group_relative_returns_per_side():
         def release(self, bonus):
             got[self.name] = bonus
 
-    games = [({0: T("a0"), 1: T("a1")}, {0: 1.0, 1: -1.0}), ({0: T("b0"), 1: T("b1")}, {0: -1.0, 1: 1.0}),
-             ({0: T("c0")}, {0: 0.0})]
+    games = [({0: T("a0"), 1: T("a1")}, {0: 1.0, 1: -1.0}, True), ({0: T("b0"), 1: T("b1")}, {0: -1.0, 1: 1.0}, True),
+             ({0: T("c0")}, {0: 0.0}, True), ({0: T("d0")}, {0: 5.0}, False)]
     sp.release_group(games, 2.0)
-    assert got == {"a0": 2.0, "b0": -2.0, "c0": 0.0, "a1": -2.0, "b1": 2.0}
-    sp.release_group([({0: T("alone")}, {0: 3.0})], 1.0)
-    assert got["alone"] == 0.0
+    assert got == {"a0": 2.0, "b0": -2.0, "c0": 0.0, "d0": 0.0, "a1": -2.0, "b1": 2.0}  # (d: not exact, nothing)
+    sp.release_group([({0: T("alone")}, {0: 3.0}, True), ({0: T("other")}, {0: 1.0}, False)], 1.0)
+    assert got["alone"] == 0.0 and got["other"] == 0.0
