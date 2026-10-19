@@ -208,6 +208,12 @@ def inject_harness(script: str, cfg: HarnessConfig, harness: str | None = None) 
     if cfg.seed:  # (before Blizzard's and the melee initialization: the built-in AI draws from it at once)
         j = sub_once(r"^(\s*)(call InitBlizzard\(\s*\)\s*)$", rf"\1call SetRandomSeed({int(cfg.seed)})\n\1\2", j,
                      "InitBlizzard call in main")
+        # and each player at its own start location (the game draws them before the script runs)
+        n = int(re.search(r"call SetPlayers\(\s*(\d+)\s*\)", j).group(1))
+        j = re.sub(r"call SetGamePlacement\(\s*\w+\s*\)", "call SetGamePlacement(MAP_PLACEMENT_FIXED)", j, count=1)
+        fixed = "".join(f"    call ForcePlayerStartLocation(Player({i}), {i})\n" for i in range(n))
+        j = sub_once(r"^(function config takes nothing returns nothing\n(?:.*\n)*?)(endfunction)",
+                     lambda m: m.group(1) + fixed + m.group(2), j, "config function")
     return j
 
 

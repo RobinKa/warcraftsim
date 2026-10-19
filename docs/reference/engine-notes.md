@@ -123,9 +123,9 @@ The built-in AI on insane gets double income from the engine; nothing in its scr
 Measured on `echofast` (`GameSetup.seed`: `SetRandomSeed` first thing in the map's `main`; games side by side, the units' types, owners, positions and hit points compared every step):
 
 * Without a seed, two identical games (an idle agent against the normal AI) differ from step 4.
-* The start locations on Echo Isles are drawn before the map's script runs: the seed does not fix them (a game's spawns match another's half the time).
+* The start locations on Echo Isles are drawn before the map's script runs: the seed alone does not fix them (a game's spawns match another's half the time). With a seed the map's `config` now also sets `MAP_PLACEMENT_FIXED` and `ForcePlayerStartLocation(Player(i), i)`: 4 games of 4 with the same spawns, identical for 300 steps.
 * With a seed and the same spawns, **games between agents with the same orders are identical** (3 games, 300 steps of harvesting and walking across the map). The engine is deterministic.
 * **The built-in AI is not**: with a seed, AI against AI differed from step 26, an idle agent against the AI from step 36. Its script threads seem to run on the wall clock.
 
-So games can be replayed and branched mid-game only between agents (self-play, past snapshots), with the spawns fixed or matched.
+So games can be replayed and branched mid-game only between agents (self-play, past snapshots).
 

@@ -124,5 +124,8 @@ def test_seed_first_in_main(echo_script):
     out = inject_harness(echo_script, HarnessConfig(step_seconds=0.5, agent_players=(0, 1), seed=1234))
     main = out[out.index("function main takes nothing returns nothing"):]
     assert main.index("call SetRandomSeed(1234)") < main.index("call InitBlizzard(")
+    config = out[out.index("function config takes nothing returns nothing"):]
+    config = config[:config.index("endfunction")]
+    assert "MAP_PLACEMENT_FIXED" in config and "call ForcePlayerStartLocation(Player(1), 1)" in config
     assert "SetRandomSeed" not in inject_harness(echo_script, HarnessConfig(step_seconds=0.5, agent_players=(0, 1)))
     pjass_check(out)
