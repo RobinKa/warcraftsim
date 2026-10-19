@@ -30,7 +30,7 @@ def test_group_relative_returns_per_side():
 
     class T:
         def __init__(self, name):
-            self.name = name
+            self.name, self.steps = name, []
 
         def release(self, bonus):
             got[self.name] = bonus

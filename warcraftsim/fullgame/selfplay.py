@@ -983,6 +983,8 @@ def release_group(games: list[tuple[dict, dict]], coef: float) -> None:
     for s in {s for trajs, _ in games for s in trajs}:
         rs = [(trajs[s], ret[s]) for trajs, ret in games if s in trajs]
         mean = sum(r for _, r in rs) / len(rs)
+        print(f"grpo group: side {s}, returns {' '.join(f'{r:+.2f}' for _, r in rs)}, steps "
+              f"{' '.join(str(len(tr.steps)) for tr, _ in rs)}", flush=True)
         for tr, r in rs:
             tr.release(coef * (r - mean) if len(rs) > 1 else 0.0)
 
@@ -2604,7 +2606,8 @@ class GraphedUpdate:
                 torch.cuda.current_stream().synchronize()
                 time.sleep(pause / 1000)
         net.eval()
-        return {k: float(torch.stack([o[k] for o in outs]).float().mean()) for k in outs[0]} if outs else {}
+        stats = {k: float(torch.stack([o[k] for o in outs]).float().mean()) for k in outs[0]} if outs else {}
+        return {**stats, "adv/std": float(advs.std())} if stats else stats  # (the scale a GRPO bonus meets)
 
 
 def set_dropout(net: torch.nn.Module, p: float) -> None:
