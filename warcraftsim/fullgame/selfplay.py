@@ -978,9 +978,9 @@ def run_branch(wid: int, k: int, cfg: dict, vocab: dict, infer: Inference, out_q
 
 
 def state_print(obs) -> int:
-    """The game's state as a number (every unit's type, owner, position and hit points): a branch's replay
-    must reach its source's."""
-    return hash(tuple(sorted((u.type_id, u.owner, u.x, u.y, u.hp) for u in obs.units)))
+    """The players' state as a number (each of their units' type, owner, position and hit points): a branch's
+    replay must reach its source's. (Not the neutral units': the critters wander apart from step ~10.)"""
+    return hash(tuple(sorted((u.type_id, u.owner, u.x, u.y, u.hp) for u in obs.units if u.owner in (0, 1))))
 
 
 def release_group(games: list[tuple[dict, dict]], coef: float) -> None:
@@ -1388,7 +1388,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     from ..protocol import SetResources, ShadowAI, StartAI
     replay = grpo.get("replay") if grpo else None
     source = grpo.get("source", 0) if grpo else 0
-    rec = {"cmds": [], "spans": [], "res": [], "t": source} if source else None
+    rec = {"cmds": [], "spans": [], "res": [], "prints": [], "t": source} if source else None
     same = None  # (a branch: whether its replay reached its source's state)
     race_ix = [fx.RACES.index(r) if r in fx.RACES else 0 for r in races]
     bots: dict[int, BCAgent] = {}
@@ -1487,8 +1487,6 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         replaying = replay is not None and t < replay["t"]
         if replay is not None and t == replay["t"]:  # (the branch: the memory as it was, the strategy's potential)
             same = state_print(obs) == replay["print"]
-            if not same:  # (the replay did not reach its source's state: the game is not what it was)
-                print(f"actor {wid}: grpo branch at step {t}: not its source's state", flush=True)
             for s, h in replay["h"].items():
                 bots[s].h = h
             for s in zs:
@@ -1532,11 +1530,16 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         if late is not None and t == opp["start"]:  # the built-in AI takes over its side (after the bots' orders)
             cmds.append(StartAI(late))
         if replaying:  # (the source's commands, which its spans index; what they send workers to harvest)
+            if same is None and state_print(obs) != replay["prints"][t]:  # (the first step it differs: a log line)
+                same = False
+                print(f"actor {wid}: grpo replay differs from step {t} (branch {replay['t']}): {len(obs.units)} units; "
+                      f"the step before's commands {[type(c).__name__ for c in replay['cmds'][t - 1]] if t else []}", flush=True)
             cmds, spans, given, built = replay["cmds"][t], replay["spans"][t], {}, {}
             for s_, res_ in replay["res"][t].items():
                 bots[s_].sent_resources = res_
         elif rec is not None and t < rec["t"]:
             rec["cmds"].append(list(cmds))
+            rec["prints"].append(state_print(obs))
             rec["spans"].append(dict(spans))
             rec["res"].append({s_: list(bots[s_].sent_resources) for s_ in spans})
         obs = g.step(cmds)

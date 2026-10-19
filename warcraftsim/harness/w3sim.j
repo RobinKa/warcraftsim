@@ -2381,6 +2381,25 @@ endfunction
 function W3S_InitVictoryDefeat takes nothing returns nothing
 endfunction
 
+// seeded games (GameSetup.seed): the neutral passive player's units that are not buildings (critters) go
+// before the harness starts. Their wandering is not replayed alike (two seeded games apart from ~5 s), and
+// they get in the way of workers and armies: GRPO's branches replay a game's commands
+function W3S_RemoveCrittersEnum takes nothing returns nothing
+    local unit u = GetEnumUnit()
+    if GetOwningPlayer(u) == Player(PLAYER_NEUTRAL_PASSIVE) and not IsUnitType(u, UNIT_TYPE_STRUCTURE) then
+        call RemoveUnit(u)
+    endif
+    set u = null
+endfunction
+
+function W3S_RemoveCritters takes nothing returns nothing
+    local group g = CreateGroup()
+    call GroupEnumUnitsInRect(g, GetWorldBounds(), null)
+    call ForGroup(g, function W3S_RemoveCrittersEnum)
+    call DestroyGroup(g)
+    set g = null
+endfunction
+
 function W3S_Init takes nothing returns nothing
     local trigger t
     local region r
