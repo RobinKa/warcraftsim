@@ -2705,6 +2705,13 @@ def load_optimizer(opt, checkpoint: Path, device, lr: float) -> bool:
     except (ValueError, RuntimeError, KeyError) as e:
         print(f"note: Adam's state in {path} does not fit ({e}); a fresh one", flush=True)
         return False
+    for g in opt.param_groups:  # inputs added since (model.load: columns at the end of a weight): their state zeros
+        for p in g["params"]:
+            for k, v in opt.state.get(p, {}).items():
+                if torch.is_tensor(v) and v.dim() == p.dim() and v.dim() > 0 and v.shape != p.shape:
+                    pad = v.new_zeros(p.shape)
+                    pad[tuple(slice(0, s) for s in v.shape)] = v
+                    opt.state[p][k] = pad
     for g, c in zip(opt.param_groups, capturable):
         g["lr"], g["capturable"] = lr, c
     print(f"Adam's state from {path}", flush=True)

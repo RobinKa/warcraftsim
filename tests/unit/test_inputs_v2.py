@@ -224,3 +224,25 @@ def test_attack_on_a_remembered_enemy_goes_where_it_was(v2):
     assert cmds == [PointOrder(1, 851983, 2000, 0)]
     cmds = bot.commands(st, [attack], [1], [0], [0])
     assert cmds == [TargetOrder(1, 851983, 3)]
+
+
+def test_adam_state_grows_with_the_inputs(v2, tmp_path):
+    from warcraftsim.fullgame.model import FullGameNet, load
+    from warcraftsim.fullgame.selfplay import load_optimizer
+    fx.set_inputs(1)
+    vocab = {**VOCAB, "upgrades": []}
+    old = FullGameNet(n_types=5, n_cur=2, n_orders=7, G=fx.Encoder(vocab).G, d=16, layers=1, priv=fx.PRIV)
+    opt = torch.optim.Adam(old.parameters(), lr=1e-3)
+    old.value(old.encode(torch.randn(1, 2, fx.F), torch.tensor([[1, 2]]), torch.zeros(1, 2, dtype=torch.long),
+                         torch.ones(1, 2, dtype=torch.bool), torch.randn(1, old.config["G"]))[0]).sum().backward()
+    opt.step()
+    torch.save({"config": old.config, "model": old.state_dict(), "vocab": vocab}, tmp_path / "c.pt")
+    torch.save(opt.state_dict(), tmp_path / "c.adam")
+    fx.set_inputs(3)
+    net, _ = load(tmp_path / "c.pt")
+    opt2 = torch.optim.Adam(net.parameters(), lr=1e-3)
+    assert load_optimizer(opt2, tmp_path / "c.pt", torch.device("cpu"), 1e-3)
+    net.value(net.encode(torch.randn(1, 2, fx.F), torch.tensor([[1, 2]]), torch.zeros(1, 2, dtype=torch.long),
+                         torch.ones(1, 2, dtype=torch.bool), torch.randn(1, net.config["G"]))[0]).sum().backward()
+    opt2.step()  # (the state's shapes fit the grown weights)
+    assert opt2.state[net.ent.weight]["exp_avg"].shape == net.ent.weight.shape
