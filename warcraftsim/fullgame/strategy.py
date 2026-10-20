@@ -334,6 +334,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--difficulty", help="keep only the built-in AI's sides at this difficulty (e.g. normal: the "
                     "insane AI gathers twice as much, so its schedule is not an agent's)")
     ap.add_argument("--items-from", type=Path, help="another pool whose item lists to keep (a policy's slots)")
+    ap.add_argument("--tavern", type=int, default=0, help="each race's this many least common item slots swapped for the "
+                    "tavern heroes its people pick most (an extended vocabulary: --neutral, neutral.extend_vocab)")
     ap.add_argument("--narrow", action="store_true", help="each strategy narrowed to its heroes, its main army and "
                     "what they need (narrow): buildings and research outside them free; drawn evenly per signature")
     ap.add_argument("--rescale-people", type=float, default=0.0, help="people's times onto the demonstrations' rules, "
@@ -353,7 +355,18 @@ def main(argv: list[str] | None = None) -> int:
     keep = orderable(json.loads(a.vocab.read_text())) if a.vocab else None
     if keep is not None:
         strategies = [{**s, "t": {c: t for c, t in s["t"].items() if c in keep}} for s in strategies]
-    pool = build_pool(strategies, keep=keep, items=json.loads(a.items_from.read_text())["items"] if a.items_from else None)
+    items = json.loads(a.items_from.read_text())["items"] if a.items_from else None
+    if a.tavern and items is not None:  # (the slots: the old ones, the rarest swapped for the race's tavern picks)
+        from .techtree import is_hero
+        items = {r: list(v) for r, v in items.items()}
+        for race in RACES:
+            picks = Counter(c for st in strategies if st["race"] == race and st["src"] == "human"
+                            for c in st["t"] if is_hero(c) and c[0] == "N")
+            new = [c for c, _ in picks.most_common(a.tavern) if c not in items[race]]
+            if new:
+                items[race] = items[race][:len(items[race]) - len(new)] + new
+                print(f"  {race}: tavern heroes in the last slots: {new}")
+    pool = build_pool(strategies, keep=keep, items=items)
     if a.narrow:
         from .techtree import tree
         pool["strategies"] = [n for n in (narrow(s, tree()) for s in pool["strategies"]) if n is not None]
