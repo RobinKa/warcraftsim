@@ -366,3 +366,49 @@ def test_remembered_enemies_hidden_until_they_fade_in(v2, tmp_path):
         net.ghost_bias.fill_(0.0)
         g3, _ = net.encode(ent, typ, cur, mask, glob)
         assert not torch.allclose(g, g3, atol=1e-4)
+
+
+def test_privileged_views_and_self_distillation(v2):
+    """--opsd-*: the privileged view has every enemy unit (those out of sight marked) and its global flag; a dual view
+    gives it beside the player's; the policy's privileged path starts at zero; the distillation's KL in an update."""
+    import types
+
+    from warcraftsim.fullgame.model import FullGameNet, act
+    from warcraftsim.fullgame.selfplay import collate, opsd_loss
+    fx.set_inputs(2, True)
+    try:
+        enc = fx.Encoder(VOCAB)
+        rows = np.stack([_unit(1, 0, -2000, 0, 1), _unit(2, 1, 2000, 0, 3), _unit(3, 1, 2500, 0, 2)])  # (3: out of sight)
+        view = enc.view(0, 1.0, [0, 1])
+        view.dual = True
+        st = view.step(rows, None, np.zeros((0, 5), np.int64), 0)
+        assert st["n"] == 2 and st["pn"] == 3 and st["pent"][:, fx.A_HID].tolist() == [0, 0, 1]
+        flag = enc.G0 + enc.ZD + enc.GX - 1
+        assert st["glob"][flag] == 0 and st["pglob"][flag] == 1
+        actor = enc.view(0, 1.0, [0, 1])
+        actor.privileged_act = True
+        st2 = actor.step(rows, None, np.zeros((0, 5), np.int64), 0)
+        assert st2["n"] == 3 and st2["glob"][flag] == 1 and "pent" not in st2
+        torch.manual_seed(0)
+        net = FullGameNet(n_types=5, n_cur=2, n_orders=7, G=enc.G, d=16, layers=1, priv=fx.PRIV, privileged=True).eval()
+        net.allowed[:] = True
+        with torch.no_grad():
+            net.glob[0].weight[:, flag] = 0.0  # (as model.load gives a network from before it)
+        g_flag, _ = net.encode(torch.as_tensor(st["ent"])[None], torch.as_tensor(st["type"])[None], torch.as_tensor(st["cur"])[None],
+                               torch.ones(1, 2, dtype=torch.bool), torch.as_tensor(st["pglob"])[None])
+        g_none, _ = net.encode(torch.as_tensor(st["ent"])[None], torch.as_tensor(st["type"])[None], torch.as_tensor(st["cur"])[None],
+                               torch.ones(1, 2, dtype=torch.bool), torch.as_tensor(st["glob"])[None])
+        assert torch.allclose(g_flag, g_none)  # (the privileged path: zero at first)
+        with torch.no_grad():
+            a = act(net, torch.as_tensor(st["ent"])[None], torch.as_tensor(st["type"])[None].long(), torch.as_tensor(st["cur"])[None].long(),
+                    torch.ones(1, 2, dtype=torch.bool), torch.as_tensor(st["glob"])[None], torch.tensor([1]))
+        step = {**{k: st[k] for k in ("ent", "type", "cur", "glob", "n", "pent", "ptype", "pcur", "pn", "pglob")}, "n_own": 1,
+                "avail": None, "adv": 0.0, "ret": 0.0, **{k: a[k][0, :1].numpy() for k in ("order", "tgt", "bx", "by", "logp")}}
+        mb = collate([step, {**step, "pent": None}][:1], torch.device("cpu"))
+        assert mb["pent"].shape[1] >= 3 and bool(mb["phas"][0])
+        from warcraftsim.fullgame.model import evaluate
+        ev = evaluate(net, mb["ent"], mb["type"], mb["cur"], mb["mask"], mb["glob"], mb["n_own"], mb["order"], mb["tgt"],
+                      mb["bx"], mb["by"], mb["avail"])
+        assert float(opsd_loss(net, ev, mb, None)) >= 0.0
+    finally:
+        fx.set_inputs(1, False)

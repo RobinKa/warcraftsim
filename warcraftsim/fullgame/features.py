@@ -221,14 +221,27 @@ F = F_BASE
 GX = 0
 
 
-def set_inputs(v: int) -> None:
+# privileged information (selfplay --opsd-coef, --opsd-share: self-distillation from the same network given what the
+# player can't see, the user's idea): one more entity channel, an enemy out of sight (the privileged view has every
+# enemy unit), and one more global number, whether the view is privileged (the policy then also reads the privileged
+# block: model.FullGameNet "privileged"). A view that is not privileged has zeros there.
+PRIVILEGED = os.environ.get("WARCRAFTSIM_PRIVILEGED", "0") == "1"
+A_HID = -1  # (set_inputs: the last entity channel when PRIVILEGED)
+
+
+def set_inputs(v: int, privileged: bool | None = None) -> None:
     """The run's inputs (selfplay --inputs): 1 as before, 2 the hero and production blocks and the clock, 3 and the
-    enemies it saw before (View.ghosts)."""
-    global INPUTS, F, GX
+    enemies it saw before (View.ghosts); `privileged` (None: as it was) the privileged channels after them."""
+    global INPUTS, F, GX, PRIVILEGED, A_HID
     INPUTS = int(v)
+    if privileged is not None:
+        PRIVILEGED = bool(privileged)
     F = F_BASE if INPUTS < 2 else A_PROD + PROD_F if INPUTS < 3 else A_MEM + MEM_F
     GX = 0 if INPUTS < 2 else 3
+    if PRIVILEGED:
+        A_HID, F, GX = F, F + 1, GX + 1
     os.environ["WARCRAFTSIM_INPUTS"] = str(INPUTS)  # (processes started anew)
+    os.environ["WARCRAFTSIM_PRIVILEGED"] = str(int(PRIVILEGED))
 
 
 set_inputs(int(os.environ.get("WARCRAFTSIM_INPUTS", 1)))
@@ -504,14 +517,19 @@ class Encoder:
         return -1.0 if len(own) and own[:, C_X].mean() > MAP_CX else 1.0
 
     def entities(self, rows: np.ndarray, player: int, sign: float, production=None,
-                 lumber: set[int] | None = None, ghosts: tuple[np.ndarray, np.ndarray] | None = None) -> tuple[np.ndarray, ...]:
+                 lumber: set[int] | None = None, ghosts: tuple[np.ndarray, np.ndarray] | None = None,
+                 omniscient: bool = False) -> tuple[np.ndarray, ...]:
         """One step's units -> (rows in entity order, n own, float features, types, current orders). `ghosts`
         (inputs 3, View.remembered): the enemies seen before and out of sight now, (their rows as last seen, seconds
-        since), after those in sight (self.ghost0: the first)."""
+        since), after those in sight (self.ghost0: the first). `omniscient` (the privileged view): every enemy unit,
+        those out of sight after those in sight and marked (A_HID)."""
         alive = rows[:, C_FLAGS] & DEAD == 0
         vis = (rows[:, C_VIS] >> player) & 1 == 1
         own = rows[alive & (rows[:, C_OWNER] == player)][:MAX_OWN]
         enemy = rows[alive & (rows[:, C_OWNER] == 1 - player) & vis]
+        hidden = rows[alive & (rows[:, C_OWNER] == 1 - player) & ~vis] if omniscient else None
+        if hidden is not None:
+            enemy = np.concatenate([enemy, hidden])
         neutral = rows[alive & (rows[:, C_OWNER] != player) & (rows[:, C_OWNER] != 1 - player) & vis]
         parts = [own, enemy, neutral]
         if ghosts is not None and len(ghosts[0]):
@@ -523,6 +541,9 @@ class Encoder:
         f[:n_own, 0] = 1
         f[n_own:n_own + len(enemy), 1] = 1
         f[n_own + len(enemy):g0, 2] = 1
+        if hidden is not None and len(hidden):  # (the privileged view: the enemies out of sight)
+            k0 = n_own + len(enemy) - len(hidden)
+            f[k0:min(n, n_own + len(enemy)), A_HID] = 1.0
         if g0 < n:  # (inputs 3: the enemies it remembers; with --neutral the neutral buildings too)
             enemy_ghost = sel[g0:, C_OWNER] == 1 - player
             f[g0:, 1], f[g0:, 2] = enemy_ghost, ~enemy_ghost
@@ -819,6 +840,9 @@ class View:
         self.levels: dict[int, int] = {}  # upgrade id -> its level (all of the player's research, not only the vocabulary's)
         self.step_seconds = 0.5  # (the clock: game seconds of a step)
         self.t_now = 0  # (the step: the tech mask's wares in stock)
+        # privileged information (PRIVILEGED): act on the privileged view (a teacher game), or give it beside the
+        # player's (dual: the self-distillation's teacher sees it)
+        self.privileged_act = self.dual = False
         self.techmask: TechMask | None = None
         self.ghosts: dict[int, tuple[np.ndarray, int]] = {}  # (inputs 3) enemy unit -> its row when last seen, the step
         self.max_own = self.max_ent = 0  # the most own units and entities in view at a step (MAX_OWN, MAX_ENT: cut)
@@ -952,9 +976,14 @@ class View:
                     del self.making[a]
             if kind == RESEARCH_FINISH and a in self.own_buildings:
                 self.levels[int(r[3])] = int(r[4])
-        sel, n_own, f, types, cur = enc.entities(rows, player, self.sign, (self.queued, self.busy, self.making),
-                                                 {u for u, r in self.assign.items() if r == "lumber"},
-                                                 self.remembered(rows, t) if F > A_MEM else None)
+        lumber = {u for u, r in self.assign.items() if r == "lumber"}
+        priv = None  # (the privileged view: every enemy unit; acting on it, or beside the player's for distillation)
+        if PRIVILEGED and (self.privileged_act or self.dual):
+            priv = enc.entities(rows, player, self.sign, (self.queued, self.busy, self.making), lumber, omniscient=True)
+        sel, n_own, f, types, cur = enc.entities(rows, player, self.sign, (self.queued, self.busy, self.making), lumber,
+                                                 self.remembered(rows, t) if F > A_MEM and not self.privileged_act else None)
+        if priv is not None and self.privileged_act:
+            sel, n_own, f, types, cur = priv
         self.max_own, self.max_ent = max(self.max_own, enc.counts[0]), max(self.max_ent, enc.counts[1])
         ids, hp = sel[:, C_ID].tolist(), sel[:, C_HP]
         last = np.array([self.hp_last.get(i, h) for i, h in zip(ids, hp.tolist())], np.float32)
@@ -988,7 +1017,7 @@ class View:
         g[6 + 2 * len(RACES):enc.G0] = self.upgrades
         if self.z is not None and enc.ZD:
             g[enc.G0:enc.G0 + enc.ZD] = self.z
-        if enc.GX:  # the clock (inputs 2)
+        if INPUTS >= 2:  # the clock (inputs 2)
             hour = (START_HOUR + t * self.step_seconds * 24.0 / DAY_SECONDS) % 24.0
             ang = 2.0 * math.pi * hour / 24.0
             x = enc.G0 + enc.ZD
@@ -1006,6 +1035,18 @@ class View:
             avail = self.zmask.copy() if avail is None else avail & self.zmask
         if self.active_f < F_BASE:
             f[:, self.active_f:F_BASE] = 0.0
-        return {"n": len(sel), "sel": sel, "n_own": n_own, "ent": f, "type": types, "cur": cur, "glob": g,
-                "index": {int(i): k for k, i in enumerate(sel[:, C_ID])}, "avail": avail,
-                "ghost0": getattr(enc, "ghost0", len(sel))}
+        out = {"n": len(sel), "sel": sel, "n_own": n_own, "ent": f, "type": types, "cur": cur, "glob": g,
+               "index": {int(i): k for k, i in enumerate(sel[:, C_ID])}, "avail": avail,
+               "ghost0": getattr(enc, "ghost0", len(sel)) if not self.privileged_act else len(sel)}
+        if priv is not None:  # (the privileged view's global flag; its entities beside the player's: "p…")
+            flag = enc.G0 + enc.ZD + enc.GX - 1
+            pg = g.copy()
+            pg[flag] = 1.0
+            if self.privileged_act:
+                out["glob"] = pg
+            else:
+                pf = priv[2]
+                if self.active_f < F_BASE:
+                    pf[:, self.active_f:F_BASE] = 0.0
+                out.update(pent=pf, ptype=priv[3], pcur=priv[4], pn=len(priv[0]), pglob=pg)
+        return out

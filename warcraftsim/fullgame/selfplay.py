@@ -660,7 +660,7 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
         _pin(cfg, "server")
         torch.set_num_threads(2)
         alive = lambda: os.getppid() == cfg["learner_pid"]  # noqa: E731
-    fx.set_inputs(cfg.get("inputs", 1))  # (the rows' width, and the past snapshots' inputs: model.load)
+    fx.set_inputs(cfg.get("inputs", 1), bool(cfg.get("privileged")))  # (the rows' width, the snapshots' inputs: model.load)
     fx.set_masks(cfg.get("tech_mask", 0), cfg.get("valid_mask", 0))
     fx.set_neutral(cfg.get("neutral", 0))
     nets = Nets(cfg, device)
@@ -829,6 +829,9 @@ class Trajectory:
                            "done": False, "version": res["version"]})
         if self.cfg.get("unit_credit", 0.0) > 0:  # (--unit-credit: each own unit's id, for its local reward)
             self.steps[-1]["ids"] = st["sel"][:self.steps[-1]["n_own"], fx.C_ID].astype(np.int64)
+        if "pent" in st:  # (--opsd-coef: the privileged view of the step, the self-distillation's teacher's)
+            self.steps[-1].update(pent=st["pent"].astype(np.float16), ptype=st["ptype"].astype(np.int16),
+                                  pcur=st["pcur"].astype(np.int16), pn=st["pn"], pglob=st["pglob"])
         if self.cfg.get("reward_parts"):  # (--reward-parts: the reward by part, PART_NAMES; "reward" their sum)
             self.steps[-1]["rparts"] = np.zeros(len(PART_NAMES), np.float32)
         if len(self.steps) > self.cfg["chunk"] and not self.hold:
@@ -1520,6 +1523,13 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     rows_next = None  # (the step's unit rows, made for the trackers: the next step's)
     made = {s: {} for s in zs}  # each item's first game second, of the sides with a strategy
     builders = {s: TargetBuilder(cfg, vocab, s, zs[s], random.Random()) for s in zs} if cfg.get("z_build") else {}
+    if cfg.get("privileged") and train:  # (--opsd-*: a teacher game acts on the privileged view; the others give it beside)
+        for s in trajs:
+            if keys[s] == "current":
+                if random.random() < cfg.get("opsd_share", 0.0):
+                    bots[s].view.privileged_act = True
+                elif cfg.get("opsd_coef", 0.0) > 0:
+                    bots[s].view.dual = True
     # --teach: a heuristic teacher's lessons (teacher.py: a tavern hero, a town portal, a potion) label the learner's steps
     teachers = ({s: Teacher(s, races[s], random.Random()) for s in trajs if keys[s] == "current"}
                 if cfg.get("teach") and replay is None else {})
@@ -1857,7 +1867,7 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
     fx.ACTIVE_F = cfg.get("features", fx.F)  # (a spawned process: the learner's setting, --features)
     fx.set_geometry(*cfg.get("map_geometry", (fx.STARTS, fx.BIN_RANGE)))  # (and the map's frame)
     fx.set_z(cfg.get("z_dim", 0))  # (and the global vector's strategy block)
-    fx.set_inputs(cfg.get("inputs", 1))  # (and the inputs: --inputs, --tech-mask, --valid-mask)
+    fx.set_inputs(cfg.get("inputs", 1), bool(cfg.get("privileged")))  # (and the inputs: --inputs, the masks, --opsd-*)
     fx.set_masks(cfg.get("tech_mask", 0), cfg.get("valid_mask", 0))
     fx.set_neutral(cfg.get("neutral", 0))
     out_q.cancel_join_thread()  # exiting must not wait to flush trajectories nobody reads any more
@@ -2207,6 +2217,20 @@ def collate(steps: list[dict], device, width: int | None = None, with_labels: bo
                 for k in labels:
                     labels[k][i, :s["n_own"]] = s[k]
         labels = {**{k: t(v) for k, v in labels.items()}, "y_has": t(has), "y_only": t(only), "y_any": bool(has.any())}
+    priv = {}
+    if any("pent" in s for s in steps):  # (--opsd-coef: the privileged views, their own width; none: phas False)
+        PE = _width(max(s.get("pn", 1) for s in steps))
+        pent = np.zeros((B, PE, fx.F), np.float32)
+        ptyp, pcur = np.zeros((B, PE), np.int64), np.zeros((B, PE), np.int64)
+        pmask, pglob, phas = np.zeros((B, PE), bool), np.zeros((B, G), np.float32), np.zeros(B, bool)
+        for i, s in enumerate(steps):
+            if "pent" in s:
+                n = s["pn"]
+                pent[i, :n], ptyp[i, :n], pcur[i, :n], pmask[i, :n], pglob[i], phas[i] = s["pent"], s["ptype"], s["pcur"], True, s["pglob"], True
+            else:
+                pmask[i, 0] = True  # (attention over nothing gives NaNs)
+        priv = {"pent": to_device(pent, device), "ptype": to_device(ptyp, device), "pcur": to_device(pcur, device),
+                "pmask": to_device(pmask, device), "pglob": to_device(pglob, device), "phas": to_device(phas, device)}
     ladv = None
     if any(s.get("ladv") is not None for s in steps):  # (--unit-credit: each own unit's share of the credit)
         ladv = np.zeros((B, O), np.float32)
@@ -2214,7 +2238,7 @@ def collate(steps: list[dict], device, width: int | None = None, with_labels: bo
             if s.get("ladv") is not None:
                 o = min(len(s["ladv"]), O)
                 ladv[i, :o] = s["ladv"][:o]
-    return {"ent": t(ent), "type": t(typ), "cur": t(cur), "mask": t(mask), "glob": t(glob), "n_own": t(n_own), **labels,
+    return {"ent": t(ent), "type": t(typ), "cur": t(cur), "mask": t(mask), "glob": t(glob), "n_own": t(n_own), **labels, **priv,
             **({"ladv": t(ladv)} if ladv is not None else {}),
             **({"uadv": t(np.array([s.get("uadv", 0.0) for s in steps], np.float32))}  # (--upgo)
                if any("uadv" in s for s in steps) else {}),
@@ -2298,6 +2322,19 @@ def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast) -> tuple[torch.
         issued = ok * (y > 0)
         acc = ((lp[..., 1:].argmax(-1) + 1 == y) * issued).sum() / issued.sum().clamp(min=1)
     return l_order + l_ptr + 0.5 * l_pt, acc
+
+
+def opsd_loss(net: FullGameNet, ev: dict, mb: dict, seq) -> torch.Tensor:
+    """--opsd-coef: KL(teacher || policy) over each own unit's order, the teacher the same network given the step's
+    privileged view (no gradient through it; own units come first in both views), on the steps that have one."""
+    with torch.no_grad():
+        evt = evaluate(net, mb["pent"], mb["ptype"], mb["pcur"], mb["pmask"], mb["pglob"], mb["n_own"],
+                       mb["order"], mb["tgt"], mb["bx"], mb["by"], mb["avail"], seq=seq)
+        lt = torch.log_softmax(evt["logits"].float(), -1)
+    ls = torch.log_softmax(ev["logits"].float(), -1)
+    kl = (lt.exp() * (lt - ls)).sum(-1)  # [N, O]
+    w = mb["own"].float() * mb["phas"].float()[:, None]
+    return (kl * w).sum() / w.sum().clamp(min=1)
 
 
 def _masked_ce(logits: torch.Tensor, y: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
@@ -2580,6 +2617,10 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
                 # also while the value warms up: it shares the network's trunk, so training it alone
                 # moved the policy too (the KL to the clone doubled in the first five updates)
                 loss = loss + args.ref_kl * ref_kl
+            if getattr(args, "opsd_coef", 0.0) > 0 and "pent" in mb:  # (self-distillation, privileged information)
+                l_opsd = opsd_loss(net, ev, mb, seq)
+                loss = loss + args.opsd_coef * l_opsd
+                stats.setdefault("loss/opsd", []).append(l_opsd.detach())
             if getattr(args, "opd_coef", 0.0) > 0 and mb.get("y_any"):
                 l_opd, opd_acc = distill_loss(net, ev, mb, autocast)
                 loss = loss + args.opd_coef * l_opd
@@ -2684,6 +2725,10 @@ class GraphedUpdate:
                 ref_kl = (anchor_kl(ev, ev_ref, getattr(args, "ref_kl_mode", "reverse")) * own).sum() / n_units
                 loss = loss + args.ref_kl * ref_kl
             out["loss/ref_kl"] = ref_kl
+            if getattr(args, "opsd_coef", 0.0) > 0 and "pent" in s:  # (self-distillation, privileged information)
+                l_opsd = opsd_loss(net, ev, s, seq)
+                loss = loss + args.opsd_coef * l_opsd
+                out["loss/opsd"] = l_opsd
             if getattr(args, "opd_coef", 0.0) > 0:
                 l_opd, opd_acc = distill_loss(net, ev, s, None)
                 loss = loss + args.opd_coef * l_opd
@@ -2794,7 +2839,7 @@ class GraphedUpdate:
                         b = {k: (v.contiguous().pin_memory() if isinstance(v, torch.Tensor) else v)  # (see to_device)
                              for k, v in b.items()}
                         b["width"] = bw
-                    yield (width, b["width"] if b is not None else 0,
+                    yield (width, b["width"] if b is not None else 0, mb["pent"].shape[1] if "pent" in mb else 0,
                            tuple(sorted(k for k, v in mb.items() if isinstance(v, torch.Tensor)))), mb, b
 
         pause = getattr(args, "update_pause_ms", 0)
@@ -2934,6 +2979,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--memory-fade", type=int, default=0, help="inputs 3: the remembered enemies fade into the learner's "
                     "attention over this many updates (its bias on them from -8 to 0; older networks and the anchor "
                     "keep them hidden at -30); 0: as loaded")
+    ap.add_argument("--opsd-share", type=float, default=0.0, help="self-distillation with privileged information (the "
+                    "user's idea): this share of the learner's training games act on the privileged view (every enemy "
+                    "unit, the opponent's resources: the network learns to use it); never in evaluation")
+    ap.add_argument("--opsd-coef", type=float, default=0.0, help="the other games' steps: a KL from the same network's "
+                    "orders given the privileged view (no gradient through it) to its orders given the player's")
     ap.add_argument("--teach", type=int, default=0, help="a heuristic teacher (teacher.py: a tavern hero with a worker, "
                     "a town portal, a potion when a hero is low) labels the learner's steps, never carried out; "
                     "--opd-coef the labels' weight; needs --neutral 1")
@@ -3244,7 +3294,8 @@ def main(argv: list[str] | None = None) -> int:
     os.environ["WARCRAFTSIM_FEATURES"] = str(args.features)  # (and processes started anew: actors, videos)
     if args.valid_mask and args.inputs < 2:
         raise SystemExit("--valid-mask reads the hero features: --inputs 2")
-    fx.set_inputs(args.inputs)  # (before any network is loaded: model.load gives older ones the new inputs)
+    fx.set_inputs(args.inputs, args.opsd_share > 0 or args.opsd_coef > 0)  # (before any network is loaded: model.load
+    # gives older ones the new inputs; --opsd-*: the privileged channels)
     fx.set_masks(args.tech_mask, args.valid_mask)
     fx.set_neutral(args.neutral)
     if args.z_modes > 0:  # (the strategy block with the modes' part: model.load grows older networks')
@@ -3450,7 +3501,8 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "teach": args.teach,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "eval_ai": [d for d in args.eval_ai.split(",") if d],
            "map_geometry": [fx.STARTS, fx.BIN_RANGE],
            "infer_entities": [int(x) for x in args.infer_entities.split(",")],

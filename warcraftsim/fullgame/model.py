@@ -33,13 +33,14 @@ class FullGameNet(nn.Module):
     def __init__(self, n_types: int, n_cur: int, n_orders: int, G: int, d: int = 192, heads: int = 4,
                  layers: int = 3, dropout: float = 0.0, memory: bool = False, target_temperature: float = 1.0,
                  priv: int = 0, order_temperature: float = 1.0, bins: int = 128, z: int = 0, gx: int = 0,
-                 valid: int = 0, vparts: int = 0, ghost: bool = False):
+                 valid: int = 0, vparts: int = 0, ghost: bool = False, privileged: bool = False):
         super().__init__()
         self.config = dict(n_types=n_types, n_cur=n_cur, n_orders=n_orders, G=G, d=d, heads=heads, layers=layers,
                            dropout=dropout, memory=memory, target_temperature=target_temperature, priv=priv,
                            order_temperature=order_temperature, bins=bins, **({"z": z} if z else {}),
                            **({"gx": gx} if gx else {}), **({"valid": valid} if valid else {}),
-                           **({"vparts": vparts} if vparts else {}), **({"ghost": True} if ghost else {}))
+                           **({"vparts": vparts} if vparts else {}), **({"ghost": True} if ghost else {}),
+                           **({"privileged": True} if privileged else {}))
         # the global vector's last `priv` numbers: the whole game (features.View.priv), for the value alone
         self.priv = int(priv)
         # the target heads' logits (unit, x, y) divided by it, acting and training alike: < 1 samples a unit's
@@ -78,6 +79,11 @@ class FullGameNet(nn.Module):
         # leaves it untrained)
         # (--reward-parts: one value per reward, outcome, shaping, strategy; the value is their sum)
         self.value_head = nn.Sequential(nn.Linear(d, d), nn.ReLU(), nn.Linear(d, max(1, int(vparts))))
+        if privileged:  # (a privileged view, the global vector's last flag: the policy reads the privileged block too;
+            # zero at first)
+            self.priv_pol = nn.Sequential(nn.Linear(self.priv, d), nn.ReLU(), nn.Linear(d, d))
+            nn.init.zeros_(self.priv_pol[2].weight)
+            nn.init.zeros_(self.priv_pol[2].bias)
         if self.priv:  # (added to the value head's input; zero at first: the value as before)
             self.priv_proj = nn.Sequential(nn.Linear(self.priv, d), nn.ReLU(), nn.Linear(d, d))
             nn.init.zeros_(self.priv_proj[2].weight)
@@ -135,7 +141,11 @@ class FullGameNet(nn.Module):
         x = self.ent(ent) + self.type_emb(typ) + self.cur_emb(cur)
         # (what the player knows, and the strategy block of a network with one: config G less the privileged
         # block; one without reads only what it knows when a run's rows have a strategy block)
-        tok = torch.cat([self.glob(glob[..., :self.config["G"] - self.priv]).unsqueeze(1), x], 1)
+        g0 = self.glob(glob[..., :self.config["G"] - self.priv])
+        if self.config.get("privileged"):  # (the flag: the last number before the privileged block)
+            at = self.config["G"] - self.priv
+            g0 = g0 + glob[..., at - 1:at].to(g0.dtype) * self.priv_pol(glob[..., at:].to(g0.dtype))
+        tok = torch.cat([g0.unsqueeze(1), x], 1)
         pad = torch.cat([torch.zeros_like(mask[:, :1]), ~mask], 1)
         if self.config.get("ghost") and ent.shape[-1] > fx.A_MEM:  # (the remembered enemies: their attention bias)
             ghost = torch.cat([torch.zeros_like(mask[:, :1]), ent[..., fx.A_MEM] > 0.5], 1)
@@ -341,8 +351,10 @@ def adapt_config(config: dict) -> dict:
     """A checkpoint's config as this run's inputs read it (features.set_inputs): the clock's numbers in the
     global vector (inputs 2: features.GX, between the strategy block and the privileged one) added."""
     config = dict(config)
-    if fx.F > fx.A_MEM and not config.get("ghost"):  # (inputs 3: the remembered enemies hidden from a network before them)
-        config["ghost"] = True
+    if fx.F > fx.A_MEM and fx.INPUTS >= 3 and not config.get("ghost"):  # (inputs 3: the remembered enemies hidden from
+        config["ghost"] = True                                            # a network before them)
+    if fx.PRIVILEGED and not config.get("privileged"):  # (the privileged path, zero at first)
+        config["privileged"] = True
     gx = config.get("gx", 0)
     if fx.GX > gx:
         config["G"] += fx.GX - gx
@@ -383,7 +395,7 @@ def load(path, device="cpu", memory: bool | None = None) -> tuple[FullGameNet, d
         state = {**state, "glob.0.weight": torch.cat([w[:, :at], w.new_zeros(w.shape[0], dz), w[:, at:],
                                                       w.new_zeros(w.shape[0], dg)], 1)}
     missing, unexpected = net.load_state_dict(state, strict=False)
-    if unexpected or any(not (k.startswith(("value_head.", "mem_", "priv_proj.")) or k in ("order_kind", "target_temp", "ghost_bias"))
+    if unexpected or any(not (k.startswith(("value_head.", "mem_", "priv_proj.", "priv_pol.")) or k in ("order_kind", "target_temp", "ghost_bias"))
                          for k in missing):
         raise RuntimeError(f"{path}: missing {missing}, unexpected {unexpected}")
     if "order_kind" in missing and "vocab" in ck:  # fits from before it: from the vocabulary
