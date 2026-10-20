@@ -50,6 +50,7 @@ import torch
 
 from . import features as fx
 from . import modes as zmodes
+from . import scenarios
 from . import strategy as strat
 from .collect import claim_slot
 from .costs import order_costs
@@ -1523,6 +1524,10 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     rows_next = None  # (the step's unit rows, made for the trackers: the next step's)
     made = {s: {} for s in zs}  # each item's first game second, of the sides with a strategy
     builders = {s: TargetBuilder(cfg, vocab, s, zs[s], random.Random()) for s in zs} if cfg.get("z_build") else {}
+    # --scenarios: a share of the training games start in a situation the harness sets up (scenarios.py)
+    scenario = (random.choice(cfg["scenarios"]) if train and replay is None and cfg.get("scenarios")
+                and random.random() < cfg.get("scenario_share", 0.0) else None)
+    scenario_cmds = scenarios.commands(scenario, obs, side, races, random.Random()) if scenario else []
     if cfg.get("privileged") and train:  # (--opsd-*: a teacher game acts on the privileged view; the others give it beside)
         for s in trajs:
             if keys[s] == "current":
@@ -1568,6 +1573,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             gathered = now
         if t == 0:
             cmds += [ShadowAI(s) for s in advised]
+            cmds += scenario_cmds  # (--scenarios: the situation the game starts in)
         held = {s: obs.players.get(s) for s in advised}  # (the labels count what the player could pay for)
         held = {s: np.asarray([t, s, p.gold, p.lumber, p.food_used, p.food_cap, p.upkeep]) for s, p in held.items() if p}
         rows = rows_next if rows_next is not None else unit_rows(obs, t)  # once for both sides
@@ -1742,6 +1748,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             "z_blocked": {c: dict(v) for c, v in builders[side].blocked.items()}} if side in builders else {}),
         **({"z_modes": trackers[side].report()} if side in trackers else {}),
         **({"taught": teachers[side].taught} if side in teachers else {}),
+        **({"scenario": scenario} if scenario else {}),
         **({"z_t": {c: round(v) for c, v in zs[side]["t"].items()},
             "z_made": {c: round(v) for c, v in made[side].items()}} if side in zs else {}),
         **({"z": zs[side]["src"] + (" won" if zs[side]["won"] else ""), "z_items": len(zs[side]["t"]),
@@ -2984,6 +2991,9 @@ def main(argv: list[str] | None = None) -> int:
                     "unit, the opponent's resources: the network learns to use it); never in evaluation")
     ap.add_argument("--opsd-coef", type=float, default=0.0, help="the other games' steps: a KL from the same network's "
                     "orders given the privileged view (no gradient through it) to its orders given the player's")
+    ap.add_argument("--scenarios", default="", help="scenarios (scenarios.py: clash, raid, rich; comma-separated) "
+                    "a share of the training games start in")
+    ap.add_argument("--scenario-share", type=float, default=0.0, help="--scenarios: the share of the training games")
     ap.add_argument("--teach", type=int, default=0, help="a heuristic teacher (teacher.py: a tavern hero with a worker, "
                     "a town portal, a potion when a hero is low) labels the learner's steps, never carried out; "
                     "--opd-coef the labels' weight; needs --neutral 1")
@@ -3503,6 +3513,7 @@ def main(argv: list[str] | None = None) -> int:
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
            "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
+           "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "eval_ai": [d for d in args.eval_ai.split(",") if d],
            "map_geometry": [fx.STARTS, fx.BIN_RANGE],
            "infer_entities": [int(x) for x in args.infer_entities.split(",")],

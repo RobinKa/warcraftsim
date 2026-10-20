@@ -123,6 +123,7 @@ def run_config(run_dir: Path, host: str, games: int, start_update) -> tuple[dict
            "features": num("features", fx.F, int), "inputs": num("inputs", 1, int),  # (--inputs, the masks)
            "tech_mask": num("tech_mask", 0, int), "valid_mask": num("valid_mask", 0, int), "neutral": num("neutral", 0, int),
            "privileged": num("opsd_share", 0.0) > 0 or num("opsd_coef", 0.0) > 0,  # (the networks' channels only)
+           "scenarios": [], "scenario_share": 0.0,  # (training games only)
            "eval_ai": [d for d in c.get("eval_ai", "normal,insane").split(",") if d],
            "eval_checkpoints": list(local), "eval_z": _flag(c.get("eval_z", 0)),
            "z_pool": c.get("eval_z_pool") or c.get("z_pool") or "", "z_src": c.get("z_src") or "", "z_enforce": _flag(c.get("z_enforce", 0)),

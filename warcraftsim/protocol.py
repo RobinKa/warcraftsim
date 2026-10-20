@@ -480,6 +480,7 @@ class Op(IntEnum):
     VIS_LINE = 82
     VIS_AREA = 83
     CAMERA_ZOOM = 84
+    SPAWN_HERO = 89
     SET_RESOURCES = 90
     SPAWN = 91
     QUEUE_SPAWN = 92
@@ -643,6 +644,19 @@ class Spawn(Command):
 
 
 @dataclass(frozen=True)
+class SpawnHero(Command):
+    """Scenarios: a hero for `player` at a level (its skill points left to spend)."""
+    player: int
+    unit_type: int | str
+    x: float
+    y: float
+    level: int
+
+    def encode(self) -> list[int]:
+        return [Op.SPAWN_HERO, self.player, fourcc(self.unit_type), _coord(self.x), _coord(self.y), self.level]
+
+
+@dataclass(frozen=True)
 class QueueSpawn(Command):
     """Scenarios: a unit for the next Restart (spawned after the old units are removed). `hp_permille`
     > 0 scales its hit points to that share of its own maximum; heroes start at `hero_level` and
@@ -792,7 +806,7 @@ def encode_commands(commands: Iterable[Command]) -> list[int]:
 
 _OP_LENGTHS = {Op.POINT: 5, Op.TARGET: 4, Op.IMMEDIATE: 3, Op.BUILD: 5, Op.LEARN: 3, Op.TARGET_DESTRUCTABLE: 4,
                Op.ITEM: 7, Op.BUY: 4, Op.VIS_CLEAR: 1, Op.VIS_MARK: 6, Op.VIS_LINE: 9, Op.VIS_AREA: 5, Op.CAMERA_ZOOM: 2,
-               Op.SET_RESOURCES: 4, Op.SPAWN: 5, Op.QUEUE_SPAWN: 8, Op.QUEUE_SKILL: 2, Op.START_AI: 2, Op.SHADOW_AI: 2, Op.CAMERA: 3,
+               Op.SET_RESOURCES: 4, Op.SPAWN: 5, Op.SPAWN_HERO: 6, Op.QUEUE_SPAWN: 8, Op.QUEUE_SKILL: 2, Op.START_AI: 2, Op.SHADOW_AI: 2, Op.CAMERA: 3,
                Op.END_GAME: 1, Op.SNAPSHOT: 1, Op.RESTART: 1}
 
 

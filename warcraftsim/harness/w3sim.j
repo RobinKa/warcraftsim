@@ -1371,6 +1371,14 @@ function W3S_ApplyOne takes integer at returns integer
         set n = 5
         set u = CreateUnit(Player(W3S_Real(w3s_cmd[at + 1])), w3s_cmd[at + 2], I2R(w3s_cmd[at + 3] - 65536), I2R(w3s_cmd[at + 4] - 65536), 270.0)
         set ok = u != null
+    elseif op == 89 then
+        // a hero at a level (scenarios): player, type, x, y, level; its skill points left for its player to spend
+        set n = 6
+        set u = CreateUnit(Player(W3S_Real(w3s_cmd[at + 1])), w3s_cmd[at + 2], I2R(w3s_cmd[at + 3] - 65536), I2R(w3s_cmd[at + 4] - 65536), 270.0)
+        if u != null and w3s_cmd[at + 5] > 1 then
+            call SetHeroLevel(u, w3s_cmd[at + 5], false)
+        endif
+        set ok = u != null
     elseif op == 80 then
         set n = 1
         call W3S_VisClear()
