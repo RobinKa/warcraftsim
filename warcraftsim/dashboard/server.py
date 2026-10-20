@@ -1496,17 +1496,54 @@ class Dashboard:
 
 def _latest_media(d: Path, media: list[dict], n: int = 40) -> list[dict]:
     """The last n media rows whose file exists, newest first; one per file (a re-rendered video
-    appends another row for its file: the latest counts)."""
+    appends another row for its file: the latest counts). A video's game replay, when kept (replays/<its name>.w3g):
+    "replay"."""
     seen: set[str] = set()
     out = []
     for m in reversed(media):
         if m["file"] in seen or not (d / m["file"]).exists():
             continue
         seen.add(m["file"])
-        out.append(m)
+        w3g = d / "replays" / (Path(m["file"]).stem + ".w3g")
+        out.append({**m, "replay": f"replays/{w3g.name}"} if w3g.exists() else m)
         if len(out) >= n:
             break
     return out
+
+
+BUNDLE_README = """A Warcraft III 1.29 replay of a warcraftsim game ({run}, {name}).
+
+The agents' orders reach the game through warcraftsim's map script (the harness), not as players' input, so the
+stock game client shows this replay with the agents idle. warcraftsim plays it back in full: the harness runs again
+and gets the agents' orders ({name}.commands.json) at the same steps (GameInstance.play_replay, the videos'
+renderer). The replay needs the exact map it was played on: map.w3x here (the replay names it "..\\w3sim\\map.w3x":
+Documents\\Warcraft III\\w3sim\\map.w3x). {name}.trace.json, when there, is the policy's panel of the video.
+"""
+
+
+def replay_bundle(w3g: Path, run: str) -> tuple[bytes, str]:
+    """A kept replay with what plays it back (its agents' orders, its map from the build cache, the video panel's
+    trace), as a zip -> (bytes, file name)."""
+    import io
+    import zipfile
+    from .. import paths
+    stem = w3g.stem
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.write(w3g, f"{stem}.w3g")
+        for extra in (".commands.json", ".trace.json"):
+            f = w3g.with_name(stem + extra)
+            if f.exists():
+                z.write(f, f.name)
+        try:
+            key = json.loads(w3g.with_name(stem + ".commands.json").read_text()).get("map_key")
+        except (OSError, ValueError):
+            key = None
+        m = paths.CACHE_DIR / "maps" / f"{key}.w3x" if key else None
+        if m is not None and m.exists():
+            z.write(m, "map.w3x")
+        z.writestr("README.txt", BUNDLE_README.format(run=run, name=stem))
+    return buf.getvalue(), f"{run}-{stem}.zip"
 
 
 def _page() -> bytes:
@@ -1583,7 +1620,11 @@ def make_handler(dash: Dashboard, docs: Docs | None = None):
                 target = (dash.runs_dir / rel).resolve()
                 if dash.runs_dir.resolve() not in target.parents or not target.is_file():
                     return self._send(b"not found", "text/plain", 404)
-                return self._file(target)
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, keep_blank_values=True)
+                if "bundle" in query and target.suffix == ".w3g":  # (the replay with what plays it back: a zip)
+                    body, name = replay_bundle(target, rel.parts[0])
+                    return self._file_bytes(body, name, "application/zip")
+                return self._file(target, f"{rel.parts[0]}-{target.name}" if "download" in query else None)
             self._send(b"not found", "text/plain", 404)
 
         def do_POST(self):
@@ -1637,7 +1678,15 @@ def make_handler(dash: Dashboard, docs: Docs | None = None):
                 return self._json({"ok": True})
             self._send(b"not found", "text/plain", 404)
 
-        def _file(self, target: Path) -> None:
+        def _file_bytes(self, body: bytes, name: str, ctype: str) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _file(self, target: Path, download: str | None = None) -> None:
             ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
             size = target.stat().st_size
             rng = self.headers.get("Range")
@@ -1654,6 +1703,8 @@ def make_handler(dash: Dashboard, docs: Docs | None = None):
                 body = target.read_bytes()
                 self.send_response(200)
             self.send_header("Content-Type", ctype)
+            if download:  # (?download: saved under the run's name)
+                self.send_header("Content-Disposition", f'attachment; filename="{download}"')
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()

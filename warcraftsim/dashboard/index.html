@@ -233,6 +233,8 @@ a.go:hover { text-decoration:underline; }
 .topnav { margin-left:8px; }
 .topnav button { padding:5px 18px; font-size:13px; }
 body.page-view .layout { grid-template-columns:1fr; }
+/* replays' downloads */
+.replays .cap .links a { margin-left:12px; } .replays .playlist a.dl { color:var(--blue); text-decoration:none; }
 /* the Ratings view */
 .ratings h2 { margin:0 0 6px; font-size:18px; } .ratings .sub { color:var(--muted); max-width:860px; margin:0 0 12px; }
 .ratings .bar { display:flex; flex-wrap:wrap; gap:6px 16px; align-items:center; margin:0 0 10px; color:var(--muted); }
@@ -1436,9 +1438,9 @@ function renderReplays(d) {
     el.dataset.list = listKey;
     box.innerHTML = list.map(m => `<div class="it" data-file="${esc(m.file)}">
         <span class="ep">${m.title ? esc(m.title) : `episode ${m.episode}`}</span><span class="${m.result ? "" : m.outcome > 0 ? "win" : m.outcome < 0 ? "loss" : ""}">${m.result ? esc(m.result) : outcomeText(m.outcome)}</span>
-        <span class="sub">${m.sub ? esc(m.sub) : `return ${fmt(m.return, 2)}${m.value0 != null ? ` · V(s₀) ${fmt(m.value0, 2)}` : ""}`}</span><span class="sub">${m.time ? ago(m.time) : ""}</span></div>`).join("")
+        <span class="sub">${m.sub ? esc(m.sub) : `return ${fmt(m.return, 2)}${m.value0 != null ? ` · V(s₀) ${fmt(m.value0, 2)}` : ""}`}</span><span class="sub">${m.time ? ago(m.time) : ""}${m.replay ? ` · <a class="dl" href="/files/${encodeURIComponent(run).replace(/%2F/g, "/")}/${m.replay}?bundle" title="the replay (.w3g), its agents' orders and its map (.zip)" download>⬇ replay</a>` : ""}</span></div>`).join("")
       || `<div class="none" style="padding:20px;color:var(--muted)">none${ui.replay.outcome !== "all" ? " with this outcome" : ""}</div>`;
-    box.querySelectorAll(".it").forEach(it => it.onclick = () => { ui.replay.file = it.dataset.file; renderReplays(d); });
+    box.querySelectorAll(".it").forEach(it => it.onclick = ev => { if (ev.target.closest("a")) return; ui.replay.file = it.dataset.file; renderReplays(d); });
   }
   box.querySelectorAll(".it").forEach(it => it.classList.toggle("on", !!cur && it.dataset.file === cur.file));
   const viewer = document.getElementById("rp-viewer");
@@ -1460,7 +1462,9 @@ function renderReplays(d) {
       ? `<video src="${src}" controls muted loop playsinline preload="metadata"${matchMedia("(max-width: 760px)").matches ? "" : " autoplay"}></video>`
       : `<iframe src="${src}#autoplay" title="trajectory"></iframe>`) +
     `<div class="cap"><span>${cur.title ? esc(cur.title) : `episode ${cur.episode}`} · <span class="${cur.result ? "" : cur.outcome > 0 ? "win" : cur.outcome < 0 ? "loss" : ""}">${cur.result ? esc(cur.result) : outcomeText(cur.outcome)}</span> · ${cur.sub ? esc(cur.sub) : `return ${fmt(cur.return, 2)}`}${cal}${cur.time ? ` · ${ago(cur.time)}` : ""}</span>
-      <a href="${src}" target="_blank">open ↗</a></div>`;
+      <span class="links">${cur.replay ? `<a href="/files/${encodeURIComponent(run).replace(/%2F/g, "/")}/${cur.replay}?download" download title="the game's replay; the stock client shows it without the agents' orders">replay .w3g</a>
+      <a href="/files/${encodeURIComponent(run).replace(/%2F/g, "/")}/${cur.replay}?bundle" download title="the replay, its agents' orders and its map: what plays it back in full (warcraftsim)">with orders and map (.zip)</a>` : ""}
+      <a href="${src}" target="_blank">open ↗</a></span></div>`;
 }
 
 // ---- observation and action spaces ----------------------------------------------------------------
