@@ -9,20 +9,20 @@ E is the number of units in view (at most 160). O is the number of own units (at
 ```mermaid
 flowchart TB
   subgraph IN["Inputs, one step"]
-    F["unit numbers<br/>[E, 29]"]
+    F["unit numbers<br/>[E, 29] (+53: --inputs 3)"]
     TY["unit type ids<br/>[E] of 147"]
     CO["current order ids<br/>[E] of 156"]
-    PL["player numbers<br/>[80]"]
+    PL["player numbers<br/>[80] + strategy [128]<br/>(+20 kinds, +3 clock)"]
     PV["whole-game numbers<br/>[23], the value only"]
   end
-  F --> LF["Linear 29→192"]
+  F --> LF["Linear →192"]
   TY --> ET["Embedding 147×192"]
   CO --> EC["Embedding 156×192"]
   LF --> SUM(("+"))
   ET --> SUM
   EC --> SUM
   SUM --> UT["unit tokens [E, 192]"]
-  PL --> MP["Linear 80→192 · ReLU · Linear 192→192"] --> PT["player token [192]"]
+  PL --> MP["Linear →192 · ReLU · Linear 192→192"] --> PT["player token [192]"]
   PT --> SEQ["tokens [1+E, 192]<br/>padding masked"]
   UT --> SEQ
   SEQ --> TR["Transformer encoder × 5<br/>pre-norm · 4 heads · feed-forward 768<br/>then a final LayerNorm"]
@@ -34,7 +34,7 @@ flowchart TB
   PV --> PP["Linear 23→192 · ReLU · Linear 192→192<br/>(starts at 0)"] --> VH
   U --> OI["for each own unit i: concat u_i, c [384]"]
   C --> OI
-  OI --> OH["Order head<br/>Linear 384→192 · ReLU · Linear 192→399"] --> MSK["mask: the unit type's orders,<br/>what the player can pay for · class 0 = none"] --> O1["order o_i [O]"]
+  OI --> OH["Order head<br/>Linear 384→192 · ReLU · Linear 192→399"] --> MSK["mask: the unit type's orders,<br/>what the player can pay for and has the tech for,<br/>a hero's state · class 0 = none"] --> O1["order o_i [O]"]
   O1 --> OE["Embedding 399×192 of o_i"]
   OE --> CD["concat u_i + emb, c [384]<br/>Linear 384→192 · ReLU · LayerNorm"]
   U --> CD
@@ -85,7 +85,16 @@ A unit token is the sum of three parts:
 
 The features have 26 more channels (hit-point change, sine and cosine of the position, each unit's last order). They are zero in use (`--features 29`): they did not help.
 
-The **player token** has 80 numbers:
+With `--inputs 3` (`fgself-107`; the new channels start with zero weights, so a network plays as before):
+
+| index | channel |
+|---|---|
+| 55 – 70 | a hero, per ability slot (4): level ÷ 3, it can be cast now (learned, cooled down, the mana), cooldown left ÷ 60 s, a skill point may go there now. An enemy hero: its levels only, as the game shows them |
+| 71 – 100 | a hero, per inventory slot (6): it holds an item, a usable one, one that heals, restores mana, a town portal |
+| 101 – 105 | own building: what it makes now (a worker, an army unit, a hero, research, its next tier) |
+| 106, 107 | an enemy it remembers (out of sight now), seen how long ago ÷ 60 s: those come after the units in sight |
+
+The **player token** has 80 numbers of what the player knows, then the target strategy (208 in the runs with strategy conditioning since `fgself-78`):
 
 | index | channel |
 |---|---|
@@ -93,6 +102,9 @@ The **player token** has 80 numbers:
 | 6 – 9 | own race: human, orc, undead, night elf (one-hot) |
 | 10 – 13 | enemy race, the same |
 | 14 – 79 | the player's level of each of 66 upgrades |
+| 80 – 207 | the target strategy (zeros: none): per item slot of the race (64), whether the target makes it and when ÷ 900 s |
+| (+20) | with `--z-modes`: per conditioning kind (10), on, and its parameter |
+| (+3) | with `--inputs 2` or `3`: the time of day (sine, cosine) and whether it is night |
 
 The **value head** also reads 23 numbers of the whole game that the player does not see: the enemy's gold, lumber and supply, and for both players their workers, army, buildings, heroes, hero levels, army hit points and where the army is. The policy never sees them.
 
@@ -143,6 +155,6 @@ There are no tokens per time step and no time encoding. The order of the steps i
 ## Actions
 
 * Every own unit gets its own order at every step (half a second).
-* Masks allow only orders that the unit's type gave in the demonstrations, and that the player can pay for now.
+* Masks allow only orders that the unit's type gave in the demonstrations, and that the player can pay for now. `--tech-mask`: and has the tech for (`features.TechMask`, from the game's tables). `--valid-mask`: a hero's orders it can carry out now (`FullGameNet.unit_valid`, from its hero channels: a cast needs the ability learned, cooled down and the mana; learning a skill needs a point; using an item needs one in the slot).
 * The chosen order goes into the target heads, so a target depends on its order.
 * The action's log-probability is the order's plus the target heads that the order uses.

@@ -4,7 +4,7 @@
 
 Reinforcement learning on the **real Warcraft III** (Legacy TFT 1.29.2) under Wine on Linux, driven step by step from Python. Nothing is reimplemented: the game's own engine runs every unit, spell, building and AI script, headless and many times faster than real time.
 
-The agent plays the **whole game** (economy, buildings, tech, armies, heroes) on the ladder map **Echo Isles** under the game's own rules. It wins **~85–89% of its games against the built-in AI at its hardest setting** (insane, no handicap), about **1.8× the built-in AI's own record** in the same matchups.
+The agent plays the **whole game** (economy, buildings, tech, armies, heroes) on the ladder map **Echo Isles** under the game's own rules. It wins **~95% of its games against the built-in AI at its hardest setting** (insane, no handicap), about **1.8× the built-in AI's own record** in the same matchups. Now it learns to play many strategies: target build orders, narrower ones and more kinds of conditioning (no rush, expand, creep, harass, ...).
 
 <p align="center"><img src="docs/media/whole-game.jpg" width="960" alt="A whole-game replay with the policy's panel"></p>
 
@@ -15,12 +15,12 @@ The agent plays the **whole game** (economy, buildings, tech, armies, heroes) on
 ```mermaid
 xychart-beta
   title "The real game on Echo Isles: games won against the untaxed insane AI"
-  x-axis ["first try", "longer horizon", "build search", "half shaping", "less KL pull", "strategies"]
+  x-axis ["first try", "longer horizon", "build search", "half shaping", "less KL pull", "strategies", "fast rules"]
   y-axis "% won" 0 --> 100
-  bar [49, 59, 62, 72, 82, 89]
+  bar [49, 59, 62, 72, 82, 89, 95]
 ```
 
-Each bar is the best policy of a step (`fgself-56`, `-62`, `-68`, `-73`, `-77`, `-78`), measured in its own run's evaluation games: the real game, all race matchups, nothing trained on them. Before Echo Isles the agent learned on small, fast "duel" maps: **79%** against the built-in AI in 2-minute games, then **80% against insane** in 6-minute games. [Experiments](docs/experiments.md) has what worked and what did not; the [experiment log](docs/reference/experiment-log.md) has every run.
+Each bar is the best policy of a step (`fgself-56`, `-62`, `-68`, `-73`, `-77`, `-78`, `-100`), measured in its own run's evaluation games: the real game, all race matchups, nothing trained on them. The last step trains on Echo Isles with faster rules toward target build orders a builder teaches, and is judged on the real game. Before Echo Isles the agent learned on small, fast "duel" maps: **79%** against the built-in AI in 2-minute games, then **80% against insane** in 6-minute games. [Experiments](docs/experiments.md) has what worked and what did not; the [experiment log](docs/reference/experiment-log.md) has every run.
 
 ## How it works
 
@@ -56,7 +56,7 @@ flowchart LR
   T --> V["value"]
 ```
 
-One network plays one side, from that player's view through the fog of war. Each own unit gets an order and a target, sampled together for all units every half second. The player token can carry a **target strategy** (a build order and tech path from the AI's games or human replays, AlphaStar's "z"). [The whole-game model](docs/model.md) has every layer.
+One network plays one side, from that player's view through the fog of war. Each own unit gets an order and a target, sampled together for all units every half second. The player token can carry a **target strategy** (a build order and tech path from the AI's games or human replays, AlphaStar's "z"). Newer inputs give each hero's abilities, cooldowns and items and the enemies it saw before; masks keep out orders the game would refuse. [The whole-game model](docs/model.md) has every layer.
 
 ```mermaid
 flowchart LR
@@ -86,7 +86,7 @@ One machine (Ryzen 9 5950X, RTX 3090) runs the learner, the inference loop and ~
 
 *The dashboard's Matchups tab: the strategy-conditioned policy (`fgself-78`, left) and its parent (right) against the insane AI, race by race, over the same 1,500 evaluation games each.*
 
-`python -m warcraftsim dashboard` (http://localhost:8765) shows every run live: outcomes, losses and the gradient noise scale, the league, production, matchups, replay videos with the policy's panel, checkpoints, and a lineage of all runs. Its **Docs** tab shows and edits [`docs/`](docs/overview.md).
+`python -m warcraftsim dashboard` (http://localhost:8765; `--host <address>` to watch from another machine or a phone) shows every run live: outcomes, losses and the gradient noise scale, the league, production, matchups, replay videos with the policy's panel, checkpoints, and a lineage of all runs. Its **Docs** tab shows and edits [`docs/`](docs/overview.md).
 
 <p align="center"><img src="docs/media/dashboard-comparison.png" width="900" alt="The training dashboard comparing four runs"></p>
 
@@ -134,7 +134,7 @@ python -m warcraftsim ai-vs-ai --difficulty insane                        # two 
 python -m warcraftsim.fullgame.collect --out runs/fullgame/demos-1 --games 800 --parallel 24 --races all
 python -m warcraftsim.fullgame.bc --data runs/fullgame/demos-1 --name fullgame-1
 python -m warcraftsim.fullgame.selfplay --name fgself-1 --init runs/bc/fullgame-1/policy.pt
-python -m warcraftsim.fullgame.versus runs/fgself-78/checkpoints/<steps>.pt --map echo100 --you human --agent orc \
+python -m warcraftsim.fullgame.versus runs/fgself-102/checkpoints/<steps>.pt --map echo100 --you human --agent orc \
     --wine ~/wc3/ge/GE-Proton10-34/files/bin                            # play it yourself, in a window
 python -m warcraftsim dashboard
 .venv/bin/pytest                                                          # unit tests

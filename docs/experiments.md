@@ -21,12 +21,12 @@ xychart-beta
 ```mermaid
 xychart-beta
   title "Games won against the untaxed insane AI, each run's evaluation games"
-  x-axis ["fgself-56 as is", "fgself-61", "fgself-62", "fgself-68", "fgself-69", "fgself-73", "fgself-77", "fgself-78"]
+  x-axis ["fgself-56 as is", "fgself-62", "fgself-68", "fgself-73", "fgself-77", "fgself-78", "fgself-100", "fgself-102"]
   y-axis "%" 0 --> 100
-  bar [49, 47, 59, 62, 71, 72, 82, 89]
+  bar [49, 59, 62, 72, 82, 89, 95, 95]
 ```
 
-Each run plays its own matchups, so compare within a run: in `fgself-78`'s games after 16:55 its policy won 89% and its start (`fgself-77`'s last) 84%. A quarter of the KL's pull (`fgself-77`) and strategy conditioning (`fgself-78`) made the last two gains.
+Each run plays its own matchups, so compare within a run: in `fgself-78`'s games its policy won 89% and its start 84%; in `fgself-100`'s, 95% to `fgself-78`'s 87%. A quarter of the KL's pull (`fgself-77`), strategy conditioning (`fgself-78`) and training on the fast rules toward targets the policy can follow (`fgself-100`) made the last gains. Since then the yardstick is spent (95%); games against frozen snapshots of the policy (`--eval-vs`) measure progress beside it.
 
 ## What worked
 
@@ -43,6 +43,11 @@ Each run plays its own matchups, so compare within a run: in `fgself-78`'s games
 | A horizon for 25-minute games (γ 0.9997) | 55% → 59% of games |
 | A wider search for a free building spot (up to 768 units) | undead's builds taken 25% → 79%, 57% → 62% of games |
 | Half the reward shaping (the material lead), so the win weighs more | 62% → 72% of games, human 34% → 53%, undead 32% → 49% |
+| A quarter of the anchor's pull (`--ref-kl 0.05`) | 72% → 82% |
+| Target strategies (AlphaStar's z: build orders from the AI's games and people's replays) | 82% → 89% |
+| Targets the policy can follow (a pool at its own rules' times, a builder that teaches from the tech tree, the next item's cost saved), trained on `echofast`, judged on the real game | 87% → 95%; ~80% of the due target items made by the policy itself |
+| The anchor moved to the best checkpoint | no slide after the peak |
+| More games as the weaker races (human and undead 35% each) | undead 79% → 89% |
 
 ## What did not help
 
@@ -53,6 +58,10 @@ Each run plays its own matchups, so compare within a run: in `fgself-78`'s games
 * A cloning loss on the AI's real games, all of them or undead's only: level at ×0.02, worse at ×0.1.
 * More self-play (half the games against itself): worse. More training games as the weak races: level.
 * Annealing the rules from duelfast to the real game: the policy did not need it.
+* More reward for following the target (×2.5, ×5), a cloning loss toward the target, targets carried out by the harness, enforcement alone: the policy did not follow better on its own.
+* An 8-layer network: level. GRPO from mid-game branches: level (creeps and the AI are not deterministic, ~55% of branches replay exactly).
+* AlphaStar's league (self-play, past snapshots, a main exploiter; `fgself-103`), OpenAI Five's reward decay (`-104`), each sample used once (`-105`): level.
+* Classifier-free guidance toward the target (`-106`, ×2): it followed no better and won 50% instead of 91%.
 
 ## What went wrong
 
