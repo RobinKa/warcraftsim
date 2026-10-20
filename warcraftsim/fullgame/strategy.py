@@ -232,7 +232,8 @@ def restricted(code: str) -> bool:
 
 def narrow(strategy: dict, tree=None) -> dict | None:
     """`strategy` (with its unit counts "n") narrowed to its heroes, its main army and what they need, at the
-    times it made them; None when its main army is not among its items (none, or made past the horizon)."""
+    times it made them; None when its main army is not among its items (none, or made past the horizon), or it has
+    no hero among them."""
     from ..data.objects import unit_table
     from .techtree import closure, is_hero
     units = unit_table()
@@ -244,6 +245,8 @@ def narrow(strategy: dict, tree=None) -> dict | None:
     if not core or any(c not in t for c in core):
         return None
     heroes = sorted((c for c in t if is_hero(c)), key=t.get)
+    if not heroes:  # (a player whose heroes were the tavern's, not orderable: its target would forbid any)
+        return None
     keep = closure(set(core) | set(heroes), strategy["race"], tree)
     return {**strategy, "t": {c: v for c, v in t.items() if c in keep}, "narrow": True,
             "sig": f"{'+'.join(heroes) or '-'}|{'+'.join(sorted(core))}"}

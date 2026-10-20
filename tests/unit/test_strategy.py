@@ -410,6 +410,7 @@ def test_narrow_strategy_keeps_heroes_main_army_and_their_needs():
     orders = [[code(c), fx.IMMEDIATE] for c in ("hfoo", "hsor", "Hmkg", "Rhme", "hkee")] + [[code("hars"), fx.POINT]]
     assert strategy.allowed(n, items, orders).tolist() == [True, True, False, False, True, True, True]
     assert strategy.narrow({**s, "n": {"hpea": 20}}) is None  # (no army)
+    assert strategy.narrow({**s, "t": {c: v for c, v in t.items() if c != "Hamg"}}) is None  # (no hero)
     pool = {"strategies": [n] * 9 + [{**n, "sig": "rare", "t": {"hbar": 1.0}}]}
     rng = random.Random(1)
     assert 0.3 < sum(strategy.sample(pool, "human", "orc", rng)["sig"] == "rare" for _ in range(400)) / 400 < 0.7
