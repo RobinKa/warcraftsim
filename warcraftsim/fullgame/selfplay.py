@@ -1018,6 +1018,7 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
         cfg = {**cfg, "map": cfg["eval_map"], "z_pool": cfg.get("eval_z_pool") or cfg.get("z_pool"),
                "costs_array": np.asarray(cfg["eval_costs"], np.int64) if cfg.get("eval_costs") else None}
     paired: list[tuple] = []  # an evaluation slot's next launches: one matchup for every policy in turn
+    mirrored: list[tuple] = []  # (--eval-vs) the next launch against a checkpoint: the last one's races swapped
     alive = Path(cfg["run_dir"]) / "remote-eval.alive"  # (scripts/remote_eval.py: its games still arrive)
     while not stop.is_set() and os.getppid() == cfg["learner_pid"]:
         if evaluating and cfg.get("eval_fallback", 0) > 0:  # --eval-fallback: another machine plays them while
@@ -1045,8 +1046,16 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                 races[1 - side] = races[side]
         ai = _choose(rng, spec["launch"])  # {"kind": "agents"} or {"kind": "ai", "difficulty"[, "delay"]}
         versus = None  # (--eval-vs: an evaluation launch of the current policy against a listed checkpoint)
-        if evaluating and cfg.get("eval_vs", 0.0) > 0 and cfg.get("eval_checkpoints") and rng.random() < cfg["eval_vs"]:
-            versus, ai = rng.choice(cfg["eval_checkpoints"]), {"kind": "agents"}
+        if mirrored or (evaluating and cfg.get("eval_vs", 0.0) > 0 and cfg.get("eval_checkpoints")
+                        and rng.random() < cfg["eval_vs"]):
+            # each matchup both ways round (the current policy with either race; drawn alone, the races decided:
+            # 0 of 19 as human against the checkpoint's orc read as a weaker policy)
+            if mirrored:
+                races, side, versus = mirrored.pop()
+            else:
+                versus = rng.choice(cfg["eval_checkpoints"])
+                mirrored.append(([races[1], races[0]], side, versus))
+            ai = {"kind": "agents"}
         elif evaluating:  # (--eval-games-per-actor: the yardstick only)
             # which policy: the current one, or one of --eval-checkpoints (head to head, at the same time).
             # Each matchup (races, sides, the AI's difficulty) is played by every policy in turn: drawn
