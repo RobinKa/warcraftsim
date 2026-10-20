@@ -124,10 +124,14 @@ def _fit_view(obs: Observation) -> tuple[tuple[float, float], float] | None:
 
 # A large map's director (whole games whose units do not fit in one view: Echo Isles' bases ~10,000
 # apart, where the centre of all units was mid-map, at the farthest zoom, with nothing in it). Fights
-# first (units with an enemy unit within ENGAGED of them); between fights it cycles through shots: the
-# learner's army, its base, the opponent's army, its base (the learner's held longer; a player without an
-# army: its base), each held a while, so both players and their bases get seen.
-ENGAGED = 900.0  # an enemy this near: the unit fights
+# first (units with an enemy unit within ENGAGED of them, where something lost hit points in the last
+# HURT_STEPS); between fights it cycles through shots: the learner's army, its base, the opponent's army,
+# its base (the learner's held longer; a player without an army: its base), each held a while, so both
+# players and their bases get seen.
+ENGAGED = 900.0  # an enemy this near: the unit fights (if blows are struck there)
+# A fight needs blows: units near enemies but losing no hit points (four ghouls idle at the opponent's base
+# beside its wisps) held the camera there for 27 of a game's 32 minutes
+HURT_STEPS = 8
 FOCUS_CELL = 1500.0  # the fight's area: around the cell with the most fighting units
 STICK = 0.6  # the current fight keeps the camera while it has this share of the biggest one's fighters
 CUT = 4000.0  # a target this far: cut there, not pan across the map
@@ -141,15 +145,23 @@ class Director:
         self.learner = learner if learner is not None else (players[0] if players else 0)
         self.opponent = next((p for p in players if p != self.learner), 1 - self.learner)
         self.shot, self.held = 0, 0
+        self.t, self.hp, self.hurt = 0, {}, {}  # (each unit's hit points a step ago; when it last lost some)
 
     def focus(self, obs: Observation, cam: tuple[float, float]) -> tuple[tuple[float, float], list] | None:
         units = [u for u in obs.units if u.alive and u.owner in obs.players]
+        self.t += 1
+        for u in units:
+            if u.hp < self.hp.get(u.id, u.hp):
+                self.hurt[u.id] = self.t
+        self.hp = {u.id: u.hp for u in units}
+        hurt = [u for u in units if self.t - self.hurt.get(u.id, -HURT_STEPS - 1) <= HURT_STEPS]
         mobile = [u for u in units if not u.is_structure]
         sides: dict = {}  # (each player's units and buildings: a unit at an enemy building fights too, a raid)
         for u in units:
             sides.setdefault(u.owner, []).append(u)
         engaged = [u for u in mobile if any((v.x - u.x) ** 2 + (v.y - u.y) ** 2 <= ENGAGED * ENGAGED
-                                            for o, vs in sides.items() if o != u.owner for v in vs)]
+                                            for o, vs in sides.items() if o != u.owner for v in vs)
+                   and any((h.x - u.x) ** 2 + (h.y - u.y) ** 2 <= FOCUS_CELL * FOCUS_CELL for h in hurt)]
         if engaged:  # a fight: the area with the most fighters, the current one kept while it is near as big
             cells: dict = {}
             for u in engaged:
