@@ -54,8 +54,13 @@ def parse(texts: list[str]) -> Tree:
 def tree() -> Tree:
     from ..data.mpq import GameArchives
     with GameArchives() as g:
-        return parse([g.read(f"Units\\{r}{k}Func.txt").decode("latin-1")
-                      for r in RACE_FILES.values() for k in ("Unit", "Upgrade")])
+        races = [g.read(f"Units\\{r}{k}Func.txt").decode("latin-1") for r in RACE_FILES.values() for k in ("Unit", "Upgrade")]
+        neutral = parse([g.read("Units\\NeutralUnitFunc.txt").decode("latin-1")])
+    t = parse(races)
+    # the tavern's heroes need what a race's hero does (an altar, then each tier: NeutralUnitFunc's Requires); the
+    # neutral buildings that sell them are no makers (a player can't build a tavern)
+    heroes = {c: v for c, v in neutral.needs.items() if is_hero(c) and c not in t.needs}
+    return Tree(t.makers, {**t.needs, **heroes}, t.upgrades)
 
 
 @lru_cache(1)

@@ -35,15 +35,21 @@ def order_costs(vocab: dict, map_name: str = "duelrush") -> np.ndarray:
     with GameArchives() as g:
         units = {r.get("unitBalanceID"): r for r in parse_slk(g.read("Units\\UnitBalance.slk").decode("latin-1"))}
         upgrades = {r.get("upgradeid"): r for r in parse_slk(g.read("Units\\UpgradeData.slk").decode("latin-1"))}
+        items = {r.get("itemID"): r for r in parse_slk(g.read("Units\\ItemData.slk").decode("latin-1"))}
 
     def scaled(v: int) -> int:  # as duelmap.rules_files: max(1, round(v * f)), unchanged at 1
         return v if rules.cost == 1.0 or v <= 0 else max(1, round(v * rules.cost))
 
     out = np.zeros((len(vocab["orders"]) + 1, 3), np.int64)
     for c, (oid, kind) in enumerate(vocab["orders"], start=1):
-        if oid < fx.TYPE_CODE or kind not in (fx.IMMEDIATE, fx.POINT):
+        if oid < fx.TYPE_CODE or kind not in (fx.IMMEDIATE, fx.POINT, fx.UNIT):
             continue
         code = fx.rawcode(oid)
+        if kind == fx.UNIT:  # (bought at a neutral building, protocol.Buy: a tavern's hero, a mercenary, an item)
+            r = units.get(code) or items.get(code)
+            if r is not None:
+                out[c] = (_num(r, "goldcost"), _num(r, "lumbercost"), _num(r, "fused") if code in units else 0)
+            continue
         if code in units:
             r = units[code]
             out[c] = (scaled(_num(r, "goldcost")), scaled(_num(r, "lumbercost")), _num(r, "fused"))

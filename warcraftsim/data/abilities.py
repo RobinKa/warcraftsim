@@ -59,9 +59,28 @@ _CAST: dict[str, tuple[str, str]] = {
     "AEmb": ("unit", "enemy"), "AEim": ("instant", "enemy"), "AEev": ("passive", ""), "AEme": ("instant", "self"),
     # Warden
     "AEbl": ("point", "utility"), "AEfk": ("instant", "enemy"), "AEsh": ("unit", "enemy"), "AEsv": ("instant", "summon"),
+    # the tavern's heroes (2026-10-20: they can be hired, protocol.Buy)
+    # Alchemist
+    "ANhs": ("point", "ally"), "ANab": ("unit", "enemy"), "ANcr": ("instant", "self"), "ANtm": ("unit", "enemy"),
+    # Goblin Tinker
+    "ANsy": ("point", "summon"), "ANcs": ("point", "enemy"), "ANeg": ("passive", ""), "ANrg": ("instant", "self"),
+    # Firelord
+    "ANia": ("passive", ""), "ANso": ("unit", "enemy"), "ANlm": ("instant", "summon"), "ANvc": ("point", "enemy"),
+    # Naga Sea Witch: Frost Arrows cast on a unit is one freezing attack
+    "ANfl": ("unit", "enemy"), "ANfa": ("unit", "enemy"), "ANms": ("instant", "self"), "ANto": ("instant", "summon"),
+    # Dark Ranger
+    "ANsi": ("point", "enemy"), "ANba": ("unit", "enemy"), "ANdr": ("unit", "enemy"), "ANch": ("unit", "enemy"),
+    # Pandaren Brewmaster
+    "ANbf": ("point", "enemy"), "ANdh": ("unit", "enemy"), "ANdb": ("passive", ""), "ANef": ("instant", "summon"),
+    # Pit Lord
+    "ANrf": ("point", "enemy"), "ANht": ("instant", "enemy"), "ANca": ("passive", ""), "ANdo": ("unit", "enemy"),
+    # Beastmaster
+    "ANsg": ("instant", "summon"), "ANsq": ("instant", "summon"), "ANsw": ("instant", "summon"), "ANst": ("point", "enemy"),
 }
 # order strings the func files do not give
-_ORDER_OVERRIDES = {"AHdr": "drain"}
+_ORDER_OVERRIDES = {"AHdr": "drain", "ANdr": "drain", "ANab": "acidbomb", "ANcr": "chemicalrage", "ANtm": "transmute",
+                    "ANso": "soulburn", "ANlm": "lavamonster", "ANvc": "volcano", "ANfa": "coldarrowstarg",
+                    "ANms": "manashieldon"}
 # heroes whose abilities are described (the melee heroes)
 MELEE_HEROES = ("Hpal", "Hamg", "Hmkg", "Hblm", "Obla", "Ofar", "Otch", "Oshd",
                 "Udea", "Ulic", "Udre", "Ucrl", "Ekee", "Emoo", "Edem", "Ewar")
