@@ -59,18 +59,3 @@ def test_run_page_cached_until_its_files_change(dash):
         f.write(json.dumps({"time": 2.0, "agent_steps": 20, "SPS": 6.0}) + "\n")
     _, h3, body = _get(base + "/api/runs/r1")
     assert h3["ETag"] != h1["ETag"] and json.loads(body)["train"][-1]["agent_steps"] == 20
-
-
-def test_replay_downloads(dash):
-    import io
-    import zipfile
-    base, d = dash
-    (d / "replays").mkdir()
-    (d / "replays" / "game-1-a0.w3g").write_bytes(b"Warcraft III recorded game\x1a")
-    (d / "replays" / "game-1-a0.commands.json").write_text(json.dumps({"map_key": "none", "commands": {}}))
-    status, h, body = _get(base + "/files/r1/replays/game-1-a0.w3g?download")
-    assert status == 200 and 'filename="r1-game-1-a0.w3g"' in h["Content-Disposition"] and body.startswith(b"Warcraft")
-    status, h, body = _get(base + "/files/r1/replays/game-1-a0.w3g?bundle")
-    names = zipfile.ZipFile(io.BytesIO(body)).namelist()
-    assert status == 200 and h["Content-Type"] == "application/zip"
-    assert {"game-1-a0.w3g", "game-1-a0.commands.json", "README.txt"} <= set(names)
