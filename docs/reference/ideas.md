@@ -16,6 +16,7 @@ In the order they run. The code for each is in place unless it says otherwise.
 | A heuristic teacher | the user ("buying a first hero with a worker": what it rarely stumbles on) | our own advisor whose orders label the policy's steps, as the target builder does (`--z-build 2`): tavern heroes, a town portal, potions, a portal home, items on the ground | to build |
 | Self-distillation with privileged information (OPSD) | the user, from LLM training | the same network given what the player can't see is the teacher; a KL pulls the policy without it toward it; never in evaluation | to build |
 | Scenarios and weight averaging | the user (the micro curriculum, kept on); model soups, task arithmetic | mid-game situations the harness sets up; specialists forked from one checkpoint, merged by averaging their weights | to build |
+| Skill ratings | the user (the insane AI's win rate is spent) | a Bradley–Terry rating over every evaluation game, the insane AI at 1500: the dashboard's Ratings view | done |
 | Human data | AlphaStar (Fig. 3E, its largest gain) | a cloning loss on people's 95 Echo Isles games, played back in our client | later |
 | Fewer decisions, spatial point heads | AlphaStar (action rate), SC2LE | a "keep this order k steps" head; points on a map, not x then y | later |
 

@@ -736,6 +736,18 @@ class Dashboard:
         self._bc_meta: dict[str, tuple[float, dict]] = {}  # dataset -> (mtime, meta.json)
         self._runs_cache: tuple[float, list[dict]] = (0.0, [])  # the list and the sweeps from one scan
         self._pages: dict[str, tuple[tuple, dict]] = {}  # a run's page, until its files change (run_stamp)
+        self._ratings = None  # (ratings.Ratings: made, and its scans started, on the first request)
+
+    def ratings(self) -> dict:
+        """The policies' skill ratings from every run's evaluation games (ratings.py), scanned every 5 minutes."""
+        from . import ratings
+        if self._ratings is None:
+            self._ratings = ratings.Ratings(self.runs_dir)
+            with self._ratings.lock:
+                self._ratings.scan()
+            ratings.background(self._ratings)
+        with self._ratings.lock:
+            return self._ratings.table()
 
     def _sweep_dir(self, group: str) -> Path | None:
         if not group or group.startswith(".") or "/" in group or "\\" in group:
@@ -1543,7 +1555,7 @@ def make_handler(dash: Dashboard, docs: Docs | None = None):
 
         def do_GET(self):
             path = urllib.parse.unquote(urllib.parse.urlparse(self.path).path)
-            if path in ("/", "/index.html", "/doc", "/lineage") or path.startswith(("/run/", "/sweep/", "/doc/")):
+            if path in ("/", "/index.html", "/doc", "/lineage", "/ratings") or path.startswith(("/run/", "/sweep/", "/doc/")):
                 return self._send(_page(), "text/html; charset=utf-8")  # (the page's own addresses: it routes)
             if path == "/api/runs":
                 return self._json(dash.run_list())
@@ -1554,6 +1566,8 @@ def make_handler(dash: Dashboard, docs: Docs | None = None):
                 return self._json(data) if data else self._json({"error": "no such run"}, 404)
             if path == "/api/lineage":
                 return self._json(dash.lineage())
+            if path == "/api/ratings":
+                return self._json(dash.ratings())
             if path == "/api/docs":
                 return self._json(docs.list())
             if path.startswith("/api/docs/"):
