@@ -40,7 +40,7 @@ The steps there: a frame relative to the own base (0 → 49%), a longer horizon,
 
 ## Next (2026-10-20)
 
-The user's direction: strategic variety first, then the whole game's actions. In order: `fgself-107` (the new inputs and masks, running), narrow targets, more kinds of conditioning, the rewards' combination, the neutral buildings with a teacher, then scenarios (mid-game situations the harness sets up, specialists merged by weight averaging). [Ideas from AlphaStar and OpenAI Five](reference/ideas-from-alphastar-and-openai-five.md) has each.
+The user's direction: strategic variety first, then the whole game's actions. In order: `fgself-107` (the new inputs and masks, running), narrow targets, more kinds of conditioning, the rewards' combination, the neutral buildings with a teacher, then scenarios (mid-game situations the harness sets up, specialists merged by weight averaging). [Ideas](reference/ideas.md) has each: where it came from, what became of it.
 
 ## Compute
 

@@ -19,7 +19,7 @@ Beating the insane AI clearly was the milestone; the user's direction now is str
 
 Running: `fgself-107`, what the agent could not see or do ([the road to the real game](road-to-the-real-game.md)): each hero's abilities, cooldowns and items, what each building makes, the time of day, and the enemies it saw before (`--inputs 3`, zero weights at first); and masks for orders the game would refuse (`--tech-mask`, `--valid-mask`).
 
-Next, in order: narrow target strategies (a game's heroes, main army and what they need), more kinds of conditioning (no rush, rush, expand, workers, creeping, harass, scouting, army size, low upkeep), a per-reward advantage (GDPO, SAW), tavern heroes, neutral shops and mercenaries with a heuristic teacher, self-distillation from the same network given what the player can't see, and scenarios. [Ideas from AlphaStar and OpenAI Five](reference/ideas-from-alphastar-and-openai-five.md) has each.
+Next, in order: narrow target strategies (a game's heroes, main army and what they need), more kinds of conditioning (no rush, rush, expand, workers, creeping, harass, scouting, army size, low upkeep), a per-reward advantage (GDPO, SAW), tavern heroes, neutral shops and mercenaries with a heuristic teacher, self-distillation from the same network given what the player can't see, and scenarios. [Ideas](reference/ideas.md) has each: where it came from, what became of it.
 
 ## How we make a whole-game agent
 
