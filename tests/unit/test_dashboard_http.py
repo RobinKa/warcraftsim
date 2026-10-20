@@ -59,3 +59,23 @@ def test_run_page_cached_until_its_files_change(dash):
         f.write(json.dumps({"time": 2.0, "agent_steps": 20, "SPS": 6.0}) + "\n")
     _, h3, body = _get(base + "/api/runs/r1")
     assert h3["ETag"] != h1["ETag"] and json.loads(body)["train"][-1]["agent_steps"] == 20
+
+
+def test_challenge_api_checks_its_request(dash):
+    import urllib.request
+    base, d = dash
+    status, _, body = _get(base + "/api/challenges")
+    data = json.loads(body)
+    assert status == 200 and set(data) == {"status", "history", "checkpoints"} and data["history"] == []
+
+    def post(req):
+        r = urllib.request.Request(base + "/api/challenge", data=json.dumps(req).encode(), method="POST")
+        try:
+            with urllib.request.urlopen(r) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+    assert post({"checkpoint": "../etc/passwd"}) == (400, {"ok": False, "message": "no such checkpoint"})
+    (d / "checkpoints").mkdir()
+    (d / "checkpoints" / "0000000000000001.pt").write_bytes(b"x")
+    assert post({"checkpoint": "runs/r1/checkpoints/0000000000000001.pt", "you": "gnoll"})[1]["message"].startswith("races")

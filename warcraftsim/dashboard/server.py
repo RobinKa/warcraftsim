@@ -749,6 +749,81 @@ class Dashboard:
         with self._ratings.lock:
             return self._ratings.table()
 
+    # ---- challenges: a person against a policy in the real game (fullgame/versus.py, the Challenge button) ----
+    def challenge_dir(self) -> Path:
+        return self.runs_dir / "challenges"
+
+    def challenges(self) -> dict:
+        """The challenge under way (status.json while its process lives), the past ones (challenges.jsonl, newest
+        first; "video" when rendered) and the checkpoints to choose from (the best rated, each recent run's last)."""
+        d = self.challenge_dir()
+        status = _read_json(d / "status.json")
+        if status and status.get("phase") != "done":
+            try:
+                os.kill(int(status["pid"]), 0)
+            except (OSError, KeyError, ValueError):
+                status = {**status, "phase": "stopped"}
+        rows = self.cache.read(d / "challenges.jsonl") if (d / "challenges.jsonl").exists() else []
+        history = [{**r, "video": r.get("video") if (d / str(r.get("video", ""))).exists() else None} for r in rows[-30:]][::-1]
+        return {"status": status, "history": history, "checkpoints": self._challenge_checkpoints()}
+
+    def _challenge_checkpoints(self) -> list[dict]:
+        out, seen = [], set()
+        try:
+            for p in self.ratings()["players"]:
+                if p["kind"] == "checkpoint" and p["games"] >= 30 and len(out) < 8:
+                    run, steps = p["name"].split("/")
+                    f = self.runs_dir / run / "checkpoints" / f"{int(steps):016d}.pt"
+                    if f.exists():
+                        out.append({"path": str(f.relative_to(self.runs_dir.parent)), "label": f"{p['name']} · rated {round(p['rating'])}"})
+                        seen.add(f)
+        except Exception:  # noqa: BLE001 (no ratings yet: the recent runs only)
+            pass
+        runs = sorted((r for r in self.runs_dir.glob("fgself-*") if (r / "checkpoints").is_dir()),
+                      key=lambda r: r.stat().st_mtime, reverse=True)[:6]
+        for r in runs:
+            cks = sorted(r.glob("checkpoints/[0-9]*.pt"))
+            if cks and cks[-1] not in seen:
+                out.append({"path": str(cks[-1].relative_to(self.runs_dir.parent)), "label": f"{r.name} · its last"})
+        return out
+
+    def start_challenge(self, req: dict) -> tuple[bool, str]:
+        """Start a game against a policy in the game's window on this machine's desktop (versus.py --record)."""
+        import subprocess
+        import sys
+        races = ("human", "orc", "undead", "nightelf", "random")
+        root = self.runs_dir.parent
+        ck = (root / str(req.get("checkpoint", ""))).resolve()
+        if self.runs_dir.resolve() not in ck.parents or ck.suffix != ".pt" or not ck.is_file():
+            return False, "no such checkpoint"
+        you, agent = str(req.get("you", "human")), str(req.get("agent", "random"))
+        if you not in races or agent not in races:
+            return False, "races: human, orc, undead, nightelf or random"
+        try:
+            speed = min(2.0, max(0.25, float(req.get("speed", 1.0))))
+        except (TypeError, ValueError):
+            return False, "speed: a number"
+        side = req.get("side")
+        st = self.challenges()["status"]
+        if st and st.get("phase") not in ("done", "stopped"):
+            return False, "a challenge is under way"
+        d = self.challenge_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        wine = ""
+        for r in sorted(self.runs_dir.glob("fgself-*/run.json"), key=lambda f: f.stat().st_mtime, reverse=True)[:1]:
+            wine = (_read_json(r) or {}).get("config", {}).get("wine") or ""
+        argv = [sys.executable, "-m", "warcraftsim.fullgame.versus", str(ck), "--map", "(2)EchoIsles", "--you", you,
+                "--agent", agent, "--speed", str(speed), "--display", ":0", "--record", str(d),
+                *(["--wine", wine] if wine and wine != "None" else []), *(["--side", str(int(side))] if side in (0, 1, "0", "1") else [])]
+        (d / "status.json").write_text(json.dumps({"phase": "launching", "pid": 0, "started": time.time(),
+                                                    "checkpoint": str(ck), "you": you, "agent": agent}))
+        log = open(d / "versus.log", "a")
+        proc = subprocess.Popen(argv, cwd=root, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                env={**os.environ, "DISPLAY": ":0"}, start_new_session=True)
+        (d / "status.json").write_text(json.dumps({"phase": "launching", "pid": proc.pid, "started": time.time(),
+                                                    "checkpoint": str(ck), "you": you, "agent": agent}))
+        return True, "started"
+
     def _sweep_dir(self, group: str) -> Path | None:
         if not group or group.startswith(".") or "/" in group or "\\" in group:
             return None
@@ -1568,6 +1643,8 @@ def make_handler(dash: Dashboard, docs: Docs | None = None):
                 return self._json(dash.lineage())
             if path == "/api/ratings":
                 return self._json(dash.ratings())
+            if path == "/api/challenges":
+                return self._json(dash.challenges())
             if path == "/api/docs":
                 return self._json(docs.list())
             if path.startswith("/api/docs/"):
@@ -1588,6 +1665,14 @@ def make_handler(dash: Dashboard, docs: Docs | None = None):
 
         def do_POST(self):
             path = urllib.parse.unquote(urllib.parse.urlparse(self.path).path)
+            if path == "/api/challenge":  # (a game against a policy on this machine's desktop)
+                length = int(self.headers.get("Content-Length") or 0)
+                try:
+                    req = json.loads(self.rfile.read(min(length, 4096)) or b"{}")
+                except json.JSONDecodeError:
+                    return self._json({"error": "expected JSON"}, 400)
+                ok, msg = dash.start_challenge(req if isinstance(req, dict) else {})
+                return self._json({"ok": ok, "message": msg}, 200 if ok else 400)
             if path.startswith("/api/runs/") and path.endswith("/notes"):
                 length = int(self.headers.get("Content-Length") or 0)
                 if length > MAX_NOTES * 4:

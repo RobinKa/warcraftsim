@@ -366,6 +366,19 @@ def adapt_config(config: dict) -> dict:
     return config
 
 
+def configure_for(path) -> None:
+    """The features' settings a checkpoint's network was trained with (features.set_inputs, the masks, the strategy
+    block, the neutral wares), for a process that plays it alone (versus.py): its config and vocabulary tell."""
+    ck = torch.load(path, map_location="cpu", weights_only=False)
+    c, vocab = ck["config"], ck.get("vocab") or {}
+    fx.set_inputs(3 if c.get("ghost") else 2 if c.get("gx", 0) >= 3 else 1, bool(c.get("privileged")))
+    fx.set_masks(bool(c.get("valid")), bool(c.get("valid")))
+    fx.set_neutral(bool(vocab.get("neutral")))
+    fx.set_z(c.get("z", 0))
+    if c.get("gx", 0) >= 3:  # (the unit channels it reads: all of them, a run's --features zeros only its weights)
+        fx.ACTIVE_F = fx.F
+
+
 def load(path, device="cpu", memory: bool | None = None) -> tuple[FullGameNet, dict]:
     """A checkpoint's network. `memory`: with (a new core, which does nothing at first) or without one. Inputs
     added since (features.set_inputs: unit features, the clock) start with zero weights, and with --valid-mask

@@ -86,7 +86,7 @@ One machine (Ryzen 9 5950X, RTX 3090) runs the learner, the inference loop and ~
 
 *The dashboard's Matchups tab: the strategy-conditioned policy (`fgself-78`, left) and its parent (right) against the insane AI, race by race, over the same 1,500 evaluation games each.*
 
-`python -m warcraftsim dashboard` (http://localhost:8765; `--host <address>` to watch from another machine or a phone) shows every run live: outcomes, losses and the gradient noise scale, the league, production, matchups, replay videos with the policy's panel, checkpoints, a lineage of all runs, and **skill ratings** of the policies (a Bradley–Terry fit over every evaluation game, the insane AI at 1500). Its **Docs** tab shows and edits [`docs/`](docs/overview.md).
+`python -m warcraftsim dashboard` (http://localhost:8765; `--host <address>` to watch from another machine or a phone) shows every run live: outcomes, losses and the gradient noise scale, the league, production, matchups, replay videos with the policy's panel, checkpoints, a lineage of all runs, **skill ratings** of the policies (a Bradley–Terry fit over every evaluation game, the insane AI at 1500), and a **Challenge** button that opens the game on the desktop for you to play a policy, recorded as a video with the policy's panel. Its **Docs** tab shows and edits [`docs/`](docs/overview.md).
 
 <p align="center"><img src="docs/media/dashboard-comparison.png" width="900" alt="The training dashboard comparing four runs"></p>
 

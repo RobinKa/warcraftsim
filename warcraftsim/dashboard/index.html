@@ -233,6 +233,22 @@ a.go:hover { text-decoration:underline; }
 .topnav { margin-left:8px; }
 .topnav button { padding:5px 18px; font-size:13px; }
 body.page-view .layout { grid-template-columns:1fr; }
+/* the Challenge window: a game against a policy on this machine's desktop */
+.challenge-btn { margin-left:10px; background:var(--panel2); color:var(--accent); border:1px solid var(--line); border-radius:6px;
+  padding:4px 10px; cursor:pointer; font:inherit; }
+.modal { position:fixed; inset:0; z-index:50; background:rgba(5,8,12,.72); display:flex; align-items:flex-start; justify-content:center;
+  padding:6vh 12px; overflow-y:auto; }
+.modal[hidden] { display:none; }
+.modal .box { background:var(--panel); border:1px solid var(--line); border-radius:10px; width:min(640px,100%); padding:16px 18px; }
+.modal h2 { margin:0 0 4px; font-size:17px; } .modal .sub { color:var(--muted); margin:0 0 12px; }
+.modal .form { display:grid; grid-template-columns:auto 1fr; gap:8px 12px; align-items:center; }
+.modal select { background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:5px; padding:4px 6px; font:inherit; max-width:100%; }
+.modal .row { display:flex; gap:10px; align-items:center; margin-top:14px; flex-wrap:wrap; }
+.modal .go { background:var(--accent); color:#111; border:0; border-radius:6px; padding:6px 16px; font-weight:600; cursor:pointer; }
+.modal .go:disabled { opacity:.45; cursor:default; } .modal .close { margin-left:auto; background:none; border:0; color:var(--muted); font-size:20px; cursor:pointer; }
+.modal .state { color:var(--accent); } .modal .hist { margin-top:14px; border-top:1px solid var(--line); padding-top:8px; }
+.modal .hist div { display:flex; gap:10px; flex-wrap:wrap; padding:4px 0; border-bottom:1px solid var(--line); font-size:12.5px; }
+.modal .hist .r { font-weight:600; } .modal .hist a { color:var(--blue); }
 /* the Ratings view */
 .ratings h2 { margin:0 0 6px; font-size:18px; } .ratings .sub { color:var(--muted); max-width:860px; margin:0 0 12px; }
 .ratings .bar { display:flex; flex-wrap:wrap; gap:6px 16px; align-items:center; margin:0 0 10px; color:var(--muted); }
@@ -367,6 +383,7 @@ body.page-view main { padding:18px 28px 40px; }
   <button id="menu" title="the runs">☰</button>
   <h1>warcraft<span>sim</span></h1><span class="sub">Warcraft III 1.29 · PufferLib 5.0 training dashboard</span>
   <span class="seg topnav"><button id="nav-runs" class="on">Runs</button><button id="nav-lineage">Lineage</button><button id="nav-ratings">Ratings</button><button id="nav-docs">Docs</button></span>
+  <button id="nav-challenge" class="challenge-btn" title="play against a policy in the game">⚔ Challenge</button>
   <div class="right"><label class="smooth" title="exponential moving average over the points of every chart"><span class="lbl">smoothing</span>
     <input type="range" id="smooth" min="0" max="0.99" step="0.01"><span id="smoothv"></span></label>
     <span id="clock"></span><label><input type="checkbox" id="auto" checked> auto-refresh</label></div>
@@ -2100,6 +2117,65 @@ function renderRatings() {
   document.getElementById("rall").onchange = ev => { R.all = ev.target.checked; renderRatings(); };
 }
 
+// ---- the Challenge window: play a policy in the game, on this machine's desktop (GET /api/challenges, POST
+// /api/challenge: fullgame/versus.py --record; the replay rendered into a video with the policy's panel) ----------
+ui.challenge = { timer: null, data: null, form: null, msg: "" };
+const RACE_NAMES = { random: "random", human: "human", orc: "orc", undead: "undead", nightelf: "night elf" };
+async function openChallenge() {
+  let m = document.getElementById("challenge");
+  if (!m) {
+    m = document.createElement("div"); m.id = "challenge"; m.className = "modal";
+    m.onclick = ev => { if (ev.target === m) closeChallenge(); };
+    document.body.appendChild(m);
+  }
+  m.hidden = false;
+  await pollChallenge();
+  clearInterval(ui.challenge.timer);
+  ui.challenge.timer = setInterval(() => { if (!document.hidden) pollChallenge(); }, 4000);
+}
+function closeChallenge() { const m = document.getElementById("challenge"); if (m) m.hidden = true; clearInterval(ui.challenge.timer); }
+async function pollChallenge() {
+  try { ui.challenge.data = await getJSON("/api/challenges"); } catch (e) { ui.challenge.data = { error: String(e) }; }
+  renderChallenge();
+}
+function renderChallenge() {
+  const m = document.getElementById("challenge"), C = ui.challenge, D = C.data || {};
+  if (!m || m.hidden) return;
+  const f = C.form || (C.form = { checkpoint: (D.checkpoints || [])[0]?.path || "", you: "human", agent: "random", side: "", speed: "1" });
+  const st = D.status, busy = st && !["done", "stopped"].includes(st.phase);
+  const opt = (v, label, cur) => `<option value="${esc(v)}" ${String(v) === String(cur) ? "selected" : ""}>${esc(label)}</option>`;
+  const races = Object.entries(RACE_NAMES);
+  const when = t => new Date(t * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  m.innerHTML = `<div class="box"><div class="row" style="margin:0"><h2>Challenge a policy</h2><button class="close" title="close">×</button></div>
+    <p class="sub">The game opens in a window on this machine's desktop: you against the policy on Echo Isles under the game's rules, the clock at real time. The game is recorded: its replay with the policy's orders, then a video with the policy's panel.</p>
+    <div class="form">
+      <label>policy</label><select id="ch-ck">${(D.checkpoints || []).map(c => opt(c.path, c.label, f.checkpoint)).join("")}</select>
+      <label>you play</label><select id="ch-you">${races.filter(([k]) => k !== "random").map(([k, n]) => opt(k, n, f.you)).join("")}</select>
+      <label>it plays</label><select id="ch-agent">${races.map(([k, n]) => opt(k, n, f.agent)).join("")}</select>
+      <label>your base</label><select id="ch-side">${opt("", "random", f.side)}${opt(0, "west", f.side)}${opt(1, "east", f.side)}</select>
+      <label>speed</label><select id="ch-speed">${["0.5", "0.75", "1", "1.25", "1.5"].map(v => opt(v, v + "×", f.speed)).join("")}</select>
+    </div>
+    <div class="row"><button class="go" id="ch-go" ${busy || !(D.checkpoints || []).length ? "disabled" : ""}>Start the game</button>
+      <span class="state">${busy ? `${esc(st.phase)}… (${RACE_NAMES[st.you] || st.you} against ${RACE_NAMES[st.agent] || st.agent})` : st && st.result ? `last: ${esc(st.result)}` : ""}</span>
+      <span style="color:var(--muted)">${esc(C.msg)}</span></div>
+    <div class="hist">${(D.history || []).length ? D.history.map(r => `<div><span>${when(r.time)}</span>
+      <span>you (${RACE_NAMES[r.you] || r.you}) vs ${esc((r.checkpoint || "").split("/").slice(-3, -2)[0] || "")} (${RACE_NAMES[r.agent] || r.agent})</span>
+      <span class="r">${esc(r.result)}</span><span>${(r.minutes || 0).toFixed(1)} min</span>
+      ${r.video ? `<a href="/files/challenges/${esc(r.video)}" target="_blank">video ↗</a>` : `<span style="color:var(--muted)">video: rendering…</span>`}</div>`).join("")
+      : `<div style="color:var(--muted)">no challenges yet</div>`}</div></div>`;
+  m.querySelector(".close").onclick = closeChallenge;
+  const bind = (id, k) => { const el = document.getElementById(id); el.onchange = () => { f[k] = el.value; }; };
+  bind("ch-ck", "checkpoint"); bind("ch-you", "you"); bind("ch-agent", "agent"); bind("ch-side", "side"); bind("ch-speed", "speed");
+  document.getElementById("ch-go").onclick = async () => {
+    C.msg = "starting…"; renderChallenge();
+    const r = await fetch("/api/challenge", { method: "POST", body: JSON.stringify({ checkpoint: f.checkpoint, you: f.you,
+      agent: f.agent, side: f.side === "" ? null : +f.side, speed: +f.speed }) });
+    const j = await r.json().catch(() => ({}));
+    C.msg = j.ok ? "the game window opens in a few seconds" : (j.message || j.error || "not started");
+    pollChallenge();
+  };
+}
+
 // ---- the Lineage view: what each run, cloning fit and demonstration collection came from ------------
 ui.lineage = { track: "whole game", data: null };
 const LINEAGE_KINDS = { selfplay: ["self-play", "#1d3a2a", "#4cc38a"], bc: ["cloning fit", "#2d2140", "#b083f0"],
@@ -2428,6 +2504,7 @@ document.getElementById("nav-docs").onclick = () => openDocs(state.view === "doc
 document.getElementById("nav-runs").onclick = () => { if (["docs", "lineage", "ratings"].includes(state.view)) openRun(state.selected || (state.runs[0] || {}).name); };
 document.getElementById("nav-lineage").onclick = () => openLineage();
 document.getElementById("nav-ratings").onclick = () => openRatings();
+document.getElementById("nav-challenge").onclick = () => openChallenge();
 if (state.view === "docs") openDocs(parseUrl().name || undefined);
 else if (state.view === "ratings") openRatings();
 else if (state.view === "lineage") openLineage(parseUrl().q.get("track") === "micro" ? "micro" : "whole game");
