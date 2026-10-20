@@ -49,6 +49,7 @@ import numpy as np
 import torch
 
 from . import features as fx
+from . import modes as zmodes
 from . import strategy as strat
 from .collect import claim_slot
 from .costs import order_costs
@@ -1188,6 +1189,16 @@ HALLS = {int.from_bytes(c.encode(), "big") for c in
          ("htow", "hkee", "hcas", "ogre", "ostr", "ofrt", "unpl", "unp1", "unp2", "etol", "etoa", "etoe")}
 AT_MINES = {"htow", "ogre", "unpl", "etol", "ugol", "egol"}  # (with a hall already: an expansion)
 WORKER_TYPES = {"human": "hpea", "orc": "opeo", "undead": "uaco", "nightelf": "ewsp"}
+WORKER_IDS = {int.from_bytes(c.encode(), "big") for c in WORKER_TYPES.values()}
+_FOOD: dict[int, int] = {}
+
+
+def unit_food() -> dict[int, int]:
+    """Unit type id -> its food (the game's tables; --z-modes' army size)."""
+    if not _FOOD:
+        from ..data.objects import unit_table
+        _FOOD.update({int.from_bytes(c.encode(), "big"): u.food for c, u in unit_table().items()})
+    return _FOOD
 SUPPLY_TYPES = {"human": "hhou", "orc": "otrb", "undead": "uzig", "nightelf": "emow"}
 CANCEL = 851976  # a building's queue: its last unit
 
@@ -1401,10 +1412,12 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         return not self.why_not
 
 
-def target(cfg: dict, view, st: dict, pool: dict, race: str, vocab: dict) -> dict:
-    """A side's target strategy `st` in its view: the input (strategy.vector) and, with --z-enforce, the
-    orders it allows for the strategies' horizon (strategy.allowed) -> `st`."""
-    view.z = strat.vector(st, pool["items"][race])
+def target(cfg: dict, view, st: dict, pool: dict, race: str, vocab: dict, modes: dict | None = None) -> dict:
+    """A side's target strategy `st` in its view: the input (strategy.vector; with --z-modes, its modes'
+    after it: modes.vector) and, with --z-enforce, the orders it allows for the strategies' horizon
+    (strategy.allowed) -> `st`."""
+    z = strat.vector(st, pool["items"][race])
+    view.z = np.concatenate([z, zmodes.vector(modes)]) if fx.ZDIM > strat.ZDIM else z
     if cfg.get("z_enforce"):
         view.zmask = strat.allowed(st, pool["items"][race], vocab["orders"])
         view.zmask_until = int(strat.horizon(st) / cfg["step_seconds"])  # (`st` scaled: --z-time-scale)
@@ -1455,22 +1468,34 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     # their race (and their opponent's, when the pool has some): the global vector's strategy block, and a
     # reward for the items made by now, theirs against the strategy's (strategy.mismatch); none in evaluation
     zs: dict[int, dict] = {}
+    zm: dict[int, dict] = {}  # (--z-modes: each side's modes, modes.draw)
     pool = strategy_pool(cfg) if train else None
     for s in trajs if pool is not None and replay is None else ():
         if keys[s] == "current" and (random.random() < cfg.get("z_share", 0.5) or (record and s == side)):  # (not the
             # exploiter's sides; a filmed game's learner always: its video shows how it plays a target)
             st = strat.sample(pool, races[s], races[1 - s], random, bool(cfg.get("z_winners", 1)), cfg.get("z_src", ""))
             if st is not None:
-                zs[s] = target(cfg, bots[s].view, strat.scaled(st, cfg.get("z_time_scale", 1.0)), pool, races[s], vocab)
+                zm[s] = zmodes.draw(random, cfg["z_modes"]) if cfg.get("z_modes") else {}
+                zs[s] = target(cfg, bots[s].view, strat.scaled(st, cfg.get("z_time_scale", 1.0)), pool, races[s], vocab,
+                               zm[s])
     if opp.get("eval_key") in ("current+z", "current+zg"):  # (--eval-z: the current policy's evaluation games with a target, AlphaStar's
         pool = strategy_pool(cfg)              # z at test time: drawn as in training, winners of the matchup first)
         st = strat.sample(pool, races[side], races[1 - side], random, True, cfg.get("z_src", "")) if pool else None
         if st is not None:
-            zs[side] = target(cfg, bots[side].view, strat.scaled(st, cfg.get("z_time_scale", 1.0)), pool, races[side], vocab)
+            zm[side] = zmodes.draw(random, cfg["z_modes"]) if cfg.get("z_modes") else {}
+            zs[side] = target(cfg, bots[side].view, strat.scaled(st, cfg.get("z_time_scale", 1.0)), pool, races[side],
+                              vocab, zm[side])
     if replay is not None:  # (the source's targets)
-        zs = {s: target(cfg, bots[s].view, st, pool, races[s], vocab) for s, st in replay["zs"].items()}
+        zs = {s: target(cfg, bots[s].view, st, pool, races[s], vocab, replay.get("zm", {}).get(s))
+              for s, st in replay["zs"].items()}
+        zm = dict(replay.get("zm", {}))
     if rec is not None:
-        rec["zs"] = dict(zs)
+        rec["zs"], rec["zm"] = dict(zs), dict(zm)
+    # --z-modes: each side's modes measured each step (modes.Tracker: their violations, the strategy potential's)
+    trackers = {s: zmodes.Tracker(m, s, (obs.players[1 - s].start_x, obs.players[1 - s].start_y), unit_food(),
+                                  WORKER_IDS) for s, m in zm.items() if m and obs.players.get(1 - s) is not None}
+    viol = {s: 0.0 for s in trackers}
+    rows_next = None  # (the step's unit rows, made for the trackers: the next step's)
     made = {s: {} for s in zs}  # each item's first game second, of the sides with a strategy
     builders = {s: TargetBuilder(cfg, vocab, s, zs[s], random.Random()) for s in zs} if cfg.get("z_build") else {}
     zphi = {s: 0.0 for s in zs}  # their strategy potentials at the last recorded step
@@ -1510,7 +1535,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             cmds += [ShadowAI(s) for s in advised]
         held = {s: obs.players.get(s) for s in advised}  # (the labels count what the player could pay for)
         held = {s: np.asarray([t, s, p.gold, p.lumber, p.food_used, p.food_cap, p.upkeep]) for s, p in held.items() if p}
-        rows = unit_rows(obs, t)  # once for both sides
+        rows = rows_next if rows_next is not None else unit_rows(obs, t)  # once for both sides
         if cfg.get("unit_credit", 0.0) > 0 and t > 0:  # each own unit's reward of its own for the last step
             for s, tr in trajs.items():
                 last = tr.steps[-1] if tr.steps else None
@@ -1611,6 +1636,10 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         for s in zs:  # (what each side with a strategy has made: its items' first times)
             for code in (*prod.trained[s], *prod.built[s], *prod.research[s]):
                 made[s].setdefault(code, obs.game_time)
+        rows_next = unit_rows(obs, t) if trackers else None
+        for s, tk in trackers.items():  # (--z-modes: evaluation games too, their rows' report)
+            p_ = obs.players.get(s)
+            viol[s] = tk.step(rows_next, obs.events, p_.food_used if p_ is not None else 0, obs.game_time)
         mat = material(obs, values, cfg.get("hero_level_value", 0.0), cfg.get("worker_cap", 0))
         pot = shaped(obs, mat, cfg.get("float_penalty", 0.0))
         if obs.game_over or t >= cfg["max_steps"]:
@@ -1623,6 +1652,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                 r = fade * shaping * (cfg["gamma"] * (pot[s] - pot[1 - s]) / scale - phi[s])
                 if s in zs:  # the strategy's potential (not returned at the end: following it pays)
                     z_new = -cfg.get("z_reward", 0.0) * strat.mismatch(made[s], zs[s], pool["items"][races[s]], obs.game_time)
+                    z_new -= cfg.get("z_mode_reward", 0.0) * viol.get(s, 0.0)
                     r += fade * (cfg["gamma"] * z_new - zphi[s])
                     zphi[s] = z_new
                 if tr.steps:
@@ -1664,6 +1694,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"shared_noise": shared_noise} if cfg.get("shared_noise", 0.0) > 0 else {}),
         **({"z_build": builders[side].log, "z_refusals": builders[side].why,
             "z_blocked": {c: dict(v) for c, v in builders[side].blocked.items()}} if side in builders else {}),
+        **({"z_modes": trackers[side].report()} if side in trackers else {}),
         **({"z_t": {c: round(v) for c, v in zs[side]["t"].items()},
             "z_made": {c: round(v) for c, v in made[side].items()}} if side in zs else {}),
         **({"z": zs[side]["src"] + (" won" if zs[side]["won"] else ""), "z_items": len(zs[side]["t"]),
@@ -2840,6 +2871,11 @@ def main(argv: list[str] | None = None) -> int:
                     "(scripts/grow_strategy.py)")
     ap.add_argument("--z-share", type=float, default=0.5, help="the share of the learner's trained sides given a "
                     "strategy (the rest and every evaluation game: none)")
+    ap.add_argument("--z-modes", type=float, default=0.0, help="more kinds of strategy conditioning (modes.py: no rush, "
+                    "rush, expand, workers, creeping, harass, scouting, ...): each kind's chance to be on in a game with a "
+                    "target, its switch and parameter in the strategy block (older networks grow it with zero weights)")
+    ap.add_argument("--z-mode-reward", type=float, default=0.1, help="--z-modes: the strategy potential's weight of "
+                    "one whole violation (a build target's item: --z-reward)")
     ap.add_argument("--z-reward", type=float, default=0.02, help="the strategy reward: its potential is minus this "
                     "per item of the race's list made by one of the side and its strategy by now, not both")
     ap.add_argument("--z-winners", type=int, default=1, help="draw the strategies of players who won (if any)")
@@ -3077,6 +3113,8 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--valid-mask reads the hero features: --inputs 2")
     fx.set_inputs(args.inputs)  # (before any network is loaded: model.load gives older ones the new inputs)
     fx.set_masks(args.tech_mask, args.valid_mask)
+    if args.z_modes > 0:  # (the strategy block with the modes' part: model.load grows older networks')
+        fx.set_z(strat.ZDIM + zmodes.MDIM)
     from ..data.duelmap import parse_duel_name
     if parse_duel_name(args.map) is None:  # another map than the duel maps: its own frame for the positions
         from ..data.mapbuild import stock_map_path    # and point targets (features.set_geometry; the actors
@@ -3284,7 +3322,7 @@ def main(argv: list[str] | None = None) -> int:
            "opd_share": args.opd_share, "opd_difficulty": args.opd_difficulty,
            "costs": order_costs(vocab, args.map).tolist() if args.avail_mask else None, "max_past": args.max_past,
            "eval_fallback": args.eval_fallback, "worker_cap": args.worker_cap, "z_dim": fx.ZDIM, "z_pool": str(args.z_pool) if args.z_pool else "", "z_share": args.z_share,
-           "z_reward": args.z_reward, "z_winners": args.z_winners, "z_src": args.z_src, "eval_z": args.eval_z,
+           "z_reward": args.z_reward, "z_modes": args.z_modes, "z_mode_reward": args.z_mode_reward, "z_winners": args.z_winners, "z_src": args.z_src, "eval_z": args.eval_z,
            "z_enforce": args.z_enforce, "z_time_scale": args.z_time_scale, "z_build": args.z_build, "z_build_labels": args.z_build_labels,
            "grpo_share": args.grpo_share, "grpo_group": args.grpo_group, "grpo_coef": args.grpo_coef,
            "grpo_seeds": args.grpo_seeds, "grpo_branch": [float(x) for x in args.grpo_branch.split("-")],

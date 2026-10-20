@@ -1109,6 +1109,10 @@ const SECTIONS = [
       [EP("z_miss_human", "off · people's builds", "#4cc38a"), EP("z_items_human", "target · people's builds", "#4cc38a", [5, 4]),
        EP("z_miss_ai", "off · the AI's builds", "#539bf5"), EP("z_items_ai", "target · the AI's builds", "#539bf5", [5, 4])],
       { ymin: 0, xfit: true, only: "fullgame", hideEmpty: true, empty: "no target strategies (--z-pool)" }],
+    ["c-z-modes", "Conditioning kinds followed", "share of the games with each kind on that kept it (--z-modes)",
+      [["no_rush", "#4cc38a"], ["rush", "#e5534b"], ["expand", "#539bf5"], ["no_expand", "#8795a3"], ["workers", "#e0a33a"],
+       ["creep", "#b083f0"], ["harass", "#f56ed2"], ["scout", "#39c5cf"], ["army", "#d7dee6"], ["low_upkeep", "#a37b45"]]
+        .map(([k, c]) => EP("mode_" + k, k.replace("_", " "), c)), { ymin: 0, ymax: 1, xfit: true, only: "fullgame", hideEmpty: true }],
     ["c-z-win", "Wins with and without a target", "training games against the built-in AI",
       [EP("z_win", "with a target", "#4cc38a"), EP("noz_win", "without", "#8795a3")], { ymin: 0, ymax: 1, xfit: true, only: "fullgame", hideEmpty: true }],
     ["c-z-t2", "Tier 2 with and without a target", "share of those games with a tier-2 hall",

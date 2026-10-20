@@ -328,6 +328,10 @@ def adapt_config(config: dict) -> dict:
     if fx.GX > gx:
         config["G"] += fx.GX - gx
         config["gx"] = fx.GX
+    z = config.get("z", 0)
+    if z and fx.ZDIM > z:  # (--z-modes: the strategy block's modes after its build target's)
+        config["G"] += fx.ZDIM - z
+        config["z"] = fx.ZDIM
     return config
 
 
@@ -343,7 +347,7 @@ def load(path, device="cpu", memory: bool | None = None) -> tuple[FullGameNet, d
         G_now = fx.Encoder(ck["vocab"]).G - fx.GX + config.get("gx", 0)
         if config["G"] < G_now and not config.get("priv"):
             config["priv"], config["G"] = G_now - config["G"], G_now
-    gx_old = config.get("gx", 0)
+    gx_old, z_old, G_old = config.get("gx", 0), config.get("z", 0), config["G"]
     config = adapt_config(config)
     valid = bool(config.get("valid"))
     net = FullGameNet(**config).to(device)
@@ -354,8 +358,11 @@ def load(path, device="cpu", memory: bool | None = None) -> tuple[FullGameNet, d
     elif w is not None and w.shape[1] > fx.F:  # (a run with fewer inputs: those it has)
         state = {**state, "ent.weight": w[:, :fx.F]}
     w = state.get("glob.0.weight")
-    if w is not None and config.get("gx", 0) > gx_old:  # the clock (at the end of what the policy reads): zeros
-        state = {**state, "glob.0.weight": torch.cat([w, w.new_zeros(w.shape[0], config["gx"] - gx_old)], 1)}
+    if w is not None and config["G"] > G_old:  # what the policy reads, [known | strategy block | clock]: grown parts zeros
+        at = G_old - config.get("priv", 0) - gx_old  # (the strategy block's end)
+        dz, dg = config.get("z", 0) - z_old, config.get("gx", 0) - gx_old
+        state = {**state, "glob.0.weight": torch.cat([w[:, :at], w.new_zeros(w.shape[0], dz), w[:, at:],
+                                                      w.new_zeros(w.shape[0], dg)], 1)}
     missing, unexpected = net.load_state_dict(state, strict=False)
     if unexpected or any(not (k.startswith(("value_head.", "mem_", "priv_proj.")) or k in ("order_kind", "target_temp"))
                          for k in missing):

@@ -246,3 +246,29 @@ def test_adam_state_grows_with_the_inputs(v2, tmp_path):
                          torch.ones(1, 2, dtype=torch.bool), torch.randn(1, net.config["G"]))[0]).sum().backward()
     opt2.step()  # (the state's shapes fit the grown weights)
     assert opt2.state[net.ent.weight]["exp_avg"].shape == net.ent.weight.shape
+
+
+def test_strategy_block_grows_with_the_modes(v2, tmp_path):
+    from warcraftsim.fullgame import modes, strategy
+    from warcraftsim.fullgame.model import FullGameNet, load
+    fx.set_inputs(2)
+    fx.set_z(strategy.ZDIM)
+    try:
+        vocab = {**VOCAB, "upgrades": [code("Rhme")]}
+        enc = fx.Encoder(vocab)
+        torch.manual_seed(0)
+        old = FullGameNet(n_types=5, n_cur=2, n_orders=7, G=enc.G, d=32, layers=1, priv=fx.PRIV, z=strategy.ZDIM,
+                          gx=fx.GX).eval()
+        torch.save({"config": old.config, "model": old.state_dict(), "vocab": vocab}, tmp_path / "z.pt")
+        fx.set_z(strategy.ZDIM + modes.MDIM)
+        net, _ = load(tmp_path / "z.pt")
+        assert net.config["z"] == strategy.ZDIM + modes.MDIM and net.config["G"] == enc.G + modes.MDIM
+        G0 = enc.G0
+        glob_old = torch.randn(1, enc.G)
+        glob = torch.cat([glob_old[:, :G0 + strategy.ZDIM], torch.randn(1, modes.MDIM), glob_old[:, G0 + strategy.ZDIM:]], 1)
+        ent, typ = torch.randn(1, 2, fx.F), torch.tensor([[1, 2]])
+        cur, mask = torch.zeros(1, 2, dtype=torch.long), torch.ones(1, 2, dtype=torch.bool)
+        with torch.no_grad():  # (the modes' part weighs nothing yet; the clock and the rest read as before)
+            assert torch.allclose(net.encode(ent, typ, cur, mask, glob)[0], old.encode(ent, typ, cur, mask, glob_old)[0], atol=1e-5)
+    finally:
+        fx.set_z(0)
