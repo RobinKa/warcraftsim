@@ -33,13 +33,13 @@ class FullGameNet(nn.Module):
     def __init__(self, n_types: int, n_cur: int, n_orders: int, G: int, d: int = 192, heads: int = 4,
                  layers: int = 3, dropout: float = 0.0, memory: bool = False, target_temperature: float = 1.0,
                  priv: int = 0, order_temperature: float = 1.0, bins: int = 128, z: int = 0, gx: int = 0,
-                 valid: int = 0, vparts: int = 0):
+                 valid: int = 0, vparts: int = 0, ghost: bool = False):
         super().__init__()
         self.config = dict(n_types=n_types, n_cur=n_cur, n_orders=n_orders, G=G, d=d, heads=heads, layers=layers,
                            dropout=dropout, memory=memory, target_temperature=target_temperature, priv=priv,
                            order_temperature=order_temperature, bins=bins, **({"z": z} if z else {}),
                            **({"gx": gx} if gx else {}), **({"valid": valid} if valid else {}),
-                           **({"vparts": vparts} if vparts else {}))
+                           **({"vparts": vparts} if vparts else {}), **({"ghost": True} if ghost else {}))
         # the global vector's last `priv` numbers: the whole game (features.View.priv), for the value alone
         self.priv = int(priv)
         # the target heads' logits (unit, x, y) divided by it, acting and training alike: < 1 samples a unit's
@@ -84,6 +84,10 @@ class FullGameNet(nn.Module):
             nn.init.zeros_(self.priv_proj[2].bias)
         # each order class's kind (features.IMMEDIATE, POINT, ...: which target it takes)
         self.register_buffer("order_kind", torch.zeros(n_orders, dtype=torch.long))
+        # (inputs 3) the attention's bias on the enemies it remembers (features.A_MEM): -30 hides them (a network from
+        # before them plays as it did); --memory-fade raises the learner's to 0 over its first updates
+        if ghost:
+            self.register_buffer("ghost_bias", torch.tensor(-30.0))
         if valid:  # (--valid-mask) what each order needs of the unit (herodata.order_needs; set_valid fills them):
             self._valid_buffers(n_types, valid)  # `valid` the number of order classes that need something
 
@@ -133,6 +137,11 @@ class FullGameNet(nn.Module):
         # block; one without reads only what it knows when a run's rows have a strategy block)
         tok = torch.cat([self.glob(glob[..., :self.config["G"] - self.priv]).unsqueeze(1), x], 1)
         pad = torch.cat([torch.zeros_like(mask[:, :1]), ~mask], 1)
+        if self.config.get("ghost") and ent.shape[-1] > fx.A_MEM:  # (the remembered enemies: their attention bias)
+            ghost = torch.cat([torch.zeros_like(mask[:, :1]), ent[..., fx.A_MEM] > 0.5], 1)
+            zero = torch.zeros((), dtype=x.dtype, device=x.device)
+            pad = torch.where(pad, torch.full_like(zero, float("-inf")),
+                              torch.where(ghost, self.ghost_bias.to(x.dtype), zero))
         out = self.transformer(tok, src_key_padding_mask=pad)
         return out[:, 0], out[:, 1:]
 
@@ -332,6 +341,8 @@ def adapt_config(config: dict) -> dict:
     """A checkpoint's config as this run's inputs read it (features.set_inputs): the clock's numbers in the
     global vector (inputs 2: features.GX, between the strategy block and the privileged one) added."""
     config = dict(config)
+    if fx.F > fx.A_MEM and not config.get("ghost"):  # (inputs 3: the remembered enemies hidden from a network before them)
+        config["ghost"] = True
     gx = config.get("gx", 0)
     if fx.GX > gx:
         config["G"] += fx.GX - gx
@@ -372,7 +383,7 @@ def load(path, device="cpu", memory: bool | None = None) -> tuple[FullGameNet, d
         state = {**state, "glob.0.weight": torch.cat([w[:, :at], w.new_zeros(w.shape[0], dz), w[:, at:],
                                                       w.new_zeros(w.shape[0], dg)], 1)}
     missing, unexpected = net.load_state_dict(state, strict=False)
-    if unexpected or any(not (k.startswith(("value_head.", "mem_", "priv_proj.")) or k in ("order_kind", "target_temp"))
+    if unexpected or any(not (k.startswith(("value_head.", "mem_", "priv_proj.")) or k in ("order_kind", "target_temp", "ghost_bias"))
                          for k in missing):
         raise RuntimeError(f"{path}: missing {missing}, unexpected {unexpected}")
     if "order_kind" in missing and "vocab" in ck:  # fits from before it: from the vocabulary

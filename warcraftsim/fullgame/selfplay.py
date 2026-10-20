@@ -2931,6 +2931,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--neutral", type=int, default=0, help="the neutral buildings' wares as orders (a tavern's heroes, "
                     "mercenaries, the goblin merchant's items: protocol.Buy) and the tavern heroes' skills and spells "
                     "(neutral.py: every network loaded grows to the extended vocabulary)")
+    ap.add_argument("--memory-fade", type=int, default=0, help="inputs 3: the remembered enemies fade into the learner's "
+                    "attention over this many updates (its bias on them from -8 to 0; older networks and the anchor "
+                    "keep them hidden at -30); 0: as loaded")
     ap.add_argument("--teach", type=int, default=0, help="a heuristic teacher (teacher.py: a tavern hero with a worker, "
                     "a town portal, a potion when a hero is low) labels the learner's steps, never carried out; "
                     "--opd-coef the labels' weight; needs --neutral 1")
@@ -3629,6 +3632,8 @@ def main(argv: list[str] | None = None) -> int:
             if native is not None:  # (the inference loop's statistics: rounds during the update apart)
                 native.loop.learner_busy = 1
             measured = {}
+            if args.memory_fade > 0 and net.config.get("ghost"):  # (published with the weights: the actors see it too)
+                net.ghost_bias.fill_(-8.0 * max(0.0, 1.0 - update / args.memory_fade))
             part_stats = parts_pass(net, batch_chunks, args, device) if args.reward_parts else {}  # (--reward-parts)
             if args.noise_scale > 0 and update % args.noise_scale == 0:  # (at the weights the update starts from)
                 t_noise = time.time()
@@ -3646,6 +3651,8 @@ def main(argv: list[str] | None = None) -> int:
                 stats = ppo_update(net, ref, opt, steps, args, warmup, device, batch_chunks, bc_iter)
             stats.update(measured)
             stats.update(part_stats)
+            if net.config.get("ghost"):
+                stats["memory/ghost_bias"] = float(net.ghost_bias)
             update += 1
             agent_steps += len(steps)
             publish(net, update, run_dir)

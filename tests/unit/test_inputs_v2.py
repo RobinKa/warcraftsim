@@ -342,3 +342,27 @@ def test_teacher_lessons_and_merged_labels(v2):
     step = {"n_own": 3, "y_order": np.array([0, 4, 0]), "y_ptr": np.array([-1, 2, -1]), "y_x": np.full(3, -1), "y_y": np.full(3, -1)}
     merge_labels(step, {"y_order": np.array([7, 0, 0]), "y_ptr": np.array([1, -1, -1]), "y_x": np.full(3, -1), "y_y": np.full(3, -1)})
     assert step["y_order"].tolist() == [7, 4, 0] and step["y_ptr"].tolist() == [1, 2, -1] and step["y_only"]
+
+
+def test_remembered_enemies_hidden_until_they_fade_in(v2, tmp_path):
+    """inputs 3: a network from before the memory (its config gets "ghost", bias -30) plays as if the remembered
+    enemies were not there; at bias 0 they count."""
+    from warcraftsim.fullgame.model import FullGameNet, load
+    fx.set_inputs(2)
+    vocab = {**VOCAB, "upgrades": []}
+    torch.manual_seed(0)
+    old = FullGameNet(n_types=5, n_cur=2, n_orders=7, G=fx.Encoder(vocab).G, d=16, layers=2, priv=fx.PRIV).eval()
+    torch.save({"config": old.config, "model": old.state_dict(), "vocab": vocab}, tmp_path / "g.pt")
+    fx.set_inputs(3)
+    net, _ = load(tmp_path / "g.pt")
+    assert net.config["ghost"] and float(net.ghost_bias) == -30.0
+    ent = torch.randn(1, 4, fx.F)
+    ent[..., fx.A_MEM] = torch.tensor([0.0, 0.0, 1.0, 1.0])  # (the last two remembered)
+    typ, cur, mask, glob = torch.tensor([[1, 2, 3, 4]]), torch.zeros(1, 4, dtype=torch.long), torch.ones(1, 4, dtype=torch.bool), torch.randn(1, net.config["G"])
+    with torch.no_grad():
+        g, u = net.encode(ent, typ, cur, mask, glob)
+        g2, u2 = net.encode(ent[:, :2], typ[:, :2], cur[:, :2], mask[:, :2], glob)
+        assert torch.allclose(g, g2, atol=1e-5) and torch.allclose(u[:, :2], u2, atol=1e-5)
+        net.ghost_bias.fill_(0.0)
+        g3, _ = net.encode(ent, typ, cur, mask, glob)
+        assert not torch.allclose(g, g3, atol=1e-4)
