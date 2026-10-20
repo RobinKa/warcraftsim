@@ -8,7 +8,7 @@ In the order they run. The code for each is in place unless it says otherwise.
 
 | idea | from | what it is | status |
 |---|---|---|---|
-| What the agent can't see or do | the user's question | each hero's abilities, cooldowns and items, what buildings make, the clock, the enemies it saw before (`--inputs 3`); masks for orders the game refuses (`--tech-mask`, `--valid-mask`) | running: `fgself-107` |
+| What the agent can't see or do | the user's question | each hero's abilities, cooldowns and items, what buildings make, the clock, the enemies it saw before (`--inputs 3`); masks for orders the game refuses (`--tech-mask`, `--valid-mask`) | `fgself-107`: below its start (41% head to head); `fgself-108` without the memory (running) |
 | Narrow target strategies | the user ("they all seem big and generic") | a game's heroes, its main army and what they need; the rest free; drawn evenly per signature (`strategy.narrow`, `--narrow` pools) | next |
 | More kinds of strategy conditioning | the user ("no rush" and many more); AlphaStar's z had statistics beside the build order | no rush, rush, expand, no expansion, workers, creeping, harass, scouting, army size, low upkeep: a switch and a parameter each (`fullgame/modes.py`, `--z-modes`) | next |
 | Rewards by part | the user (rewards combined in LLM RL): GDPO, SAW | an advantage per reward (outcome, shaping, strategy), each normalized, a saturated one held small (`--reward-parts`) | built |
