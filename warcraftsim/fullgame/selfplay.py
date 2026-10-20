@@ -827,12 +827,16 @@ class Trajectory:
                            "done": False, "version": res["version"]})
         if self.cfg.get("unit_credit", 0.0) > 0:  # (--unit-credit: each own unit's id, for its local reward)
             self.steps[-1]["ids"] = st["sel"][:self.steps[-1]["n_own"], fx.C_ID].astype(np.int64)
+        if self.cfg.get("reward_parts"):  # (--reward-parts: the reward by part, PART_NAMES; "reward" their sum)
+            self.steps[-1]["rparts"] = np.zeros(len(PART_NAMES), np.float32)
         if len(self.steps) > self.cfg["chunk"] and not self.hold:
             self.flush(bootstrap=True)
 
-    def end(self, reward: float) -> None:
+    def end(self, reward: float, parts=None) -> None:
         if self.steps:
             self.steps[-1]["reward"] = reward
+            if parts is not None and "rparts" in self.steps[-1]:
+                self.steps[-1]["rparts"] = np.asarray(parts, np.float32)
             self.steps[-1]["done"] = True
             if not self.hold:
                 self.flush(bootstrap=False)
@@ -1650,11 +1654,15 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         for s, tr in trajs.items():  # shaping: gamma * phi(s') - phi(s), for the step just taken
             if s in spans and tr.steps:  # (it recorded a step this time)
                 r = fade * shaping * (cfg["gamma"] * (pot[s] - pot[1 - s]) / scale - phi[s])
+                r_z = 0.0
                 if s in zs:  # the strategy's potential (not returned at the end: following it pays)
                     z_new = -cfg.get("z_reward", 0.0) * strat.mismatch(made[s], zs[s], pool["items"][races[s]], obs.game_time)
                     z_new -= cfg.get("z_mode_reward", 0.0) * viol.get(s, 0.0)
-                    r += fade * (cfg["gamma"] * z_new - zphi[s])
+                    r_z = fade * (cfg["gamma"] * z_new - zphi[s])
                     zphi[s] = z_new
+                if tr.steps and "rparts" in tr.steps[-1]:
+                    tr.steps[-1]["rparts"][1:] += (r, r_z)
+                r += r_z
                 if tr.steps:
                     tr.steps[-1]["reward"] += r
                     ret[s] += r
@@ -1673,7 +1681,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                     else cfg.get("tie_value", 0.0) + cfg["tie_break"] * math.tanh(2.0 * lead[s]))
         fade = cfg["shaping_decay"] ** (obs.game_time / 600.0) if cfg.get("shaping_decay", 0.0) > 0 else 1.0
         last = terminal - fade * shaping * phi.get(s, 0.0)
-        tr.end(last)
+        tr.end(last, (terminal, -fade * shaping * phi.get(s, 0.0), 0.0))
         ret[s] += last
         if record and trace:
             trace[-1].setdefault("reward", {})[str(s)] = round(last, 4)
@@ -2183,6 +2191,8 @@ def collate(steps: list[dict], device, width: int | None = None, with_labels: bo
             **{k: t(v) for k, v in acts.items()}, "logp": t(logp), "avail": t(avail) if avail is not None else None,
             "adv": t(np.array([s["adv"] for s in steps], np.float32)),
             "ret": t(np.array([s["ret"] for s in steps], np.float32)),
+            **({"ret_parts": t(np.stack([s["ret_parts"] if s.get("ret_parts") is not None else np.zeros(len(PART_NAMES), np.float32)
+                                         for s in steps]))} if any(s.get("ret_parts") is not None for s in steps) else {}),
             "own": torch.arange(O, device=device)[None] < t(n_own)[:, None]}
 
 
@@ -2389,6 +2399,80 @@ class NoiseScale:
         return out
 
 
+PART_NAMES = ("outcome", "shaping", "strategy")  # --reward-parts: the rewards each with its value and advantage
+
+
+@torch.no_grad()
+def parts_pass(net: FullGameNet, chunks: list[list[dict]], args, device) -> dict:
+    """--reward-parts (GDPO, the user's idea): each reward part's advantage on its own, then normalized on its own
+    and summed (args.part_weights), so one part's scale does not drown the others'. The parts' values from the
+    network now (a pass over the batch, no gradient), GAE per part over each chunk; a chunk's last step without
+    its game's end only bootstraps (its next state is the next chunk's): neutral. A part whose advantages spread
+    less than args.part_floor times the outcome's is not blown up to the others' size (saturated: SAW's point).
+    Sets each step's "adv", "ret", "ret_parts" and with UPGO "uadv" (on the sums) -> statistics."""
+    K = net.config["vparts"]
+    seqs = pieces(chunks, args.seq_len)
+    per_mb = max(1, args.minibatch // args.seq_len)
+    autocast = torch.autocast("cuda", dtype=torch.bfloat16, enabled=bool(device.type == "cuda" and args.bf16))
+    was = net.training
+    net.eval()
+    for a in range(0, len(seqs), per_mb):
+        part = seqs[a:a + per_mb]
+        mb = collate_seq(part, device, B=len(part), T=args.seq_len)
+        with autocast:
+            g, _ = net.encode(mb["ent"], mb["type"], mb["cur"], mb["mask"], mb["glob"])
+            if net.memory:
+                B, T, h0, _ = mb["seq"]
+                g = net.context_seq(g.view(B, T, -1), h0)[0].reshape(B * T, -1)
+            vp = net.value_parts(g, mb["glob"]).float().cpu().numpy()
+        T = mb["seq"][1]  # (collate_seq's rows: each sequence padded to T steps)
+        for b, q in enumerate(part):
+            for t, st in enumerate(q):
+                st["vp"] = vp[b * T + t]
+    net.train(was)
+    gamma, lam = args.gamma, args.lam
+    trained, neutral = [], []
+    for c in chunks:
+        last = c[-1]
+        n = len(c) if last["done"] else len(c) - 1
+        next_v, adv = (np.zeros(K, np.float32) if last["done"] else last["vp"]), np.zeros(K, np.float32)
+        for st in reversed(c[:n]):
+            nonterminal = 0.0 if st["done"] else 1.0
+            delta = st["rparts"] + gamma * next_v * nonterminal - st["vp"]
+            adv = delta + gamma * lam * nonterminal * adv
+            st["advp"], st["ret_parts"] = adv.copy(), adv + st["vp"]
+            next_v = st["vp"]
+        if args.upgo > 0:  # (UPGO on the sums, as Trajectory.flush)
+            boot = 0.0 if last["done"] else float(last["vp"].sum())
+            g_, v1, q1 = boot, boot, -np.inf
+            for st in reversed(c[:n]):
+                rr, v = float(st["rparts"].sum()), float(st["vp"].sum())
+                G = rr if st["done"] else rr + gamma * (g_ if q1 >= v1 else v1)
+                st["uadv"] = G - v
+                q1 = rr + (0.0 if st["done"] else gamma * v1)
+                g_, v1 = G, v
+        trained += c[:n]
+        if not last["done"]:
+            neutral.append(last)
+    A = np.stack([st["advp"] for st in trained]) if trained else np.zeros((1, K), np.float32)
+    mean, std = A.mean(0), A.std(0)
+    scale = np.maximum(std, args.part_floor * std[0]) + 1e-8
+    w = np.asarray([float(x) for x in args.part_weights.split(",")][:K], np.float32)
+    for st in trained:
+        st["adv"] = float((w * (st["advp"] - mean) / scale).sum())
+        st["ret"] = float(st["ret_parts"].sum())
+    um = float(np.mean([st["uadv"] for st in trained])) if trained and args.upgo > 0 else 0.0
+    for st in neutral:  # (the batch's mean: no push either way)
+        st["adv"], st["ret_parts"], st["ret"] = 0.0, st["vp"].copy(), float(st["vp"].sum())
+        if args.upgo > 0:
+            st["uadv"] = um
+    out = {}
+    for k, name in enumerate(PART_NAMES[:K]):
+        out[f"parts/{name} adv std"] = float(std[k])
+        out[f"parts/{name} return"] = float(np.mean([st["ret_parts"][k] for st in trained])) if trained else 0.0
+    return out
+
+
 def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict], args, warmup: bool, device,
                chunks: list[list[dict]] | None = None, bc_iter=None, measure: bool = False, terms: bool = False) -> dict:
     """PPO epochs over the steps; for a network with memory over sequences cut from `chunks` (the
@@ -2444,11 +2528,13 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
             log_ratio = (ev["logp"] - mb["logp"]) * own
             ratio = log_ratio.exp()
             pg = -(torch.min(ratio * adv, ratio.clamp(1 - args.clip, 1 + args.clip) * adv) * own).sum() / n_units
+            se = (((ev["vparts"].float() - mb["ret_parts"]) ** 2).sum(-1) if "ret_parts" in mb and "vparts" in ev
+                  else (ev["value"] - mb["ret"]) ** 2)  # (--reward-parts: each part's value its own return)
             if "valid" in mb:  # (the padding steps: no units, no value target)
                 valid = mb["valid"].float()
-                v_loss = 0.5 * (((ev["value"] - mb["ret"]) ** 2) * valid).sum() / valid.sum()
+                v_loss = 0.5 * (se * valid).sum() / valid.sum()
             else:
-                v_loss = 0.5 * ((ev["value"] - mb["ret"]) ** 2).mean()
+                v_loss = 0.5 * se.mean()
             entropy = (ev["entropy"] * own).sum() / n_units
             loss = args.vf_coef * v_loss - args.ent_coef * entropy
             if not warmup:
@@ -2554,7 +2640,9 @@ class GraphedUpdate:
             ratio = log_ratio.exp()
             pg = -(torch.min(ratio * adv, ratio.clamp(1 - args.clip, 1 + args.clip) * adv) * own).sum() / n_units
             valid = s["valid"].float()
-            v_loss = 0.5 * (((value - s["ret"]) ** 2) * valid).sum() / valid.sum().clamp(min=1)
+            se = (((ev["vparts"].float() - s["ret_parts"]) ** 2).sum(-1) if "ret_parts" in s and "vparts" in ev
+                  else (value - s["ret"]) ** 2)  # (--reward-parts: each part's value its own return)
+            v_loss = 0.5 * (se * valid).sum() / valid.sum().clamp(min=1)
             entropy = (ev["entropy"] * own).sum() / n_units
             loss = args.vf_coef * v_loss - args.ent_coef * entropy + self.pg_coef * pg
             out = {"loss/policy": pg, "loss/value": v_loss, "loss/entropy": entropy}
@@ -2876,6 +2964,12 @@ def main(argv: list[str] | None = None) -> int:
                     "target, its switch and parameter in the strategy block (older networks grow it with zero weights)")
     ap.add_argument("--z-mode-reward", type=float, default=0.1, help="--z-modes: the strategy potential's weight of "
                     "one whole violation (a build target's item: --z-reward)")
+    ap.add_argument("--reward-parts", type=int, default=0, help="GDPO (the user's idea): a value and an advantage per "
+                    "reward (outcome, shaping, strategy), each normalized on its own, summed with --part-weights "
+                    "(parts_pass; the value head grows, model.split_value)")
+    ap.add_argument("--part-weights", default="1,1,1", help="--reward-parts: each part's weight")
+    ap.add_argument("--part-floor", type=float, default=0.1, help="--reward-parts: a part's advantages are not scaled up "
+                    "past this share of the outcome's spread (a saturated part stays small)")
     ap.add_argument("--z-reward", type=float, default=0.02, help="the strategy reward: its potential is minus this "
                     "per item of the race's list made by one of the side and its strategy by now, not both")
     ap.add_argument("--z-winners", type=int, default=1, help="draw the strategies of players who won (if any)")
@@ -3185,6 +3279,9 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--ref-update copies the policy into the anchor: --init must have the starting weights' architecture")
     if args.z_pool and not fx.ZDIM:
         raise SystemExit("--z-pool needs a network with a strategy block: scripts/grow_strategy.py")
+    if args.reward_parts:  # (a value per reward: the old value is the first, the others start at zero)
+        from .model import split_value
+        net = split_value(net, len(PART_NAMES))
     if args.rl_dropout >= 0:  # the updates' dropout (the actors act without: eval mode)
         set_dropout(net, args.rl_dropout)
     graphed = bool(args.cuda_graphs) and device.type == "cuda" and bool(net.memory)
@@ -3322,7 +3419,7 @@ def main(argv: list[str] | None = None) -> int:
            "opd_share": args.opd_share, "opd_difficulty": args.opd_difficulty,
            "costs": order_costs(vocab, args.map).tolist() if args.avail_mask else None, "max_past": args.max_past,
            "eval_fallback": args.eval_fallback, "worker_cap": args.worker_cap, "z_dim": fx.ZDIM, "z_pool": str(args.z_pool) if args.z_pool else "", "z_share": args.z_share,
-           "z_reward": args.z_reward, "z_modes": args.z_modes, "z_mode_reward": args.z_mode_reward, "z_winners": args.z_winners, "z_src": args.z_src, "eval_z": args.eval_z,
+           "z_reward": args.z_reward, "reward_parts": args.reward_parts, "z_modes": args.z_modes, "z_mode_reward": args.z_mode_reward, "z_winners": args.z_winners, "z_src": args.z_src, "eval_z": args.eval_z,
            "z_enforce": args.z_enforce, "z_time_scale": args.z_time_scale, "z_build": args.z_build, "z_build_labels": args.z_build_labels,
            "grpo_share": args.grpo_share, "grpo_group": args.grpo_group, "grpo_coef": args.grpo_coef,
            "grpo_seeds": args.grpo_seeds, "grpo_branch": [float(x) for x in args.grpo_branch.split("-")],
@@ -3492,6 +3589,7 @@ def main(argv: list[str] | None = None) -> int:
             if native is not None:  # (the inference loop's statistics: rounds during the update apart)
                 native.loop.learner_busy = 1
             measured = {}
+            part_stats = parts_pass(net, batch_chunks, args, device) if args.reward_parts else {}  # (--reward-parts)
             if args.noise_scale > 0 and update % args.noise_scale == 0:  # (at the weights the update starts from)
                 t_noise = time.time()
                 parts = ppo_update(net, ref, opt, steps, args, warmup, device, batch_chunks, None, measure=True,
@@ -3507,6 +3605,7 @@ def main(argv: list[str] | None = None) -> int:
             if stats is None:
                 stats = ppo_update(net, ref, opt, steps, args, warmup, device, batch_chunks, bc_iter)
             stats.update(measured)
+            stats.update(part_stats)
             update += 1
             agent_steps += len(steps)
             publish(net, update, run_dir)

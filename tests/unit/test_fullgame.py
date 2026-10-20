@@ -1163,3 +1163,55 @@ def test_material_worker_cap():
     assert material(obs, values) == {0: 30 * 75 + 135, 1: 75}
     capped = material(obs, values, worker_cap=20)
     assert capped[0] == pytest.approx(20 * 75 + 135) and capped[1] == 75
+
+
+def test_reward_parts_gdpo():
+    """--reward-parts (GDPO): the value head split per reward plays as before; each part's GAE over a chunk with the
+    network's own part values, normalized on its own (a near-constant part not blown up past the floor), summed; a
+    chunk's last step without its game's end is neutral; a PPO update fits each part's value."""
+    import types
+
+    from warcraftsim.fullgame.model import act, split_value
+    from warcraftsim.fullgame.selfplay import PART_NAMES, parts_pass, ppo_update
+    net = _net(True)
+    g, glob = torch.randn(5, 64), torch.randn(5, 30)
+    v0 = net.value(g, glob)
+    net = split_value(net, len(PART_NAMES))
+    assert net.config["vparts"] == 3 and torch.allclose(net.value(g, glob), v0, atol=1e-6)
+    rng = np.random.default_rng(1)
+    chunks = []
+    for c in range(3):
+        chunk = []
+        for i in range(6):
+            n, own = 4, 2
+            st = {"n": n, "n_own": own, "ent": rng.normal(size=(n, fx.F)).astype(np.float32), "type": rng.integers(0, 20, n),
+                  "cur": rng.integers(0, 10, n), "glob": rng.normal(size=30).astype(np.float32), "h": None}
+            with torch.no_grad():
+                a = act(net, torch.from_numpy(st["ent"])[None], torch.from_numpy(st["type"])[None],
+                        torch.from_numpy(st["cur"])[None], torch.ones(1, n, dtype=torch.bool),
+                        torch.from_numpy(st["glob"])[None], torch.tensor([own]))
+            st.update({k: a[k][0, :own].numpy() for k in ("order", "tgt", "bx", "by", "logp")})
+            st.update(avail=None, done=c == 0 and i == 5, adv=0.0, ret=0.0,
+                      rparts=np.array([1.0 if c == 0 and i == 5 else 0.0, rng.normal() * 0.1, 1e-4 * rng.normal()], np.float32))
+            chunk.append(st)
+        chunks.append(chunk)
+    args = types.SimpleNamespace(seq_len=4, minibatch=8, bf16=0, gamma=0.99, lam=0.95, upgo=1.0, part_floor=0.1,
+                                 part_weights="1,1,1", epochs=1, pad_groups=1, clip=0.2, vf_coef=0.5, ent_coef=0.0, ref_kl=0.0,
+                                 bc_coef=0.0, max_grad_norm=0.5, opd_coef=0.0)
+    out = parts_pass(net, chunks, args, torch.device("cpu"))
+    assert set(out) == {f"parts/{p} {w}" for p in PART_NAMES for w in ("adv std", "return")}
+    last = chunks[0][-1]  # (the game's end: its own GAE, outcome part)
+    assert last["ret_parts"][0] == pytest.approx(1.0, abs=1e-5) and np.isfinite(last["adv"])
+    for c in chunks[1:]:  # (no end: the last step bootstraps only)
+        assert c[-1]["adv"] == 0.0 and np.allclose(c[-1]["ret_parts"], c[-1]["vp"])
+    s = chunks[1][0]
+    nxt = chunks[1][1]
+    assert s["advp"][1] == pytest.approx(s["rparts"][1] + 0.99 * nxt["vp"][1] - s["vp"][1] + 0.99 * 0.95 * nxt["advp"][1], rel=1e-4, abs=1e-6)
+    trained = [st for c in chunks for st in (c if c[-1]["done"] else c[:-1])]
+    A = np.stack([st["advp"] for st in trained])
+    assert A[:, 2].std() < 0.1 * A[:, 0].std()  # (the strategy part: tiny; held at the floor, not scaled up to 1)
+    steps = [st for c in chunks for st in c]
+    before = net.value_head[2].weight.detach().clone()
+    opt = torch.optim.Adam(net.parameters(), lr=1e-3)
+    res = ppo_update(net, None, opt, steps, args, False, torch.device("cpu"), chunks)
+    assert np.isfinite(res["loss/value"]) and float((net.value_head[2].weight - before).abs().max()) > 0

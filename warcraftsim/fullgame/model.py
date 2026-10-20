@@ -33,12 +33,13 @@ class FullGameNet(nn.Module):
     def __init__(self, n_types: int, n_cur: int, n_orders: int, G: int, d: int = 192, heads: int = 4,
                  layers: int = 3, dropout: float = 0.0, memory: bool = False, target_temperature: float = 1.0,
                  priv: int = 0, order_temperature: float = 1.0, bins: int = 128, z: int = 0, gx: int = 0,
-                 valid: int = 0):
+                 valid: int = 0, vparts: int = 0):
         super().__init__()
         self.config = dict(n_types=n_types, n_cur=n_cur, n_orders=n_orders, G=G, d=d, heads=heads, layers=layers,
                            dropout=dropout, memory=memory, target_temperature=target_temperature, priv=priv,
                            order_temperature=order_temperature, bins=bins, **({"z": z} if z else {}),
-                           **({"gx": gx} if gx else {}), **({"valid": valid} if valid else {}))
+                           **({"gx": gx} if gx else {}), **({"valid": valid} if valid else {}),
+                           **({"vparts": vparts} if vparts else {}))
         # the global vector's last `priv` numbers: the whole game (features.View.priv), for the value alone
         self.priv = int(priv)
         # the target heads' logits (unit, x, y) divided by it, acting and training alike: < 1 samples a unit's
@@ -75,7 +76,8 @@ class FullGameNet(nn.Module):
         self.register_buffer("allowed", torch.zeros(n_types, n_orders, dtype=torch.bool))
         # the value of the state for reinforcement learning (fullgame/selfplay.py; behavior cloning
         # leaves it untrained)
-        self.value_head = nn.Sequential(nn.Linear(d, d), nn.ReLU(), nn.Linear(d, 1))
+        # (--reward-parts: one value per reward, outcome, shaping, strategy; the value is their sum)
+        self.value_head = nn.Sequential(nn.Linear(d, d), nn.ReLU(), nn.Linear(d, max(1, int(vparts))))
         if self.priv:  # (added to the value head's input; zero at first: the value as before)
             self.priv_proj = nn.Sequential(nn.Linear(self.priv, d), nn.ReLU(), nn.Linear(d, d))
             nn.init.zeros_(self.priv_proj[2].weight)
@@ -197,10 +199,14 @@ class FullGameNet(nn.Module):
         """The point's y logits [N, O, BINS] given its x bins [N, O]."""
         return self.point_y(z + self.x_emb(x.clamp(min=0).long())) / self.target_temp
 
-    def value(self, g, glob=None):
+    def value_parts(self, g, glob=None):
+        """[N, parts] (one: the value)."""
         if self.priv and glob is not None:  # (the privileged block: what the player does not see)
             g = g + self.priv_proj(glob[..., -self.priv:].to(g.dtype))
-        return self.value_head(g).squeeze(-1)
+        return self.value_head(g)
+
+    def value(self, g, glob=None):
+        return self.value_parts(g, glob).sum(-1)
 
     def uses(self, order):
         """Which targets each order uses: (pointer [N, O], point [N, O]) booleans."""
@@ -298,8 +304,10 @@ def evaluate(net: FullGameNet, ent, typ, cur, mask, glob, n_own, order, tgt, bx,
     yl = net.y_logits(z, bx)
     uses_ptr, uses_pt = net.uses(order)
     logp = _logp(logits, order) + uses_ptr * _logp(ptr, tgt) + uses_pt * (_logp(xl, bx) + _logp(yl, by))
-    return {"logp": logp, "entropy": _entropy(logits), "logits": logits, "value": net.value(g, glob), "g": g, "u": u,
-            "ptr": ptr, "xl": xl, "yl": yl, "uses_ptr": uses_ptr, "uses_pt": uses_pt}
+    vp = net.value_parts(g, glob)
+    return {"logp": logp, "entropy": _entropy(logits), "logits": logits, "value": vp.sum(-1), "g": g, "u": u,
+            "ptr": ptr, "xl": xl, "yl": yl, "uses_ptr": uses_ptr, "uses_pt": uses_pt,
+            **({"vparts": vp} if net.config.get("vparts") else {})}
 
 
 def anchor_kl(ev: dict, ev_ref: dict, mode: str = "reverse"):
@@ -372,3 +380,18 @@ def load(path, device="cpu", memory: bool | None = None) -> tuple[FullGameNet, d
     if fx.VALID_MASK and not valid and "vocab" in ck:
         net.set_valid(ck["vocab"])
     return net.eval(), ck
+
+
+def split_value(net: FullGameNet, parts: int) -> FullGameNet:
+    """--reward-parts: `net`'s value head with one output per reward (the first is the old value, the others zero:
+    their sum plays as before) -> a new network."""
+    if net.config.get("vparts", 0) >= parts:
+        return net
+    config = {**net.config, "vparts": parts}
+    new = FullGameNet(**config).to(net.order_kind.device)
+    state = net.state_dict()
+    w, b = state["value_head.2.weight"], state["value_head.2.bias"]
+    state["value_head.2.weight"] = torch.cat([w, w.new_zeros(parts - w.shape[0], w.shape[1])])
+    state["value_head.2.bias"] = torch.cat([b, b.new_zeros(parts - b.shape[0])])
+    new.load_state_dict(state)
+    return new.train(net.training)
