@@ -131,7 +131,7 @@ def run_config(run_dir: Path, host: str, games: int, start_update) -> tuple[dict
            "eval_vs": num("eval_vs", 0.0),  # (--eval-vs: the current policy against a listed checkpoint)
            "z_time_scale": num("z_time_scale", 1.0), "opd_share": 0.0, "opd_difficulty": c.get("opd_difficulty", "normal"),
            "shared_noise": num("shared_noise", 0.0), "float_penalty": num("float_penalty", 0.0),
-           "hero_level_value": num("hero_level_value", 0.0), "shaping": num("shaping", 0.0),
+           "hero_level_value": num("hero_level_value", 0.0), "shaping": num("shaping", 0.0), "shaping_decay": 0.0,
            "shaping_scale": num("shaping_scale", 1.0), "gamma": num("gamma", 0.999), "lam": num("lam", 0.95),
            "tie_break": num("tie_break", 0.0), "tie_value": num("tie_value", 0.0), "unit_credit": 0.0,
            "upgo": 0.0, "chunk": num("chunk", 64, int), "max_past": num("max_past", 12, int),

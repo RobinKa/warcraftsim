@@ -1597,12 +1597,15 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         pot = shaped(obs, mat, cfg.get("float_penalty", 0.0))
         if obs.game_over or t >= cfg["max_steps"]:
             break
+        # --shaping-decay (OpenAI Five, its eq. 11): every reward but the outcome times decay^(game minutes / 10),
+        # so a long game's large material swings do not drown the win
+        fade = cfg["shaping_decay"] ** (obs.game_time / 600.0) if cfg.get("shaping_decay", 0.0) > 0 else 1.0
         for s, tr in trajs.items():  # shaping: gamma * phi(s') - phi(s), for the step just taken
             if s in spans and tr.steps:  # (it recorded a step this time)
-                r = shaping * (cfg["gamma"] * (pot[s] - pot[1 - s]) / scale - phi[s])
+                r = fade * shaping * (cfg["gamma"] * (pot[s] - pot[1 - s]) / scale - phi[s])
                 if s in zs:  # the strategy's potential (not returned at the end: following it pays)
                     z_new = -cfg.get("z_reward", 0.0) * strat.mismatch(made[s], zs[s], pool["items"][races[s]], obs.game_time)
-                    r += cfg["gamma"] * z_new - zphi[s]
+                    r += fade * (cfg["gamma"] * z_new - zphi[s])
                     zphi[s] = z_new
                 if tr.steps:
                     tr.steps[-1]["reward"] += r
@@ -1620,7 +1623,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         # potential back to 0 (so the shaping only moves credit around and sums to ~0 over a game)
         terminal = (outcome[s] if outcome[s] != 0.0
                     else cfg.get("tie_value", 0.0) + cfg["tie_break"] * math.tanh(2.0 * lead[s]))
-        last = terminal - shaping * phi.get(s, 0.0)
+        fade = cfg["shaping_decay"] ** (obs.game_time / 600.0) if cfg.get("shaping_decay", 0.0) > 0 else 1.0
+        last = terminal - fade * shaping * phi.get(s, 0.0)
         tr.end(last)
         ret[s] += last
         if record and trace:
@@ -2998,6 +3002,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="minutes between game videos (0: none; the actors take turns). Rendering one takes ~6 minutes of "
                          "3.4 cores (the game at 960x540 on a software renderer, in real time)")
     ap.add_argument("--shaping", type=float, default=1.0, help="weight of the material-lead reward shaping (0: none)")
+    ap.add_argument("--shaping-decay", type=float, default=0.0, help="every reward but the outcome (the shaping, the "
+                    "strategy's) times this ^ (game minutes / 10) (OpenAI Five: 0.6; 0: none)")
     ap.add_argument("--ref-update", type=int, default=0, help="every this many updates the KL anchor becomes the current "
                     "policy (a rolling anchor: the KL still stops sudden jumps, but no longer pulls back to the start's "
                     "habits; 0: the anchor stays --init)")
@@ -3216,6 +3222,7 @@ def main(argv: list[str] | None = None) -> int:
            "video_every": args.video_every, "scripted_reset": bool(args.scripted_reset),
            "agent_games_factor": args.agent_games_factor, "mirror": bool(args.mirror), "learner_pid": os.getpid(),
            "actors": args.actors, "values": unit_values(), "shaping": args.shaping, "shaping_scale": args.shaping_scale,
+           "shaping_decay": args.shaping_decay,
            "tie_break": args.tie_break, "tie_value": args.tie_value, "compile": bool(args.compile), "native_obs": bool(args.native_obs),
            "real_share": args.real_share, "infer_batch": 64, "infer_streams": args.infer_streams, "infer_pipeline": args.infer_pipeline,
            "infer_fuse": args.infer_fuse, "game_cuts": args.game_cuts, "shared_noise": args.shared_noise,
