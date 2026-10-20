@@ -56,6 +56,7 @@ from .costs import order_costs
 from .trace import DEAD_FLAG, Production, material, trace_step, unit_values  # noqa: F401
 from .play import unit_rows
 from .model import FullGameNet, act, adapt_config, anchor_kl, arch_key, evaluate, load
+from .teacher import Teacher
 from ..rl.league import Member, pfsp_weight
 
 RUNS = Path(__file__).resolve().parents[2] / "runs"
@@ -888,6 +889,22 @@ class Trajectory:
         self.steps = self.steps[-1:] if bootstrap else []
 
 
+def merge_labels(step: dict, y: dict) -> None:
+    """A teacher's labels (encoder step_labels: y_order, y_ptr, y_x, y_y) into a recorded step, only the units it
+    ordered (y_only); another teacher's labels of the step stay where this one has none."""
+    if not (y["y_order"] > 0).any():
+        return
+    n = step["n_own"]
+    if "y_order" in step:
+        on = y["y_order"][:n] > 0
+        for k in ("y_order", "y_ptr", "y_x", "y_y"):
+            step[k] = np.where(on, y[k][:n], step[k])
+    else:
+        for k, v in y.items():
+            step[k] = v[:n]
+    step["y_only"] = True
+
+
 def label_step(obs, t: int, advised: list[int], spans: dict, sts: dict, held: dict, bots: dict, trajs: dict) -> None:
     """The built-in AI advising (protocol.ShadowAI): its orders given during step t (in the next
     observation, `obs`) label the step each advised side just recorded (its last trajectory step),
@@ -1439,7 +1456,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     grpo["ret"]) for the group's advantage (game_loop)."""
     from .play import BCAgent
 
-    from ..protocol import SetResources, ShadowAI, StartAI
+    from ..protocol import Buy, SetResources, ShadowAI, StartAI
     replay = grpo.get("replay") if grpo else None
     source = grpo.get("source", 0) if grpo else 0
     rec = {"cmds": [], "spans": [], "res": [], "prints": [], "t": source} if source else None
@@ -1503,6 +1520,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     rows_next = None  # (the step's unit rows, made for the trackers: the next step's)
     made = {s: {} for s in zs}  # each item's first game second, of the sides with a strategy
     builders = {s: TargetBuilder(cfg, vocab, s, zs[s], random.Random()) for s in zs} if cfg.get("z_build") else {}
+    # --teach: a heuristic teacher's lessons (teacher.py: a tavern hero, a town portal, a potion) label the learner's steps
+    teachers = ({s: Teacher(s, races[s], random.Random()) for s in trajs if keys[s] == "current"}
+                if cfg.get("teach") and replay is None else {})
     zphi = {s: 0.0 for s in zs}  # their strategy potentials at the last recorded step
     # the built-in AI advises the learner's sides (opp["advise"]): its orders label their steps
     advised = [s for s in trajs if keys[s] == "current"] if opp.get("advise") else []
@@ -1584,6 +1604,17 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                      for s, r in zip(live, results) if r is not None}
             trace.append(trace_step(t, obs, mat, chose, value={s: r["value"] for s, r in zip(live, results) if r},
                                     entropy={s: r["entropy"] for s, r in zip(live, results) if r}))
+        for s, tc in teachers.items():  # (--teach: never carried out, the side's step just recorded labelled)
+            if s in spans and trajs[s].steps:
+                c = tc.commands(rows, obs.players.get(s), obs.game_time, t)
+                q = obs.players.get(s)
+                if c and q is not None:
+                    me = np.asarray([t, s, q.gold, q.lumber, q.food_used, q.food_cap, q.upkeep])
+                    lessons = np.asarray([(t, x.unit, x.item, 2, 0, 0, x.shop) if isinstance(x, Buy)
+                                          else (t, x.unit, x.order, 0, 0, 0, 0) for x in c], np.int64).reshape(-1, 7)
+                    y, _ = bots[s].enc.step_labels(bots[s].view, sts[s], lessons, me, np.zeros((0, 5), np.int64),
+                                                   bots[s].trees)
+                    merge_labels(trajs[s].steps[-1], y)
         built, given = {}, {}
         for s, b in builders.items():  # (--z-build: after the agents' orders, so a worker it takes is taken)
             c = b.commands(obs, made[s], t, cfg["step_seconds"], cmds[spans[s][0]:spans[s][1]] if s in spans else ())
@@ -1627,11 +1658,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             if len(rows) and trajs[s].steps:
                 later = np.asarray([(t + 1, int(e.kind), e.a, e.b, e.c) for e in obs.events], np.int64).reshape(-1, 5)
                 y, _ = bots[s].enc.step_labels(bots[s].view, sts[s], rows, me, later, bots[s].trees)
-                if (y["y_order"] > 0).any():
-                    step = trajs[s].steps[-1]
-                    for k, v in y.items():
-                        step[k] = v[:step["n_own"]]
-                    step["y_only"] = True
+                merge_labels(trajs[s].steps[-1], y)
         if advised:  # the advisor's orders of the step just taken: the labels of the step recorded
             label_step(obs, t, advised, spans, sts, held, bots, trajs)
         for s, (a, b) in spans.items():
@@ -1704,6 +1731,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"z_build": builders[side].log, "z_refusals": builders[side].why,
             "z_blocked": {c: dict(v) for c, v in builders[side].blocked.items()}} if side in builders else {}),
         **({"z_modes": trackers[side].report()} if side in trackers else {}),
+        **({"taught": teachers[side].taught} if side in teachers else {}),
         **({"z_t": {c: round(v) for c, v in zs[side]["t"].items()},
             "z_made": {c: round(v) for c, v in made[side].items()}} if side in zs else {}),
         **({"z": zs[side]["src"] + (" won" if zs[side]["won"] else ""), "z_items": len(zs[side]["t"]),
@@ -2903,6 +2931,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--neutral", type=int, default=0, help="the neutral buildings' wares as orders (a tavern's heroes, "
                     "mercenaries, the goblin merchant's items: protocol.Buy) and the tavern heroes' skills and spells "
                     "(neutral.py: every network loaded grows to the extended vocabulary)")
+    ap.add_argument("--teach", type=int, default=0, help="a heuristic teacher (teacher.py: a tavern hero with a worker, "
+                    "a town portal, a potion when a hero is low) labels the learner's steps, never carried out; "
+                    "--opd-coef the labels' weight; needs --neutral 1")
     ap.add_argument("--tech-mask", type=int, default=0, help="mask the orders the player lacks the tech for "
                     "(features.TechMask: buildings, tiers, research levels, the hero limit)")
     ap.add_argument("--valid-mask", type=int, default=0, help="mask each hero's orders it can't carry out now: an "
@@ -3416,7 +3447,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "teach": args.teach,
            "eval_ai": [d for d in args.eval_ai.split(",") if d],
            "map_geometry": [fx.STARTS, fx.BIN_RANGE],
            "infer_entities": [int(x) for x in args.infer_entities.split(",")],

@@ -316,3 +316,29 @@ def test_neutral_wares_as_orders(v2, tmp_path):
         assert not m.allowed(frozenset({"htow"}), {}, frozenset(), frozenset(), now=200.0)[hire]  # (an altar first)
     finally:
         fx.set_neutral(False)
+
+
+def test_teacher_lessons_and_merged_labels(v2):
+    import random
+    from types import SimpleNamespace
+
+    from warcraftsim.fullgame.selfplay import merge_labels
+    from warcraftsim.fullgame.teacher import Teacher
+    from warcraftsim.protocol import Buy, ImmediateOrder
+    tc = Teacher(0, "human", random.Random(0))
+    rows = np.stack([_unit(1, 0, 0, 0, 1, fx.WORKER, "hpea"), _unit(2, 0, -3000, 0, 1, fx.STRUCTURE, "halt"),
+                     _unit(9, 15, 1000, 0, 1, fx.STRUCTURE, "ntav"), _unit(8, 15, 0, -2000, 1, fx.STRUCTURE, "ngme")])
+    rich = SimpleNamespace(gold=900, lumber=300, food_used=10, food_cap=30)
+    assert tc.commands(rows, rich, 100.0, 0) == []  # (the tavern sells from 135 s)
+    assert tc.commands(rows, rich, 200.0, 1) == [Buy(1, 9, tc.pick)]
+    assert tc.commands(rows, rich, 201.0, 2) == []  # (a lesson every GAP steps)
+    hero = _hero(0, items=("phea", "stwp"))
+    hero[fx.C_HP], hero[fx.C_X], hero[fx.C_Y] = 200, 0, -1500
+    lessons = tc.commands(np.stack([*rows, hero]), rich, 500.0, 40)
+    assert ImmediateOrder(int(hero[fx.C_ID]), 852008) in lessons  # (its healing potion: slot 1)
+    hero2 = _hero(0, items=("phea",))
+    hero2[fx.C_X], hero2[fx.C_Y] = 0, -1500
+    assert Buy(int(hero2[fx.C_ID]), 8, int.from_bytes(b"stwp", "big")) in tc.commands(np.stack([*rows, hero2]), rich, 500.0, 80)
+    step = {"n_own": 3, "y_order": np.array([0, 4, 0]), "y_ptr": np.array([-1, 2, -1]), "y_x": np.full(3, -1), "y_y": np.full(3, -1)}
+    merge_labels(step, {"y_order": np.array([7, 0, 0]), "y_ptr": np.array([1, -1, -1]), "y_x": np.full(3, -1), "y_y": np.full(3, -1)})
+    assert step["y_order"].tolist() == [7, 4, 0] and step["y_ptr"].tolist() == [1, 2, -1] and step["y_only"]
