@@ -15,6 +15,12 @@ and away from items it does not make.
 
 The built-in AI's times are the items' (an event when an item is done); people's replays give the
 order's (a click), so their times get CLICK_LAG, about an item's build time.
+
+Narrow strategies (--narrow; the user's idea, 2026-10-20: the whole games' targets were big and alike): a
+game's own heroes and main army (the unit types with FOOD_SHARE of its army's food, at most 3) and what they
+need (techtree.closure), nothing else; their buildings and research outside it are free (mismatch, allowed),
+heroes and army units outside it are not. Drawn evenly over their signatures (heroes, main army: "sig"), not
+over games, so a rare build comes up as often as a common one.
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ import argparse
 import json
 import random
 from collections import Counter
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -77,14 +84,17 @@ def from_demos(path: Path) -> list[dict]:
     meta = json.loads(str(z["meta"]))
     units, ev, dt = z["units"], z["events"], float(meta.get("step_seconds", 0.5))
     made: dict[int, list] = {0: [], 1: []}
+    count: dict[int, Counter] = {0: Counter(), 1: Counter()}  # each unit type trained (the main army: narrow)
     for (step, kind, a, b, c), p in zip(ev.tolist(), owners_at(units, ev)):
         if kind in MADE_EVENTS and p in (0, 1):
             made[p].append((rawcode(c if kind == 6 else b), step * dt))
+            if kind == 6:
+                count[p][rawcode(c)] += 1
     result = meta.get("result") or {}
     races = meta["races"]
     diff = meta.get("difficulties") or [None, None]
     return [{"race": races[p], "opp": races[1 - p], "src": "ai", "won": result.get(str(p)) == "VICTORY",
-             "t": _first_times(made[p]), "game": f"{path.parent.name}/{path.name}", "player": p,
+             "t": _first_times(made[p]), "n": dict(count[p]), "game": f"{path.parent.name}/{path.name}", "player": p,
              "difficulty": diff[p], "map": meta.get("map"), "end": round(float(units[:, 0].max()) * dt, 1)}
             for p in (0, 1)]
 
@@ -103,8 +113,9 @@ def from_replays(stats: Path) -> list[dict]:
         for i, b in enumerate(bos):
             pairs = [(code, t_ms / 1000.0 + CLICK_LAG) for t_ms, kind, code, *_ in b["build"]
                      if kind in ("train", "build", "hero", "research", "upgrade")]
+            n = Counter(code for t_ms, kind, code, *_ in b["build"] if kind == "train")
             out.append({"race": races[i], "opp": races[1 - i], "src": "human", "won": bool(b.get("won")),
-                        "t": _first_times(pairs), "replay": r.get("file"), "slot": b.get("slot"),
+                        "t": _first_times(pairs), "n": dict(n), "replay": r.get("file"), "slot": b.get("slot"),
                         "end": round(r.get("length_ms", HORIZON * 1000) / 1000.0, 1)})
     return out
 
@@ -204,6 +215,40 @@ def hindsight(pool: dict, path: Path, meta: dict) -> dict[int, dict]:
     return {p: pool["_games"][(key, p)] for p in (0, 1) if (key, p) in pool["_games"]}
 
 
+FOOD_SHARE = 0.2  # a narrow strategy's main army: the unit types with this share of its army's food
+
+
+@lru_cache(None)
+def restricted(code: str) -> bool:
+    """A hero or an army unit (not a worker, building or research): what a narrow strategy makes only when it
+    lists it."""
+    from ..data.objects import unit_table
+    from .techtree import is_hero
+    if is_hero(code):
+        return True
+    u = unit_table().get(code)
+    return u is not None and not u.is_building and code not in WORKERS and code[:1].islower()
+
+
+def narrow(strategy: dict, tree=None) -> dict | None:
+    """`strategy` (with its unit counts "n") narrowed to its heroes, its main army and what they need, at the
+    times it made them; None when its main army is not among its items (none, or made past the horizon)."""
+    from ..data.objects import unit_table
+    from .techtree import closure, is_hero
+    units = unit_table()
+    food = {c: k * max(units[c].food, 1) for c, k in (strategy.get("n") or {}).items()
+            if c in units and restricted(c) and not is_hero(c)}
+    total = sum(food.values())
+    core = [c for c, f in sorted(food.items(), key=lambda kv: (-kv[1], kv[0])) if f >= FOOD_SHARE * total][:3]
+    t = strategy["t"]
+    if not core or any(c not in t for c in core):
+        return None
+    heroes = sorted((c for c in t if is_hero(c)), key=t.get)
+    keep = closure(set(core) | set(heroes), strategy["race"], tree)
+    return {**strategy, "t": {c: v for c, v in t.items() if c in keep}, "narrow": True,
+            "sig": f"{'+'.join(heroes) or '-'}|{'+'.join(sorted(core))}"}
+
+
 def vector(strategy: dict | None, items: list[str]) -> np.ndarray:
     """The policy's input for a strategy (zeros: none): per slot, made (1) and its time / HORIZON
     (1: never) in the second half."""
@@ -231,11 +276,12 @@ def allowed(strategy: dict, items: list[str], orders: list) -> np.ndarray:
     from .techtree import closure
     keep = (closure(strategy["t"], strategy["race"]) if "race" in strategy else set(strategy["t"])) | ALWAYS
     listed = set(items)
+    free = strategy.get("narrow")  # (a narrow strategy: buildings and research it does not list are free)
     out = np.ones(len(orders) + 1, bool)
     for c, (oid, kind) in enumerate(orders, start=1):
         if oid >= fx.TYPE_CODE and kind in (fx.IMMEDIATE, fx.POINT):
             code = fx.rawcode(oid)
-            out[c] = code not in listed or code in keep
+            out[c] = code not in listed or code in keep or bool(free and not restricted(code))
     return out
 
 
@@ -254,7 +300,10 @@ def mismatch(made: dict[str, float], strategy: dict, items: list[str], now: floa
     """The race's items made by game second `now` (up to the strategy's horizon) by one of the player
     (`made`: each item's first time) and the strategy, not both."""
     now = min(now, horizon(strategy))
-    return sum((made.get(c, 1e9) <= now) != (strategy["t"].get(c, 1e9) <= now) for c in items)
+    t = strategy["t"]
+    if strategy.get("narrow"):  # (its own items as any strategy's; outside them, heroes and army units only)
+        return sum((made.get(c, 1e9) <= now) != (t.get(c, 1e9) <= now) for c in items if c in t or restricted(c))
+    return sum((made.get(c, 1e9) <= now) != (t.get(c, 1e9) <= now) for c in items)
 
 
 def sample(pool: dict, race: str, opp: str, rng: random.Random, winners: bool = True, src: str = "") -> dict | None:
@@ -264,7 +313,13 @@ def sample(pool: dict, race: str, opp: str, rng: random.Random, winners: bool = 
     mine = [s for s in pool["strategies"] if s["race"] == race and (not src or s["src"] == src)]
     tiers = [[s for s in mine if s["opp"] == opp and s["won"]], [s for s in mine if s["won"]]] if winners else []
     tiers += [[s for s in mine if s["opp"] == opp], mine]
-    return next((rng.choice(c) for c in tiers if c), None)
+    c = next((c for c in tiers if c), None)
+    if c is None:
+        return None
+    if "sig" in c[0]:  # (narrow strategies: a signature first, each as likely, then one of its games)
+        sig = rng.choice(sorted({s["sig"] for s in c}))
+        c = [s for s in c if s["sig"] == sig]
+    return rng.choice(c)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -276,6 +331,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--difficulty", help="keep only the built-in AI's sides at this difficulty (e.g. normal: the "
                     "insane AI gathers twice as much, so its schedule is not an agent's)")
     ap.add_argument("--items-from", type=Path, help="another pool whose item lists to keep (a policy's slots)")
+    ap.add_argument("--narrow", action="store_true", help="each strategy narrowed to its heroes, its main army and "
+                    "what they need (narrow): buildings and research outside them free; drawn evenly per signature")
     ap.add_argument("--rescale-people", type=float, default=0.0, help="people's times onto the demonstrations' rules, "
                     "no item earlier than this quantile of the AI's (strategy.rescale_people; 0: as recorded)")
     a = ap.parse_args(argv)
@@ -294,6 +351,13 @@ def main(argv: list[str] | None = None) -> int:
     if keep is not None:
         strategies = [{**s, "t": {c: t for c, t in s["t"].items() if c in keep}} for s in strategies]
     pool = build_pool(strategies, keep=keep, items=json.loads(a.items_from.read_text())["items"] if a.items_from else None)
+    if a.narrow:
+        from .techtree import tree
+        pool["strategies"] = [n for n in (narrow(s, tree()) for s in pool["strategies"]) if n is not None]
+        sigs = Counter((s["race"], s["sig"]) for s in pool["strategies"])
+        for race in RACES:
+            mine = Counter({k[1]: v for k, v in sigs.items() if k[0] == race})
+            print(f"  {race}: {len(mine)} signatures, the most common {mine.most_common(5)}")
     a.out.parent.mkdir(parents=True, exist_ok=True)
     a.out.write_text(json.dumps(pool))
     by = Counter((s["race"], s["src"], s["won"]) for s in pool["strategies"])

@@ -382,3 +382,34 @@ def test_classifier_free_guidance_of_the_order():
     assert torch.equal(run(glob, None), run(glob, torch.ones(N)))
     assert torch.equal(run(glob, torch.zeros(N)), run(blank, None))
     assert not torch.equal(run(glob, torch.full((N,), 8.0)), run(glob, None))
+
+
+def test_narrow_strategy_keeps_heroes_main_army_and_their_needs():
+    """A narrow strategy (the user's idea): the game's heroes, its main army (unit types with a fifth of its army's
+    food) and what they need; its other buildings and research are free, other heroes and army units are not (the
+    reward, the enforcement); drawn evenly per signature."""
+    pytest.importorskip("warcraftsim.data.objects")
+    try:
+        from warcraftsim.fullgame.techtree import tree
+        tree()
+    except Exception as e:  # noqa: BLE001 (the game's tables)
+        pytest.skip(f"no game data: {e}")
+    t = {"hbar": 40.0, "halt": 50.0, "Hamg": 80.0, "hfoo": 90.0, "hlum": 150.0, "hbla": 160.0, "hrif": 200.0,
+         "hars": 300.0, "hsor": 350.0, "Rhme": 400.0, "hkee": 420.0}
+    s = {"race": "human", "opp": "orc", "src": "human", "won": True, "t": t,
+         "n": {"hpea": 20, "hfoo": 10, "hrif": 8, "hsor": 1}}
+    n = strategy.narrow(s)
+    assert n["narrow"] and n["sig"] == "Hamg|hfoo+hrif"  # (the sorceress: a tenth of the food)
+    assert set(n["t"]) == {"hbar", "halt", "Hamg", "hfoo", "hrif", "hbla"}  # (riflemen need the blacksmith)
+    items = ["hbar", "halt", "Hamg", "hfoo", "hlum", "hbla", "hrif", "hars", "hsor", "Rhme", "hkee", "Hmkg", "hkni"]
+    made = {"hbar": 30.0, "halt": 40.0, "Hamg": 70.0, "hfoo": 80.0, "hbla": 150.0, "hrif": 190.0}
+    assert strategy.mismatch(made, n, items, 600.0) == 0
+    assert strategy.mismatch({**made, "hlum": 99.0, "hars": 200.0, "Rhme": 300.0}, n, items, 600.0) == 0  # (free)
+    assert strategy.mismatch({**made, "hsor": 300.0, "Hmkg": 400.0}, n, items, 600.0) == 2  # (not its army, hero)
+    code = lambda c: int.from_bytes(c.encode(), "big")  # noqa: E731
+    orders = [[code(c), fx.IMMEDIATE] for c in ("hfoo", "hsor", "Hmkg", "Rhme", "hkee")] + [[code("hars"), fx.POINT]]
+    assert strategy.allowed(n, items, orders).tolist() == [True, True, False, False, True, True, True]
+    assert strategy.narrow({**s, "n": {"hpea": 20}}) is None  # (no army)
+    pool = {"strategies": [n] * 9 + [{**n, "sig": "rare", "t": {"hbar": 1.0}}]}
+    rng = random.Random(1)
+    assert 0.3 < sum(strategy.sample(pool, "human", "orc", rng)["sig"] == "rare" for _ in range(400)) / 400 < 0.7

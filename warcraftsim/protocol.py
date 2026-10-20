@@ -474,6 +474,7 @@ class Op(IntEnum):
     LEARN = 5
     TARGET_DESTRUCTABLE = 6
     ITEM = 7
+    BUY = 8
     VIS_CLEAR = 80
     VIS_MARK = 81
     VIS_LINE = 82
@@ -581,6 +582,19 @@ class UseItem(Command):
         px = _coord(self.x) if self.x is not None else 0
         py = _coord(self.y) if self.y is not None else 0
         return [Op.ITEM, self.unit, 0, self.slot, px, py, self.target]
+
+
+@dataclass(frozen=True)
+class Buy(Command):
+    """Buy `item` (an item's, a hero's or a mercenary's type id) from the neutral building `shop` (a shop, a tavern, a
+    mercenary camp) as the player of `unit`: within its reach the building sells to the player (the bought item to a
+    hero of the player's near it), else `unit` goes to it."""
+    unit: int
+    shop: int
+    item: int
+
+    def encode(self) -> list[int]:
+        return [Op.BUY, self.unit, self.shop, self.item]
 
 
 @dataclass(frozen=True)

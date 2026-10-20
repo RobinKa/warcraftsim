@@ -41,6 +41,7 @@ globals
     constant integer W3S_VERSION = 4
     constant integer W3S_QS_SKILLS = 8
     constant integer W3S_ABIL_SLOTS = 4  // warcraftsim.protocol.HERO_ABILITY_SLOTS
+    constant real W3S_BUY_RANGE = 450.0  // (a shop's, a tavern's reach: 500 less a margin)
     boolean w3s_full = true
     integer array w3s_removed
     integer w3s_nremoved = 0
@@ -1258,6 +1259,18 @@ function W3S_ApplyOne takes integer at returns integer
                 set ok = UnitUseItemPoint(u, UnitItemInSlot(u, w3s_cmd[at + 3]), I2R(w3s_cmd[at + 4] - 65536), I2R(w3s_cmd[at + 5] - 65536))
             else
                 set ok = UnitUseItem(u, UnitItemInSlot(u, w3s_cmd[at + 3]))
+            endif
+        endif
+    elseif op == 8 then
+        // buy from a neutral building (a shop's item, a tavern's hero, a camp's mercenary): the unit's player
+        // buys when the unit is within reach of it (the building picks its buyer among the player's units
+        // near it), else the unit goes to it
+        set n = 4
+        if W3S_Owned(u) and W3S_Unit(w3s_cmd[at + 2]) != null then
+            if IsUnitInRange(u, W3S_Unit(w3s_cmd[at + 2]), W3S_BUY_RANGE) then
+                set ok = IssueNeutralImmediateOrderById(GetOwningPlayer(u), W3S_Unit(w3s_cmd[at + 2]), w3s_cmd[at + 3])
+            else
+                set ok = IssueTargetOrderById(u, 851971, W3S_Unit(w3s_cmd[at + 2]))
             endif
         endif
     elseif op == 90 then
