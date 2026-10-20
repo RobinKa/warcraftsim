@@ -98,10 +98,10 @@ def _vs_ai(e: dict) -> bool:
 
 EPISODE_SERIES.update({  # strategy conditioning (selfplay --z-pool): the training games' target strategies (the Strategy tab)
     "z_share": lambda e: (1.0 if "z" in e else 0.0) if not e.get("eval") else None,
-    "z_miss": lambda e: e.get("z_miss"),
     "z_miss_human": lambda e: e.get("z_miss") if str(e.get("z", "")).startswith("human") else None,
     "z_miss_ai": lambda e: e.get("z_miss") if str(e.get("z", "")).startswith("ai") else None,
-    "z_items": lambda e: e.get("z_items"),
+    "z_items_human": lambda e: e.get("z_items") if str(e.get("z", "")).startswith("human") else None,
+    "z_items_ai": lambda e: e.get("z_items") if str(e.get("z", "")).startswith("ai") else None,
     "z_win": lambda e: (1.0 if e.get("outcome", 0) > 0 else 0.0) if "z" in e and _vs_ai(e) else None,
     "noz_win": lambda e: (1.0 if e.get("outcome", 0) > 0 else 0.0) if "z" not in e and _vs_ai(e) and "prod" in e else None,
     "z_t2": lambda e: float(any(c in ((e.get("prod") or {}).get("built") or {}) for c in TIER2)) if "z" in e and _vs_ai(e) else None,

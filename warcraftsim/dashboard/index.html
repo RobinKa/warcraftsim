@@ -1003,7 +1003,7 @@ function renderSweep() {
 
 // Every chart: series = [source, key, name, color, transform?]; sources: ep (episodes), tr (trainer
 // epochs), br (bridge throughput), cal (value calibration, dots)
-const EP = (key, name, color) => ["ep", key, name, color];
+const EP = (key, name, color, dash) => ["ep", key, name, color, dash];  // (dash: a reference line, e.g. a scale)
 const TR = (key, name, color, f) => ["tr", key, name, color, f];
 const SECTIONS = [
   ["Outcomes", [
@@ -1105,9 +1105,10 @@ const SECTIONS = [
       [EP("p_kills", "kills", "#4cc38a"), EP("p_lost", "losses", "#e5534b")], { ymin: 0, xfit: true, only: "fullgame", empty: "recorded by games since the Production tab (older ones don't have it)" }],
   ]],
   ["Strategy", [
-    ["c-z-miss", "Following the target", "items made by the learner or its target by the game's end, not both (of the race's 64)",
-      [EP("z_miss", "all targets", "#e0a33a"), EP("z_miss_human", "people's", "#4cc38a"), EP("z_miss_ai", "the AI's", "#539bf5"),
-       EP("z_items", "the target's items", "#8795a3")], { ymin: 0, xfit: true, only: "fullgame", hideEmpty: true, empty: "no target strategies (--z-pool)" }],
+    ["c-z-miss", "Following the target", "solid: items only one of the learner and its target made (lower: closer) · dashed: the target's items",
+      [EP("z_miss_human", "off · people's builds", "#4cc38a"), EP("z_items_human", "target · people's builds", "#4cc38a", [5, 4]),
+       EP("z_miss_ai", "off · the AI's builds", "#539bf5"), EP("z_items_ai", "target · the AI's builds", "#539bf5", [5, 4])],
+      { ymin: 0, xfit: true, only: "fullgame", hideEmpty: true, empty: "no target strategies (--z-pool)" }],
     ["c-z-win", "Wins with and without a target", "training games against the built-in AI",
       [EP("z_win", "with a target", "#4cc38a"), EP("noz_win", "without", "#8795a3")], { ymin: 0, ymax: 1, xfit: true, only: "fullgame", hideEmpty: true }],
     ["c-z-t2", "Tier 2 with and without a target", "share of those games with a tier-2 hall",
@@ -1280,10 +1281,10 @@ function renderMain() {
       c.marks = (c.opts.axis || "steps") === "steps" ? marks : [];
       c.series = [];
       shown.forEach((n, ri) => {
-        for (const [src, key, name, color] of expandDefs(defs, state.data[n])) {
+        for (const [src, key, name, color, dash] of expandDefs(defs, state.data[n])) {
           const mu = shown.length > 1 ? null : c.opts.matchups ? matchupStyle(name) : c.opts.opponents ? opponentStyle(name) : null;  // (comparing runs: a dash per run)
           c.series.push({ name, color: mu ? mu.color : defs.length === 1 && shown.length > 1 ? runColor(ri) : color, run: ri,
-                          runName: shown.length > 1 ? n : "", dash: mu ? mu.dash : DASHES[ri % DASHES.length], many: shown.length > 1,
+                          runName: shown.length > 1 ? n : "", dash: mu ? mu.dash : dash && shown.length === 1 ? dash : DASHES[ri % DASHES.length], many: shown.length > 1,
                           dots: src === "cal", points: seriesPoints(state.data[n], src, key) });
         }
       });
