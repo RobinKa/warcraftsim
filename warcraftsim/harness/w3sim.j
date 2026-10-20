@@ -42,6 +42,7 @@ globals
     constant integer W3S_QS_SKILLS = 8
     constant integer W3S_ABIL_SLOTS = 4  // warcraftsim.protocol.HERO_ABILITY_SLOTS
     constant real W3S_BUY_RANGE = 450.0  // (a shop's, a tavern's reach: 500 less a margin)
+    constant integer W3S_BUY_STEPS = 120  // (a purchase under way: given up after this many steps)
     boolean w3s_full = true
     integer array w3s_removed
     integer w3s_nremoved = 0
@@ -76,6 +77,12 @@ globals
     boolean w3s_restart = false
     // spawns queued for the next scenario restart (op 92): random compositions chosen by Python
     integer w3s_nqs = 0
+    // purchases under way (op 8): a unit on its way to a neutral building buys there when it is in reach
+    unit array w3s_buy_u
+    unit array w3s_buy_shop
+    integer array w3s_buy_item
+    integer array w3s_buy_ttl
+    integer w3s_nbuy = 0
     integer array w3s_qs_player
     integer array w3s_qs_type
     real array w3s_qs_x
@@ -1214,9 +1221,58 @@ function W3S_ShadowAI takes integer i returns boolean
     return true
 endfunction
 
+// a purchase under way: the unit's (one each), tried every step until it is done or `ttl` steps have passed
+function W3S_AddBuy takes unit u, unit shop, integer item, integer ttl returns nothing
+    local integer i = 0
+    loop
+        exitwhen i >= w3s_nbuy or w3s_buy_u[i] == u
+        set i = i + 1
+    endloop
+    if i >= w3s_nbuy then
+        if w3s_nbuy >= 32 then
+            return
+        endif
+        set w3s_nbuy = w3s_nbuy + 1
+    endif
+    set w3s_buy_u[i] = u
+    set w3s_buy_shop[i] = shop
+    set w3s_buy_item[i] = item
+    set w3s_buy_ttl[i] = ttl
+endfunction
+
+function W3S_DropBuy takes integer i returns nothing
+    set w3s_nbuy = w3s_nbuy - 1
+    set w3s_buy_u[i] = w3s_buy_u[w3s_nbuy]
+    set w3s_buy_shop[i] = w3s_buy_shop[w3s_nbuy]
+    set w3s_buy_item[i] = w3s_buy_item[w3s_nbuy]
+    set w3s_buy_ttl[i] = w3s_buy_ttl[w3s_nbuy]
+    set w3s_buy_u[w3s_nbuy] = null
+    set w3s_buy_shop[w3s_nbuy] = null
+endfunction
+
+// (a shop sells to the unit it serves: a right-click on it engages, and the sale goes through a moment later)
+function W3S_BuyPending takes nothing returns nothing
+    local integer i = 0
+    local unit u
+    loop
+        exitwhen i >= w3s_nbuy
+        set u = w3s_buy_u[i]
+        set w3s_buy_ttl[i] = w3s_buy_ttl[i] - 1
+        if u == null or IsUnitType(u, UNIT_TYPE_DEAD) or GetUnitTypeId(w3s_buy_shop[i]) == 0 or w3s_buy_ttl[i] < 0 then
+            call W3S_DropBuy(i)
+        elseif IsUnitInRange(u, w3s_buy_shop[i], W3S_BUY_RANGE) and IssueNeutralImmediateOrderById(GetOwningPlayer(u), w3s_buy_shop[i], w3s_buy_item[i]) then
+            call W3S_DropBuy(i)
+        else
+            set i = i + 1
+        endif
+    endloop
+    set u = null
+endfunction
+
 function W3S_ApplyOne takes integer at returns integer
     local integer op = w3s_cmd[at]
     local unit u = W3S_Unit(w3s_cmd[at + 1])
+    local unit s
     local boolean ok = false
     local integer n = 1
     if op == 1 then
@@ -1262,15 +1318,19 @@ function W3S_ApplyOne takes integer at returns integer
             endif
         endif
     elseif op == 8 then
-        // buy from a neutral building (a shop's item, a tavern's hero, a camp's mercenary): the unit's player
-        // buys when the unit is within reach of it (the building picks its buyer among the player's units
-        // near it), else the unit goes to it
+        // buy from a neutral building (a shop's item, a tavern's hero, a camp's mercenary) for the unit's player:
+        // at once when the building serves the unit already, else the unit goes to it (a right-click) and the
+        // purchase is tried every step until it goes through, at most W3S_BUY_STEPS (W3S_BuyPending)
         set n = 4
-        if W3S_Owned(u) and W3S_Unit(w3s_cmd[at + 2]) != null then
-            if IsUnitInRange(u, W3S_Unit(w3s_cmd[at + 2]), W3S_BUY_RANGE) then
-                set ok = IssueNeutralImmediateOrderById(GetOwningPlayer(u), W3S_Unit(w3s_cmd[at + 2]), w3s_cmd[at + 3])
+        set s = W3S_Unit(w3s_cmd[at + 2])
+        if W3S_Owned(u) and s != null then
+            if IsUnitInRange(u, s, W3S_BUY_RANGE) and IssueNeutralImmediateOrderById(GetOwningPlayer(u), s, w3s_cmd[at + 3]) then
+                set ok = true
             else
-                set ok = IssueTargetOrderById(u, 851971, W3S_Unit(w3s_cmd[at + 2]))
+                set ok = IssueTargetOrderById(u, 851971, s)
+                if ok then
+                    call W3S_AddBuy(u, s, w3s_cmd[at + 3], W3S_BUY_STEPS)
+                endif
             endif
         endif
     elseif op == 90 then
@@ -1371,6 +1431,7 @@ function W3S_ApplyOne takes integer at returns integer
     endif
     set w3s_ncres = w3s_ncres + 1
     set u = null
+    set s = null
     return n
 endfunction
 
@@ -1397,6 +1458,7 @@ function W3S_ReadCommands takes nothing returns nothing
     endloop
     set w3s_cursor = 0
     set w3s_quiet = true  // (the orders given now are the agents')
+    call W3S_BuyPending()
     loop
         exitwhen w3s_cursor >= w3s_ncmd
         set i = w3s_cursor

@@ -791,7 +791,7 @@ def encode_commands(commands: Iterable[Command]) -> list[int]:
 
 
 _OP_LENGTHS = {Op.POINT: 5, Op.TARGET: 4, Op.IMMEDIATE: 3, Op.BUILD: 5, Op.LEARN: 3, Op.TARGET_DESTRUCTABLE: 4,
-               Op.ITEM: 7, Op.VIS_CLEAR: 1, Op.VIS_MARK: 6, Op.VIS_LINE: 9, Op.VIS_AREA: 5, Op.CAMERA_ZOOM: 2,
+               Op.ITEM: 7, Op.BUY: 4, Op.VIS_CLEAR: 1, Op.VIS_MARK: 6, Op.VIS_LINE: 9, Op.VIS_AREA: 5, Op.CAMERA_ZOOM: 2,
                Op.SET_RESOURCES: 4, Op.SPAWN: 5, Op.QUEUE_SPAWN: 8, Op.QUEUE_SKILL: 2, Op.START_AI: 2, Op.SHADOW_AI: 2, Op.CAMERA: 3,
                Op.END_GAME: 1, Op.SNAPSHOT: 1, Op.RESTART: 1}
 
