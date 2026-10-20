@@ -21,6 +21,8 @@ theirs rebuilt from their runs.
 
 from __future__ import annotations
 
+import gzip
+import hashlib
 import json
 import mimetypes
 from collections import OrderedDict
@@ -34,6 +36,28 @@ from importlib import resources
 from pathlib import Path
 
 import numpy as np
+
+# the run list leaves out what only a run's own page shows (~1.4 of 1.5 MB with 400 runs: every launch
+# command and config); runs() keeps them for the lineage
+LIST_DROP = ("launch", "config", "args", "resumes", "inputs")
+# responses compressed for clients that take gzip (a phone over the tailnet: a run's page 2.5 MB -> ~0.3)
+COMPRESSIBLE = ("application/json", "text/html", "text/plain", "text/markdown", "text/css", "application/javascript")
+_GZ: OrderedDict = OrderedDict()  # an unchanged response's compressed bytes, by its ETag (the last few)
+_GZ_LOCK = threading.Lock()
+
+
+def _gzipped(body: bytes, tag: str) -> bytes:
+    with _GZ_LOCK:
+        if tag in _GZ:
+            _GZ.move_to_end(tag)
+            return _GZ[tag]
+    out = gzip.compress(body, compresslevel=5)
+    with _GZ_LOCK:
+        _GZ[tag] = out
+        while len(_GZ) > 48:
+            _GZ.popitem(last=False)
+    return out
+
 
 TRAIN_KEYS = ("agent_steps", "SPS", "epoch", "uptime", "env/win_rate", "env/loss_rate", "env/episode_return",
               "env/episode_length", "env/n", "loss/policy", "loss/value", "loss/entropy", "loss/kl",
@@ -707,6 +731,7 @@ class Dashboard:
         self._summaries: dict[Path, tuple[tuple, dict]] = {}  # run dir -> (file mtimes, summary)
         self._bc_meta: dict[str, tuple[float, dict]] = {}  # dataset -> (mtime, meta.json)
         self._runs_cache: tuple[float, list[dict]] = (0.0, [])  # the list and the sweeps from one scan
+        self._pages: dict[str, tuple[tuple, dict]] = {}  # a run's page, until its files change (run_stamp)
 
     def _sweep_dir(self, group: str) -> Path | None:
         if not group or group.startswith(".") or "/" in group or "\\" in group:
@@ -1355,6 +1380,24 @@ class Dashboard:
                 out.append(info)
         return out
 
+    def run_list(self) -> list[dict]:
+        """The run list as the page gets it: without what only a run's own page shows (LIST_DROP)."""
+        return [{k: v for k, v in r.items() if k not in LIST_DROP} for r in self.runs()]
+
+    def run_stamp(self, d: Path) -> tuple:
+        """A run's files as they are (each one's name, size and time, its checkpoints' too) and the runs
+        directory's time (a run started from it: its children): its page is the same until one changes."""
+        items = []
+        for sub in (d, d / "checkpoints"):
+            try:
+                with os.scandir(sub) as it:
+                    for e in it:
+                        st = e.stat()
+                        items.append((sub.name, e.name, st.st_mtime_ns, st.st_size))
+            except (FileNotFoundError, NotADirectoryError):
+                pass
+        return self.runs_dir.stat().st_mtime_ns, tuple(sorted(items))
+
     def run(self, name: str) -> dict | None:
         if name.startswith("bc/"):
             return self.bc_run(name)
@@ -1363,6 +1406,15 @@ class Dashboard:
         d = self.runs_dir / name
         if not (d / "run.json").exists() or d.parent != self.runs_dir:
             return None
+        stamp = self.run_stamp(d)
+        cached = self._pages.get(name)
+        if cached and cached[0] == stamp:  # (nothing changed: a finished run, or between two updates)
+            return cached[1]
+        page = self._run_page(name, d)
+        self._pages[name] = (stamp, page)
+        return page
+
+    def _run_page(self, name: str, d: Path) -> dict:
         info = json.loads((d / "run.json").read_text())
         info["notes"], info["title"] = self.notes(d), self.title(d)
         info["spaces"] = _spaces(info, d, self.runs_dir)
@@ -1402,7 +1454,8 @@ class Dashboard:
             info["real_game"] = _real_game(episodes)
             argv = [str(x) for x in (info.get("launch") or {}).get("argv") or []]
             try:  # the remote evaluation worker (scripts/remote_eval.py marks each arrival of its games)
-                info["remote_eval"] = {"age": time.time() - (d / "remote-eval.alive").stat().st_mtime,
+                # (when its games last came, not how long ago: the page counts; the answer stays the same)
+                info["remote_eval"] = {"seen": (d / "remote-eval.alive").stat().st_mtime,
                                        "fallback": next((float(v) for x, v in zip(argv, argv[1:]) if x == "--eval-fallback"),
                                                         0.0)}
             except FileNotFoundError:
@@ -1452,22 +1505,44 @@ def make_handler(dash: Dashboard, docs: Docs | None = None):
             pass
 
         def _send(self, body: bytes, ctype: str, status: int = 200) -> None:
+            """A response; a GET's with an ETag (the page polls every few seconds: an unchanged answer is a 304,
+            no body) and compressed when the client takes gzip."""
+            tag = None
+            if self.command == "GET" and status == 200:
+                tag = '"' + hashlib.blake2b(body, digest_size=12).hexdigest() + '"'
+                if tag in (self.headers.get("If-None-Match") or ""):
+                    self.send_response(304)
+                    self.send_header("ETag", tag)
+                    self.send_header("Cache-Control", "no-cache")
+                    self.end_headers()
+                    return
+            zipped = (tag is not None and len(body) > 1400 and ctype.split(";")[0] in COMPRESSIBLE
+                      and "gzip" in (self.headers.get("Accept-Encoding") or ""))
+            if zipped:
+                body = _gzipped(body, tag)
             self.send_response(status)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
+            if tag:  # (stored, and asked again each time: If-None-Match)
+                self.send_header("ETag", tag)
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Vary", "Accept-Encoding")
+            else:
+                self.send_header("Cache-Control", "no-store")
+            if zipped:
+                self.send_header("Content-Encoding", "gzip")
             self.end_headers()
             self.wfile.write(body)
 
         def _json(self, obj, status: int = 200) -> None:
-            self._send(json.dumps(obj).encode(), "application/json", status)
+            self._send(json.dumps(obj, separators=(",", ":")).encode(), "application/json", status)
 
         def do_GET(self):
             path = urllib.parse.unquote(urllib.parse.urlparse(self.path).path)
             if path in ("/", "/index.html", "/doc", "/lineage") or path.startswith(("/run/", "/sweep/", "/doc/")):
                 return self._send(_page(), "text/html; charset=utf-8")  # (the page's own addresses: it routes)
             if path == "/api/runs":
-                return self._json(dash.runs())
+                return self._json(dash.run_list())
             if path == "/api/sweeps":
                 return self._json(dash.sweeps())
             if path.startswith("/api/runs/"):

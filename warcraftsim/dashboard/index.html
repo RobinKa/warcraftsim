@@ -295,13 +295,67 @@ body.page-view main { padding:18px 28px 40px; }
 .md th { background:var(--panel2); }
 .md blockquote { margin:8px 0; padding:2px 12px; border-left:3px solid var(--line); color:var(--muted); }
 .md a { color:#539bf5; } .md img { max-width:100%; border-radius:6px; } .md hr { border:0; border-top:1px solid var(--line); margin:18px 0; }
+/* never wider than the screen: a grid's least column width at most the page's (a phone is ~400 px) */
+.grid { grid-template-columns:repeat(auto-fill,minmax(min(420px,100%),1fr)); }
+.mu-grid { grid-template-columns:repeat(auto-fill,minmax(min(440px,100%),1fr)); }
+.spaces { grid-template-columns:repeat(auto-fit,minmax(min(380px,100%),1fr)); }
+.about { grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr)); }
+.chart canvas { touch-action:pan-y; }  /* (a finger dragged across a chart reads its values; up and down scrolls) */
+#menu { display:none; background:var(--panel); border:1px solid var(--line); border-radius:6px; color:var(--text);
+        font:16px/1 system-ui; padding:5px 9px; cursor:pointer; }
+@media (hover: none) { .chart .ctl { opacity:1; } }  /* (touch: no hover, the panel's controls always shown) */
+/* a phone: the run list slides in over the page (☰), the panels one a row, wide tables scroll */
+@media (max-width: 760px) {
+  header { flex-wrap:wrap; gap:8px 10px; padding:8px 10px; }
+  header .sub { display:none; }
+  header h1 { font-size:15px; }
+  #menu { display:inline-block; }
+  body.page-view #menu { display:none; }
+  .topnav { margin-left:0; }
+  .topnav button { padding:5px 10px; }
+  header .right { margin-left:0; width:100%; justify-content:space-between; font-size:12px; gap:8px; }
+  header .right .smooth input { width:72px; }
+  header .right > * { white-space:nowrap; }
+  header .right .lbl { display:none; }
+  header .right label { gap:4px; }
+  .layout { grid-template-columns:1fr; }
+  aside { position:fixed; left:0; top:0; bottom:0; width:min(88vw, 340px); z-index:70; padding-top:12px;
+          transform:translateX(-102%); transition:transform .18s ease; box-shadow:0 0 28px rgba(0,0,0,.55); }
+  body.drawer aside { transform:none; }
+  body.drawer::after { content:""; position:fixed; inset:0; background:rgba(5,8,11,.55); z-index:65; }
+  .run, .sweep { padding:10px 10px; }
+  main { padding:10px 10px 30px; }
+  .title h2 { font-size:16px; }
+  .tabs { flex-wrap:nowrap; overflow-x:auto; margin:0 -10px 12px; padding:0 10px; top:-10px; scrollbar-width:none; }
+  .tabs::-webkit-scrollbar { display:none; }
+  .tab { flex:none; padding:9px 10px 8px; }
+  .cards { grid-template-columns:repeat(2, minmax(0, 1fr)); gap:8px; }
+  .card { padding:8px 10px; }
+  .card .v { font-size:17px; }
+  .grid { gap:10px; }
+  .chart canvas { height:180px; }
+  .chart .legend.compact { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+  .chart.full { inset:4px; padding:10px 10px 8px; }
+  table { display:block; overflow-x:auto; }
+  .md table { font-size:12px; }
+  .spaces ol { columns:1; }
+  .docs { grid-template-columns:1fr; gap:12px; }
+  .docs .list { position:static; order:2; }  /* (the document first, the list of the others after it) */
+  .doc { padding:12px 14px 18px; }
+  .md { font-size:14px; }
+  body.page-view main { padding:12px 10px 30px; }
+  .lineage .graph { height:calc(100dvh - 200px); }
+  .viewer iframe { height:70vh; min-height:300px; }
+  .playlist { max-height:50vh; }
+}
 </style>
 </head>
 <body>
 <header>
+  <button id="menu" title="the runs">☰</button>
   <h1>warcraft<span>sim</span></h1><span class="sub">Warcraft III 1.29 · PufferLib 5.0 training dashboard</span>
   <span class="seg topnav"><button id="nav-runs" class="on">Runs</button><button id="nav-lineage">Lineage</button><button id="nav-docs">Docs</button></span>
-  <div class="right"><label class="smooth" title="exponential moving average over the points of every chart">smoothing
+  <div class="right"><label class="smooth" title="exponential moving average over the points of every chart"><span class="lbl">smoothing</span>
     <input type="range" id="smooth" min="0" max="0.99" step="0.01"><span id="smoothv"></span></label>
     <span id="clock"></span><label><input type="checkbox" id="auto" checked> auto-refresh</label></div>
 </header>
@@ -617,13 +671,18 @@ function registerChart(id, opts) {
     };
     fs.onclick = ev => { ev.stopPropagation(); setFull(ui.full === id ? null : id); };
   }
-  canvas.addEventListener("mousemove", ev => {
+  const hover = ev => {  // (pointer events: a mouse, or a finger touching or dragged across the chart)
     const geo = ui.charts[id].geo; if (!geo) return;
     const r = canvas.getBoundingClientRect(), mx = ev.clientX - r.left;
     ui.hoverX = geo.x0 + (mx - geo.pad.l) / (geo.W - geo.pad.l - geo.pad.r) * (geo.x1 - geo.x0);
     ui.hoverChart = id; ui.hoverAxis = ui.charts[id].opts.axis || "steps"; drawAllCrosshairs();
+  };
+  canvas.addEventListener("pointermove", hover);
+  canvas.addEventListener("pointerdown", hover);
+  canvas.addEventListener("pointerleave", ev => {  // (a finger lifted: the values stay until the next touch)
+    if (ev.pointerType === "touch") return;
+    ui.hoverX = null; ui.hoverChart = null; drawAllCrosshairs();
   });
-  canvas.addEventListener("mouseleave", () => { ui.hoverX = null; ui.hoverChart = null; drawAllCrosshairs(); });
   canvas.addEventListener("dblclick", ev => {  // a restart's span (its diamond clicked) -> everything again
     if (!ui.stepsZoom) return;
     ev.preventDefault(); window.getSelection()?.removeAllRanges();
@@ -632,7 +691,21 @@ function registerChart(id, opts) {
 }
 
 // ---- data --------------------------------------------------------------------------------------
-async function getJSON(url) { const r = await fetch(url); if (!r.ok) throw new Error(r.status); return r.json(); }
+// the answers are revalidated (the server's ETag: an unchanged one is a 304, nothing sent); one with the
+// same ETag as before is not parsed again, and `seen.same` says so (nothing to draw anew)
+const fetched = {};  // url -> {tag, value}
+function setClock() {  // (a phone: the time alone)
+  document.getElementById("clock").innerHTML = `<span class="lbl">updated </span>${new Date().toLocaleTimeString()}`;
+}
+async function getJSON(url, seen) {
+  const r = await fetch(url, { cache: "no-cache" }); if (!r.ok) throw new Error(r.status);
+  const tag = r.headers.get("ETag"), last = fetched[url];
+  if (tag && last && last.tag === tag) { if (seen) seen.same = true; return last.value; }
+  const value = await r.json();
+  if (tag) fetched[url] = { tag, value };
+  if (seen) seen.same = false;
+  return value;
+}
 
 // one refresh at a time: a click or the timer during one asks for another pass after it (with many
 // runs compared, overlapping refreshes piled up and a click's refresh waited behind all of them)
@@ -651,7 +724,7 @@ async function refreshOnce() {
       const L = await getJSON("/api/lineage");
       if (JSON.stringify(L) !== JSON.stringify(ui.lineage.data)) { ui.lineage.data = L; renderLineageGraph(); }
     } catch (e) { console.error(e); }
-    document.getElementById("clock").textContent = "updated " + new Date().toLocaleTimeString();
+    setClock();
     return;
   }
   if (state.view === "docs") {  // the run list stays current; the document too, unless it is being edited
@@ -664,27 +737,32 @@ async function refreshOnce() {
         if (JSON.stringify(list) !== JSON.stringify(ui.docs.list)) { ui.docs.list = list; renderDocs(); }
       }
     } catch (e) { console.error(e); }
-    document.getElementById("clock").textContent = "updated " + new Date().toLocaleTimeString();
+    setClock();
     return;
   }
   try {
-    [state.runs, state.sweeps] = await Promise.all([getJSON("/api/runs"), getJSON("/api/sweeps")]);
+    const a = {}, b = {};
+    [state.runs, state.sweeps] = await Promise.all([getJSON("/api/runs", a), getJSON("/api/sweeps", b)]);
     if (!state.selected && state.runs.length) state.selected = state.runs[0].name;
-    renderRuns();
-    if (state.view === "sweep") renderSweep();
+    // the list drawn anew when it changed (and every half minute: its "… ago")
+    if (!a.same || !b.same || Date.now() - (ui.listDrawn || 0) > 30000) { renderRuns(); ui.listDrawn = Date.now(); }
+    if (state.view === "sweep" && !(a.same && b.same)) renderSweep();
     // the shown run always; a compared run only when its files changed (finished runs: once)
     const ver = n => { const r = state.runs.find(r => r.name === n); return r ? `${r.status}|${(r.summary || {}).updated}` : ""; };
     const names = [...new Set([state.selected, ...state.compare].filter(Boolean))]
       .filter(n => n === state.selected || !state.data[n] || state.dataVer[n] !== ver(n));
     for (let i = 0; i < names.length; i += 6) {  // a few at a time
+      let changed = false;  // (the same answers as before: the page stays as it is)
       await Promise.all(names.slice(i, i + 6).map(async n => {
-        state.data[n] = await getJSON("/api/runs/" + encodeURIComponent(n));
+        const seen = {}, had = state.data[n];
+        state.data[n] = await getJSON("/api/runs/" + encodeURIComponent(n), seen);
         state.dataVer[n] = ver(n);
+        if (!seen.same || !had) changed = true;
       }));
-      if (state.view === "run" && state.selected && state.data[state.selected]) renderMain();
+      if (changed && state.view === "run" && state.selected && state.data[state.selected]) renderMain();
     }
   } catch (e) { console.error(e); }
-  document.getElementById("clock").textContent = "updated " + new Date().toLocaleTimeString();
+  setClock();
 }
 // the shown run in view in the run list (on a selection change, not on refreshes: those would
 // fight scrolling the list)
@@ -713,9 +791,10 @@ function selectionChanged(push = false) {
 function openRun(name) {
   if (state.view === "docs" && ui.docs.editing && !confirm("Leave the document without saving?")) return;
   if (!name) return;
+  document.body.classList.remove("drawer");  // (a phone: the run list closes on a choice)
   state.view = "run"; state.selected = name; state.mediaKey = ""; setNav(); selectionChanged(true);
 }
-function openSweep(group) { state.view = "sweep"; state.sweep = group; ui.expanded.add(group); keepExpanded(); setNav(); selectionChanged(true); }
+function openSweep(group) { document.body.classList.remove("drawer"); state.view = "sweep"; state.sweep = group; ui.expanded.add(group); keepExpanded(); setNav(); selectionChanged(true); }
 
 // run list controls: a text filter, the kinds of runs listed, and "selected only" (the compared
 // runs and the one shown)
@@ -1164,7 +1243,7 @@ function renderMain() {
     ["Episodes", fmt(s.episodes || 0, 0)],
     ["Trainer SPS", fmt(last.SPS || 0, 0)],
     ...(info.trainer === "fullgame" ? [
-      ...(info.remote_eval && info.status === "training" ? [["Evaluation worker", (() => { const r = info.remote_eval, m = r.age / 60, down = r.fallback && r.age > r.fallback;
+      ...(info.remote_eval && info.status === "training" ? [["Evaluation worker", (() => { const r = { ...info.remote_eval }; r.age = r.seen != null ? Date.now() / 1000 - r.seen : r.age; const m = r.age / 60, down = r.fallback && r.age > r.fallback;
         return down ? `<span style="color:var(--bad, #e5534b)">silent ${m.toFixed(0)} min</span> <small>· this machine's fallback plays the evaluation games</small>`
           : `${m < 1 ? "up" : `last game ${m.toFixed(0)} min ago`} <small>· the laptop plays the evaluation games${r.fallback ? " · this machine's wait" : ""}</small>`; })()]] : []),
       ["Real game", info.real_game ? `${(100 * info.real_game.wins).toFixed(0)}% <small>won · ${(100 * info.real_game.ties).toFixed(0)}% tied · last ${info.real_game.games} ${info.real_game.evaluation ? "evaluation games" : "vs the built-in AI"}${Object.entries(info.real_game.vs || {}).map(([k, v]) => ` · ${esc(k)}: ${(100 * v).toFixed(0)}%`).join("")}</small>` : "–"],
@@ -1283,6 +1362,7 @@ function showTab(kind, id, quiet) {
   const legend = document.getElementById("legend"); if (legend) legend.style.display = charts ? "" : "none";
   // charts in a hidden tab have no size: drawn when shown
   document.querySelectorAll(`.pane[data-pane="${id}"] canvas:not(.overlay)`).forEach(c => drawChart(c.id));
+  if (id === "replays" && state.data[state.selected]) renderReplays(state.data[state.selected]);  // (its viewer: now)
   if (!quiet) saveUrl(true);  // (a tab is a page: back returns to the one before)
 }
 // a tab's count (e.g. evaluations); `keep`: shown also at zero (else the tab hides)
@@ -1342,11 +1422,14 @@ function renderReplays(d) {
     return;
   }
   if (el.dataset.viewer === cur.file) return;  // playing: left alone
+  // its tab hidden: nothing loaded (the viewer's video streamed its 60-80 MB on every run's page, a phone's
+  // too); showTab builds it when the tab is shown
+  if (el.offsetParent === null) return;
   el.dataset.viewer = cur.file; ui.replay.file = cur.file;
   const src = `/files/${encodeURIComponent(run).replace(/%2F/g, "/")}/${cur.file}`;
   const cal = cur.value0 != null ? ` · predicted V(s₀) ${fmt(cur.value0, 2)}, discounted return ${fmt(cur.return0, 2)}` : "";
   viewer.innerHTML = (cur.kind === "video"
-      ? `<video src="${src}" controls muted autoplay loop playsinline></video>`
+      ? `<video src="${src}" controls muted loop playsinline preload="metadata"${matchMedia("(max-width: 760px)").matches ? "" : " autoplay"}></video>`
       : `<iframe src="${src}#autoplay" title="trajectory"></iframe>`) +
     `<div class="cap"><span>${cur.title ? esc(cur.title) : `episode ${cur.episode}`} · <span class="${cur.result ? "" : cur.outcome > 0 ? "win" : cur.outcome < 0 ? "loss" : ""}">${cur.result ? esc(cur.result) : outcomeText(cur.outcome)}</span> · ${cur.sub ? esc(cur.sub) : `return ${fmt(cur.return, 2)}`}${cal}${cur.time ? ` · ${ago(cur.time)}` : ""}</span>
       <a href="${src}" target="_blank">open ↗</a></div>`;
@@ -1981,7 +2064,8 @@ function renderLineageGraph() {
     `<div class="tt">${esc(title(n))}</div>` +
     (n.changes && n.changes.length ? `<div class="ch">${n.changes.map(c => `<div>+ ${esc(c)}</div>`).join("")}</div>` : "") +
     (n.note ? `<div class="nt">${esc(n.note)}</div>` : "") + `<div class="hint2">click to open the run</div>`;
-  const lines = ["flowchart LR"];
+  // (a phone: top to bottom, the runs' chain scrolled down instead of a strip at a tenth of its size)
+  const lines = [matchMedia("(max-width: 760px)").matches ? "flowchart TB" : "flowchart LR"];
   const quoted = s => s.replace(/"/g, "'").replace(/&#39;/g, "#39;");  // (mermaid's own entity for ': "&#39;" showed as "&'")
   for (const n of shown) lines.push(`  ${id.get(n.name)}["${quoted(label(n))}"]:::${LINEAGE_KINDS[n.kind] ? n.kind : "run"}`);
   const arrow = w => w === "data" ? "-.->" : w === "policy" ? "==>" : w === "played" ? "-.-" : "-->";
@@ -2084,7 +2168,10 @@ function panZoom(box, inner, start = null, onChange = null) {
     else return;
     ev.preventDefault();
   });
-  if (start) { ({ s, x, y } = start); apply(); } else fit();
+  // a phone: at a size to read (the graph's width at most the box's), at its end: the newest runs
+  const readable = () => { const r = box.getBoundingClientRect(); s = Math.min(1, Math.max(0.4, (r.width - 24) / w));
+                           x = w * s < r.width ? (r.width - w * s) / 2 : 12; y = h * s < r.height ? (r.height - h * s) / 2 : r.height - h * s - 12; apply(); };
+  if (start) { ({ s, x, y } = start); apply(); } else if (matchMedia("(max-width: 760px)").matches) readable(); else fit();
   return { moved: () => moved };
 }
 
@@ -2278,7 +2365,12 @@ window.addEventListener("popstate", async () => {
   } finally { navigating = false; }
 });
 refresh().then(showSelectedRun);
-setInterval(() => { if (document.getElementById("auto").checked) refresh(); }, 5000);
+// a phone's run list: ☰ opens it, a tap beside it closes it
+document.getElementById("menu").onclick = () => document.body.classList.toggle("drawer");
+document.body.addEventListener("click", ev => { if (ev.target === document.body) document.body.classList.remove("drawer"); });
+// every 5 s while the page is looked at (a phone's hidden tab asks nothing); at once when it is again
+setInterval(() => { if (document.getElementById("auto").checked && !document.hidden) refresh(); }, 5000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden && document.getElementById("auto").checked) refresh(); });
 window.addEventListener("resize", () => { for (const id in ui.charts) drawChart(id); });
 </script>
 </body>
