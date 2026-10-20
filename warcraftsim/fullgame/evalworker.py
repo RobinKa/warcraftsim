@@ -128,6 +128,7 @@ def run_config(run_dir: Path, host: str, games: int, start_update) -> tuple[dict
            "z_build": num("z_build", 0, int),
            "grpo_share": 0.0, "grpo_group": 4, "grpo_branch": [60.0, 480.0],  # (evaluation games never branch)
            "eval_map": "", "eval_costs": None,  # (its map is the evaluation games' already: --eval-map)
+           "eval_vs": num("eval_vs", 0.0),  # (--eval-vs: the current policy against a listed checkpoint)
            "z_time_scale": num("z_time_scale", 1.0), "opd_share": 0.0, "opd_difficulty": c.get("opd_difficulty", "normal"),
            "shared_noise": num("shared_noise", 0.0), "float_penalty": num("float_penalty", 0.0),
            "hero_level_value": num("hero_level_value", 0.0), "shaping": num("shaping", 0.0),

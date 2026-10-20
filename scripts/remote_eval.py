@@ -108,7 +108,7 @@ SETTINGS = ("map", "handicap", "step_seconds", "max_minutes", "wait_floor_ms", "
             "pairs", "scripted_reset", "native_obs", "game_nice", "game_cuts", "features", "eval_ai", "eval_checkpoints",
             "races", "mirror", "opd_difficulty", "shared_noise", "float_penalty", "hero_level_value", "shaping",
             "shaping_scale", "gamma", "tie_break", "tie_value", "avail_mask", "infer_entities", "seed", "wine", "fsync", "ntsync",
-            "eval_z", "z_pool", "z_src", "z_enforce", "z_time_scale", "z_build", "eval_map", "eval_z_pool")
+            "eval_z", "z_pool", "z_src", "z_enforce", "z_time_scale", "z_build", "eval_map", "eval_z_pool", "eval_vs")
 
 
 def launch_key(info: dict) -> str:

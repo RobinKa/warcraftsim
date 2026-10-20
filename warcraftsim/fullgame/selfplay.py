@@ -1044,7 +1044,10 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
             if cfg["mirror"]:
                 races[1 - side] = races[side]
         ai = _choose(rng, spec["launch"])  # {"kind": "agents"} or {"kind": "ai", "difficulty"[, "delay"]}
-        if evaluating:  # (--eval-games-per-actor: the yardstick only)
+        versus = None  # (--eval-vs: an evaluation launch of the current policy against a listed checkpoint)
+        if evaluating and cfg.get("eval_vs", 0.0) > 0 and cfg.get("eval_checkpoints") and rng.random() < cfg["eval_vs"]:
+            versus, ai = rng.choice(cfg["eval_checkpoints"]), {"kind": "agents"}
+        elif evaluating:  # (--eval-games-per-actor: the yardstick only)
             # which policy: the current one, or one of --eval-checkpoints (head to head, at the same time).
             # Each matchup (races, sides, the AI's difficulty) is played by every policy in turn: drawn
             # apart, the policies' matchups differed (the AI's mean record in them 0.45 against 0.50),
@@ -1097,14 +1100,16 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                         pass
                     opp = ({"name": f"script:ai-{ai['difficulty']}" + (" (real)" if real else ""), "kind": "ai"}
                            if ai["kind"] == "ai" else {"name": "exploiter", "kind": "exploiter"} if ai["kind"] == "exploit"
+                           else {"name": f"eval-vs:{versus}", "kind": "past", "path": versus,
+                                 "eval_tag": "vs " + "/".join(Path(versus).parts[-3::2])} if versus
                            else dict(_choose(rng, spec["agents"])))
-                    if agents_only:  # races apart: the stronger one's income taxed (League.balance)
+                    if agents_only and not versus:  # races apart: the stronger one's income taxed (League.balance)
                         taxed, share = balance_tax(spec, races)
                         if share > 0:
                             opp["tax"], opp["tax_side"] = share, taxed
                     # on-policy distillation: the built-in AI advises the learner (never in the real game)
                     opp["advise"] = not real and rng.random() < cfg.get("opd_share", 0.0)
-                    if evaluating and eval_key != "current":
+                    if evaluating and not versus and eval_key != "current":
                         opp["eval_key"] = eval_key
                     if "shaping" in spec:  # (--shaping-anneal: the weight now, the game's for its whole length)
                         opp["shaping"] = spec["shaping"]
@@ -1635,7 +1640,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             "z_missed": sorted(c for c, t0 in zs[side]["t"].items() if t0 <= min(obs.game_time, strat.horizon(zs[side])) and made[side].get(c, 1e9) > min(obs.game_time, strat.horizon(zs[side]))),
             "z_extra": sorted(c for c, t0 in made[side].items() if t0 <= min(obs.game_time, strat.horizon(zs[side])) and zs[side]["t"].get(c, 1e9) > min(obs.game_time, strat.horizon(zs[side])) and c in pool["items"][races[side]])} if side in zs else {}),
         **({"branch": round(replay["t"] * cfg["step_seconds"]), "branch_same": same} if replay is not None else {}),
-        **({} if train else {"eval": True, "eval_key": opp.get("eval_key") or "current"})}
+        **({} if train else {"eval": True, "eval_key": opp.get("eval_tag") or opp.get("eval_key") or "current"})}
     out_q.put({"episode": ep})
     if grpo is not None:
         grpo["same"] = same
@@ -2792,6 +2797,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--z-enforce", type=int, default=0, help="with --z-pool: a side with a target may only train, "
                     "build and research the target's items (and workers and supply) for the strategies' horizon "
                     "(the availability mask; strategy.allowed)")
+    ap.add_argument("--eval-vs", type=float, default=0.0, help="this share of the evaluation launches play the current "
+                    "policy against one of --eval-checkpoints (agents both sides, no tax; their rows' eval_key \"vs "
+                    "<run>/<checkpoint>\"): a yardstick beyond the built-in AI")
     ap.add_argument("--eval-map", default="", help="the evaluation games' map, if not the training's (e.g. train on "
                     "echofast, evaluate on (2)EchoIsles: the real game); the same map frame")
     ap.add_argument("--eval-z-pool", type=Path, default=None, help="with --eval-map: the strategies its current+z games "
@@ -3220,7 +3228,7 @@ def main(argv: list[str] | None = None) -> int:
            "z_enforce": args.z_enforce, "z_time_scale": args.z_time_scale, "z_build": args.z_build, "z_build_labels": args.z_build_labels,
            "grpo_share": args.grpo_share, "grpo_group": args.grpo_group, "grpo_coef": args.grpo_coef,
            "grpo_seeds": args.grpo_seeds, "grpo_branch": [float(x) for x in args.grpo_branch.split("-")],
-           "eval_map": args.eval_map, "eval_z_pool": str(args.eval_z_pool) if args.eval_z_pool else "",
+           "eval_map": args.eval_map, "eval_z_pool": str(args.eval_z_pool) if args.eval_z_pool else "", "eval_vs": args.eval_vs,
            "eval_costs": order_costs(vocab, args.eval_map).tolist() if args.eval_map and args.avail_mask else None,
            "order_names": vocab.get("order_names") or {str(k): v for k, v in fx.demo_order_names(args.runs).items()}}
     if args.pin and (os.cpu_count() or 0) >= 16:
