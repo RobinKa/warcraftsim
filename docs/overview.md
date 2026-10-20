@@ -9,7 +9,7 @@ warcraftsim trains agents on the real Warcraft III 1.29, headless under Wine. Py
 | Micro fights | 91% against the scripted opponent. League self-play: 82%, and 79% against the 91% policy. | `--trainer torch` |
 | Whole game, `duelrush` (2-minute games) | **79%** against the built-in AI, all 16 matchups. | `fgself-10` |
 | Whole game, `duelfast` (6-minute games) | **80%** of its games against the insane AI won. Every matchup is above the AI's own record. | `fgself-51` |
-| **The real game on Echo Isles** (the game's rules, no handicap) | **~95% of its games against the insane AI won** (~355 paired evaluation games; `fgself-100`'s best 92%, `fgself-78` ~87% before): ~179% of the AI's own record. Human ~92%, undead ~89%, orc ~97%, night elf ~100%. With a target build order it follows on its own: ~83%. | best `fgself-102` (`echofast` training with target build orders and the weak races trained more, judged on the real game; running) |
+| **The real game on Echo Isles** (the game's rules, no handicap) | **~95% of its games against the insane AI won** (~355 paired evaluation games; `fgself-100`'s best 92%, `fgself-78` ~87% before): ~179% of the AI's own record. Human ~92%, undead ~89%, orc ~97%, night elf ~100%. With a target build order it follows on its own: ~83%. | best `fgself-102` (`echofast` training with target build orders and the weak races trained more, judged on the real game); running: `fgself-103`, AlphaStar's league (mostly self-play, past snapshots, a main exploiter) |
 
 The yardstick is the evaluation games: the real game against the built-in AI, which the policy does not train on. Each policy in a run plays the same matchups (paired), so a run compares its policies directly.
 
