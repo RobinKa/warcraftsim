@@ -31,5 +31,6 @@ for k in sorted({e['eval_key'] for e in eps}):
         if R:
             win.append(f"{100 * sum(e['outcome'] > 0 for e, _ in R) / max(1e-9, sum(p for _, p in R)):.0f}%")
     heroes = sum(e['prod']['heroes'] for e in X) / len(X)
-    print(f"{k[-14:]:14s} n={len(X)} won {100 * c[1.0] / len(X):.0f}% ties {100 * c[0.0] / len(X):.0f}% heroes {heroes:.2f}  by 20 min: {' '.join(win)}")
+    name = ("vs " + k.split("/")[-1][-17:]) if k.startswith("vs ") else k[-14:]  # (--eval-vs: the current policy against it)
+    print(f"{name:20s} n={len(X)} won {100 * c[1.0] / len(X):.0f}% ties {100 * c[0.0] / len(X):.0f}% heroes {heroes:.2f}  by 20 min: {' '.join(win)}")
 PY

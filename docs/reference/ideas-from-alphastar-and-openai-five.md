@@ -84,4 +84,14 @@ Results so far (2026-10-13, share of the AI's record on evaluation games, head t
 
 Next from the papers (2026-10-17, agreed with the user): AlphaStar's exploiters, against the policy's one strategy (an early rush of tier-1 units). Then #10's build-order goals: a target build order and unit mix a game (AlphaStar's z), from the built-in AI's Echo Isles games and later from human replays, with a small reward for following it.
 
+## Past the built-in AI (2026-10-20)
+
+The policy wins ~95% of the real game against the insane AI, so that yardstick is spent, and 95% of its training games were against that AI. What the papers did to go past their scripted bots, in the order we take it up:
+
+1. **AlphaStar's league** (Fig. 3A/B): the main agent trains against itself (35%), its past players by PFSP (50%) and exploiters (15%); the exploiters raised the main agents from 1540 to 1824 Elo. Ours: `--ai-share 0.15` (the built-in AI kept as a floor and a curriculum), `--exploiter-share 0.15` (a main exploiter), `--self-share 0.4` of the rest (self ~29%, past ~43%), `--max-past 12`. The yardstick: the current policy against frozen checkpoints (`--eval-vs`), beside the built-in AI. `fgself-103`.
+2. **OpenAI Five's reward decay** (App. G, eq. 11): every reward but the win scaled by 0.6^(T / 10 min), so a long game's large material swings do not drown the win. Ours: the shaping (material lead) weighs the same at minute 30 as at minute 1.
+3. **Fresh data** (OpenAI Five §4.4): reuse ~1 and staleness 0-1. Ours: reuse 2, staleness ~1.5-3 (more with GRPO's held steps).
+4. **Human data** (AlphaStar Fig. 3E, its biggest lever): our 2,591 human 1.29 replays give target build orders only; 95 Echo Isles ones play back as demonstrations. A cloning loss on human games (as the clone's anchor) would add human tactics the built-in AI never shows.
+5. Later, larger: fewer decisions (a "keep this order k steps" head, AlphaStar's action-rate finding), spatial point heads (SC2LE), the actions people use that the AI never does (tavern heroes, neutral shops, mercenaries).
+
 Sources: [AlphaStar (DeepMind's PDF)](https://storage.googleapis.com/deepmind-media/research/alphastar/AlphaStar_unformatted.pdf), its [supplementary data](https://static-content.springer.com/esm/art%3A10.1038%2Fs41586-019-1724-z/MediaObjects/41586_2019_1724_MOESM2_ESM.zip), [OpenAI Five, arXiv 1912.06680](https://arxiv.org/abs/1912.06680), [SC2LE, arXiv 1708.04782](https://arxiv.org/abs/1708.04782).
