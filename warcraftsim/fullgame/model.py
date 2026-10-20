@@ -32,11 +32,13 @@ def _order_temp_default(state, prefix, *_):
 class FullGameNet(nn.Module):
     def __init__(self, n_types: int, n_cur: int, n_orders: int, G: int, d: int = 192, heads: int = 4,
                  layers: int = 3, dropout: float = 0.0, memory: bool = False, target_temperature: float = 1.0,
-                 priv: int = 0, order_temperature: float = 1.0, bins: int = 128, z: int = 0):
+                 priv: int = 0, order_temperature: float = 1.0, bins: int = 128, z: int = 0, gx: int = 0,
+                 valid: int = 0):
         super().__init__()
         self.config = dict(n_types=n_types, n_cur=n_cur, n_orders=n_orders, G=G, d=d, heads=heads, layers=layers,
                            dropout=dropout, memory=memory, target_temperature=target_temperature, priv=priv,
-                           order_temperature=order_temperature, bins=bins, **({"z": z} if z else {}))
+                           order_temperature=order_temperature, bins=bins, **({"z": z} if z else {}),
+                           **({"gx": gx} if gx else {}), **({"valid": valid} if valid else {}))
         # the global vector's last `priv` numbers: the whole game (features.View.priv), for the value alone
         self.priv = int(priv)
         # the target heads' logits (unit, x, y) divided by it, acting and training alike: < 1 samples a unit's
@@ -80,6 +82,47 @@ class FullGameNet(nn.Module):
             nn.init.zeros_(self.priv_proj[2].bias)
         # each order class's kind (features.IMMEDIATE, POINT, ...: which target it takes)
         self.register_buffer("order_kind", torch.zeros(n_orders, dtype=torch.long))
+        if valid:  # (--valid-mask) what each order needs of the unit (herodata.order_needs; set_valid fills them):
+            self._valid_buffers(n_types, valid)  # `valid` the number of order classes that need something
+
+    def _valid_buffers(self, n_types: int, k: int) -> None:
+        self.register_buffer("valid_cols", torch.zeros(k, dtype=torch.long))  # the order classes that need something
+        self.register_buffer("valid_need", torch.full((n_types, k), -1, dtype=torch.int8))  # per unit type: what
+
+    def set_valid(self, vocab: dict) -> None:
+        """The mask of a hero's orders it can't carry out now (--valid-mask; features.A_HERO's bits, inputs 2):
+        from the game's tables (herodata.order_needs)."""
+        from .herodata import order_needs
+        needs = order_needs(vocab)
+        cols = sorted({c for _, c in needs})
+        n_types = self.type_emb.num_embeddings
+        dev = self.order_kind.device
+        need = torch.full((n_types, max(len(cols), 1)), -1, dtype=torch.int8)
+        at = {c: i for i, c in enumerate(cols)}
+        for (t, c), v in needs.items():
+            if t < 0:
+                need[:, at[c]] = v
+            elif t < n_types:
+                need[t, at[c]] = v
+        self._valid_buffers(n_types, need.shape[1])
+        self.valid_cols.copy_(torch.as_tensor(cols or [0]))
+        self.valid_need.copy_(need)
+        self.valid_cols, self.valid_need = self.valid_cols.to(dev), self.valid_need.to(dev)
+        self.config["valid"] = need.shape[1]
+
+    def unit_valid(self, ent, typ):
+        """[N, O, K] bool: whether each of the first O units can carry out each of the order classes that need
+        something of it (valid_cols): the bits its A_HERO features give (ready per ability slot, learned, a skill
+        point it may spend there, a usable item per inventory slot)."""
+        h, af, it = fx.A_HERO, fx.HERO_ABIL_F, fx.A_HERO + 4 * fx.HERO_ABIL_F
+        e = ent[:, :typ.shape[1]] if ent.shape[1] > typ.shape[1] else ent
+        bits = torch.cat([e[..., h + 1:h + 4 * af:af] > 0.5, e[..., h:h + 4 * af:af] > 0.1,
+                          e[..., h + 3:h + 4 * af:af] > 0.5, e[..., it + 1:it + 6 * fx.HERO_ITEM_F:fx.HERO_ITEM_F] > 0.5], -1)
+        need = self.valid_need[typ.long()]
+        ok = torch.ones(need.shape, dtype=torch.bool, device=need.device)
+        for j in range(bits.shape[-1]):
+            ok &= ~((need == j) & ~bits[..., j:j + 1])
+        return ok
 
     def encode(self, ent, typ, cur, mask, glob):
         """-> global token [N, d], entity tokens [N, E, d]."""
@@ -120,10 +163,11 @@ class FullGameNet(nn.Module):
             k *= 2
         return g + self.mem_out(b.to(g.dtype)), b
 
-    def order_logits(self, g, u, typ, n_own, by_type: bool = True, avail=None):
+    def order_logits(self, g, u, typ, n_own, by_type: bool = True, avail=None, ent=None):
         """[N, O, n_orders] for the first O entities (own units first; others can only get none).
         `by_type`: only the orders each unit type got in the demonstrations (playing; training
-        learns it: a mask there made unseen pairs, e.g. of upgraded buildings, infinitely wrong)."""
+        learns it: a mask there made unseen pairs, e.g. of upgraded buildings, infinitely wrong).
+        `ent` (a network with "valid"): its units' features, for their hero orders (unit_valid)."""
         O = u.shape[1]
         own = u[:, :O]
         logits = self.order(torch.cat([own, g.unsqueeze(1).expand_as(own)], -1)) / self.order_temp
@@ -133,6 +177,8 @@ class FullGameNet(nn.Module):
             allowed &= self.allowed[typ[:, :O].long()]
         if avail is not None:  # [N, n_orders]: what the player can pay for now
             allowed &= avail[:, None, :].bool()
+        if ent is not None and self.config.get("valid"):
+            allowed[..., self.valid_cols] &= self.unit_valid(ent[:, :O], typ[:, :O])
         allowed[..., 0] = True  # no order: always
         return logits.masked_fill(~allowed, NEG)
 
@@ -210,14 +256,14 @@ def act(net: FullGameNet, ent, typ, cur, mask, glob, n_own, avail=None, h=None, 
     g, u = net.encode(ent, typ, cur, mask, glob)
     g, h = net.context(g, h)
     O = min(fx.MAX_OWN, u.shape[1])
-    logits = net.order_logits(g, u[:, :O], typ, n_own, avail=avail)
+    logits = net.order_logits(g, u[:, :O], typ, n_own, avail=avail, ent=ent)
     if guide is not None and net.config.get("z"):
-        z0 = net.config["G"] - net.priv - net.config["z"]
+        z0 = net.config["G"] - net.priv - net.config.get("gx", 0) - net.config["z"]
         blank = glob.clone()
         blank[:, z0:z0 + net.config["z"]] = 0.0
         g0, u0 = net.encode(ent, typ, cur, mask, blank)
         g0, _ = net.context(g0, h_in)
-        free = net.order_logits(g0, u0[:, :O], typ, n_own, avail=avail)
+        free = net.order_logits(g0, u0[:, :O], typ, n_own, avail=avail, ent=ent)
         w = guide.to(logits.dtype)[:, None, None]
         logits = torch.where(w != 1, free + w * (logits - free), logits)
     def sample(lg):
@@ -247,7 +293,7 @@ def evaluate(net: FullGameNet, ent, typ, cur, mask, glob, n_own, order, tgt, bx,
         B, T, h0, starts = seq
         g = net.context_seq(g.view(B, T, -1), h0, starts)[0].reshape(B * T, -1)
     O = order.shape[1]
-    logits = net.order_logits(g, u[:, :O], typ, n_own, avail=avail)
+    logits = net.order_logits(g, u[:, :O], typ, n_own, avail=avail, ent=ent)
     ptr, xl, z = net.target_logits(g, u, mask, order)
     yl = net.y_logits(z, bx)
     uses_ptr, uses_pt = net.uses(order)
@@ -274,25 +320,48 @@ def anchor_kl(ev: dict, ev_ref: dict, mode: str = "reverse"):
     return out
 
 
+def adapt_config(config: dict) -> dict:
+    """A checkpoint's config as this run's inputs read it (features.set_inputs): the clock's numbers in the
+    global vector (inputs 2: features.GX, between the strategy block and the privileged one) added."""
+    config = dict(config)
+    gx = config.get("gx", 0)
+    if fx.GX > gx:
+        config["G"] += fx.GX - gx
+        config["gx"] = fx.GX
+    return config
+
+
 def load(path, device="cpu", memory: bool | None = None) -> tuple[FullGameNet, dict]:
-    """A checkpoint's network. `memory`: with (a new core, which does nothing at first) or without one."""
+    """A checkpoint's network. `memory`: with (a new core, which does nothing at first) or without one. Inputs
+    added since (features.set_inputs: unit features, the clock) start with zero weights, and with --valid-mask
+    (features.VALID_MASK) its hero orders' mask is set (set_valid)."""
     ck = torch.load(path, map_location=device, weights_only=False)
     config = dict(ck["config"])
     if memory is not None:
         config["memory"] = memory
     if "vocab" in ck:  # global features added since (the privileged block at the end): the value's, zero at first
-        G_now = fx.Encoder(ck["vocab"]).G
+        G_now = fx.Encoder(ck["vocab"]).G - fx.GX + config.get("gx", 0)
         if config["G"] < G_now and not config.get("priv"):
             config["priv"], config["G"] = G_now - config["G"], G_now
+    gx_old = config.get("gx", 0)
+    config = adapt_config(config)
+    valid = bool(config.get("valid"))
     net = FullGameNet(**config).to(device)
     state = ck["model"] if net.memory else {k: v for k, v in ck["model"].items() if not k.startswith("mem_")}
     w = state.get("ent.weight")
     if w is not None and w.shape[1] < fx.F:  # features added since (at the end): their weights start at 0
         state = {**state, "ent.weight": torch.cat([w, w.new_zeros(w.shape[0], fx.F - w.shape[1])], 1)}
+    elif w is not None and w.shape[1] > fx.F:  # (a run with fewer inputs: those it has)
+        state = {**state, "ent.weight": w[:, :fx.F]}
+    w = state.get("glob.0.weight")
+    if w is not None and config.get("gx", 0) > gx_old:  # the clock (at the end of what the policy reads): zeros
+        state = {**state, "glob.0.weight": torch.cat([w, w.new_zeros(w.shape[0], config["gx"] - gx_old)], 1)}
     missing, unexpected = net.load_state_dict(state, strict=False)
     if unexpected or any(not (k.startswith(("value_head.", "mem_", "priv_proj.")) or k in ("order_kind", "target_temp"))
                          for k in missing):
         raise RuntimeError(f"{path}: missing {missing}, unexpected {unexpected}")
     if "order_kind" in missing and "vocab" in ck:  # fits from before it: from the vocabulary
         net.order_kind.copy_(torch.as_tensor([0] + [k[1] for k in ck["vocab"]["orders"]], device=net.order_kind.device))
+    if fx.VALID_MASK and not valid and "vocab" in ck:
+        net.set_valid(ck["vocab"])
     return net.eval(), ck

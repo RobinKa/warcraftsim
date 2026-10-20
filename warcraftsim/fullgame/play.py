@@ -42,19 +42,23 @@ def rawcode_or(order: int) -> str:
 
 
 def unit_rows(obs: Observation, t: int) -> np.ndarray:
-    """The observation's units as rows of collect.UNIT_COLS."""
+    """The observation's units as rows of collect.UNIT_COLS, then a hero's items and abilities (features.ROW_COLS:
+    its 6 items' types, per ability slot its level and cooldown left in 0.1 s; zeros for others)."""
     ua = getattr(obs, "unit_array", None)
-    if ua is not None:  # (native observations: the table's first 17 columns are these, after the step)
-        out = np.empty((len(ua), 18), np.int64)
+    if ua is not None:  # (native observations: the table's first 31 columns are these, after the step)
+        out = np.empty((len(ua), fx.ROW_COLS), np.int64)
         out[:, 0] = t
-        out[:, 1:] = ua[:, :17]
+        out[:, 1:] = ua[:, :fx.ROW_COLS - 1]
         return out
     return np.asarray([(t, u.id, u.type_id, u.owner, u.x, u.y, u.facing, u.hp, u.max_hp, u.mana, u.max_mana,
-                        u.order, int(u.flags), u.visible_to, u.resource, u.hero_level, u.hero_xp, u.skill_points)
-                       for u in obs.units], np.int64).reshape(-1, 18)
+                        u.order, int(u.flags), u.visible_to, u.resource, u.hero_level, u.hero_xp, u.skill_points,
+                        *(tuple(u.items) + (0,) * 6)[:6],
+                        *(v for lv, cd in (tuple(u.abilities) + ((0, 0.0),) * 4)[:4] for v in (lv, int(round(cd * 10)))))
+                       for u in obs.units], np.int64).reshape(-1, fx.ROW_COLS)
 
 
 REPAIR = 852024  # the order a worker resumes a building with
+ATTACK = 851983
 
 
 class BCAgent:
@@ -159,6 +163,10 @@ class BCAgent:
                 out.append(LearnSkill(unit, oid))
             elif kind == fx.POINT:
                 out.append(Build(unit, oid, x, y) if oid >= TYPE_CODE else PointOrder(unit, oid, x, y))
+            elif kind == fx.UNIT and int(tgt[i]) >= st.get("ghost0", len(sel)):  # an enemy it remembers (inputs 3):
+                if oid in (ATTACK, fx.SMART):  # where it saw it (attack: attack-move); nothing else reaches it
+                    g = sel[int(tgt[i])]
+                    out.append(PointOrder(unit, oid, int(g[fx.C_X]), int(g[fx.C_Y])))
             elif kind == fx.UNIT:
                 target = sel[int(tgt[i])]
                 if oid == fx.HARVEST and int(target[fx.C_TYPE]) not in fx.GOLD_MINES:
@@ -199,7 +207,7 @@ class BCAgent:
             g, self.h = self.net.context(g, self.h)
             O = min(n_own, fx.MAX_OWN)
             avail = torch.as_tensor(st["avail"], device=dev)[None] if st.get("avail") is not None else None
-            logits = self.net.order_logits(g, u[:, :O], typ, torch.tensor([O], device=dev), avail=avail)
+            logits = self.net.order_logits(g, u[:, :O], typ, torch.tensor([O], device=dev), avail=avail, ent=ent)
             order = self._sample(logits)  # [1, O]
             if self.order_temperature != 1.0:  # whether a unit gets an order stays as learned; which one sharpens
                 again = self._sample(logits[..., 1:] / self.order_temperature) + 1

@@ -54,7 +54,7 @@ from .collect import claim_slot
 from .costs import order_costs
 from .trace import DEAD_FLAG, Production, material, trace_step, unit_values  # noqa: F401
 from .play import unit_rows
-from .model import FullGameNet, act, anchor_kl, arch_key, evaluate, load
+from .model import FullGameNet, act, adapt_config, anchor_kl, arch_key, evaluate, load
 from ..rl.league import Member, pfsp_weight
 
 RUNS = Path(__file__).resolve().parents[2] / "runs"
@@ -658,6 +658,8 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
         _pin(cfg, "server")
         torch.set_num_threads(2)
         alive = lambda: os.getppid() == cfg["learner_pid"]  # noqa: E731
+    fx.set_inputs(cfg.get("inputs", 1))  # (the rows' width, and the past snapshots' inputs: model.load)
+    fx.set_masks(cfg.get("tech_mask", 0), cfg.get("valid_mask", 0))
     nets = Nets(cfg, device)
     while nets.current is None and not stop.is_set() and alive():
         time.sleep(1)
@@ -1658,6 +1660,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         # games between agents: the share of the learner's income taken (< 0: of the opponent's)
         **({"balance_tax": opp["tax"] if opp["tax_side"] == side else -opp["tax"]} if "tax_side" in opp else {}),
         "prod": prod.row(side, obs), "opp_prod": prod.row(1 - side, obs), **({"advised": True} if advised else {}),
+        **({"max_own": bots[side].view.max_own, "max_ent": bots[side].view.max_ent} if side in bots else {}),
         **({"shared_noise": shared_noise} if cfg.get("shared_noise", 0.0) > 0 else {}),
         **({"z_build": builders[side].log, "z_refusals": builders[side].why,
             "z_blocked": {c: dict(v) for c, v in builders[side].blocked.items()}} if side in builders else {}),
@@ -1786,6 +1789,8 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
     fx.ACTIVE_F = cfg.get("features", fx.F)  # (a spawned process: the learner's setting, --features)
     fx.set_geometry(*cfg.get("map_geometry", (fx.STARTS, fx.BIN_RANGE)))  # (and the map's frame)
     fx.set_z(cfg.get("z_dim", 0))  # (and the global vector's strategy block)
+    fx.set_inputs(cfg.get("inputs", 1))  # (and the inputs: --inputs, --tech-mask, --valid-mask)
+    fx.set_masks(cfg.get("tech_mask", 0), cfg.get("valid_mask", 0))
     out_q.cancel_join_thread()  # exiting must not wait to flush trajectories nobody reads any more
     torch.set_num_threads(1)
     try:
@@ -2764,6 +2769,14 @@ def main(argv: list[str] | None = None) -> int:
                     help="each actor's extra games that only evaluate: the real game against the built-in AI (normal "
                          "or insane, races at random), never advised, nothing trained on; episodes have eval: true "
                          "(the real-game yardstick sooner and steadier, the training's mix unchanged)")
+    ap.add_argument("--inputs", type=int, default=1, help="2: also each hero's abilities (level, ready, cooldown, "
+                    "learnable) and items, what each building makes, and the time of day (features.set_inputs; older "
+                    "checkpoints read them with zero weights)")
+    ap.add_argument("--tech-mask", type=int, default=0, help="mask the orders the player lacks the tech for "
+                    "(features.TechMask: buildings, tiers, research levels, the hero limit)")
+    ap.add_argument("--valid-mask", type=int, default=0, help="mask each hero's orders it can't carry out now: an "
+                    "ability not learned, cooling down or without the mana, no skill point, an empty item slot (needs "
+                    "--inputs 2)")
     ap.add_argument("--features", type=int, default=fx.F, help="the unit features in use (features.ACTIVE_F): the "
                                                                 "rest are zeros (29: as before 2026-10-12, 50: without "
                                                                 "the last order, 55: all)")
@@ -3053,6 +3066,10 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     fx.ACTIVE_F = args.features  # (the cloning loss's data workers fork from here: they inherit it)
     os.environ["WARCRAFTSIM_FEATURES"] = str(args.features)  # (and processes started anew: actors, videos)
+    if args.valid_mask and args.inputs < 2:
+        raise SystemExit("--valid-mask reads the hero features: --inputs 2")
+    fx.set_inputs(args.inputs)  # (before any network is loaded: model.load gives older ones the new inputs)
+    fx.set_masks(args.tech_mask, args.valid_mask)
     from ..data.duelmap import parse_duel_name
     if parse_duel_name(args.map) is None:  # another map than the duel maps: its own frame for the positions
         from ..data.mapbuild import stock_map_path    # and point targets (features.set_geometry; the actors
@@ -3112,7 +3129,7 @@ def main(argv: list[str] | None = None) -> int:
     fx.set_z(net.config.get("z", 0))  # the global vector's strategy block (scripts/grow_strategy.py), as the policy's
     G = fx.Encoder(vocab).G
     for what, n in [("the starting weights" if args.start_weights else "--init", net), ("the anchor (--init)", ref)] + \
-            [(str(c), FullGameNet(**torch.load(c, map_location="cpu", weights_only=False)["config"]))
+            [(str(c), FullGameNet(**adapt_config(torch.load(c, map_location="cpu", weights_only=False)["config"])))
              for c in args.eval_checkpoints or []]:
         if n is not None and n.bins != fx.BINS:  # (their point targets must be this map's bins)
             raise SystemExit(f"{what} has {n.bins} point bins, {args.map}'s frame {fx.BINS}: scripts/grow_bins.py")
@@ -3214,7 +3231,7 @@ def main(argv: list[str] | None = None) -> int:
                     return False
                 c = torch.load(path, map_location="cpu", weights_only=False)
                 return (c["config"].get("bins", 128) == fx.BINS and c.get("vocab") == vocab
-                        and c["config"]["G"] == net.config["G"])  # (the run's rows' width: a strategy block or none)
+                        and adapt_config(c["config"])["G"] == net.config["G"])  # (the run's rows' width: a strategy block or none)
             taken = league.inherit(json.loads((src / "league.json").read_text()), src.name, usable)
             print(f"league from {src.name}: {len(taken)} past snapshots ({', '.join(taken)})", flush=True)
         first = run_dir / "checkpoints" / f"{0:016d}.pt"
@@ -3248,6 +3265,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask,
            "eval_ai": [d for d in args.eval_ai.split(",") if d],
            "map_geometry": [fx.STARTS, fx.BIN_RANGE],
            "infer_entities": [int(x) for x in args.infer_entities.split(",")],

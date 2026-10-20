@@ -171,7 +171,11 @@ RESEARCH_FINISH = 9
 # unit columns (collect.UNIT_COLS)
 C_STEP, C_ID, C_TYPE, C_OWNER, C_X, C_Y, C_FACING, C_HP, C_MAXHP, C_MANA, C_MAXMANA, C_ORDER, C_FLAGS, \
     C_VIS, C_RESOURCE, C_HLEVEL, C_HXP, C_SKILLPTS = range(18)
-DEAD, STRUCTURE = 1024, 2
+# then (a live game's rows, play.unit_rows; a demonstration's from its "heroes", hero_rows) a hero's 6 items' types
+# and per ability slot its level and cooldown left (0.1 s); rows with 18 columns have none
+C_ITEM0, C_ABIL0 = 18, 24
+ROW_COLS = 32
+DEAD, STRUCTURE, CONSTRUCTING = 1024, 2, 8
 FLAG_BITS = (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 2048)  # UnitFlags but DEAD
 F0 = 3 + 2 + 4 + len(FLAG_BITS) + 3 + 2 + 1 + 2 + 1  # 29: ... production (queued, busy), and a worker on lumber
 # then (2026-10-12; a checkpoint from before gets zero weights for them, model.load): the hit points' change since
@@ -186,10 +190,63 @@ A_POS = A_HPD + 1
 # group's units could not see that they head for one point (their point orders scattered, fgself-13)
 A_LAST = A_POS + 4 * len(POS_FREQS)
 LAST_SCALE, LAST_AGE = 1536.0, 40.0
-F = A_LAST + 5  # 55
-# the unit features in use (selfplay --features): channels from here on are zeros, so their weights get no
+F_BASE = A_LAST + 5  # 55
+# inputs v2 (selfplay --inputs 2, 2026-10-20; a checkpoint from before gets zero weights for them, model.load): a
+# hero's state, as the harness reports it (protocol.Unit.abilities, items): per ability slot its level / 3, whether
+# it can be cast now (learned, cooled down, the mana: 0 or 1), its cooldown left / 60 s and whether a skill point
+# may go there now (0 or 1; an enemy hero's levels and items only: its cooldowns the game doesn't show); per
+# inventory slot whether it holds an item, a usable one, one that heals, restores mana, a town portal
+# (herodata.item_table). Then what a building makes now (one of: a worker, an army unit, a hero, research, its
+# next tier): before, it saw only that it made something
+A_HERO = F_BASE
+HERO_ABIL_F, HERO_ITEM_F = 4, 5
+HERO_F = 4 * HERO_ABIL_F + 6 * HERO_ITEM_F  # 46
+A_PROD = A_HERO + HERO_F
+PROD_F = 5
+WORKER_TYPES = (1752196449, 1869636975, 1969316719, 1702327152)  # hpea, opeo, uaco, ewsp
+COOLDOWN_SCALE = 60.0
+# inputs v3 (--inputs 3): the enemy's units and buildings it saw and no longer sees, where it saw them last (View.ghosts:
+# after the entities in sight; a building until its place is in sight again, a unit for MEMORY_SECONDS): whether an
+# entity is such a memory, and how long ago it was seen / 60 s (at most 1). Their place counts as in sight within
+# SIGHT of one of the player's units (most units see 800 at night and more by day)
+A_MEM = A_PROD + PROD_F
+MEM_F = 2
+MAX_GHOSTS, MEMORY_SECONDS, SIGHT = 40, 60.0, 800.0
+# and the global vector (between the strategy block and the privileged one: a network without them reads what it
+# knows and its strategy block as before): the time of day (sin, cos of its angle; Units\MiscData.txt: a day of
+# 480 s, dawn at 6, dusk at 18; melee games start at 8) and whether it is night (creeps sleep, night elves hide)
+DAY_SECONDS, DAWN, DUSK, START_HOUR = 480.0, 6.0, 18.0, 8.0
+INPUTS = 1
+F = F_BASE
+GX = 0
+
+
+def set_inputs(v: int) -> None:
+    """The run's inputs (selfplay --inputs): 1 as before, 2 the hero and production blocks and the clock, 3 and the
+    enemies it saw before (View.ghosts)."""
+    global INPUTS, F, GX
+    INPUTS = int(v)
+    F = F_BASE if INPUTS < 2 else A_PROD + PROD_F if INPUTS < 3 else A_MEM + MEM_F
+    GX = 0 if INPUTS < 2 else 3
+    os.environ["WARCRAFTSIM_INPUTS"] = str(INPUTS)  # (processes started anew)
+
+
+set_inputs(int(os.environ.get("WARCRAFTSIM_INPUTS", 1)))
+# the unit features in use (selfplay --features): channels from here up to F_BASE are zeros, so their weights get no
 # gradient and the network is as one without them (29: as before 2026-10-12, 50: without the last order)
 ACTIVE_F = int(os.environ.get("WARCRAFTSIM_FEATURES", F))  # (also from the environment: processes started anew)
+# selfplay --tech-mask: orders the player lacks the tech for (techtree: a building, a tier, an altar; a research at
+# its last level or under way; a hero past the limit or one it has) are masked with those it can't pay for
+TECH_MASK = os.environ.get("WARCRAFTSIM_TECH_MASK", "0") == "1"
+# selfplay --valid-mask: the network masks each hero's orders it can't carry out now (model.FullGameNet "valid":
+# an ability not learned or cooling down, no skill point for it, an empty inventory slot); needs inputs 2
+VALID_MASK = os.environ.get("WARCRAFTSIM_VALID_MASK", "0") == "1"
+
+
+def set_masks(tech: bool, valid: bool) -> None:
+    global TECH_MASK, VALID_MASK
+    TECH_MASK, VALID_MASK = bool(tech), bool(valid)
+    os.environ["WARCRAFTSIM_TECH_MASK"], os.environ["WARCRAFTSIM_VALID_MASK"] = str(int(TECH_MASK)), str(int(VALID_MASK))
 # the global vector's strategy block (strategy conditioning, fullgame/strategy.py: the policy's target strategy,
 # zeros for none), between what the player knows and the privileged block; 0: none (a run's networks all
 # have it or none: set_z from the run's network)
@@ -320,10 +377,19 @@ def describe_spaces(vocab: dict, order_names: dict[int, str] | None = None, agen
            + [f"{f}({k}π{c})" for k in POS_FREQS for c in ("x", "y") for f in ("sin", "cos")]
            + ["last order's target: dx / 1536 (mirrored)", "last order's target: dy / 1536", "last order: a point",
               "last order: a unit", "last order: steps ago / 40"])
+    if F > F_BASE:
+        ent += ([f"hero ability {k + 1}: {w}" for k in range(4) for w in ("level / 3", "can be cast now",
+                                                                           "cooldown left / 60 s", "can learn now")]
+                + [f"hero item {k + 1}: {w}" for k in range(6) for w in ("held", "usable", "heals", "restores mana",
+                                                                          "town portal")]
+                + [f"making: {w}" for w in ("a worker", "an army unit", "a hero", "research", "its next tier")])
+    if F > A_MEM:
+        ent += ["an enemy it remembers (out of sight now)", "seen seconds ago / 60"]
     glob = (["gold / 1000", "lumber / 1000", "food used / 100", "food cap / 100", "upkeep / 2", "time (steps / 1800)"]
             + [f"own race: {r}" for r in RACES] + [f"enemy race: {r}" for r in RACES]
             + [f"upgrade {rawcode(u)} (level / 3)" for u in vocab["upgrades"]]
             + [f"strategy: slot {k} {w}" for w in ("made", "time / horizon") for k in range(ZDIM // 2)]
+            + (["time of day: sin", "time of day: cos", "night"] if GX else [])
             + [f"privileged (value only): opponent {k}" for k in ("gold / 1000", "lumber / 1000", "food used / 100",
                                                                    "food cap / 100", "upkeep / 2")]
             + [f"privileged (value only): {side} {k}" for side in ("own", "enemy")
@@ -349,7 +415,9 @@ def describe_spaces(vocab: dict, order_names: dict[int, str] | None = None, agen
                              "used_by": ["an order at a point or on a tree"]}],
                         "masks": "Orders: those the unit's type got in the demonstrations (none always); "
                                  "the pointer: the entities in view. Harvest orders to workers already harvesting "
-                                 "are not sent (the demonstrations' AI re-issued them without effect)."},
+                                 "are not sent (the demonstrations' AI re-issued them without effect)."
+                                 + (" Orders the player lacks the tech for (--tech-mask)." if TECH_MASK else "")
+                                 + (" A hero's orders it can't carry out now (--valid-mask)." if VALID_MASK else "")},
             "agents": agents, "reward": "+1 for a win, -1 for a loss, 0 for a tie (the time limit), at the end.",
             "reward_scale": 1}
 
@@ -411,7 +479,9 @@ class Encoder:
         self.order_kind = np.array([IMMEDIATE] + [k[1] for k in vocab["orders"]], np.int64)
         self.G0 = 6 + 2 * len(RACES) + len(self.upgrade_index)  # what the player knows
         self.ZD = ZDIM  # the target strategy (strategy.vector; none: zeros)
-        self.G = self.G0 + self.ZD + PRIV  # and what only the value reads (privileged: the whole game, see View.priv)
+        self.GX = GX  # the clock (inputs 2)
+        self.G = self.G0 + self.ZD + self.GX + PRIV  # and what only the value reads (privileged: the whole game, View.priv)
+        self.tech = TECH_MASK
         # the lookups as sorted arrays (vectorized; per-entity dict lookups were most of a step's cost)
         self._type_keys, self._type_vals = _sorted_map(self.type_index)
         self._cur_keys, self._cur_vals = _sorted_map(self.cur_index)
@@ -423,19 +493,29 @@ class Encoder:
         return -1.0 if len(own) and own[:, C_X].mean() > MAP_CX else 1.0
 
     def entities(self, rows: np.ndarray, player: int, sign: float, production=None,
-                 lumber: set[int] | None = None) -> tuple[np.ndarray, ...]:
-        """One step's units -> (rows in entity order, n own, float features, types, current orders)."""
+                 lumber: set[int] | None = None, ghosts: tuple[np.ndarray, np.ndarray] | None = None) -> tuple[np.ndarray, ...]:
+        """One step's units -> (rows in entity order, n own, float features, types, current orders). `ghosts`
+        (inputs 3, View.remembered): the enemies seen before and out of sight now, (their rows as last seen, seconds
+        since), after those in sight (self.ghost0: the first)."""
         alive = rows[:, C_FLAGS] & DEAD == 0
         vis = (rows[:, C_VIS] >> player) & 1 == 1
         own = rows[alive & (rows[:, C_OWNER] == player)][:MAX_OWN]
         enemy = rows[alive & (rows[:, C_OWNER] == 1 - player) & vis]
         neutral = rows[alive & (rows[:, C_OWNER] != player) & (rows[:, C_OWNER] != 1 - player) & vis]
-        sel = np.concatenate([own, enemy, neutral])[:MAX_ENT]
+        parts = [own, enemy, neutral]
+        if ghosts is not None and len(ghosts[0]):
+            parts.append(ghosts[0].astype(rows.dtype, copy=False)[:, :rows.shape[1]])
+        sel = np.concatenate(parts)[:MAX_ENT]
         n, n_own = len(sel), len(own)
+        self.ghost0 = g0 = min(n, n_own + len(enemy) + len(neutral))
         f = np.zeros((n, F), np.float32)
         f[:n_own, 0] = 1
         f[n_own:n_own + len(enemy), 1] = 1
-        f[n_own + len(enemy):, 2] = 1
+        f[n_own + len(enemy):g0, 2] = 1
+        if g0 < n:  # (inputs 3: the enemies it remembers)
+            f[g0:, 1] = 1
+            f[g0:, A_MEM] = 1
+            f[g0:, A_MEM + 1] = np.minimum(ghosts[1][:n - g0] / 60.0, 1.0)
         f[:, 3], f[:, 4] = frame_xy(sel[:, C_X], sel[:, C_Y], sign)
         f[:, 5] = sel[:, C_HP] / np.maximum(sel[:, C_MAXHP], 1)
         f[:, 6] = sel[:, C_MAXHP] / 1000.0
@@ -456,7 +536,7 @@ class Encoder:
         # production (buildings' current order stays 0 while they train): what the player queued, and
         # whether something is being made (View keeps both from its orders and the events)
         if production is not None:
-            queued, busy = production
+            queued, busy = production[:2]
             ids = sel[:, C_ID]
             if queued:
                 f[:, a + 6] = np.minimum(_lookup(ids, *_sorted_map(queued)), 5) / 5.0
@@ -464,9 +544,49 @@ class Encoder:
             f[:n_own, a + 8] = np.isin(sel[:n_own, C_ID], np.fromiter(lumber, np.int64, len(lumber)))
             if busy:
                 f[:, a + 7] = np.isin(ids, np.fromiter(busy, np.int64, len(busy)))
+        if F > F_BASE:
+            self._hero_block(sel, n_own, f)
+            making = production[2] if production is not None and len(production) > 2 else None
+            if making:  # (inputs 2: what each own building makes, View.making)
+                k = _lookup(sel[:n_own, C_ID], *_sorted_map({b: m[0] + 1 for b, m in making.items()}))
+                hit = np.nonzero(k > 0)[0]
+                f[hit, A_PROD + k[hit] - 1] = 1.0
+        self.counts = (int((alive & (rows[:, C_OWNER] == player)).sum()), n_own + len(enemy) + len(neutral))
         types = _lookup(sel[:, C_TYPE], self._type_keys, self._type_vals)
         cur = _lookup(sel[:, C_ORDER], self._cur_keys, self._cur_vals)
         return sel, n_own, f, types, cur
+
+    @staticmethod
+    def _hero_block(sel: np.ndarray, n_own: int, f: np.ndarray) -> None:
+        """The heroes' A_HERO features (inputs 2), from rows with their items and abilities (ROW_COLS)."""
+        if sel.shape[1] < ROW_COLS:
+            return
+        heroes = np.nonzero(sel[:, C_FLAGS] & HERO)[0]
+        if not len(heroes):
+            return
+        from .herodata import hero_table, item_table
+        table, items = hero_table(), item_table()
+        for i in heroes.tolist():
+            r = sel[i].tolist()
+            own = i < n_own  # (an enemy's: its levels and items, as the game shows them)
+            slots = table.get(r[C_TYPE], ())
+            for k in range(4):
+                lvl, cd = r[C_ABIL0 + 2 * k], r[C_ABIL0 + 2 * k + 1]
+                a = A_HERO + HERO_ABIL_F * k
+                f[i, a] = lvl / 3.0
+                ab = slots[k] if k < len(slots) else None
+                if not own or ab is None:
+                    continue
+                f[i, a + 2] = min(cd / 10.0 / COOLDOWN_SCALE, 1.0)
+                cost = ab.mana[min(lvl, len(ab.mana)) - 1] if ab.mana and lvl > 0 else 0.0
+                f[i, a + 1] = float(bool(ab.order) and lvl > 0 and cd == 0 and r[C_MANA] >= cost)
+                f[i, a + 3] = float(r[C_SKILLPTS] > 0 and lvl < ab.levels and r[C_HLEVEL] >= ab.hero_level_for(lvl + 1))
+            for k in range(6):
+                it = r[C_ITEM0 + k]
+                if it:
+                    b = A_HERO + 4 * HERO_ABIL_F + HERO_ITEM_F * k
+                    f[i, b] = 1.0
+                    f[i, b + 1:b + 5] = items.get(it, (0, 0, 0, 0))
 
     def view(self, player: int, sign: float, races: list[int]) -> "View":
         return View(self, player, sign, races)
@@ -484,6 +604,8 @@ class Encoder:
         meta = game["meta"]
         T = meta["steps"] + 1
         u, pl, ev, od = game["units"], game["players"], game["events"], game["orders"]
+        if F > F_BASE and "heroes" in game:  # (inputs 2: the heroes' items and abilities)
+            u = hero_rows(u, game["heroes"])
         us, ps, es, os_ = (_step_slices(a[:, 0], T) for a in (u, pl, ev, od))
         sh = meta.get("shadow")
         po = game.get("policy_orders") if sh and sh["player"] == player else None
@@ -499,6 +621,7 @@ class Encoder:
                "avail": np.ones((T, self.n_orders), bool)}
         view = self.view(player, sign, races)
         view.z = z  # (a strategy as the input: bc's hindsight targets)
+        view.step_seconds = float(meta.get("step_seconds", 0.5))
         for t in range(T):
             prow = pl[ps[t]:ps[t + 1]]
             me = prow[prow[:, 1] == player]
@@ -593,6 +716,63 @@ def _paid_orders(enc: "Encoder", rows: np.ndarray, st: dict, me, trees: dict) ->
 Encoder._paid = lambda self, rows, st, me, trees: _paid_orders(self, rows, st, me, trees)
 
 
+class TechMask:
+    """--tech-mask: which order classes a player has the tech for (fullgame/techtree.py, the game's own
+    tables): a unit or building whose requirements it has finished (a hall counts as each lower tier), a
+    research's next level (not past its last, not one under way), a hero while it has fewer than 3 and none
+    of that type, with what its place among them needs (an altar, then each tier). Orders without a unit,
+    building or research code: always. Cached while what it has stays the same (most steps)."""
+
+    def __init__(self, vocab: dict, race: str):
+        from . import techtree as tt
+        self.tt, self.race, self.tree, self.max_level = tt, race, tt.tree(), tt.research_levels()
+        self.items = [(c, rawcode(o)) for c, (o, k) in enumerate(vocab["orders"], start=1)
+                      if o >= TYPE_CODE and k in (IMMEDIATE, POINT)]
+        self.n = len(vocab["orders"]) + 1
+        self._key: tuple | None = None
+        self._ok = np.ones(self.n, bool)
+
+    def allowed(self, done: frozenset, levels: dict[str, int], heroes: frozenset, researching: frozenset) -> np.ndarray:
+        """`done`: the player's finished buildings' types, `levels`: research -> level, `heroes`: its heroes'
+        types (with one in training), `researching`: research under way."""
+        key = (done, tuple(sorted(levels.items())), heroes, researching)
+        if key == self._key:
+            return self._ok
+        tt = self.tt
+        have = tt.counts_as(done, self.race) | {c for c, v in levels.items() if v > 0}
+        ok = np.ones(self.n, bool)
+        for c, code in self.items:
+            if code[0] == "R":  # research: its next level
+                lvl = levels.get(code, 0)
+                ok[c] = (lvl < self.max_level.get(code, 1) and code not in researching
+                         and not tt.missing(code, self.race, have, lvl, self.tree))
+            elif tt.is_hero(code):
+                ok[c] = len(heroes) < 3 and code not in heroes and not tt.missing(code, self.race, have, len(heroes), self.tree)
+            else:
+                ok[c] = not tt.missing(code, self.race, have, 0, self.tree)
+        self._key, self._ok = key, ok
+        return ok
+
+
+def hero_rows(units: np.ndarray, heroes: np.ndarray) -> np.ndarray:
+    """A demonstration's unit rows (UNIT_COLS) with its heroes' items and abilities (collect.HERO_COLS: step, id,
+    6 items, 4 ability levels, 4 cooldowns in 0.1 s) in the columns past them (ROW_COLS, as a live game's)."""
+    out = np.zeros((len(units), ROW_COLS), np.int64)
+    out[:, :units.shape[1]] = units
+    if len(heroes) and len(units):
+        ku = units[:, C_STEP].astype(np.int64) * (1 << 32) + units[:, C_ID]
+        kh = heroes[:, 0].astype(np.int64) * (1 << 32) + heroes[:, 1]
+        order = np.argsort(kh)
+        kh = kh[order]
+        j = np.minimum(np.searchsorted(kh, ku), len(kh) - 1)
+        hit = np.nonzero(kh[j] == ku)[0]
+        h = heroes[order[j[hit]]]
+        out[hit, C_ITEM0:C_ITEM0 + 6] = h[:, 2:8]
+        out[hit, C_ABIL0:C_ABIL0 + 8:2] = h[:, 8:12]
+        out[hit, C_ABIL0 + 1:C_ABIL0 + 8:2] = h[:, 12:16]
+    return out
+
+
 class View:
     """What one player sees, step by step (demonstrations, or a live game): the entities, the
     global features, and the upgrades it has researched so far."""
@@ -613,6 +793,13 @@ class View:
         self.assign: dict[int, str] = {}  # own worker -> "gold" / "lumber": what its last orders sent it to
         self.hp_last: dict[int, int] = {}  # unit -> its hit points at the last step it was in view
         self.last_order: dict[int, tuple] = {}  # own unit -> (kind 0 none/1 point/2 unit, x, y, target, step)
+        # inputs 2 and --tech-mask: what each own building makes now (its kind, A_PROD's, and code), research levels
+        self.making: dict[int, tuple[int, int]] = {}
+        self.levels: dict[int, int] = {}  # upgrade id -> its level (all of the player's research, not only the vocabulary's)
+        self.step_seconds = 0.5  # (the clock: game seconds of a step)
+        self.techmask: TechMask | None = None
+        self.ghosts: dict[int, tuple[np.ndarray, int]] = {}  # (inputs 3) enemy unit -> its row when last seen, the step
+        self.max_own = self.max_ent = 0  # the most own units and entities in view at a step (MAX_OWN, MAX_ENT: cut)
 
     def track_harvest(self, orders, st: dict, trees) -> None:
         """What each own worker harvests, from the step's recorded orders (step, unit, order, kind,
@@ -668,6 +855,56 @@ class View:
                 out[a + 7], out[a + 8] = frame_xy(r[army, C_X].mean(), r[army, C_Y].mean(), self.sign)
         return out
 
+    def remembered(self, rows: np.ndarray, t: int) -> tuple[np.ndarray, np.ndarray]:
+        """(inputs 3) The enemy units and buildings the player saw and doesn't see now: (their rows as last seen,
+        seconds since), buildings first, then the most recently seen, at most MAX_GHOSTS. Each is forgotten when it is
+        in sight again (then an entity as any), when its place is (within SIGHT of one of the player's units: it
+        moved, or died there), a unit after MEMORY_SECONDS; one seen dying, at once."""
+        p = self.player
+        enemy = rows[rows[:, C_OWNER] == 1 - p]
+        seen = enemy[(enemy[:, C_VIS] >> p) & 1 == 1]
+        dead = seen[:, C_FLAGS] & DEAD > 0
+        for i in seen[dead, C_ID].tolist():
+            self.ghosts.pop(i, None)
+        live = seen[~dead]
+        for r in live:
+            self.ghosts[int(r[C_ID])] = (r.copy(), t)
+        if not self.ghosts:
+            return np.zeros((0, rows.shape[1]), rows.dtype), np.zeros(0, np.float32)
+        now = set(live[:, C_ID].tolist())
+        mine = rows[(rows[:, C_OWNER] == p) & (rows[:, C_FLAGS] & DEAD == 0)][:, [C_X, C_Y]].astype(np.float64)
+        keep, gone = [], []
+        for i, (r, t0) in self.ghosts.items():
+            if i in now:
+                continue
+            age = (t - t0) * self.step_seconds
+            near = len(mine) and float(((mine - r[[C_X, C_Y]]) ** 2).sum(1).min()) < SIGHT * SIGHT
+            if near or (not r[C_FLAGS] & STRUCTURE and age > MEMORY_SECONDS):
+                gone.append(i)
+            else:
+                keep.append((not r[C_FLAGS] & STRUCTURE, age, r))
+        for i in gone:
+            del self.ghosts[i]
+        keep.sort(key=lambda x: (x[0], x[1]))
+        keep = keep[:MAX_GHOSTS]
+        if not keep:
+            return np.zeros((0, rows.shape[1]), rows.dtype), np.zeros(0, np.float32)
+        return np.stack([r for _, _, r in keep]), np.asarray([a for _, a, _ in keep], np.float32)
+
+    def tech_allowed(self, rows: np.ndarray) -> np.ndarray:
+        """--tech-mask: the order classes the player has the tech for (TechMask), from its finished buildings,
+        research, heroes (dead ones too: they count) and what it makes now."""
+        if self.techmask is None:
+            self.techmask = TechMask(self.enc.vocab, RACES[self.races[self.player]])
+        mine = rows[rows[:, C_OWNER] == self.player]
+        fl = mine[:, C_FLAGS]
+        done = mine[(fl & STRUCTURE > 0) & (fl & DEAD == 0) & (fl & CONSTRUCTING == 0), C_TYPE]
+        heroes = {rawcode(c) for c in mine[fl & HERO > 0, C_TYPE].tolist()}
+        heroes |= {rawcode(m[1]) for m in self.making.values() if m[0] == 2}
+        researching = frozenset(rawcode(m[1]) for m in self.making.values() if m[0] == 3)
+        return self.techmask.allowed(frozenset(rawcode(c) for c in set(done.tolist())),
+                                     {rawcode(k): v for k, v in self.levels.items()}, frozenset(heroes), researching)
+
     def step(self, rows: np.ndarray, me: np.ndarray | None, events: np.ndarray, t: int,
              opp: np.ndarray | None = None) -> dict:
         """rows: this step's units (UNIT_COLS), me: the player's row (PLAYER_COLS) or None, events:
@@ -678,12 +915,23 @@ class View:
             kind, a = int(r[1]), int(r[2])
             if kind in PRODUCTION_START:
                 self.busy.add(a)
+                if a in self.own_buildings:
+                    code = int(r[3])
+                    self.making[a] = (3 if kind == 8 else 4 if kind == 11 else 2 if code >> 24 < 0x61 else
+                                      0 if code in WORKER_TYPES else 1, code)  # (a hero's id: upper case)
             elif kind in PRODUCTION_END:
                 self.busy.discard(a)
                 if self.queued.get(a, 0) > 0:
                     self.queued[a] -= 1
-        sel, n_own, f, types, cur = enc.entities(rows, player, self.sign, (self.queued, self.busy),
-                                                 {u for u, r in self.assign.items() if r == "lumber"})
+                m = self.making.get(a)  # (a unit's end: the one made, its type c; a cancel's: b. Research, a tier: any)
+                if m is not None and (m[0] >= 3 or m[1] == int(r[4] if kind == TRAIN_FINISH else r[3])):
+                    del self.making[a]
+            if kind == RESEARCH_FINISH and a in self.own_buildings:
+                self.levels[int(r[3])] = int(r[4])
+        sel, n_own, f, types, cur = enc.entities(rows, player, self.sign, (self.queued, self.busy, self.making),
+                                                 {u for u, r in self.assign.items() if r == "lumber"},
+                                                 self.remembered(rows, t) if F > A_MEM else None)
+        self.max_own, self.max_ent = max(self.max_own, enc.counts[0]), max(self.max_ent, enc.counts[1])
         ids, hp = sel[:, C_ID].tolist(), sel[:, C_HP]
         last = np.array([self.hp_last.get(i, h) for i, h in zip(ids, hp.tolist())], np.float32)
         f[:, A_HPD] = np.clip((hp - last) / np.maximum(sel[:, C_MAXHP], 1), -1.0, 1.0)  # (0: not in view the last step)
@@ -716,15 +964,23 @@ class View:
         g[6 + 2 * len(RACES):enc.G0] = self.upgrades
         if self.z is not None and enc.ZD:
             g[enc.G0:enc.G0 + enc.ZD] = self.z
-        g[enc.G0 + enc.ZD:] = self.priv(rows, opp)
+        if enc.GX:  # the clock (inputs 2)
+            hour = (START_HOUR + t * self.step_seconds * 24.0 / DAY_SECONDS) % 24.0
+            ang = 2.0 * math.pi * hour / 24.0
+            x = enc.G0 + enc.ZD
+            g[x:x + 3] = math.sin(ang), math.cos(ang), float(hour < DAWN or hour >= DUSK)
+        g[enc.G0 + enc.ZD + enc.GX:] = self.priv(rows, opp)
         avail = None
         if enc.costs is not None:  # what the player can pay for now (orders beyond it are masked)
             c = enc.costs
             gold, lumber, fu, fc = (int(me[2]), int(me[3]), int(me[4]), int(me[5])) if me is not None else (0, 0, 0, 0)
             avail = affordable(c, gold, lumber, fu, fc, self.reserve)
+            if enc.tech:  # (--tech-mask)
+                avail &= self.tech_allowed(rows)
         if self.zmask is not None and t < self.zmask_until:  # (--z-enforce: only the target's items)
             avail = self.zmask.copy() if avail is None else avail & self.zmask
-        if self.active_f < F:
-            f[:, self.active_f:] = 0.0
+        if self.active_f < F_BASE:
+            f[:, self.active_f:F_BASE] = 0.0
         return {"n": len(sel), "sel": sel, "n_own": n_own, "ent": f, "type": types, "cur": cur, "glob": g,
-                "index": {int(i): k for k, i in enumerate(sel[:, C_ID])}, "avail": avail}
+                "index": {int(i): k for k, i in enumerate(sel[:, C_ID])}, "avail": avail,
+                "ghost0": getattr(enc, "ghost0", len(sel))}

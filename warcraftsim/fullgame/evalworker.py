@@ -120,7 +120,8 @@ def run_config(run_dir: Path, host: str, games: int, start_update) -> tuple[dict
            "agent_games_factor": num("agent_games_factor", 1, int), "pairs": num("pairs", 1, int),
            "scripted_reset": _flag(c.get("scripted_reset", 0)), "native_obs": _flag(c.get("native_obs", 1)),
            "game_nice": num("game_nice", 10, int), "game_cuts": num("game_cuts", 0, int) or None,
-           "features": num("features", fx.F, int), "eval_ai": [d for d in c.get("eval_ai", "normal,insane").split(",") if d],
+           "features": num("features", fx.F, int), "inputs": num("inputs", 1, int),  # (--inputs, the masks)
+           "tech_mask": num("tech_mask", 0, int), "valid_mask": num("valid_mask", 0, int), "eval_ai": [d for d in c.get("eval_ai", "normal,insane").split(",") if d],
            "eval_checkpoints": list(local), "eval_z": _flag(c.get("eval_z", 0)),
            "z_pool": c.get("eval_z_pool") or c.get("z_pool") or "", "z_src": c.get("z_src") or "", "z_enforce": _flag(c.get("z_enforce", 0)),
            # (a number: 2 is the builder as a teacher only, never carrying out; as a flag it was True, == 1, and the
@@ -177,6 +178,8 @@ def worker_main(wid: int, cfg: dict, games: int, keys: dict, host: str, q, stop)
     fx.ACTIVE_F = cfg["features"]
     fx.set_geometry(*cfg["map_geometry"])
     fx.set_z(cfg.get("z_dim", 0))
+    fx.set_inputs(cfg.get("inputs", 1))
+    fx.set_masks(cfg.get("tech_mask", 0), cfg.get("valid_mask", 0))
     torch.set_num_threads(1)
     sys.setswitchinterval(0.001)  # (a game thread woken by its answer waits for the GIL: 5 ms by default)
     try:
@@ -244,6 +247,8 @@ def main(argv: list[str] | None = None) -> int:
     wine.ensure_template()
     fx.ACTIVE_F = cfg["features"]
     os.environ["WARCRAFTSIM_FEATURES"] = str(cfg["features"])
+    fx.set_inputs(cfg["inputs"])  # (before the networks: model.load gives older ones the new inputs)
+    fx.set_masks(cfg["tech_mask"], cfg["valid_mask"])
     from ..data.duelmap import parse_duel_name
     if parse_duel_name(cfg["map"]) is None:  # (as selfplay.main: another map's frame; set_geometry exports it)
         from ..data.mapbuild import stock_map_path

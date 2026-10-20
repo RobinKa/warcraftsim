@@ -58,6 +58,22 @@ def tree() -> Tree:
                       for r in RACE_FILES.values() for k in ("Unit", "Upgrade")])
 
 
+@lru_cache(1)
+def research_levels() -> dict[str, int]:
+    """Research -> its number of levels (UpgradeData.slk "maxlevel")."""
+    from ..data.mpq import GameArchives
+    from ..data.objects import parse_slk
+    with GameArchives() as g:
+        rows = parse_slk(g.read("Units\\UpgradeData.slk").decode("latin-1"))
+    out = {}
+    for r in rows:
+        try:
+            out[r["upgradeid"]] = max(1, int(float(r.get("maxlevel") or 1)))
+        except (KeyError, ValueError):
+            pass
+    return out
+
+
 def is_hero(code: str) -> bool:
     """A hero's id: upper case, as research's ("R...") is too."""
     return code[:1].isupper() and code[0] != "R"
