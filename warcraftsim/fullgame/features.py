@@ -243,6 +243,17 @@ TECH_MASK = os.environ.get("WARCRAFTSIM_TECH_MASK", "0") == "1"
 VALID_MASK = os.environ.get("WARCRAFTSIM_VALID_MASK", "0") == "1"
 
 
+# selfplay --neutral: the neutral buildings' wares and the tavern heroes' orders in every network's vocabulary
+# (fullgame/neutral.py; model.load extends a checkpoint's and grows its network)
+NEUTRAL = os.environ.get("WARCRAFTSIM_NEUTRAL", "0") == "1"
+
+
+def set_neutral(on: bool) -> None:
+    global NEUTRAL
+    NEUTRAL = bool(on)
+    os.environ["WARCRAFTSIM_NEUTRAL"] = str(int(NEUTRAL))
+
+
 def set_masks(tech: bool, valid: bool) -> None:
     global TECH_MASK, VALID_MASK
     TECH_MASK, VALID_MASK = bool(tech), bool(valid)
@@ -512,8 +523,9 @@ class Encoder:
         f[:n_own, 0] = 1
         f[n_own:n_own + len(enemy), 1] = 1
         f[n_own + len(enemy):g0, 2] = 1
-        if g0 < n:  # (inputs 3: the enemies it remembers)
-            f[g0:, 1] = 1
+        if g0 < n:  # (inputs 3: the enemies it remembers; with --neutral the neutral buildings too)
+            enemy_ghost = sel[g0:, C_OWNER] == 1 - player
+            f[g0:, 1], f[g0:, 2] = enemy_ghost, ~enemy_ghost
             f[g0:, A_MEM] = 1
             f[g0:, A_MEM + 1] = np.minimum(ghosts[1][:n - g0] / 60.0, 1.0)
         f[:, 3], f[:, 4] = frame_xy(sel[:, C_X], sel[:, C_Y], sign)
@@ -727,22 +739,31 @@ class TechMask:
         from . import techtree as tt
         self.tt, self.race, self.tree, self.max_level = tt, race, tt.tree(), tt.research_levels()
         self.items = [(c, rawcode(o)) for c, (o, k) in enumerate(vocab["orders"], start=1)
-                      if o >= TYPE_CODE and k in (IMMEDIATE, POINT)]
+                      if o >= TYPE_CODE and k in (IMMEDIATE, POINT, UNIT)]  # (UNIT: a neutral building's ware)
+        self.wares = {c for c, (o, k) in enumerate(vocab["orders"], start=1) if o >= TYPE_CODE and k == UNIT}
+        if self.wares:  # (in stock from this game second on: neutral.stock_times)
+            from .neutral import stock_times
+            self.stock = stock_times()
         self.n = len(vocab["orders"]) + 1
         self._key: tuple | None = None
         self._ok = np.ones(self.n, bool)
 
-    def allowed(self, done: frozenset, levels: dict[str, int], heroes: frozenset, researching: frozenset) -> np.ndarray:
+    def allowed(self, done: frozenset, levels: dict[str, int], heroes: frozenset, researching: frozenset,
+                now: float = 1e9) -> np.ndarray:
         """`done`: the player's finished buildings' types, `levels`: research -> level, `heroes`: its heroes'
-        types (with one in training), `researching`: research under way."""
-        key = (done, tuple(sorted(levels.items())), heroes, researching)
+        types (with one in training), `researching`: research under way, `now`: the game second (a neutral
+        building's wares in stock)."""
+        key = (done, tuple(sorted(levels.items())), heroes, researching,
+               tuple(sorted(c for c, v in getattr(self, "stock", {}).items() if v <= now)))
         if key == self._key:
             return self._ok
         tt = self.tt
         have = tt.counts_as(done, self.race) | {c for c, v in levels.items() if v > 0}
         ok = np.ones(self.n, bool)
         for c, code in self.items:
-            if code[0] == "R":  # research: its next level
+            if c in self.wares and self.stock.get(code, 0.0) > now:  # (not in stock yet)
+                ok[c] = False
+            elif code[0] == "R":  # research: its next level
                 lvl = levels.get(code, 0)
                 ok[c] = (lvl < self.max_level.get(code, 1) and code not in researching
                          and not tt.missing(code, self.race, have, lvl, self.tree))
@@ -797,6 +818,7 @@ class View:
         self.making: dict[int, tuple[int, int]] = {}
         self.levels: dict[int, int] = {}  # upgrade id -> its level (all of the player's research, not only the vocabulary's)
         self.step_seconds = 0.5  # (the clock: game seconds of a step)
+        self.t_now = 0  # (the step: the tech mask's wares in stock)
         self.techmask: TechMask | None = None
         self.ghosts: dict[int, tuple[np.ndarray, int]] = {}  # (inputs 3) enemy unit -> its row when last seen, the step
         self.max_own = self.max_ent = 0  # the most own units and entities in view at a step (MAX_OWN, MAX_ENT: cut)
@@ -861,7 +883,8 @@ class View:
         in sight again (then an entity as any), when its place is (within SIGHT of one of the player's units: it
         moved, or died there), a unit after MEMORY_SECONDS; one seen dying, at once."""
         p = self.player
-        enemy = rows[rows[:, C_OWNER] == 1 - p]
+        enemy = rows[(rows[:, C_OWNER] == 1 - p) | ((rows[:, C_OWNER] != p) & (rows[:, C_FLAGS] & STRUCTURE > 0)
+                                                    if NEUTRAL else False)]  # (--neutral: the shops too)
         seen = enemy[(enemy[:, C_VIS] >> p) & 1 == 1]
         dead = seen[:, C_FLAGS] & DEAD > 0
         for i in seen[dead, C_ID].tolist():
@@ -903,7 +926,8 @@ class View:
         heroes |= {rawcode(m[1]) for m in self.making.values() if m[0] == 2}
         researching = frozenset(rawcode(m[1]) for m in self.making.values() if m[0] == 3)
         return self.techmask.allowed(frozenset(rawcode(c) for c in set(done.tolist())),
-                                     {rawcode(k): v for k, v in self.levels.items()}, frozenset(heroes), researching)
+                                     {rawcode(k): v for k, v in self.levels.items()}, frozenset(heroes), researching,
+                                     self.t_now * self.step_seconds)
 
     def step(self, rows: np.ndarray, me: np.ndarray | None, events: np.ndarray, t: int,
              opp: np.ndarray | None = None) -> dict:
@@ -976,6 +1000,7 @@ class View:
             gold, lumber, fu, fc = (int(me[2]), int(me[3]), int(me[4]), int(me[5])) if me is not None else (0, 0, 0, 0)
             avail = affordable(c, gold, lumber, fu, fc, self.reserve)
             if enc.tech:  # (--tech-mask)
+                self.t_now = t
                 avail &= self.tech_allowed(rows)
         if self.zmask is not None and t < self.zmask_until:  # (--z-enforce: only the target's items)
             avail = self.zmask.copy() if avail is None else avail & self.zmask

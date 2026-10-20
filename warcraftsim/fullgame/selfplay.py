@@ -661,6 +661,7 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
         alive = lambda: os.getppid() == cfg["learner_pid"]  # noqa: E731
     fx.set_inputs(cfg.get("inputs", 1))  # (the rows' width, and the past snapshots' inputs: model.load)
     fx.set_masks(cfg.get("tech_mask", 0), cfg.get("valid_mask", 0))
+    fx.set_neutral(cfg.get("neutral", 0))
     nets = Nets(cfg, device)
     while nets.current is None and not stop.is_set() and alive():
         time.sleep(1)
@@ -1830,6 +1831,7 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
     fx.set_z(cfg.get("z_dim", 0))  # (and the global vector's strategy block)
     fx.set_inputs(cfg.get("inputs", 1))  # (and the inputs: --inputs, --tech-mask, --valid-mask)
     fx.set_masks(cfg.get("tech_mask", 0), cfg.get("valid_mask", 0))
+    fx.set_neutral(cfg.get("neutral", 0))
     out_q.cancel_join_thread()  # exiting must not wait to flush trajectories nobody reads any more
     torch.set_num_threads(1)
     try:
@@ -2898,6 +2900,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--inputs", type=int, default=1, help="2: also each hero's abilities (level, ready, cooldown, "
                     "learnable) and items, what each building makes, and the time of day (features.set_inputs; older "
                     "checkpoints read them with zero weights)")
+    ap.add_argument("--neutral", type=int, default=0, help="the neutral buildings' wares as orders (a tavern's heroes, "
+                    "mercenaries, the goblin merchant's items: protocol.Buy) and the tavern heroes' skills and spells "
+                    "(neutral.py: every network loaded grows to the extended vocabulary)")
     ap.add_argument("--tech-mask", type=int, default=0, help="mask the orders the player lacks the tech for "
                     "(features.TechMask: buildings, tiers, research levels, the hero limit)")
     ap.add_argument("--valid-mask", type=int, default=0, help="mask each hero's orders it can't carry out now: an "
@@ -3207,6 +3212,7 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--valid-mask reads the hero features: --inputs 2")
     fx.set_inputs(args.inputs)  # (before any network is loaded: model.load gives older ones the new inputs)
     fx.set_masks(args.tech_mask, args.valid_mask)
+    fx.set_neutral(args.neutral)
     if args.z_modes > 0:  # (the strategy block with the modes' part: model.load grows older networks')
         fx.set_z(strat.ZDIM + zmodes.MDIM)
     from ..data.duelmap import parse_duel_name
@@ -3372,6 +3378,9 @@ def main(argv: list[str] | None = None) -> int:
                 if not Path(path).exists():
                     return False
                 c = torch.load(path, map_location="cpu", weights_only=False)
+                if fx.NEUTRAL and c.get("vocab"):  # (--neutral: model.load extends it)
+                    from .neutral import extend_vocab
+                    c["vocab"] = extend_vocab(c["vocab"])
                 return (c["config"].get("bins", 128) == fx.BINS and c.get("vocab") == vocab
                         and adapt_config(c["config"])["G"] == net.config["G"])  # (the run's rows' width: a strategy block or none)
             taken = league.inherit(json.loads((src / "league.json").read_text()), src.name, usable)
@@ -3407,7 +3416,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral,
            "eval_ai": [d for d in args.eval_ai.split(",") if d],
            "map_geometry": [fx.STARTS, fx.BIN_RANGE],
            "infer_entities": [int(x) for x in args.infer_entities.split(",")],

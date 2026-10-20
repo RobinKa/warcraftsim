@@ -272,3 +272,47 @@ def test_strategy_block_grows_with_the_modes(v2, tmp_path):
             assert torch.allclose(net.encode(ent, typ, cur, mask, glob)[0], old.encode(ent, typ, cur, mask, glob_old)[0], atol=1e-5)
     finally:
         fx.set_z(0)
+
+
+def test_neutral_wares_as_orders(v2, tmp_path):
+    """--neutral: a checkpoint's vocabulary gets the neutral buildings' wares and the tavern heroes' orders, its
+    network grows (old orders and types as they were); a buy order on a shop is a Buy, on anything else nothing;
+    a ware is masked until it is in stock."""
+    from warcraftsim.fullgame import neutral
+    from warcraftsim.fullgame.model import FullGameNet, load
+    from warcraftsim.fullgame.play import BCAgent
+    from warcraftsim.protocol import Buy
+    fx.set_inputs(2)
+    vocab = {**VOCAB, "types": VOCAB["types"] + [code("hpea"), code("hbar")], "upgrades": []}
+    torch.manual_seed(0)
+    old = FullGameNet(n_types=7, n_cur=2, n_orders=7, G=fx.Encoder(vocab).G, d=16, layers=1, priv=fx.PRIV).eval()
+    old.allowed[:] = True
+    torch.save({"config": old.config, "model": old.state_dict(), "vocab": vocab}, tmp_path / "o.pt")
+    fx.set_neutral(True)
+    try:
+        net, ck = load(tmp_path / "o.pt")
+        v = ck["vocab"]
+        assert neutral.extended(v) and v["orders"][:6] == vocab["orders"] and v["types"][:6] == vocab["types"]
+        assert net.config["n_orders"] == len(v["orders"]) + 1 and net.config["n_types"] == len(v["types"]) + 1
+        oix = {tuple(o): c for c, o in enumerate(v["orders"], start=1)}
+        tix = {t: i + 1 for i, t in enumerate(v["types"])}
+        hire, learn = oix[(code("Npbm"), fx.UNIT)], oix[(code("ANbf"), fx.SKILL)]
+        assert net.allowed[tix[code("hpea")], hire] and not net.allowed[tix[code("hbar")], hire]
+        assert net.allowed[tix[code("Npbm")], learn] and net.allowed[tix[code("Npbm")], oix[(852580, fx.POINT)]]
+        g, glob = torch.randn(1, 16), torch.zeros(1, net.config["G"])
+        assert torch.allclose(net.order[2](torch.ones(1, 16))[0, :7], old.order[2](torch.ones(1, 16))[0, :7])
+        bot = BCAgent(None, v, 0, None)
+        bot.view = bot.enc.view(0, 1.0, [0, 1])
+        bot.trees, bot.building_since, bot.t = {}, {}, 0
+        peon = _unit(1, 0, -100, 0, 1, fx.WORKER, "hpea")
+        tav = _unit(9, 15, 0, 0, 1, fx.STRUCTURE, "ntav")
+        st = bot.view.step(np.stack([peon, tav]), None, np.zeros((0, 5), np.int64), 0)
+        assert bot.commands(st, [hire], [1], [0], [0]) == [Buy(1, 9, code("Npbm"))]
+        assert bot.commands(st, [hire], [0], [0], [0]) == []  # (pointed at itself: no shop)
+        m = fx.TechMask(v, "human")
+        early = m.allowed(frozenset({"htow", "halt"}), {}, frozenset(), frozenset(), now=60.0)
+        late = m.allowed(frozenset({"htow", "halt"}), {}, frozenset(), frozenset(), now=200.0)
+        assert not early[hire] and late[hire]  # (the tavern's heroes from 135 s)
+        assert not m.allowed(frozenset({"htow"}), {}, frozenset(), frozenset(), now=200.0)[hire]  # (an altar first)
+    finally:
+        fx.set_neutral(False)

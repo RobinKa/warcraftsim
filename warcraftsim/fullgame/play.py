@@ -26,12 +26,13 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from ..protocol import (Build, Command, EventKind, ImmediateOrder, LearnSkill, Observation, PointOrder,
+from ..protocol import (Build, Buy, Command, EventKind, ImmediateOrder, LearnSkill, Observation, PointOrder,
                         TargetDestructable, TargetOrder)
 from ..runtime.instance import Agent, BuiltinAI, GameInstance, GameSetup
 from . import features as fx
 from .collect import Films, series
 from .model import load
+from .neutral import is_shop
 
 TYPE_CODE = fx.TYPE_CODE  # orders at or above this are unit / building / upgrade / ability codes
 
@@ -163,6 +164,9 @@ class BCAgent:
                 out.append(LearnSkill(unit, oid))
             elif kind == fx.POINT:
                 out.append(Build(unit, oid, x, y) if oid >= TYPE_CODE else PointOrder(unit, oid, x, y))
+            elif kind == fx.UNIT and oid >= TYPE_CODE:  # bought at a neutral building (neutral.py): the one pointed at
+                if is_shop(int(sel[int(tgt[i]), fx.C_TYPE])):  # (anything else: no order)
+                    out.append(Buy(unit, int(sel[int(tgt[i]), fx.C_ID]), oid))
             elif kind == fx.UNIT and int(tgt[i]) >= st.get("ghost0", len(sel)):  # an enemy it remembers (inputs 3):
                 if oid in (ATTACK, fx.SMART):  # where it saw it (attack: attack-move); nothing else reaches it
                     g = sel[int(tgt[i])]

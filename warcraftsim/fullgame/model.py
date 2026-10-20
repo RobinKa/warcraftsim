@@ -379,6 +379,12 @@ def load(path, device="cpu", memory: bool | None = None) -> tuple[FullGameNet, d
         net.order_kind.copy_(torch.as_tensor([0] + [k[1] for k in ck["vocab"]["orders"]], device=net.order_kind.device))
     if fx.VALID_MASK and not valid and "vocab" in ck:
         net.set_valid(ck["vocab"])
+    if fx.NEUTRAL and "vocab" in ck:  # (--neutral: the neutral buildings' wares as orders, neutral.py)
+        from . import neutral
+        if not neutral.extended(ck["vocab"]):
+            new = neutral.extend_vocab(ck["vocab"])
+            net = neutral.grow(net, ck["vocab"], new)
+            ck = {**ck, "vocab": new}
     return net.eval(), ck
 
 
