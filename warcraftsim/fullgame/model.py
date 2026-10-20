@@ -194,17 +194,32 @@ def _entropy(logits):
     return -(lp.exp() * lp).sum(-1)
 
 
-def act(net: FullGameNet, ent, typ, cur, mask, glob, n_own, avail=None, h=None, generator=None, shared=None) -> dict:
+def act(net: FullGameNet, ent, typ, cur, mask, glob, n_own, avail=None, h=None, generator=None, shared=None,
+        guide=None) -> dict:
     """Sample every own unit's order and targets (the first O = min(MAX_OWN, E) entities; the
     orders each unit type got in the demonstrations). -> order, tgt, bx, by, logp [N, O] (the
     action's log-probability per unit: order, plus the targets that order uses; 0 for padding)
     and value [N]; with memory the core's new state "h" [N, d] (`h`: the last one, None at a start).
     `shared` [N] (bool): those rows sample their units' targets (unit, x, y) with one noise vector for all of
-    them (_gumbel_argmax); the order still with one each."""
+    them (_gumbel_argmax); the order still with one each.
+    `guide` [N] (1: none), classifier-free guidance by the target strategy (as in image generation): the order's
+    logits also without the strategy (its block of the global vector zeroed: the policy trains both ways, a
+    quarter of its games with no target) and mixed as free + guide * (with - free); > 1 follows the target
+    harder. The targets (unit, x, y), the value and the memory come from the pass with the strategy."""
+    h_in = h
     g, u = net.encode(ent, typ, cur, mask, glob)
     g, h = net.context(g, h)
     O = min(fx.MAX_OWN, u.shape[1])
     logits = net.order_logits(g, u[:, :O], typ, n_own, avail=avail)
+    if guide is not None and net.config.get("z"):
+        z0 = net.config["G"] - net.priv - net.config["z"]
+        blank = glob.clone()
+        blank[:, z0:z0 + net.config["z"]] = 0.0
+        g0, u0 = net.encode(ent, typ, cur, mask, blank)
+        g0, _ = net.context(g0, h_in)
+        free = net.order_logits(g0, u0[:, :O], typ, n_own, avail=avail)
+        w = guide.to(logits.dtype)[:, None, None]
+        logits = torch.where(w != 1, free + w * (logits - free), logits)
     def sample(lg):
         return _gumbel_argmax(lg, generator, shared)
     # (the order itself with a draw of its own per unit: one draw for all made a side's similar units take a rare

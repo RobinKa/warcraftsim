@@ -133,12 +133,15 @@ class Inference:
     def __init__(self, nets: Nets, device, max_batch: int, compile_: bool = True, buckets: tuple[int, ...] | None = None,
                  thread: bool = True, entities: tuple[int, ...] = (fx.MAX_ENT,), shared: "SharedRows | None" = None,
                  fuse: bool = False, bf16: bool = False, generator: torch.Generator | None = None,
-                 capture_mode: str = "global"):
+                 capture_mode: str = "global", guide: bool = False):
         """`buckets`: the batch sizes its compiled calls pad to (the smallest that fits; default: just
         max_batch); `entities`: likewise the entity counts (a call padded 4 rows of ~47 entities to
         16 x 160: ~50 times the attention). `thread` False: no batching thread of its own (the
         inference server calls _forward)."""
         self.nets, self.device, self.max_batch = nets, device, max_batch
+        # guide: rows can carry a classifier-free guidance weight (model.act; --eval-guide): every call then runs the
+        # network twice, so only the evaluation worker's (its games are all evaluation games)
+        self.guide = guide
         self.shared = shared  # view steps given as {"n", "n_own", "row"}: their rows there
         # fuse: the call compiled (torch.compile, inductor: fused kernels) before its CUDA graph is captured.
         # A call was ~150 small kernels on ~10 rows: the GPU waited between them more than it computed.
@@ -220,7 +223,7 @@ class Inference:
         if net not in self._fns:
             G, NO, d = net.config["G"], net.config["n_orders"], net.config["d"] if net.memory else 0
             ref = weakref.ref(net)  # (not the network itself: the entry would keep it alive)
-            bf16, gen = self.bf16, self.generator
+            bf16, gen, guided = self.bf16, self.generator, self.guide
 
             def packed_act(x):
                 # one tensor in and one out: each copy to or from the GPU is a driver call of its own
@@ -233,10 +236,15 @@ class Inference:
                 typ, cur, mask = x[:, a:a + E].long(), x[:, a + E:a + 2 * E].long(), x[:, a + 2 * E:a + 3 * E] > 0.5
                 a += 3 * E
                 n_own, avail = x[:, a].long(), x[:, a + 1:a + 1 + NO] > 0.5
-                shared = x[:, a + 1] > 1.5  # (class 0, "none", always available: 2 marks a shared-noise game's row)
+                # (class 0, "none", always available, carries flags: 2 marks a shared-noise game's row; with guide,
+                # + 10 * round(10 * w) a guidance weight w)
+                flag = x[:, a + 1]
+                tens = torch.floor(flag / 10.0) if guided else torch.zeros_like(flag)
+                shared = flag - 10.0 * tens > 1.5
+                guide = torch.where(tens > 0, tens / 10.0, torch.ones_like(tens)) if guided else None
                 with torch.autocast("cuda", dtype=torch.bfloat16, enabled=bf16, cache_enabled=False):
                     out = act(ref(), ent, typ, cur, mask, glob, n_own, avail, x[:, a + 1 + NO:] if d else None,
-                              generator=gen, shared=shared)
+                              generator=gen, shared=shared, guide=guide)
                 return torch.cat([out["order"].float(), out["tgt"].float(), out["bx"].float(), out["by"].float(),
                                   out["logp"].float(), out["value"].float()[:, None], out["entropy"].float()[:, None]]
                                  + ([out["h"].float()] if d else []), 1)
@@ -316,6 +324,8 @@ class Inference:
                     avail[i] = st["avail"]
                 if st.get("shared_noise"):  # (see SharedRows.write)
                     avail[i, 0] = 2.0
+                if st.get("guide"):  # (--eval-guide: the weight with the flags, see packed_act)
+                    avail[i, 0] += 10.0 * round(10.0 * st["guide"])
                 if d and st.get("h") is not None:  # (none: the game's start, zeros)
                     hs[i] = st["h"]
         own = n_own[:len(sts)].astype(np.int64)
@@ -409,6 +419,8 @@ class SharedRows:
         self.avail[r] = st["avail"] if st.get("avail") is not None else 1.0
         if st.get("shared_noise"):  # (class 0 is always available: 2 marks the row, see packed_act)
             self.avail[r, 0] = 2.0
+        if st.get("guide"):  # (--eval-guide: the weight with the flags)
+            self.avail[r, 0] += 10.0 * round(10.0 * st["guide"])
         h = st.get("h")
         self.h[r, :len(h) if h is not None else self.h.shape[1]] = h if h is not None else 0.0
 
@@ -1063,6 +1075,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
             # and the AI-record share depends on the mix.
             if not paired:
                 keys = ["current"] + (["current+z"] if cfg.get("eval_z") else []) + list(cfg.get("eval_checkpoints") or [])
+                if cfg.get("eval_z") and cfg.get("eval_guide", 0.0) > 0 and cfg.get("guide_capable"):
+                    keys.insert(2, "current+zg")  # (--eval-guide: its target followed with guidance; the worker's only)
                 rng.shuffle(keys)
                 diff = rng.choice(cfg.get("eval_ai") or ["normal", "insane"])
                 paired = [(list(races), side, diff, key) for key in keys]
@@ -1429,7 +1443,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         keys[s] = ("current" if s == side or opp["kind"] == "self" else exploiter_key(cfg) if opp["kind"] == "exploiter"
                    else opp["path"])
         if s == side and opp.get("eval_key"):  # (an evaluation game of a listed checkpoint: --eval-checkpoints)
-            keys[s] = "current" if opp["eval_key"] == "current+z" else opp["eval_key"]
+            keys[s] = "current" if opp["eval_key"] in ("current+z", "current+zg") else opp["eval_key"]
             bot.view.active_f = fx.F  # (all features: a checkpoint's weights past its own are zeros)
         if keys[s] == "current" and train:  # (an evaluation game: no steps to train on)
             trajs[s] = Trajectory(cfg, out_q, {"worker": wid, "opponent": opp["name"]}, hold=replay is not None)
@@ -1446,7 +1460,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             st = strat.sample(pool, races[s], races[1 - s], random, bool(cfg.get("z_winners", 1)), cfg.get("z_src", ""))
             if st is not None:
                 zs[s] = target(cfg, bots[s].view, strat.scaled(st, cfg.get("z_time_scale", 1.0)), pool, races[s], vocab)
-    if opp.get("eval_key") == "current+z":  # (--eval-z: the current policy's evaluation games with a target, AlphaStar's
+    if opp.get("eval_key") in ("current+z", "current+zg"):  # (--eval-z: the current policy's evaluation games with a target, AlphaStar's
         pool = strategy_pool(cfg)              # z at test time: drawn as in training, winners of the matchup first)
         st = strat.sample(pool, races[side], races[1 - side], random, True, cfg.get("z_src", "")) if pool else None
         if st is not None:
@@ -1518,6 +1532,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             sts[s]["h"] = bots[s].h
             if shared_noise:
                 sts[s]["shared_noise"] = True
+            if opp.get("eval_key") == "current+zg" and s == side and s in zs:  # (--eval-guide)
+                sts[s]["guide"] = cfg["eval_guide"]
         results = infer.request([(keys[s], sts[s]) for s in live]) if live and not replaying else []
         spans = {}
         for s, res in zip(live, results):
@@ -2813,6 +2829,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--eval-vs", type=float, default=0.0, help="this share of the evaluation launches play the current "
                     "policy against one of --eval-checkpoints (agents both sides, no tax; their rows' eval_key \"vs "
                     "<run>/<checkpoint>\"): a yardstick beyond the built-in AI")
+    ap.add_argument("--eval-guide", type=float, default=0.0, help="with --eval-z: the evaluation worker also plays "
+                    "current+zg, current+z's games with classifier-free guidance toward the target (model.act: the order "
+                    "logits free + w * (with - free)) at this weight w (e.g. 2; 0: none)")
     ap.add_argument("--eval-map", default="", help="the evaluation games' map, if not the training's (e.g. train on "
                     "echofast, evaluate on (2)EchoIsles: the real game); the same map frame")
     ap.add_argument("--eval-z-pool", type=Path, default=None, help="with --eval-map: the strategies its current+z games "
@@ -3245,6 +3264,7 @@ def main(argv: list[str] | None = None) -> int:
            "grpo_share": args.grpo_share, "grpo_group": args.grpo_group, "grpo_coef": args.grpo_coef,
            "grpo_seeds": args.grpo_seeds, "grpo_branch": [float(x) for x in args.grpo_branch.split("-")],
            "eval_map": args.eval_map, "eval_z_pool": str(args.eval_z_pool) if args.eval_z_pool else "", "eval_vs": args.eval_vs,
+           "eval_guide": args.eval_guide,
            "eval_costs": order_costs(vocab, args.eval_map).tolist() if args.eval_map and args.avail_mask else None,
            "order_names": vocab.get("order_names") or {str(k): v for k, v in fx.demo_order_names(args.runs).items()}}
     if args.pin and (os.cpu_count() or 0) >= 16:

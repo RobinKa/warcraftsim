@@ -129,6 +129,7 @@ def run_config(run_dir: Path, host: str, games: int, start_update) -> tuple[dict
            "grpo_share": 0.0, "grpo_group": 4, "grpo_branch": [60.0, 480.0],  # (evaluation games never branch)
            "eval_map": "", "eval_costs": None,  # (its map is the evaluation games' already: --eval-map)
            "eval_vs": num("eval_vs", 0.0),  # (--eval-vs: the current policy against a listed checkpoint)
+           "eval_guide": num("eval_guide", 0.0), "guide_capable": True,  # (--eval-guide: current+zg, this worker's only)
            "z_time_scale": num("z_time_scale", 1.0), "opd_share": 0.0, "opd_difficulty": c.get("opd_difficulty", "normal"),
            "shared_noise": num("shared_noise", 0.0), "float_penalty": num("float_penalty", 0.0),
            "hero_level_value": num("hero_level_value", 0.0), "shaping": num("shaping", 0.0), "shaping_decay": 0.0,
@@ -187,7 +188,8 @@ def worker_main(wid: int, cfg: dict, games: int, keys: dict, host: str, q, stop)
         cuda = device.type == "cuda"
         # the calls padded to a few batch sizes and entity counts (each shape a CUDA graph, captured at its first call)
         buckets = tuple(sorted({b for b in (2, 4, 8) if b < games} | {games}))
-        infer = Inference(nets, device, games, compile_=cuda, buckets=buckets, entities=tuple(cfg["infer_entities"]))
+        infer = Inference(nets, device, games, compile_=cuda, buckets=buckets, entities=tuple(cfg["infer_entities"]),
+                          guide=cfg.get("eval_guide", 0.0) > 0)
         rows = Rows(q, host, keys, infer)
         threads = [threading.Thread(target=game_loop, args=(wid, k, cfg, infer, rows, stop, None), daemon=True)
                    for k in range(games)]

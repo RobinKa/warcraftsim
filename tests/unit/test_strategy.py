@@ -356,3 +356,29 @@ def test_affordable_keeps_the_reserve():
     assert fx.affordable(costs, 200, 120, 10, 20).tolist() == [True, True, True, True, True]
     assert fx.affordable(costs, 200, 120, 10, 20, (3, 160, 105)).tolist() == [True, True, False, True, False]
     assert fx.affordable(costs, 100, 50, 10, 20, (3, 160, 105)).tolist() == [True, True, False, False, False]
+
+
+def test_classifier_free_guidance_of_the_order():
+    """--eval-guide (model.act): weight 1 is no guidance; weight 0 samples as the network without its target
+    (its strategy block zeroed); the same noise for both."""
+    from warcraftsim.fullgame.model import act
+    torch.manual_seed(0)
+    Z, P = 8, fx.PRIV
+    G = 30 + Z + P
+    net = FullGameNet(n_types=5, n_cur=5, n_orders=7, G=G, d=16, heads=2, layers=1, priv=P, z=Z).eval()
+    for p_ in net.parameters():
+        p_.data.normal_(0, 0.5)
+    N, E = 6, 5
+    ent, typ, cur = torch.randn(N, E, fx.F), torch.randint(1, 5, (N, E)), torch.randint(0, 5, (N, E))
+    mask, glob, n_own = torch.ones(N, E, dtype=torch.bool), torch.randn(N, G), torch.full((N,), 3)
+    net.allowed.fill_(True)
+    blank = glob.clone()
+    blank[:, G - P - Z:G - P] = 0.0
+
+    def run(g, guide):
+        gen = torch.Generator().manual_seed(7)
+        with torch.no_grad():
+            return act(net, ent, typ, cur, mask, g, n_own, generator=gen, guide=guide)["order"]
+    assert torch.equal(run(glob, None), run(glob, torch.ones(N)))
+    assert torch.equal(run(glob, torch.zeros(N)), run(blank, None))
+    assert not torch.equal(run(glob, torch.full((N,), 8.0)), run(glob, None))
