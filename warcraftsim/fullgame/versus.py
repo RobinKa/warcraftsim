@@ -31,6 +31,27 @@ from .play import play_game
 from .trace import unit_values
 
 
+def keep_left_replay(g: GameInstance, dest: Path, trace: dict | None, since: float, wait: float = 15.0) -> Path | None:
+    """A game the person closed: the replay the client wrote on leaving (LastReplay.w3g), the policy's orders beside
+    it (GameInstance.save_replay's commands.json: they are not in the .w3g) and the panel's trace -> its path."""
+    from ..runtime.instance import commands_path
+    src = g.replay_dir() / "LastReplay.w3g"
+    deadline = time.time() + wait
+    while time.time() < deadline and not (src.exists() and src.stat().st_mtime > since):
+        time.sleep(0.5)
+    if not src.exists() or src.stat().st_mtime <= since:
+        print("the client wrote no replay", flush=True)
+        return None
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    time.sleep(0.5)  # (let the writer finish)
+    dest.write_bytes(src.read_bytes())
+    commands_path(dest).write_text(json.dumps({"format": "warcraftsim-commands", "version": 1,
+                                               "map_key": getattr(g, "_map_key", None), "commands": dict(g._cmd_log)}))
+    if trace is not None:
+        dest.with_suffix(".trace.json").write_text(json.dumps(trace))
+    return dest
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("checkpoint", type=Path, help="a self-play checkpoint (runs/<run>/checkpoints/*.pt) or a fit's policy.pt")
@@ -85,6 +106,7 @@ def main(argv: list[str] | None = None) -> int:
     display = None if args.display.lower() in ("", "none") else args.display
     rec = args.record
     stem = f"challenge-{int(time.time())}"
+    video = f"videos/{stem}.mp4" if rec is not None else None  # (none when the replay could not be kept)
     status = {"stem": stem, "checkpoint": str(args.checkpoint), "you": you, "agent": agent, "side": side,
               "map": args.map, "speed": args.speed, "pid": os.getpid(), "started": time.time()}
 
@@ -101,24 +123,37 @@ def main(argv: list[str] | None = None) -> int:
         obs = g.start()
         phase("playing")
         r = play_game(g, obs, net, vocab, device, 1 - side, args.temperature, costs=order_costs(vocab, args.map),
-                      values=values)
+                      values=values, left_ok=True)
         trace = r.pop("trace", None)
         you_, it = r["sides"].get("ai", {}), r["sides"].get("agent", {})  # (play_game calls the other side "ai": you)
-        result = {"VICTORY": "the policy won", "DEFEAT": "you won"}.get(r["outcome"], "a tie")
+        result = {"VICTORY": "the policy won", "DEFEAT": "you won", "LEFT": "you left"}.get(r["outcome"], "a tie")
+        if r["outcome"] == "LEFT" and trace and trace["steps"]:  # (who was ahead then: the material, as the panel shows)
+            m = trace["steps"][-1].get("material") or {}
+            mine, its = m.get(str(side)), m.get(str(1 - side))
+            if mine is not None and its is not None:
+                result += f" ({'ahead' if mine > its else 'behind'}: material {round(mine)} to the policy's {round(its)})"
         if films is not None:
             phase("saving the replay", result=result)
             if trace is not None:
                 trace["title"] = f"you ({you}) against {args.checkpoint.parent.parent.name} ({agent})"[:70]
                 trace["sides"] = [{"player": 1 - side, "name": f"the policy ({agent})", "kind": "agent"},
                                   {"player": side, "name": f"you ({you})", "kind": "human"}]
-            films.film(g, stem, trace=trace, row={"episode": 0, "title": f"you ({you}) vs the policy ({agent})",
-                                                   "outcome": {"VICTORY": -1.0, "DEFEAT": 1.0}.get(r["outcome"], 0.0),
-                                                   "sub": f"{result} after {r['minutes']:.1f} game minutes"})
+            row = {"episode": 0, "title": f"you ({you}) vs the policy ({agent})",
+                   "outcome": {"VICTORY": -1.0, "DEFEAT": 1.0}.get(r["outcome"], 0.0),
+                   "sub": f"{result} after {r['minutes']:.1f} game minutes"}
+            if r["outcome"] == "LEFT":  # (the game is closed: the replay the client wrote on leaving, the orders kept)
+                kept = keep_left_replay(g, rec / "replays" / f"{stem}.w3g", trace, status["started"])
+                if kept is not None:
+                    films.pool.submit(films._render, g.setup, kept, stem, row, trace)
+                else:
+                    video = None
+            else:
+                films.film(g, stem, trace=trace, row=row)
     print(f"{result} after {r['minutes']} game minutes · gold gathered: you {you_.get('gold')}, the policy "
           f"{it.get('gold')} · food: you {you_.get('food')}, the policy {it.get('food')}", flush=True)
     if rec is not None:
         row = {**status, "time": time.time(), "result": result, "minutes": r["minutes"], "you_stats": you_,
-               "policy_stats": it, "video": f"videos/{stem}.mp4"}
+               "policy_stats": it, "video": video}
         with open(rec / "challenges.jsonl", "a") as f:
             f.write(json.dumps(row) + "\n")
         phase("rendering the video", result=result)

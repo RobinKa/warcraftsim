@@ -2161,7 +2161,7 @@ function renderChallenge() {
     <div class="hist">${(D.history || []).length ? D.history.map(r => `<div><span>${when(r.time)}</span>
       <span>you (${RACE_NAMES[r.you] || r.you}) vs ${esc((r.checkpoint || "").split("/").slice(-3, -2)[0] || "")} (${RACE_NAMES[r.agent] || r.agent})</span>
       <span class="r">${esc(r.result)}</span><span>${(r.minutes || 0).toFixed(1)} min</span>
-      ${r.video ? `<a href="/files/challenges/${esc(r.video)}" target="_blank">video ↗</a>` : `<span style="color:var(--muted)">video: rendering…</span>`}</div>`).join("")
+      ${r.video ? `<a href="/files/challenges/${esc(r.video)}" target="_blank">video ↗</a>` : r.pending ? `<span style="color:var(--muted)">video: rendering…</span>` : `<span style="color:var(--muted)">no video</span>`}</div>`).join("")
       : `<div style="color:var(--muted)">no challenges yet</div>`}</div></div>`;
   m.querySelector(".close").onclick = closeChallenge;
   const bind = (id, k) => { const el = document.getElementById(id); el.onchange = () => { f[k] = el.value; }; };

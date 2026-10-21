@@ -73,8 +73,9 @@ RACE_LETTER = {"human": "h", "orc": "o", "undead": "u", "nightelf": "e"}
 
 def of_race(code: str, race: str) -> bool:
     """A melee item of `race` (its id's letter: units and buildings first, heroes upper case, research
-    after the R)."""
-    return (code[1] if code[0] == "R" else code[0]).lower() == RACE_LETTER[race]
+    after the R), or one any race hires (a tavern hero, a mercenary: neutral.py)."""
+    from .neutral import MERCENARIES, TAVERN_HEROES
+    return (code[1] if code[0] == "R" else code[0]).lower() == RACE_LETTER[race] or code in TAVERN_HEROES or code in MERCENARIES
 
 
 def from_demos(path: Path) -> list[dict]:

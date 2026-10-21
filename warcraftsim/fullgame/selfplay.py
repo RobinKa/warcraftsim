@@ -1388,8 +1388,22 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         takes no upgrade behind them, and a hall trains them back to back); taught, the upgrade alone (the
         hall's decision to learn)."""
         from . import techtree
-        from ..protocol import Build, ImmediateOrder
+        from ..protocol import Build, Buy, ImmediateOrder
         code = int.from_bytes(c.encode(), "big")
+        if (k := self.cls.get((code, fx.UNIT))) is not None:  # (--neutral: a tavern hero, a mercenary: bought by the
+            from .neutral import MERCENARIES  # worker nearest its building, the tavern or a camp)
+            kind = "nmer" if c in MERCENARIES else "ntav"
+            shops = [u for u in obs.units if u.type == kind and u.alive]
+            workers = [u for u in mine if u.is_worker and not u.is_structure and not fx.building(int(u.flags), u.order)]
+            if not shops or not workers:
+                self.why_not = "no shop" if not shops else "no worker"
+                return None
+            if not self._affords(k, p):
+                return None
+            hall = next((u for u in done if u.type_id in HALLS), workers[0])
+            shop = min(shops, key=lambda u: (u.x - hall.x) ** 2 + (u.y - hall.y) ** 2)
+            w = min(workers, key=lambda u: (u.x - shop.x) ** 2 + (u.y - shop.y) ** 2)
+            return [Buy(w.id, shop.id, code)]
         if (k := self.cls.get((code, fx.POINT))) is not None:  # a building: the worker nearest the hall
             from ..protocol import UnitFlags
             hall = next((u for u in done if u.type_id in HALLS), None)
@@ -1667,7 +1681,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                     builders[s].why.append([round(obs.game_time)] + builders[s].ctx)
         for s, (at, c, me) in built.items():  # (--z-build-labels: the builder's accepted orders label the side's step)
             ok = obs.command_results[at:at + len(c)] if at is not None else [True] * len(c)
-            rows = np.asarray([(t, x.unit, getattr(x, "building", getattr(x, "order", 0)),
+            rows = np.asarray([(t, x.unit, x.item, 2, 0, 0, x.shop) if isinstance(x, Buy) else  # (a hire: on its building)
+                               (t, x.unit, getattr(x, "building", getattr(x, "order", 0)),
                                 1 if hasattr(x, "x") else 2 if hasattr(x, "target") else 0,
                                 int(getattr(x, "x", 0)), int(getattr(x, "y", 0)), getattr(x, "target", 0))
                                for x, a in zip(c, ok) if a], np.int64).reshape(-1, 7)

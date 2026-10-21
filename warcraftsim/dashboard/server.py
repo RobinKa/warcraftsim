@@ -764,7 +764,8 @@ class Dashboard:
             except (OSError, KeyError, ValueError):
                 status = {**status, "phase": "stopped"}
         rows = self.cache.read(d / "challenges.jsonl") if (d / "challenges.jsonl").exists() else []
-        history = [{**r, "video": r.get("video") if (d / str(r.get("video", ""))).exists() else None} for r in rows[-30:]][::-1]
+        history = [{**r, "video": r["video"] if r.get("video") and (d / r["video"]).exists() else None,
+                    "pending": bool(r.get("video")) and not (d / r["video"]).exists()} for r in rows[-30:]][::-1]
         return {"status": status, "history": history, "checkpoints": self._challenge_checkpoints()}
 
     def _challenge_checkpoints(self) -> list[dict]:

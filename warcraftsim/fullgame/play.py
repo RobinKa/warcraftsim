@@ -234,9 +234,12 @@ def matchup_setup(map_name: str, race: str, ai_race: str, difficulty: str, agent
 
 
 def play_game(g: GameInstance, obs: Observation, net, vocab: dict, device, agent_side: int,
-              temperature: float, order_temperature: float = 1.0, values: dict | None = None, costs=None) -> dict:
+              temperature: float, order_temperature: float = 1.0, values: dict | None = None, costs=None,
+              left_ok: bool = False) -> dict:
     """One game from its first observation `obs` (the game's setup: matchup_setup). `values`
-    (unit type values, fullgame.trace.unit_values): also a trace for the video's panel ("trace")."""
+    (unit type values, fullgame.trace.unit_values): also a trace for the video's panel ("trace"). `left_ok` (a
+    person at the game's window, versus.py): the game closed before its end is outcome "LEFT", not an error."""
+    from ..runtime.instance import GameCrashed
     from .trace import material, trace_step
     slots = g.setup.slots
     races = [fx.RACES.index(s.race) if s.race in fx.RACES else 0 for s in slots]
@@ -250,6 +253,7 @@ def play_game(g: GameInstance, obs: Observation, net, vocab: dict, device, agent
     names = {v: k for k, v in (obs.orders or {}).items()}
     kinds = {0: fx.IMMEDIATE, 1: fx.POINT, 2: fx.UNIT, 3: fx.SKILL}
     trace: list[dict] = []
+    left = False
     held = {0: [], 1: []}  # gold + lumber on hand each step (hoarding: gathered and not spent)
     food_1min: dict[int, int] = {}
     while not obs.game_over:
@@ -263,7 +267,13 @@ def play_game(g: GameInstance, obs: Observation, net, vocab: dict, device, agent
         if values is not None:
             mine = Counter(fx.order_label(o, k, names) for o, k in getattr(bot, "last_sent", []))
             trace.append(trace_step(t, obs, material(obs, values), {agent_side: mine}))
-        obs = g.step(cmds)
+        try:
+            obs = g.step(cmds)
+        except GameCrashed:
+            if not left_ok:
+                raise
+            left = True  # (the person closed the game)
+            break
         if values is not None and trace:
             owner = {u.id: u.owner for u in obs.units}
             ai = Counter(fx.order_label(o.order, kinds.get(o.kind, fx.IMMEDIATE), names) for o in obs.issued
@@ -286,7 +296,7 @@ def play_game(g: GameInstance, obs: Observation, net, vocab: dict, device, agent
                                                         "held": round(sum(held[p]) / max(len(held[p]), 1)),
                                                         "food_1min": food_1min.get(p)}
              for p, s in obs.players.items() if p in (0, 1)}
-    outcome = results.get(agent_side, "?")
+    outcome = "LEFT" if left else results.get(agent_side, "?")
     ai = slots[1 - agent_side]
     out = {"outcome": outcome, "minutes": round(obs.game_time / 60, 2), "orders": bot.issued, "steps": t,
             "failed": failed, "by_kind": by_kind, "sides": sides,
