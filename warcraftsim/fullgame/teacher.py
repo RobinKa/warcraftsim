@@ -36,9 +36,16 @@ USESLOT = 852008
 class Teacher:
     """One side's lessons in one game (commands: what it would order now)."""
 
-    def __init__(self, side: int, race: str, rng: random.Random):
+    def __init__(self, side: int, race: str, rng: random.Random, target: dict | None = None):
+        """`target` (the side's target strategy, if it has one): its tavern hero is the one taught, and none when it
+        has none (another hero would break a narrow target)."""
+        from .neutral import TAVERN_HEROES
         self.side = side
-        self.pick = fourcc(rng.choice(PICKS.get(race, PICKS["human"])))
+        if target is None:
+            self.pick = fourcc(rng.choice(PICKS.get(race, PICKS["human"])))
+        else:
+            mine = sorted((t, c) for c, t in target.get("t", {}).items() if c in TAVERN_HEROES)
+            self.pick = fourcc(mine[0][1]) if mine else None
         self.last: dict[str, int] = {}
         self.taught: dict[str, int] = {}  # each kind's lessons this game (the episode row)
 
@@ -64,7 +71,7 @@ class Teacher:
         done = alive[(alive[:, fx.C_FLAGS] & fx.STRUCTURE > 0) & (alive[:, fx.C_FLAGS] & fx.CONSTRUCTING == 0), fx.C_TYPE]
         # a tavern hero: the first with an altar, the second with tier 2
         n_heroes = len(heroes)
-        if (len(tavern) and now >= 135.0 and n_heroes < 2 and player.gold >= 425 and player.lumber >= 135
+        if (self.pick is not None and len(tavern) and now >= 135.0 and n_heroes < 2 and player.gold >= 425 and player.lumber >= 135
                 and player.food_used + 5 <= player.food_cap and fourcc_in(done, ALTARS)
                 and (n_heroes == 0 or fourcc_in(done, TIER2)) and self.pick not in set(heroes[:, fx.C_TYPE].tolist())):
             tv = tavern[0]

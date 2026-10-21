@@ -1550,7 +1550,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                 elif cfg.get("opsd_coef", 0.0) > 0:
                     bots[s].view.dual = True
     # --teach: a heuristic teacher's lessons (teacher.py: a tavern hero, a town portal, a potion) label the learner's steps
-    teachers = ({s: Teacher(s, races[s], random.Random()) for s in trajs if keys[s] == "current"}
+    teachers = ({s: Teacher(s, races[s], random.Random(), zs.get(s)) for s in trajs if keys[s] == "current"}
                 if cfg.get("teach") and replay is None else {})
     zphi = {s: 0.0 for s in zs}  # their strategy potentials at the last recorded step
     # the built-in AI advises the learner's sides (opp["advise"]): its orders label their steps
