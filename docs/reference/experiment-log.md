@@ -1456,7 +1456,7 @@ Its first 10 minutes read 26% against its start in 65 snapshot games, but the ra
 
 **Result of `fgself-117` (22:55, 55 minutes):** worse, as `fgself-107`. 35% of 130 head to head with its start (thirds 49%, 35%, 23%), 43% of 267 with `fgself-114`'s last; against insane 83% of 69 (its start 95% of 56); with a target 34% of 65. Fading them in did not help: twice now the remembered enemies made it weaker. Before a third try, a look at what it does with them (attack-moves to where an enemy was? the neutral buildings among them?).
 
-**`fgself-118`** (from `fgself-111`'s last, 23:00, `--neutral 2`): **OPSD again, clean** (`fgself-112` started with a league of one old snapshot and two spell toggles swapped): `--opsd-share 0.2 --opsd-coef 0.05`, overnight, so the privileged input (which starts at zero) has time to learn before the distillation can carry anything.
+**`fgself-118`** (stopped after 8 minutes: a fresh Adam, the privileged path shifting the parameters; now matched by name) **= `fgself-119`** (from `fgself-111`'s last, 23:12, `--neutral 2`): **OPSD again, clean** (`fgself-112` started with a league of one old snapshot and two spell toggles swapped): `--opsd-share 0.2 --opsd-coef 0.05`, overnight, so the privileged input (which starts at zero) has time to learn before the distillation can carry anything.
 
 **Skill ratings** (the user's idea, the dashboard's Ratings view): a Bradley-Terry fit on the Elo scale over every evaluation game in the real game, the insane AI at 1500. At 22:45: `fgself-106`'s last checkpoint 2128 ± 24, `fgself-102`'s 11841833 1977 ± 8, `fgself-100`'s best 1956 ± 9.
 
