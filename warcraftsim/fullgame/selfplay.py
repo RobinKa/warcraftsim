@@ -2919,9 +2919,11 @@ def save_checkpoint(path: Path, net: FullGameNet, opt, vocab: dict, agent_steps:
     resume from it goes on with the optimizer's moments instead of fresh ones (a fresh Adam's first steps
     are ~lr per weight whatever the gradient: forks lost ~10 points of the AI's record in their first
     20 minutes)."""
-    torch.save({"model": net.state_dict(), "config": net.config, "vocab": vocab, "agent_steps": agent_steps,
-                "update": update}, path)
-    torch.save(opt.state_dict(), path.with_suffix(".adam"))
+    for obj, dest in (({"model": net.state_dict(), "config": net.config, "vocab": vocab, "agent_steps": agent_steps,
+                        "update": update}, path), (opt.state_dict(), path.with_suffix(".adam"))):
+        tmp = dest.with_name(dest.name + ".tmp")  # (whole or not at all: a learner stopped while saving left a
+        torch.save(obj, tmp)                       # truncated checkpoint, and the resume failed on it)
+        os.replace(tmp, dest)
     for old in sorted(path.parent.glob("[0-9]*.adam"))[:-keep_opt]:
         old.unlink(missing_ok=True)
 
