@@ -2896,7 +2896,8 @@ class GraphedUpdate:
                 torch.cuda.current_stream().synchronize()
                 time.sleep(pause / 1000)
         net.eval()
-        stats = {k: float(torch.stack([o[k] for o in outs]).float().mean()) for k in outs[0]} if outs else {}
+        keys = dict.fromkeys(k for o in outs for k in o)  # (some only in some minibatches: --opsd-coef's, with a privileged view)
+        stats = {k: float(torch.stack([o[k] for o in outs if k in o]).float().mean()) for k in keys}
         return {**stats, "adv/std": float(advs.std())} if stats else stats  # (the scale a GRPO bonus meets)
 
 
