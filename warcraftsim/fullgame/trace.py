@@ -110,6 +110,10 @@ def material_steps(units, steps: int, values: dict) -> "np.ndarray":
 WORKERS = {"hpea", "opeo", "uaco", "ewsp"}
 
 
+HIRED = {int.from_bytes(c.encode(), "big") for c in
+         ("Nalc", "Ntin", "Nfir", "Nngs", "Nbrn", "Npbm", "Nplh", "Nbst", "nftb", "nfsp", "nogm", "ngrk")}
+
+
 class Production:
     """What each player makes, loses and holds over a game, from the observations' events: units
     trained and buildings finished by type, research, kills and losses, food at one minute,
@@ -126,6 +130,19 @@ class Production:
         # gathered so far at the game's start: a scripted reset (games without the built-in AI) keeps
         # the game's counters, so without this they added up over a launch's games (185k gold)
         self.base: dict[int, tuple[int, int]] = {}
+        self.hired: set[int] = set()  # (tavern heroes and mercenaries seen: hired, no training event)
+
+    def _hires(self, obs) -> None:
+        """A tavern hero or a mercenary of a player's seen for the first time: trained (bought, protocol.Buy)."""
+        from .features import rawcode
+        ua = getattr(obs, "unit_array", None)
+        rows = ([(int(i), int(t), int(o)) for i, t, o in ua[:, :3].tolist() if t in HIRED] if ua is not None
+                else [(u.id, u.type_id, u.owner) for u in obs.units if u.type_id in HIRED])
+        for i, t, o in rows:
+            if i not in self.hired and o in (0, 1):
+                self.hired.add(i)
+                if self.steps > 1:  # (not one the map had at its start)
+                    self.trained[o][rawcode(t)] += 1
 
     def step(self, obs) -> None:
         from .features import rawcode
@@ -139,6 +156,7 @@ class Production:
             self.max_food[p] = max(self.max_food[p], s.food_used)
             if obs.game_time >= 60 and p not in self.food_1min:
                 self.food_1min[p] = s.food_used
+        self._hires(obs)
         events = [e for e in obs.events if int(e.kind) in (1, 3, 6, 9, 12)]
         if not events:
             return
