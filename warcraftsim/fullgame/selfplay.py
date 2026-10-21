@@ -2942,17 +2942,28 @@ def save_checkpoint(path: Path, net: FullGameNet, opt, vocab: dict, agent_steps:
         old.unlink(missing_ok=True)
 
 
-def load_optimizer(opt, checkpoint: Path, device, lr: float) -> bool:
-    """Adam's state saved with `checkpoint` (save_checkpoint), if there is one that fits; this run's lr."""
+def load_optimizer(opt, checkpoint: Path, device, lr: float, net: FullGameNet | None = None) -> bool:
+    """Adam's state saved with `checkpoint` (save_checkpoint), if there is one that fits; this run's lr. With `net`
+    (the network `opt` steps), a network with parameters added since (--opsd-*: the privileged path) takes the state
+    of those it shares by name (the checkpoint's config gives the saved order), the new ones from zero."""
     path = Path(checkpoint).with_suffix(".adam")
     if not path.exists():
         return False
     capturable = [g.get("capturable", False) for g in opt.param_groups]
+    saved = torch.load(path, map_location=device, weights_only=False)
     try:
-        opt.load_state_dict(torch.load(path, map_location=device, weights_only=False))
+        opt.load_state_dict(saved)
     except (ValueError, RuntimeError, KeyError) as e:
-        print(f"note: Adam's state in {path} does not fit ({e}); a fresh one", flush=True)
-        return False
+        remapped = _by_name(saved, checkpoint, net) if net is not None else None
+        try:
+            if remapped is None:
+                raise ValueError("no names to match")
+            opt.load_state_dict(remapped)
+            print(f"note: Adam's state in {path} matched by name ({len(remapped['state'])} of "
+                  f"{len(remapped['param_groups'][0]['params'])} parameters; the others from zero)", flush=True)
+        except (ValueError, RuntimeError, KeyError) as e2:
+            print(f"note: Adam's state in {path} does not fit ({e}; {e2}); a fresh one", flush=True)
+            return False
     for g in opt.param_groups:  # inputs added since (model.load: columns at the end of a weight): their state zeros
         for p in g["params"]:
             for k, v in opt.state.get(p, {}).items():
@@ -2964,6 +2975,24 @@ def load_optimizer(opt, checkpoint: Path, device, lr: float) -> bool:
         g["lr"], g["capturable"] = lr, c
     print(f"Adam's state from {path}", flush=True)
     return True
+
+
+def _by_name(saved: dict, checkpoint: Path, net: FullGameNet) -> dict | None:
+    """`saved` (an Adam state dict of one parameter group, in the order of the checkpoint's network's parameters)
+    for `net`'s parameters: each one's state by its name; None when the checkpoint has no config."""
+    ck = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    if "config" not in ck or len(saved.get("param_groups", [])) != 1:
+        return None
+    with torch.device("meta"):
+        old = [n for n, _ in FullGameNet(**ck["config"]).named_parameters()]
+    if len(old) != len(saved["param_groups"][0]["params"]):
+        return None
+    at = {n: saved["param_groups"][0]["params"][i] for i, n in enumerate(old)}
+    state = {}
+    for i, (n, _) in enumerate(net.named_parameters()):
+        if n in at and at[n] in saved["state"]:
+            state[i] = saved["state"][at[n]]
+    return {"state": state, "param_groups": [{**saved["param_groups"][0], "params": list(range(len(list(net.parameters()))))}]}
 
 
 def publish(net: FullGameNet, version: int, run_dir: Path, name: str = "current.pt") -> None:
@@ -3449,7 +3478,7 @@ def main(argv: list[str] | None = None) -> int:
     graphed = bool(args.cuda_graphs) and device.type == "cuda" and bool(net.memory)
     opt = torch.optim.Adam(net.parameters(), lr=args.lr, eps=1e-5, capturable=graphed)
     if args.start_weights and not args.resume:
-        load_optimizer(opt, args.start_weights, device, args.lr)
+        load_optimizer(opt, args.start_weights, device, args.lr, net)
     # the main exploiter (--exploiter-share): a second network, from the run's starting weights
     # (as AlphaStar's from the supervised agent), trained on its games against the learner alone
     x_init = {k: v.detach().clone() for k, v in net.state_dict().items()} if args.exploiter_share > 0 else None
@@ -3484,7 +3513,7 @@ def main(argv: list[str] | None = None) -> int:
         if src:
             last = torch.load(src, map_location=device, weights_only=False)
             net.load_state_dict(trained(last["model"], net))
-            load_optimizer(opt, src, device, args.lr)
+            load_optimizer(opt, src, device, args.lr, net)
         resumed = {"steps": rows[-1]["agent_steps"] if rows else 0, "update": rows[-1]["epoch"] if rows else 0,
                    "episodes": sum(1 for _ in open(run_dir / "episodes.jsonl")) if (run_dir / "episodes.jsonl").exists() else 0,
                    "checkpoint": Path(src).name if src else None,

@@ -1215,3 +1215,26 @@ def test_reward_parts_gdpo():
     opt = torch.optim.Adam(net.parameters(), lr=1e-3)
     res = ppo_update(net, None, opt, steps, args, False, torch.device("cpu"), chunks)
     assert np.isfinite(res["loss/value"]) and float((net.value_head[2].weight - before).abs().max()) > 0
+
+
+def test_adam_state_matched_by_name_for_added_parameters(tmp_path):
+    """A network with parameters added since its checkpoint (--opsd-*: the privileged path, registered among the
+    others): Adam's state of the parameters it shares, by name; the new ones from zero (not a fresh optimizer)."""
+    from warcraftsim.fullgame.model import FullGameNet
+    from warcraftsim.fullgame.selfplay import load_optimizer, save_checkpoint
+
+    small = dict(n_types=5, n_cur=2, n_orders=7, G=12, d=16, layers=1, priv=4)
+    old = FullGameNet(**small)
+    opt = torch.optim.Adam(old.parameters(), lr=1e-3)
+    for p in old.parameters():
+        p.grad = torch.randn_like(p)
+    opt.step()
+    save_checkpoint(tmp_path / f"{5:016d}.pt", old, opt, {}, 5, 5)
+    new = FullGameNet(**small, privileged=True)
+    new.load_state_dict(old.state_dict(), strict=False)
+    fresh = torch.optim.Adam(new.parameters(), lr=5e-5)
+    assert not load_optimizer(torch.optim.Adam(new.parameters()), tmp_path / f"{5:016d}.pt", "cpu", 5e-5)  # (no net)
+    assert load_optimizer(fresh, tmp_path / f"{5:016d}.pt", "cpu", 5e-5, new)
+    names = dict(new.named_parameters())
+    assert torch.equal(fresh.state[names["order.2.weight"]]["exp_avg"], opt.state[dict(old.named_parameters())["order.2.weight"]]["exp_avg"])
+    assert names["priv_pol.0.weight"] not in fresh.state and fresh.param_groups[0]["lr"] == 5e-5
