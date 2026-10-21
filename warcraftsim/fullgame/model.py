@@ -386,7 +386,14 @@ def configure_for(path) -> None:
     c, vocab = ck["config"], ck.get("vocab") or {}
     fx.set_inputs(3 if c.get("ghost") else 2 if c.get("gx", 0) >= 3 else 1, bool(c.get("privileged")))
     fx.set_masks(bool(c.get("valid")), bool(c.get("valid")))
-    fx.set_neutral(bool(vocab.get("neutral")))
+    neutral = int(bool(vocab.get("neutral")))
+    if neutral and "allowed" in ck.get("model", {}):  # (--neutral 2: no unit type may buy a mercenary)
+        from .neutral import MERCENARIES, fourcc
+        oix = {tuple(o): k for k, o in enumerate(vocab["orders"], start=1)}
+        mercs = [oix[(fourcc(m), fx.UNIT)] for m in MERCENARIES if (fourcc(m), fx.UNIT) in oix]
+        if mercs and not bool(ck["model"]["allowed"][:, mercs].any()):
+            neutral = 2
+    fx.set_neutral(neutral)
     fx.set_z(c.get("z", 0))
     if c.get("gx", 0) >= 3:  # (the unit channels it reads: all of them, a run's --features zeros only its weights)
         fx.ACTIVE_F = fx.F
