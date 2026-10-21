@@ -128,8 +128,10 @@ class FullGameNet(nn.Module):
         point it may spend there, a usable item per inventory slot)."""
         h, af, it = fx.A_HERO, fx.HERO_ABIL_F, fx.A_HERO + 4 * fx.HERO_ABIL_F
         e = ent[:, :typ.shape[1]] if ent.shape[1] > typ.shape[1] else ent
+        hidden = 9 + fx.FLAG_BITS.index(16)  # (UnitFlags.HIDDEN: a worker inside a gold mine)
         bits = torch.cat([e[..., h + 1:h + 4 * af:af] > 0.5, e[..., h:h + 4 * af:af] > 0.1,
-                          e[..., h + 3:h + 4 * af:af] > 0.5, e[..., it + 1:it + 6 * fx.HERO_ITEM_F:fx.HERO_ITEM_F] > 0.5], -1)
+                          e[..., h + 3:h + 4 * af:af] > 0.5, e[..., it + 1:it + 6 * fx.HERO_ITEM_F:fx.HERO_ITEM_F] > 0.5,
+                          e[..., hidden:hidden + 1] < 0.5], -1)
         need = self.valid_need[typ.long()]
         ok = torch.ones(need.shape, dtype=torch.bool, device=need.device)
         for j in range(bits.shape[-1]):
@@ -421,6 +423,9 @@ def load(path, device="cpu", memory: bool | None = None) -> tuple[FullGameNet, d
             new = neutral.extend_vocab(ck["vocab"])
             net = neutral.grow(net, ck["vocab"], new)
             ck = {**ck, "vocab": new}
+        neutral.who_buys(net, ck["vocab"])  # (and its tables as they are now: networks grown before them too)
+        if net.config.get("valid"):
+            net.set_valid(ck["vocab"])
     return net.eval(), ck
 
 

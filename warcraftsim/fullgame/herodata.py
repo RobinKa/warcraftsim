@@ -87,7 +87,8 @@ def order_needs(vocab: dict) -> dict[tuple[int, int], int]:
     """(unit type index, order class) -> what the order needs of the unit (model.FullGameNet's "valid_need"):
     0..3 the ability in that slot ready (learned, cooled down, the mana), 4..7 learned (its toggles),
     8..11 a skill point it may spend there (learning it), 12..17 a usable item in that inventory slot
-    (useslot1..6, any unit type: index -1)."""
+    (useslot1..6, any unit type: index -1), 18 not hidden (a ware bought at a neutral building: not from inside a
+    gold mine)."""
     from . import features as fx
     kinds = [0] + [int(k) for _, k in vocab["orders"]]
     names = {v: int(k) for k, v in (vocab.get("order_names") or {}).items()}  # (order string -> id)
@@ -108,6 +109,12 @@ def order_needs(vocab: dict) -> dict[tuple[int, int], int]:
                 for c in by_order.get(names.get(s, -1), ()) if s else ():
                     if kinds[c] != fx.SKILL:
                         out[(t, c)] = need
+    if vocab.get("neutral"):  # (--neutral: a ware bought at a neutral building: not by a unit inside a gold mine,
+        from .neutral import MERCENARIES, MERCHANT_ITEMS, TAVERN_HEROES  # which takes no order)
+        for w in (*TAVERN_HEROES, *MERCENARIES, *MERCHANT_ITEMS):
+            c = index.get((fourcc(w), fx.UNIT))
+            if c is not None:
+                out[(-1, c)] = 18
     for k in range(ITEM_SLOTS):
         for c in by_order.get(852008 + k, ()):
             out[(-1, c)] = 12 + k

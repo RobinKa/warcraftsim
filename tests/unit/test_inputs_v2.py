@@ -298,6 +298,8 @@ def test_neutral_wares_as_orders(v2, tmp_path):
         tix = {t: i + 1 for i, t in enumerate(v["types"])}
         hire, learn = oix[(code("Npbm"), fx.UNIT)], oix[(code("ANbf"), fx.SKILL)]
         assert net.allowed[tix[code("hpea")], hire] and not net.allowed[tix[code("hbar")], hire]
+        portal = oix[(code("stwp"), fx.UNIT)]  # (the merchant's items: a hero's, not a worker's)
+        assert net.allowed[tix[code("Npbm")], portal] and not net.allowed[tix[code("hpea")], portal]
         assert net.allowed[tix[code("Npbm")], learn] and net.allowed[tix[code("Npbm")], oix[(852580, fx.POINT)]]
         g, glob = torch.randn(1, 16), torch.zeros(1, net.config["G"])
         assert torch.allclose(net.order[2](torch.ones(1, 16))[0, :7], old.order[2](torch.ones(1, 16))[0, :7])

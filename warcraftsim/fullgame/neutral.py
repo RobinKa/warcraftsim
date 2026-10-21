@@ -124,7 +124,7 @@ def grow(net, old: dict, new: dict):
     allowed = torch.zeros(T1, O1, dtype=torch.bool, device=oe.device)
     allowed[:T0, :O0] = state["allowed"]
     oix = {tuple(o): c for c, o in enumerate(new["orders"], start=1)}
-    buys = [oix[(fourcc(c), 2)] for c in (*TAVERN_HEROES, *MERCENARIES, *MERCHANT_ITEMS)]
+    buys = [oix[(fourcc(c), 2)] for c in (*TAVERN_HEROES, *MERCENARIES)]  # (items: a hero's, who_buys)
     generic = [c for (o, k), c in oix.items() if o in GENERIC + USESLOTS and k in (0, 1, 2)]
     for i in range(1, T1):
         c = code[i]
@@ -181,3 +181,20 @@ def nearest_shop(sel, ware: int, unit):
         return None
     d = (shops[:, fx.C_X] - unit[fx.C_X]) ** 2 + (shops[:, fx.C_Y] - unit[fx.C_Y]) ** 2
     return shops[int(d.argmin())]
+
+
+@torch.no_grad()
+def who_buys(net, vocab: dict) -> None:
+    """Which unit types may buy what (`net`'s allowed orders, in place): a hero anything, a worker a tavern hero or a
+    mercenary, never the goblin merchant's items (a worker has no inventory: in fgself-111 workers sent to buy them
+    were all refused)."""
+    tix = {int(t): i + 1 for i, t in enumerate(vocab["types"])}
+    oix = {tuple(o): c for c, o in enumerate(vocab["orders"], start=1)}
+    items = [oix[(fourcc(c), 2)] for c in MERCHANT_ITEMS if (fourcc(c), 2) in oix]
+    hires = [oix[(fourcc(c), 2)] for c in (*TAVERN_HEROES, *MERCENARIES) if (fourcc(c), 2) in oix]
+    for code, i in tix.items():
+        c = int(code).to_bytes(4, "big").decode("latin-1")
+        hero = c[:1].isupper() and c[0] != "R"
+        if hero or c in WORKERS:
+            net.allowed[i, hires] = True
+            net.allowed[i, items] = hero
