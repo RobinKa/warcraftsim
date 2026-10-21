@@ -42,7 +42,7 @@ globals
     constant integer W3S_QS_SKILLS = 8
     constant integer W3S_ABIL_SLOTS = 4  // warcraftsim.protocol.HERO_ABILITY_SLOTS
     constant real W3S_BUY_RANGE = 450.0  // (a shop's, a tavern's reach: 500 less a margin)
-    constant integer W3S_BUY_STEPS = 120  // (a purchase under way: given up after this many steps)
+    constant integer W3S_BUY_STEPS = 160  // (a purchase under way: given up after this many steps; the tavern is ~6,300 from a start, a worker ~80 steps away)
     boolean w3s_full = true
     integer array w3s_removed
     integer w3s_nremoved = 0
@@ -1263,6 +1263,9 @@ function W3S_BuyPending takes nothing returns nothing
         elseif IsUnitInRange(u, w3s_buy_shop[i], W3S_BUY_RANGE) and IssueNeutralImmediateOrderById(GetOwningPlayer(u), w3s_buy_shop[i], w3s_buy_item[i]) then
             call W3S_DropBuy(i)
         else
+            if IsUnitInRange(u, w3s_buy_shop[i], W3S_BUY_RANGE) then  // (come on foot, the shop unseen when sent:
+                call IssueTargetOrderById(u, 851971, w3s_buy_shop[i])  // the right-click that engages it, now)
+            endif
             set i = i + 1
         endif
     endloop
@@ -1320,7 +1323,8 @@ function W3S_ApplyOne takes integer at returns integer
     elseif op == 8 then
         // buy from a neutral building (a shop's item, a tavern's hero, a camp's mercenary) for the unit's player:
         // at once when the building serves the unit already, else the unit goes to it (a right-click) and the
-        // purchase is tried every step until it goes through, at most W3S_BUY_STEPS (W3S_BuyPending)
+        // purchase is tried every step until it goes through, at most W3S_BUY_STEPS (W3S_BuyPending); a shop in the
+        // fog (unseen: an order can't target it) is walked to, and right-clicked in reach
         set n = 4
         set s = W3S_Unit(w3s_cmd[at + 2])
         if W3S_Owned(u) and s != null then
@@ -1328,6 +1332,9 @@ function W3S_ApplyOne takes integer at returns integer
                 set ok = true
             else
                 set ok = IssueTargetOrderById(u, 851971, s)
+                if not ok then  // (a shop the player hasn't seen, in the fog: no order can target it; a walk there)
+                    set ok = IssuePointOrderById(u, 851986, GetUnitX(s), GetUnitY(s))
+                endif
                 if ok then
                     call W3S_AddBuy(u, s, w3s_cmd[at + 3], W3S_BUY_STEPS)
                 endif

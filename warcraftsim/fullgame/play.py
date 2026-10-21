@@ -60,7 +60,8 @@ def unit_rows(obs: Observation, t: int) -> np.ndarray:
 
 REPAIR = 852024  # the order a worker resumes a building with
 ATTACK = 851983
-BUY_COMMIT_STEPS = 80  # (a unit sent to buy: 40 s to walk there, the harness keeps the purchase pending meanwhile)
+BUY_COMMIT_STEPS = 120  # (a unit sent to buy: 60 s to walk there, the harness keeps the purchase pending meanwhile; a
+# worker from its start reached the tavern, unseen, in 77 steps)
 
 
 class BCAgent:
@@ -174,6 +175,9 @@ class BCAgent:
                     out.append(Buy(unit, int(shop[fx.C_ID]), oid))
                     self.__dict__.setdefault("buying_since", {})[unit] = self.t
                     self.bought = getattr(self, "bought", 0) + 1
+                    buys = self.__dict__.setdefault("buys", {})  # (the episode row: each ware by its buyers' type)
+                    key = f"{fx.rawcode(oid)} by {fx.rawcode(int(sel[i, fx.C_TYPE]))}"
+                    buys[key] = buys.get(key, 0) + 1
             elif kind == fx.UNIT and int(tgt[i]) >= st.get("ghost0", len(sel)):  # an enemy it remembers (inputs 3):
                 if oid in (ATTACK, fx.SMART):  # where it saw it (attack: attack-move); nothing else reaches it
                     g = sel[int(tgt[i])]
