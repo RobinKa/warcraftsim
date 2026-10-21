@@ -893,12 +893,15 @@ class Trajectory:
         self.steps = self.steps[-1:] if bootstrap else []
 
 
-def merge_labels(step: dict, y: dict) -> None:
+def merge_labels(step: dict, y: dict, teach: bool = False) -> None:
     """A teacher's labels (encoder step_labels: y_order, y_ptr, y_x, y_y) into a recorded step, only the units it
-    ordered (y_only); another teacher's labels of the step stay where this one has none."""
+    ordered (y_only); another teacher's labels of the step stay where this one has none. `teach` (the heuristic
+    teacher's, --teach): those units marked ("y_teach": their own loss weight, --teach-coef)."""
     if not (y["y_order"] > 0).any():
         return
     n = step["n_own"]
+    if teach:
+        step["y_teach"] = (step.get("y_teach", np.zeros(n, bool)) | (y["y_order"][:n] > 0))
     if "y_order" in step:
         on = y["y_order"][:n] > 0
         for k in ("y_order", "y_ptr", "y_x", "y_y"):
@@ -1644,7 +1647,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                                           else (t, x.unit, x.order, 0, 0, 0, 0) for x in c], np.int64).reshape(-1, 7)
                     y, _ = bots[s].enc.step_labels(bots[s].view, sts[s], lessons, me, np.zeros((0, 5), np.int64),
                                                    bots[s].trees)
-                    merge_labels(trajs[s].steps[-1], y)
+                    merge_labels(trajs[s].steps[-1], y, teach=True)
         built, given = {}, {}
         for s, b in builders.items():  # (--z-build: after the agents' orders, so a worker it takes is taken)
             c = b.commands(obs, made[s], t, cfg["step_seconds"], cmds[spans[s][0]:spans[s][1]] if s in spans else ())
@@ -2231,14 +2234,17 @@ def collate(steps: list[dict], device, width: int | None = None, with_labels: bo
     labels = {}
     if with_labels or any("y_order" in s for s in steps):  # the advisor's labels (on-policy distillation; others: none)
         labels = {"y_order": np.zeros((B, O), np.int64), **{k: np.full((B, O), -1, np.int64) for k in ("y_ptr", "y_x", "y_y")}}
-        has, only = np.zeros(B, bool), np.zeros(B, bool)
+        has, only, teach = np.zeros(B, bool), np.zeros(B, bool), np.zeros((B, O), bool)
         for i, s in enumerate(steps):
             if "y_order" in s:
                 has[i] = True
                 only[i] = bool(s.get("y_only", False))
                 for k in labels:
                     labels[k][i, :s["n_own"]] = s[k]
-        labels = {**{k: t(v) for k, v in labels.items()}, "y_has": t(has), "y_only": t(only), "y_any": bool(has.any())}
+                if "y_teach" in s:  # (the heuristic teacher's units, --teach-coef)
+                    teach[i, :min(len(s["y_teach"]), O)] = s["y_teach"][:O]
+        labels = {**{k: t(v) for k, v in labels.items()}, "y_has": t(has), "y_only": t(only), "y_teach": t(teach),
+                  "y_any": bool(has.any())}
     priv = {}
     if any("pent" in s for s in steps):  # (--opsd-coef: the privileged views, their own width; none: phas False)
         PE = _width(max(s.get("pn", 1) for s in steps))
@@ -2319,7 +2325,7 @@ def collate_seq(seqs: list[list[dict]], device, width: int | None = None, B: int
     return mb
 
 
-def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast) -> tuple[torch.Tensor, torch.Tensor]:
+def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast, teach_scale: float = 0.0) -> tuple[torch.Tensor, torch.Tensor]:
     """On-policy distillation: the cloning loss (bc.losses: the order, then its target given the
     teacher's order) on the learner's own steps that the built-in AI advised (mb["y_has"]), from
     the PPO pass's network outputs; and the share of the teacher's orders (not "none") the policy
@@ -2343,7 +2349,12 @@ def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast) -> tuple[torch.
     with torch.no_grad():
         issued = ok * (y > 0)
         acc = ((lp[..., 1:].argmax(-1) + 1 == y) * issued).sum() / issued.sum().clamp(min=1)
-    return l_order + l_ptr + 0.5 * l_pt, acc
+    out = l_order + l_ptr + 0.5 * l_pt
+    if teach_scale and "y_teach" in mb:  # (the heuristic teacher's lessons: rare, their own weight, --teach-coef)
+        tm = (mb["y_teach"] & mb["own"] & (lp_y > -1e4)).float()
+        out = out + teach_scale * (-(lp_y * tm).sum() / tm.sum().clamp(min=1)
+                                   + _masked_ce(ptr, mb["y_ptr"], tm))
+    return out, acc
 
 
 def opsd_loss(net: FullGameNet, ev: dict, mb: dict, seq) -> torch.Tensor:
@@ -2644,7 +2655,7 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
                 loss = loss + args.opsd_coef * l_opsd
                 stats.setdefault("loss/opsd", []).append(l_opsd.detach())
             if getattr(args, "opd_coef", 0.0) > 0 and mb.get("y_any"):
-                l_opd, opd_acc = distill_loss(net, ev, mb, autocast)
+                l_opd, opd_acc = distill_loss(net, ev, mb, autocast, getattr(args, "teach_coef", 0.0) / args.opd_coef)
                 loss = loss + args.opd_coef * l_opd
                 stats.setdefault("loss/opd", []).append(l_opd.detach())
                 stats.setdefault("opd/acc", []).append(opd_acc)
@@ -2752,7 +2763,7 @@ class GraphedUpdate:
                 loss = loss + args.opsd_coef * l_opsd
                 out["loss/opsd"] = l_opsd
             if getattr(args, "opd_coef", 0.0) > 0:
-                l_opd, opd_acc = distill_loss(net, ev, s, None)
+                l_opd, opd_acc = distill_loss(net, ev, s, None, getattr(args, "teach_coef", 0.0) / args.opd_coef)
                 loss = loss + args.opd_coef * l_opd
                 out.update({"loss/opd": l_opd, "opd/acc": opd_acc, "opd/steps": s["y_has"].float().sum() / valid.sum().clamp(min=1)})
             if b is not None:
@@ -3001,6 +3012,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--memory-fade", type=int, default=0, help="inputs 3: the remembered enemies fade into the learner's "
                     "attention over this many updates (its bias on them from -8 to 0; older networks and the anchor "
                     "keep them hidden at -30); 0: as loaded")
+    ap.add_argument("--teach-coef", type=float, default=0.0, help="--teach: the cloning loss's weight on the heuristic "
+                    "teacher's lessons alone (rare among the target builder's labels: under --opd-coef they barely moved "
+                    "the new orders)")
     ap.add_argument("--opsd-share", type=float, default=0.0, help="self-distillation with privileged information (the "
                     "user's idea): this share of the learner's training games act on the privileged view (every enemy "
                     "unit, the opponent's resources: the network learns to use it); never in evaluation")
