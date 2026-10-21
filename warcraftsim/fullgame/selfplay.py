@@ -2365,8 +2365,9 @@ def opsd_loss(net: FullGameNet, ev: dict, mb: dict, seq) -> torch.Tensor:
     """--opsd-coef: KL(teacher || policy) over each own unit's order, the teacher the same network given the step's
     privileged view (no gradient through it; own units come first in both views), on the steps that have one."""
     with torch.no_grad():
-        evt = evaluate(net, mb["pent"], mb["ptype"], mb["pcur"], mb["pmask"], mb["pglob"], mb["n_own"],
-                       mb["order"], mb["tgt"], mb["bx"], mb["by"], mb["avail"], seq=seq)
+        evt = evaluate(net, mb["pent"], mb["ptype"], mb["pcur"], mb["pmask"], mb["pglob"], mb["n_own"], mb["order"],
+                       mb["tgt"].clamp(max=mb["pent"].shape[1] - 1),  # (the player's view's pointers: only the orders'
+                       mb["bx"], mb["by"], mb["avail"], seq=seq)      # logits are used, but gathered within its width)
         lt = torch.log_softmax(evt["logits"].float(), -1)
     ls = torch.log_softmax(ev["logits"].float(), -1)
     kl = (lt.exp() * (lt - ls)).sum(-1)  # [N, O]

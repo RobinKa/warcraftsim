@@ -420,12 +420,13 @@ def test_privileged_views_and_self_distillation(v2):
                       mb["bx"], mb["by"], mb["avail"])
         assert float(opsd_loss(net, ev, mb, None)) >= 0.0
         # a batch whose widest step (its own units) has no privileged view: the privileged width covers its orders
-        big = enc.view(0, 1.0, [0, 1]).step(np.stack([_unit(10 + k, 0, -2000, 10 * k, 1) for k in range(40)]), None,
-                                            np.zeros((0, 5), np.int64), 0)
+        units = [_unit(10 + k, 0, -2000, 10 * k, 1) for k in range(40)] + [_unit(100 + k, 1, -1900, 10 * k, 3) for k in range(70)]
+        big = enc.view(0, 1.0, [0, 1]).step(np.stack(units), None, np.zeros((0, 5), np.int64), 0)
         wide = {**{k: big[k] for k in ("ent", "type", "cur", "glob", "n")}, "n_own": 40, "avail": None, "adv": 0.0,
                 "ret": 0.0, **{k: np.zeros(40, np.float32 if k == "logp" else np.int64) for k in ("order", "tgt", "bx", "by", "logp")}}
+        wide["tgt"] = np.full(40, big["n"] - 1)  # (an enemy past the privileged views' width)
         mb = collate([step, wide], torch.device("cpu"))
-        assert mb["pent"].shape[1] >= mb["order"].shape[1] == 40
+        assert mb["pent"].shape[1] >= mb["order"].shape[1] and mb["pent"].shape[1] <= wide["tgt"][0]
         ev = evaluate(net, mb["ent"], mb["type"], mb["cur"], mb["mask"], mb["glob"], mb["n_own"], mb["order"], mb["tgt"],
                       mb["bx"], mb["by"], mb["avail"])
         assert float(opsd_loss(net, ev, mb, None)) >= 0.0
