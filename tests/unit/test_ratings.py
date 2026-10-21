@@ -24,6 +24,13 @@ def test_players_of_a_row():
         == ("r h0", "fgself-102/11841833")
     assert p({"eval": True, "eval_key": "current", "opponent": "script:ai-insane"}, "r", 0) is None  # (the taxed AI)
     assert p({"eval_key": "current", "opponent": "script:ai-insane (real)"}, "r", 0) is None  # (a training game)
+    # a checkpoint of a run without the shops, in a run with them since they could be bought: a player of its own
+    late = ratings.SHOPS_SINCE + 1
+    old = lambda run: run == "fgself-102"  # noqa: E731
+    assert p({"eval": True, "eval_key": "vs fgself-102/0000000011841833.pt", "opponent": "x", "time": late}, "r", late, old) \
+        == ("r h0", "fgself-102/11841833 +shops")
+    assert p({"eval": True, "eval_key": "runs/fgself-102/checkpoints/0000000011841833.pt", "opponent": "script:ai-insane (real)",
+              "time": late - 2}, "r", 0, old) == ("fgself-102/11841833", "insane AI")
 
 
 def test_fit_and_incremental_scan(tmp_path):

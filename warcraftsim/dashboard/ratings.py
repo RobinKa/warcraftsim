@@ -5,7 +5,10 @@ the insane built-in AI in the real game as its anchor (ANCHOR_RATING).
 The players: each listed checkpoint (`--eval-checkpoints`, "fgself-102/11841833"), each run's current policy by the
 hour since the run started ("fgself-107 h2"; with a target strategy "+z"), and the anchor. The games: a run's
 evaluation games against the insane AI in the real game, and its head-to-head games (`--eval-vs`: the current
-policy against a listed checkpoint). Ties count half a win each.
+policy against a listed checkpoint). Ties count half a win each. A checkpoint from a run without the neutral buildings'
+wares, evaluated in one with them (selfplay --neutral) since they could be bought (SHOPS_SINCE), is a player of its own
+("fgself-109/4933795 +shops"): its new buy orders went through untrained (its heroes walked off to buy items), and it
+won 71% against insane there to 97% elsewhere.
 
 The scan reads only what was added to the runs' episode files since the last one (their offsets in CACHE), so the
 dashboard keeps the ratings current cheaply; the fit runs on the pairs' totals."""
@@ -23,7 +26,10 @@ ANCHOR = "insane AI"
 ANCHOR_RATING = 1500.0
 SCALE = 400.0 / math.log(10.0)  # Elo points per unit of log-strength
 PRIOR_GAMES = 1.0  # each player's virtual tie against the anchor: finite ratings for a few games
-CACHE = ".ratings-cache.json"
+CACHE = ".ratings-cache-v2.json"  # (v2: the "+shops" players)
+# the evaluation games could buy from the neutral buildings from here on (2026-10-21 14:27: the laptop's evaluation
+# worker started with the harness that reaches a shop in the fog; before, every buy order was refused)
+SHOPS_SINCE = 1792589220.0
 _CKPT = re.compile(r"(fgself-[\w.-]+)/(?:checkpoints/)?0*(\d+)\.pt")
 
 
@@ -33,13 +39,19 @@ def checkpoint_name(path: str) -> str | None:
     return f"{m.group(1)}/{m.group(2)}" if m else None
 
 
-def players_of(row: dict, run: str, start: float) -> tuple[str, str] | None:
-    """An evaluation row's (player, opponent), or None when it is no rated game."""
+def players_of(row: dict, run: str, start: float, untrained=lambda run: False) -> tuple[str, str] | None:
+    """An evaluation row's (player, opponent), or None when it is no rated game. `untrained(run)`: whether that
+    checkpoint's run lacked the neutral wares the game is played with (its checkpoints then "+shops")."""
     if not row.get("eval"):
         return None
     key, opp = str(row.get("eval_key") or "current"), str(row.get("opponent") or "")
+    late = float(row.get("time", 0.0)) >= SHOPS_SINCE
+
+    def named(path: str) -> str | None:
+        c = checkpoint_name(path)
+        return c + " +shops" if c is not None and late and untrained(c.split("/")[0]) else c
     if key.startswith("vs "):
-        b = checkpoint_name(key)
+        b = named(key)
         if b is None:
             return None
     elif "ai-insane" in opp and "(real)" in opp:
@@ -51,7 +63,7 @@ def players_of(row: dict, run: str, start: float) -> tuple[str, str] | None:
         suffix = {"current+z": " +z", "current+zg": " +zg"}.get(key, "")
         a = f"{run} h{hour}{suffix}"
     else:
-        a = checkpoint_name(key)
+        a = named(key)
         if a is None:
             return None
     return (a, b) if a != b else None
@@ -84,6 +96,8 @@ class Ratings:
             if not files:
                 continue
             start = None
+            shops = self._neutral(d.name) > 0
+            untrained = (lambda r: self._neutral(r) == 0) if shops else (lambda r: False)
             for f in files:
                 key, size = str(f.relative_to(self.runs_dir)), f.stat().st_size
                 at = self.state["files"].get(key, 0)
@@ -108,7 +122,7 @@ class Ratings:
                         row = json.loads(line)
                     except ValueError:
                         continue
-                    pair = players_of(row, d.name, start)
+                    pair = players_of(row, d.name, start, untrained)
                     if pair is not None:
                         self._add(pair, float(row.get("outcome", 0.0)), float(row.get("time", 0.0)), d.name)
                         changed = True
@@ -119,6 +133,16 @@ class Ratings:
             tmp.write_text(json.dumps(self.state))
             tmp.replace(self.path)
         return changed
+
+    def _neutral(self, run: str) -> int:
+        """A run's --neutral (0: none, or no run.json)."""
+        cache = self.__dict__.setdefault("_neutrals", {})
+        if run not in cache:
+            try:
+                cache[run] = int(json.loads((self.runs_dir / run / "run.json").read_text()).get("config", {}).get("neutral") or 0)
+            except (OSError, ValueError, TypeError):
+                cache[run] = 0
+        return cache[run]
 
     def _add(self, pair: tuple[str, str], outcome: float, t: float, run: str) -> None:
         a, b = pair
