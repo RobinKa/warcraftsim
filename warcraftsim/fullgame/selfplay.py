@@ -2251,7 +2251,7 @@ def collate(steps: list[dict], device, width: int | None = None, with_labels: bo
                   "y_any": bool(has.any())}
     priv = {}
     if any("pent" in s for s in steps):  # (--opsd-coef: the privileged views, their own width; none: phas False)
-        PE = _width(max(s.get("pn", 1) for s in steps))
+        PE = _width(max(O, *(s.get("pn", 1) for s in steps)))  # (at least the batch's own units: the orders' width)
         pent = np.zeros((B, PE, fx.F), np.float32)
         ptyp, pcur = np.zeros((B, PE), np.int64), np.zeros((B, PE), np.int64)
         pmask, pglob, phas = np.zeros((B, PE), bool), np.zeros((B, G), np.float32), np.zeros(B, bool)

@@ -408,7 +408,7 @@ def describe_spaces(vocab: dict, order_names: dict[int, str] | None = None, agen
                 + [f"hero item {k + 1}: {w}" for k in range(6) for w in ("held", "usable", "heals", "restores mana",
                                                                           "town portal")]
                 + [f"making: {w}" for w in ("a worker", "an army unit", "a hero", "research", "its next tier")])
-    if F > A_MEM:
+    if INPUTS >= 3:
         ent += ["an enemy it remembers (out of sight now)", "seen seconds ago / 60"]
     glob = (["gold / 1000", "lumber / 1000", "food used / 100", "food cap / 100", "upkeep / 2", "time (steps / 1800)"]
             + [f"own race: {r}" for r in RACES] + [f"enemy race: {r}" for r in RACES]
@@ -985,7 +985,7 @@ class View:
         if PRIVILEGED and (self.privileged_act or self.dual):
             priv = enc.entities(rows, player, self.sign, (self.queued, self.busy, self.making), lumber, omniscient=True)
         sel, n_own, f, types, cur = enc.entities(rows, player, self.sign, (self.queued, self.busy, self.making), lumber,
-                                                 self.remembered(rows, t) if F > A_MEM and not self.privileged_act else None)
+                                                 self.remembered(rows, t) if INPUTS >= 3 and not self.privileged_act else None)
         if priv is not None and self.privileged_act:
             sel, n_own, f, types, cur = priv
         self.max_own, self.max_ent = max(self.max_own, enc.counts[0]), max(self.max_ent, enc.counts[1])

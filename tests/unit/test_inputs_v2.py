@@ -389,6 +389,11 @@ def test_privileged_views_and_self_distillation(v2):
         assert st["n"] == 2 and st["pn"] == 3 and st["pent"][:, fx.A_HID].tolist() == [0, 0, 1]
         flag = enc.G0 + enc.ZD + enc.GX - 1
         assert st["glob"][flag] == 0 and st["pglob"][flag] == 1
+        # (inputs 2: no remembered enemies, though the privileged column makes the rows as wide as inputs 3's)
+        seen = enc.view(0, 1.0, [0, 1])
+        seen.dual = True
+        seen.step(np.stack([rows[0], rows[1], _unit(3, 1, 2500, 0, 3)]), None, np.zeros((0, 5), np.int64), 0)
+        assert seen.step(rows, None, np.zeros((0, 5), np.int64), 1)["n"] == 2
         actor = enc.view(0, 1.0, [0, 1])
         actor.privileged_act = True
         st2 = actor.step(rows, None, np.zeros((0, 5), np.int64), 0)
@@ -411,6 +416,16 @@ def test_privileged_views_and_self_distillation(v2):
         mb = collate([step, {**step, "pent": None}][:1], torch.device("cpu"))
         assert mb["pent"].shape[1] >= 3 and bool(mb["phas"][0])
         from warcraftsim.fullgame.model import evaluate
+        ev = evaluate(net, mb["ent"], mb["type"], mb["cur"], mb["mask"], mb["glob"], mb["n_own"], mb["order"], mb["tgt"],
+                      mb["bx"], mb["by"], mb["avail"])
+        assert float(opsd_loss(net, ev, mb, None)) >= 0.0
+        # a batch whose widest step (its own units) has no privileged view: the privileged width covers its orders
+        big = enc.view(0, 1.0, [0, 1]).step(np.stack([_unit(10 + k, 0, -2000, 10 * k, 1) for k in range(40)]), None,
+                                            np.zeros((0, 5), np.int64), 0)
+        wide = {**{k: big[k] for k in ("ent", "type", "cur", "glob", "n")}, "n_own": 40, "avail": None, "adv": 0.0,
+                "ret": 0.0, **{k: np.zeros(40, np.float32 if k == "logp" else np.int64) for k in ("order", "tgt", "bx", "by", "logp")}}
+        mb = collate([step, wide], torch.device("cpu"))
+        assert mb["pent"].shape[1] >= mb["order"].shape[1] == 40
         ev = evaluate(net, mb["ent"], mb["type"], mb["cur"], mb["mask"], mb["glob"], mb["n_own"], mb["order"], mb["tgt"],
                       mb["bx"], mb["by"], mb["avail"])
         assert float(opsd_loss(net, ev, mb, None)) >= 0.0
