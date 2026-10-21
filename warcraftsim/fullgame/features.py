@@ -259,6 +259,7 @@ VALID_MASK = os.environ.get("WARCRAFTSIM_VALID_MASK", "0") == "1"
 # selfplay --neutral: the neutral buildings' wares and the tavern heroes' orders in every network's vocabulary
 # (fullgame/neutral.py; model.load extends a checkpoint's and grows its network)
 NEUTRAL = os.environ.get("WARCRAFTSIM_NEUTRAL", "0") == "1"
+SHOP_IDS = np.array([int.from_bytes(c.encode(), "big") for c in ("ntav", "ngme", "nmer", "nmrk")], np.int64)
 
 
 def set_neutral(on: bool) -> None:
@@ -530,7 +531,10 @@ class Encoder:
         hidden = rows[alive & (rows[:, C_OWNER] == 1 - player) & ~vis] if omniscient else None
         if hidden is not None:
             enemy = np.concatenate([enemy, hidden])
-        neutral = rows[alive & (rows[:, C_OWNER] != player) & (rows[:, C_OWNER] != 1 - player) & vis]
+        known = vis
+        if NEUTRAL:  # (--neutral: the shops always, as the game's minimap shows the neutral buildings from the start)
+            known = vis | np.isin(rows[:, C_TYPE], SHOP_IDS)
+        neutral = rows[alive & (rows[:, C_OWNER] != player) & (rows[:, C_OWNER] != 1 - player) & known]
         parts = [own, enemy, neutral]
         if ghosts is not None and len(ghosts[0]):
             parts.append(ghosts[0].astype(rows.dtype, copy=False)[:, :rows.shape[1]])

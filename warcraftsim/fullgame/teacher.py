@@ -4,7 +4,7 @@ out: they label the policy's step for the units it would order (as the target bu
 cloning loss on those labels (--opd-coef) pulls the policy toward them while the reward decides whether they stay.
 selfplay --teach 1 (needs --neutral 1: the orders it teaches are the neutral buildings' wares).
 
-    a tavern hero: a worker near the tavern hires one (the game's draw of the race's usual picks), as the first hero
+    a tavern hero: the worker nearest the tavern hires one (the game's draw of the race's usual picks), as the first hero
                    when the player has an altar and none, or the second with a tier-2 hall, from 135 s, the money there
     a town portal: a hero near the goblin merchant buys one when it has none and a free slot, from 440 s
     a potion:      a hero below 40% of its hit points drinks what heals in its inventory
@@ -29,7 +29,7 @@ ALTARS = {fourcc(c) for c in ("halt", "oalt", "uaod", "eate")}
 TIER2 = {fourcc(c) for c in ("hkee", "hcas", "ostr", "ofrt", "unp1", "unp2", "etoa", "etoe")}
 TAVERN, MERCHANT, PORTAL = fourcc("ntav"), fourcc("ngme"), fourcc("stwp")
 GAP = 20  # steps between two lessons of a kind
-NEAR_TAVERN, NEAR_MERCHANT = 3000.0, 2500.0
+NEAR_MERCHANT = 2500.0
 USESLOT = 852008
 
 
@@ -66,7 +66,7 @@ class Teacher:
         alive = mine[mine[:, fx.C_FLAGS] & fx.DEAD == 0]
         heroes = mine[mine[:, fx.C_FLAGS] & fx.HERO > 0]  # (dead ones count: they can be revived)
         live_heroes = alive[alive[:, fx.C_FLAGS] & fx.HERO > 0]
-        shops = rows[(fl & fx.DEAD == 0) & ((rows[:, fx.C_VIS] >> self.side) & 1 == 1)]
+        shops = rows[fl & fx.DEAD == 0]  # (the neutral buildings: on the game's minimap from the start)
         tavern, merchant = shops[shops[:, fx.C_TYPE] == TAVERN], shops[shops[:, fx.C_TYPE] == MERCHANT]
         done = alive[(alive[:, fx.C_FLAGS] & fx.STRUCTURE > 0) & (alive[:, fx.C_FLAGS] & fx.CONSTRUCTING == 0), fx.C_TYPE]
         # a tavern hero: the first with an altar, the second with tier 2
@@ -79,7 +79,7 @@ class Teacher:
             if len(workers):
                 d = np.hypot(workers[:, fx.C_X] - tv[fx.C_X], workers[:, fx.C_Y] - tv[fx.C_Y])
                 k = int(np.argmin(d))
-                if d[k] < NEAR_TAVERN and self._due("tavern hero", t):
+                if self._due("tavern hero", t):  # (the nearest worker: it walks there, protocol.Buy)
                     out.append(Buy(int(workers[k, fx.C_ID]), int(tv[fx.C_ID]), self.pick))
         for h in live_heroes:
             items = [int(v) for v in h[fx.C_ITEM0:fx.C_ITEM0 + 6]]
