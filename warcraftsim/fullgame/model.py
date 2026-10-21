@@ -349,6 +349,17 @@ def anchor_kl(ev: dict, ev_ref: dict, mode: str = "reverse"):
     return out
 
 
+DERIVED = ("allowed", "valid_cols", "valid_need")  # tables from the game's data and the vocabulary, never trained
+
+
+def trained(state: dict, net: FullGameNet) -> dict:
+    """A checkpoint's weights for a network built since (a resumed run): the tables it derives from the game's
+    data (the orders each type may give, neutral.who_buys; the hero orders' needs, set_valid) the network's
+    own, as load gives them now, not the checkpoint's."""
+    own = net.state_dict()
+    return {**state, **{k: own[k] for k in DERIVED if k in own}}
+
+
 def adapt_config(config: dict) -> dict:
     """A checkpoint's config as this run's inputs read it (features.set_inputs): the clock's numbers in the
     global vector (inputs 2: features.GX, between the strategy block and the privileged one) added."""

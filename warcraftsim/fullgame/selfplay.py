@@ -56,7 +56,7 @@ from .collect import claim_slot
 from .costs import order_costs
 from .trace import DEAD_FLAG, Production, material, trace_step, unit_values  # noqa: F401
 from .play import unit_rows
-from .model import FullGameNet, act, adapt_config, anchor_kl, arch_key, evaluate, load
+from .model import FullGameNet, act, adapt_config, anchor_kl, arch_key, evaluate, load, trained
 from .teacher import Teacher
 from ..rl.league import Member, pfsp_weight
 
@@ -3452,7 +3452,7 @@ def main(argv: list[str] | None = None) -> int:
         src = args.resume_weights if args.resume_weights else (cks[-1] if cks else None)
         if src:
             last = torch.load(src, map_location=device, weights_only=False)
-            net.load_state_dict(last["model"])
+            net.load_state_dict(trained(last["model"], net))
             load_optimizer(opt, src, device, args.lr)
         resumed = {"steps": rows[-1]["agent_steps"] if rows else 0, "update": rows[-1]["epoch"] if rows else 0,
                    "episodes": sum(1 for _ in open(run_dir / "episodes.jsonl")) if (run_dir / "episodes.jsonl").exists() else 0,
@@ -3519,7 +3519,7 @@ def main(argv: list[str] | None = None) -> int:
     if xnet is not None:
         if resumed is not None and (run_dir / "exploiter.pt").exists():  # (it goes on too)
             xck = torch.load(run_dir / "exploiter.pt", map_location=device, weights_only=False)
-            xnet.load_state_dict(xck["model"])
+            xnet.load_state_dict(trained(xck["model"], xnet))
             x_update, x_since = xck["version"], xck.get("since", 0)
         publish(xnet, x_update, run_dir, "exploiter.pt")
         publish_exploiter(xnet, x_update, run_dir, vocab)
