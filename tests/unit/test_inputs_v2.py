@@ -308,7 +308,9 @@ def test_neutral_wares_as_orders(v2, tmp_path):
         tav = _unit(9, 15, 0, 0, 1, fx.STRUCTURE, "ntav")
         st = bot.view.step(np.stack([peon, tav]), None, np.zeros((0, 5), np.int64), 0)
         assert bot.commands(st, [hire], [1], [0], [0]) == [Buy(1, 9, code("Npbm"))]
-        assert bot.commands(st, [hire], [0], [0], [0]) == []  # (pointed at itself: no shop)
+        assert bot.commands(st, [hire], [0], [0], [0]) == []  # (on its way: committed, no other order)
+        bot.buying_since = {}
+        assert bot.commands(st, [hire], [0], [0], [0]) == [Buy(1, 9, code("Npbm"))]  # (pointed elsewhere: the tavern)
         m = fx.TechMask(v, "human")
         early = m.allowed(frozenset({"htow", "halt"}), {}, frozenset(), frozenset(), now=60.0)
         late = m.allowed(frozenset({"htow", "halt"}), {}, frozenset(), frozenset(), now=200.0)

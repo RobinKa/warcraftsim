@@ -32,7 +32,7 @@ from ..runtime.instance import Agent, BuiltinAI, GameInstance, GameSetup
 from . import features as fx
 from .collect import Films, series
 from .model import load
-from .neutral import is_shop
+from .neutral import is_shop, nearest_shop
 
 TYPE_CODE = fx.TYPE_CODE  # orders at or above this are unit / building / upgrade / ability codes
 
@@ -166,10 +166,14 @@ class BCAgent:
                 out.append(LearnSkill(unit, oid))
             elif kind == fx.POINT:
                 out.append(Build(unit, oid, x, y) if oid >= TYPE_CODE else PointOrder(unit, oid, x, y))
-            elif kind == fx.UNIT and oid >= TYPE_CODE:  # bought at a neutral building (neutral.py): the one pointed at
-                if is_shop(int(sel[int(tgt[i]), fx.C_TYPE])):  # (anything else: no order)
-                    out.append(Buy(unit, int(sel[int(tgt[i]), fx.C_ID]), oid))
+            elif kind == fx.UNIT and oid >= TYPE_CODE:  # bought at a neutral building (neutral.py): the one pointed at,
+                shop = sel[int(tgt[i])]                    # else the nearest that sells it (a new order's pointer
+                if not is_shop(int(shop[fx.C_TYPE])):      # has no reason to pick the tavern: no hire in thousands
+                    shop = nearest_shop(sel, oid, sel[i])  # of games)
+                if shop is not None:
+                    out.append(Buy(unit, int(shop[fx.C_ID]), oid))
                     self.__dict__.setdefault("buying_since", {})[unit] = self.t
+                    self.bought = getattr(self, "bought", 0) + 1
             elif kind == fx.UNIT and int(tgt[i]) >= st.get("ghost0", len(sel)):  # an enemy it remembers (inputs 3):
                 if oid in (ATTACK, fx.SMART):  # where it saw it (attack: attack-move); nothing else reaches it
                     g = sel[int(tgt[i])]

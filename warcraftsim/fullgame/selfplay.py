@@ -1766,6 +1766,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             "z_blocked": {c: dict(v) for c, v in builders[side].blocked.items()}} if side in builders else {}),
         **({"z_modes": trackers[side].report()} if side in trackers else {}),
         **({"taught": teachers[side].taught} if side in teachers else {}),
+        **({"buy_orders": bots[side].bought} if side in bots and getattr(bots[side], "bought", 0) else {}),
         **({"scenario": scenario} if scenario else {}),
         **({"z_t": {c: round(v) for c, v in zs[side]["t"].items()},
             "z_made": {c: round(v) for c, v in made[side].items()}} if side in zs else {}),

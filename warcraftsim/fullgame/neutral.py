@@ -169,3 +169,15 @@ def stock_times() -> dict[str, float]:
 def is_shop(type_id: int) -> bool:
     return int(type_id) in {fourcc(c) for c in SHOPS}
 
+
+def nearest_shop(sel, ware: int, unit):
+    """The row of the building in view nearest `unit` that sells `ware` (a tavern its heroes, a camp its
+    mercenaries, the goblin merchant its items), or None."""
+    from . import features as fx
+    code = int(ware).to_bytes(4, "big").decode("latin-1")
+    kind = TAVERN if code in TAVERN_HEROES else CAMP if code in MERCENARIES else MERCHANT
+    shops = sel[sel[:, fx.C_TYPE] == fourcc(kind)]
+    if not len(shops):
+        return None
+    d = (shops[:, fx.C_X] - unit[fx.C_X]) ** 2 + (shops[:, fx.C_Y] - unit[fx.C_Y]) ** 2
+    return shops[int(d.argmin())]
