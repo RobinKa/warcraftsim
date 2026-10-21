@@ -350,6 +350,16 @@ def test_target_builder_resumes_a_stalled_frame(monkeypatch):
     assert b.commands(obs, {}, 45, 0.5) == []
 
 
+def test_target_builder_saves_for_a_tavern_hero(monkeypatch):
+    """--neutral: a due tavern hero is bought by the worker nearest the tavern, and short of its cost the
+    builder keeps that cost from the agent's other orders (its reserve: the hire's class, as for any item)."""
+    b = _builder(monkeypatch, {"t": {"Npbm": 60.0}}, [("hfoo", fx.IMMEDIATE), ("Npbm", fx.UNIT)])
+    units = [(1, "htow", 0, 0), (2, "halt", 300, 0), (3, "hpea", 900, 0), (4, "hpea", 100, 0), (9, "ntav", 1200, 0)]
+    assert b.commands(_obs(units, gold=50), {}, 10, 0.5) == [] and b.reserve == (2, 100, 50)
+    c = b.commands(_obs(units), {}, 40, 0.5)
+    assert len(c) == 1 and (c[0].unit, c[0].shop, c[0].item) == (3, 9, _code("Npbm"))
+
+
 def test_affordable_keeps_the_reserve():
     """--z-build: the target's next item's cost is kept from the other orders; the item and free orders stay."""
     costs = np.asarray([[0, 0, 0], [0, 0, 0], [80, 30, 0], [160, 105, 0], [70, 0, 2]])  # none, move, barracks, keep, footman

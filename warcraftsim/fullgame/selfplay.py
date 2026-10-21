@@ -1301,7 +1301,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         from . import techtree
         from ..protocol import UnitFlags
         self.observe(obs)
-        self.agent_now = {fx.rawcode(o) for x in ordered if (o := getattr(x, "building", None) or getattr(x, "order", 0)) >= fx.TYPE_CODE}
+        self.agent_now = {fx.rawcode(o) for x in ordered
+                          if (o := getattr(x, "building", None) or getattr(x, "item", None) or getattr(x, "order", 0)) >= fx.TYPE_CODE}
         p = obs.players.get(self.side)
         if p is None:
             return []
@@ -1440,11 +1441,12 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
 
     def _class(self, c: str) -> int:
         code = int.from_bytes(c.encode(), "big")
-        return self.cls.get((code, fx.POINT)) or self.cls.get((code, fx.IMMEDIATE)) or 0
+        return (self.cls.get((code, fx.POINT)) or self.cls.get((code, fx.IMMEDIATE))
+                or self.cls.get((code, fx.UNIT)) or 0)  # (--neutral: a tavern hero, a mercenary: bought)
 
     @staticmethod
     def _name(cmd) -> str:
-        o = cmd.building if hasattr(cmd, "building") else cmd.order
+        o = cmd.building if hasattr(cmd, "building") else cmd.item if hasattr(cmd, "item") else cmd.order  # (a Buy: its ware)
         return fx.rawcode(o) if o >= fx.TYPE_CODE else str(o)
 
     def _affords(self, k: int, p) -> bool:
