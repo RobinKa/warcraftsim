@@ -490,3 +490,15 @@ def test_vocabulary_extension_is_deterministic_and_reorderable(v2):
         assert torch.equal(moved.order_emb.weight[i], net.order_emb.weight[j])
         assert torch.equal(moved.allowed[:, i], net.allowed[:, j]) and moved.order_kind[i] == net.order_kind[j]
     assert neutral.reorder(copy.deepcopy(net), vocab, {**vocab, "orders": vocab["orders"][:-1]}) is None
+
+
+def test_view_first_hero_free(v2):
+    """The view's mask lets a player with no hero (alive or dead) order its first at 50 gold; one with a hero not."""
+    costs = np.zeros((len(VOCAB["orders"]) + 1, 3), np.int64)
+    costs[6] = (425, 100, 5)  # (Hamg)
+    enc = fx.Encoder(VOCAB, costs)
+    me = np.asarray([0, 0, 50, 20, 5, 12, 0])
+    none = np.stack([_unit(1, 0, -2000, 0, 1)])
+    assert enc.view(0, 1.0, [0, 1]).step(none, me, np.zeros((0, 5), np.int64), 0)["avail"][6]
+    dead = np.stack([_unit(1, 0, -2000, 0, 1), _unit(2, 0, -2100, 0, 1, fx.HERO | fx.DEAD, "Hpal")])
+    assert not enc.view(0, 1.0, [0, 1]).step(dead, me, np.zeros((0, 5), np.int64), 0)["avail"][6]

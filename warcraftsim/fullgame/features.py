@@ -307,6 +307,26 @@ def _step_slices(col: np.ndarray, steps: int) -> np.ndarray:
     return np.searchsorted(col, np.arange(steps + 1), side="left")
 
 
+def is_hero_code(code: str) -> bool:
+    """A hero's unit code (an altar's or a tavern's: "Hpal", "Npbm"; not research, "Rhde")."""
+    return len(code) == 4 and code[0].isupper() and code[0] != "R" and code[1:].islower()
+
+
+def hero_classes(vocab: dict) -> np.ndarray:
+    """The order classes that make a hero: trained at an altar (immediate) or hired at a tavern (unit target)."""
+    return np.asarray([c for c, (o, k) in enumerate(vocab["orders"], start=1)
+                       if o >= TYPE_CODE and k in (IMMEDIATE, UNIT) and is_hero_code(rawcode(o))], np.int64)
+
+
+def first_hero_free(costs: np.ndarray, vocab: dict) -> np.ndarray:
+    """`costs` with the heroes' gold and lumber 0: a player's first hero costs only its food (1.29: the hero token,
+    bj_MELEE_STARTING_HERO_TOKENS; tested at the altar and the tavern, 2026-10-21. Before, the mask held a first
+    hero back until 425 gold and 100 lumber)."""
+    c = np.array(costs, copy=True)
+    c[hero_classes(vocab), :2] = 0
+    return c
+
+
 def affordable(costs: np.ndarray, gold: int, lumber: int, fu: int, fc: int, reserve=None) -> np.ndarray:
     """[n_orders + 1] bool: the order classes the player can pay for (row 0, no order: always). `reserve`
     (order class, gold, lumber), --z-build: what the target's next item needs is kept from the others
@@ -495,6 +515,8 @@ class Encoder:
         each step's availability mask ("avail": what the player can pay for)."""
         self.vocab = vocab
         self.costs = costs
+        # the first hero is free (the game's hero token: only its food; at the altar or the tavern): the costs then
+        self.costs_first = first_hero_free(costs, vocab) if costs is not None else None
         self.type_index = {t: i + 1 for i, t in enumerate(vocab["types"])}  # 0: unknown
         self.cur_index = {o: i + 1 for i, o in enumerate(vocab["current_orders"])}
         self.order_index = {tuple(k): i + 1 for i, k in enumerate(vocab["orders"])}  # 0: no order
@@ -942,6 +964,11 @@ class View:
             return np.zeros((0, rows.shape[1]), rows.dtype), np.zeros(0, np.float32)
         return np.stack([r for _, _, r in keep]), np.asarray([a for _, a, _ in keep], np.float32)
 
+    def has_hero(self, rows: np.ndarray) -> bool:
+        """Whether the player has had a hero (dead ones stay among the rows) or makes one now: its first is free."""
+        mine = rows[rows[:, C_OWNER] == self.player]
+        return bool((mine[:, C_FLAGS] & HERO > 0).any()) or any(m[0] == 2 for m in self.making.values())
+
     def tech_allowed(self, rows: np.ndarray) -> np.ndarray:
         """--tech-mask: the order classes the player has the tech for (TechMask), from its finished buildings,
         research, heroes (dead ones too: they count) and what it makes now."""
@@ -1029,7 +1056,7 @@ class View:
         g[enc.G0 + enc.ZD + enc.GX:] = self.priv(rows, opp)
         avail = None
         if enc.costs is not None:  # what the player can pay for now (orders beyond it are masked)
-            c = enc.costs
+            c = enc.costs_first if not self.has_hero(rows) else enc.costs
             gold, lumber, fu, fc = (int(me[2]), int(me[3]), int(me[4]), int(me[5])) if me is not None else (0, 0, 0, 0)
             avail = affordable(c, gold, lumber, fu, fc, self.reserve)
             if enc.tech:  # (--tech-mask)

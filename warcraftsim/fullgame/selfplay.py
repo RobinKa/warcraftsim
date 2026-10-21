@@ -1331,7 +1331,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         mine = [u for u in obs.units if u.owner == self.side and u.alive]
         done = [u for u in mine if u.is_structure and not u.flags & UnitFlags.CONSTRUCTING]
         have = techtree.counts_as({u.type for u in done} | {c for c in made if c[0] == "R"}, self.race)
-        heroes = len({c for c in (*made, *self.started) if techtree.is_hero(c)})
+        heroes = len({c for c in (*made, *self.started) if techtree.is_hero(c) or fx.is_hero_code(c)})
+        self.first_free = heroes == 0 and not any(getattr(u, "is_hero", False) for u in mine)  # (a free first hero)
         save = None
         for _, c in due:
             item = self.next_step(c, have, {u.type for u in done}, heroes, t)
@@ -1452,6 +1453,11 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             self.why_not = self.why_not or ("busy" if at else "no maker")
         return None
 
+    def _order_id(self, k: int) -> int:
+        if not hasattr(self, "_oids"):
+            self._oids = {c: o for (o, _), c in self.cls.items()}
+        return self._oids.get(k, 0)
+
     def _class(self, c: str) -> int:
         code = int.from_bytes(c.encode(), "big")
         return (self.cls.get((code, fx.POINT)) or self.cls.get((code, fx.IMMEDIATE))
@@ -1466,6 +1472,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         if self.costs is None:
             return True
         g, l, f = (int(v) for v in self.costs[k])
+        if getattr(self, "first_free", False) and fx.is_hero_code(fx.rawcode(self._order_id(k))):
+            g = l = 0  # (the first hero: its food only)
         self.why_not = "gold" if p.gold < g else "lumber" if p.lumber < l else "food" if f and p.food_used + f > p.food_cap else ""
         return not self.why_not
 

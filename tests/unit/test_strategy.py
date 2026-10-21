@@ -212,7 +212,9 @@ def test_target_builder_starts_due_items_at_their_makers(monkeypatch):
     assert b.commands(_obs(units), {}, 12, 0.5) == []  # (no barracks for the footman; the lumber mill not due)
     c = b.commands(_obs(units + [(5, "hbar", 500, 0)]), {"hbar": 1.0, "Hamg": 2.0}, 40, 0.5)
     assert len(c) == 1 and c[0].unit == 5 and c[0].order == _code("hfoo")
-    assert b.commands(_obs(units, gold=50), {}, 60, 0.5) == []  # (nothing it can pay for)
+    assert b.commands(_obs(units, gold=50), {"Hamg": 2.0}, 60, 0.5) == []  # (nothing it can pay for)
+    c = b.commands(_obs(units, gold=50), {}, 80, 0.5)  # (but a first hero: free, its food only)
+    assert len(c) == 1 and c[0].order == _code("Hamg")
 
 
 def test_target_builder_starts_what_an_item_needs_first(monkeypatch):
@@ -355,9 +357,21 @@ def test_target_builder_saves_for_a_tavern_hero(monkeypatch):
     builder keeps that cost from the agent's other orders (its reserve: the hire's class, as for any item)."""
     b = _builder(monkeypatch, {"t": {"Npbm": 60.0}}, [("hfoo", fx.IMMEDIATE), ("Npbm", fx.UNIT)])
     units = [(1, "htow", 0, 0), (2, "halt", 300, 0), (3, "hpea", 900, 0), (4, "hpea", 100, 0), (9, "ntav", 1200, 0)]
-    assert b.commands(_obs(units, gold=50), {}, 10, 0.5) == [] and b.reserve == (2, 100, 50)
-    c = b.commands(_obs(units), {}, 40, 0.5)
+    assert b.commands(_obs(units, gold=50), {"Hamg": 1.0}, 10, 0.5) == [] and b.reserve == (2, 100, 50)
+    c = b.commands(_obs(units), {"Hamg": 1.0}, 40, 0.5)
     assert len(c) == 1 and (c[0].unit, c[0].shop, c[0].item) == (3, 9, _code("Npbm"))
+    c = b.commands(_obs(units, gold=50), {}, 80, 0.5)  # (the first hero: free)
+    assert len(c) == 1 and c[0].item == _code("Npbm") and b.reserve is None
+
+
+def test_first_hero_is_free():
+    """A player's first hero costs only its food (the game's hero token): at an altar or a tavern; not research."""
+    vocab = {"orders": [[_code("hfoo"), fx.IMMEDIATE], [_code("Hamg"), fx.IMMEDIATE], [_code("Npbm"), fx.UNIT],
+                        [_code("Rhde"), fx.IMMEDIATE]]}
+    costs = np.asarray([[0, 0, 0], [135, 0, 2], [425, 100, 5], [425, 135, 5], [100, 50, 0]])
+    free = fx.first_hero_free(costs, vocab)
+    assert free.tolist() == [[0, 0, 0], [135, 0, 2], [0, 0, 5], [0, 0, 5], [100, 50, 0]]
+    assert fx.affordable(free, 50, 20, 5, 12).tolist() == [True, False, True, True, False]
 
 
 def test_affordable_keeps_the_reserve():

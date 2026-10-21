@@ -1250,7 +1250,13 @@ function W3S_DropBuy takes integer i returns nothing
     set w3s_buy_shop[w3s_nbuy] = null
 endfunction
 
-// (a shop sells to the unit it serves: a right-click on it engages, and the sale goes through a moment later)
+// a shop's sale to its player's unit u in reach (it needs no right-click: a worker's right-click on a tavern could leave
+// the tavern serving none of the player's units, ~half the purchases never went through, 2026-10-21)
+function W3S_Sell takes unit u, unit shop, integer id returns boolean
+    return IssueNeutralImmediateOrderById(GetOwningPlayer(u), shop, id)
+endfunction
+
+// (a unit sent to buy walks to the shop; the sale goes through once it is in reach)
 function W3S_BuyPending takes nothing returns nothing
     local integer i = 0
     local unit u
@@ -1260,12 +1266,12 @@ function W3S_BuyPending takes nothing returns nothing
         set w3s_buy_ttl[i] = w3s_buy_ttl[i] - 1
         if u == null or IsUnitType(u, UNIT_TYPE_DEAD) or GetUnitTypeId(w3s_buy_shop[i]) == 0 or w3s_buy_ttl[i] < 0 then
             call W3S_DropBuy(i)
-        elseif IsUnitInRange(u, w3s_buy_shop[i], W3S_BUY_RANGE) and IssueNeutralImmediateOrderById(GetOwningPlayer(u), w3s_buy_shop[i], w3s_buy_item[i]) then
+        elseif IsUnitInRange(u, w3s_buy_shop[i], W3S_BUY_RANGE) and W3S_Sell(u, w3s_buy_shop[i], w3s_buy_item[i]) then
             call W3S_DropBuy(i)
         else
-            if IsUnitInRange(u, w3s_buy_shop[i], W3S_BUY_RANGE) then  // (come on foot, the shop unseen when sent:
-                call IssueTargetOrderById(u, 851971, w3s_buy_shop[i])  // the right-click that engages it, now)
-            endif
+            // (sent on foot to a shop it could not see: a right-click on it once it is seen, so it arrives as a
+            // customer; arriving by a move, ~half the purchases never went through, a right-click beside it no help)
+            // (no right-click: a worker's on a tavern left it beside it, the tavern then serving none of its player's units)
             set i = i + 1
         endif
     endloop
@@ -1322,19 +1328,16 @@ function W3S_ApplyOne takes integer at returns integer
         endif
     elseif op == 8 then
         // buy from a neutral building (a shop's item, a tavern's hero, a camp's mercenary) for the unit's player:
-        // at once when the building serves the unit already, else the unit goes to it (a right-click) and the
-        // purchase is tried every step until it goes through, at most W3S_BUY_STEPS (W3S_BuyPending); a shop in the
-        // fog (unseen: an order can't target it) is walked to, and right-clicked in reach
+        // at once when the unit is in reach, else the unit walks to it and the purchase is tried every step until
+        // it goes through, at most W3S_BUY_STEPS (W3S_BuyPending)
         set n = 4
         set s = W3S_Unit(w3s_cmd[at + 2])
         if W3S_Owned(u) and s != null then
-            if IsUnitInRange(u, s, W3S_BUY_RANGE) and IssueNeutralImmediateOrderById(GetOwningPlayer(u), s, w3s_cmd[at + 3]) then
+            if IsUnitInRange(u, s, W3S_BUY_RANGE) and W3S_Sell(u, s, w3s_cmd[at + 3]) then
                 set ok = true
             else
-                set ok = IssueTargetOrderById(u, 851971, s)
-                if not ok then  // (a shop the player hasn't seen, in the fog: no order can target it; a walk there)
-                    set ok = IssuePointOrderById(u, 851986, GetUnitX(s), GetUnitY(s))
-                endif
+                set ok = IssuePointOrderById(u, 851986, GetUnitX(s), GetUnitY(s))  // (a walk there: a shop in the fog can't be
+                // targeted, and a worker's right-click on a tavern could leave the tavern serving none of its player's units)
                 if ok then
                     call W3S_AddBuy(u, s, w3s_cmd[at + 3], W3S_BUY_STEPS)
                 endif

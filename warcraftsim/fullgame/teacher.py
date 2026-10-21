@@ -71,7 +71,8 @@ class Teacher:
         done = alive[(alive[:, fx.C_FLAGS] & fx.STRUCTURE > 0) & (alive[:, fx.C_FLAGS] & fx.CONSTRUCTING == 0), fx.C_TYPE]
         # a tavern hero: the first with an altar, the second with tier 2
         n_heroes = len(heroes)
-        if (self.pick is not None and len(tavern) and now >= 135.0 and n_heroes < 2 and player.gold >= 425 and player.lumber >= 135
+        if (self.pick is not None and len(tavern) and now >= 135.0 and n_heroes < 2
+                and (n_heroes == 0 or player.gold >= 425 and player.lumber >= 135)  # (the first hero is free: food only)
                 and player.food_used + 5 <= player.food_cap and fourcc_in(done, ALTARS)
                 and (n_heroes == 0 or fourcc_in(done, TIER2)) and self.pick not in set(heroes[:, fx.C_TYPE].tolist())):
             tv = tavern[0]
