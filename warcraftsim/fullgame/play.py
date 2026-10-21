@@ -60,6 +60,7 @@ def unit_rows(obs: Observation, t: int) -> np.ndarray:
 
 REPAIR = 852024  # the order a worker resumes a building with
 ATTACK = 851983
+BUY_COMMIT_STEPS = 80  # (a unit sent to buy: 40 s to walk there, the harness keeps the purchase pending meanwhile)
 
 
 class BCAgent:
@@ -87,6 +88,7 @@ class BCAgent:
         self.trees = {d.id: (d.x, d.y) for d in (obs.destructables or [])}
         self.h = None  # the memory core's state (FullGameNet.memory)
         self.building_since: dict[int, int] = {}  # worker -> the step it started its building order
+        self.buying_since: dict[int, int] = {}  # unit -> the step it was sent to buy (protocol.Buy: on its way)
         self.t = 0
 
     def accepted(self, cmds: list[Command], results: list[bool]) -> None:
@@ -167,6 +169,7 @@ class BCAgent:
             elif kind == fx.UNIT and oid >= TYPE_CODE:  # bought at a neutral building (neutral.py): the one pointed at
                 if is_shop(int(sel[int(tgt[i]), fx.C_TYPE])):  # (anything else: no order)
                     out.append(Buy(unit, int(sel[int(tgt[i]), fx.C_ID]), oid))
+                    self.__dict__.setdefault("buying_since", {})[unit] = self.t
             elif kind == fx.UNIT and int(tgt[i]) >= st.get("ghost0", len(sel)):  # an enemy it remembers (inputs 3):
                 if oid in (ATTACK, fx.SMART):  # where it saw it (attack: attack-move); nothing else reaches it
                     g = sel[int(tgt[i])]
@@ -191,9 +194,13 @@ class BCAgent:
         return out
 
     def committed(self, unit: int) -> bool:
-        """A worker busy with a building order (features.building) for less than BUILD_COMMIT_STEPS."""
+        """A worker busy with a building order (features.building) for less than BUILD_COMMIT_STEPS, or a unit
+        on its way to buy at a neutral building for less than BUY_COMMIT_STEPS (another order every half second
+        turned it back long before it reached the tavern: no tavern hero hired in thousands of games)."""
         since = self.building_since.get(unit)
-        return since is not None and self.t - since < fx.BUILD_COMMIT_STEPS
+        bought = getattr(self, "buying_since", {}).get(unit)
+        return ((since is not None and self.t - since < fx.BUILD_COMMIT_STEPS)
+                or (bought is not None and self.t - bought < BUY_COMMIT_STEPS))
 
     def act(self, obs: Observation, t: int) -> list[Command]:
         st = self.observe(obs, t)
