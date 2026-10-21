@@ -104,6 +104,11 @@ class Nets:
         net.load_state_dict(ck["model"])  # (in place: CUDA graphs captured from it stay valid)
         return net, ck["version"], m
 
+    def vocab(self) -> dict:
+        if not hasattr(self, "_vocab"):
+            self._vocab = json.loads(Path(self.cfg["vocab"]).read_text())
+        return self._vocab
+
     def reload(self) -> None:
         self.checked = time.time()
         self.current, self.version, self.mtime = self._live(self.current_path, self.current, self.version, self.mtime)
@@ -120,8 +125,8 @@ class Nets:
                 self.reload()
             return self.current if key == "current" else self.exploiter
         net = self.snapshots.pop(key, None)
-        if net is None:
-            net, _ = load(key, self.device)
+        if net is None:  # (--neutral: its orders in the run's vocabulary's order, as the games decode them)
+            net, _ = load(key, self.device, vocab=self.vocab() if fx.NEUTRAL else None)
         self.snapshots[key] = net  # most recently used last
         # the whole league stays loaded (~8 MB each on the GPU): with a cache of 4 and 8+ snapshots
         # it reloaded one from disk on almost every call (83% of an actor's time, the games waiting)
@@ -3383,7 +3388,18 @@ def main(argv: list[str] | None = None) -> int:
     torch.set_num_threads(4)  # the games need the cores
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
-    net, ck = load(args.init, device, None if args.memory < 0 else bool(args.memory))
+    # --neutral: the vocabulary of the weights it trains (its last checkpoint's, or the start's), when they have one
+    # extended already: the anchor's orders put in its order (one extended in another process could list a toggle's
+    # two orders the other way round, neutral.reorder)
+    weights_vocab = None
+    if fx.NEUTRAL:
+        from .neutral import extended
+        own = sorted((run_dir / "checkpoints").glob("[0-9]*.pt")) if args.resume else []
+        src = args.resume_weights or (own[-1] if own else None) or (args.start_weights if not own else None)
+        if src is not None:
+            weights_vocab = torch.load(src, map_location="cpu", weights_only=False).get("vocab")
+            weights_vocab = weights_vocab if weights_vocab is not None and extended(weights_vocab) else None
+    net, ck = load(args.init, device, None if args.memory < 0 else bool(args.memory), vocab=weights_vocab)
     vocab = ck["vocab"]
     trained_for = ck.get("value_reward")  # the rewards BC's value head learned (fullgame/bc.py)
     ours = {"gamma": args.gamma, "shaping": args.shaping, "shaping_scale": args.shaping_scale, "tie_break": args.tie_break}
@@ -3397,7 +3413,7 @@ def main(argv: list[str] | None = None) -> int:
         for p in ref.parameters():
             p.requires_grad_(False)
     if args.start_weights and not args.resume:  # a new run from another run's checkpoint (--init stays the anchor)
-        start, _ = load(args.start_weights, device, None if args.memory < 0 else bool(args.memory))
+        start, _ = load(args.start_weights, device, None if args.memory < 0 else bool(args.memory), vocab=vocab if fx.NEUTRAL else None)
         if arch_key(start.config) != arch_key(net.config):  # a grown network (scripts/grow_model.py): its own
             net = start                                     # shapes (the anchor keeps the init's)
         else:
@@ -3521,7 +3537,9 @@ def main(argv: list[str] | None = None) -> int:
                 if fx.NEUTRAL and c.get("vocab"):  # (--neutral: model.load extends it)
                     from .neutral import extend_vocab
                     c["vocab"] = extend_vocab(c["vocab"])
-                return (c["config"].get("bins", 128) == fx.BINS and c.get("vocab") == vocab
+                from .neutral import same_orders  # (--neutral: a reordering of the run's fits, Nets.get)
+                return (c["config"].get("bins", 128) == fx.BINS and c.get("vocab") is not None
+                        and (c["vocab"] == vocab or bool(fx.NEUTRAL) and same_orders(c["vocab"], vocab))
                         and adapt_config(c["config"])["G"] == net.config["G"])  # (the run's rows' width: a strategy block or none)
             taken = league.inherit(json.loads((src / "league.json").read_text()), src.name, usable)
             print(f"league from {src.name}: {len(taken)} past snapshots ({', '.join(taken)})", flush=True)

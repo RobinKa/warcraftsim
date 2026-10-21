@@ -392,10 +392,12 @@ def configure_for(path) -> None:
         fx.ACTIVE_F = fx.F
 
 
-def load(path, device="cpu", memory: bool | None = None) -> tuple[FullGameNet, dict]:
+def load(path, device="cpu", memory: bool | None = None, vocab: dict | None = None) -> tuple[FullGameNet, dict]:
     """A checkpoint's network. `memory`: with (a new core, which does nothing at first) or without one. Inputs
     added since (features.set_inputs: unit features, the clock) start with zero weights, and with --valid-mask
-    (features.VALID_MASK) its hero orders' mask is set (set_valid)."""
+    (features.VALID_MASK) its hero orders' mask is set (set_valid). `vocab` (--neutral: the run's): its orders in
+    that vocabulary's order (neutral.reorder; one extended in another process may list a toggle's two the other
+    way round)."""
     ck = torch.load(path, map_location=device, weights_only=False)
     config = dict(ck["config"])
     if memory is not None:
@@ -434,6 +436,10 @@ def load(path, device="cpu", memory: bool | None = None) -> tuple[FullGameNet, d
             new = neutral.extend_vocab(ck["vocab"])
             net = neutral.grow(net, ck["vocab"], new)
             ck = {**ck, "vocab": new}
+        if vocab is not None and ck["vocab"]["orders"] != vocab["orders"]:
+            if neutral.reorder(net, ck["vocab"], vocab) is None:
+                raise RuntimeError(f"{path}: its vocabulary has other orders than the run's")
+            ck = {**ck, "vocab": vocab}
         neutral.who_buys(net, ck["vocab"])  # (and its tables as they are now: networks grown before them too)
         if net.config.get("valid"):
             net.set_valid(ck["vocab"])

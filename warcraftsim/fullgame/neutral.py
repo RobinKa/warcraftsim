@@ -71,7 +71,8 @@ def extend_vocab(vocab: dict) -> dict:
         for code in hero_ability_table()[h]:
             add(fourcc(code), 3)  # (learning it)
             a = info[code]
-            for name in {a.order, *func.get(code, {}).values()} - {None}:
+            for name in sorted({a.order, *func.get(code, {}).values()} - {None}):  # (sorted: a set's order is the
+                # process's hash seed's; a toggle's two orders came in either order, 2026-10-21)
                 oid = SPELL_IDS.get(name)
                 if oid is None:
                     continue
@@ -81,6 +82,34 @@ def extend_vocab(vocab: dict) -> dict:
     if "orders" in counts:
         counts["orders"] = list(counts["orders"]) + [0] * (len(orders) - len(counts["orders"]))
     return {**vocab, "types": types, "orders": orders, "order_names": names, "counts": counts, "neutral": 1}
+
+
+@torch.no_grad()
+def reorder(net, old: dict, new: dict):
+    """`net` (of vocabulary `old`) with its orders in `new`'s order, in place: the same orders, another order (a
+    vocabulary extended in another process before extend_vocab sorted a toggle's two orders: robogoblin and
+    unrobogoblin, 2026-10-21; a run's network then gave one for the other) -> `net`, or None when `new` has other
+    orders or unit types."""
+    if old["orders"] == new["orders"]:
+        return net
+    if list(old["types"]) != list(new["types"]) or sorted(map(tuple, old["orders"])) != sorted(map(tuple, new["orders"])):
+        return None
+    at = {tuple(o): i + 1 for i, o in enumerate(old["orders"])}
+    perm = torch.as_tensor([0] + [at[tuple(o)] for o in new["orders"]], device=net.order_kind.device)
+    head = net.order[2]
+    head.weight.copy_(head.weight[perm])
+    head.bias.copy_(head.bias[perm])
+    net.order_emb.weight.copy_(net.order_emb.weight[perm])
+    net.allowed.copy_(net.allowed[:, perm])
+    net.order_kind.copy_(net.order_kind[perm])
+    if net.config.get("valid"):
+        net.set_valid(new)
+    return net
+
+
+def same_orders(a: dict, b: dict) -> bool:
+    """Two vocabularies with the same unit types and orders, in any order (reorder: one network fits the other)."""
+    return list(a["types"]) == list(b["types"]) and sorted(map(tuple, a["orders"])) == sorted(map(tuple, b["orders"]))
 
 
 @torch.no_grad()

@@ -460,3 +460,33 @@ def test_no_mercenaries(v2, tmp_path):
     finally:
         fx.set_neutral(0)
         sp._POOLS.clear()
+
+
+def test_vocabulary_extension_is_deterministic_and_reorderable(v2):
+    """--neutral: extend_vocab lists a toggle's two orders sorted (a set's order was the process's hash seed's: runs
+    extended in different processes listed robogoblin and unrobogoblin the other way round), and a network of one
+    order is put in another's (neutral.reorder: every order-indexed weight and table follows its order)."""
+    import copy
+    import subprocess
+    import sys
+
+    from warcraftsim.fullgame import neutral
+    from warcraftsim.fullgame.model import FullGameNet
+    code_ = ("import json; from warcraftsim.fullgame.neutral import extend_vocab; "
+             "print(json.dumps(extend_vocab({'types': [], 'orders': [], 'upgrades': [], 'current_orders': []})['orders']))")
+    outs = {subprocess.run([sys.executable, "-c", code_], capture_output=True, text=True,
+                           env={**__import__("os").environ, "PYTHONHASHSEED": s}).stdout for s in ("1", "2", "3")}
+    assert len(outs) == 1 and len(json.loads(next(iter(outs)))) > 50
+    vocab = neutral.extend_vocab(VOCAB)
+    net = FullGameNet(n_types=len(vocab["types"]) + 1, n_orders=len(vocab["orders"]) + 1, n_cur=2, G=8, d=16, layers=1)
+    torch.nn.init.normal_(net.order[2].bias)
+    net.allowed[:] = torch.rand(net.allowed.shape) > 0.5
+    net.order_kind.copy_(torch.as_tensor([0] + [k for _, k in vocab["orders"]]))
+    other = {**vocab, "orders": vocab["orders"][:-2] + vocab["orders"][-1:] + vocab["orders"][-2:-1]}
+    moved = neutral.reorder(copy.deepcopy(net), vocab, other)
+    n = len(vocab["orders"])
+    for i, j in ((n, n - 1), (n - 1, n), (1, 1)):  # (class i in `other` is class j in `vocab`)
+        assert torch.equal(moved.order[2].bias[i], net.order[2].bias[j])
+        assert torch.equal(moved.order_emb.weight[i], net.order_emb.weight[j])
+        assert torch.equal(moved.allowed[:, i], net.allowed[:, j]) and moved.order_kind[i] == net.order_kind[j]
+    assert neutral.reorder(copy.deepcopy(net), vocab, {**vocab, "orders": vocab["orders"][:-1]}) is None
