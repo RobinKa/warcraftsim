@@ -257,15 +257,15 @@ VALID_MASK = os.environ.get("WARCRAFTSIM_VALID_MASK", "0") == "1"
 
 
 # selfplay --neutral: the neutral buildings' wares and the tavern heroes' orders in every network's vocabulary
-# (fullgame/neutral.py; model.load extends a checkpoint's and grows its network)
-NEUTRAL = os.environ.get("WARCRAFTSIM_NEUTRAL", "0") == "1"
+# (fullgame/neutral.py; model.load extends a checkpoint's and grows its network); 2: no mercenaries (neutral.who_buys)
+NEUTRAL = int(os.environ.get("WARCRAFTSIM_NEUTRAL", "0"))
 SHOP_IDS = np.array([int.from_bytes(c.encode(), "big") for c in ("ntav", "ngme", "nmer", "nmrk")], np.int64)
 
 
-def set_neutral(on: bool) -> None:
+def set_neutral(v: int) -> None:
     global NEUTRAL
-    NEUTRAL = bool(on)
-    os.environ["WARCRAFTSIM_NEUTRAL"] = str(int(NEUTRAL))
+    NEUTRAL = int(v)
+    os.environ["WARCRAFTSIM_NEUTRAL"] = str(NEUTRAL)
 
 
 def set_masks(tech: bool, valid: bool) -> None:

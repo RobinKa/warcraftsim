@@ -187,7 +187,9 @@ def nearest_shop(sel, ware: int, unit):
 def who_buys(net, vocab: dict) -> None:
     """Which unit types may buy what (`net`'s allowed orders, in place): a hero anything, a worker a tavern hero or a
     mercenary, never the goblin merchant's items (a worker has no inventory: in fgself-111 workers sent to buy them
-    were all refused)."""
+    were all refused); with --neutral 2 no one a mercenary (in the real game's evaluation, 2026-10-21, every policy's
+    workers bought ~2 a game, never taught, and won less: fgself-109 84% of 37 against insane, 94-98% before)."""
+    from . import features as fx
     tix = {int(t): i + 1 for i, t in enumerate(vocab["types"])}
     oix = {tuple(o): c for c, o in enumerate(vocab["orders"], start=1)}
     items = [oix[(fourcc(c), 2)] for c in MERCHANT_ITEMS if (fourcc(c), 2) in oix]
@@ -198,3 +200,6 @@ def who_buys(net, vocab: dict) -> None:
         if hero or c in WORKERS:
             net.allowed[i, hires] = True
             net.allowed[i, items] = hero
+    if fx.NEUTRAL == 2:
+        mercs = [oix[(fourcc(c), 2)] for c in MERCENARIES if (fourcc(c), 2) in oix]
+        net.allowed[:, mercs] = False

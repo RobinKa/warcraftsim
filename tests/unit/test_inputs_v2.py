@@ -2,6 +2,8 @@
 features; the masks of orders the player lacks the tech for (--tech-mask) and a hero can't carry out now
 (--valid-mask); and older checkpoints loaded with zero weights for the new inputs."""
 
+import json
+
 import numpy as np
 import pytest
 
@@ -432,3 +434,29 @@ def test_privileged_views_and_self_distillation(v2):
         assert float(opsd_loss(net, ev, mb, None)) >= 0.0
     finally:
         fx.set_inputs(1, False)
+
+
+def test_no_mercenaries(v2, tmp_path):
+    """--neutral 2: no unit type may buy a mercenary (who_buys), the target builder buys none, and the targets have
+    none (their items' list, the inputs' slots, unchanged)."""
+    from warcraftsim.fullgame import neutral, selfplay as sp
+    from warcraftsim.fullgame.model import FullGameNet
+    vocab = neutral.extend_vocab(VOCAB)
+    net = FullGameNet(n_types=len(vocab["types"]) + 1, n_orders=len(vocab["orders"]) + 1, n_cur=2, G=8, d=16, layers=1)
+    tix = {int(t): i + 1 for i, t in enumerate(vocab["types"])}
+    oix = {tuple(o): c for c, o in enumerate(vocab["orders"], start=1)}
+    merc, tav = oix[(code("nfsp"), fx.UNIT)], oix[(code("Npbm"), fx.UNIT)]
+    pool = {"items": {"human": ["hfoo", "nfsp"]}, "strategies": [{"race": "human", "t": {"hfoo": 60.0, "nfsp": 200.0}}]}
+    path = tmp_path / "pool.json"
+    path.write_text(json.dumps(pool))
+    try:
+        for v in (1, 2):
+            fx.set_neutral(v)
+            neutral.who_buys(net, vocab)
+            assert bool(net.allowed[tix[code("Hpal")], merc]) == (v == 1) and bool(net.allowed[tix[code("Hpal")], tav])
+        sp._POOLS.clear()
+        got = sp.strategy_pool({"z_pool": str(path)})
+        assert got["strategies"][0]["t"] == {"hfoo": 60.0} and got["items"]["human"] == ["hfoo", "nfsp"]
+    finally:
+        fx.set_neutral(0)
+        sp._POOLS.clear()

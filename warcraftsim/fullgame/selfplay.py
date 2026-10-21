@@ -1210,7 +1210,12 @@ def strategy_pool(cfg: dict) -> dict | None:
     if not path:
         return None
     if path not in _POOLS:
-        _POOLS[path] = json.loads(Path(path).read_text())
+        pool = json.loads(Path(path).read_text())
+        if fx.NEUTRAL == 2:  # (--neutral 2: no mercenaries to buy, none in the targets)
+            from .neutral import MERCENARIES
+            pool["strategies"] = [{**s, "t": {c: v for c, v in s["t"].items() if c not in MERCENARIES}}
+                                  for s in pool["strategies"]]  # (the items' list stays: it is the inputs' slots)
+        _POOLS[path] = pool
     return _POOLS[path]
 
 
@@ -1396,6 +1401,9 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         code = int.from_bytes(c.encode(), "big")
         if (k := self.cls.get((code, fx.UNIT))) is not None:  # (--neutral: a tavern hero, a mercenary: bought by the
             from .neutral import MERCENARIES  # worker nearest its building, the tavern or a camp)
+            if c in MERCENARIES and fx.NEUTRAL == 2:  # (--neutral 2: none to buy)
+                self.why_not = "off"
+                return None
             kind = "nmer" if c in MERCENARIES else "ntav"
             shops = [u for u in obs.units if u.type == kind and u.alive]
             workers = [u for u in mine if u.is_worker and not u.is_structure and not fx.building(int(u.flags), u.order)]
@@ -3016,7 +3024,7 @@ def main(argv: list[str] | None = None) -> int:
                     "checkpoints read them with zero weights)")
     ap.add_argument("--neutral", type=int, default=0, help="the neutral buildings' wares as orders (a tavern's heroes, "
                     "mercenaries, the goblin merchant's items: protocol.Buy) and the tavern heroes' skills and spells "
-                    "(neutral.py: every network loaded grows to the extended vocabulary)")
+                    "(neutral.py: every network loaded grows to the extended vocabulary); 2: no mercenaries")
     ap.add_argument("--memory-fade", type=int, default=0, help="inputs 3: the remembered enemies fade into the learner's "
                     "attention over this many updates (its bias on them from -8 to 0; older networks and the anchor "
                     "keep them hidden at -30); 0: as loaded")
