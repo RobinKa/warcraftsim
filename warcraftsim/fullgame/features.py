@@ -265,6 +265,16 @@ NEUTRAL = int(os.environ.get("WARCRAFTSIM_NEUTRAL", "0"))
 SHOP_IDS = np.array([int.from_bytes(c.encode(), "big") for c in ("ntav", "ngme", "nmer", "nmrk")], np.int64)
 
 
+# selfplay --macros: the agent's own orders for what the game spreads over many (fullgame/macros.py: expand)
+MACROS = os.environ.get("WARCRAFTSIM_MACROS", "0") == "1"
+
+
+def set_macros(on: bool) -> None:
+    global MACROS
+    MACROS = bool(on)
+    os.environ["WARCRAFTSIM_MACROS"] = str(int(MACROS))
+
+
 def set_neutral(v: int) -> None:
     global NEUTRAL
     NEUTRAL = int(v)
@@ -542,6 +552,12 @@ class Encoder:
         self.costs = costs
         # the first hero is free (the game's hero token: only its food; at the altar or the tavern): the costs then
         self.costs_first = first_hero_free(costs, vocab) if costs is not None else None
+        # --macros: the expand order's class, and per race the class whose cost and mask it takes (its hall's build;
+        # undead: haunting a mine)
+        ix = {tuple(k): i + 1 for i, k in enumerate(vocab["orders"])}
+        self.expand_class = ix.get((990001, IMMEDIATE))
+        self.expand_via = {r: ix.get((int.from_bytes(h.encode(), "big"), UNIT if r == "undead" else POINT))
+                           for r, h in (("human", "htow"), ("orc", "ogre"), ("undead", "ugol"), ("nightelf", "etol"))}
         self.type_index = {t: i + 1 for i, t in enumerate(vocab["types"])}  # 0: unknown
         self.cur_index = {o: i + 1 for i, o in enumerate(vocab["current_orders"])}
         self.order_index = {tuple(k): i + 1 for i, k in enumerate(vocab["orders"])}  # 0: no order
@@ -1104,6 +1120,12 @@ class View:
             if enc.tech:  # (--tech-mask)
                 self.t_now = t
                 avail &= self.tech_allowed(rows)
+        if avail is not None and enc.expand_class is not None:  # (--macros: expand, while the natural is free and
+            from .macros import site                              # its hall affordable; night elves not yet: entangle)
+            race = RACES[self.races[player]]
+            self.expand_site = site(rows, getattr(self, "start", None)) if MACROS and race != "nightelf" else None
+            via = enc.expand_via.get(race)
+            avail[enc.expand_class] = bool(self.expand_site is not None and via is not None and avail[via])
         if self.zmask is not None and t < self.zmask_until:  # (--z-enforce: only the target's items)
             avail = self.zmask.copy() if avail is None else avail & self.zmask
         if self.active_f < F_BASE:

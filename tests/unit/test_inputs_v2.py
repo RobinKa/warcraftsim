@@ -622,3 +622,59 @@ def test_teacher_takes_the_natural_expansion(v2):
     c = ud.commands(np.stack(base[:3] + acolytes), player, 320.0, 1)
     assert c == [TargetOrder(10, code("ugol"), 51)]
     assert Teacher(0, "nightelf", random.Random(0), {"t": {"etol": 300.0}}).expand_at is None  # (no entangle order yet)
+
+
+def test_expand_macro(v2):
+    """--macros: the expand order (a worker's) joins the vocabulary and the network; it may be given while the
+    natural is free and its hall affordable; the agent builds the hall where people do (undead: haunts the mine);
+    the teacher's expansion lesson is that order."""
+    import random
+    from types import SimpleNamespace
+
+    import torch
+
+    from warcraftsim.fullgame import macros
+    from warcraftsim.fullgame.model import FullGameNet
+    from warcraftsim.fullgame.play import BCAgent
+    from warcraftsim.fullgame.teacher import Teacher
+    from warcraftsim.protocol import Build, ImmediateOrder, TargetOrder
+    vocab = {**AUDIT_VOCAB, "orders": AUDIT_VOCAB["orders"] + [[code("htow"), fx.POINT], [code("ugol"), fx.UNIT]]}
+    v = macros.extend(vocab)
+    assert macros.extended(v) and v["orders"][-1] == [macros.EXPAND, fx.IMMEDIATE] and macros.extend(v) is v
+    net = FullGameNet(n_types=len(v["types"]) + 1, n_orders=len(vocab["orders"]) + 1, n_cur=2, G=fx.Encoder(vocab).G, d=16, layers=1)
+    grown = macros.grow(net, vocab, v)
+    k = len(v["orders"])
+    tix = {t: i + 1 for i, t in enumerate(v["types"])}
+    assert grown.config["n_orders"] == k + 1 and bool(grown.allowed[tix[code("uaco")], k]) and not bool(grown.allowed[tix[code("halt")], k])
+    assert torch.equal(grown.order[2].weight[:k], net.order[2].weight) and grown.order[2].bias[k] < net.order[2].bias.min()
+    start = (-5184.0, 2944.0)
+    main, nat = _unit(50, 15, -5632, 3584, 1, fx.STRUCTURE, "ngol"), _unit(51, 15, -4864, -3200, 1, fx.STRUCTURE, "ngol")
+    home = [_unit(1, 0, -5184, 2944, 1, fx.STRUCTURE, "htow"), main, nat, _unit(2, 0, -5300, 3300, 1, fx.WORKER, "hpea")]
+    assert macros.site(np.stack(home), start) == (51, -4864.0, -3200.0, -4764.0, -2400.0)
+    assert macros.site(np.stack(home + [_unit(60, 12, -4700, -3000, 1, 0, "nomg")]), start) is None  # (its camp)
+    assert macros.site(np.stack(home + [_unit(70, 1, -4764, -2400, 1, fx.STRUCTURE, "htow")]), start) is None  # (taken)
+    costs = np.zeros((k + 1, 3), np.int64)
+    costs[k - 2] = (193, 103, 0)  # (htow's build)
+    fx.set_macros(True)
+    try:
+        enc = fx.Encoder(v, costs)
+        bot = BCAgent(None, v, 0, None, costs=costs)
+        bot.view = bot.enc.view(0, 1.0, [0, 1])
+        bot.view.start = start
+        bot.trees, bot.building_since, bot.t = {}, {}, 0
+        rich, poor = np.asarray([0, 0, 500, 300, 5, 12, 0]), np.asarray([0, 0, 50, 300, 5, 12, 0])
+        assert not bot.view.step(np.stack(home), poor, np.zeros((0, 5), np.int64), 0)["avail"][k]
+        st = bot.view.step(np.stack(home), rich, np.zeros((0, 5), np.int64), 1)
+        assert st["avail"][k]
+        i = st["index"][2]
+        order = [0] * (i + 1)
+        order[i] = k
+        assert bot.commands(st, order, [0] * (i + 1), [0] * (i + 1), [0] * (i + 1)) == [Build(2, code("htow"), -4764.0, -2400.0)]
+        bot.view.races = [2, 1]  # (undead: the mine haunted)
+        st = bot.view.step(np.stack(home), rich, np.zeros((0, 5), np.int64), 2)
+        assert bot.commands(st, order, [0] * (i + 1), [0] * (i + 1), [0] * (i + 1)) == [TargetOrder(2, code("ugol"), 51)]
+        player = SimpleNamespace(gold=500, lumber=300, food_used=5, food_cap=12, start_x=start[0], start_y=start[1])
+        tc = Teacher(0, "human", random.Random(0), {"t": {"htow": 300.0}})
+        assert tc.commands(np.stack(home), player, 320.0, 1) == [ImmediateOrder(2, macros.EXPAND)]
+    finally:
+        fx.set_macros(False)

@@ -60,6 +60,9 @@ def unit_rows(obs: Observation, t: int) -> np.ndarray:
 
 REPAIR = 852024  # the order a worker resumes a building with
 ATTACK = 851983
+EXPAND = 990001  # (macros.EXPAND)
+HAUNT = int.from_bytes(b"ugol", "big")
+EXPAND_HALLS = {r: int.from_bytes(h.encode(), "big") for r, h in (("human", "htow"), ("orc", "ogre"), ("nightelf", "etol"))}
 REVIVE = 852039  # an altar's revival of a dead hero: a target order on it (its training order is refused; tested
 # 2026-10-22: accepted ~7 s after the death, at 425 x 0.4 gold for a level 1 hero)
 BUY_REACH, BUY_ARRIVED = 500.0, 6  # (a buyer this near its shop this many steps: free again, _release_buyers)
@@ -89,6 +92,8 @@ class BCAgent:
         rows = unit_rows(obs, 0)
         sign = self.enc.side(rows, self.player)
         self.view = self.enc.view(self.player, sign, races)
+        p = obs.players.get(self.player)  # (its start: --macros' expand finds its natural from it)
+        self.view.start = (p.start_x, p.start_y) if p is not None and hasattr(p, "start_x") else None
         self.trees = {d.id: (d.x, d.y) for d in (obs.destructables or [])}
         self.h = None  # the memory core's state (FullGameNet.memory)
         self.building_since: dict[int, int] = {}  # worker -> the step it started its building order
@@ -175,7 +180,13 @@ class BCAgent:
                 continue  # on its way to build, or building: another order would cancel it
             self.last_sent.append((oid, kind))
             x, y = fx.bins_world(int(bx[i]), int(by[i]), self.view.sign)
-            if kind == fx.IMMEDIATE and oid in self.view.dead_heroes:  # (a dead hero's order at an altar: its revival)
+            if kind == fx.IMMEDIATE and oid == EXPAND:  # (--macros: the natural taken, macros.py)
+                where = getattr(self.view, "expand_site", None)
+                race = fx.RACES[self.view.races[self.player]]
+                if where is not None:
+                    mine, _, _, hx, hy = where
+                    out.append(TargetOrder(unit, HAUNT, mine) if race == "undead" else Build(unit, EXPAND_HALLS[race], hx, hy))
+            elif kind == fx.IMMEDIATE and oid in self.view.dead_heroes:  # (a dead hero's order at an altar: its revival)
                 out.append(TargetOrder(unit, REVIVE, self.view.dead_heroes[oid]))
             elif kind == fx.IMMEDIATE:
                 out.append(ImmediateOrder(unit, oid))

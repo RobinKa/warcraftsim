@@ -394,6 +394,7 @@ def configure_for(path) -> None:
         if mercs and not bool(ck["model"]["allowed"][:, mercs].any()):
             neutral = 2
     fx.set_neutral(neutral)
+    fx.set_macros(bool(vocab.get("macros")))
     fx.set_z(c.get("z", 0))
     if c.get("gx", 0) >= 3:  # (the unit channels it reads: all of them, a run's --features zeros only its weights)
         fx.ACTIVE_F = fx.F
@@ -443,6 +444,13 @@ def load(path, device="cpu", memory: bool | None = None, vocab: dict | None = No
             new = neutral.extend_vocab(ck["vocab"])
             net = neutral.grow(net, ck["vocab"], new)
             ck = {**ck, "vocab": new}
+        if fx.MACROS and "vocab" in ck:  # (--macros: the agent's own orders, macros.py)
+            from . import macros
+            if not macros.extended(ck["vocab"]):
+                new = macros.extend(ck["vocab"])
+                net = macros.grow(net, ck["vocab"], new)
+                ck = {**ck, "vocab": new}
+            macros.allow(net, ck["vocab"])
         if vocab is not None and ck["vocab"]["orders"] != vocab["orders"]:
             if neutral.reorder(net, ck["vocab"], vocab) is None:
                 raise RuntimeError(f"{path}: its vocabulary has other orders than the run's")

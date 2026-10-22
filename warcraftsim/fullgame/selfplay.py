@@ -669,6 +669,7 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
     fx.set_inputs(cfg.get("inputs", 1), bool(cfg.get("privileged")))  # (the rows' width, the snapshots' inputs: model.load)
     fx.set_masks(cfg.get("tech_mask", 0), cfg.get("valid_mask", 0))
     fx.set_neutral(cfg.get("neutral", 0))
+    fx.set_macros(bool(cfg.get("macros", 0)))
     nets = Nets(cfg, device)
     while nets.current is None and not stop.is_set() and alive():
         time.sleep(1)
@@ -1335,8 +1336,9 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         done = [u for u in mine if u.is_structure and not u.flags & UnitFlags.CONSTRUCTING]
         have = techtree.counts_as({u.type for u in done} | {c for c in made if c[0] == "R"}, self.race)
         heroes = len({c for c in (*made, *self.started) if techtree.is_hero(c) or fx.is_hero_code(c)})
+        expansion = self._expansion_reserve(obs, due, p, t)  # (--macros: money kept for a due expansion)
         self.first_free = heroes == 0 and not any(getattr(u, "is_hero", False) for u in mine)  # (a free first hero)
-        save = None
+        save = expansion
         for _, c in due:
             item = self.next_step(c, have, {u.type for u in done}, heroes, t)
             if item is None:
@@ -1356,6 +1358,23 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
                 return cmds
         self.reserve = save
         return []
+
+    def _expansion_reserve(self, obs, due: list, p, t: int):
+        """--macros: a due expansion (the race's hall or a haunted mine among the due items) with the natural free:
+        its cost kept from the agent's other orders (the expand order takes its hall's mask), else None."""
+        from .macros import site
+        hall = {"human": "htow", "orc": "ogre", "undead": "ugol"}.get(self.race)
+        if not fx.MACROS or hall is None or self.costs is None or not any(c in (hall, "unpl") for _, c in due):
+            return None
+        from .play import unit_rows
+        q = obs.players.get(self.side)
+        if q is None or site(unit_rows(obs, t), (q.start_x, q.start_y)) is None:
+            return None
+        k = self.cls.get((int.from_bytes(hall.encode(), "big"), fx.UNIT if hall == "ugol" else fx.POINT))
+        if k is None:
+            return None
+        g, l = int(self.costs[k][0]), int(self.costs[k][1])
+        return (k, g, l) if p.gold < g or p.lumber < l else None
 
     def resume(self, obs, t: int):
         """A human's or orc's building left unfinished (its worker taken away: no hit points gained for 20
@@ -1933,6 +1952,7 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
     fx.set_inputs(cfg.get("inputs", 1), bool(cfg.get("privileged")))  # (and the inputs: --inputs, the masks, --opsd-*)
     fx.set_masks(cfg.get("tech_mask", 0), cfg.get("valid_mask", 0))
     fx.set_neutral(cfg.get("neutral", 0))
+    fx.set_macros(bool(cfg.get("macros", 0)))
     out_q.cancel_join_thread()  # exiting must not wait to flush trajectories nobody reads any more
     torch.set_num_threads(1)
     try:
@@ -3080,6 +3100,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--neutral", type=int, default=0, help="the neutral buildings' wares as orders (a tavern's heroes, "
                     "mercenaries, the goblin merchant's items: protocol.Buy) and the tavern heroes' skills and spells "
                     "(neutral.py: every network loaded grows to the extended vocabulary); 2: no mercenaries")
+    ap.add_argument("--macros", type=int, default=0, help="the agent's own orders for what the game spreads over many "
+                    "(macros.py: expand, a worker takes the natural expansion where people build there; every network "
+                    "loaded grows to them)")
     ap.add_argument("--memory-fade", type=int, default=0, help="inputs 3: the remembered enemies fade into the learner's "
                     "attention over this many updates (its bias on them from -8 to 0; older networks and the anchor "
                     "keep them hidden at -30); 0: as loaded")
@@ -3408,6 +3431,7 @@ def main(argv: list[str] | None = None) -> int:
     # gives older ones the new inputs; --opsd-*: the privileged channels)
     fx.set_masks(args.tech_mask, args.valid_mask)
     fx.set_neutral(args.neutral)
+    fx.set_macros(bool(args.macros))
     if args.z_modes > 0:  # (the strategy block with the modes' part: model.load grows older networks')
         fx.set_z(strat.ZDIM + zmodes.MDIM)
     from ..data.duelmap import parse_duel_name
@@ -3449,6 +3473,9 @@ def main(argv: list[str] | None = None) -> int:
         if src is not None:
             weights_vocab = torch.load(src, map_location="cpu", weights_only=False).get("vocab")
             weights_vocab = weights_vocab if weights_vocab is not None and extended(weights_vocab) else None
+            if weights_vocab is not None and fx.MACROS:  # (--macros: its orders after theirs, as model.load adds them)
+                from .macros import extend as with_macros
+                weights_vocab = with_macros(weights_vocab)
     net, ck = load(args.init, device, None if args.memory < 0 else bool(args.memory), vocab=weights_vocab)
     vocab = ck["vocab"]
     trained_for = ck.get("value_reward")  # the rewards BC's value head learned (fullgame/bc.py)
@@ -3624,7 +3651,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "eval_ai": [d for d in args.eval_ai.split(",") if d],

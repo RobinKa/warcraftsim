@@ -147,6 +147,10 @@ class Teacher:
             return []    # games that had an expansion due, 13% won to 32%; --scenarios natural clears the camps)
         if not len(workers) or not self._due("expansion: the hall", t):
             return []
+        if fx.MACROS:  # (the agent's expand order: where to build is its own business, macros.py)
+            from .macros import EXPAND
+            w = workers[int(np.argmin(np.hypot(workers[:, fx.C_X] - mx, workers[:, fx.C_Y] - my)))]
+            return [ImmediateOrder(int(w[fx.C_ID]), EXPAND)]
         if self.race == "undead":  # (an acolyte haunts the mine: its gold, no hall needed)
             w = workers[int(np.argmin(np.hypot(workers[:, fx.C_X] - mx, workers[:, fx.C_Y] - my)))]
             return [TargetOrder(int(w[fx.C_ID]), HAUNTED, int(nat[fx.C_ID]))]
