@@ -438,3 +438,18 @@ def test_narrow_strategy_keeps_heroes_main_army_and_their_needs():
     pool = {"strategies": [n] * 9 + [{**n, "sig": "rare", "t": {"hbar": 1.0}}]}
     rng = random.Random(1)
     assert 0.3 < sum(strategy.sample(pool, "human", "orc", rng)["sig"] == "rare" for _ in range(400)) / 400 < 0.7
+
+
+def test_natural_scenario_clears_both_naturals():
+    """--scenarios natural: the camp at each start's nearest gold mine past its main is removed (ClearCreeps)."""
+    import random as _random
+    from types import SimpleNamespace as NS
+
+    from warcraftsim.fullgame import scenarios
+    from warcraftsim.protocol import ClearCreeps
+    players = {0: NS(start_x=-5184.0, start_y=2944.0), 1: NS(start_x=4672.0, start_y=2944.0)}
+    units = [NS(type="ngol", x=-5632.0, y=3584.0), NS(type="ngol", x=-4864.0, y=-3200.0), NS(type="ngol", x=5120.0, y=3584.0),
+             NS(type="ngol", x=4352.0, y=-3200.0)]
+    out = scenarios.commands("natural", NS(players=players, units=units), 0, ["human", "orc"], _random.Random(0))
+    assert out == [ClearCreeps(-4864.0, -3200.0, 900), ClearCreeps(4352.0, -3200.0, 900)]
+    assert ClearCreeps(-4864.0, -3200.0, 900).encode()[0] == 88

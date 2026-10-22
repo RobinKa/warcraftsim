@@ -3,6 +3,9 @@ start with a situation the harness sets up at the first step (selfplay --scenari
 policy meets what a game from scratch rarely brings it to. Both sides get the same value, so the material
 shaping starts even. Evaluation games never have one.
 
+    natural both natural expansions' camps removed (the gold mine nearest each start but its main): expanding needs
+            no creeping first (the teacher's expansion lessons, --teach, then apply; fgself-123's army sent to clear
+            the camp lost its games)
     clash   each side an army (its race's tier-1 and tier-2 units, ARMY gold) and a hero at level 3 between the bases
     raid    the opponent's army (ARMY gold) at the learner's base, the learner's as large at home
     rich    both sides 1,500 more gold and 700 more lumber: the tiers, the tech, the heroes early
@@ -14,9 +17,10 @@ from __future__ import annotations
 import math
 import random
 
-from ..protocol import SetResources, Spawn, SpawnHero
+from ..protocol import ClearCreeps, SetResources, Spawn, SpawnHero
 
-SCENARIOS = ("clash", "raid", "rich")
+SCENARIOS = ("clash", "raid", "rich", "natural")
+NATURAL_FROM_START, CAMP_RADIUS = 1500.0, 900
 ARMY = 1200  # gold an army is worth
 UNITS = {"human": ("hfoo", "hrif", "hkni", "hmpr", "hsor"), "orc": ("ogru", "ohun", "orai", "otau", "oshm"),
          "undead": ("ugho", "ucry", "uabo", "unec", "ugar"), "nightelf": ("earc", "esen", "edry", "edoc", "ehip")}
@@ -49,6 +53,13 @@ def commands(name: str, obs, side: int, races: list[str], rng: random.Random) ->
     if len(starts) < 2:
         return []
     out = []
+    if name == "natural":  # (each start's natural: its nearest gold mine past its main)
+        mines = [(u.x, u.y) for u in obs.units if u.type in ("ngol", "ugol", "egol")]
+        for x0, y0 in starts.values():
+            far = sorted((math.hypot(x - x0, y - y0), x, y) for x, y in mines if math.hypot(x - x0, y - y0) > NATURAL_FROM_START)
+            if far:
+                out.append(ClearCreeps(far[0][1], far[0][2], CAMP_RADIUS))
+        return out
     if name == "rich":
         for p in (0, 1):
             q = obs.players[p]

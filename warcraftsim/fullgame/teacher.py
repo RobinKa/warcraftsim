@@ -8,9 +8,9 @@ selfplay --teach 1 (needs --neutral 1: the orders it teaches are the neutral bui
                    when the player has an altar and none, or the second with a tier-2 hall, from 135 s, the money there
     a town portal: a hero near the goblin merchant buys one when it has none and a free slot, from 440 s
     a potion:      a hero below 40% of its hit points drinks what heals in its inventory
-    an expansion:  when its target's expansion is due (a hall, or undead's haunted gold mine, in its items): the army
-                   clears the natural expansion's camp (at 6 units or more), then the worker nearest builds the hall
-                   where people put theirs (undead: an acolyte haunts the mine), then three workers go to mine there.
+    an expansion:  when its target's expansion is due (a hall, or undead's haunted gold mine, in its items) and the
+                   natural expansion's camp is gone (cleared, or --scenarios natural): the worker nearest builds the
+                   hall where people put theirs (undead: an acolyte haunts the mine), then three workers go to mine there.
                    (No policy had ever expanded: 0% of its games, people 81% of Echo Isles'. Night elves not yet: a
                    tree of life's mine needs the entangle order, which the agent can't give.)
 
@@ -22,7 +22,7 @@ import random
 
 import numpy as np
 
-from ..protocol import Build, Buy, ImmediateOrder, PointOrder, TargetOrder
+from ..protocol import Build, Buy, ImmediateOrder, TargetOrder
 from . import features as fx
 from .neutral import fourcc
 
@@ -41,8 +41,7 @@ MINES = {fourcc(c) for c in ("ngol", "ugol", "egol")}
 EXPAND_SPOTS = {(-4864, -3200): (100, 800), (4352, -3200): (-300, 700)}
 NATURAL_FROM_START = 1500.0  # (the main mine is nearer its start)
 CAMP_NEAR = 900.0  # creeps this near the natural mine guard it
-ARMY_TO_CREEP = 6  # army units it takes to clear a camp
-ATTACK, HARVEST = 851983, 852018
+HARVEST = 852018
 HIDDEN = 16  # (UnitFlags.HIDDEN: a worker inside a gold mine)
 NEAR_MERCHANT = 2500.0
 USESLOT = 852008
@@ -144,11 +143,8 @@ class Teacher:
             return ([TargetOrder(int(w[fx.C_ID]), HARVEST, mine_id) for w in pick]
                     if len(pick) and self._due("expansion: workers", t) else [])
         creeps = rows[(rows[:, fx.C_OWNER] == 12) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0) & near(rows, CAMP_NEAR)]
-        if len(creeps):  # (its camp first: the army)
-            army = alive[(alive[:, fx.C_FLAGS] & (fx.STRUCTURE | fx.WORKER) == 0)]
-            if len(army) < ARMY_TO_CREEP or not self._due("expansion: its camp", t):
-                return []
-            return [PointOrder(int(u[fx.C_ID]), ATTACK, int(mx), int(my)) for u in army]
+        if len(creeps):  # (guarded: no lesson. Sending the army to clear it (fgself-123: 26 lessons a game) lost the
+            return []    # games that had an expansion due, 13% won to 32%; --scenarios natural clears the camps)
         if not len(workers) or not self._due("expansion: the hall", t):
             return []
         if self.race == "undead":  # (an acolyte haunts the mine: its gold, no hall needed)

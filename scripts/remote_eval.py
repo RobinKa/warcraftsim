@@ -89,9 +89,13 @@ def live_runs() -> list[str]:
     out = subprocess.run(["ps", "-eo", "lstart,args", "--sort=start_time"], capture_output=True, text=True).stdout
     runs = []
     for line in out.splitlines():
-        m = re.search(r"-m warcraftsim\.fullgame\.selfplay .*--name (\S+)", line)
-        if m and "spawn_main" not in line and m.group(1) not in runs:
-            runs.append(m.group(1))
+        words = line.split()[5:]  # (past lstart's five fields: a python process itself, not a shell command naming one)
+        if (len(words) < 5 or not Path(words[0]).name.startswith("python") or words[1:3] != ["-m", "warcraftsim.fullgame.selfplay"]
+                or "--name" not in words or "spawn_main" in line):
+            continue
+        name = words[words.index("--name") + 1] if words.index("--name") + 1 < len(words) else ""
+        if re.fullmatch(r"[\w.-]+", name) and name not in runs:
+            runs.append(name)
     return runs
 
 

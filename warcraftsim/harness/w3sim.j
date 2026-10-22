@@ -1278,6 +1278,22 @@ function W3S_BuyPending takes nothing returns nothing
     set u = null
 endfunction
 
+function W3S_ClearCreeps takes real x, real y, real r returns nothing
+    local group g = CreateGroup()
+    local unit u
+    call GroupEnumUnitsInRange(g, x, y, r, null)
+    loop
+        set u = FirstOfGroup(g)
+        exitwhen u == null
+        call GroupRemoveUnit(g, u)
+        if GetOwningPlayer(u) == Player(PLAYER_NEUTRAL_AGGRESSIVE) then
+            call KillUnit(u)  // (not RemoveUnit: the harness drops a unit on its death; a removed one stayed reported)
+        endif
+    endloop
+    call DestroyGroup(g)
+    set g = null
+endfunction
+
 function W3S_ApplyOne takes integer at returns integer
     local integer op = w3s_cmd[at]
     local unit u = W3S_Unit(w3s_cmd[at + 1])
@@ -1381,6 +1397,11 @@ function W3S_ApplyOne takes integer at returns integer
         set n = 5
         set u = CreateUnit(Player(W3S_Real(w3s_cmd[at + 1])), w3s_cmd[at + 2], I2R(w3s_cmd[at + 3] - 65536), I2R(w3s_cmd[at + 4] - 65536), 270.0)
         set ok = u != null
+    elseif op == 88 then
+        // remove the neutral hostile units within a radius of a point (scenarios: an expansion's camp cleared)
+        set n = 4
+        set ok = true
+        call W3S_ClearCreeps(I2R(w3s_cmd[at + 1] - 65536), I2R(w3s_cmd[at + 2] - 65536), I2R(w3s_cmd[at + 3]))
     elseif op == 89 then
         // a hero at a level (scenarios): player, type, x, y, level; its skill points left for its player to spend
         set n = 6
