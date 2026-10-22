@@ -52,3 +52,14 @@ def test_violations():
     v = tk.step(np.stack(home + [_row(4, 0, -2700, 0, modes.WORKER, "hpea")]), [], 10, 600.0)  # 2 of 4 workers at 480
     assert tk.v["workers"] == pytest.approx(0.5) and tk.v["army"] == pytest.approx(0.5) and tk.v["harass"] == pytest.approx(0.5)
     assert v == pytest.approx(sum(tk.v.values())) and tk.report()["workers"] == [4.0, 0.5]
+
+
+def test_expand_needs_a_hall_at_another_mine():
+    """With its own start known, "expand" is met by a hall far from it at a gold mine, not by a second one at home."""
+    tk = modes.Tracker({"expand": 240.0}, 0, (3000.0, 0.0), {}, {code("hpea")}, own_start=(-3000.0, 0.0))
+    home = [_row(1, 0, -3000, 0, modes.STRUCTURE, "htow"), _row(2, 15, -3300, 0, modes.STRUCTURE, "ngol"),
+            _row(3, 15, 0, 1500, modes.STRUCTURE, "ngol")]
+    tk.step(np.stack(home + [_row(4, 0, -2600, 300, modes.STRUCTURE, "htow")]), [], 10, 200.0)
+    assert "expand" not in tk.done
+    tk.step(np.stack(home + [_row(5, 0, 300, 1400, modes.STRUCTURE, "htow")]), [], 10, 220.0)
+    assert "expand" in tk.done

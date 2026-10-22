@@ -502,3 +502,95 @@ def test_view_first_hero_free(v2):
     assert enc.view(0, 1.0, [0, 1]).step(none, me, np.zeros((0, 5), np.int64), 0)["avail"][6]
     dead = np.stack([_unit(1, 0, -2000, 0, 1), _unit(2, 0, -2100, 0, 1, fx.HERO | fx.DEAD, "Hpal")])
     assert not enc.view(0, 1.0, [0, 1]).step(dead, me, np.zeros((0, 5), np.int64), 0)["avail"][6]
+
+
+AUDIT_VOCAB = {"types": [code(c) for c in ("uaco", "ngol", "ugol", "ntav", "ngme", "Hpal", "halt", "hpea", "htow", "unpl")],
+               "current_orders": [], "upgrades": [],
+               "orders": [[code("ugol"), fx.UNIT], [fx.HARVEST, fx.UNIT], [code("Hpal"), fx.IMMEDIATE], [code("hfoo"), fx.IMMEDIATE],
+                          [code("Npbm"), fx.UNIT]]}
+
+
+def test_audit_fixes_orders(v2):
+    """The audit of 2026-10-22: a haunted gold mine is built on a gold mine (a target order), not bought; a ware goes
+    to a building that sells it; a buyer in reach of its shop a few steps is free again, a refused one at once; a
+    worker may be sent from its gold mine to another one."""
+    from warcraftsim.fullgame.play import BUY_ARRIVED, BCAgent
+    from warcraftsim.protocol import Buy, TargetOrder
+    v = AUDIT_VOCAB
+    bot = BCAgent(None, v, 0, None)
+    bot.view = bot.enc.view(0, 1.0, [0, 1])
+    bot.trees, bot.building_since, bot.t = {}, {}, 0
+    aco = _unit(1, 0, -100, 0, 1, fx.WORKER, "uaco")
+    home = _unit(5, 15, -300, 0, 1, fx.STRUCTURE, "ugol")
+    far = _unit(6, 15, 3000, 0, 1, fx.STRUCTURE, "ngol")
+    tav, gme = _unit(9, 15, 0, 2000, 1, fx.STRUCTURE, "ntav"), _unit(8, 15, 0, -2000, 1, fx.STRUCTURE, "ngme")
+    st = bot.view.step(np.stack([aco, home, far, tav, gme]), None, np.zeros((0, 5), np.int64), 0)
+    idx = st["index"]
+    haunt, harvest, hire = 1, 2, 5
+    assert bot.commands(st, [haunt], [idx[5]], [0], [0]) == [TargetOrder(1, code("ugol"), 6)]  # (the unhaunted mine)
+    assert bot.commands(st, [hire], [idx[8]], [0], [0]) == [Buy(1, 9, code("Npbm"))]  # (the merchant sells no heroes)
+    bot.accepted([Buy(1, 9, code("Npbm"))], [False])
+    assert not bot.buying_since  # (refused: free again)
+    bot.commands(st, [hire], [idx[9]], [0], [0])
+    near = _unit(1, 0, 0, 1700, 1, fx.WORKER, "uaco")
+    for t in range(BUY_ARRIVED):
+        st2 = bot.view.step(np.stack([near, home, far, tav, gme]), None, np.zeros((0, 5), np.int64), t + 1)
+        bot.commands(st2, [0], [0], [0], [0])
+    assert not bot.buying_since  # (in reach a while: free again, not 60 s)
+    miner = _unit(1, 0, -100, 0, 1, fx.WORKER, "uaco")
+    miner[fx.C_ORDER] = 852018  # (harvesting)
+    st3 = bot.view.step(np.stack([miner, home, far, tav, gme]), None, np.zeros((0, 5), np.int64), 20)
+    bot.view.mine_of[1] = 5
+    assert bot.commands(st3, [harvest], [st3["index"][5]], [0], [0]) == []  # (its own mine: redundant)
+    assert bot.commands(st3, [harvest], [st3["index"][6]], [0], [0]) == [TargetOrder(1, fx.HARVEST, 6)]  # (another)
+
+
+def test_audit_fixes_revival_labels_and_production(v2):
+    """A dead hero may be revived (the order that trained it, at its revival's price); the target builder's and
+    teacher's labels at an idle building are kept; a building's "making" reads 1 with no worker on lumber."""
+    v = AUDIT_VOCAB
+    costs = np.zeros((len(v["orders"]) + 1, 3), np.int64)
+    costs[3], costs[4] = (425, 100, 5), (135, 0, 2)
+    enc = fx.Encoder(v, costs)
+    m = fx.TechMask(v, "human")
+    k = 3
+    assert not m.allowed(frozenset({"htow", "halt"}), {}, frozenset({"Hpal"}), frozenset())[k]  # (alive: not again)
+    assert m.allowed(frozenset({"htow", "halt"}), {}, frozenset({"Hpal"}), frozenset(), dead=frozenset({"Hpal"}))[k]
+    pal = _unit(2, 0, -2100, 0, 1, fx.HERO | fx.DEAD, "Hpal")
+    pal[fx.C_HLEVEL] = 3
+    rows = np.stack([_unit(1, 0, -2000, 0, 1, fx.WORKER, "hpea"), pal, _unit(3, 0, -2500, 0, 1, fx.STRUCTURE, "halt")])
+    assert fx.revive_costs(enc, rows, 0)[k].tolist() == [255, 0, 5]  # (425 x (0.4 + 0.1 x 2))
+    view = enc.view(0, 1.0, [0, 1])
+    me = np.asarray([0, 0, 1000, 500, 5, 30, 0])
+    st = view.step(rows, me, np.zeros((0, 5), np.int64), 0)
+    label = np.asarray([[0, 3, code("hfoo"), 0, 0, 0, 0]], np.int64)
+    y, _ = enc.step_labels(view, st, label, me, np.zeros((0, 5), np.int64), {})
+    yt, _ = enc.step_labels(view, st, label, me, np.zeros((0, 5), np.int64), {}, taught=True)
+    i = st["index"][3]
+    assert y["y_order"][i] == 0 and yt["y_order"][i] == 4  # (an order never given starts nothing: kept when taught)
+    view.busy = {3}
+    st2 = view.step(rows, me, np.zeros((0, 5), np.int64), 1)
+    making = 9 + len(fx.FLAG_BITS) + 7  # (the base block's "being made" column)
+    assert not view.assign and st2["ent"][st2["index"][3], making] == 1.0
+
+
+def test_dead_hero_revived_with_the_revive_order(v2):
+    """An altar's order for a dead hero's type is its revival: the revive order on the dead hero (tested in the game:
+    the type's own order is refused)."""
+    from warcraftsim.fullgame.play import REVIVE, BCAgent
+    from warcraftsim.protocol import ImmediateOrder, TargetOrder
+    bot = BCAgent(None, AUDIT_VOCAB, 0, None)
+    bot.view = bot.enc.view(0, 1.0, [0, 1])
+    bot.trees, bot.building_since, bot.t = {}, {}, 0
+    alt = _unit(3, 0, -2500, 0, 1, fx.STRUCTURE, "halt")
+    pal = _unit(2, 0, -2100, 0, 1, fx.HERO | fx.DEAD, "Hpal")
+    st = bot.view.step(np.stack([alt, pal]), None, np.zeros((0, 5), np.int64), 0)
+    i = st["index"][3]
+    order = [0] * (i + 1)
+    order[i] = 3  # (Hpal at the altar)
+    assert bot.commands(st, order, [0] * (i + 1), [0] * (i + 1), [0] * (i + 1)) == [TargetOrder(3, REVIVE, 2)]
+    st2 = bot.view.step(np.stack([alt]), None, np.zeros((0, 5), np.int64), 1)
+    i2 = st2["index"][3]
+    order2 = [0] * (i2 + 1)
+    order2[i2] = 3
+    assert bot.commands(st2, order2, [0] * (i2 + 1), [0] * (i2 + 1), [0] * (i2 + 1)) == [ImmediateOrder(3, code("Hpal"))]

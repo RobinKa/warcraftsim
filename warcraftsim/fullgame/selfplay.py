@@ -1559,7 +1559,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         rec["zs"], rec["zm"] = dict(zs), dict(zm)
     # --z-modes: each side's modes measured each step (modes.Tracker: their violations, the strategy potential's)
     trackers = {s: zmodes.Tracker(m, s, (obs.players[1 - s].start_x, obs.players[1 - s].start_y), unit_food(),
-                                  WORKER_IDS) for s, m in zm.items() if m and obs.players.get(1 - s) is not None}
+                                  WORKER_IDS, (obs.players[s].start_x, obs.players[s].start_y))
+                for s, m in zm.items() if m and obs.players.get(1 - s) is not None and obs.players.get(s) is not None}
     viol = {s: 0.0 for s in trackers}
     rows_next = None  # (the step's unit rows, made for the trackers: the next step's)
     made = {s: {} for s in zs}  # each item's first game second, of the sides with a strategy
@@ -1669,7 +1670,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                     lessons = np.asarray([(t, x.unit, x.item, 2, 0, 0, x.shop) if isinstance(x, Buy)
                                           else (t, x.unit, x.order, 0, 0, 0, 0) for x in c], np.int64).reshape(-1, 7)
                     y, _ = bots[s].enc.step_labels(bots[s].view, sts[s], lessons, me, np.zeros((0, 5), np.int64),
-                                                   bots[s].trees)
+                                                   bots[s].trees, taught=True)
                     merge_labels(trajs[s].steps[-1], y, teach=True)
         built, given = {}, {}
         for s, b in builders.items():  # (--z-build: after the agents' orders, so a worker it takes is taken)
@@ -1714,7 +1715,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                                for x, a in zip(c, ok) if a], np.int64).reshape(-1, 7)
             if len(rows) and trajs[s].steps:
                 later = np.asarray([(t + 1, int(e.kind), e.a, e.b, e.c) for e in obs.events], np.int64).reshape(-1, 5)
-                y, _ = bots[s].enc.step_labels(bots[s].view, sts[s], rows, me, later, bots[s].trees)
+                y, _ = bots[s].enc.step_labels(bots[s].view, sts[s], rows, me, later, bots[s].trees,
+                                               taught=cfg.get("z_build", 0) == 2)  # (never carried out: started nothing)
                 merge_labels(trajs[s].steps[-1], y)
         if advised:  # the advisor's orders of the step just taken: the labels of the step recorded
             label_step(obs, t, advised, spans, sts, held, bots, trajs)

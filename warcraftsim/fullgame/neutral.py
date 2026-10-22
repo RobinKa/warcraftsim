@@ -199,6 +199,18 @@ def is_shop(type_id: int) -> bool:
     return int(type_id) in {fourcc(c) for c in SHOPS}
 
 
+def is_ware(oid: int) -> bool:
+    """A neutral building's ware (a tavern hero, a mercenary, a goblin merchant's item): bought (protocol.Buy)."""
+    return int(oid).to_bytes(4, "big").decode("latin-1") in {*TAVERN_HEROES, *MERCENARIES, *MERCHANT_ITEMS}
+
+
+def sells(type_id: int, ware: int) -> bool:
+    """Whether a building of `type_id` sells `ware` (a tavern its heroes, a camp its mercenaries, the merchant its items)."""
+    code = int(ware).to_bytes(4, "big").decode("latin-1")
+    kind = TAVERN if code in TAVERN_HEROES else CAMP if code in MERCENARIES else MERCHANT
+    return int(type_id) == fourcc(kind)
+
+
 def nearest_shop(sel, ware: int, unit):
     """The row of the building in view nearest `unit` that sells `ware` (a tavern its heroes, a camp its
     mercenaries, the goblin merchant its items), or None."""

@@ -32,7 +32,7 @@ from ..runtime.instance import Agent, BuiltinAI, GameInstance, GameSetup
 from . import features as fx
 from .collect import Films, series
 from .model import load
-from .neutral import is_shop, nearest_shop
+from .neutral import is_ware, nearest_shop, sells
 
 TYPE_CODE = fx.TYPE_CODE  # orders at or above this are unit / building / upgrade / ability codes
 
@@ -60,6 +60,9 @@ def unit_rows(obs: Observation, t: int) -> np.ndarray:
 
 REPAIR = 852024  # the order a worker resumes a building with
 ATTACK = 851983
+REVIVE = 852039  # an altar's revival of a dead hero: a target order on it (its training order is refused; tested
+# 2026-10-22: accepted ~7 s after the death, at 425 x 0.4 gold for a level 1 hero)
+BUY_REACH, BUY_ARRIVED = 500.0, 6  # (a buyer this near its shop this many steps: free again, _release_buyers)
 BUY_COMMIT_STEPS = 120  # (a unit sent to buy: 60 s to walk there, the harness keeps the purchase pending meanwhile; a
 # worker from its start reached the tavern, unseen, in 77 steps)
 
@@ -111,6 +114,12 @@ class BCAgent:
                     self.view.assign.pop(unit, None)
                 else:
                     self.view.assign[unit] = res
+                    if res == "gold" and hasattr(c, "target"):  # (its mine: another one is a transfer, not redundant)
+                        self.view.mine_of[unit] = c.target
+        buying = getattr(self, "buying_since", {})
+        for c, ok in zip(cmds, results):  # (a buy the game refused: the unit is free again)
+            if not ok and isinstance(c, Buy):
+                buying.pop(c.unit, None)
 
     def _sample(self, logits: torch.Tensor) -> torch.Tensor:
         return torch.distributions.Categorical(logits=logits / self.temperature).sample()
@@ -141,6 +150,7 @@ class BCAgent:
         """The orders sampled for the view's own units (order class, pointer, x and y bins per unit;
         sequences over the first min(n_own, MAX_OWN) units) as game commands."""
         out: list[Command] = []
+        self._release_buyers(st["sel"][:st["n_own"]])
         self.last_sent: list[tuple[int, int]] = []  # (order id, kind) of what it sent: the video's panel
         self.sent_resources: list[str | None] = []  # per command: what it sends the worker to harvest (accepted())
         sel = st["sel"]
@@ -155,29 +165,39 @@ class BCAgent:
             else:
                 res = fx.harvest_resource(oid, kind, None)
             unit = int(sel[i, fx.C_ID])
-            if fx.redundant(oid, kind, int(sel[i, fx.C_ORDER]), res, self.view.assign.get(unit)):
+            same = True  # (gold from another mine than its own: a transfer, not redundant)
+            if res == "gold" and kind == fx.UNIT:
+                mine = self._mine(sel, int(tgt[i]), i)
+                same = mine is None or mine == self.view.mine_of.get(unit, self._mine(sel, -1, i))
+            if fx.redundant(oid, kind, int(sel[i, fx.C_ORDER]), res, self.view.assign.get(unit), same):
                 continue  # it harvests that already
             if self.committed(unit):
                 continue  # on its way to build, or building: another order would cancel it
             self.last_sent.append((oid, kind))
             x, y = fx.bins_world(int(bx[i]), int(by[i]), self.view.sign)
-            if kind == fx.IMMEDIATE:
+            if kind == fx.IMMEDIATE and oid in self.view.dead_heroes:  # (a dead hero's order at an altar: its revival)
+                out.append(TargetOrder(unit, REVIVE, self.view.dead_heroes[oid]))
+            elif kind == fx.IMMEDIATE:
                 out.append(ImmediateOrder(unit, oid))
             elif kind == fx.SKILL:
                 out.append(LearnSkill(unit, oid))
             elif kind == fx.POINT:
                 out.append(Build(unit, oid, x, y) if oid >= TYPE_CODE else PointOrder(unit, oid, x, y))
-            elif kind == fx.UNIT and oid >= TYPE_CODE:  # bought at a neutral building (neutral.py): the one pointed at,
-                shop = sel[int(tgt[i])]                    # else the nearest that sells it (a new order's pointer
-                if not is_shop(int(shop[fx.C_TYPE])):      # has no reason to pick the tavern: no hire in thousands
-                    shop = nearest_shop(sel, oid, sel[i])  # of games)
+            elif kind == fx.UNIT and oid >= TYPE_CODE and is_ware(oid):  # bought at a neutral building (neutral.py):
+                shop = sel[int(tgt[i])]                    # the one pointed at, if it sells it, else the nearest that
+                if not sells(int(shop[fx.C_TYPE]), oid):   # does (a new order's pointer has no reason to pick the
+                    shop = nearest_shop(sel, oid, sel[i])  # tavern: no hire in thousands of games)
                 if shop is not None:
                     out.append(Buy(unit, int(shop[fx.C_ID]), oid))
-                    self.__dict__.setdefault("buying_since", {})[unit] = self.t
+                    self.__dict__.setdefault("buying_since", {})[unit] = (self.t, float(shop[fx.C_X]), float(shop[fx.C_Y]))
                     self.bought = getattr(self, "bought", 0) + 1
                     buys = self.__dict__.setdefault("buys", {})  # (the episode row: each ware by its buyers' type)
                     key = f"{fx.rawcode(oid)} by {fx.rawcode(int(sel[i, fx.C_TYPE]))}"
                     buys[key] = buys.get(key, 0) + 1
+            elif kind == fx.UNIT and oid >= TYPE_CODE:  # a building made on a unit: undead's haunted gold mine, on a
+                mine = self._mine(sel, int(tgt[i]), i, plain=True)  # gold mine (it went down the buy path to the goblin
+                if mine is not None:                                # merchant before: undead never expanded)
+                    out.append(TargetOrder(unit, oid, mine))
             elif kind == fx.UNIT and int(tgt[i]) >= st.get("ghost0", len(sel)):  # an enemy it remembers (inputs 3):
                 if oid in (ATTACK, fx.SMART):  # where it saw it (attack: attack-move); nothing else reaches it
                     g = sel[int(tgt[i])]
@@ -201,6 +221,18 @@ class BCAgent:
         self.issued += len(out)
         return out
 
+    def _mine(self, sel: np.ndarray, k: int, i: int, plain: bool = False) -> int | None:
+        """The gold mine an order pointing at row `k` goes to: that one if it is a mine, else the nearest to unit
+        row `i` (`plain`: an unhaunted one, a haunted gold mine's site); its id, None with none in view."""
+        kinds = (fx.GOLD_MINES[0],) if plain else fx.GOLD_MINES
+        if 0 <= k < len(sel) and int(sel[k, fx.C_TYPE]) in kinds:
+            return int(sel[k, fx.C_ID])
+        mines = sel[np.isin(sel[:, fx.C_TYPE], kinds)]
+        if not len(mines):
+            return None
+        d = (mines[:, fx.C_X] - sel[i, fx.C_X]) ** 2 + (mines[:, fx.C_Y] - sel[i, fx.C_Y]) ** 2
+        return int(mines[int(np.argmin(d)), fx.C_ID])
+
     def committed(self, unit: int) -> bool:
         """A worker busy with a building order (features.building) for less than BUILD_COMMIT_STEPS, or a unit
         on its way to buy at a neutral building for less than BUY_COMMIT_STEPS (another order every half second
@@ -208,7 +240,26 @@ class BCAgent:
         since = self.building_since.get(unit)
         bought = getattr(self, "buying_since", {}).get(unit)
         return ((since is not None and self.t - since < fx.BUILD_COMMIT_STEPS)
-                or (bought is not None and self.t - bought < BUY_COMMIT_STEPS))
+                or (bought is not None and self.t - bought[0] < BUY_COMMIT_STEPS))
+
+    def _release_buyers(self, sel: np.ndarray) -> None:
+        """Buyers free again once they have been in reach of their shop BUY_ARRIVED steps (the sale went through or
+        will not: the harness keeps trying meanwhile), not the whole BUY_COMMIT_STEPS (a hero in reach stood still)."""
+        buying = getattr(self, "buying_since", {})
+        if not buying:
+            return
+        pos = {int(u): (float(x), float(y)) for u, x, y in sel[:, [fx.C_ID, fx.C_X, fx.C_Y]].tolist()}
+        near = self.__dict__.setdefault("buy_near", {})
+        for unit, (_, sx, sy) in list(buying.items()):
+            p = pos.get(unit)
+            if p is None:
+                buying.pop(unit, None)
+                near.pop(unit, None)
+            elif (p[0] - sx) ** 2 + (p[1] - sy) ** 2 < BUY_REACH ** 2:
+                near[unit] = near.get(unit, 0) + 1
+                if near[unit] >= BUY_ARRIVED:
+                    buying.pop(unit, None)
+                    near.pop(unit, None)
 
     def act(self, obs: Observation, t: int) -> list[Command]:
         st = self.observe(obs, t)

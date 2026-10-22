@@ -137,6 +137,12 @@ TREE_ROWS = 3
 # neutral hostile camps, against the tree wall: kobolds on each base's side (point-symmetric),
 # an ogre and two forest trolls north, a gnoll brute and two poachers south
 KOBOLDS, OGRES, GNOLLS = ("nkob", "nkob", "nkog"), ("nogr", "nftt", "nftt"), ("ngnb", "ngna", "ngna")
+# Echo Isles' own creeps (its neutral hostile units at the start), and what its tavern and camps sell: scaled with the
+# races' units under fast rules (the audit of 2026-10-22: 44 of its 75 creeps kept their whole hit points on
+# echofast while every player unit had half, and a tavern hero cost twice an altar hero)
+ECHO_CREEPS = ("nftb", "nftt", "ngna", "ngnb", "nkob", "nkog", "nkot", "nmrl", "nmrm", "nmrr", "nogm", "nogr", "nomg",
+               "ntrg", "nwzg")
+NEUTRAL_SOLD = ("Npbm", "Nbrn", "Nngs", "Nplh", "Nbst", "Nalc", "Ntin", "Nfir", "nftb", "nfsp", "nogm", "ngrk")
 _lock = threading.Lock()
 
 
@@ -246,7 +252,7 @@ def rules_files(rules: Rules, tables_in_map: bool = True) -> dict[str, bytes]:
     races = {"human", "orc", "undead", "nightelf", "other"}
     creeps = {t for camp in (KOBOLDS, OGRES, GNOLLS) for t in camp}
     used = {u for u, r in unitdata.items() if r.get("race") in races and u not in campaign}
-    used |= creeps | {"ngol", "ninf"}
+    used |= creeps | set(ECHO_CREEPS) | set(NEUTRAL_SOLD) | {"ngol", "ninf"}
     used_abilities = set()
     for r in unit_abilities:
         if r.get("unitAbilID") in used:
@@ -584,7 +590,7 @@ def echo_map_path(name: str) -> Path:
     src = stock_map_path(src_name)
     if rules == Rules():
         return src
-    version = "v1" + ("_t" if TABLES_IN_MAP else "")
+    version = "v2" + ("_t" if TABLES_IN_MAP else "")  # (v2: Echo Isles' creeps and the neutral buildings' units scaled)
     out = paths.CACHE_DIR / "maps" / f"echo{rules.tag}_{version}.w3x"
     with _lock:
         if not out.exists():

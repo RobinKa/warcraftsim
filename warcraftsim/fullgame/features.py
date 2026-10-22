@@ -141,7 +141,8 @@ def harvest_resource(order: int, kind: int, target_type: int | None) -> str | No
     return None
 
 
-def redundant(order: int, kind: int, current: int, resource: str | None = None, assigned: str | None = None) -> bool:
+def redundant(order: int, kind: int, current: int, resource: str | None = None, assigned: str | None = None,
+              same_mine: bool = True) -> bool:
     """A harvest order for a worker already harvesting that resource: the AI re-issues these without
     effect; learned as decisions, a policy re-ordered its workers every few seconds to other trees
     and reset their work (240 gold from 27 peasants in 80 s). `resource`: what the order harvests
@@ -150,6 +151,8 @@ def redundant(order: int, kind: int, current: int, resource: str | None = None, 
     a decision: dropping those too (both show the same current order) left the clone with almost no
     lumber as human and orc, hoarding gold it could not spend on farms and barracks."""
     if current not in HARVESTING or order not in (HARVEST, SMART) or kind not in (UNIT, TREE):
+        return False
+    if resource == "gold" and not same_mine:  # (another mine: a transfer, an expansion's workers; the audit of 2026-10-22)
         return False
     return resource is None or resource == (assigned or "gold")
 
@@ -324,6 +327,28 @@ def first_hero_free(costs: np.ndarray, vocab: dict) -> np.ndarray:
     hero back until 425 gold and 100 lumber)."""
     c = np.array(costs, copy=True)
     c[hero_classes(vocab), :2] = 0
+    return c
+
+
+REVIVE = (0.4, 0.1, 4.0, 700)  # MiscGame: ReviveBaseFactor, ReviveLevelFactor, ReviveMaxFactor, HeroMaxReviveCostGold
+
+
+def revive_costs(enc: "Encoder", rows: np.ndarray, player: int) -> np.ndarray:
+    """The encoder's costs with each dead hero's order (an altar's, the one that trained it) at its revival's: its
+    gold times 0.4 + 0.1 per level past the first (at most 4 times it, and 700), no lumber; the costs as they are
+    when no hero of the player is dead (the mask had held a dead hero's revival back for good, the audit of
+    2026-10-22)."""
+    mine = rows[(rows[:, C_OWNER] == player) & (rows[:, C_FLAGS] & HERO > 0) & (rows[:, C_FLAGS] & DEAD > 0)]
+    if not len(mine):
+        return enc.costs
+    c = np.array(enc.costs, copy=True)
+    base, per, most, cap = REVIVE
+    for t, lvl in mine[:, [C_TYPE, C_HLEVEL]].tolist():
+        k = enc.order_index.get((int(t), IMMEDIATE))
+        if k is not None:
+            g = int(enc.costs[k][0])
+            c[k, 0] = min(int(g * (base + per * max(int(lvl) - 1, 0))), int(g * most), cap)
+            c[k, 1] = 0
     return c
 
 
@@ -601,8 +626,8 @@ class Encoder:
                 f[:, a + 6] = np.minimum(_lookup(ids, *_sorted_map(queued)), 5) / 5.0
         if lumber:  # own workers the player sent to the trees (their current order is the same as gold miners')
             f[:n_own, a + 8] = np.isin(sel[:n_own, C_ID], np.fromiter(lumber, np.int64, len(lumber)))
-            if busy:
-                f[:, a + 7] = np.isin(ids, np.fromiter(busy, np.int64, len(busy)))
+        if production is not None and busy:  # (it sat under `lumber`: a building's "making" read 0 while no worker
+            f[:, a + 7] = np.isin(ids, np.fromiter(busy, np.int64, len(busy)))  # chopped; the audit of 2026-10-22)
         if F > F_BASE:
             self._hero_block(sel, n_own, f)
             making = production[2] if production is not None and len(production) > 2 else None
@@ -708,18 +733,21 @@ class Encoder:
             view.track_harvest(rows_t if po is None else po[pos[t]:pos[t + 1]], st, trees)
         return out
 
-    def step_labels(self, view: "View", st: dict, rows: np.ndarray, me, later: np.ndarray, trees: dict) -> tuple[dict, list]:
+    def step_labels(self, view: "View", st: dict, rows: np.ndarray, me, later: np.ndarray, trees: dict,
+                    taught: bool = False) -> tuple[dict, list]:
         """One step's labels (y_order, y_ptr, y_x, y_y [MAX_OWN]) from the orders the AI gave in it
         (rows: step, unit, order, kind, x, y, target), in the state `st` (View.step; the view as it
         was then), and which of the orders count (paid for, and train / research orders that started
         something within `later`'s events: the step's and up to two after; a building busy already
         queues them). Self-play's distillation from the built-in AI advising (protocol.ShadowAI)
-        labels its live steps with it, the demonstrations' encoder its recorded ones."""
+        labels its live steps with it, the demonstrations' encoder its recorded ones. `taught`: orders never carried
+        out (the target builder's, the teacher's: they started nothing because they were not given; the filter
+        dropped every train, research and hero label at an idle building, the audit of 2026-10-22)."""
         y = {"y_order": np.zeros(MAX_OWN, np.int16), "y_ptr": np.full(MAX_OWN, -1, np.int16),
              "y_x": np.full(MAX_OWN, -1, np.int16), "y_y": np.full(MAX_OWN, -1, np.int16)}
         index = st["index"]
         paid = self._paid(rows, st, me, trees)
-        if self.costs is not None:  # train / research orders that started nothing: refused (tech, hero limit)
+        if self.costs is not None and not taught:  # train / research orders that started nothing: refused (tech, hero limit)
             started = {int(r[2]) for r in later.tolist() if r[1] in PRODUCTION_START}  # (a few events: np.isin cost more)
             paid = [ok and not (int(r[3]) == 0 and int(r[2]) >= TYPE_CODE and int(r[1]) in view.own_buildings
                                 and int(r[1]) not in started and int(r[1]) not in view.busy)
@@ -762,7 +790,7 @@ def _paid_orders(enc: "Encoder", rows: np.ndarray, st: dict, me, trees: dict) ->
         c = enc.order_index.get(lab) if lab is not None else None
         if c is None:
             continue
-        cg, cl, cf = (int(v) for v in enc.costs[c])
+        cg, cl, cf = (int(v) for v in (enc.costs_first if st.get("first_free") else enc.costs)[c])  # (a first hero: free)
         if cg == cl == cf == 0:
             continue
         if cg <= gold and cl <= lumber and (cf == 0 or fu + cf <= fc):
@@ -796,11 +824,11 @@ class TechMask:
         self._ok = np.ones(self.n, bool)
 
     def allowed(self, done: frozenset, levels: dict[str, int], heroes: frozenset, researching: frozenset,
-                now: float = 1e9) -> np.ndarray:
+                now: float = 1e9, dead: frozenset = frozenset()) -> np.ndarray:
         """`done`: the player's finished buildings' types, `levels`: research -> level, `heroes`: its heroes'
         types (with one in training), `researching`: research under way, `now`: the game second (a neutral
         building's wares in stock)."""
-        key = (done, tuple(sorted(levels.items())), heroes, researching,
+        key = (done, tuple(sorted(levels.items())), heroes, researching, dead,
                tuple(sorted(c for c, v in getattr(self, "stock", {}).items() if v <= now)))
         if key == self._key:
             return self._ok
@@ -814,6 +842,8 @@ class TechMask:
                 lvl = levels.get(code, 0)
                 ok[c] = (lvl < self.max_level.get(code, 1) and code not in researching
                          and not tt.missing(code, self.race, have, lvl, self.tree))
+            elif tt.is_hero(code) and code in dead:  # revived at an altar, with the order that trained it (`dead`: its
+                ok[c] = c not in self.wares and not tt.missing(code, self.race, have, 0, self.tree)  # dead heroes' types)
             elif tt.is_hero(code):
                 ok[c] = len(heroes) < 3 and code not in heroes and not tt.missing(code, self.race, have, len(heroes), self.tree)
             else:
@@ -859,10 +889,12 @@ class View:
         self.queued: dict[int, int] = {}  # building -> units / research ordered and not yet done
         self.busy: set[int] = set()  # buildings making something
         self.assign: dict[int, str] = {}  # own worker -> "gold" / "lumber": what its last orders sent it to
+        self.mine_of: dict[int, int] = {}  # own worker -> the gold mine its last accepted gold order sent it to
         self.hp_last: dict[int, int] = {}  # unit -> its hit points at the last step it was in view
         self.last_order: dict[int, tuple] = {}  # own unit -> (kind 0 none/1 point/2 unit, x, y, target, step)
         # inputs 2 and --tech-mask: what each own building makes now (its kind, A_PROD's, and code), research levels
         self.making: dict[int, tuple[int, int]] = {}
+        self.dead_heroes: dict[int, int] = {}  # own dead heroes: type -> unit id (BCAgent revives them)
         self.levels: dict[int, int] = {}  # upgrade id -> its level (all of the player's research, not only the vocabulary's)
         self.step_seconds = 0.5  # (the clock: game seconds of a step)
         self.t_now = 0  # (the step: the tech mask's wares in stock)
@@ -978,11 +1010,13 @@ class View:
         fl = mine[:, C_FLAGS]
         done = mine[(fl & STRUCTURE > 0) & (fl & DEAD == 0) & (fl & CONSTRUCTING == 0), C_TYPE]
         heroes = {rawcode(c) for c in mine[fl & HERO > 0, C_TYPE].tolist()}
-        heroes |= {rawcode(m[1]) for m in self.making.values() if m[0] == 2}
+        making = {rawcode(m[1]) for m in self.making.values() if m[0] == 2}
+        dead = frozenset(rawcode(c) for c in mine[(fl & HERO > 0) & (fl & DEAD > 0), C_TYPE].tolist()) - making
+        heroes |= making
         researching = frozenset(rawcode(m[1]) for m in self.making.values() if m[0] == 3)
         return self.techmask.allowed(frozenset(rawcode(c) for c in set(done.tolist())),
                                      {rawcode(k): v for k, v in self.levels.items()}, frozenset(heroes), researching,
-                                     self.t_now * self.step_seconds)
+                                     self.t_now * self.step_seconds, dead)
 
     def step(self, rows: np.ndarray, me: np.ndarray | None, events: np.ndarray, t: int,
              opp: np.ndarray | None = None) -> dict:
@@ -1008,6 +1042,8 @@ class View:
             if kind == RESEARCH_FINISH and a in self.own_buildings:
                 self.levels[int(r[3])] = int(r[4])
         lumber = {u for u, r in self.assign.items() if r == "lumber"}
+        dead = rows[(rows[:, C_OWNER] == player) & (rows[:, C_FLAGS] & HERO > 0) & (rows[:, C_FLAGS] & DEAD > 0)]
+        self.dead_heroes = {int(t): int(i) for t, i in dead[:, [C_TYPE, C_ID]].tolist()}
         priv = None  # (the privileged view: every enemy unit; acting on it, or beside the player's for distillation)
         if PRIVILEGED and (self.privileged_act or self.dual):
             priv = enc.entities(rows, player, self.sign, (self.queued, self.busy, self.making), lumber, omniscient=True)
@@ -1056,7 +1092,7 @@ class View:
         g[enc.G0 + enc.ZD + enc.GX:] = self.priv(rows, opp)
         avail = None
         if enc.costs is not None:  # what the player can pay for now (orders beyond it are masked)
-            c = enc.costs_first if not self.has_hero(rows) else enc.costs
+            c = enc.costs_first if not self.has_hero(rows) else revive_costs(enc, rows, self.player)
             gold, lumber, fu, fc = (int(me[2]), int(me[3]), int(me[4]), int(me[5])) if me is not None else (0, 0, 0, 0)
             avail = affordable(c, gold, lumber, fu, fc, self.reserve)
             if enc.tech:  # (--tech-mask)
@@ -1067,6 +1103,7 @@ class View:
         if self.active_f < F_BASE:
             f[:, self.active_f:F_BASE] = 0.0
         out = {"n": len(sel), "sel": sel, "n_own": n_own, "ent": f, "type": types, "cur": cur, "glob": g,
+               "first_free": enc.costs is not None and not self.has_hero(rows),
                "index": {int(i): k for k, i in enumerate(sel[:, C_ID])}, "avail": avail,
                "ghost0": getattr(enc, "ghost0", len(sel)) if not self.privileged_act else len(sel)}
         if priv is not None:  # (the privileged view's global flag; its entities beside the player's: "p…")

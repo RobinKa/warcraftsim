@@ -45,10 +45,12 @@ def order_costs(vocab: dict, map_name: str = "duelrush") -> np.ndarray:
         if oid < fx.TYPE_CODE or kind not in (fx.IMMEDIATE, fx.POINT, fx.UNIT):
             continue
         code = fx.rawcode(oid)
-        if kind == fx.UNIT:  # (bought at a neutral building, protocol.Buy: a tavern's hero, a mercenary, an item)
-            r = units.get(code) or items.get(code)
-            if r is not None:
-                out[c] = (_num(r, "goldcost"), _num(r, "lumbercost"), _num(r, "fused") if code in units else 0)
+        if kind == fx.UNIT:  # (bought at a neutral building, protocol.Buy: a tavern's hero, a mercenary, an item; or
+            if code in units:  # built on a unit: a haunted gold mine) a unit's scaled as the map's tables (duelmap:
+                r = units[code]  # NEUTRAL_SOLD), an item's not
+                out[c] = (scaled(_num(r, "goldcost")), scaled(_num(r, "lumbercost")), _num(r, "fused"))
+            elif code in items:
+                out[c] = (_num(items[code], "goldcost"), _num(items[code], "lumbercost"), 0)
             continue
         if code in units:
             r = units[code]

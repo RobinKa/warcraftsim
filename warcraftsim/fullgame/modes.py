@@ -39,6 +39,8 @@ INTEGER = {"workers", "creep", "harass", "army"}
 # unit flags (protocol.UnitFlags) and row columns (features)
 HERO, STRUCTURE, WORKER, DEAD = 1, 2, 4, 1024
 C_TYPE, C_OWNER, C_X, C_Y, C_FLAGS, C_HLEVEL = 2, 3, 4, 5, 12, 15
+GOLD_MINES = {int.from_bytes(c.encode(), "big") for c in ("ngol", "ugol", "egol")}
+EXPANSION_FROM_START, EXPANSION_AT_MINE = 1500.0, 1000.0  # (as trace.Production's expansions)
 HALLS = {int.from_bytes(c.encode(), "big") for c in
          ("htow", "hkee", "hcas", "ogre", "ostr", "ofrt", "unpl", "unp1", "unp2", "etol", "etoa", "etoe")}
 DEATH = 1
@@ -72,8 +74,10 @@ class Tracker:
     """One side's modes in a game: their violations so far (step), each in [0, 1]."""
 
     def __init__(self, modes: dict[str, float], side: int, enemy_start: tuple[float, float], food: dict[int, int],
-                 worker_types: set[int]):
-        self.modes, self.side, self.enemy = dict(modes), side, enemy_start
+                 worker_types: set[int], own_start: tuple[float, float] | None = None):
+        """`own_start`: an expansion is a hall far from it and at a gold mine (None: any second hall, as before;
+        a second hall at home met "expand" and broke "no_expand", the audit of 2026-10-22)."""
+        self.modes, self.side, self.enemy, self.own = dict(modes), side, enemy_start, own_start
         self.food, self.worker_types = food, worker_types  # (unit type -> its food; the workers' types)
         self.v = {k: 0.0 for k in modes}
         self.done: set[str] = set()  # (a goal reached: no violation later)
@@ -105,7 +109,15 @@ class Tracker:
                 elif now >= x:
                     self.v[k] = 1.0
             elif k in ("expand", "no_expand"):
-                halls = int((np.isin(mine[:, C_TYPE], list(HALLS)) & (fl & STRUCTURE > 0)).sum())
+                hall = mine[np.isin(mine[:, C_TYPE], list(HALLS)) & (fl & STRUCTURE > 0)]
+                if self.own is None:
+                    halls = len(hall)
+                else:  # (the main hall and those at another gold mine)
+                    gm = rows[np.isin(rows[:, C_TYPE], list(GOLD_MINES))]
+                    far = (hall[:, C_X] - self.own[0]) ** 2 + (hall[:, C_Y] - self.own[1]) ** 2 > EXPANSION_FROM_START ** 2
+                    at = (((hall[:, None, C_X] - gm[None, :, C_X]) ** 2 + (hall[:, None, C_Y] - gm[None, :, C_Y]) ** 2)
+                          .min(1, initial=1e18) < EXPANSION_AT_MINE ** 2) if len(gm) else np.zeros(len(hall), bool)
+                    halls = 1 + int((far & at).sum())
                 if k == "expand" and halls >= 2:
                     self.done.add(k)
                 elif k == "expand" and now >= x:
