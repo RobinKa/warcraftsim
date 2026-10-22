@@ -963,7 +963,9 @@ def test_checkpoint_keeps_adam_state(tmp_path):
     assert load_optimizer(fresh, tmp_path / f"{40:016d}.pt", "cpu", 5e-5)
     assert fresh.param_groups[0]["lr"] == 5e-5
     assert torch.equal(fresh.state[net.weight]["exp_avg"], opt.state[net.weight]["exp_avg"])
-    assert not load_optimizer(torch.optim.Adam(net.parameters()), tmp_path / f"{10:016d}.pt", "cpu", 5e-5)
+    older = torch.optim.Adam(net.parameters())  # (its own not kept: the nearest saved one's, 30's)
+    assert load_optimizer(older, tmp_path / f"{10:016d}.pt", "cpu", 5e-5)
+    assert older.state[net.weight]["step"] == 3
 
 
 def test_set_dropout():
