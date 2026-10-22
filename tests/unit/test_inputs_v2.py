@@ -594,3 +594,32 @@ def test_dead_hero_revived_with_the_revive_order(v2):
     order2 = [0] * (i2 + 1)
     order2[i2] = 3
     assert bot.commands(st2, order2, [0] * (i2 + 1), [0] * (i2 + 1), [0] * (i2 + 1)) == [ImmediateOrder(3, code("Hpal"))]
+
+
+def test_teacher_takes_the_natural_expansion(v2):
+    """With its target's expansion due, the teacher has the army clear the natural's camp, then a worker build the
+    hall where people do (undead: an acolyte haunts the mine), then three workers mine there."""
+    import random
+    from types import SimpleNamespace
+
+    from warcraftsim.fullgame.teacher import ATTACK, HARVEST, Teacher
+    from warcraftsim.protocol import Build, PointOrder, TargetOrder
+    player = SimpleNamespace(gold=500, lumber=300, food_used=30, food_cap=60, start_x=-5184.0, start_y=2944.0)
+    main, nat = _unit(50, 15, -5632, 3584, 1, fx.STRUCTURE, "ngol"), _unit(51, 15, -4864, -3200, 1, fx.STRUCTURE, "ngol")
+    base = [_unit(1, 0, -5184, 2944, 1, fx.STRUCTURE, "htow"), main, nat] + [_unit(10 + i, 0, -5300, 3300, 1, fx.WORKER, "hpea") for i in range(5)]
+    army = [_unit(30 + i, 0, -4000, 1000, 1, 0, "hfoo") for i in range(6)]
+    camp = [_unit(60, 12, -4700, -3000, 1, 0, "nomg")]
+    tc = Teacher(0, "human", random.Random(0), {"t": {"htow": 300.0}})
+    assert tc.commands(np.stack(base + army + camp), player, 200.0, 1) == []  # (not due yet)
+    c = tc.commands(np.stack(base + army + camp), player, 320.0, 2)
+    assert c == [PointOrder(30 + i, ATTACK, -4864, -3200) for i in range(6)]
+    c = tc.commands(np.stack(base + army), player, 330.0, 30)
+    assert len(c) == 1 and isinstance(c[0], Build) and c[0].building == code("htow") and (c[0].x, c[0].y) == (-4764.0, -2400.0)
+    done = [_unit(70, 0, -4764, -2400, 1, fx.STRUCTURE, "htow")]
+    c = tc.commands(np.stack(base + army + done), player, 340.0, 60)
+    assert len(c) == 3 and all(isinstance(x, TargetOrder) and x.order == HARVEST and x.target == 51 for x in c)
+    ud = Teacher(0, "undead", random.Random(0), {"t": {"ugol": 300.0}})
+    acolytes = [_unit(10 + i, 0, -5300, 3300, 1, fx.WORKER, "uaco") for i in range(3)]
+    c = ud.commands(np.stack(base[:3] + acolytes), player, 320.0, 1)
+    assert c == [TargetOrder(10, code("ugol"), 51)]
+    assert Teacher(0, "nightelf", random.Random(0), {"t": {"etol": 300.0}}).expand_at is None  # (no entangle order yet)

@@ -1228,6 +1228,9 @@ HALLS = {int.from_bytes(c.encode(), "big") for c in
          ("htow", "hkee", "hcas", "ogre", "ostr", "ofrt", "unpl", "unp1", "unp2", "etol", "etoa", "etoe")}
 AT_MINES = {"htow", "ogre", "unpl", "etol", "ugol", "egol"}  # (with a hall already: an expansion)
 WORKER_TYPES = {"human": "hpea", "orc": "opeo", "undead": "uaco", "nightelf": "ewsp"}
+# a target's hall or haunted gold mine is its expansion (the starting hall is no item): made only by one far from home
+# at a gold mine (trace.Production); a second hall at home had counted (16% of fgself-122's games built one)
+EXPANSION_ITEMS = {"htow", "ogre", "unpl", "etol", "ugol"}
 WORKER_IDS = {int.from_bytes(c.encode(), "big") for c in WORKER_TYPES.values()}
 _FOOD: dict[int, int] = {}
 
@@ -1478,6 +1481,17 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         return not self.why_not
 
 
+def label_rows(t: int, cmds: list) -> np.ndarray:
+    """Commands as label rows (step, unit, order, kind 0 immediate / 1 point / 2 target, x, y, target): a buy on its
+    building, a build or point order at its point, a target order on its unit."""
+    from ..protocol import Buy
+    return np.asarray([(t, x.unit, x.item, 2, 0, 0, x.shop) if isinstance(x, Buy) else
+                       (t, x.unit, getattr(x, "building", getattr(x, "order", 0)),
+                        1 if hasattr(x, "x") else 2 if hasattr(x, "target") else 0,
+                        int(getattr(x, "x", 0)), int(getattr(x, "y", 0)), getattr(x, "target", 0))
+                       for x in cmds], np.int64).reshape(-1, 7)
+
+
 def target(cfg: dict, view, st: dict, pool: dict, race: str, vocab: dict, modes: dict | None = None) -> dict:
     """A side's target strategy `st` in its view: the input (strategy.vector; with --z-modes, its modes'
     after it: modes.vector) and, with --z-enforce, the orders it allows for the strategies' horizon
@@ -1667,8 +1681,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                 q = obs.players.get(s)
                 if c and q is not None:
                     me = np.asarray([t, s, q.gold, q.lumber, q.food_used, q.food_cap, q.upkeep])
-                    lessons = np.asarray([(t, x.unit, x.item, 2, 0, 0, x.shop) if isinstance(x, Buy)
-                                          else (t, x.unit, x.order, 0, 0, 0, 0) for x in c], np.int64).reshape(-1, 7)
+                    lessons = label_rows(t, c)
                     y, _ = bots[s].enc.step_labels(bots[s].view, sts[s], lessons, me, np.zeros((0, 5), np.int64),
                                                    bots[s].trees, taught=True)
                     merge_labels(trajs[s].steps[-1], y, teach=True)
@@ -1708,11 +1721,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                     builders[s].why.append([round(obs.game_time)] + builders[s].ctx)
         for s, (at, c, me) in built.items():  # (--z-build-labels: the builder's accepted orders label the side's step)
             ok = obs.command_results[at:at + len(c)] if at is not None else [True] * len(c)
-            rows = np.asarray([(t, x.unit, x.item, 2, 0, 0, x.shop) if isinstance(x, Buy) else  # (a hire: on its building)
-                               (t, x.unit, getattr(x, "building", getattr(x, "order", 0)),
-                                1 if hasattr(x, "x") else 2 if hasattr(x, "target") else 0,
-                                int(getattr(x, "x", 0)), int(getattr(x, "y", 0)), getattr(x, "target", 0))
-                               for x, a in zip(c, ok) if a], np.int64).reshape(-1, 7)
+            rows = label_rows(t, [x for x, a in zip(c, ok) if a])
             if len(rows) and trajs[s].steps:
                 later = np.asarray([(t + 1, int(e.kind), e.a, e.b, e.c) for e in obs.events], np.int64).reshape(-1, 5)
                 y, _ = bots[s].enc.step_labels(bots[s].view, sts[s], rows, me, later, bots[s].trees,
@@ -1726,6 +1735,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         prod.step(obs)
         for s in zs:  # (what each side with a strategy has made: its items' first times)
             for code in (*prod.trained[s], *prod.built[s], *prod.research[s]):
+                if code in EXPANSION_ITEMS and not prod.expansions[s]:
+                    continue  # (a hall or a haunted mine: made only as an expansion, not a second one at home)
                 made[s].setdefault(code, obs.game_time)
         rows_next = unit_rows(obs, t) if trackers else None
         for s, tk in trackers.items():  # (--z-modes: evaluation games too, their rows' report)

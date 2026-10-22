@@ -1259,3 +1259,19 @@ def test_production_counts_expansions_and_creeps():
     prod.step(NS(**{**vars(obs), "events": [ev(3, 10, code("htow")), ev(3, 11, code("htow")), ev(1, 20, 21)], "game_time": 300.0}))
     row = prod.row(0, obs)
     assert (row["expansions"], row["expansion_t"], row["halls_home"], row["creeps"]) == (1, 300, 1, 1)
+
+
+def test_production_counts_a_haunted_mine_as_an_expansion():
+    """Undead expand with a haunted gold mine (no hall needed): one finished far from its start counts."""
+    from types import SimpleNamespace as NS
+
+    from warcraftsim.fullgame.trace import Production
+
+    code = lambda c: int.from_bytes(c.encode(), "big")  # noqa: E731
+    player = NS(gold=0, lumber=0, food_used=5, food_cap=12, gold_gathered=0, lumber_gathered=0, start_x=0.0, start_y=0.0)
+    units = [NS(id=2, type_id=code("ngol"), owner=15, x=4000.0, y=0.0), NS(id=11, type_id=code("ugol"), owner=0, x=4000.0, y=0.0)]
+    obs = NS(players={0: player, 1: player}, units=units, events=[], game_time=1.0)
+    prod = Production()
+    prod.step(obs)
+    prod.step(NS(**{**vars(obs), "events": [NS(kind=3, a=11, b=code("ugol"), c=0)], "game_time": 400.0}))
+    assert prod.row(0, obs)["expansions"] == 1

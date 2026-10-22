@@ -8,6 +8,11 @@ selfplay --teach 1 (needs --neutral 1: the orders it teaches are the neutral bui
                    when the player has an altar and none, or the second with a tier-2 hall, from 135 s, the money there
     a town portal: a hero near the goblin merchant buys one when it has none and a free slot, from 440 s
     a potion:      a hero below 40% of its hit points drinks what heals in its inventory
+    an expansion:  when its target's expansion is due (a hall, or undead's haunted gold mine, in its items): the army
+                   clears the natural expansion's camp (at 6 units or more), then the worker nearest builds the hall
+                   where people put theirs (undead: an acolyte haunts the mine), then three workers go to mine there.
+                   (No policy had ever expanded: 0% of its games, people 81% of Echo Isles'. Night elves not yet: a
+                   tree of life's mine needs the entangle order, which the agent can't give.)
 
 Each kind at most every GAP steps a side, so a long wait for the money is not a label a step."""
 
@@ -17,7 +22,7 @@ import random
 
 import numpy as np
 
-from ..protocol import Buy, ImmediateOrder
+from ..protocol import Build, Buy, ImmediateOrder, PointOrder, TargetOrder
 from . import features as fx
 from .neutral import fourcc
 
@@ -29,6 +34,16 @@ ALTARS = {fourcc(c) for c in ("halt", "oalt", "uaod", "eate")}
 TIER2 = {fourcc(c) for c in ("hkee", "hcas", "ostr", "ofrt", "unp1", "unp2", "etoa", "etoe")}
 TAVERN, MERCHANT, PORTAL = fourcc("ntav"), fourcc("ngme"), fourcc("stwp")
 GAP = 20  # steps between two lessons of a kind
+HALL = {"human": "htow", "orc": "ogre", "undead": "unpl", "nightelf": "etol"}
+HAUNTED = fourcc("ugol")
+MINES = {fourcc(c) for c in ("ngol", "ugol", "egol")}
+# where people built their halls at Echo Isles' natural expansions (95 games of 1.29: the mine -> the hall's offset)
+EXPAND_SPOTS = {(-4864, -3200): (100, 800), (4352, -3200): (-300, 700)}
+NATURAL_FROM_START = 1500.0  # (the main mine is nearer its start)
+CAMP_NEAR = 900.0  # creeps this near the natural mine guard it
+ARMY_TO_CREEP = 6  # army units it takes to clear a camp
+ATTACK, HARVEST = 851983, 852018
+HIDDEN = 16  # (UnitFlags.HIDDEN: a worker inside a gold mine)
 NEAR_MERCHANT = 2500.0
 USESLOT = 852008
 
@@ -48,6 +63,9 @@ class Teacher:
             self.pick = fourcc(mine[0][1]) if mine else None
         self.last: dict[str, int] = {}
         self.taught: dict[str, int] = {}  # each kind's lessons this game (the episode row)
+        self.race = race
+        due = [v for c, v in (target or {}).get("t", {}).items() if c in (HALL.get(race), "ugol")]
+        self.expand_at = min(due) if due and race != "nightelf" else None  # (its target's expansion: when)
 
     def _due(self, kind: str, t: int) -> bool:
         if t - self.last.get(kind, -GAP) < GAP:
@@ -95,7 +113,54 @@ class Teacher:
                 m = merchant[0]
                 if np.hypot(h[fx.C_X] - m[fx.C_X], h[fx.C_Y] - m[fx.C_Y]) < NEAR_MERCHANT and self._due("town portal", t):
                     out.append(Buy(int(h[fx.C_ID]), int(m[fx.C_ID]), PORTAL))
+        if self.expand_at is not None and now >= self.expand_at:
+            out += self._expansion(rows, alive, player, t)
         return out
+
+    def _expansion(self, rows: np.ndarray, alive: np.ndarray, player, t: int) -> list:
+        """The next step of taking the natural expansion: clearing its camp, the hall (undead: the haunted mine), the
+        workers that mine there."""
+        sx, sy = getattr(player, "start_x", None), getattr(player, "start_y", None)
+        mines = rows[np.isin(rows[:, fx.C_TYPE], list(MINES)) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0)]
+        if sx is None or not len(mines):
+            return []
+        d = np.hypot(mines[:, fx.C_X] - sx, mines[:, fx.C_Y] - sy)
+        far = np.argsort(d)[d[np.argsort(d)] > NATURAL_FROM_START]
+        if not len(far):
+            return []
+        nat = mines[far[0]]
+        mx, my = float(nat[fx.C_X]), float(nat[fx.C_Y])
+        near = lambda r, rad: np.hypot(r[:, fx.C_X] - mx, r[:, fx.C_Y] - my) < rad  # noqa: E731
+        hall = fourcc(HALL[self.race])
+        workers = alive[np.isin(alive[:, fx.C_TYPE], list(WORKERS)) & (alive[:, fx.C_FLAGS] & HIDDEN == 0)]
+        taken = alive[np.isin(alive[:, fx.C_TYPE], [hall, HAUNTED]) & near(alive, 1000.0)]
+        if len(taken):  # (taken: once finished, three workers to mine there)
+            if (taken[:, fx.C_FLAGS] & fx.CONSTRUCTING > 0).all() or (near(workers, 900.0).sum() >= 4) or not len(workers):
+                return []
+            target = taken[taken[:, fx.C_TYPE] == HAUNTED]
+            mine_id = int(target[0, fx.C_ID]) if len(target) else int(nat[fx.C_ID])
+            far_w = workers[~near(workers, 900.0)]
+            pick = far_w[np.argsort(np.hypot(far_w[:, fx.C_X] - mx, far_w[:, fx.C_Y] - my))[:3]]
+            return ([TargetOrder(int(w[fx.C_ID]), HARVEST, mine_id) for w in pick]
+                    if len(pick) and self._due("expansion: workers", t) else [])
+        creeps = rows[(rows[:, fx.C_OWNER] == 12) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0) & near(rows, CAMP_NEAR)]
+        if len(creeps):  # (its camp first: the army)
+            army = alive[(alive[:, fx.C_FLAGS] & (fx.STRUCTURE | fx.WORKER) == 0)]
+            if len(army) < ARMY_TO_CREEP or not self._due("expansion: its camp", t):
+                return []
+            return [PointOrder(int(u[fx.C_ID]), ATTACK, int(mx), int(my)) for u in army]
+        if not len(workers) or not self._due("expansion: the hall", t):
+            return []
+        if self.race == "undead":  # (an acolyte haunts the mine: its gold, no hall needed)
+            w = workers[int(np.argmin(np.hypot(workers[:, fx.C_X] - mx, workers[:, fx.C_Y] - my)))]
+            return [TargetOrder(int(w[fx.C_ID]), HAUNTED, int(nat[fx.C_ID]))]
+        ox, oy = EXPAND_SPOTS.get((int(round(mx)), int(round(my))), (None, None))
+        if ox is None:  # (another map's: 750 toward its start)
+            n = max(float(np.hypot(sx - mx, sy - my)), 1.0)
+            ox, oy = 750.0 * (sx - mx) / n, 750.0 * (sy - my) / n
+        x, y = mx + ox, my + oy
+        w = workers[int(np.argmin(np.hypot(workers[:, fx.C_X] - x, workers[:, fx.C_Y] - y)))]
+        return [Build(int(w[fx.C_ID]), hall, x, y)]
 
 
 def fourcc_in(types: np.ndarray, codes: set[int]) -> bool:

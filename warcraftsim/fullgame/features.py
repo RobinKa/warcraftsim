@@ -761,7 +761,13 @@ class Encoder:
             c = self.order_index.get(lab) if lab is not None else None
             ttype = int(st["sel"][index[target], C_TYPE]) if target in index else None
             res = harvest_resource(lab[0], lab[1], ttype) if lab is not None else None
-            if c is None or redundant(lab[0], lab[1], int(st["sel"][k, C_ORDER]), res, view.assign.get(int(r[1]))):
+            same = True  # (gold from another mine than the worker's: a transfer, kept)
+            if res == "gold" and target in index:
+                known = view.mine_of.get(int(r[1]))
+                tx, ty = st["sel"][index[target], C_X], st["sel"][index[target], C_Y]
+                same = (known == target if known is not None
+                        else math.hypot(float(st["sel"][k, C_X] - tx), float(st["sel"][k, C_Y] - ty)) < 1500.0)
+            if c is None or redundant(lab[0], lab[1], int(st["sel"][k, C_ORDER]), res, view.assign.get(int(r[1])), same):
                 continue
             y["y_order"][k] = c
             y["y_ptr"][k] = -1

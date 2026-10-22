@@ -183,7 +183,7 @@ class Production:
                 p = owner.get(e.a)
                 if p in (0, 1):
                     self.built[p][rawcode(e.b)] += 1
-                    if k == 3 and rawcode(e.b) in HALLS:
+                    if k == 3 and (rawcode(e.b) in HALLS or rawcode(e.b) == "ugol"):  # (undead's: a haunted mine)
                         self._hall(p, e.a, obs)
             elif k == 9:  # research done: b=tech, c=level
                 p = owner.get(e.a)
