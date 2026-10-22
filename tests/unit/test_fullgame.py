@@ -1238,3 +1238,24 @@ def test_adam_state_matched_by_name_for_added_parameters(tmp_path):
     names = dict(new.named_parameters())
     assert torch.equal(fresh.state[names["order.2.weight"]]["exp_avg"], opt.state[dict(old.named_parameters())["order.2.weight"]]["exp_avg"])
     assert names["priv_pol.0.weight"] not in fresh.state and fresh.param_groups[0]["lr"] == 5e-5
+
+
+def test_production_counts_expansions_and_creeps():
+    """A hall finished far from its player's start at a gold mine is an expansion; one at home is not. A neutral
+    unit killed by a player is a creep."""
+    from types import SimpleNamespace as NS
+
+    from warcraftsim.fullgame.trace import Production
+
+    code = lambda c: int.from_bytes(c.encode(), "big")  # noqa: E731
+    player = NS(gold=0, lumber=0, food_used=5, food_cap=12, gold_gathered=0, lumber_gathered=0, start_x=0.0, start_y=0.0)
+    units = [NS(id=1, type_id=code("ngol"), owner=15, x=300.0, y=0.0), NS(id=2, type_id=code("ngol"), owner=15, x=4000.0, y=0.0),
+             NS(id=10, type_id=code("htow"), owner=0, x=600.0, y=200.0), NS(id=11, type_id=code("htow"), owner=0, x=3700.0, y=300.0),
+             NS(id=20, type_id=code("nkob"), owner=12, x=2000.0, y=0.0), NS(id=21, type_id=code("hfoo"), owner=0, x=2000.0, y=10.0)]
+    ev = lambda k, a, b=0, c=0: NS(kind=k, a=a, b=b, c=c)  # noqa: E731
+    obs = NS(players={0: player, 1: player}, units=units, events=[], game_time=1.0)
+    prod = Production()
+    prod.step(obs)
+    prod.step(NS(**{**vars(obs), "events": [ev(3, 10, code("htow")), ev(3, 11, code("htow")), ev(1, 20, 21)], "game_time": 300.0}))
+    row = prod.row(0, obs)
+    assert (row["expansions"], row["expansion_t"], row["halls_home"], row["creeps"]) == (1, 300, 1, 1)

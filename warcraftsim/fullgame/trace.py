@@ -108,6 +108,10 @@ def material_steps(units, steps: int, values: dict) -> "np.ndarray":
 
 
 WORKERS = {"hpea", "opeo", "uaco", "ewsp"}
+HALLS = {"htow", "ogre", "unpl", "etol"}  # (a race's first-tier hall: one more is an expansion if at another mine)
+MINES = {"ngol", "ugol", "egol"}  # (a gold mine, haunted or entangled)
+EXPANSION_FROM_START = 1500.0  # a hall this far from its player's start, and
+EXPANSION_AT_MINE = 1000.0  # this near a gold mine: an expansion (a second hall at home is none)
 
 
 HIRED = {int.from_bytes(c.encode(), "big") for c in
@@ -131,6 +135,10 @@ class Production:
         # the game's counters, so without this they added up over a launch's games (185k gold)
         self.base: dict[int, tuple[int, int]] = {}
         self.hired: set[int] = set()  # (tavern heroes and mercenaries seen: hired, no training event)
+        self.mines: list[tuple[float, float]] | None = None  # the gold mines (their first step's)
+        self.expansions: dict[int, list[float]] = {0: [], 1: []}  # each expansion's game second
+        self.halls_home = {0: 0, 1: 0}  # more halls that are no expansion (at home, or at no mine)
+        self.creeps = {0: 0, 1: 0}  # neutral units killed (creeping)
 
     def _hires(self, obs) -> None:
         """A tavern hero or a mercenary of a player's seen for the first time: trained (bought, protocol.Buy)."""
@@ -157,6 +165,8 @@ class Production:
             if obs.game_time >= 60 and p not in self.food_1min:
                 self.food_1min[p] = s.food_used
         self._hires(obs)
+        if self.mines is None:
+            self.mines = [(u.x, u.y) for u in obs.units if rawcode(u.type_id) in MINES]
         events = [e for e in obs.events if int(e.kind) in (1, 3, 6, 9, 12)]
         if not events:
             return
@@ -173,6 +183,8 @@ class Production:
                 p = owner.get(e.a)
                 if p in (0, 1):
                     self.built[p][rawcode(e.b)] += 1
+                    if k == 3 and rawcode(e.b) in HALLS:
+                        self._hall(p, e.a, obs)
             elif k == 9:  # research done: b=tech, c=level
                 p = owner.get(e.a)
                 if p in (0, 1):
@@ -184,6 +196,21 @@ class Production:
                     self.lost[dead] += 1
                     if killer in (0, 1) and killer != dead:
                         self.kills[killer] += 1
+                elif dead is not None and killer in (0, 1):  # (a neutral unit: a creep)
+                    self.creeps[killer] += 1
+
+    def _hall(self, p: int, unit: int, obs) -> None:
+        """A hall of player p finished: an expansion when far from its start and at a gold mine."""
+        u = next((x for x in obs.units if x.id == unit), None)
+        s = obs.players.get(p)
+        if u is None or s is None:
+            return
+        home = ((u.x - s.start_x) ** 2 + (u.y - s.start_y) ** 2) ** 0.5
+        mine = min((((u.x - x) ** 2 + (u.y - y) ** 2) ** 0.5 for x, y in self.mines or ()), default=1e9)
+        if home > EXPANSION_FROM_START and mine < EXPANSION_AT_MINE:
+            self.expansions[p].append(round(obs.game_time))
+        else:
+            self.halls_home[p] += 1
 
     def row(self, p: int, obs) -> dict:
         s = obs.players.get(p)
@@ -195,4 +222,6 @@ class Production:
                 "kills": self.kills[p], "lost": self.lost[p], "food_1min": self.food_1min.get(p),
                 "max_food": self.max_food[p], "held": round(self.held[p] / max(self.steps, 1)),
                 "gold": s.gold_gathered - self.base.get(p, (0, 0))[0] if s else 0,
-                "lumber": s.lumber_gathered - self.base.get(p, (0, 0))[1] if s else 0}
+                "lumber": s.lumber_gathered - self.base.get(p, (0, 0))[1] if s else 0,
+                "expansions": len(self.expansions[p]), **({"expansion_t": self.expansions[p][0]} if self.expansions[p] else {}),
+                "halls_home": self.halls_home[p], "creeps": self.creeps[p]}
