@@ -143,8 +143,15 @@ class Teacher:
             return ([TargetOrder(int(w[fx.C_ID]), HARVEST, mine_id) for w in pick]
                     if len(pick) and self._due("expansion: workers", t) else [])
         creeps = rows[(rows[:, fx.C_OWNER] == 12) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0) & near(rows, CAMP_NEAR)]
-        if len(creeps):  # (guarded: no lesson. Sending the army to clear it (fgself-123: 26 lessons a game) lost the
-            return []    # games that had an expansion due, 13% won to 32%; --scenarios natural clears the camps)
+        if len(creeps):  # (guarded. Sending the whole army to clear it every 10 s (fgself-123) lost the games that had
+            # an expansion due, 13% won to 32%. With --macros: its heroes, while the army is 6 units or more, are shown
+            # the creep order (the policy decides who goes with them))
+            army = alive[(alive[:, fx.C_FLAGS] & (fx.STRUCTURE | fx.WORKER) == 0)]
+            heroes = army[army[:, fx.C_FLAGS] & fx.HERO > 0]
+            if not fx.MACROS or len(army) < 6 or not len(heroes) or not self._due("expansion: its camp", t):
+                return []
+            from .macros import CREEP
+            return [ImmediateOrder(int(h[fx.C_ID]), CREEP) for h in heroes]
         if not len(workers) or not self._due("expansion: the hall", t):
             return []
         if fx.MACROS:  # (the agent's expand order: where to build is its own business, macros.py)

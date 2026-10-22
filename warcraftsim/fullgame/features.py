@@ -556,6 +556,7 @@ class Encoder:
         # undead: haunting a mine)
         ix = {tuple(k): i + 1 for i, k in enumerate(vocab["orders"])}
         self.expand_class = ix.get((990001, IMMEDIATE))
+        self.creep_class = ix.get((990002, IMMEDIATE))
         self.expand_via = {r: ix.get((int.from_bytes(h.encode(), "big"), UNIT if r == "undead" else POINT))
                            for r, h in (("human", "htow"), ("orc", "ogre"), ("undead", "ugol"), ("nightelf", "etol"))}
         self.type_index = {t: i + 1 for i, t in enumerate(vocab["types"])}  # 0: unknown
@@ -1126,6 +1127,10 @@ class View:
             self.expand_site = site(rows, getattr(self, "start", None)) if MACROS and race != "nightelf" else None
             via = enc.expand_via.get(race)
             avail[enc.expand_class] = bool(self.expand_site is not None and via is not None and avail[via])
+        if avail is not None and enc.creep_class is not None:  # (--macros: creep the natural, while its camp stands)
+            from .macros import camp
+            self.creep_at = camp(rows, getattr(self, "start", None)) if MACROS else None
+            avail[enc.creep_class] = self.creep_at is not None
         if self.zmask is not None and t < self.zmask_until:  # (--z-enforce: only the target's items)
             avail = self.zmask.copy() if avail is None else avail & self.zmask
         if self.active_f < F_BASE:

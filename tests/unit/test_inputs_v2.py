@@ -637,15 +637,16 @@ def test_expand_macro(v2):
     from warcraftsim.fullgame.model import FullGameNet
     from warcraftsim.fullgame.play import BCAgent
     from warcraftsim.fullgame.teacher import Teacher
-    from warcraftsim.protocol import Build, ImmediateOrder, TargetOrder
+    from warcraftsim.protocol import Build, ImmediateOrder, PointOrder, TargetOrder
     vocab = {**AUDIT_VOCAB, "orders": AUDIT_VOCAB["orders"] + [[code("htow"), fx.POINT], [code("ugol"), fx.UNIT]]}
     v = macros.extend(vocab)
-    assert macros.extended(v) and v["orders"][-1] == [macros.EXPAND, fx.IMMEDIATE] and macros.extend(v) is v
+    assert macros.extended(v) and v["orders"][-2:] == [[macros.EXPAND, fx.IMMEDIATE], [macros.CREEP, fx.IMMEDIATE]]
+    assert macros.extend(v) is v
     net = FullGameNet(n_types=len(v["types"]) + 1, n_orders=len(vocab["orders"]) + 1, n_cur=2, G=fx.Encoder(vocab).G, d=16, layers=1)
     grown = macros.grow(net, vocab, v)
-    k = len(v["orders"])
+    k, kc = len(v["orders"]) - 1, len(v["orders"])
     tix = {t: i + 1 for i, t in enumerate(v["types"])}
-    assert grown.config["n_orders"] == k + 1 and bool(grown.allowed[tix[code("uaco")], k]) and not bool(grown.allowed[tix[code("halt")], k])
+    assert grown.config["n_orders"] == kc + 1 and bool(grown.allowed[tix[code("uaco")], k]) and not bool(grown.allowed[tix[code("halt")], k])
     assert torch.equal(grown.order[2].weight[:k], net.order[2].weight) and grown.order[2].bias[k] < net.order[2].bias.min()
     start = (-5184.0, 2944.0)
     main, nat = _unit(50, 15, -5632, 3584, 1, fx.STRUCTURE, "ngol"), _unit(51, 15, -4864, -3200, 1, fx.STRUCTURE, "ngol")
@@ -653,7 +654,7 @@ def test_expand_macro(v2):
     assert macros.site(np.stack(home), start) == (51, -4864.0, -3200.0, -4764.0, -2400.0)
     assert macros.site(np.stack(home + [_unit(60, 12, -4700, -3000, 1, 0, "nomg")]), start) is None  # (its camp)
     assert macros.site(np.stack(home + [_unit(70, 1, -4764, -2400, 1, fx.STRUCTURE, "htow")]), start) is None  # (taken)
-    costs = np.zeros((k + 1, 3), np.int64)
+    costs = np.zeros((kc + 1, 3), np.int64)
     costs[k - 2] = (193, 103, 0)  # (htow's build)
     fx.set_macros(True)
     try:
@@ -676,5 +677,18 @@ def test_expand_macro(v2):
         player = SimpleNamespace(gold=500, lumber=300, food_used=5, food_cap=12, start_x=start[0], start_y=start[1])
         tc = Teacher(0, "human", random.Random(0), {"t": {"htow": 300.0}})
         assert tc.commands(np.stack(home), player, 320.0, 1) == [ImmediateOrder(2, macros.EXPAND)]
+        # creep: while the natural's camp stands, to it; the teacher shows it to the heroes once the army is 6 strong
+        guarded = home + [_unit(60, 12, -4700, -3000, 1, 0, "nomg")]
+        assert macros.camp(np.stack(guarded), start) == (-4864.0, -3200.0) and macros.camp(np.stack(home), start) is None
+        bot.view.races = [0, 1]
+        st = bot.view.step(np.stack(guarded), rich, np.zeros((0, 5), np.int64), 3)
+        assert st["avail"][kc] and not st["avail"][k]
+        order[i] = kc
+        assert bot.commands(st, order, [0] * (i + 1), [0] * (i + 1), [0] * (i + 1)) == [PointOrder(2, 851983, -4864, -3200)]
+        pal = _unit(80, 0, -5000, 2900, 1, fx.HERO, "Hpal")
+        army = [_unit(81 + j, 0, -5000, 2800, 1, 0, "hfoo") for j in range(5)]
+        tc2 = Teacher(0, "human", random.Random(0), {"t": {"htow": 300.0}})
+        assert tc2.commands(np.stack(guarded + [pal] + army), player, 320.0, 1) == [ImmediateOrder(80, macros.CREEP)]
+        assert Teacher(0, "human", random.Random(0), {"t": {"htow": 300.0}}).commands(np.stack(guarded + [pal]), player, 320.0, 1) == []
     finally:
         fx.set_macros(False)

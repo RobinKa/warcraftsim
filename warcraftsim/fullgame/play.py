@@ -60,7 +60,7 @@ def unit_rows(obs: Observation, t: int) -> np.ndarray:
 
 REPAIR = 852024  # the order a worker resumes a building with
 ATTACK = 851983
-EXPAND = 990001  # (macros.EXPAND)
+EXPAND, CREEP = 990001, 990002  # (macros.EXPAND, macros.CREEP)
 HAUNT = int.from_bytes(b"ugol", "big")
 EXPAND_HALLS = {r: int.from_bytes(h.encode(), "big") for r, h in (("human", "htow"), ("orc", "ogre"), ("nightelf", "etol"))}
 REVIVE = 852039  # an altar's revival of a dead hero: a target order on it (its training order is refused; tested
@@ -180,7 +180,11 @@ class BCAgent:
                 continue  # on its way to build, or building: another order would cancel it
             self.last_sent.append((oid, kind))
             x, y = fx.bins_world(int(bx[i]), int(by[i]), self.view.sign)
-            if kind == fx.IMMEDIATE and oid == EXPAND:  # (--macros: the natural taken, macros.py)
+            if kind == fx.IMMEDIATE and oid == CREEP:  # (--macros: to the natural's camp, attack-moving)
+                at = getattr(self.view, "creep_at", None)
+                if at is not None:
+                    out.append(PointOrder(unit, ATTACK, int(at[0]), int(at[1])))
+            elif kind == fx.IMMEDIATE and oid == EXPAND:  # (--macros: the natural taken, macros.py)
                 where = getattr(self.view, "expand_site", None)
                 race = fx.RACES[self.view.races[self.player]]
                 if where is not None:

@@ -1,5 +1,8 @@
 """The agent's own orders for what the game spreads over many (selfplay --macros 1).
 
+    creep    an army unit or a hero attack-moves to the natural expansion's camp, while the camp stands (and nobody
+             holds the natural). The lesson that sent the whole army there every 10 s (fgself-123) lost its games;
+             as an order, the policy decides who goes and when.
     expand   a worker takes the natural expansion: the race's hall built where people build it (Echo Isles: ~800
              north of the natural's mine), or for undead the mine haunted. Taught as a raw build order at a point
              (fgself-123/124), the policy learned "build a hall" and built it at home: 26-30% of its games had a
@@ -16,7 +19,9 @@ import torch
 
 from . import features as fx
 
-EXPAND = 990001  # (no game order has this id: the agent's own)
+EXPAND = 990001  # (no game order has these ids: the agent's own)
+CREEP = 990002
+ORDERS = (EXPAND, CREEP)
 HALLS = {"human": "htow", "orc": "ogre", "undead": "unpl", "nightelf": "etol"}
 WORKERS = ("hpea", "opeo", "uaco", "ewsp")
 MINES = {int.from_bytes(c.encode(), "big") for c in ("ngol", "ugol", "egol")}
@@ -33,7 +38,8 @@ def code(c: str) -> int:
 
 
 def extended(vocab: dict) -> bool:
-    return bool(vocab.get("macros"))
+    have = {tuple(o) for o in vocab["orders"]}
+    return all((o, fx.IMMEDIATE) in have for o in ORDERS)
 
 
 def extend(vocab: dict) -> dict:
@@ -41,9 +47,10 @@ def extend(vocab: dict) -> dict:
     if extended(vocab):
         return vocab
     orders = [list(o) for o in vocab["orders"]]
-    if [EXPAND, fx.IMMEDIATE] not in orders:
-        orders.append([EXPAND, fx.IMMEDIATE])
-    names = {**(vocab.get("order_names") or {}), str(EXPAND): "expand"}
+    for o in ORDERS:  # (in this order: a vocabulary with the first ones gets the later ones after them)
+        if [o, fx.IMMEDIATE] not in orders:
+            orders.append([o, fx.IMMEDIATE])
+    names = {**(vocab.get("order_names") or {}), str(EXPAND): "expand", str(CREEP): "creep the natural"}
     counts = dict(vocab.get("counts") or {})
     if "orders" in counts:
         counts["orders"] = list(counts["orders"]) + [0] * (len(orders) - len(counts["orders"]))
@@ -79,15 +86,48 @@ def grow(net, old: dict, new: dict):
 
 
 def allow(net, vocab: dict) -> None:
-    """Workers may give the macro orders (net's allowed table, in place)."""
+    """Who may give the macro orders (net's allowed table, in place): expand a worker, creep whatever may attack-move
+    and is no worker."""
     oix = {tuple(o): c for c, o in enumerate(vocab["orders"], start=1)}
-    k = oix.get((EXPAND, fx.IMMEDIATE))
-    if k is None:
-        return
     tix = {int(t): i + 1 for i, t in enumerate(vocab["types"])}
-    for w in WORKERS:
-        if code(w) in tix:
-            net.allowed[tix[code(w)], k] = True
+    k = oix.get((EXPAND, fx.IMMEDIATE))
+    if k is not None:
+        for w in WORKERS:
+            if code(w) in tix:
+                net.allowed[tix[code(w)], k] = True
+    k, move = oix.get((CREEP, fx.IMMEDIATE)), oix.get((851983, fx.POINT))
+    if k is not None and move is not None:
+        workers = [tix[code(w)] for w in WORKERS if code(w) in tix]
+        net.allowed[:, k] = net.allowed[:, move]
+        net.allowed[workers, k] = False
+
+
+def natural(rows: np.ndarray, start: tuple[float, float] | None):
+    """The player's natural expansion's mine row (the gold mine nearest its start but its main), or None."""
+    if start is None:
+        return None
+    sx, sy = start
+    mines = rows[np.isin(rows[:, fx.C_TYPE], list(MINES)) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0)]
+    if not len(mines):
+        return None
+    d = np.hypot(mines[:, fx.C_X] - sx, mines[:, fx.C_Y] - sy)
+    order = np.argsort(d)
+    far = order[d[order] > NATURAL_FROM_START]
+    return mines[far[0]] if len(far) else None
+
+
+def camp(rows: np.ndarray, start: tuple[float, float] | None) -> tuple[float, float] | None:
+    """The natural's mine (x, y) while its camp stands and nobody holds the natural (creep: where to go), or None."""
+    nat = natural(rows, start)
+    if nat is None:
+        return None
+    mx, my = float(nat[fx.C_X]), float(nat[fx.C_Y])
+    alive = rows[rows[:, fx.C_FLAGS] & fx.DEAD == 0]
+    dist = np.hypot(alive[:, fx.C_X] - mx, alive[:, fx.C_Y] - my)
+    halls = np.isin(alive[:, fx.C_TYPE], [code(h) for h in HALLS.values()] + [HAUNTED]) & (alive[:, fx.C_OWNER] <= 1)
+    if (halls & (dist < TAKEN_NEAR)).any() or not ((alive[:, fx.C_OWNER] == 12) & (dist < CAMP_NEAR)).any():
+        return None
+    return mx, my
 
 
 def site(rows: np.ndarray, start: tuple[float, float] | None) -> tuple[int, float, float, float, float] | None:
