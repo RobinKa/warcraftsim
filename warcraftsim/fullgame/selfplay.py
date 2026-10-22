@@ -1517,6 +1517,8 @@ def target(cfg: dict, view, st: dict, pool: dict, race: str, vocab: dict, modes:
     (strategy.allowed) -> `st`."""
     z = strat.vector(st, pool["items"][race])
     view.z = np.concatenate([z, zmodes.vector(modes)]) if fx.ZDIM > strat.ZDIM else z
+    if cfg.get("z_mix"):  # (--z-mix: the target army's mix after them)
+        view.z = np.concatenate([view.z, strat.mix(st, pool["items"][race])])
     if cfg.get("z_enforce"):
         view.zmask = strat.allowed(st, pool["items"][race], vocab["orders"])
         view.zmask_until = int(strat.horizon(st) / cfg["step_seconds"])  # (`st` scaled: --z-time-scale)
@@ -1775,6 +1777,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                 if s in zs:  # the strategy's potential (not returned at the end: following it pays)
                     z_new = -cfg.get("z_reward", 0.0) * strat.mismatch(made[s], zs[s], pool["items"][races[s]], obs.game_time)
                     z_new -= cfg.get("z_mode_reward", 0.0) * viol.get(s, 0.0)
+                    if cfg.get("z_mix"):  # (--z-mix: the army trained so far against the target's mix)
+                        z_new -= cfg.get("z_mix_reward", 0.0) * strat.mix_gap(prod.trained[s], zs[s])
                     r_z = fade * (cfg["gamma"] * z_new - zphi[s])
                     zphi[s] = z_new
                 if tr.steps and "rparts" in tr.steps[-1]:
@@ -1826,6 +1830,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"scenario": scenario} if scenario else {}),
         **({"z_t": {c: round(v) for c, v in zs[side]["t"].items()},
             "z_made": {c: round(v) for c, v in made[side].items()}} if side in zs else {}),
+        **({"z_mix_gap": round(strat.mix_gap(prod.trained[side], zs[side]), 3)} if side in zs and zs[side].get("n") else {}),
         **({"z": zs[side]["src"] + (" won" if zs[side]["won"] else ""), "z_items": len(zs[side]["t"]),
             "z_miss": strat.mismatch(made[side], zs[side], pool["items"][races[side]], obs.game_time),
             # (which: the strategy's items due by now and not made; made and not in it)
@@ -3105,6 +3110,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--neutral", type=int, default=0, help="the neutral buildings' wares as orders (a tavern's heroes, "
                     "mercenaries, the goblin merchant's items: protocol.Buy) and the tavern heroes' skills and spells "
                     "(neutral.py: every network loaded grows to the extended vocabulary); 2: no mercenaries")
+    ap.add_argument("--z-mix", type=int, default=0, help="a target's army mix as an input (each item's share of its "
+                    "army units, strategy.mix; the strategy block grows) and in its reward (--z-mix-reward)")
+    ap.add_argument("--z-mix-reward", type=float, default=0.0, help="--z-mix: the strategy potential's term for the "
+                    "army trained against the target's mix (minus this times their total variation, 0 to 1)")
     ap.add_argument("--macros", type=int, default=0, help="the agent's own orders for what the game spreads over many "
                     "(macros.py: expand, a worker takes the natural expansion where people build there; every network "
                     "loaded grows to them)")
@@ -3439,6 +3448,8 @@ def main(argv: list[str] | None = None) -> int:
     fx.set_macros(bool(args.macros))
     if args.z_modes > 0:  # (the strategy block with the modes' part: model.load grows older networks')
         fx.set_z(strat.ZDIM + zmodes.MDIM)
+    if args.z_mix:  # (and the target army's mix after it)
+        fx.set_z(strat.ZDIM + (zmodes.MDIM if args.z_modes > 0 else 0) + strat.SLOTS)
     from ..data.duelmap import parse_duel_name
     if parse_duel_name(args.map) is None:  # another map than the duel maps: its own frame for the positions
         from ..data.mapbuild import stock_map_path    # and point targets (features.set_geometry; the actors
@@ -3673,7 +3684,7 @@ def main(argv: list[str] | None = None) -> int:
            "opd_share": args.opd_share, "opd_difficulty": args.opd_difficulty,
            "costs": order_costs(vocab, args.map).tolist() if args.avail_mask else None, "max_past": args.max_past,
            "eval_fallback": args.eval_fallback, "worker_cap": args.worker_cap, "z_dim": fx.ZDIM, "z_pool": str(args.z_pool) if args.z_pool else "", "z_share": args.z_share,
-           "z_reward": args.z_reward, "reward_parts": args.reward_parts, "z_modes": args.z_modes, "z_mode_reward": args.z_mode_reward, "z_winners": args.z_winners, "z_src": args.z_src, "eval_z": args.eval_z,
+           "z_reward": args.z_reward, "z_mix": args.z_mix, "z_mix_reward": args.z_mix_reward, "reward_parts": args.reward_parts, "z_modes": args.z_modes, "z_mode_reward": args.z_mode_reward, "z_winners": args.z_winners, "z_src": args.z_src, "eval_z": args.eval_z,
            "z_enforce": args.z_enforce, "z_time_scale": args.z_time_scale, "z_build": args.z_build, "z_build_labels": args.z_build_labels,
            "grpo_share": args.grpo_share, "grpo_group": args.grpo_group, "grpo_coef": args.grpo_coef,
            "grpo_seeds": args.grpo_seeds, "grpo_branch": [float(x) for x in args.grpo_branch.split("-")],

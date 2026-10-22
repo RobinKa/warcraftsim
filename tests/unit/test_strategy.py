@@ -453,3 +453,17 @@ def test_natural_scenario_clears_both_naturals():
     out = scenarios.commands("natural", NS(players=players, units=units), 0, ["human", "orc"], _random.Random(0))
     assert out == [ClearCreeps(-4864.0, -3200.0, 900), ClearCreeps(4352.0, -3200.0, 900)]
     assert ClearCreeps(-4864.0, -3200.0, 900).encode()[0] == 88
+
+
+def test_army_mix_input_and_gap():
+    """--z-mix: a strategy's army as shares of its army units (no workers or heroes); the gap of what a side trained
+    to it, their total variation (0 until 5 army units)."""
+    from warcraftsim.fullgame import strategy as st
+    s = {"t": {"hfoo": 60.0}, "n": {"hpea": 20, "hfoo": 6, "hrif": 2, "Hamg": 1}}
+    z = st.mix(s, ["hfoo", "hrif", "hkni"])
+    assert z[:3].tolist() == [0.75, 0.25, 0.0] and z.shape == (st.SLOTS,)
+    assert st.mix(None, ["hfoo"]).sum() == 0.0
+    assert st.mix_gap({"hfoo": 3}, s) == 0.0  # (too few yet)
+    assert st.mix_gap({"hfoo": 6, "hrif": 2, "hpea": 9}, s) == pytest.approx(0.0)
+    assert st.mix_gap({"hfoo": 8}, s) == pytest.approx(0.25)
+    assert st.mix_gap({"hkni": 8}, s) == pytest.approx(1.0)

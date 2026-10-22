@@ -289,6 +289,38 @@ def allowed(strategy: dict, items: list[str], orders: list) -> np.ndarray:
     return out
 
 
+WORKER_CODES = ("hpea", "opeo", "uaco", "ewsp")
+
+
+def is_army(code: str) -> bool:
+    """An army unit's code (a race's unit, no worker, hero, building or research): lower case and trained."""
+    return code[:1].islower() and code not in WORKER_CODES
+
+
+def mix(strategy: dict | None, items: list[str]) -> np.ndarray:
+    """--z-mix: the policy's input for a strategy's army: per slot, the item's share of the army units it made (its
+    counts "n"; zeros: none, or no army)."""
+    z = np.zeros(SLOTS, np.float32)
+    n = {c: v for c, v in ((strategy or {}).get("n") or {}).items() if is_army(c) and v > 0}
+    total = sum(n.values())
+    if not total:
+        return z
+    for k, code in enumerate(items[:SLOTS]):
+        z[k] = n.get(code, 0) / total
+    return z
+
+
+def mix_gap(trained: dict[str, int], strategy: dict, least: int = 5) -> float:
+    """--z-mix: how far the army a side trained is from its strategy's (the total variation of the two mixes, 0 to
+    1); 0 while it trained fewer than `least` army units or the strategy has no army."""
+    want = {c: v for c, v in (strategy.get("n") or {}).items() if is_army(c) and v > 0}
+    have = {c: v for c, v in trained.items() if is_army(c) and v > 0}
+    tw, th = sum(want.values()), sum(have.values())
+    if not tw or th < least:
+        return 0.0
+    return 0.5 * sum(abs(have.get(c, 0) / th - want.get(c, 0) / tw) for c in set(want) | set(have))
+
+
 def horizon(strategy: dict) -> float:
     """The game seconds `strategy` covers: HORIZON, or less when its game ended sooner ("end")."""
     return min(HORIZON, strategy.get("end", HORIZON))
