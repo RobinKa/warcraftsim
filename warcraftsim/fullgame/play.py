@@ -63,6 +63,8 @@ ATTACK = 851983
 EXPAND, CREEP = 990001, 990002  # (macros.EXPAND, macros.CREEP)
 HAUNT = int.from_bytes(b"ugol", "big")
 EXPAND_HALLS = {r: int.from_bytes(h.encode(), "big") for r, h in (("human", "htow"), ("orc", "ogre"), ("nightelf", "etol"))}
+CANCEL = 851976  # a building's queue: its last unit
+TIERS = {int.from_bytes(c.encode(), "big") for c in ("hkee", "hcas", "ostr", "ofrt", "unp1", "unp2", "etoa", "etoe")}
 REVIVE = 852039  # an altar's revival of a dead hero: a target order on it (its training order is refused; tested
 # 2026-10-22: accepted ~7 s after the death, at 425 x 0.4 gold for a level 1 hero)
 BUY_REACH, BUY_ARRIVED = 500.0, 6  # (a buyer this near its shop this many steps: free again, _release_buyers)
@@ -195,6 +197,11 @@ class BCAgent:
                     out.append(TargetOrder(unit, HAUNT, mine) if race == "undead" else Build(unit, EXPAND_HALLS[race], hx, hy))
             elif kind == fx.IMMEDIATE and oid in self.view.dead_heroes:  # (a dead hero's order at an altar: its revival)
                 out.append(TargetOrder(unit, REVIVE, self.view.dead_heroes[oid]))
+            elif kind == fx.IMMEDIATE and oid in TIERS and unit in self.view.busy and self.view.making.get(unit, (4,))[0] != 4:
+                # (a hall's next tier while it trains workers: its queue cancelled first; the game takes no upgrade
+                # behind them, so the order was refused while a hall trained workers back to back: human targets
+                # missed their keep and won 4 of 26 in the real game; the target builder did this already)
+                out += [ImmediateOrder(unit, CANCEL)] * 6 + [ImmediateOrder(unit, oid)]
             elif kind == fx.IMMEDIATE:
                 out.append(ImmediateOrder(unit, oid))
             elif kind == fx.SKILL:

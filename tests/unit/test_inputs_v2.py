@@ -714,3 +714,22 @@ def test_own_units_past_the_cap_keep_heroes_army_and_producers(v2):
     st = fx.Encoder(VOCAB).view(0, 1.0, [0, 1]).step(np.stack(farms + workers + late), None, np.zeros((0, 5), np.int64), 0)
     ids = set(st["sel"][:st["n_own"], fx.C_ID].tolist())
     assert st["n_own"] == fx.MAX_OWN and {3000, 3001, 3002} <= ids and all(2000 + j in ids for j in range(50))
+
+
+def test_tier_order_cancels_a_busy_halls_queue(v2):
+    """A hall's next tier while it trains workers: its queue cancelled first (the game takes no upgrade behind them);
+    a hall already upgrading, or idle, gets the order alone."""
+    from warcraftsim.fullgame.play import CANCEL, BCAgent
+    from warcraftsim.protocol import ImmediateOrder
+    v = {**AUDIT_VOCAB, "types": AUDIT_VOCAB["types"] + [code("hkee")], "orders": AUDIT_VOCAB["orders"] + [[code("hkee"), fx.IMMEDIATE]]}
+    k = len(v["orders"])
+    bot = BCAgent(None, v, 0, None)
+    bot.view = bot.enc.view(0, 1.0, [0, 1])
+    bot.trees, bot.building_since, bot.t = {}, {}, 0
+    hall = _unit(1, 0, -5184, 2944, 1, fx.STRUCTURE, "htow")
+    st = bot.view.step(np.stack([hall]), None, np.zeros((0, 5), np.int64), 0)
+    assert bot.commands(st, [k], [0], [0], [0]) == [ImmediateOrder(1, code("hkee"))]  # (idle)
+    bot.view.busy, bot.view.making = {1}, {1: (0, code("hpea"))}
+    assert bot.commands(st, [k], [0], [0], [0]) == [ImmediateOrder(1, CANCEL)] * 6 + [ImmediateOrder(1, code("hkee"))]
+    bot.view.making = {1: (4, code("hkee"))}  # (upgrading already: not cancelled)
+    assert bot.commands(st, [k], [0], [0], [0]) == [ImmediateOrder(1, code("hkee"))]
