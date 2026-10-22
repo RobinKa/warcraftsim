@@ -1464,7 +1464,7 @@ Its first 10 minutes read 26% against its start in 65 snapshot games, but the ra
 
 **Result of `fgself-120` (01:25, 1 hour 40 minutes):** level, the new baseline under the corrected rules. 48% of 313 head to head with its start, 55% of 387 with `fgself-114`'s last; against insane 87% of 87 (its start 89% of 79 in these rules); rating 1929 ± 16 and 1922 ± 22 to its start's 1916 ± 7; with a target 42% of 90 against insane. The first hero comes at a median 60 s (79 s before); tavern heroes hired in 7% of the training games, and 32% of the targets that ask for one (153 of 476).
 
-**`fgself-121`** (from `fgself-120`'s last, 8527594, 01:30, overnight): **OPSD, clean and under the corrected rules** (`--opsd-share 0.2 --opsd-coef 0.05`; Adam's state matched by name): the first attempt that has its parent's league, one vocabulary and the game's rules right. Head to head with its start and `fgself-111`'s last.
+**`fgself-121`** (from `fgself-120`'s last, 8527594, 01:30, overnight): **OPSD, clean and under the corrected rules** (`--opsd-share 0.2 --opsd-coef 0.05`; Adam's state matched by name): the first attempt that has its parent's league, one vocabulary and the game's rules right. Head to head with its start and `fgself-111`'s last. Stopped at 01:40 for a shutdown after 10 minutes (682214 steps); to go on from there.
 
 **Skill ratings** (the user's idea, the dashboard's Ratings view): a Bradley-Terry fit on the Elo scale over every evaluation game in the real game, the insane AI at 1500. At 22:45: `fgself-106`'s last checkpoint 2128 ± 24, `fgself-102`'s 11841833 1977 ± 8, `fgself-100`'s best 1956 ± 9.
 
