@@ -156,6 +156,7 @@ class BCAgent:
         sequences over the first min(n_own, MAX_OWN) units) as game commands."""
         out: list[Command] = []
         self._release_buyers(st["sel"][:st["n_own"]])
+        expanded = False  # (--macros: one expand order a step)
         self.last_sent: list[tuple[int, int]] = []  # (order id, kind) of what it sent: the video's panel
         self.sent_resources: list[str | None] = []  # per command: what it sends the worker to harvest (accepted())
         sel = st["sel"]
@@ -180,14 +181,16 @@ class BCAgent:
                 continue  # on its way to build, or building: another order would cancel it
             self.last_sent.append((oid, kind))
             x, y = fx.bins_world(int(bx[i]), int(by[i]), self.view.sign)
-            if kind == fx.IMMEDIATE and oid == CREEP:  # (--macros: to the natural's camp, attack-moving)
-                at = getattr(self.view, "creep_at", None)
-                if at is not None:
+            if kind == fx.IMMEDIATE and oid == CREEP:  # (--macros: to the natural's camp, attack-moving; not again to a
+                at = getattr(self.view, "creep_at", None)  # unit attack-moving already)
+                if at is not None and int(sel[i, fx.C_ORDER]) != ATTACK:
                     out.append(PointOrder(unit, ATTACK, int(at[0]), int(at[1])))
-            elif kind == fx.IMMEDIATE and oid == EXPAND:  # (--macros: the natural taken, macros.py)
+            elif kind == fx.IMMEDIATE and oid == EXPAND:  # (--macros: the natural taken, macros.py; one worker a step)
                 where = getattr(self.view, "expand_site", None)
                 race = fx.RACES[self.view.races[self.player]]
-                if where is not None:
+                if where is not None and not expanded:
+                    expanded = True
+                    self.view.expanding = (self.t + fx.EXPAND_PENDING_STEPS, unit)
                     mine, _, _, hx, hy = where
                     out.append(TargetOrder(unit, HAUNT, mine) if race == "undead" else Build(unit, EXPAND_HALLS[race], hx, hy))
             elif kind == fx.IMMEDIATE and oid in self.view.dead_heroes:  # (a dead hero's order at an altar: its revival)

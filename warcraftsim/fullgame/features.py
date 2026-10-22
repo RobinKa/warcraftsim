@@ -158,7 +158,10 @@ def redundant(order: int, kind: int, current: int, resource: str | None = None, 
 
 
 WORKER = 4  # UnitFlags.WORKER
-BUILD_COMMIT_STEPS = 60  # (a worker's building order that lasts longer: let it be re-ordered)
+BUILD_COMMIT_STEPS = 400  # (a worker's building order that lasts longer: let it be re-ordered. 60 until 2026-10-22:
+# the walk to an expansion took ~30 s of it and the hall was left unbuilt; a real-game hall takes 150-180 s)
+PASSIVE_IDS = np.array([int.from_bytes(c.encode(), "big") for c in (
+    "hhou", "otrb", "uzig", "emow", "hwtw", "hgtw", "hctw", "hatw", "owtw", "uzg1", "uzg2", "etrp", "ugol", "egol")], np.int64)
 
 
 def building(flags: int, current: int) -> bool:
@@ -265,6 +268,8 @@ NEUTRAL = int(os.environ.get("WARCRAFTSIM_NEUTRAL", "0"))
 SHOP_IDS = np.array([int.from_bytes(c.encode(), "big") for c in ("ntav", "ngme", "nmer", "nmrk")], np.int64)
 
 
+CREEP_ARMY, CREEP_FROM = 6, 150.0  # --macros: creep the natural's camp with 6 army units or more, from second 150
+EXPAND_PENDING_STEPS = 120  # --macros: an expand order under way this long (the walk, ~30 s): no other, its cost kept
 # selfplay --macros: the agent's own orders for what the game spreads over many (fullgame/macros.py: expand)
 MACROS = os.environ.get("WARCRAFTSIM_MACROS", "0") == "1"
 
@@ -590,7 +595,13 @@ class Encoder:
         those out of sight after those in sight and marked (A_HID)."""
         alive = rows[:, C_FLAGS] & DEAD == 0
         vis = (rows[:, C_VIS] >> player) & 1 == 1
-        own = rows[alive & (rows[:, C_OWNER] == player)][:MAX_OWN]
+        own = rows[alive & (rows[:, C_OWNER] == player)]
+        if len(own) > MAX_OWN:  # (past MAX_OWN: heroes, the army, buildings that make something, workers, then farms and
+            fl = own[:, C_FLAGS]  # towers; the rows are in first-seen order, so the newest were cut: 12-17% of the games,
+            rank = np.where(fl & HERO > 0, 0, np.where(fl & (STRUCTURE | WORKER) == 0, 1,  # won 2-5%; audit 2)
+                            np.where(fl & STRUCTURE > 0, np.where(np.isin(own[:, C_TYPE], PASSIVE_IDS), 4, 2), 3)))
+            own = own[np.argsort(rank, kind="stable")]
+        own = own[:MAX_OWN]
         enemy = rows[alive & (rows[:, C_OWNER] == 1 - player) & vis]
         hidden = rows[alive & (rows[:, C_OWNER] == 1 - player) & ~vis] if omniscient else None
         if hidden is not None:
@@ -1117,7 +1128,13 @@ class View:
         if enc.costs is not None:  # what the player can pay for now (orders beyond it are masked)
             c = enc.costs_first if not self.has_hero(rows) else revive_costs(enc, rows, self.player)
             gold, lumber, fu, fc = (int(me[2]), int(me[3]), int(me[4]), int(me[5])) if me is not None else (0, 0, 0, 0)
-            avail = affordable(c, gold, lumber, fu, fc, self.reserve)
+            reserve = self.reserve
+            pending = getattr(self, "expanding", None)  # (--macros: an expand order on its way: its hall's cost kept until
+            if pending is not None and t < pending[0] and getattr(self, "expand_site", None) is not None:  # the frame
+                via = enc.expand_via.get(RACES[self.races[player]])  # stands; the policy spent it during the walk, and
+                if via is not None:  # sent the next wave of workers: 63 hall orders, no hall, in a filmed game; audit 1)
+                    reserve = (via, int(c[via][0]), int(c[via][1]))
+            avail = affordable(c, gold, lumber, fu, fc, reserve)
             if enc.tech:  # (--tech-mask)
                 self.t_now = t
                 avail &= self.tech_allowed(rows)
@@ -1126,11 +1143,15 @@ class View:
             race = RACES[self.races[player]]
             self.expand_site = site(rows, getattr(self, "start", None)) if MACROS and race != "nightelf" else None
             via = enc.expand_via.get(race)
-            avail[enc.expand_class] = bool(self.expand_site is not None and via is not None and avail[via])
+            busy = getattr(self, "expanding", None) is not None and t < self.expanding[0]
+            avail[enc.expand_class] = bool(self.expand_site is not None and via is not None and avail[via] and not busy)
         if avail is not None and enc.creep_class is not None:  # (--macros: creep the natural, while its camp stands)
             from .macros import camp
-            self.creep_at = camp(rows, getattr(self, "start", None)) if MACROS else None
-            avail[enc.creep_class] = self.creep_at is not None
+            mine = rows[(rows[:, C_OWNER] == player) & (rows[:, C_FLAGS] & DEAD == 0)]
+            army = int((mine[:, C_FLAGS] & (STRUCTURE | WORKER) == 0).sum())
+            strong = army >= CREEP_ARMY and t * self.step_seconds >= CREEP_FROM  # (the teacher's conditions: from minute 1,
+            self.creep_at = camp(rows, getattr(self, "start", None)) if MACROS and strong else None  # any unit sent it:
+            avail[enc.creep_class] = self.creep_at is not None  # 436 attack-moves a game; audit 3)
         if self.zmask is not None and t < self.zmask_until:  # (--z-enforce: only the target's items)
             avail = self.zmask.copy() if avail is None else avail & self.zmask
         if self.active_f < F_BASE:

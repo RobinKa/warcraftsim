@@ -656,6 +656,7 @@ def test_expand_macro(v2):
     assert macros.site(np.stack(home + [_unit(70, 1, -4764, -2400, 1, fx.STRUCTURE, "htow")]), start) is None  # (taken)
     costs = np.zeros((kc + 1, 3), np.int64)
     costs[k - 2] = (193, 103, 0)  # (htow's build)
+    costs[4] = (100, 0, 0)  # (hfoo)
     fx.set_macros(True)
     try:
         enc = fx.Encoder(v, costs)
@@ -671,6 +672,10 @@ def test_expand_macro(v2):
         order = [0] * (i + 1)
         order[i] = k
         assert bot.commands(st, order, [0] * (i + 1), [0] * (i + 1), [0] * (i + 1)) == [Build(2, code("htow"), -4764.0, -2400.0)]
+        st = bot.view.step(np.stack(home), rich, np.zeros((0, 5), np.int64), 2)
+        assert not st["avail"][k]  # (one under way: no other expand meanwhile, its hall's cost kept)
+        assert not bot.view.step(np.stack(home), np.asarray([0, 0, 250, 300, 5, 12, 0]), np.zeros((0, 5), np.int64), 3)["avail"][4]
+        bot.view.expanding = None
         bot.view.races = [2, 1]  # (undead: the mine haunted)
         st = bot.view.step(np.stack(home), rich, np.zeros((0, 5), np.int64), 2)
         assert bot.commands(st, order, [0] * (i + 1), [0] * (i + 1), [0] * (i + 1)) == [TargetOrder(2, code("ugol"), 51)]
@@ -681,14 +686,31 @@ def test_expand_macro(v2):
         guarded = home + [_unit(60, 12, -4700, -3000, 1, 0, "nomg")]
         assert macros.camp(np.stack(guarded), start) == (-4864.0, -3200.0) and macros.camp(np.stack(home), start) is None
         bot.view.races = [0, 1]
-        st = bot.view.step(np.stack(guarded), rich, np.zeros((0, 5), np.int64), 3)
-        assert st["avail"][kc] and not st["avail"][k]
-        order[i] = kc
-        assert bot.commands(st, order, [0] * (i + 1), [0] * (i + 1), [0] * (i + 1)) == [PointOrder(2, 851983, -4864, -3200)]
         pal = _unit(80, 0, -5000, 2900, 1, fx.HERO, "Hpal")
         army = [_unit(81 + j, 0, -5000, 2800, 1, 0, "hfoo") for j in range(5)]
+        assert not bot.view.step(np.stack(guarded + army), rich, np.zeros((0, 5), np.int64), 400)["avail"][kc]  # (5 units)
+        assert not bot.view.step(np.stack(guarded + [pal] + army), rich, np.zeros((0, 5), np.int64), 100)["avail"][kc]  # (50 s)
+        st = bot.view.step(np.stack(guarded + [pal] + army), rich, np.zeros((0, 5), np.int64), 400)
+        assert st["avail"][kc] and not st["avail"][k]
+        i = st["index"][2]
+        order = [0] * (i + 1)
+        order[i] = kc
+        assert bot.commands(st, order, [0] * (i + 1), [0] * (i + 1), [0] * (i + 1)) == [PointOrder(2, 851983, -4864, -3200)]
         tc2 = Teacher(0, "human", random.Random(0), {"t": {"htow": 300.0}})
         assert tc2.commands(np.stack(guarded + [pal] + army), player, 320.0, 1) == [ImmediateOrder(80, macros.CREEP)]
         assert Teacher(0, "human", random.Random(0), {"t": {"htow": 300.0}}).commands(np.stack(guarded + [pal]), player, 320.0, 1) == []
     finally:
         fx.set_macros(False)
+
+
+
+def test_own_units_past_the_cap_keep_heroes_army_and_producers(v2):
+    """Past MAX_OWN own units: heroes, the army, buildings that make something, workers, then farms are kept, in that
+    order (the rows' first-seen order cut the newest)."""
+    farms = [_unit(1000 + j, 0, -3000, j, 1, fx.STRUCTURE, "hhou") for j in range(60)]
+    workers = [_unit(2000 + j, 0, -3000, j, 1, fx.WORKER, "hpea") for j in range(50)]
+    late = [_unit(3000, 0, -3000, 0, 1, fx.STRUCTURE, "hbar"), _unit(3001, 0, -3000, 0, 1, 0, "hfoo"),
+            _unit(3002, 0, -3000, 0, 1, fx.HERO, "Hpal")]
+    st = fx.Encoder(VOCAB).view(0, 1.0, [0, 1]).step(np.stack(farms + workers + late), None, np.zeros((0, 5), np.int64), 0)
+    ids = set(st["sel"][:st["n_own"], fx.C_ID].tolist())
+    assert st["n_own"] == fx.MAX_OWN and {3000, 3001, 3002} <= ids and all(2000 + j in ids for j in range(50))

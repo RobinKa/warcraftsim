@@ -109,7 +109,8 @@ class Tracker:
                 elif now >= x:
                     self.v[k] = 1.0
             elif k in ("expand", "no_expand"):
-                hall = mine[np.isin(mine[:, C_TYPE], list(HALLS)) & (fl & STRUCTURE > 0)]
+                kinds = list(HALLS) + ([int.from_bytes(b"ugol", "big")] if self.own is not None else [])  # (undead: a haunted
+                hall = mine[np.isin(mine[:, C_TYPE], kinds) & (fl & STRUCTURE > 0)]  # mine far from home; audit 4)
                 if self.own is None:
                     halls = len(hall)
                 else:  # (the main hall and those at another gold mine)
