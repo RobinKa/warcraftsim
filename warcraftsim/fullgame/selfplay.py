@@ -3614,6 +3614,9 @@ def main(argv: list[str] | None = None) -> int:
                 if fx.NEUTRAL and c.get("vocab"):  # (--neutral: model.load extends it)
                     from .neutral import extend_vocab
                     c["vocab"] = extend_vocab(c["vocab"])
+                if fx.MACROS and c.get("vocab"):  # (--macros: and its orders after them)
+                    from .macros import extend as with_macros
+                    c["vocab"] = with_macros(c["vocab"])
                 from .neutral import same_orders  # (--neutral: a reordering of the run's fits, Nets.get)
                 return (c["config"].get("bins", 128) == fx.BINS and c.get("vocab") is not None
                         and (c["vocab"] == vocab or bool(fx.NEUTRAL) and same_orders(c["vocab"], vocab))
