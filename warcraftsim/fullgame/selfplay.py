@@ -2988,8 +2988,13 @@ def load_optimizer(opt, checkpoint: Path, device, lr: float, net: FullGameNet | 
     (the network `opt` steps), a network with parameters added since (--opsd-*: the privileged path) takes the state
     of those it shares by name (the checkpoint's config gives the saved order), the new ones from zero."""
     path = Path(checkpoint).with_suffix(".adam")
-    if not path.exists():
-        return False
+    if not path.exists():  # (only the newest few are kept: a fork from an earlier checkpoint takes the nearest one's,
+        near = sorted(Path(checkpoint).parent.glob("[0-9]*.adam"),  # a fresh Adam cost forks ~10 points early on)
+                      key=lambda q: abs(int(q.stem) - int(Path(checkpoint).stem)) if q.stem.isdigit() and Path(checkpoint).stem.isdigit() else 1 << 62)
+        if not near or not near[0].stem.isdigit():
+            return False
+        print(f"note: no Adam state saved with {Path(checkpoint).name}: the nearest one's, {near[0].name}", flush=True)
+        path = near[0]
     capturable = [g.get("capturable", False) for g in opt.param_groups]
     saved = torch.load(path, map_location=device, weights_only=False)
     try:
