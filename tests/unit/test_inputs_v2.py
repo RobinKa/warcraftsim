@@ -596,6 +596,36 @@ def test_dead_hero_revived_with_the_revive_order(v2):
     assert bot.commands(st2, order2, [0] * (i2 + 1), [0] * (i2 + 1), [0] * (i2 + 1)) == [ImmediateOrder(3, code("Hpal"))]
 
 
+
+def test_dead_tavern_hero_revived_at_the_altar(v2):
+    """A dead tavern hero's hire is its revival at an altar of the player's (tested in the game, 2026-10-23: the
+    altar takes it, at 0.4 of its gold); the mask allows it with an altar, its price the revival's."""
+    from warcraftsim.fullgame.play import REVIVE, BCAgent
+    from warcraftsim.protocol import TargetOrder
+    v = AUDIT_VOCAB
+    k = 5  # (Npbm, a tavern's)
+    m = fx.TechMask(v, "human")
+    assert not m.allowed(frozenset({"htow"}), {}, frozenset({"Npbm"}), frozenset(), dead=frozenset({"Npbm"}))[k]  # (no altar)
+    assert m.allowed(frozenset({"htow", "halt"}), {}, frozenset({"Npbm"}), frozenset(), dead=frozenset({"Npbm"}))[k]
+    costs = np.zeros((len(v["orders"]) + 1, 3), np.int64)
+    costs[k] = (425, 135, 5)
+    enc = fx.Encoder(v, costs)
+    alt, peon = _unit(3, 0, -2500, 0, 1, fx.STRUCTURE, "halt"), _unit(1, 0, -2000, 0, 1, fx.WORKER, "hpea")
+    panda = _unit(2, 0, -2100, 0, 1, fx.HERO | fx.DEAD, "Npbm")
+    assert fx.revive_costs(enc, np.stack([alt, peon, panda]), 0)[k].tolist() == [170, 0, 5]
+    bot = BCAgent(None, v, 0, None)
+    bot.view = bot.enc.view(0, 1.0, [0, 1])
+    bot.trees, bot.building_since, bot.t = {}, {}, 0
+    st = bot.view.step(np.stack([alt, peon, panda]), None, np.zeros((0, 5), np.int64), 0)
+    i = st["index"][1]
+    order = [0] * (i + 1)
+    order[i] = k  # (the worker's hire of it)
+    assert bot.commands(st, order, [0] * (i + 1), [0] * (i + 1), [0] * (i + 1)) == [TargetOrder(3, REVIVE, 2)]
+    st = bot.view.step(np.stack([peon, panda]), None, np.zeros((0, 5), np.int64), 1)
+    i = st["index"][1]
+    assert bot.commands(st, order[:i + 1], [0] * (i + 1), [0] * (i + 1), [0] * (i + 1)) == []  # (no altar: nothing)
+
+
 def test_teacher_takes_the_natural_expansion(v2):
     """With its target's expansion due and the natural's camp gone, the teacher has a worker build the hall where
     people do (undead: an acolyte haunts the mine), then three workers mine there; while the camp stands, nothing."""

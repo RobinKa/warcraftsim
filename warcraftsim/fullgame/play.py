@@ -64,6 +64,7 @@ EXPAND, CREEP, MIX, PICKUP = 990001, 990002, 990003, 990004  # (macros.EXPAND, .
 HAUNT = int.from_bytes(b"ugol", "big")
 EXPAND_HALLS = {r: int.from_bytes(h.encode(), "big") for r, h in (("human", "htow"), ("orc", "ogre"), ("nightelf", "etol"))}
 CANCEL = 851976  # a building's queue: its last unit
+ALTARS = [int.from_bytes(c.encode(), "big") for c in ("halt", "oalt", "uaod", "eate")]
 TIERS = {int.from_bytes(c.encode(), "big") for c in ("hkee", "hcas", "ostr", "ofrt", "unp1", "unp2", "etoa", "etoe")}
 REVIVE = 852039  # an altar's revival of a dead hero: a target order on it (its training order is refused; tested
 # 2026-10-22: accepted ~7 s after the death, at 425 x 0.4 gold for a level 1 hero)
@@ -231,6 +232,10 @@ class BCAgent:
                 out.append(LearnSkill(unit, oid))
             elif kind == fx.POINT:
                 out.append(Build(unit, oid, x, y) if oid >= TYPE_CODE else PointOrder(unit, oid, x, y))
+            elif kind == fx.UNIT and oid in self.view.dead_heroes:  # (a dead tavern hero's hire: its revival at an altar of
+                altar = self._altar(sel[:st["n_own"]])            # the player's; tested 2026-10-23: 0.4 of its gold, as
+                if altar is not None:                             # an altar hero's)
+                    out.append(TargetOrder(altar, REVIVE, self.view.dead_heroes[oid]))
             elif kind == fx.UNIT and oid >= TYPE_CODE and is_ware(oid):  # bought at a neutral building (neutral.py):
                 shop = sel[int(tgt[i])]                    # the one pointed at, if it sells it, else the nearest that
                 if not sells(int(shop[fx.C_TYPE]), oid):   # does (a new order's pointer has no reason to pick the
@@ -268,6 +273,12 @@ class BCAgent:
                 self.sent_resources.append(res)
         self.issued += len(out)
         return out
+
+    @staticmethod
+    def _altar(own: np.ndarray) -> int | None:
+        """A finished altar of the player's (`own`: its units' rows), its id, or None."""
+        done = own[np.isin(own[:, fx.C_TYPE], ALTARS) & (own[:, fx.C_FLAGS] & (fx.CONSTRUCTING | fx.DEAD) == 0)]
+        return int(done[0, fx.C_ID]) if len(done) else None
 
     def _mine(self, sel: np.ndarray, k: int, i: int, plain: bool = False) -> int | None:
         """The gold mine an order pointing at row `k` goes to: that one if it is a mine, else the nearest to unit

@@ -349,17 +349,17 @@ REVIVE = (0.4, 0.1, 4.0, 700)  # MiscGame: ReviveBaseFactor, ReviveLevelFactor, 
 
 
 def revive_costs(enc: "Encoder", rows: np.ndarray, player: int) -> np.ndarray:
-    """The encoder's costs with each dead hero's order (an altar's, the one that trained it) at its revival's: its
-    gold times 0.4 + 0.1 per level past the first (at most 4 times it, and 700), no lumber; the costs as they are
-    when no hero of the player is dead (the mask had held a dead hero's revival back for good, the audit of
-    2026-10-22)."""
+    """The encoder's costs with each dead hero's order (an altar's, the one that trained it; a tavern hero's hire) at
+    its revival's: its gold times 0.4 + 0.1 per level past the first (at most 4 times it, and 700), no lumber; the costs
+    as they are when no hero of the player is dead (the mask had held a dead hero's revival back for good, the audit
+    of 2026-10-22)."""
     mine = rows[(rows[:, C_OWNER] == player) & (rows[:, C_FLAGS] & HERO > 0) & (rows[:, C_FLAGS] & DEAD > 0)]
     if not len(mine):
         return enc.costs
     c = np.array(enc.costs, copy=True)
     base, per, most, cap = REVIVE
     for t, lvl in mine[:, [C_TYPE, C_HLEVEL]].tolist():
-        k = enc.order_index.get((int(t), IMMEDIATE))
+        k = enc.order_index.get((int(t), IMMEDIATE)) or enc.order_index.get((int(t), UNIT))
         if k is not None:
             g = int(enc.costs[k][0])
             c[k, 0] = min(int(g * (base + per * max(int(lvl) - 1, 0))), int(g * most), cap)
@@ -879,7 +879,8 @@ class TechMask:
                 ok[c] = (lvl < self.max_level.get(code, 1) and code not in researching
                          and not tt.missing(code, self.race, have, lvl, self.tree))
             elif tt.is_hero(code) and code in dead:  # revived at an altar, with the order that trained it (`dead`: its
-                ok[c] = c not in self.wares and not tt.missing(code, self.race, have, 0, self.tree)  # dead heroes' types)
+                ok[c] = not tt.missing(code, self.race, have, 0, self.tree)  # dead heroes' types; a tavern's hero too, with
+                # an altar: its hire's order is the altar's revival, play.BCAgent. A dead tavern hero was lost for good)
             elif tt.is_hero(code):
                 ok[c] = len(heroes) < 3 and code not in heroes and not tt.missing(code, self.race, have, len(heroes), self.tree)
             else:
