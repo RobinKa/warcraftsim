@@ -78,11 +78,12 @@ class Teacher:
         total = sum(army.values())
         self.mix = {c: v / total for c, v in army.items()} if total else {}  # (its target's army mix)
 
-    def _due(self, kind: str, t: int) -> bool:
+    def _due(self, kind: str, t: int, counted: str | None = None) -> bool:
+        """Whether a lesson of `kind` may be given now (and it is counted, as `counted`: one hero's of many kinds)."""
         if t - self.last.get(kind, -GAP) < GAP:
             return False
         self.last[kind] = t
-        self.taught[kind] = self.taught.get(kind, 0) + 1
+        self.taught[counted or kind] = self.taught.get(counted or kind, 0) + 1
         return True
 
     def commands(self, rows: np.ndarray, player, now: float, t: int, can=None, pickers=()) -> list:
@@ -122,14 +123,14 @@ class Teacher:
             # an item lying near, picked up when no enemy is near
             if int(h[fx.C_ID]) in pickers and fx.MACROS >= 2 and not (
                     np.hypot(enemies[:, fx.C_X] - h[fx.C_X], enemies[:, fx.C_Y] - h[fx.C_Y]) < ENEMY_NEAR).any():
-                if self._due(f"item {int(h[fx.C_ID])}", t):
+                if self._due(f"item {int(h[fx.C_ID])}", t, "item"):
                     from .macros import PICKUP
                     out.append(ImmediateOrder(int(h[fx.C_ID]), PICKUP))
             # a potion when it is low
             if h[fx.C_HP] < 0.4 * max(int(h[fx.C_MAXHP]), 1):
                 from .herodata import item_table
                 heal = [k for k, it in enumerate(items) if it and item_table().get(it, (0, 0, 0, 0))[1]]
-                if heal and self._due(f"potion {int(h[fx.C_ID])}", t):
+                if heal and self._due(f"potion {int(h[fx.C_ID])}", t, "potion"):
                     out.append(ImmediateOrder(int(h[fx.C_ID]), USESLOT + heal[0]))
             # a town portal from the goblin merchant
             if (len(merchant) and now >= 440.0 and PORTAL not in items and 0 in items and player.gold >= 500):
