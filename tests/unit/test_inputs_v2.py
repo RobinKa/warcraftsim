@@ -751,3 +751,20 @@ def test_teacher_teaches_the_target_army_mix(v2):
     assert tc.commands(np.stack(base + feet), player, 200.0, 2) == [ImmediateOrder(2, code("hrif"))]
     mixed = feet[:3] + [_unit(20 + i, 0, -5000, 2800, 1, 0, "hrif") for i in range(3)]
     assert Teacher(0, "human", random.Random(0), {"t": {}, "n": {"hfoo": 5, "hrif": 5}}).commands(np.stack(base + mixed), player, 200.0, 3) == []
+
+
+def test_army_mix_lesson_only_for_what_the_policy_can_train(v2):
+    """The army mix teaches only units the policy could train now (can): the most lacking of those."""
+    import random
+    from types import SimpleNamespace
+
+    from warcraftsim.fullgame.teacher import Teacher
+    from warcraftsim.protocol import ImmediateOrder
+    player = SimpleNamespace(gold=500, lumber=300, food_used=20, food_cap=40, start_x=-5184.0, start_y=2944.0)
+    base = [_unit(1, 0, -5184, 2944, 1, fx.STRUCTURE, "htow"), _unit(2, 0, -5000, 2900, 1, fx.STRUCTURE, "hbar")]
+    feet = [_unit(10 + i, 0, -5000, 2800, 1, 0, "hfoo") for i in range(6)]
+    target = {"t": {}, "n": {"hfoo": 2, "hrif": 6, "hkni": 4}}
+    rows = np.stack(base + feet)
+    assert Teacher(0, "human", random.Random(0), target).commands(rows, player, 200.0, 1, lambda u: u != "hrif") == \
+        [ImmediateOrder(2, code("hkni"))]  # (riflemen lack most but can't be trained now: knights)
+    assert Teacher(0, "human", random.Random(0), target).commands(rows, player, 200.0, 1, lambda u: False) == []

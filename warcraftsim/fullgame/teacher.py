@@ -81,8 +81,11 @@ class Teacher:
         self.taught[kind] = self.taught.get(kind, 0) + 1
         return True
 
-    def commands(self, rows: np.ndarray, player, now: float, t: int) -> list:
-        """rows: the step's units (features' columns, ROW_COLS with the heroes' items), player: its PlayerState."""
+    def commands(self, rows: np.ndarray, player, now: float, t: int, can=None) -> list:
+        """rows: the step's units (features' columns, ROW_COLS with the heroes' items), player: its PlayerState.
+        `can(code)`: whether the policy could train that unit now (its mask: the money, the tech); the army mix
+        teaches only those (99% of its lessons had named a unit the policy could not order then, and taught nothing)."""
+        self.can = can
         if player is None or rows.shape[1] < fx.ROW_COLS:
             return []
         out = []
@@ -137,14 +140,17 @@ class Teacher:
         for c in army[:, fx.C_TYPE].tolist():
             k = int(c).to_bytes(4, "big").decode("latin-1")
             have[k] = have.get(k, 0) + 1 / len(army)
-        unit, gap = max(((u, s - have.get(u, 0.0)) for u, s in self.mix.items()), key=lambda x: x[1])
-        if gap < MIX_SLACK:
-            return []
-        makers = {fourcc(m) for m in tree().makers.get(unit, ())}
-        at = alive[(fl & fx.STRUCTURE > 0) & (fl & fx.CONSTRUCTING == 0) & np.isin(alive[:, fx.C_TYPE], list(makers))]
-        if not len(at) or not self._due("army mix", t):
-            return []
-        return [ImmediateOrder(int(at[0, fx.C_ID]), fourcc(unit))]
+        done = alive[(fl & fx.STRUCTURE > 0) & (fl & fx.CONSTRUCTING == 0)]
+        can = getattr(self, "can", None)
+        for unit, gap in sorted(((u, s - have.get(u, 0.0)) for u, s in self.mix.items()), key=lambda x: -x[1]):
+            if gap < MIX_SLACK:
+                return []
+            if can is not None and not can(unit):
+                continue  # (not now: the next most lacking that it can)
+            at = done[np.isin(done[:, fx.C_TYPE], [fourcc(m) for m in tree().makers.get(unit, ())])]
+            if len(at):
+                return [ImmediateOrder(int(at[0, fx.C_ID]), fourcc(unit))] if self._due("army mix", t) else []
+        return []
 
     def _expansion(self, rows: np.ndarray, alive: np.ndarray, player, t: int) -> list:
         """The next step of taking the natural expansion: clearing its camp, the hall (undead: the haunted mine), the

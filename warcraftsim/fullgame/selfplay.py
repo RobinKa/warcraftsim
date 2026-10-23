@@ -1698,7 +1698,10 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                                     entropy={s: r["entropy"] for s, r in zip(live, results) if r}))
         for s, tc in teachers.items():  # (--teach: never carried out, the side's step just recorded labelled)
             if s in spans and trajs[s].steps:
-                c = tc.commands(rows, obs.players.get(s), obs.game_time, t)
+                av, oix = sts[s].get("avail"), bots[s].enc.order_index
+                can = (None if av is None else  # (the units the policy could train now: the army mix teaches only those)
+                       lambda u, av=av, oix=oix: bool(av[oix.get((int.from_bytes(u.encode(), "big"), fx.IMMEDIATE), 0)]))
+                c = tc.commands(rows, obs.players.get(s), obs.game_time, t, can)
                 q = obs.players.get(s)
                 if c and q is not None:
                     me = np.asarray([t, s, q.gold, q.lumber, q.food_used, q.food_cap, q.upkeep])
