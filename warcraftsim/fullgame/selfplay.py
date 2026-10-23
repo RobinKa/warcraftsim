@@ -3661,11 +3661,11 @@ def main(argv: list[str] | None = None) -> int:
         league.shaping = shaping_now(args, resumed["update"] if resumed else 0)
     if resumed is not None and (run_dir / "league.json").exists():
         league.restore(json.loads((run_dir / "league.json").read_text()))
-    if resumed is not None and league.win_balance is not None and (run_dir / "episodes.jsonl").exists():
-        from collections import deque as _deque
-        with open(run_dir / "episodes.jsonl") as fh:  # (its newest games between agents: the model again)
-            rows = [json.loads(line) for line in _deque((x for x in fh if '"tb_x"' in x), maxlen=3000)]
-        league.win_balance.restore([(r["tb_x"], r.get("balance_tax", 0.0), (r["outcome"] + 1.0) / 2.0) for r in rows])
+        if league.win_balance is not None and (run_dir / "episodes.jsonl").exists():
+            from collections import deque as _deque
+            with open(run_dir / "episodes.jsonl") as fh:  # (its newest games between agents: the model again)
+                rows = [json.loads(line) for line in _deque((x for x in fh if '"tb_x"' in x), maxlen=3000)]
+            league.win_balance.restore([(r["tb_x"], r.get("balance_tax", 0.0), (r["outcome"] + 1.0) / 2.0) for r in rows])
     else:
         if args.league_from:  # (a fork: its parent's opponents, then its own start)
             src = Path(args.league_from) if Path(args.league_from).is_dir() else args.runs / args.league_from
