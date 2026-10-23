@@ -1294,6 +1294,18 @@ function W3S_DropBuy takes integer i returns nothing
     set w3s_buy_shop[w3s_nbuy] = null
 endfunction
 
+function W3S_ForgetBuy takes unit u returns nothing
+    local integer i = 0
+    loop
+        exitwhen i >= w3s_nbuy
+        if w3s_buy_u[i] == u then
+            call W3S_DropBuy(i)
+            return
+        endif
+        set i = i + 1
+    endloop
+endfunction
+
 // a shop's sale to its player's unit u in reach (it needs no right-click: a worker's right-click on a tavern could leave
 // the tavern serving none of the player's units, ~half the purchases never went through, 2026-10-21)
 function W3S_Sell takes unit u, unit shop, integer id returns boolean
@@ -1453,6 +1465,14 @@ function W3S_ApplyOne takes integer at returns integer
         if W3S_Owned(u) then
             set ok = W3S_PickUp(u, I2R(w3s_cmd[at + 2]))
         endif
+    elseif op == 87 then
+        // take gold and lumber from a player (an income tax; < 0: give), what it has now less them: a sale the step
+        // before stays paid (an absolute set had undone it: the taxed side's walk-and-buy purchases came free)
+        set n = 4
+        set s = null
+        call SetPlayerState(Player(W3S_Real(w3s_cmd[at + 1])), PLAYER_STATE_RESOURCE_GOLD, IMaxBJ(0, GetPlayerState(Player(W3S_Real(w3s_cmd[at + 1])), PLAYER_STATE_RESOURCE_GOLD) - (w3s_cmd[at + 2] - 65536)))
+        call SetPlayerState(Player(W3S_Real(w3s_cmd[at + 1])), PLAYER_STATE_RESOURCE_LUMBER, IMaxBJ(0, GetPlayerState(Player(W3S_Real(w3s_cmd[at + 1])), PLAYER_STATE_RESOURCE_LUMBER) - (w3s_cmd[at + 3] - 65536)))
+        set ok = true
     elseif op == 90 then
         set n = 4
         call SetPlayerState(Player(W3S_Real(w3s_cmd[at + 1])), PLAYER_STATE_RESOURCE_GOLD, w3s_cmd[at + 2])
@@ -1548,6 +1568,9 @@ function W3S_ApplyOne takes integer at returns integer
     endif
     if ok then
         set w3s_cres[w3s_ncres] = 1
+        if op == 1 or op == 2 or op == 3 or op == 4 or op == 6 or op == 9 then
+            call W3S_ForgetBuy(u)  // (another order: its purchase under way given up; it had gone on, and bought later)
+        endif
         if (op == 1 or op == 2 or op == 3 or op == 4 or op == 6) and w3s_shadow[GetPlayerId(GetOwningPlayer(u))] then
             call SaveInteger(w3s_lo, GetHandleId(u), 0, op)
             call SaveInteger(w3s_lo, GetHandleId(u), 1, w3s_cmd[at + 2])

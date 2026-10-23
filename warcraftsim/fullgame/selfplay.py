@@ -977,6 +977,13 @@ def game_rng(cfg: dict, wid: int, k: int) -> random.Random:
     return random.Random(f"{cfg['seed']}/{Path(cfg.get('run_dir', '')).name}/{cfg.get('start_update', 0)}/{wid}/{k}")
 
 
+def smoothed_rate(m: Member, window: int = 50) -> float | None:
+    """The learner's score against a member, shrunk toward a half by two virtual games ((w + 1) / (n + 2)); None
+    unplayed."""
+    r = m.recent[-window:]
+    return (sum(r) + 1.0) / (len(r) + 2.0) if r else None
+
+
 def matchup(mirror: bool, race: str, opp: str) -> str:
     """The key of the curriculum's level for a learner playing `race` against `opp` (League)."""
     return race if mirror else f"{race}/{opp}"
@@ -1166,6 +1173,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                            else dict(_choose(rng, spec["agents"])))
                     if agents_only and not versus:  # races apart: the stronger one's income taxed (League.balance)
                         taxed, share = balance_tax(spec, races)
+                        if cfg.get("win_balance"):  # (the model's cap: the races' balance until it is fitted)
+                            share = min(share, cfg.get("win_balance", 0.0))
                         if share > 0:
                             opp["tax"], opp["tax_side"] = share, taxed
                         if spec.get("win_balance") and opp.get("kind") in ("self", "past"):  # (--win-balance: by who
@@ -1546,7 +1555,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     grpo["ret"]) for the group's advantage (game_loop)."""
     from .play import BCAgent
 
-    from ..protocol import Buy, SetResources, ShadowAI, StartAI
+    from ..protocol import Buy, SetResources, ShadowAI, StartAI, TakeResources
     replay = grpo.get("replay") if grpo else None
     source = grpo.get("source", 0) if grpo else 0
     rec = {"cmds": [], "spans": [], "res": [], "prints": [], "t": source} if source else None
@@ -1669,13 +1678,19 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         # what it has left
         cmds = []
         if taxed is not None and obs.players.get(taxed) is not None:
+            # what is owed of all it has gathered so far (its starting gold and lumber too), less what was taken: a
+            # share of each step's 10-20 rounded down had made small taxes none (0.054 took 0.005); taken, not set:
+            # an absolute set had undone a sale the harness made before the step's commands (audit 5)
             p = obs.players[taxed]
-            now = (p.gold_gathered, p.lumber_gathered)
-            dg, dl = (p.gold, p.lumber) if gathered is None else (now[0] - gathered[0], now[1] - gathered[1])
-            if dg > 0 or dl > 0:  # (at the start: its starting gold and lumber)
-                p.gold, p.lumber = max(0, p.gold - int(opp["tax"] * dg)), max(0, p.lumber - int(opp["tax"] * dl))
-                cmds.append(SetResources(taxed, p.gold, p.lumber))
-            gathered = now
+            if gathered is None:
+                gathered = (p.gold_gathered - p.gold, p.lumber_gathered - p.lumber, 0, 0)  # (base, taken)
+            base_g, base_l, took_g, took_l = gathered
+            og = int(round(opp["tax"] * (p.gold_gathered - base_g))) - took_g
+            ol = int(round(opp["tax"] * (p.lumber_gathered - base_l))) - took_l
+            if og or ol:
+                cmds.append(TakeResources(taxed, og, ol))
+                p.gold, p.lumber = max(0, p.gold - og), max(0, p.lumber - ol)  # (the taxed agent sees what is left)
+                gathered = (base_g, base_l, took_g + og, took_l + ol)
         if t == 0:
             cmds += [ShadowAI(s) for s in advised]
             cmds += scenario_cmds  # (--scenarios: the situation the game starts in)
@@ -2232,7 +2247,8 @@ class League:
                    for n in self.scripts]
         agents = [{"name": "self", "kind": "self", "p": self.shares["self"] if self.past else 1.0}]
         if self.past:
-            w = [pfsp_weight(m.win_rate(), self.pfsp) for m in self.past]
+            w = [max(pfsp_weight(smoothed_rate(m), self.pfsp), 0.05) for m in self.past]  # (2 of 2 won had weighed
+            # a snapshot 0 for good; audit 5)
             total = sum(w) or 1.0
             agents += [{"name": m.name, "kind": "past", "path": m.path, "p": self.shares["past"] * x / total}
                        for m, x in zip(self.past, w)]
@@ -3709,6 +3725,15 @@ def main(argv: list[str] | None = None) -> int:
                         and (c["vocab"] == vocab or bool(fx.NEUTRAL) and same_orders(c["vocab"], vocab))
                         and adapt_config(c["config"])["G"] == net.config["G"])  # (the run's rows' width: a strategy block or none)
             taken = league.inherit(json.loads((src / "league.json").read_text()), src.name, usable)
+            if league.win_balance is not None:  # (--win-balance: the parent's records of taxed games no measure of the
+                for m in league.past:           # snapshots for PFSP; its newest games between agents the model's start)
+                    m.recent = []
+                if (src / "episodes.jsonl").exists():
+                    from collections import deque as _deque
+                    with open(src / "episodes.jsonl") as fh:
+                        rows = [json.loads(line) for line in _deque((x for x in fh if '"tb_x"' in x), maxlen=3000)]
+                    league.win_balance.restore([(r["tb_x"], r.get("balance_tax", 0.0), (r["outcome"] + 1.0) / 2.0)
+                                                for r in rows])
             print(f"league from {src.name}: {len(taken)} past snapshots ({', '.join(taken)})", flush=True)
         first = run_dir / "checkpoints" / f"{0:016d}.pt"
         torch.save({**ck, "model": net.state_dict(), "config": net.config, "vocab": vocab, "agent_steps": 0}, first)
@@ -3901,14 +3926,17 @@ def main(argv: list[str] | None = None) -> int:
                     e["episode"] = episodes
                     m = league.member(e["opponent"])
                     taxed = league.win_balance is not None and bool(e.get("balance_tax"))
-                    if m is not None and not e.get("eval") and not taxed:  # (an evaluation game is no league game; a
-                        m.record(e["outcome"])  # game the win balance taxed tells nothing of the opponent's strength
+                    pulled = league.win_balance is not None and bool(e.get("z_t")) and m in league.past  # (a target
+                    # costs the learner: 35% won against past snapshots with one, 54% without; audit 5)
+                    if m is not None and not e.get("eval") and not taxed and not pulled:  # (an evaluation game is no
+                        m.record(e["outcome"])  # league game; a taxed one tells nothing of the opponent's strength
                         if m in league.past:     # for PFSP: 8-33% won untaxed, 42-100% taxed; audit 4)
                             league.past_recent.append(1.0 if e["outcome"] > 0.5 else 0.0 if e["outcome"] < -0.5 else 0.5)
                     if "curriculum" in e:
                         league.curriculum(e["opponent"], e["outcome"], league.matchup(e["race"], e["opponent_race"]))
-                    if e["opponent"] == "self" and e["race"] != e["opponent_race"]:
-                        league.balanced(e["race"], e["opponent_race"], e["outcome"])
+                    if e["opponent"] == "self" and e["race"] != e["opponent_race"] and league.win_balance is None:
+                        league.balanced(e["race"], e["opponent_race"], e["outcome"])  # (--win-balance: the model's
+                        # games had driven it to 0.88 of undead's income, then the fallback of a fork; audit 5)
                     if league.win_balance is not None and "tb_x" in e:  # (--win-balance: the model's games)
                         league.win_balance.add(e["tb_x"], e.get("balance_tax", 0.0), e["outcome"])
                     with open(run_dir / "episodes.jsonl", "a") as f:

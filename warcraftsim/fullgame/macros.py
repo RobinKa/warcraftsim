@@ -69,8 +69,9 @@ def extend(vocab: dict, level: int | None = None) -> dict:
     """`vocab` with the macro orders of a level (None: this process's) at its end (immediate orders) -> a new
     vocabulary."""
     level = int((fx.MACROS or 1) if level is None else level)
-    if extended(vocab, level):
-        return vocab
+    if extended(vocab, level):  # (its level noted even when it adds no order: --macros 3's skill points; a
+        return vocab if int(vocab.get("macros") or 0) >= level else {**vocab, "macros": level}  # checkpoint plays
+        # alone at its own level, model.configure_for; audit 5)
     out = [list(o) for o in vocab["orders"]]
     for o in orders(level):  # (in this order: a vocabulary with the first ones gets the later ones after them)
         if [o, fx.IMMEDIATE] not in out:

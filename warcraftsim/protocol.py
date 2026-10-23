@@ -483,6 +483,7 @@ class Op(IntEnum):
     BUY = 8
     PICK_UP = 9
     CLEAR_CREEPS = 88
+    TAKE_RESOURCES = 87
     VIS_CLEAR = 80
     VIS_MARK = 81
     VIS_LINE = 82
@@ -615,6 +616,17 @@ class PickUp(Command):
 
     def encode(self) -> list[int]:
         return [Op.PICK_UP, self.unit, int(self.radius)]
+
+
+@dataclass(frozen=True)
+class TakeResources(Command):
+    """A player's gold and lumber less these (an income tax; < 0: given), from what it has when the step runs."""
+    player: int
+    gold: int
+    lumber: int
+
+    def encode(self) -> list[int]:
+        return [Op.TAKE_RESOURCES, self.player, int(self.gold) + COORD_BIAS, int(self.lumber) + COORD_BIAS]
 
 
 @dataclass(frozen=True)
@@ -836,7 +848,7 @@ def encode_commands(commands: Iterable[Command]) -> list[int]:
 
 _OP_LENGTHS = {Op.POINT: 5, Op.TARGET: 4, Op.IMMEDIATE: 3, Op.BUILD: 5, Op.LEARN: 3, Op.TARGET_DESTRUCTABLE: 4,
                Op.ITEM: 7, Op.BUY: 4, Op.PICK_UP: 3, Op.VIS_CLEAR: 1, Op.VIS_MARK: 6, Op.VIS_LINE: 9, Op.VIS_AREA: 5, Op.CAMERA_ZOOM: 2,
-               Op.SET_RESOURCES: 4, Op.SPAWN: 5, Op.SPAWN_HERO: 6, Op.CLEAR_CREEPS: 4, Op.QUEUE_SPAWN: 8, Op.QUEUE_SKILL: 2, Op.START_AI: 2, Op.SHADOW_AI: 2, Op.CAMERA: 3,
+               Op.SET_RESOURCES: 4, Op.TAKE_RESOURCES: 4, Op.SPAWN: 5, Op.SPAWN_HERO: 6, Op.CLEAR_CREEPS: 4, Op.QUEUE_SPAWN: 8, Op.QUEUE_SKILL: 2, Op.START_AI: 2, Op.SHADOW_AI: 2, Op.CAMERA: 3,
                Op.END_GAME: 1, Op.SNAPSHOT: 1, Op.RESTART: 1}
 
 

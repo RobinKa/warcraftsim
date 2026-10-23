@@ -122,7 +122,9 @@ def tier2(prod: dict) -> bool:
 
 
 def report(eps: list[dict], label: str, rates: dict | None = None) -> None:
-    real = [e for e in eps if "(real)" in e["opponent"]]
+    # (evaluation games only: the training launches against the untaxed AI play the training map; --split eval_key
+    # shows each policy apart, the headline pools the evaluated ones; audit 5)
+    real = [e for e in eps if "(real)" in e["opponent"] and e.get("eval")]
     won = sum(e["outcome"] > 0 for e in real)
     print(f"== {label}: real games {won} of {len(real)} won ({100 * won / max(1, len(real)):.0f}%)")
     if rates:  # against the AI's own record in the same matchups (normal and insane; easy has none)
