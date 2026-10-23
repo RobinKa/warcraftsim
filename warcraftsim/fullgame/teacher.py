@@ -17,8 +17,8 @@ selfplay --teach 1 (needs --neutral 1: the orders it teaches are the neutral bui
     an expansion:  when its target's expansion is due (a hall, or undead's haunted gold mine, in its items) and the
                    natural expansion's camp is gone (cleared, or --scenarios natural): the worker nearest builds the
                    hall where people put theirs (undead: an acolyte haunts the mine), then three workers go to mine there.
-                   (No policy had ever expanded: 0% of its games, people 81% of Echo Isles'. Night elves not yet: a
-                   tree of life's mine needs the entangle order, which the agent can't give.)
+                   (No policy had ever expanded: 0% of its games, people 81% of Echo Isles'. Night elves: the agent
+                   has a tree of life entangle the mine, play.BCAgent._entangle, and the workers then mine that.)
 
 Each kind at most every GAP steps a side, so a long wait for the money is not a label a step."""
 
@@ -41,7 +41,7 @@ TIER2 = {fourcc(c) for c in ("hkee", "hcas", "ostr", "ofrt", "unp1", "unp2", "et
 TAVERN, MERCHANT, PORTAL = fourcc("ntav"), fourcc("ngme"), fourcc("stwp")
 GAP = 20  # steps between two lessons of a kind
 HALL = {"human": "htow", "orc": "ogre", "undead": "unpl", "nightelf": "etol"}
-HAUNTED = fourcc("ugol")
+HAUNTED, ENTANGLED = fourcc("ugol"), fourcc("egol")
 MINES = {fourcc(c) for c in ("ngol", "ugol", "egol")}
 # where people built their halls at Echo Isles' natural expansions (95 games of 1.29: the mine -> the hall's offset)
 EXPAND_SPOTS = {(-4864, -3200): (100, 800), (4352, -3200): (-300, 700)}
@@ -72,7 +72,7 @@ class Teacher:
         self.taught: dict[str, int] = {}  # each kind's lessons this game (the episode row)
         self.race = race
         due = [v for c, v in (target or {}).get("t", {}).items() if c in (HALL.get(race), "ugol")]
-        self.expand_at = min(due) if due and race != "nightelf" else None  # (its target's expansion: when)
+        self.expand_at = min(due) if due else None  # (its target's expansion: when)
         from .strategy import is_army
         army = {c: v for c, v in ((target or {}).get("n") or {}).items() if is_army(c) and v > 0}
         total = sum(army.values())
@@ -188,7 +188,9 @@ class Teacher:
         if len(taken):  # (taken: once finished, three workers to mine there)
             if (taken[:, fx.C_FLAGS] & fx.CONSTRUCTING > 0).all() or (near(workers, 900.0).sum() >= 4) or not len(workers):
                 return []
-            target = taken[taken[:, fx.C_TYPE] == HAUNTED]
+            target = alive[np.isin(alive[:, fx.C_TYPE], [HAUNTED, ENTANGLED]) & near(alive, 1000.0)]
+            if self.race == "nightelf" and not len(target):
+                return []  # (its tree of life entangles the mine first)
             mine_id = int(target[0, fx.C_ID]) if len(target) else int(nat[fx.C_ID])
             far_w = workers[~near(workers, 900.0)]
             pick = far_w[np.argsort(np.hypot(far_w[:, fx.C_X] - mx, far_w[:, fx.C_Y] - my))[:3]]

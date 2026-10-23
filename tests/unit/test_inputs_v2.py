@@ -651,7 +651,14 @@ def test_teacher_takes_the_natural_expansion(v2):
     acolytes = [_unit(10 + i, 0, -5300, 3300, 1, fx.WORKER, "uaco") for i in range(3)]
     c = ud.commands(np.stack(base[:3] + acolytes), player, 320.0, 1)
     assert c == [TargetOrder(10, code("ugol"), 51)]
-    assert Teacher(0, "nightelf", random.Random(0), {"t": {"etol": 300.0}}).expand_at is None  # (no entangle order yet)
+    ne = Teacher(0, "nightelf", random.Random(0), {"t": {"etol": 300.0}})
+    assert ne.expand_at == 300.0  # (its tree of life entangles the mine: play.BCAgent._entangle)
+    wisps = [_unit(10 + i, 0, -5300, 3300, 1, fx.WORKER, "ewsp") for i in range(3)]
+    tree = [_unit(70, 0, -4736, -2368, 1, fx.STRUCTURE, "etol")]
+    assert ne.commands(np.stack(base[:3] + wisps + tree), player, 340.0, 60) == []  # (not entangled yet)
+    held = [_unit(71, 0, -4864, -3200, 1, fx.STRUCTURE, "egol")]
+    c = ne.commands(np.stack(base[:3] + wisps + tree + held), player, 350.0, 90)
+    assert len(c) == 3 and all(isinstance(x, TargetOrder) and x.order == HARVEST and x.target == 71 for x in c)
 
 
 def test_expand_macro(v2):
@@ -902,3 +909,25 @@ def test_pickup_macro_takes_the_items_lying_near(v2):
         assert tc.commands(np.vstack([rows, foe]), player, 300.0, 1, None, [80]) == []  # (a fight: later)
     finally:
         fx.set_macros(0)
+
+
+def test_night_elves_entangle_their_expansion(v2):
+    """Night elves expand too (--macros): a finished tree of life near a gold mine no one entangled entangles it
+    (tested in the game: from 840 away), again after ENTANGLE_EVERY steps until it is; their main's mine is left be."""
+    from warcraftsim.fullgame.play import ENTANGLE, ENTANGLE_EVERY, BCAgent
+    from warcraftsim.protocol import TargetOrder
+    bot = BCAgent(None, AUDIT_VOCAB, 0, None)
+    bot.view = bot.enc.view(0, 1.0, [3, 1])
+    bot.t = 0
+    main, nat = _unit(50, 15, -5632, 3584, 1, fx.STRUCTURE, "ngol"), _unit(51, 15, -4864, -3200, 1, fx.STRUCTURE, "ngol")
+    home = [_unit(1, 0, -5300, 3300, 1, fx.STRUCTURE, "etol"), main, _unit(52, 0, -5632, 3584, 1, fx.STRUCTURE, "egol"), nat]
+    tree = _unit(2, 0, -4736, -2368, 1, fx.STRUCTURE, "etol")
+    assert bot._entangle(np.stack(home)) == []  # (the main's: entangled)
+    assert bot._entangle(np.stack(home + [_unit(2, 0, -4736, -2368, 1, fx.STRUCTURE | fx.CONSTRUCTING, "etol")])) == []
+    assert bot._entangle(np.stack(home + [tree])) == [TargetOrder(2, ENTANGLE, 51)]
+    bot.t = ENTANGLE_EVERY - 1
+    assert bot._entangle(np.stack(home + [tree])) == []  # (given: a while to walk there)
+    bot.t = ENTANGLE_EVERY
+    assert bot._entangle(np.stack(home + [tree])) == [TargetOrder(2, ENTANGLE, 51)]
+    held = _unit(53, 0, -4864, -3200, 1, fx.STRUCTURE, "egol")
+    assert bot._entangle(np.stack(home + [tree, held])) == []

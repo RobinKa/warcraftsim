@@ -1142,9 +1142,9 @@ class View:
                 self.t_now = t
                 avail &= self.tech_allowed(rows)
         if avail is not None and enc.expand_class is not None:  # (--macros: expand, while the natural is free and
-            from .macros import site                              # its hall affordable; night elves not yet: entangle)
-            race = RACES[self.races[player]]
-            self.expand_site = site(rows, getattr(self, "start", None)) if MACROS and race != "nightelf" else None
+            from .macros import site                              # its hall affordable; night elves' tree of life
+            race = RACES[self.races[player]]                      # entangles its mine, play.BCAgent._entangle)
+            self.expand_site = site(rows, getattr(self, "start", None)) if MACROS else None
             via = enc.expand_via.get(race)
             busy = getattr(self, "expanding", None) is not None and t < self.expanding[0]
             avail[enc.expand_class] = bool(self.expand_site is not None and via is not None and avail[via] and not busy)

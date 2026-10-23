@@ -65,6 +65,12 @@ HAUNT = int.from_bytes(b"ugol", "big")
 EXPAND_HALLS = {r: int.from_bytes(h.encode(), "big") for r, h in (("human", "htow"), ("orc", "ogre"), ("nightelf", "etol"))}
 CANCEL = 851976  # a building's queue: its last unit
 ALTARS = [int.from_bytes(c.encode(), "big") for c in ("halt", "oalt", "uaod", "eate")]
+ENTANGLE = 852147  # a tree of life's entangle gold mine (tested 2026-10-23: given 840 from the mine, it uproots, walks
+# nearer and the mine is entangled ~9 s on)
+TREES_OF_LIFE = [int.from_bytes(c.encode(), "big") for c in ("etol", "etoa", "etoe")]
+NGOL, EGOL = int.from_bytes(b"ngol", "big"), int.from_bytes(b"egol", "big")
+ENTANGLE_NEAR, ENTANGLE_EVERY = 1200.0, 20  # (a tree this near a mine no one entangled: the order, again after so
+# many steps until it is)
 TIERS = {int.from_bytes(c.encode(), "big") for c in ("hkee", "hcas", "ostr", "ofrt", "unp1", "unp2", "etoa", "etoe")}
 REVIVE = 852039  # an altar's revival of a dead hero: a target order on it (its training order is refused; tested
 # 2026-10-22: accepted ~7 s after the death, at 425 x 0.4 gold for a level 1 hero)
@@ -142,6 +148,7 @@ class BCAgent:
         unit_rows(obs, t) when already made (both sides of a self-play game share them)."""
         picking = getattr(self, "picking_since", {})
         rows = unit_rows(obs, t) if rows is None else rows
+        self.rows = rows
         for e in obs.events:
             if int(e.kind) == int(EventKind.TREE_DEATH):
                 self.trees.pop(e.a, None)
@@ -271,7 +278,34 @@ class BCAgent:
                 out.append(TargetDestructable(unit, oid, tree))
             if len(out) > len(self.sent_resources):  # (aligned with out: accepted() pairs them)
                 self.sent_resources.append(res)
+        if fx.MACROS and fx.RACES[self.view.races[self.player]] == "nightelf" and getattr(self, "rows", None) is not None:
+            out += self._entangle(self.rows)  # (--macros: the expansion's mine; the policy has no entangle order)
+            self.sent_resources += [None] * (len(out) - len(self.sent_resources))
         self.issued += len(out)
+        return out
+
+    def _entangle(self, rows: np.ndarray) -> list[Command]:
+        """Night elves: a finished tree of life of the player's within ENTANGLE_NEAR of a gold mine no one has
+        entangled entangles it (the expand order builds a tree of life at the natural; its mine is mined once
+        entangled, and the policy has no order for that)."""
+        fl = rows[:, fx.C_FLAGS]
+        trees = rows[(rows[:, fx.C_OWNER] == self.player) & np.isin(rows[:, fx.C_TYPE], TREES_OF_LIFE)
+                     & (fl & (fx.CONSTRUCTING | fx.DEAD) == 0)]
+        mines = rows[(rows[:, fx.C_TYPE] == NGOL) & (fl & fx.DEAD == 0)]
+        if not len(trees) or not len(mines):
+            return []
+        held = rows[(rows[:, fx.C_TYPE] == EGOL) & (fl & fx.DEAD == 0)]
+        sent = self.__dict__.setdefault("entangle_sent", {})
+        out: list[Command] = []
+        for tree in trees:
+            d = np.hypot(mines[:, fx.C_X] - tree[fx.C_X], mines[:, fx.C_Y] - tree[fx.C_Y])
+            m = mines[int(np.argmin(d))]
+            if d.min() > ENTANGLE_NEAR or (np.hypot(held[:, fx.C_X] - m[fx.C_X], held[:, fx.C_Y] - m[fx.C_Y]) < 300).any():
+                continue
+            tid = int(tree[fx.C_ID])
+            if self.t - sent.get(tid, -ENTANGLE_EVERY) >= ENTANGLE_EVERY:
+                sent[tid] = self.t
+                out.append(TargetOrder(tid, ENTANGLE, int(m[fx.C_ID])))
         return out
 
     @staticmethod
