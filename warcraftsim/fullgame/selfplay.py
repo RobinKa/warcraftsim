@@ -1702,7 +1702,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             if s in spans and trajs[s].steps:
                 av, oix = sts[s].get("avail"), bots[s].enc.order_index
                 can = (None if av is None else  # (the units the policy could train now: the army mix teaches only those)
-                       lambda u, av=av, oix=oix: bool(av[oix.get((int.from_bytes(u.encode(), "big"), fx.IMMEDIATE), 0)]))
+                       lambda u, k=fx.IMMEDIATE, av=av, oix=oix: bool(av[oix.get((int.from_bytes(u.encode(), "big"), k), 0)]))
                 c = tc.commands(rows, obs.players.get(s), obs.game_time, t, can, getattr(bots[s].view, "pickers", ()))
                 q = obs.players.get(s)
                 if c and q is not None:

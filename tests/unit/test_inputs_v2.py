@@ -331,7 +331,7 @@ def test_teacher_lessons_and_merged_labels(v2):
     from warcraftsim.fullgame.selfplay import merge_labels
     from warcraftsim.fullgame.teacher import Teacher
     from warcraftsim.protocol import Buy, ImmediateOrder
-    tc = Teacher(0, "human", random.Random(0))
+    tc = Teacher(0, "human", random.Random(0), {"t": {"Npbm": 150.0}})  # (a target's tavern hero: the first one)
     rows = np.stack([_unit(1, 0, 0, 0, 1, fx.WORKER, "hpea"), _unit(2, 0, -3000, 0, 1, fx.STRUCTURE, "halt"),
                      _unit(9, 15, 1000, 0, 1, fx.STRUCTURE, "ntav"), _unit(8, 15, 0, -2000, 1, fx.STRUCTURE, "ngme")])
     rich = SimpleNamespace(gold=900, lumber=300, food_used=10, food_cap=30)
@@ -931,3 +931,31 @@ def test_night_elves_entangle_their_expansion(v2):
     assert bot._entangle(np.stack(home + [tree])) == [TargetOrder(2, ENTANGLE, 51)]
     held = _unit(53, 0, -4864, -3200, 1, fx.STRUCTURE, "egol")
     assert bot._entangle(np.stack(home + [tree, held])) == []
+
+
+def test_teacher_first_hero_without_a_target(v2):
+    """A game without a target: a side with no hero is shown its altar (a worker near its hall builds one) and then
+    its first hero at it, when the policy could order them; with a target the teacher leaves it to the target."""
+    import random
+    from types import SimpleNamespace
+
+    from warcraftsim.fullgame.teacher import FIRST_HEROES, Teacher
+    from warcraftsim.protocol import Build, ImmediateOrder
+    player = SimpleNamespace(gold=500, lumber=300, food_used=10, food_cap=22, start_x=-5184, start_y=2944)
+    hall, peon = _unit(1, 0, -5184, 2944, 1, fx.STRUCTURE, "htow"), _unit(2, 0, -5000, 2900, 1, fx.WORKER, "hpea")
+    tc = Teacher(0, "human", random.Random(0))
+    assert tc.commands(np.stack([hall, peon]), player, 30.0, 1) == []  # (not yet)
+    c = tc.commands(np.stack([hall, peon]), player, 60.0, 2)
+    assert len(c) == 1 and isinstance(c[0], Build) and c[0].unit == 2 and c[0].building == code("halt")
+    assert 450 <= np.hypot(c[0].x + 5184, c[0].y - 2944) <= 800
+    frame = _unit(3, 0, -4500, 2900, 1, fx.STRUCTURE | fx.CONSTRUCTING, "halt")
+    assert tc.commands(np.stack([hall, peon, frame]), player, 90.0, 60) == []  # (being built)
+    altar = _unit(3, 0, -4500, 2900, 1, fx.STRUCTURE, "halt")
+    c = tc.commands(np.stack([hall, peon, altar]), player, 120.0, 90)
+    assert len(c) == 1 and isinstance(c[0], ImmediateOrder) and c[0].unit == 3
+    assert fx.rawcode(c[0].order) in FIRST_HEROES["human"]
+    assert tc.commands(np.stack([hall, peon, altar]), player, 130.0, 120, lambda u, k=fx.IMMEDIATE: False) == []  # (masked)
+    pal = _unit(4, 0, -4600, 2900, 1, fx.HERO, "Hpal")
+    assert tc.commands(np.stack([hall, peon, altar, pal]), player, 140.0, 150) == []  # (it has one)
+    targeted = Teacher(0, "human", random.Random(0), {"t": {"hfoo": 100.0}})
+    assert targeted.commands(np.stack([hall, peon]), player, 60.0, 2) == []

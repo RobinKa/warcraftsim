@@ -4,8 +4,13 @@ out: they label the policy's step for the units it would order (as the target bu
 cloning loss on those labels (--opd-coef) pulls the policy toward them while the reward decides whether they stay.
 selfplay --teach 1 (needs --neutral 1: the orders it teaches are the neutral buildings' wares).
 
+    a first hero:  (a game without a target) from FIRST_HERO_FROM, a side without a hero: its altar trains one of the
+                   race's usual first heroes (the game's draw), and with no altar the worker nearest its hall builds one
+                   450-800 from it, as the target builder places buildings. Without a target the human policy built an
+                   altar in a fifth of its games (`fgself-134`): it rushed the built-in AI down and lost to policies.
     a tavern hero: the worker nearest the tavern hires one (the game's draw of the race's usual picks), as the first hero
-                   when the player has an altar and none, or the second with a tier-2 hall, from 135 s, the money there
+                   when the player has an altar and none (with a target), or the second with a tier-2 hall, from 135 s,
+                   the money there
     a town portal: a hero near the goblin merchant buys one when it has none and a free slot, from 440 s
     a potion:      a hero below 40% of its hit points drinks what heals in its inventory
     an item:       (--macros 2) a hero with an item lying near (macros.pickable) and no enemy unit within ENEMY_NEAR
@@ -37,10 +42,16 @@ PICKS = {"human": ("Npbm", "Nfir", "Ntin"), "orc": ("Ntin", "Npbm", "Nalc"), "un
          "nightelf": ("Npbm", "Nngs", "Nbst")}
 WORKERS = {fourcc(c) for c in ("hpea", "opeo", "uaco", "ewsp")}
 ALTARS = {fourcc(c) for c in ("halt", "oalt", "uaod", "eate")}
+ALTAR = {"human": "halt", "orc": "oalt", "undead": "uaod", "nightelf": "eate"}
+# the first heroes people train at the altar (1.29 ladder habits)
+FIRST_HEROES = {"human": ("Hamg", "Hmkg", "Hpal"), "orc": ("Obla", "Ofar", "Otch"), "undead": ("Udea", "Udre", "Ulic"),
+                "nightelf": ("Edem", "Ekee", "Emoo")}
+FIRST_HERO_FROM = 45.0
 TIER2 = {fourcc(c) for c in ("hkee", "hcas", "ostr", "ofrt", "unp1", "unp2", "etoa", "etoe")}
 TAVERN, MERCHANT, PORTAL = fourcc("ntav"), fourcc("ngme"), fourcc("stwp")
 GAP = 20  # steps between two lessons of a kind
 HALL = {"human": "htow", "orc": "ogre", "undead": "unpl", "nightelf": "etol"}
+HALLS_ALL = ("htow", "hkee", "hcas", "ogre", "ostr", "ofrt", "unpl", "unp1", "unp2", "etol", "etoa", "etoe")
 HAUNTED, ENTANGLED = fourcc("ugol"), fourcc("egol")
 MINES = {fourcc(c) for c in ("ngol", "ugol", "egol")}
 # where people built their halls at Echo Isles' natural expansions (95 games of 1.29: the mine -> the hall's offset)
@@ -70,6 +81,9 @@ class Teacher:
             self.pick = fourcc(mine[0][1]) if mine else None
         self.last: dict[str, int] = {}
         self.taught: dict[str, int] = {}  # each kind's lessons this game (the episode row)
+        # (a game without a target: its first hero from the altar, FIRST_HEROES)
+        self.first = fourcc(rng.choice(FIRST_HEROES.get(race, FIRST_HEROES["human"]))) if target is None else None
+        self.rng = rng
         self.race = race
         due = [v for c, v in (target or {}).get("t", {}).items() if c in (HALL.get(race), "ugol")]
         self.expand_at = min(due) if due else None  # (its target's expansion: when)
@@ -88,8 +102,9 @@ class Teacher:
 
     def commands(self, rows: np.ndarray, player, now: float, t: int, can=None, pickers=()) -> list:
         """rows: the step's units (features' columns, ROW_COLS with the heroes' items), player: its PlayerState.
-        `can(code)`: whether the policy could train that unit now (its mask: the money, the tech); the army mix
-        teaches only those (99% of its lessons had named a unit the policy could not order then, and taught nothing).
+        `can(code[, kind])`: whether the policy could order that unit now (its mask: the money, the tech; kind: the
+        order's, immediate by default, features.POINT for a building); the army mix teaches only those (99% of its
+        lessons had named a unit the policy could not order then, and taught nothing).
         `pickers`: the side's heroes with an item lying near (macros.pickable, the view's of the step)."""
         self.can = can
         if player is None or rows.shape[1] < fx.ROW_COLS:
@@ -103,9 +118,12 @@ class Teacher:
         shops = rows[fl & fx.DEAD == 0]  # (the neutral buildings: on the game's minimap from the start)
         tavern, merchant = shops[shops[:, fx.C_TYPE] == TAVERN], shops[shops[:, fx.C_TYPE] == MERCHANT]
         done = alive[(alive[:, fx.C_FLAGS] & fx.STRUCTURE > 0) & (alive[:, fx.C_FLAGS] & fx.CONSTRUCTING == 0), fx.C_TYPE]
-        # a tavern hero: the first with an altar, the second with tier 2
         n_heroes = len(heroes)
+        if self.first is not None and n_heroes == 0 and now >= FIRST_HERO_FROM:
+            out += self._first_hero(alive, player, t)
+        # a tavern hero: the first with an altar (with a target), the second with tier 2
         if (self.pick is not None and len(tavern) and now >= 135.0 and n_heroes < 2
+                and (n_heroes > 0 or self.first is None)
                 and (n_heroes == 0 or player.gold >= 425 and player.lumber >= 135)  # (the first hero is free: food only)
                 and player.food_used + 5 <= player.food_cap and fourcc_in(done, ALTARS)
                 and (n_heroes == 0 or fourcc_in(done, TIER2)) and self.pick not in set(heroes[:, fx.C_TYPE].tolist())):
@@ -142,6 +160,30 @@ class Teacher:
         if self.mix and now >= MIX_FROM:
             out += self._mix(alive, t)
         return out
+
+    def _first_hero(self, alive: np.ndarray, player, t: int) -> list:
+        """A side without a hero: its altar trains its first hero, and with no altar (nor one being built) a worker
+        builds one near its hall; each when the policy could order it (`can`)."""
+        can = getattr(self, "can", None)
+        altars = alive[np.isin(alive[:, fx.C_TYPE], list(ALTARS))]
+        done = altars[altars[:, fx.C_FLAGS] & fx.CONSTRUCTING == 0]
+        if len(done):
+            if (can is None or can(fx.rawcode(self.first))) and player.food_used + 5 <= player.food_cap \
+                    and self._due("first hero", t):
+                return [ImmediateOrder(int(done[0, fx.C_ID]), self.first)]
+            return []
+        if len(altars):
+            return []  # (being built)
+        code = ALTAR.get(self.race)
+        workers = alive[np.isin(alive[:, fx.C_TYPE], list(WORKERS)) & (alive[:, fx.C_FLAGS] & HIDDEN == 0)
+                        & (alive[:, fx.C_FLAGS] & fx.STRUCTURE == 0)]
+        halls = alive[np.isin(alive[:, fx.C_TYPE], [fourcc(h) for h in HALLS_ALL])]
+        if code is None or not len(workers) or (can is not None and not can(code, fx.POINT)) or not self._due("altar", t):
+            return []
+        at = halls[0] if len(halls) else workers[0]
+        w = workers[int(np.argmin(np.hypot(workers[:, fx.C_X] - at[fx.C_X], workers[:, fx.C_Y] - at[fx.C_Y])))]
+        a, r = self.rng.uniform(0, 2 * np.pi), self.rng.uniform(450, 800)
+        return [Build(int(w[fx.C_ID]), fourcc(code), float(at[fx.C_X] + r * np.cos(a)), float(at[fx.C_Y] + r * np.sin(a)))]
 
     def _mix(self, alive: np.ndarray, t: int) -> list:
         """The unit its target's army has the largest share of more than its own, trained at a building that makes it."""
