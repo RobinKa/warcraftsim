@@ -62,6 +62,7 @@ REPAIR = 852024  # the order a worker resumes a building with
 ATTACK = 851983
 EXPAND, CREEP, MIX, PICKUP = 990001, 990002, 990003, 990004  # (macros.EXPAND, .CREEP, .MIX, .PICKUP)
 HAUNT = int.from_bytes(b"ugol", "big")
+WISP = int.from_bytes(b"ewsp", "big")
 MACHINES = {int.from_bytes(c.encode(), "big") for c in ("hgyr", "hmtt", "hrtt", "ocat", "ebal", "umtw")}  # (repairable)
 MINED_BY = {"undead": HAUNT, "nightelf": int.from_bytes(b"egol", "big")}  # (their own; humans and orcs: a plain one)
 EXPAND_HALLS = {r: int.from_bytes(h.encode(), "big") for r, h in (("human", "htow"), ("orc", "ogre"), ("nightelf", "etol"))}
@@ -205,7 +206,10 @@ class BCAgent:
             if res == "gold" and kind == fx.UNIT:
                 mine = self._mine(sel, int(tgt[i]), i)
                 same = mine is None or mine == self.view.mine_of.get(unit, self._mine(sel, -1, i))
-            if fx.redundant(oid, kind, int(sel[i, fx.C_ORDER]), res, self.view.assign.get(unit), same):
+            current = int(sel[i, fx.C_ORDER])
+            if current == fx.SMART and int(sel[i, fx.C_TYPE]) == WISP:  # (a wisp mining shows "smart": a harvest
+                current = fx.HARVEST                                     # re-sent was refused, 318 a game)
+            if fx.redundant(oid, kind, current, res, self.view.assign.get(unit), same):
                 continue  # it harvests that already
             if self.committed(unit):
                 continue  # on its way to build, or building: another order would cancel it
@@ -278,7 +282,8 @@ class BCAgent:
                     if mine is None:
                         continue
                     out.append(TargetOrder(unit, oid, mine))
-                elif oid == REPAIR and not self._repairable(target):  # (nothing to repair there: the game refuses it,
+                elif oid == REPAIR and (not self._repairable(target) or int(sel[i, fx.C_ORDER]) == REPAIR):  # (nothing
+                    # to repair there, or repairing already: the game refuses both,
                     self.noop_repairs = getattr(self, "noop_repairs", 0) + 1  # ~1,000-1,500 a game as human and orc,
                     continue  # 11-35% of the policy's orders since fgself-100; not sent: what it did, as before)
                 else:
@@ -380,8 +385,11 @@ class BCAgent:
 
     def _repairable(self, row: np.ndarray) -> bool:
         """A repair's target: a building or a machine of the player's that is damaged or unfinished."""
-        return (int(row[fx.C_OWNER]) == self.player and (int(row[fx.C_FLAGS]) & fx.STRUCTURE or int(row[fx.C_TYPE]) in MACHINES)
-                and (int(row[fx.C_HP]) < int(row[fx.C_MAXHP]) or int(row[fx.C_FLAGS]) & fx.CONSTRUCTING))
+        fl = int(row[fx.C_FLAGS])
+        orc = fx.rawcode(int(row[fx.C_TYPE]))[:1] == "o"  # (an orc frame takes no helpers: refused, tested 2026-10-23)
+        return (int(row[fx.C_OWNER]) == self.player and (fl & fx.STRUCTURE or int(row[fx.C_TYPE]) in MACHINES)
+                and ((int(row[fx.C_HP]) < int(row[fx.C_MAXHP]) and not fl & fx.CONSTRUCTING)
+                     or (fl & fx.CONSTRUCTING and not orc)))
 
     def committed(self, unit: int) -> bool:
         """A worker busy with a building order (features.building) for less than BUILD_COMMIT_STEPS, or a unit
