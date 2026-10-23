@@ -1168,6 +1168,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                         taxed, share = balance_tax(spec, races)
                         if share > 0:
                             opp["tax"], opp["tax_side"] = share, taxed
+                        if spec.get("win_balance") and opp.get("kind") in ("self", "past"):  # (--win-balance: by who
+                            opp["win_balance"] = spec["win_balance"]  # is expected to win, play_one)
                     # on-policy distillation: the built-in AI advises the learner (never in the real game)
                     opp["advise"] = not real and rng.random() < cfg.get("opd_share", 0.0)
                     if evaluating and not versus and eval_key != "current":
@@ -1594,6 +1596,19 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         zm = dict(replay.get("zm", {}))
     if rec is not None:
         rec["zs"], rec["zm"] = dict(zs), dict(zm)
+    if cfg.get("win_balance") and train and opp.get("kind") in ("self", "past") and replay is None:
+        # --win-balance: the features of who is expected to win (balance.py), and from the league's model the tax
+        # that evens the game out (the favoured side's income); the races' balance until it is fitted
+        from .balance import features as balance_features, tax as balance_tax_for
+        x = balance_features(races[side], races[1 - side], zs.get(side), zs.get(1 - side), opp["kind"] == "past")
+        opp["tb_x"] = [round(float(v), 3) for v in x]
+        t = balance_tax_for(opp.get("win_balance"), x, random)
+        if t is not None:
+            opp.pop("tax", None)
+            opp.pop("tax_side", None)
+            if abs(t) > 1e-3:
+                opp["tax"], opp["tax_side"] = round(abs(t), 3), (side if t > 0 else 1 - side)
+            taxed = opp.get("tax_side") if opp.get("tax") else None
     # --z-modes: each side's modes measured each step (modes.Tracker: their violations, the strategy potential's)
     trackers = {s: zmodes.Tracker(m, s, (obs.players[1 - s].start_x, obs.players[1 - s].start_y), unit_food(),
                                   WORKER_IDS, (obs.players[s].start_x, obs.players[s].start_y))
@@ -1826,6 +1841,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
            if "curriculum" in opp else {}),
         # games between agents: the share of the learner's income taken (< 0: of the opponent's)
         **({"balance_tax": opp["tax"] if opp["tax_side"] == side else -opp["tax"]} if "tax_side" in opp else {}),
+        **({"tb_x": opp["tb_x"]} if "tb_x" in opp else {}),  # (--win-balance: the game's features, balance.py)
         "prod": prod.row(side, obs), "opp_prod": prod.row(1 - side, obs), **({"advised": True} if advised else {}),
         **({"max_own": bots[side].view.max_own, "max_ent": bots[side].view.max_ent} if side in bots else {}),
         **({"shared_noise": shared_noise} if cfg.get("shared_noise", 0.0) > 0 else {}),
@@ -2004,7 +2020,7 @@ class League:
     def __init__(self, run_dir: Path, ai: list[str], shares: dict, max_past: int, pfsp: str,
                  curriculum: tuple[float, float, float, int] | None = None, mode: str = "hp",
                  races: tuple[str, ...] = ("",), mirror: bool = True, balance: tuple[float, float] | None = None,
-                 exploiter_share: float = 0.0, tie: float = 0.0, floor: float = 0.0):
+                 exploiter_share: float = 0.0, tie: float = 0.0, floor: float = 0.0, win_balance: float = 0.0):
         """`curriculum`: (start level, step, the knob at level 1, base handicap): games against the
         built-in AI get easier or harder towards a 50% score, a level per difficulty in [0, 1] that
         a loss raises by `step`, a win lowers (a tie leaves it). At 0 the game is the real one; None:
@@ -2060,6 +2076,9 @@ class League:
         self.exploiter = Member("exploiter") if exploiter_share > 0 else None
         self.exploiter_resets = 0
         self.shaping: float | None = None  # (--shaping-anneal: the shaping's weight now, in the spec)
+        # --win-balance: games between agents taxed by who is expected to win (balance.py; the races' balance until fitted)
+        from .balance import Balance
+        self.win_balance = Balance(win_balance) if win_balance > 0 else None
 
     def matchup(self, race: str, opp: str) -> str:
         return matchup(self.mirror, race, opp)
@@ -2192,7 +2211,9 @@ class League:
             total = sum(w) or 1.0
             agents += [{"name": m.name, "kind": "past", "path": m.path, "p": self.shares["past"] * x / total}
                        for m, x in zip(self.past, w)]
+        model = self.win_balance.coef() if self.win_balance is not None else None
         return {"launch": launch, "agents": agents, **({"balance": self.balance_taxes()} if self.balance else {}),
+                **({"win_balance": model} if model else {}),
                 **({"shaping": self.shaping} if self.shaping is not None else {})}
 
     def write(self) -> None:
@@ -2209,6 +2230,7 @@ class League:
         summary = {"pfsp": self.pfsp, "members": [row(m) for m in [*self.scripts.values(), *self.real.values(), *self.past]],
                    "self": row(self.self_member), "level": {f"{n}|{r}": v for (n, r), v in self.level.items()},
                    "balance": self.balance,
+                   **({"win_balance": self.win_balance.summary()} if self.win_balance is not None else {}),
                    **({"exploiter": row(self.exploiter), "exploiter_resets": self.exploiter_resets} if self.exploiter else {})}
         tmp = self.run_dir / "league.json.tmp"
         tmp.write_text(json.dumps(summary))
@@ -2228,6 +2250,10 @@ class League:
             out[f"curriculum/{short} level"] = lv
             out.update({f"curriculum/{short} {k}": v for k, v in self.knobs(n, r).items() if k in used})
         out.update({f"balance/{k} tax": v for k, v in self.balance_taxes().items()} if self.balance else {})
+        if self.win_balance is not None:  # (--win-balance: the model's weights, log-odds for a side)
+            sm = self.win_balance.summary()
+            out.update({f"win balance/{k}": v for k, v in sm["weights"].items()})
+            out["win balance/tax"], out["win balance/games"] = sm["beta"], sm["games"]
         if self.exploiter is not None:
             if self.exploiter.win_rate() is not None:
                 out["league/exploiter_vs_main"] = 1.0 - self.exploiter.win_rate()  # (the exploiter's score)
@@ -3272,6 +3298,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="without --mirror: how far a game of the learner against itself moves the tax between "
                          "its two races (League: the winner's income taxed more, towards a 50%% score; 0: no tax)")
     ap.add_argument("--balance-max", type=float, default=0.9, help="the tax between two races at the end of its range")
+    ap.add_argument("--win-balance", type=float, default=0.0, help="games between agents (self-play, past snapshots) "
+                    "taxed by who is expected to win: a logistic model of the outcome from both sides' races, targets "
+                    "and the tax (balance.py), the favoured side's income taxed by the share that evens it out, at most "
+                    "this; 0: the races' balance only (--balance-step)")
     ap.add_argument("--handicap", type=int, default=50)
     ap.add_argument("--step-seconds", type=float, default=0.5)
     ap.add_argument("--max-minutes", type=float, default=4.0)
@@ -3624,12 +3654,18 @@ def main(argv: list[str] | None = None) -> int:
                                 if args.curriculum >= 0 else None), mode=args.curriculum_mode, races=tuple(races),
                     mirror=bool(args.mirror),
                     balance=(args.balance_step, args.balance_max) if args.balance_step > 0 else None,
-                    exploiter_share=args.exploiter_share, tie=args.curriculum_tie, floor=args.curriculum_floor)
+                    exploiter_share=args.exploiter_share, tie=args.curriculum_tie, floor=args.curriculum_floor,
+                    win_balance=args.win_balance)
     league.real_share = args.real_share
     if args.shaping_anneal > 0:  # (the games from the start: the weight at this run's update)
         league.shaping = shaping_now(args, resumed["update"] if resumed else 0)
     if resumed is not None and (run_dir / "league.json").exists():
         league.restore(json.loads((run_dir / "league.json").read_text()))
+    if resumed is not None and league.win_balance is not None and (run_dir / "episodes.jsonl").exists():
+        from collections import deque as _deque
+        with open(run_dir / "episodes.jsonl") as fh:  # (its newest games between agents: the model again)
+            rows = [json.loads(line) for line in _deque((x for x in fh if '"tb_x"' in x), maxlen=3000)]
+        league.win_balance.restore([(r["tb_x"], r.get("balance_tax", 0.0), (r["outcome"] + 1.0) / 2.0) for r in rows])
     else:
         if args.league_from:  # (a fork: its parent's opponents, then its own start)
             src = Path(args.league_from) if Path(args.league_from).is_dir() else args.runs / args.league_from
@@ -3694,7 +3730,7 @@ def main(argv: list[str] | None = None) -> int:
            "avail_mask": bool(args.avail_mask),
            "opd_share": args.opd_share, "opd_difficulty": args.opd_difficulty,
            "costs": order_costs(vocab, args.map).tolist() if args.avail_mask else None, "max_past": args.max_past,
-           "eval_fallback": args.eval_fallback, "worker_cap": args.worker_cap, "z_dim": fx.ZDIM, "z_pool": str(args.z_pool) if args.z_pool else "", "z_share": args.z_share,
+           "eval_fallback": args.eval_fallback, "worker_cap": args.worker_cap, "z_dim": fx.ZDIM, "z_pool": str(args.z_pool) if args.z_pool else "", "z_share": args.z_share, "win_balance": args.win_balance,
            "z_reward": args.z_reward, "z_mix": args.z_mix, "z_mix_reward": args.z_mix_reward, "reward_parts": args.reward_parts, "z_modes": args.z_modes, "z_mode_reward": args.z_mode_reward, "z_winners": args.z_winners, "z_src": args.z_src, "eval_z": args.eval_z,
            "z_enforce": args.z_enforce, "z_time_scale": args.z_time_scale, "z_build": args.z_build, "z_build_labels": args.z_build_labels,
            "grpo_share": args.grpo_share, "grpo_group": args.grpo_group, "grpo_coef": args.grpo_coef,
@@ -3846,6 +3882,8 @@ def main(argv: list[str] | None = None) -> int:
                         league.curriculum(e["opponent"], e["outcome"], league.matchup(e["race"], e["opponent_race"]))
                     if e["opponent"] == "self" and e["race"] != e["opponent_race"]:
                         league.balanced(e["race"], e["opponent_race"], e["outcome"])
+                    if league.win_balance is not None and "tb_x" in e:  # (--win-balance: the model's games)
+                        league.win_balance.add(e["tb_x"], e.get("balance_tax", 0.0), e["outcome"])
                     with open(run_dir / "episodes.jsonl", "a") as f:
                         f.write(json.dumps(e) + "\n")
                     continue
