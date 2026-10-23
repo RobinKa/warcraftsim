@@ -135,6 +135,30 @@ section > h3 { font-size:13px; margin:0 0 8px; color:var(--muted); text-transfor
 .viewer .cap { padding:8px 12px; display:flex; justify-content:space-between; gap:12px; color:var(--muted); font-size:12.5px; border-top:1px solid var(--line); }
 .viewer .cap a { color:var(--blue); text-decoration:none; }
 .viewer .none { padding:60px 20px; text-align:center; color:var(--muted); }
+/* a video's info: both sides' heroes and play, the learner's target (videos.py) */
+.vinfo { background:var(--panel); border:1px solid var(--line); border-radius:8px; margin-top:10px; padding:10px 12px; font-size:12.5px; }
+.vinfo.muted, .vinfo .muted { color:var(--muted); }
+.vsides { display:grid; grid-template-columns:1fr 1fr; gap:10px 18px; }
+@media (max-width: 760px) { .vsides { grid-template-columns:1fr; } }
+.vh { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.6px; margin-bottom:4px; }
+.hchip { display:inline-block; background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:1px 8px; margin:0 4px 4px 0; }
+.hchip.neutral { border-color:var(--accent); color:var(--accent); }
+.hchip small { color:var(--muted); }
+.vfacts { color:var(--muted); margin-top:2px; }
+.vt { margin-top:10px; }
+table.vtt { width:auto; min-width:280px; font-size:12px; margin-top:2px; }
+table.vtt td, table.vtt th { padding:2px 10px; }
+table.vtt tr.miss td:last-child { color:var(--red, #e5534b); }
+table.vtt tr.late td:last-child { color:#e0a33a; }
+table.vtt tr.ok td:last-child { color:#4cc38a; }
+.playlist .tags { grid-column:1 / -1; color:var(--muted); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.playlist .tags b { color:var(--accent); font-weight:500; }
+.videos h2 { margin:0 0 6px; font-size:18px; } .videos .sub { color:var(--muted); max-width:860px; margin:0 0 12px; }
+.vbar { display:flex; flex-wrap:wrap; gap:8px 10px; align-items:center; margin-bottom:10px; color:var(--muted); font-size:12px; }
+.vbar input[type=search] { background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:5px 10px; min-width:260px; font:inherit; }
+.vbar .tg { background:var(--panel); border:1px solid var(--line); border-radius:12px; color:var(--muted); padding:3px 10px; font:inherit; font-size:12px; cursor:pointer; }
+.vbar .tg.on { color:var(--text); border-color:var(--accent); background:var(--panel2); }
+@media (max-width: 760px) { .vbar input[type=search] { min-width:0; width:100%; } }
 .playlist { background:var(--panel); border:1px solid var(--line); border-radius:8px; max-height:calc(100vh - 250px); overflow-y:auto; }
 .playlist .it { padding:7px 12px; border-bottom:1px solid var(--line); cursor:pointer; display:grid; grid-template-columns:1fr auto; gap:1px 8px; font-size:12px; }
 .playlist .it:last-child { border-bottom:0; }
@@ -382,7 +406,7 @@ body.page-view main { padding:18px 28px 40px; }
 <header>
   <button id="menu" title="the runs">☰</button>
   <h1>warcraft<span>sim</span></h1><span class="sub">Warcraft III 1.29 · PufferLib 5.0 training dashboard</span>
-  <span class="seg topnav"><button id="nav-runs" class="on">Runs</button><button id="nav-lineage">Lineage</button><button id="nav-ratings">Ratings</button><button id="nav-docs">Docs</button></span>
+  <span class="seg topnav"><button id="nav-runs" class="on">Runs</button><button id="nav-lineage">Lineage</button><button id="nav-ratings">Ratings</button><button id="nav-videos">Videos</button><button id="nav-docs">Docs</button></span>
   <button id="nav-challenge" class="challenge-btn" title="play against a policy in the game">⚔ Challenge</button>
   <div class="right"><label class="smooth" title="exponential moving average over the points of every chart"><span class="lbl">smoothing</span>
     <input type="range" id="smooth" min="0" max="0.99" step="0.01"><span id="smoothv"></span></label>
@@ -421,6 +445,7 @@ function parseUrl() {
   else if (parts[0] === "doc") { out.view = "docs"; out.name = parts.slice(1).join("/") || null; }
   else if (parts[0] === "lineage") out.view = "lineage";
   else if (parts[0] === "ratings") out.view = "ratings";
+  else if (parts[0] === "videos") out.view = "videos";
   if (!out.view && location.hash.length > 1) {
     const h = new URLSearchParams(location.hash.slice(1));
     if (h.get("run")) { out.view = "run"; out.name = h.get("run"); }
@@ -440,6 +465,7 @@ function urlFor() {
   if (state.view === "docs") path = "/doc/" + (ui.docs && ui.docs.doc ? encPath(ui.docs.doc.name) : "");
   else if (state.view === "lineage") return "/lineage" + (ui.lineage && ui.lineage.track === "micro" ? "?track=micro" : "");
   else if (state.view === "ratings") return "/ratings";
+  else if (state.view === "videos") return "/videos" + (ui.videos && ui.videos.q ? "?q=" + encodeURIComponent(ui.videos.q) : "");
   else if (state.view === "sweep" && state.sweep) path = "/sweep/" + encPath(state.sweep);
   else if (state.selected) path = "/run/" + encPath(state.selected);
   const q = new URLSearchParams();
@@ -463,6 +489,7 @@ function saveUrl(push = false) {
   if (u.view === "docs") state.view = "docs";
   if (u.view === "lineage") state.view = "lineage";
   if (u.view === "ratings") state.view = "ratings";
+  if (u.view === "videos") state.view = "videos";
   if (h.get("compare")) h.get("compare").split(",").filter(Boolean).forEach(n => state.compare.add(n));
   if (h.get("smooth") !== null && !Number.isNaN(parseFloat(h.get("smooth")))) ui.smooth = parseFloat(h.get("smooth"));
   if (h.get("hover")) ui.hoverX = parseFloat(h.get("hover"));  // a cursor position (screenshots)
@@ -751,6 +778,14 @@ function refresh() {
   return refreshing;
 }
 async function refreshOnce() {
+  if (state.view === "videos") {  // new videos and their info as the server sums them up (videos.py)
+    try {
+      const V = await getJSON("/api/videos");
+      if (V.updated !== (ui.videos.data || {}).updated || V.pending !== (ui.videos.data || {}).pending) { ui.videos.data = V; renderVideos(); }
+    } catch (e) { console.error(e); }
+    setClock();
+    return;
+  }
   if (state.view === "ratings") {  // re-drawn when the ratings changed (the server scans every 5 minutes)
     try {
       const R = await getJSON("/api/ratings");
@@ -1436,7 +1471,7 @@ function renderReplays(d) {
         <div class="seg" id="rp-kind"><button data-k="video">Game videos<span class="n"></span></button><button data-k="render">Trajectory renders<span class="n"></span></button></div>
         <div class="seg" id="rp-out"><button data-o="all">all</button><button data-o="win">wins</button><button data-o="loss">losses</button><button data-o="tie">ties</button></div>
         <span id="rp-hint"></span></div>
-      <div class="replays"><div class="viewer" id="rp-viewer"></div><div class="playlist" id="rp-list"></div></div>`;
+      <div class="replays"><div><div class="viewer" id="rp-viewer"></div><div id="rp-info"></div></div><div class="playlist" id="rp-list"></div></div>`;
     el.querySelectorAll("#rp-kind button").forEach(b => b.onclick = () => { ui.replay.kind = b.dataset.k; ui.replay.file = null; renderReplays(d); });
     el.querySelectorAll("#rp-out button").forEach(b => b.onclick = () => { ui.replay.outcome = b.dataset.o; renderReplays(d); });
   }
@@ -1447,18 +1482,19 @@ function renderReplays(d) {
     ? `game footage of game 0, every ${d.info.args?.video_every || "N"} episodes: the policy's view beside it`
     : `the units' positions and hit points, every ${d.info.args?.record_every || "N"} episodes of game 0`;
   const cur = list.find(m => m.file === ui.replay.file) || list[0];
-  const listKey = list.map(m => m.file).join("|");
+  const listKey = list.map(m => m.file + (m.info ? "+" : "")).join("|");
   const box = document.getElementById("rp-list");
   if (el.dataset.list !== listKey) {  // rebuilt only when the episodes change (keeps the scroll)
     el.dataset.list = listKey;
     box.innerHTML = list.map(m => `<div class="it" data-file="${esc(m.file)}">
         <span class="ep">${m.title ? esc(m.title) : `episode ${m.episode}`}</span><span class="${m.result ? "" : m.outcome > 0 ? "win" : m.outcome < 0 ? "loss" : ""}">${m.result ? esc(m.result) : outcomeText(m.outcome)}</span>
-        <span class="sub">${m.sub ? esc(m.sub) : `return ${fmt(m.return, 2)}${m.value0 != null ? ` · V(s₀) ${fmt(m.value0, 2)}` : ""}`}</span><span class="sub">${m.time ? ago(m.time) : ""}</span></div>`).join("")
+        <span class="sub">${m.sub ? esc(m.sub) : `return ${fmt(m.return, 2)}${m.value0 != null ? ` · V(s₀) ${fmt(m.value0, 2)}` : ""}`}</span><span class="sub">${m.time ? ago(m.time) : ""}</span>${videoTags(m.info)}</div>`).join("")
       || `<div class="none" style="padding:20px;color:var(--muted)">none${ui.replay.outcome !== "all" ? " with this outcome" : ""}</div>`;
     box.querySelectorAll(".it").forEach(it => it.onclick = () => { ui.replay.file = it.dataset.file; renderReplays(d); });
   }
   box.querySelectorAll(".it").forEach(it => it.classList.toggle("on", !!cur && it.dataset.file === cur.file));
-  const viewer = document.getElementById("rp-viewer");
+  const viewer = document.getElementById("rp-viewer"), infoBox = document.getElementById("rp-info");
+  if (infoBox) infoBox.innerHTML = cur && cur.kind === "video" && "info" in cur ? videoInfoHtml(cur.info) : "";
   if (!cur) {
     if (el.dataset.viewer !== "none") {
       el.dataset.viewer = "none";
@@ -1994,8 +2030,9 @@ function setNav() {
   document.getElementById("nav-docs").classList.toggle("on", state.view === "docs");
   document.getElementById("nav-lineage").classList.toggle("on", state.view === "lineage");
   document.getElementById("nav-ratings").classList.toggle("on", state.view === "ratings");
-  document.getElementById("nav-runs").classList.toggle("on", !["docs", "lineage", "ratings"].includes(state.view));
-  const page = ["docs", "lineage", "ratings"].includes(state.view);
+  document.getElementById("nav-videos").classList.toggle("on", state.view === "videos");
+  document.getElementById("nav-runs").classList.toggle("on", !["docs", "lineage", "ratings", "videos"].includes(state.view));
+  const page = ["docs", "lineage", "ratings", "videos"].includes(state.view);
   document.body.classList.toggle("page-view", page);  // (no run list, no chart controls)
   if (!page) for (const id in ui.charts) drawChart(id);  // (sized while hidden)
 }
@@ -2057,6 +2094,123 @@ function renderDocs() {
   const ta = document.getElementById("doctext");
   if (ta) ta.addEventListener("keydown", ev => { if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) document.getElementById("docsave").click(); });
   renderMermaid(m);
+}
+
+// ---- a game video's info: both sides and the learner's target (GET /api/videos, a run's media rows; videos.py) ----
+const mmss = s => s == null ? "–" : `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+const RACE_TITLES = { human: "Human", orc: "Orc", undead: "Undead", nightelf: "Night Elf" };
+function heroChips(s) {
+  return (s.heroes || []).map(h => `<span class="hchip${h[0][0] === "N" ? " neutral" : ""}" title="${esc(h[0])}${h[0][0] === "N" ? ": a tavern's" : ""}">${esc(h[1])}${h[2] ? ` <small>${h[2]}</small>` : ""}</span>`).join("")
+    || `<span class="muted">no hero</span>`;
+}
+function sideHtml(label, s) {
+  if (!s) return "";
+  const f = [];
+  if (s.tier) f.push(`tier ${s.tier}`);
+  if (s.expanded) f.push(`${s.expanded} expansion${s.expanded > 1 ? "s" : ""}`);
+  if (s.halls_home) f.push(`${s.halls_home} hall${s.halls_home > 1 ? "s" : ""} at home`);
+  if (s.creeps) f.push(`${s.creeps} camp${s.creeps > 1 ? "s" : ""} crept`);
+  if (s.picked) f.push(`${s.picked} item${s.picked > 1 ? "s" : ""} picked up`);
+  if (s.bought) f.push("buy orders: " + Object.entries(s.bought).map(([k, n]) => `${esc(k)}${n > 1 ? " ×" + n : ""}`).join(", "));
+  if (s.army != null) f.push(`army ${s.army}, workers ${s.workers} at the end`);
+  return `<div><div class="vh">${label}${s.race ? " · " + (RACE_TITLES[s.race] || esc(s.race)) : ""}</div>${heroChips(s)}<div class="vfacts">${f.join(" · ")}</div></div>`;
+}
+function videoInfoHtml(info) {
+  if (!info) return `<div class="vinfo muted">summing up this game… (the server reads its trace and episode: within a minute)</div>`;
+  const t = info.target;
+  const SRC = { human: "people's games", ai: "the built-in AI's games" };
+  const after = x => t.end != null && x[3] == null && x[2] > t.end;  // (due after the game ended)
+  const tgt = t ? `<div class="vt"><div class="vh">The learner's target${t.src ? ` (from ${esc(SRC[t.src] || t.src)})` : ""}${t.followed != null ? ` · ${Math.round(100 * t.followed)}% of the items due by the end made` : ""}</div>
+      <table class="vtt"><tr><th>item</th><th>due</th><th>made</th></tr>${t.items.map(x =>
+        `<tr class="${after(x) ? "" : x[3] == null ? "miss" : x[3] <= x[2] + 30 ? "ok" : "late"}"><td title="${esc(x[0])}">${esc(x[1])}</td><td>${mmss(x[2])}</td><td${after(x) ? ' class="muted"' : ""}>${after(x) ? "after the end" : x[3] == null ? "not made" : mmss(x[3])}</td></tr>`).join("")}</table></div>`
+    : `<div class="vt muted">No target: the policy's own game.</div>`;
+  return `<div class="vinfo"><div class="vsides">${sideHtml("learner", info.me)}${sideHtml("opponent", info.opp)}</div>${tgt}</div>`;
+}
+function videoTags(info) {  // a playlist line: both sides' heroes (a tavern's in colour), what else happened
+  if (!info) return "";
+  const hs = s => (s.heroes || []).map(h => h[0][0] === "N" ? `<b>${esc(h[1])}</b>` : esc(h[1])).join(", ") || "no hero";
+  return `<span class="tags">${hs(info.me)} vs ${hs(info.opp)}${info.target ? " · target" : ""}${info.me.picked ? ` · ${info.me.picked} items picked up` : ""}${(info.me.expanded || info.opp.expanded) ? " · expansion" : ""}</span>`;
+}
+
+// ---- the Videos view: every run's game videos, searchable (GET /api/videos) ---------------------------------------
+ui.videos = { data: null, q: "", outcome: "all", race: "all", tags: new Set(), file: null };
+const VTAGS = {
+  "neutral hero": i => [...i.me.heroes, ...i.opp.heroes].some(h => h[0][0] === "N"),
+  "target": i => !!i.target,
+  "expansion": i => !!(i.me.expanded || i.opp.expanded),
+  "tier 3": i => i.me.tier === 3 || i.opp.tier === 3,
+  "items picked up": i => !!i.me.picked,
+  "buy orders": i => !!i.me.bought,
+  "creeping": i => !!i.me.creeps,
+};
+async function openVideos(q) {
+  state.view = "videos"; if (q !== undefined) ui.videos.q = q; setNav(); saveUrl(true);
+  const m = document.getElementById("main"); m.dataset.run = ""; m.dataset.vframe = "";
+  if (!ui.videos.data) m.innerHTML = `<div class="empty">listing every run's videos…</div>`;
+  try { ui.videos.data = await getJSON("/api/videos"); } catch (e) { m.innerHTML = `<div class="empty">no videos: ${esc(e)}</div>`; return; }
+  renderVideos();
+}
+function videoHay(v) {  // what a search matches: the run, the title, both sides' heroes and races, the target's items, tags
+  const i = v.info || {};
+  const side = s => s ? (s.heroes || []).map(h => h[0] + " " + h[1]).join(" ") + " " + (s.race || "") + " " + Object.keys(s.bought || {}).join(" ") : "";
+  return [v.run, v.title, v.opponent, side(i.me), side(i.opp), (i.tags || []).join(" "),
+          i.target ? i.target.items.map(x => x[0] + " " + x[1]).join(" ") : ""].join(" ").toLowerCase();
+}
+function renderVideos() {
+  const V = ui.videos, D = V.data, m = document.getElementById("main");
+  if (!D || state.view !== "videos") return;
+  if (m.dataset.vframe !== "1") {  // the page's frame, once
+    m.dataset.vframe = "1";
+    m.innerHTML = `<div class="videos"><h2>Videos</h2>
+      <div class="sub">Every run's game videos (a training game every few minutes, rendered in the background), newest first, with both sides' heroes, the learner's target and how the game went. Search by a hero, a unit, a building, a run or a race: every word must match.</div>
+      <div class="vbar"><input type="search" id="vq" placeholder="search: Pandaren, Far Seer, fgself-135, Tauren…" autocomplete="off">
+        <div class="seg" id="v-out"><button data-o="all">all</button><button data-o="win">wins</button><button data-o="loss">losses</button><button data-o="tie">ties</button></div>
+        <div class="seg" id="v-race"><button data-r="all">any race</button><button data-r="human">human</button><button data-r="orc">orc</button><button data-r="undead">undead</button><button data-r="nightelf">night elf</button></div>
+        <span id="v-tags">${Object.keys(VTAGS).map(k => `<button class="tg" data-t="${k}">${k}</button>`).join(" ")}</span>
+        <span id="v-count"></span></div>
+      <div class="replays"><div><div class="viewer" id="v-viewer"></div><div id="v-info"></div></div><div class="playlist" id="v-list"></div></div></div>`;
+    const q = document.getElementById("vq"); q.value = V.q;
+    q.oninput = () => { V.q = q.value; saveUrl(false); renderVideos(); };
+    m.querySelectorAll("#v-out button").forEach(b => b.onclick = () => { V.outcome = b.dataset.o; renderVideos(); });
+    m.querySelectorAll("#v-race button").forEach(b => b.onclick = () => { V.race = b.dataset.r; renderVideos(); });
+    m.querySelectorAll("#v-tags .tg").forEach(b => b.onclick = () => { V.tags.has(b.dataset.t) ? V.tags.delete(b.dataset.t) : V.tags.add(b.dataset.t); renderVideos(); });
+    m.dataset.list = ""; m.dataset.viewer = "";
+  }
+  m.querySelectorAll("#v-out button").forEach(b => b.classList.toggle("on", b.dataset.o === V.outcome));
+  m.querySelectorAll("#v-race button").forEach(b => b.classList.toggle("on", b.dataset.r === V.race));
+  m.querySelectorAll("#v-tags .tg").forEach(b => b.classList.toggle("on", V.tags.has(b.dataset.t)));
+  const words = V.q.toLowerCase().split(/\s+/).filter(Boolean);
+  const list = D.videos.filter(v => {
+    const i = v.info;
+    if (V.outcome !== "all" && outcomeText(v.outcome) !== V.outcome) return false;
+    if (V.race !== "all" && !(i && i.me.race ? i.me.race === V.race : (v.title || "").startsWith(V.race))) return false;
+    for (const t of V.tags) if (!i || !VTAGS[t](i)) return false;
+    if (words.length) { const h = videoHay(v); if (!words.every(w => h.includes(w))) return false; }
+    return true;
+  });
+  document.getElementById("v-count").textContent = `${list.length} of ${D.videos.length}${D.pending ? ` (${D.pending} still being summed up)` : ""}`;
+  const key = v => v.run + "/" + v.file, shown = list.slice(0, 300);
+  const cur = shown.find(v => key(v) === V.file) || shown[0];
+  const box = document.getElementById("v-list"), listKey = shown.map(v => key(v) + (v.info ? "+" : "")).join("|");
+  if (m.dataset.list !== listKey) {  // rebuilt only when the list changes (keeps the scroll)
+    m.dataset.list = listKey;
+    box.innerHTML = shown.map(v => `<div class="it" data-k="${esc(key(v))}">
+        <span class="ep">${esc(v.title || v.file)}</span><span class="${v.outcome > 0 ? "win" : v.outcome < 0 ? "loss" : ""}">${outcomeText(v.outcome)}</span>
+        <span class="sub">${esc(v.run)}${v.game_time ? " · " + (v.game_time / 60).toFixed(1) + " game min" : ""}</span><span class="sub">${v.time ? ago(v.time) : ""}</span>${videoTags(v.info)}</div>`).join("")
+      + (list.length > shown.length ? `<div style="padding:10px 12px;color:var(--muted)">and ${list.length - shown.length} more: narrow the search</div>` : "")
+      || `<div style="padding:20px;color:var(--muted)">no video matches</div>`;
+    box.querySelectorAll(".it").forEach(it => it.onclick = () => { V.file = it.dataset.k; renderVideos(); });
+  }
+  box.querySelectorAll(".it").forEach(it => it.classList.toggle("on", !!cur && it.dataset.k === key(cur)));
+  const viewer = document.getElementById("v-viewer"), infoBox = document.getElementById("v-info");
+  if (!cur) { m.dataset.viewer = ""; viewer.innerHTML = `<div class="none">No video matches.</div>`; infoBox.innerHTML = ""; return; }
+  infoBox.innerHTML = videoInfoHtml(cur.info);
+  if (m.dataset.viewer === key(cur)) return;  // playing: left alone
+  m.dataset.viewer = key(cur); V.file = key(cur);
+  const src = `/files/${encPath(cur.run)}/${cur.file}`;
+  viewer.innerHTML = `<video src="${src}" controls muted loop playsinline preload="metadata"${matchMedia("(max-width: 760px)").matches ? "" : " autoplay"}></video>
+    <div class="cap"><span>${esc(cur.title || "")} · <span class="${cur.outcome > 0 ? "win" : cur.outcome < 0 ? "loss" : ""}">${outcomeText(cur.outcome)}</span> · ${esc(cur.sub || "")} · <a href="/run/${encPath(cur.run)}?tab=replays">${esc(cur.run)}</a></span>
+    <a href="${src}" target="_blank">open ↗</a></div>`;
 }
 
 // ---- the Ratings view: skill ratings from every run's evaluation games (GET /api/ratings, dashboard/ratings.py) ----
@@ -2501,12 +2655,14 @@ slider.addEventListener("input", () => {
 });
 setupRunTools();
 document.getElementById("nav-docs").onclick = () => openDocs(state.view === "docs" ? null : undefined);
-document.getElementById("nav-runs").onclick = () => { if (["docs", "lineage", "ratings"].includes(state.view)) openRun(state.selected || (state.runs[0] || {}).name); };
+document.getElementById("nav-runs").onclick = () => { if (["docs", "lineage", "ratings", "videos"].includes(state.view)) openRun(state.selected || (state.runs[0] || {}).name); };
+document.getElementById("nav-videos").onclick = () => openVideos();
 document.getElementById("nav-lineage").onclick = () => openLineage();
 document.getElementById("nav-ratings").onclick = () => openRatings();
 document.getElementById("nav-challenge").onclick = () => openChallenge();
 if (state.view === "docs") openDocs(parseUrl().name || undefined);
 else if (state.view === "ratings") openRatings();
+else if (state.view === "videos") openVideos(parseUrl().q.get("q") || undefined);
 else if (state.view === "lineage") openLineage(parseUrl().q.get("track") === "micro" ? "micro" : "whole game");
 else saveUrl(false);  // (an old #… link: its address in the new form)
 // back and forward: show the page of that history entry
@@ -2517,6 +2673,7 @@ window.addEventListener("popstate", async () => {
     if (u.view === "docs") { ui.docs.editing = false; await openDocs(u.name || undefined); }
     else if (u.view === "lineage") await openLineage(u.q.get("track") === "micro" ? "micro" : "whole game");
     else if (u.view === "ratings") await openRatings();
+    else if (u.view === "videos") await openVideos(u.q.get("q") || "");
     else {
       const t = u.q.get("tab");
       if (t) ui.tabs.run = ui.tabs.bc = ui.tabs.collect = ui.tabs.fullbc = t; else ui.tabs.run = ui.tabs.bc = ui.tabs.collect = ui.tabs.fullbc = "overview";

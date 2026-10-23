@@ -737,6 +737,7 @@ class Dashboard:
         self._runs_cache: tuple[float, list[dict]] = (0.0, [])  # the list and the sweeps from one scan
         self._pages: dict[str, tuple[tuple, dict]] = {}  # a run's page, until its files change (run_stamp)
         self._ratings = None  # (ratings.Ratings: made, and its scans started, on the first request)
+        self._videos = None  # (videos.VideoIndex: made, and its thread started, on the first request)
 
     def ratings(self) -> dict:
         """The policies' skill ratings from every run's evaluation games (ratings.py), scanned every 5 minutes."""
@@ -748,6 +749,17 @@ class Dashboard:
             ratings.background(self._ratings)
         with self._ratings.lock:
             return self._ratings.table()
+
+    def video_index(self):
+        """Every run's game videos with what happened in them (videos.py), filled in by a thread."""
+        from . import videos
+        if self._videos is None:
+            self._videos = videos.VideoIndex(self.runs_dir)
+            videos.background(self._videos)
+        return self._videos
+
+    def videos(self) -> dict:
+        return self.video_index().listing()
 
     # ---- challenges: a person against a policy in the real game (fullgame/versus.py, the Challenge button) ----
     def challenge_dir(self) -> Path:
@@ -1501,10 +1513,18 @@ class Dashboard:
         stamp = self.run_stamp(d)
         cached = self._pages.get(name)
         if cached and cached[0] == stamp:  # (nothing changed: a finished run, or between two updates)
-            return cached[1]
+            return self._with_video_info(name, cached[1])
         page = self._run_page(name, d)
         self._pages[name] = (stamp, page)
-        return page
+        return self._with_video_info(name, page)
+
+    def _with_video_info(self, name: str, page: dict) -> dict:
+        """The page with its videos' info (videos.py; made by a thread, so added as it comes, not cached with the page)."""
+        if not page.get("media") or page.get("info", {}).get("trainer") != "fullgame":
+            return page
+        index = self.video_index()
+        return {**page, "media": [{**m, "info": index.get(name, m["file"])} if m.get("kind") == "video" else m
+                                  for m in page["media"]]}
 
     def _run_page(self, name: str, d: Path) -> dict:
         info = json.loads((d / "run.json").read_text())
@@ -1631,7 +1651,7 @@ def make_handler(dash: Dashboard, docs: Docs | None = None):
 
         def do_GET(self):
             path = urllib.parse.unquote(urllib.parse.urlparse(self.path).path)
-            if path in ("/", "/index.html", "/doc", "/lineage", "/ratings") or path.startswith(("/run/", "/sweep/", "/doc/")):
+            if path in ("/", "/index.html", "/doc", "/lineage", "/ratings", "/videos") or path.startswith(("/run/", "/sweep/", "/doc/")):
                 return self._send(_page(), "text/html; charset=utf-8")  # (the page's own addresses: it routes)
             if path == "/api/runs":
                 return self._json(dash.run_list())
@@ -1644,6 +1664,8 @@ def make_handler(dash: Dashboard, docs: Docs | None = None):
                 return self._json(dash.lineage())
             if path == "/api/ratings":
                 return self._json(dash.ratings())
+            if path == "/api/videos":
+                return self._json(dash.videos())
             if path == "/api/challenges":
                 return self._json(dash.challenges())
             if path == "/api/docs":
