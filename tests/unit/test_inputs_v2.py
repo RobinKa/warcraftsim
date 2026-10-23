@@ -733,3 +733,21 @@ def test_tier_order_cancels_a_busy_halls_queue(v2):
     assert bot.commands(st, [k], [0], [0], [0]) == [ImmediateOrder(1, CANCEL)] * 6 + [ImmediateOrder(1, code("hkee"))]
     bot.view.making = {1: (4, code("hkee"))}  # (upgrading already: not cancelled)
     assert bot.commands(st, [k], [0], [0], [0]) == [ImmediateOrder(1, code("hkee"))]
+
+
+def test_teacher_teaches_the_target_army_mix(v2):
+    """With its target's army mix known, the teacher has a building that makes it train the unit the target has the
+    largest share of more than its own army (by 0.15 at least), from 120 s and 5 army units."""
+    import random
+    from types import SimpleNamespace
+
+    from warcraftsim.fullgame.teacher import Teacher
+    from warcraftsim.protocol import ImmediateOrder
+    player = SimpleNamespace(gold=500, lumber=300, food_used=20, food_cap=40, start_x=-5184.0, start_y=2944.0)
+    tc = Teacher(0, "human", random.Random(0), {"t": {"hfoo": 60.0}, "n": {"hfoo": 5, "hrif": 5, "hpea": 20}})
+    base = [_unit(1, 0, -5184, 2944, 1, fx.STRUCTURE, "htow"), _unit(2, 0, -5000, 2900, 1, fx.STRUCTURE, "hbar")]
+    feet = [_unit(10 + i, 0, -5000, 2800, 1, 0, "hfoo") for i in range(6)]
+    assert tc.commands(np.stack(base + feet), player, 100.0, 1) == []  # (before 120 s)
+    assert tc.commands(np.stack(base + feet), player, 200.0, 2) == [ImmediateOrder(2, code("hrif"))]
+    mixed = feet[:3] + [_unit(20 + i, 0, -5000, 2800, 1, 0, "hrif") for i in range(3)]
+    assert Teacher(0, "human", random.Random(0), {"t": {}, "n": {"hfoo": 5, "hrif": 5}}).commands(np.stack(base + mixed), player, 200.0, 3) == []

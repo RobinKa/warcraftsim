@@ -8,6 +8,9 @@ selfplay --teach 1 (needs --neutral 1: the orders it teaches are the neutral bui
                    when the player has an altar and none, or the second with a tier-2 hall, from 135 s, the money there
     a town portal: a hero near the goblin merchant buys one when it has none and a free slot, from 440 s
     a potion:      a hero below 40% of its hit points drinks what heals in its inventory
+    the army mix:  from MIX_FROM, with 5 army units or more, the unit its target's army has the largest share of
+                   more than its own army (by MIX_SLACK at least) trained at a building that makes it (the target's
+                   mix as an input and a reward, fgself-130, left the mix gap where it was: 0.62)
     an expansion:  when its target's expansion is due (a hall, or undead's haunted gold mine, in its items) and the
                    natural expansion's camp is gone (cleared, or --scenarios natural): the worker nearest builds the
                    hall where people put theirs (undead: an acolyte haunts the mine), then three workers go to mine there.
@@ -43,6 +46,7 @@ NATURAL_FROM_START = 1500.0  # (the main mine is nearer its start)
 CAMP_NEAR = 900.0  # creeps this near the natural mine guard it
 HARVEST = 852018
 HIDDEN = 16  # (UnitFlags.HIDDEN: a worker inside a gold mine)
+MIX_FROM, MIX_SLACK, MIX_LEAST = 120.0, 0.15, 5
 NEAR_MERCHANT = 2500.0
 USESLOT = 852008
 
@@ -65,6 +69,10 @@ class Teacher:
         self.race = race
         due = [v for c, v in (target or {}).get("t", {}).items() if c in (HALL.get(race), "ugol")]
         self.expand_at = min(due) if due and race != "nightelf" else None  # (its target's expansion: when)
+        from .strategy import is_army
+        army = {c: v for c, v in ((target or {}).get("n") or {}).items() if is_army(c) and v > 0}
+        total = sum(army.values())
+        self.mix = {c: v / total for c, v in army.items()} if total else {}  # (its target's army mix)
 
     def _due(self, kind: str, t: int) -> bool:
         if t - self.last.get(kind, -GAP) < GAP:
@@ -114,7 +122,29 @@ class Teacher:
                     out.append(Buy(int(h[fx.C_ID]), int(m[fx.C_ID]), PORTAL))
         if self.expand_at is not None and now >= self.expand_at:
             out += self._expansion(rows, alive, player, t)
+        if self.mix and now >= MIX_FROM:
+            out += self._mix(alive, t)
         return out
+
+    def _mix(self, alive: np.ndarray, t: int) -> list:
+        """The unit its target's army has the largest share of more than its own, trained at a building that makes it."""
+        from .techtree import tree
+        fl = alive[:, fx.C_FLAGS]
+        army = alive[fl & (fx.STRUCTURE | fx.WORKER | fx.HERO) == 0]
+        if len(army) < MIX_LEAST:
+            return []
+        have = {}
+        for c in army[:, fx.C_TYPE].tolist():
+            k = int(c).to_bytes(4, "big").decode("latin-1")
+            have[k] = have.get(k, 0) + 1 / len(army)
+        unit, gap = max(((u, s - have.get(u, 0.0)) for u, s in self.mix.items()), key=lambda x: x[1])
+        if gap < MIX_SLACK:
+            return []
+        makers = {fourcc(m) for m in tree().makers.get(unit, ())}
+        at = alive[(fl & fx.STRUCTURE > 0) & (fl & fx.CONSTRUCTING == 0) & np.isin(alive[:, fx.C_TYPE], list(makers))]
+        if not len(at) or not self._due("army mix", t):
+            return []
+        return [ImmediateOrder(int(at[0, fx.C_ID]), fourcc(unit))]
 
     def _expansion(self, rows: np.ndarray, alive: np.ndarray, player, t: int) -> list:
         """The next step of taking the natural expansion: clearing its camp, the hall (undead: the haunted mine), the
