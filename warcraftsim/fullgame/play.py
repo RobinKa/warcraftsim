@@ -60,7 +60,7 @@ def unit_rows(obs: Observation, t: int) -> np.ndarray:
 
 REPAIR = 852024  # the order a worker resumes a building with
 ATTACK = 851983
-EXPAND, CREEP = 990001, 990002  # (macros.EXPAND, macros.CREEP)
+EXPAND, CREEP, MIX = 990001, 990002, 990003  # (macros.EXPAND, macros.CREEP, macros.MIX)
 HAUNT = int.from_bytes(b"ugol", "big")
 EXPAND_HALLS = {r: int.from_bytes(h.encode(), "big") for r, h in (("human", "htow"), ("orc", "ogre"), ("nightelf", "etol"))}
 CANCEL = 851976  # a building's queue: its last unit
@@ -183,7 +183,13 @@ class BCAgent:
                 continue  # on its way to build, or building: another order would cancel it
             self.last_sent.append((oid, kind))
             x, y = fx.bins_world(int(bx[i]), int(by[i]), self.view.sign)
-            if kind == fx.IMMEDIATE and oid == CREEP:  # (--macros: to the natural's camp, attack-moving; not again to a
+            if kind == fx.IMMEDIATE and oid == MIX:  # (--macros: the building trains its target's army mix)
+                from .macros import mix_choice
+                unit_code = mix_choice(getattr(self.view, "mix_target", None) or {}, getattr(self.view, "mix_have", {}),
+                                       fx.rawcode(int(sel[i, fx.C_TYPE])), getattr(self.view, "mix_can", lambda u: False))
+                if unit_code is not None:
+                    out.append(ImmediateOrder(unit, int.from_bytes(unit_code.encode(), "big")))
+            elif kind == fx.IMMEDIATE and oid == CREEP:  # (--macros: to the natural's camp, attack-moving; not again to a
                 at = getattr(self.view, "creep_at", None)  # unit attack-moving already)
                 if at is not None and int(sel[i, fx.C_ORDER]) != ATTACK:
                     out.append(PointOrder(unit, ATTACK, int(at[0]), int(at[1])))

@@ -3,6 +3,10 @@
     creep    an army unit or a hero attack-moves to the natural expansion's camp, while the camp stands (and nobody
              holds the natural). The lesson that sent the whole army there every 10 s (fgself-123) lost its games;
              as an order, the policy decides who goes and when.
+    mix      a building trains its target's army mix: the unit the target's army has the largest share of more than the
+             side's own army, of those the building makes and the player can pay for now (with a target that names
+             an army). Taught one unit at a time (fgself-131), the army-mix gap did not move: a handful of lessons a
+             game against the hundreds of train orders the policy gives itself.
     expand   a worker takes the natural expansion: the race's hall built where people build it (Echo Isles: ~800
              north of the natural's mine), or for undead the mine haunted. Taught as a raw build order at a point
              (fgself-123/124), the policy learned "build a hall" and built it at home: 26-30% of its games had a
@@ -21,7 +25,8 @@ from . import features as fx
 
 EXPAND = 990001  # (no game order has these ids: the agent's own)
 CREEP = 990002
-ORDERS = (EXPAND, CREEP)
+MIX = 990003
+ORDERS = (EXPAND, CREEP, MIX)
 HALLS = {"human": "htow", "orc": "ogre", "undead": "unpl", "nightelf": "etol"}
 WORKERS = ("hpea", "opeo", "uaco", "ewsp")
 MINES = {int.from_bytes(c.encode(), "big") for c in ("ngol", "ugol", "egol")}
@@ -50,7 +55,8 @@ def extend(vocab: dict) -> dict:
     for o in ORDERS:  # (in this order: a vocabulary with the first ones gets the later ones after them)
         if [o, fx.IMMEDIATE] not in orders:
             orders.append([o, fx.IMMEDIATE])
-    names = {**(vocab.get("order_names") or {}), str(EXPAND): "expand", str(CREEP): "creep the natural"}
+    names = {**(vocab.get("order_names") or {}), str(EXPAND): "expand", str(CREEP): "creep the natural",
+             str(MIX): "train the target's mix"}
     counts = dict(vocab.get("counts") or {})
     if "orders" in counts:
         counts["orders"] = list(counts["orders"]) + [0] * (len(orders) - len(counts["orders"]))
@@ -100,6 +106,30 @@ def allow(net, vocab: dict) -> None:
         workers = [tix[code(w)] for w in WORKERS if code(w) in tix]
         net.allowed[:, k] = net.allowed[:, move]
         net.allowed[workers, k] = False
+    k = oix.get((MIX, fx.IMMEDIATE))
+    if k is not None:  # (mix: a building that trains army units)
+        for b in {m for u, ms in _makers().items() if army(u) for m in ms}:
+            if code(b) in tix:
+                net.allowed[tix[code(b)], k] = True
+
+
+def army(c: str) -> bool:
+    """An army unit's code (lower case, no worker; buildings are trained by no one)."""
+    return c[:1].islower() and c not in WORKERS
+
+
+def _makers() -> dict[str, tuple[str, ...]]:
+    from .techtree import tree
+    return {u: ms for u, ms in tree().makers.items() if army(u) and all(m[:1].islower() for m in ms)
+            and not any(u in ups for ups in tree().upgrades.values())}
+
+
+def mix_choice(target: dict[str, float], have: dict[str, float], building: str, can) -> str | None:
+    """mix: the unit `building` trains for its target's army (`target`: each unit's share of it; `have`: the side's
+    own army shares): of those it makes and `can(unit)` allows now, the one most lacking; None if none lacks."""
+    makes = [u for u, ms in _makers().items() if building in ms and u in target]
+    best = max(((target[u] - have.get(u, 0.0), u) for u in makes if can(u)), default=None)
+    return best[1] if best is not None and best[0] > 0 else None
 
 
 def natural(rows: np.ndarray, start: tuple[float, float] | None):

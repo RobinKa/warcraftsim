@@ -640,13 +640,14 @@ def test_expand_macro(v2):
     from warcraftsim.protocol import Build, ImmediateOrder, PointOrder, TargetOrder
     vocab = {**AUDIT_VOCAB, "orders": AUDIT_VOCAB["orders"] + [[code("htow"), fx.POINT], [code("ugol"), fx.UNIT]]}
     v = macros.extend(vocab)
-    assert macros.extended(v) and v["orders"][-2:] == [[macros.EXPAND, fx.IMMEDIATE], [macros.CREEP, fx.IMMEDIATE]]
+    assert macros.extended(v) and v["orders"][-3:] == [[macros.EXPAND, fx.IMMEDIATE], [macros.CREEP, fx.IMMEDIATE],
+                                                       [macros.MIX, fx.IMMEDIATE]]
     assert macros.extend(v) is v
     net = FullGameNet(n_types=len(v["types"]) + 1, n_orders=len(vocab["orders"]) + 1, n_cur=2, G=fx.Encoder(vocab).G, d=16, layers=1)
     grown = macros.grow(net, vocab, v)
-    k, kc = len(v["orders"]) - 1, len(v["orders"])
+    k, kc = len(v["orders"]) - 2, len(v["orders"]) - 1
     tix = {t: i + 1 for i, t in enumerate(v["types"])}
-    assert grown.config["n_orders"] == kc + 1 and bool(grown.allowed[tix[code("uaco")], k]) and not bool(grown.allowed[tix[code("halt")], k])
+    assert grown.config["n_orders"] == kc + 2 and bool(grown.allowed[tix[code("uaco")], k]) and not bool(grown.allowed[tix[code("halt")], k])
     assert torch.equal(grown.order[2].weight[:k], net.order[2].weight) and grown.order[2].bias[k] < net.order[2].bias.min()
     start = (-5184.0, 2944.0)
     main, nat = _unit(50, 15, -5632, 3584, 1, fx.STRUCTURE, "ngol"), _unit(51, 15, -4864, -3200, 1, fx.STRUCTURE, "ngol")
@@ -654,7 +655,7 @@ def test_expand_macro(v2):
     assert macros.site(np.stack(home), start) == (51, -4864.0, -3200.0, -4764.0, -2400.0)
     assert macros.site(np.stack(home + [_unit(60, 12, -4700, -3000, 1, 0, "nomg")]), start) is None  # (its camp)
     assert macros.site(np.stack(home + [_unit(70, 1, -4764, -2400, 1, fx.STRUCTURE, "htow")]), start) is None  # (taken)
-    costs = np.zeros((kc + 1, 3), np.int64)
+    costs = np.zeros((kc + 2, 3), np.int64)
     costs[k - 2] = (193, 103, 0)  # (htow's build)
     costs[4] = (100, 0, 0)  # (hfoo)
     fx.set_macros(True)
@@ -768,3 +769,39 @@ def test_army_mix_lesson_only_for_what_the_policy_can_train(v2):
     assert Teacher(0, "human", random.Random(0), target).commands(rows, player, 200.0, 1, lambda u: u != "hrif") == \
         [ImmediateOrder(2, code("hkni"))]  # (riflemen lack most but can't be trained now: knights)
     assert Teacher(0, "human", random.Random(0), target).commands(rows, player, 200.0, 1, lambda u: False) == []
+
+
+
+def test_mix_macro_trains_the_target_army_mix(v2):
+    """--macros' mix: a building trains the unit its target's army lacks most of those it makes and the player can
+    train now; the order is available while such a unit lacks."""
+    from warcraftsim.fullgame import macros
+    from warcraftsim.fullgame.play import BCAgent
+    from warcraftsim.protocol import ImmediateOrder
+    assert macros.mix_choice({"hfoo": 0.3, "hrif": 0.7}, {"hfoo": 1.0}, "hbar", lambda u: True) == "hrif"
+    assert macros.mix_choice({"hfoo": 0.3, "hrif": 0.7}, {"hfoo": 1.0}, "hbar", lambda u: u != "hrif") is None  # (footmen
+    assert macros.mix_choice({"hfoo": 0.3, "hkni": 0.7}, {}, "hbar", lambda u: True) in ("hkni", "hfoo")      # enough)
+    base = {**AUDIT_VOCAB, "types": AUDIT_VOCAB["types"] + [code("hrif")],
+            "orders": AUDIT_VOCAB["orders"] + [[code("hrif"), fx.IMMEDIATE]]}
+    v = macros.extend(base)
+    km = len(v["orders"])
+    costs = np.zeros((km + 1, 3), np.int64)
+    fx.set_macros(True)
+    try:
+        bot = BCAgent(None, v, 0, None, costs=costs)
+        bot.view = bot.enc.view(0, 1.0, [0, 1])
+        bot.view.start = (-5184.0, 2944.0)
+        bot.view.mix_target = {"hfoo": 0.3, "hrif": 0.7}
+        bot.trees, bot.building_since, bot.t = {}, {}, 0
+        rows = np.stack([_unit(2, 0, -5000, 2900, 1, fx.STRUCTURE, "hbar")] + [_unit(10 + j, 0, -5000, 2800, 1, 0, "hfoo") for j in range(4)])
+        me = np.asarray([0, 0, 500, 300, 10, 40, 0])
+        st = bot.view.step(rows, me, np.zeros((0, 5), np.int64), 0)
+        assert st["avail"][km]
+        i = st["index"][2]
+        order = [0] * (i + 1)
+        order[i] = km
+        assert bot.commands(st, order, [0] * (i + 1), [0] * (i + 1), [0] * (i + 1)) == [ImmediateOrder(2, code("hrif"))]
+        bot.view.mix_target = {"hfoo": 1.0}
+        assert not bot.view.step(rows, me, np.zeros((0, 5), np.int64), 1)["avail"][km]  # (nothing lacks)
+    finally:
+        fx.set_macros(False)

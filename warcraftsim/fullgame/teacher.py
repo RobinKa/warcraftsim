@@ -149,6 +149,9 @@ class Teacher:
                 continue  # (not now: the next most lacking that it can)
             at = done[np.isin(done[:, fx.C_TYPE], [fourcc(m) for m in tree().makers.get(unit, ())])]
             if len(at):
+                if fx.MACROS:  # (the building's mix order: which unit is its business, macros.MIX)
+                    from .macros import MIX
+                    return [ImmediateOrder(int(at[0, fx.C_ID]), MIX)] if self._due("army mix", t) else []
                 return [ImmediateOrder(int(at[0, fx.C_ID]), fourcc(unit))] if self._due("army mix", t) else []
         return []
 

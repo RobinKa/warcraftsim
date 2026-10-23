@@ -1519,6 +1519,8 @@ def target(cfg: dict, view, st: dict, pool: dict, race: str, vocab: dict, modes:
     view.z = np.concatenate([z, zmodes.vector(modes)]) if fx.ZDIM > strat.ZDIM else z
     if cfg.get("z_mix"):  # (--z-mix: the target army's mix after them)
         view.z = np.concatenate([view.z, strat.mix(st, pool["items"][race])])
+    army = {c: v for c, v in (st.get("n") or {}).items() if strat.is_army(c) and v > 0}
+    view.mix_target = {c: v / sum(army.values()) for c, v in army.items()} if army else {}  # (--macros: mix)
     if cfg.get("z_enforce"):
         view.zmask = strat.allowed(st, pool["items"][race], vocab["orders"])
         view.zmask_until = int(strat.horizon(st) / cfg["step_seconds"])  # (`st` scaled: --z-time-scale)

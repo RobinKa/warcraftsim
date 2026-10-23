@@ -562,6 +562,7 @@ class Encoder:
         ix = {tuple(k): i + 1 for i, k in enumerate(vocab["orders"])}
         self.expand_class = ix.get((990001, IMMEDIATE))
         self.creep_class = ix.get((990002, IMMEDIATE))
+        self.mix_class = ix.get((990003, IMMEDIATE))
         self.expand_via = {r: ix.get((int.from_bytes(h.encode(), "big"), UNIT if r == "undead" else POINT))
                            for r, h in (("human", "htow"), ("orc", "ogre"), ("undead", "ugol"), ("nightelf", "etol"))}
         self.type_index = {t: i + 1 for i, t in enumerate(vocab["types"])}  # 0: unknown
@@ -1152,6 +1153,18 @@ class View:
             strong = army >= CREEP_ARMY and t * self.step_seconds >= CREEP_FROM  # (the teacher's conditions: from minute 1,
             self.creep_at = camp(rows, getattr(self, "start", None)) if MACROS and strong else None  # any unit sent it:
             avail[enc.creep_class] = self.creep_at is not None  # 436 attack-moves a game; audit 3)
+        if avail is not None and enc.mix_class is not None:  # (--macros: train the target's mix, while it lacks a unit
+            target = getattr(self, "mix_target", None) or {}  # the side can train now)
+            mine = rows[(rows[:, C_OWNER] == player) & (rows[:, C_FLAGS] & (DEAD | STRUCTURE | WORKER | HERO) == 0)]
+            n = max(len(mine), 1)
+            have: dict[str, float] = {}
+            for c in mine[:, C_TYPE].tolist():
+                k = rawcode(int(c))
+                have[k] = have.get(k, 0.0) + 1.0 / n
+            self.mix_have = have
+            idx = enc.order_index
+            self.mix_can = lambda u: bool(avail[idx.get((int.from_bytes(u.encode(), "big"), IMMEDIATE), 0)])
+            avail[enc.mix_class] = bool(MACROS and any(s > have.get(u, 0.0) and self.mix_can(u) for u, s in target.items()))
         if self.zmask is not None and t < self.zmask_until:  # (--z-enforce: only the target's items)
             avail = self.zmask.copy() if avail is None else avail & self.zmask
         if self.active_f < F_BASE:
