@@ -40,3 +40,15 @@ def test_fit_recovers_an_edge_and_the_tax_evens_it():
     assert -0.5 <= t < -0.2
     assert tax({**coef, "jitter": 0.0}, -x, random.Random(0)) == -t
     assert tax(None, x, random.Random(0)) is None and Balance(0.5).coef() is None  # (not fitted: the races' balance)
+
+
+def test_a_full_window_keeps_refitting():
+    """Once the window is full the model still refits every 25 games (it had frozen; audit 4)."""
+    rng = np.random.default_rng(1)
+    b = Balance(0.5, window=300)
+    x = features("human", "orc", None, None, False)
+    for k in range(900):
+        sign = 1.0 if k < 600 else -1.0  # (human wins until game 600, then loses)
+        p = 1 / (1 + np.exp(-sign * 1.5))
+        b.add(x, 0.0, 1.0 if rng.random() < p else -1.0)
+    assert b.added_at_fit >= 875 and b.w[0] - b.w[1] < 0  # (the flip learned)

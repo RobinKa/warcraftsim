@@ -41,7 +41,7 @@ import time
 import traceback
 import types
 import weakref
-from collections import Counter
+from collections import Counter, deque
 from pathlib import Path
 from typing import Callable
 
@@ -1223,6 +1223,12 @@ def strategy_pool(cfg: dict) -> dict | None:
             from .neutral import MERCENARIES
             pool["strategies"] = [{**s, "t": {c: v for c, v in s["t"].items() if c not in MERCENARIES}}
                                   for s in pool["strategies"]]  # (the items' list stays: it is the inputs' slots)
+        # the army mixes: only units a race's building trains (mercenaries, zeppelins, shredders, a morph's other
+        # form: a third of the target games' mixes held some, a gap no play could close; audit 4)
+        from .techtree import tree
+        trainable = {u for u, ms in tree().makers.items() if any(m[:1] in "houe" for m in ms)}
+        pool["strategies"] = [{**s, "n": {c: v for c, v in (s.get("n") or {}).items()
+                                          if not strat.is_army(c) or c in trainable}} for s in pool["strategies"]]
         _POOLS[path] = pool
     return _POOLS[path]
 
@@ -1234,6 +1240,7 @@ WORKER_TYPES = {"human": "hpea", "orc": "opeo", "undead": "uaco", "nightelf": "e
 # a target's hall or haunted gold mine is its expansion (the starting hall is no item): made only by one far from home
 # at a gold mine (trace.Production); a second hall at home had counted (16% of fgself-122's games built one)
 EXPANSION_ITEMS = {"htow", "ogre", "unpl", "etol", "ugol"}
+UNTAXED_PAST = 0.25  # (--win-balance: the share of games against past snapshots left untaxed, PFSP's)
 WORKER_IDS = {int.from_bytes(c.encode(), "big") for c in WORKER_TYPES.values()}
 _FOOD: dict[int, int] = {}
 
@@ -1498,7 +1505,7 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         g, l, f = (int(v) for v in self.costs[k])
         if getattr(self, "first_free", False) and fx.is_hero_code(fx.rawcode(self._order_id(k))):
             g = l = 0  # (the first hero: its food only)
-        self.why_not = "gold" if p.gold < g else "lumber" if p.lumber < l else "food" if f and p.food_used + f > p.food_cap else ""
+        self.why_not = "gold" if p.gold < g else "lumber" if p.lumber < l else "food" if f and p.food_used + f > min(p.food_cap, fx.FOOD_MAX) else ""
         return not self.why_not
 
 
@@ -1596,6 +1603,11 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         zm = dict(replay.get("zm", {}))
     if rec is not None:
         rec["zs"], rec["zm"] = dict(zs), dict(zm)
+    if opp.get("kind") == "past" and cfg.get("win_balance") and train and random.random() < UNTAXED_PAST:
+        opp.pop("tax", None)  # (a share of the games against past snapshots untaxed: PFSP's measure of them)
+        opp.pop("tax_side", None)
+        opp.pop("win_balance", None)
+        taxed = None
     if cfg.get("win_balance") and train and opp.get("kind") in ("self", "past") and replay is None:
         # --win-balance: the features of who is expected to win (balance.py), and from the league's model the tax
         # that evens the game out (the favoured side's income); the races' balance until it is fitted
@@ -1858,6 +1870,12 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"pickup_orders": getattr(bots[side], "pickup_orders", 0), "picked_up": getattr(bots[side], "picked_up", 0)}
            if side in bots and fx.MACROS >= 2 else {}),  # (--macros 2: items off the ground)
         **({"auto_skills": getattr(bots[side], "auto_skills", 0)} if side in bots and fx.MACROS >= 3 else {}),
+        # the orders the game refused (the learner's side): their share, and the kinds refused most (audit 4: never measured)
+        **({"refused_share": round(sum(r for _, r in bots[side].order_results.values())
+                                   / max(sum(n for n, _ in bots[side].order_results.values()), 1), 4),
+            "refused": dict(sorted(((k, r) for k, (n, r) in bots[side].order_results.items() if r),
+                                   key=lambda kv: -kv[1])[:12])}
+           if side in bots and getattr(bots[side], "order_results", None) else {}),
         **({"scenario": scenario} if scenario else {}),
         **({"z_t": {c: round(v) for c, v in zs[side]["t"].items()},
             "z_made": {c: round(v) for c, v in made[side].items()}} if side in zs else {}),
@@ -2081,6 +2099,7 @@ class League:
         self.exploiter = Member("exploiter") if exploiter_share > 0 else None
         self.exploiter_resets = 0
         self.shaping: float | None = None  # (--shaping-anneal: the shaping's weight now, in the spec)
+        self.past_recent: deque = deque(maxlen=300)  # (the learner's newest results against past snapshots)
         # --win-balance: games between agents taxed by who is expected to win (balance.py; the races' balance until fitted)
         from .balance import Balance
         self.win_balance = Balance(win_balance) if win_balance > 0 else None
@@ -2243,9 +2262,8 @@ class League:
 
     def train_keys(self) -> dict:
         out = {f"league/{n}": m.win_rate() for n, m in [*self.scripts.items(), *self.real.items()] if m.win_rate() is not None}
-        past = [x for m in self.past for x in m.recent[-50:]]
-        if past:
-            out["league/past"] = sum(past) / len(past)
+        if self.past_recent:  # (the newest games: each member's last 50 had let an old, rarely drawn one dominate)
+            out["league/past"] = sum(self.past_recent) / len(self.past_recent)
         if self.self_member.win_rate() is not None:
             out["league/self"] = self.self_member.win_rate()
         out["league/members"] = len(self.past)
@@ -3881,8 +3899,11 @@ def main(argv: list[str] | None = None) -> int:
                     episodes += 1
                     e["episode"] = episodes
                     m = league.member(e["opponent"])
-                    if m is not None:
-                        m.record(e["outcome"])
+                    taxed = league.win_balance is not None and bool(e.get("balance_tax"))
+                    if m is not None and not e.get("eval") and not taxed:  # (an evaluation game is no league game; a
+                        m.record(e["outcome"])  # game the win balance taxed tells nothing of the opponent's strength
+                        if m in league.past:     # for PFSP: 8-33% won untaxed, 42-100% taxed; audit 4)
+                            league.past_recent.append(1.0 if e["outcome"] > 0.5 else 0.0 if e["outcome"] < -0.5 else 0.5)
                     if "curriculum" in e:
                         league.curriculum(e["opponent"], e["outcome"], league.matchup(e["race"], e["opponent_race"]))
                     if e["opponent"] == "self" and e["race"] != e["opponent_race"]:

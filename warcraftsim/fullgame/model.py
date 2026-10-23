@@ -458,7 +458,36 @@ def load(path, device="cpu", memory: bool | None = None, vocab: dict | None = No
         neutral.who_buys(net, ck["vocab"])  # (and its tables as they are now: networks grown before them too)
         if net.config.get("valid"):
             net.set_valid(ck["vocab"])
+    if "vocab" in ck and "allowed" in dict(net.named_buffers()):
+        prune_allowed(net, ck["vocab"])
     return net.eval(), ck
+
+
+@torch.no_grad()
+def prune_allowed(net: FullGameNet, vocab: dict) -> int:
+    """The orders no unit of a type can give in the game, out of `net`'s allowed table (in place) -> how many: a type
+    trains, researches or upgrades to only what the game's tables say it makes (a town hall no castle, an altar no
+    research), and a worker builds only its own race's buildings. The table came from the demonstrations, where a
+    recycled unit id gave its order to another type (77 such pairs, ~0.3-0.5% of the policy's orders; audit 4)."""
+    from .techtree import tree
+    makers = tree().makers
+    types = {i: fx.rawcode(int(t)) for i, t in enumerate(vocab["types"], start=1)}
+    n = 0
+    for c, (o, k) in enumerate(vocab["orders"], start=1):
+        if o < fx.TYPE_CODE or c >= net.allowed.shape[1]:
+            continue
+        code = fx.rawcode(int(o))
+        if k == fx.IMMEDIATE and code in makers:
+            bad = [i for i, t in types.items() if t not in makers[code]]
+        elif k == fx.POINT:
+            bad = [i for i, t in types.items() if t[:1] in "houe" and t[:1] != code[:1]]
+        else:
+            continue
+        bad = [i for i in bad if i < net.allowed.shape[0] and bool(net.allowed[i, c])]
+        if bad:
+            net.allowed[bad, c] = False
+            n += len(bad)
+    return n
 
 
 def split_value(net: FullGameNet, parts: int) -> FullGameNet:

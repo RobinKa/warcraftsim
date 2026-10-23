@@ -26,7 +26,7 @@ ANCHOR = "insane AI"
 ANCHOR_RATING = 1500.0
 SCALE = 400.0 / math.log(10.0)  # Elo points per unit of log-strength
 PRIOR_GAMES = 1.0  # each player's virtual tie against the anchor: finite ratings for a few games
-CACHE = ".ratings-cache-v2.json"  # (v2: the "+shops" players)
+CACHE = ".ratings-cache-v3.json"  # (v2: the "+shops" players; v3: Echo Isles runs only, hours from the creation)
 # the evaluation games could buy from the neutral buildings from here on (2026-10-21 14:27: the laptop's evaluation
 # worker started with the harness that reaches a shop in the fog; before, every buy order was refused)
 SHOPS_SINCE = 1792589220.0
@@ -85,6 +85,16 @@ class Ratings:
         self.state.setdefault("meta", {})  # player -> {"run", "kind", "first", "last"}
         self._table: dict | None = None
 
+    @staticmethod
+    def _echo(info: Path) -> bool:
+        """Whether a run's evaluation games are the real Echo Isles (the anchor's games: the duel maps' insane AI
+        is another opponent, and one anchor over both mixed them; audit 4)."""
+        try:
+            c = json.loads(info.read_text()).get("config") or {}
+        except (OSError, ValueError):
+            return False
+        return "EchoIsles" in str(c.get("eval_map") or c.get("map") or "")
+
     def scan(self) -> bool:
         """Read the runs' new evaluation rows -> whether anything changed."""
         changed = False
@@ -93,7 +103,7 @@ class Ratings:
             if not d.is_dir() or not info.exists():
                 continue
             files = [f for f in (d / "episodes.jsonl", d / "episodes-remote.jsonl") if f.exists()]
-            if not files:
+            if not files or not self._echo(info):
                 continue
             start = None
             shops = self._neutral(d.name) > 0
@@ -108,7 +118,8 @@ class Ratings:
                 if start is None:
                     try:
                         meta = json.loads(info.read_text())
-                        start = float(meta.get("started") or meta.get("created") or 0.0)
+                        start = float(meta.get("created") or meta.get("started") or 0.0)  # (a resume resets
+                        # "started": every game before it had clamped into h0; audit 4)
                     except (OSError, ValueError):
                         start = 0.0
                 with f.open("rb") as fh:

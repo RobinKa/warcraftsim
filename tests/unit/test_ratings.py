@@ -36,7 +36,7 @@ def test_players_of_a_row():
 def test_fit_and_incremental_scan(tmp_path):
     run = tmp_path / "fgself-1"
     run.mkdir()
-    (run / "run.json").write_text(json.dumps({"created": 0.0}))
+    (run / "run.json").write_text(json.dumps({"created": 0.0, "config": {"eval_map": "(2)EchoIsles"}}))
     rows = [_row("current", 1, 10.0)] * 300 + [_row("current", -1, 10.0)] * 100  # 75% against the anchor
     rows += [_row("vs fgself-0/0000000000000042.pt", 1, 20.0)] * 50 + [_row("vs fgself-0/0000000000000042.pt", 0, 20.0)] * 100
     (run / "episodes.jsonl").write_text("\n".join(rows) + "\n")

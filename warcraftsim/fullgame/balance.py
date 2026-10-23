@@ -68,11 +68,14 @@ class Balance:
         self.rows: deque = deque(maxlen=window)  # (features, A's tax, A's score: 1 a win, 0.5 a tie, 0 a loss)
         self.w = np.zeros(len(NAMES))
         self.beta = PRIOR_BETA
-        self.fitted = 0  # (games at the last fit)
+        self.fitted = 0  # (games in the window at the last fit)
+        self.added = 0  # (games added in all, and at the last fit: a full window refits every 25 new games too;
+        self.added_at_fit = 0  # counting the window's length, it had never refitted once full; audit 4)
 
     def add(self, x, tax_a: float, outcome: float) -> None:
         self.rows.append((np.asarray(x, float), float(tax_a), (float(outcome) + 1.0) / 2.0))
-        if len(self.rows) >= MIN_GAMES and len(self.rows) - self.fitted >= 25:
+        self.added += 1
+        if len(self.rows) >= MIN_GAMES and self.added - self.added_at_fit >= 25:
             self.fit()
 
     def fit(self, iters: int = 12) -> None:
@@ -95,6 +98,7 @@ class Balance:
                 break
         self.w, self.beta = theta[:-1], float(theta[-1])
         self.fitted = len(self.rows)
+        self.added_at_fit = self.added
 
     def coef(self) -> dict | None:
         """The model for the actors (the league's spec), once fitted."""
@@ -111,5 +115,6 @@ class Balance:
     def restore(self, rows: list) -> None:
         for x, t, s in rows:
             self.rows.append((np.asarray(x, float), float(t), float(s)))
+            self.added += 1
         if len(self.rows) >= MIN_GAMES:
             self.fit()

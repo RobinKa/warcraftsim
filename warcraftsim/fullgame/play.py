@@ -134,6 +134,12 @@ class BCAgent:
                     if res == "gold" and hasattr(c, "target"):  # (its mine: another one is a transfer, not redundant)
                         self.view.mine_of[unit] = c.target
         buying = getattr(self, "buying_since", {})
+        tally = self.__dict__.setdefault("order_results", {})  # (per kind of order: sent, refused; the episode row)
+        for c, ok in zip(cmds, results):
+            o = getattr(c, "order", None) or getattr(c, "building", None) or getattr(c, "item", None) or getattr(c, "ability", 0)
+            key = f"{type(c).__name__}:{fx.rawcode(int(o)) if isinstance(o, int) and o >= TYPE_CODE else o}"
+            sent, refused = tally.get(key, (0, 0))
+            tally[key] = (sent + 1, refused + (not ok))
         picking = getattr(self, "picking_since", {})
         for c, ok in zip(cmds, results):  # (a buy or a pick-up the game refused: the unit is free again)
             if not ok and isinstance(c, Buy):
@@ -277,8 +283,9 @@ class BCAgent:
             elif kind == fx.TREE and self.trees:
                 tree = min(self.trees, key=lambda k: (self.trees[k][0] - x) ** 2 + (self.trees[k][1] - y) ** 2)
                 out.append(TargetDestructable(unit, oid, tree))
-            if len(out) > len(self.sent_resources):  # (aligned with out: accepted() pairs them)
-                self.sent_resources.append(res)
+            if len(out) > len(self.sent_resources):  # (aligned with out: accepted() pairs them; a tier's queue cancels
+                self.sent_resources += [None] * (len(out) - len(self.sent_resources) - 1) + [res]  # before it: none;
+                # one entry for its seven commands had paired the step's later orders with others' resources; audit 4)
         if fx.MACROS and fx.RACES[self.view.races[self.player]] == "nightelf" and getattr(self, "rows", None) is not None:
             out += self._entangle(self.rows)  # (--macros: the expansion's mine; the policy has no entangle order)
         if fx.MACROS >= 3 and getattr(self, "rows", None) is not None:

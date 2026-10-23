@@ -182,6 +182,7 @@ C_STEP, C_ID, C_TYPE, C_OWNER, C_X, C_Y, C_FACING, C_HP, C_MAXHP, C_MANA, C_MAXM
 C_ITEM0, C_ABIL0 = 18, 24
 ROW_COLS = 32
 DEAD, STRUCTURE, CONSTRUCTING = 1024, 2, 8
+FOOD_MAX = 100  # (the game's food ceiling: a player's food cap counts farms past it)
 FLAG_BITS = (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 2048)  # UnitFlags but DEAD
 F0 = 3 + 2 + 4 + len(FLAG_BITS) + 3 + 2 + 1 + 2 + 1  # 29: ... production (queued, busy), and a worker on lumber
 # then (2026-10-12; a checkpoint from before gets zero weights for them, model.load): the hit points' change since
@@ -372,6 +373,7 @@ def affordable(costs: np.ndarray, gold: int, lumber: int, fu: int, fc: int, rese
     (order class, gold, lumber), --z-build: what the target's next item needs is kept from the others
     (the item itself as before; free orders stay)."""
     c = costs
+    fc = min(fc, FOOD_MAX)  # (the game's ceiling: farms past it give nothing; at 100 every unit was refused; audit 4)
     avail = (c[:, 0] <= gold) & (c[:, 1] <= lumber) & ((c[:, 2] == 0) | (fu + c[:, 2] <= fc))
     if reserve is not None:
         k, rg, rl = reserve
@@ -636,6 +638,8 @@ class Encoder:
         f[:, 7] = np.where(sel[:, C_MAXMANA] > 0, sel[:, C_MANA] / np.maximum(sel[:, C_MAXMANA], 1), 0)
         f[:, 8] = sel[:, C_MAXMANA] / 1000.0
         f[:, 9:9 + len(FLAG_BITS)] = (sel[:, C_FLAGS][:, None] & _FLAG_BITS) > 0
+        f[n_own:, 9 + FLAG_BITS.index(512)] = 0.0  # (an enemy's illusion looks real: the game tells its owner only;
+        # the flag had told a Blademaster's images apart; audit 4)
         a = 9 + len(FLAG_BITS)
         f[:, a] = sel[:, C_HLEVEL] / 10.0
         f[:, a + 1] = sel[:, C_RESOURCE] / 12500.0
@@ -668,7 +672,8 @@ class Encoder:
         self.counts = (int((alive & (rows[:, C_OWNER] == player)).sum()), n_own + len(enemy) + len(neutral))
         types = _lookup(sel[:, C_TYPE], self._type_keys, self._type_vals)
         cur = _lookup(sel[:, C_ORDER], self._cur_keys, self._cur_vals)
-        return sel, n_own, f, types, cur
+        cur[n_own:][sel[n_own:, C_ORDER] >= TYPE_CODE] = 0  # (an enemy worker walking to build: what it will build
+        return sel, n_own, f, types, cur                      # is not shown before the frame stands; audit 4)
 
     @staticmethod
     def _hero_block(sel: np.ndarray, n_own: int, f: np.ndarray) -> None:
@@ -829,7 +834,7 @@ def _paid_orders(enc: "Encoder", rows: np.ndarray, st: dict, me, trees: dict) ->
         cg, cl, cf = (int(v) for v in (enc.costs_first if st.get("first_free") else enc.costs)[c])  # (a first hero: free)
         if cg == cl == cf == 0:
             continue
-        if cg <= gold and cl <= lumber and (cf == 0 or fu + cf <= fc):
+        if cg <= gold and cl <= lumber and (cf == 0 or fu + cf <= min(fc, FOOD_MAX)):
             gold, lumber, fu = gold - cg, lumber - cl, fu + cf
         else:
             ok[j] = False
@@ -1069,6 +1074,10 @@ class View:
             for k in [k for k in d if k not in self.own_buildings]:
                 del d[k]
         self.busy &= self.own_buildings
+        units = set(rows[(rows[:, C_OWNER] == player) & (rows[:, C_FLAGS] & DEAD == 0), C_ID].tolist())
+        for d in (self.assign, self.mine_of, self.last_order):  # (a unit gone: what it harvested, its mine and its last
+            for k in [k for k in d if k not in units]:            # order forgotten, not given to the next unit with its
+                del d[k]                                          # id: ~72 reuses a game; audit 4)
         for r in events:  # production started / ended at a building of the player's (an enemy's: unseen)
             kind, a = int(r[1]), int(r[2])
             if a not in self.own_buildings:

@@ -39,10 +39,15 @@ def ai_games_for(map_name: str | None) -> Path:
 
 
 def run_map(name: str) -> str | None:
-    """A run's --map (its last launch's)."""
+    """The map of a run's evaluation games: its --eval-map, else its --map (its last launch's). (Its --map alone, the
+    training map, had given Echo Isles runs duelfast's record since fgself-100: echofast is not Echo Isles' name;
+    audit 4.)"""
     try:
         argv = json.loads((RUNS / name / "run.json").read_text())["launch"]["argv"]
-        return argv[argv.index("--map") + 1] if "--map" in argv else None
+        for flag in ("--eval-map", "--map"):
+            if flag in argv:
+                return argv[argv.index(flag) + 1]
+        return None
     except (OSError, ValueError, KeyError):
         return None
 
