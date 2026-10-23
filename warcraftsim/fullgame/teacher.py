@@ -8,6 +8,9 @@ selfplay --teach 1 (needs --neutral 1: the orders it teaches are the neutral bui
                    when the player has an altar and none, or the second with a tier-2 hall, from 135 s, the money there
     a town portal: a hero near the goblin merchant buys one when it has none and a free slot, from 440 s
     a potion:      a hero below 40% of its hit points drinks what heals in its inventory
+    an item:       (--macros 2) a hero with an item lying near (macros.pickable) and no enemy unit within ENEMY_NEAR
+                   picks it up (the agent's pick-up order: creeps' drops lay where they fell, the policy had no order
+                   that took them)
     the army mix:  from MIX_FROM, with 5 army units or more, the unit its target's army has the largest share of
                    more than its own army (by MIX_SLACK at least) trained at a building that makes it (the target's
                    mix as an input and a reward, fgself-130, left the mix gap where it was: 0.62)
@@ -48,6 +51,7 @@ HARVEST = 852018
 HIDDEN = 16  # (UnitFlags.HIDDEN: a worker inside a gold mine)
 MIX_FROM, MIX_SLACK, MIX_LEAST = 120.0, 0.15, 5
 NEAR_MERCHANT = 2500.0
+ENEMY_NEAR = 800.0  # (an item lesson waits while an enemy unit is this near the hero: a fight)
 USESLOT = 852008
 
 
@@ -81,10 +85,11 @@ class Teacher:
         self.taught[kind] = self.taught.get(kind, 0) + 1
         return True
 
-    def commands(self, rows: np.ndarray, player, now: float, t: int, can=None) -> list:
+    def commands(self, rows: np.ndarray, player, now: float, t: int, can=None, pickers=()) -> list:
         """rows: the step's units (features' columns, ROW_COLS with the heroes' items), player: its PlayerState.
         `can(code)`: whether the policy could train that unit now (its mask: the money, the tech); the army mix
-        teaches only those (99% of its lessons had named a unit the policy could not order then, and taught nothing)."""
+        teaches only those (99% of its lessons had named a unit the policy could not order then, and taught nothing).
+        `pickers`: the side's heroes with an item lying near (macros.pickable, the view's of the step)."""
         self.can = can
         if player is None or rows.shape[1] < fx.ROW_COLS:
             return []
@@ -110,8 +115,16 @@ class Teacher:
                 k = int(np.argmin(d))
                 if self._due("tavern hero", t):  # (the nearest worker: it walks there, protocol.Buy)
                     out.append(Buy(int(workers[k, fx.C_ID]), int(tv[fx.C_ID]), self.pick))
+        pickers = set(pickers or ())
+        enemies = rows[(rows[:, fx.C_OWNER] == 1 - self.side) & (fl & (fx.DEAD | fx.STRUCTURE) == 0)]
         for h in live_heroes:
             items = [int(v) for v in h[fx.C_ITEM0:fx.C_ITEM0 + 6]]
+            # an item lying near, picked up when no enemy is near
+            if int(h[fx.C_ID]) in pickers and fx.MACROS >= 2 and not (
+                    np.hypot(enemies[:, fx.C_X] - h[fx.C_X], enemies[:, fx.C_Y] - h[fx.C_Y]) < ENEMY_NEAR).any():
+                if self._due(f"item {int(h[fx.C_ID])}", t):
+                    from .macros import PICKUP
+                    out.append(ImmediateOrder(int(h[fx.C_ID]), PICKUP))
             # a potion when it is low
             if h[fx.C_HP] < 0.4 * max(int(h[fx.C_MAXHP]), 1):
                 from .herodata import item_table

@@ -669,7 +669,7 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
     fx.set_inputs(cfg.get("inputs", 1), bool(cfg.get("privileged")))  # (the rows' width, the snapshots' inputs: model.load)
     fx.set_masks(cfg.get("tech_mask", 0), cfg.get("valid_mask", 0))
     fx.set_neutral(cfg.get("neutral", 0))
-    fx.set_macros(bool(cfg.get("macros", 0)))
+    fx.set_macros(int(cfg.get("macros", 0) or 0))
     nets = Nets(cfg, device)
     while nets.current is None and not stop.is_set() and alive():
         time.sleep(1)
@@ -1703,7 +1703,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                 av, oix = sts[s].get("avail"), bots[s].enc.order_index
                 can = (None if av is None else  # (the units the policy could train now: the army mix teaches only those)
                        lambda u, av=av, oix=oix: bool(av[oix.get((int.from_bytes(u.encode(), "big"), fx.IMMEDIATE), 0)]))
-                c = tc.commands(rows, obs.players.get(s), obs.game_time, t, can)
+                c = tc.commands(rows, obs.players.get(s), obs.game_time, t, can, getattr(bots[s].view, "pickers", ()))
                 q = obs.players.get(s)
                 if c and q is not None:
                     me = np.asarray([t, s, q.gold, q.lumber, q.food_used, q.food_cap, q.upkeep])
@@ -1835,6 +1835,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"taught": teachers[side].taught, "taught_kept": getattr(teachers[side], "kept", 0)} if side in teachers else {}),
         **({"buy_orders": bots[side].bought, "buys": dict(getattr(bots[side], "buys", {}))}
            if side in bots and getattr(bots[side], "bought", 0) else {}),
+        **({"pickup_orders": getattr(bots[side], "pickup_orders", 0), "picked_up": getattr(bots[side], "picked_up", 0)}
+           if side in bots and fx.MACROS >= 2 else {}),  # (--macros 2: items off the ground)
         **({"scenario": scenario} if scenario else {}),
         **({"z_t": {c: round(v) for c, v in zs[side]["t"].items()},
             "z_made": {c: round(v) for c, v in made[side].items()}} if side in zs else {}),
@@ -1966,7 +1968,7 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
     fx.set_inputs(cfg.get("inputs", 1), bool(cfg.get("privileged")))  # (and the inputs: --inputs, the masks, --opsd-*)
     fx.set_masks(cfg.get("tech_mask", 0), cfg.get("valid_mask", 0))
     fx.set_neutral(cfg.get("neutral", 0))
-    fx.set_macros(bool(cfg.get("macros", 0)))
+    fx.set_macros(int(cfg.get("macros", 0) or 0))
     out_q.cancel_join_thread()  # exiting must not wait to flush trajectories nobody reads any more
     torch.set_num_threads(1)
     try:
@@ -3124,7 +3126,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--z-mix-reward", type=float, default=0.0, help="--z-mix: the strategy potential's term for the "
                     "army trained against the target's mix (minus this times their total variation, 0 to 1)")
     ap.add_argument("--macros", type=int, default=0, help="the agent's own orders for what the game spreads over many "
-                    "(macros.py: expand, a worker takes the natural expansion where people build there; every network "
+                    "(macros.py: 1 expand, creep, mix; 2 also pick up, a hero takes the items lying near; every network "
                     "loaded grows to them)")
     ap.add_argument("--memory-fade", type=int, default=0, help="inputs 3: the remembered enemies fade into the learner's "
                     "attention over this many updates (its bias on them from -8 to 0; older networks and the anchor "
@@ -3454,7 +3456,7 @@ def main(argv: list[str] | None = None) -> int:
     # gives older ones the new inputs; --opsd-*: the privileged channels)
     fx.set_masks(args.tech_mask, args.valid_mask)
     fx.set_neutral(args.neutral)
-    fx.set_macros(bool(args.macros))
+    fx.set_macros(args.macros)
     if args.z_modes > 0:  # (the strategy block with the modes' part: model.load grows older networks')
         fx.set_z(strat.ZDIM + zmodes.MDIM)
     if args.z_mix:  # (and the target army's mix after it)

@@ -130,7 +130,7 @@ class EventKind(IntEnum):
     SPELL_EFFECT = 15  # a=caster, b=ability, c=target unit
     TREE_DEATH = 16  # a=destructable
     SUMMON = 17  # a=summoner, b=summoned, c=type
-    ITEM_PICKUP = 18  # a=unit, b=item type
+    ITEM_PICKUP = 18  # a=unit, b=item type, c=1 if it lay on the ground (not bought)
 
 
 @dataclass(slots=True)
@@ -257,6 +257,8 @@ class Observation:
     removed: list[int] = field(default_factory=list)  # units that left the game since the last observation
     camera: tuple[float, float] | None = None  # the local camera's target (videos), if the harness reports it
     issued: list[IssuedOrder] = field(default_factory=list)  # the built-in AI's orders (record_ai_orders)
+    # the items lying on the ground that an agent's player sees: (type, x, y, the players' visibility bits, powerup)
+    ground: list[tuple[int, int, int, int, int]] = field(default_factory=list)
 
     @property
     def game_time(self) -> float:
@@ -299,7 +301,7 @@ def tokens_from_text(text: str) -> list[str]:
     return [t for t in _TOKEN_RE.findall(text) if _KEEP_RE.fullmatch(t)]
 
 
-_FIELDS = {"T": 4, "P": 14, "O": 1, "D": 5, "E": 4, "C": 1, "U": 14, "R": 1, "K": 2, "I": 6}
+_FIELDS = {"T": 4, "P": 14, "O": 1, "D": 5, "E": 4, "C": 1, "U": 14, "R": 1, "K": 2, "I": 6, "G": 5}
 HERO_ABILITY_SLOTS = 4
 # heroes: level, xp, skill points, 6 items, then per ability slot its level and cooldown left (0.1 s)
 _HERO_EXTRA = 9 + 2 * HERO_ABILITY_SLOTS
@@ -371,6 +373,7 @@ def parse_tokens(toks: list[str], order_names: Sequence[str] = ORDER_NAMES) -> O
     full = True
     removed: list[int] = []
     issued: list[IssuedOrder] = []
+    ground: list[tuple[int, int, int, int, int]] = []
 
     while i < n:
         tag = toks[i]
@@ -415,6 +418,8 @@ def parse_tokens(toks: list[str], order_names: Sequence[str] = ORDER_NAMES) -> O
             issued.append(IssuedOrder(*v[:6]))
         elif tag == "R":
             removed.append(v[0])
+        elif tag == "G":
+            ground.append(tuple(v[:5]))
         elif tag == "P":
             players[v[0]] = PlayerState(v[0], Race(v[1]) if v[1] in Race._value2member_map_ else Race.UNKNOWN,
                                         bool(v[2]), v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], Result(v[11]),
@@ -440,6 +445,7 @@ def parse_tokens(toks: list[str], order_names: Sequence[str] = ORDER_NAMES) -> O
     obs.removed = removed
     obs.issued = issued  # the built-in AI's orders since the last observation (record_ai_orders)
     obs.camera = camera  # the local camera's target (x, y), or None
+    obs.ground = ground
     return obs
 
 
@@ -475,6 +481,7 @@ class Op(IntEnum):
     TARGET_DESTRUCTABLE = 6
     ITEM = 7
     BUY = 8
+    PICK_UP = 9
     CLEAR_CREEPS = 88
     VIS_CLEAR = 80
     VIS_MARK = 81
@@ -597,6 +604,17 @@ class Buy(Command):
 
     def encode(self) -> list[int]:
         return [Op.BUY, self.unit, self.shop, self.item]
+
+
+@dataclass(frozen=True)
+class PickUp(Command):
+    """The hero `unit` picks up the nearest item lying within `radius` that its player sees (a powerup, or with a free
+    slot in its inventory)."""
+    unit: int
+    radius: int
+
+    def encode(self) -> list[int]:
+        return [Op.PICK_UP, self.unit, int(self.radius)]
 
 
 @dataclass(frozen=True)
@@ -817,7 +835,7 @@ def encode_commands(commands: Iterable[Command]) -> list[int]:
 
 
 _OP_LENGTHS = {Op.POINT: 5, Op.TARGET: 4, Op.IMMEDIATE: 3, Op.BUILD: 5, Op.LEARN: 3, Op.TARGET_DESTRUCTABLE: 4,
-               Op.ITEM: 7, Op.BUY: 4, Op.VIS_CLEAR: 1, Op.VIS_MARK: 6, Op.VIS_LINE: 9, Op.VIS_AREA: 5, Op.CAMERA_ZOOM: 2,
+               Op.ITEM: 7, Op.BUY: 4, Op.PICK_UP: 3, Op.VIS_CLEAR: 1, Op.VIS_MARK: 6, Op.VIS_LINE: 9, Op.VIS_AREA: 5, Op.CAMERA_ZOOM: 2,
                Op.SET_RESOURCES: 4, Op.SPAWN: 5, Op.SPAWN_HERO: 6, Op.CLEAR_CREEPS: 4, Op.QUEUE_SPAWN: 8, Op.QUEUE_SKILL: 2, Op.START_AI: 2, Op.SHADOW_AI: 2, Op.CAMERA: 3,
                Op.END_GAME: 1, Op.SNAPSHOT: 1, Op.RESTART: 1}
 

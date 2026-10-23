@@ -271,13 +271,13 @@ SHOP_IDS = np.array([int.from_bytes(c.encode(), "big") for c in ("ntav", "ngme",
 CREEP_ARMY, CREEP_FROM = 6, 150.0  # --macros: creep the natural's camp with 6 army units or more, from second 150
 EXPAND_PENDING_STEPS = 120  # --macros: an expand order under way this long (the walk, ~30 s): no other, its cost kept
 # selfplay --macros: the agent's own orders for what the game spreads over many (fullgame/macros.py: expand)
-MACROS = os.environ.get("WARCRAFTSIM_MACROS", "0") == "1"
+MACROS = int(os.environ.get("WARCRAFTSIM_MACROS", "0") or 0)  # (its level: 2 adds pick up, macros.LEVELS)
 
 
-def set_macros(on: bool) -> None:
+def set_macros(level: int) -> None:
     global MACROS
-    MACROS = bool(on)
-    os.environ["WARCRAFTSIM_MACROS"] = str(int(MACROS))
+    MACROS = int(level)
+    os.environ["WARCRAFTSIM_MACROS"] = str(MACROS)
 
 
 def set_neutral(v: int) -> None:
@@ -563,6 +563,7 @@ class Encoder:
         self.expand_class = ix.get((990001, IMMEDIATE))
         self.creep_class = ix.get((990002, IMMEDIATE))
         self.mix_class = ix.get((990003, IMMEDIATE))
+        self.pickup_class = ix.get((990004, IMMEDIATE))
         self.expand_via = {r: ix.get((int.from_bytes(h.encode(), "big"), UNIT if r == "undead" else POINT))
                            for r, h in (("human", "htow"), ("orc", "ogre"), ("undead", "ugol"), ("nightelf", "etol"))}
         self.type_index = {t: i + 1 for i, t in enumerate(vocab["types"])}  # 0: unknown
@@ -1165,6 +1166,10 @@ class View:
             idx = enc.order_index
             self.mix_can = lambda u: bool(avail[idx.get((int.from_bytes(u.encode(), "big"), IMMEDIATE), 0)])
             avail[enc.mix_class] = bool(MACROS and any(s > have.get(u, 0.0) and self.mix_can(u) for u, s in target.items()))
+        if avail is not None and enc.pickup_class is not None:  # (--macros 2: pick up, while a hero has an item lying
+            from .macros import pickable                          # near; the ground items: play.BCAgent.observe)
+            self.pickers = pickable(rows, player, getattr(self, "ground", ())) if MACROS >= 2 else []
+            avail[enc.pickup_class] = bool(self.pickers)
         if self.zmask is not None and t < self.zmask_until:  # (--z-enforce: only the target's items)
             avail = self.zmask.copy() if avail is None else avail & self.zmask
         if self.active_f < F_BASE:

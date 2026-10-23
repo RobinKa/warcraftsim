@@ -805,3 +805,70 @@ def test_mix_macro_trains_the_target_army_mix(v2):
         assert not bot.view.step(rows, me, np.zeros((0, 5), np.int64), 1)["avail"][km]  # (nothing lacks)
     finally:
         fx.set_macros(False)
+
+
+def test_pickup_macro_takes_the_items_lying_near(v2):
+    """--macros 2: pick up joins the vocabulary (a hero's order); it is available while a hero has an item lying near
+    that its player sees (and a free slot, but for a powerup); the agent sends the harness's pick-up and keeps the
+    hero on it until it holds one; the teacher shows it when no enemy is near."""
+    import random
+    from types import SimpleNamespace
+
+    import torch
+
+    from warcraftsim.fullgame import macros
+    from warcraftsim.fullgame.model import FullGameNet
+    from warcraftsim.fullgame.play import PICKUP_COMMIT_STEPS, BCAgent
+    from warcraftsim.fullgame.teacher import Teacher
+    from warcraftsim.protocol import Event, EventKind, ImmediateOrder, Observation, PickUp
+    assert macros.extend(AUDIT_VOCAB, 1)["orders"][-1] == [macros.MIX, fx.IMMEDIATE]
+    v1 = macros.extend(AUDIT_VOCAB, 1)
+    v = macros.extend(v1, 2)
+    assert v["orders"][:-1] == v1["orders"] and v["orders"][-1] == [macros.PICKUP, fx.IMMEDIATE] and v["macros"] == 2
+    assert macros.extended(v, 2) and not macros.extended(v1, 2) and macros.extend(v, 1) is v
+    net = FullGameNet(n_types=len(v1["types"]) + 1, n_orders=len(v1["orders"]) + 1, n_cur=2, G=fx.Encoder(v1).G, d=16, layers=1)
+    grown = macros.grow(net, v1, v)
+    kp = len(v["orders"])
+    tix = {t: i + 1 for i, t in enumerate(v["types"])}
+    assert bool(grown.allowed[tix[code("Hpal")], kp]) and not bool(grown.allowed[tix[code("hpea")], kp])
+    assert torch.equal(grown.order[2].weight[:kp], net.order[2].weight)
+    pal = _unit(80, 0, -5000, 2900, 1, fx.HERO, "Hpal")
+    full = pal.copy()
+    full[fx.C_ITEM0:fx.C_ITEM0 + 6] = code("rat6")
+    rows = np.stack([_unit(1, 0, -5184, 2944, 1, fx.STRUCTURE, "htow"), pal])
+    near, far, unseen = (code("rat6"), -4600, 2900, 1, 0), (code("rat6"), -3900, 2900, 1, 0), (code("rat6"), -4900, 2900, 2, 0)
+    tome = (code("tdex"), -4900, 2950, 1, 1)
+    assert macros.pickable(rows, 0, [near]) == [80] and macros.pickable(rows, 0, [far, unseen]) == []
+    assert macros.pickable(np.stack([rows[0], full]), 0, [near]) == [] and macros.pickable(np.stack([rows[0], full]), 0, [tome]) == [80]
+    costs = np.zeros((kp + 1, 3), np.int64)
+    fx.set_macros(2)
+    try:
+        bot = BCAgent(None, v, 0, None, costs=costs)
+        bot.view = bot.enc.view(0, 1.0, [0, 1])
+        bot.view.start = (-5184.0, 2944.0)
+        bot.trees, bot.building_since, bot.t = {}, {}, 0
+        me, ev = np.asarray([0, 0, 500, 300, 10, 40, 0]), np.zeros((0, 5), np.int64)
+        bot.view.ground = [far]
+        assert not bot.view.step(rows, me, ev, 0)["avail"][kp]
+        bot.view.ground = [near]
+        st = bot.view.step(rows, me, ev, 1)
+        assert st["avail"][kp]
+        i = st["index"][80]
+        order = [0] * (i + 1)
+        order[i] = kp
+        assert bot.commands(st, order, [0] * (i + 1), [0] * (i + 1), [0] * (i + 1)) == [PickUp(80, int(macros.PICKUP_NEAR))]
+        assert bot.committed(80)  # (walking to it: the next orders wait)
+        bot.t = PICKUP_COMMIT_STEPS
+        assert not bot.committed(80)
+        bot.picking_since[80] = bot.t
+        obs = Observation(0, 0, False, {}, [], [Event(EventKind.ITEM_PICKUP, 80, code("rat6"), 1)], [])
+        bot.observe(obs, bot.t, rows)
+        assert not bot.committed(80) and bot.picked_up == 1  # (it holds one: free again)
+        player = SimpleNamespace(gold=500, lumber=300, food_used=5, food_cap=12, start_x=-5184, start_y=2944)
+        tc = Teacher(0, "human", random.Random(0))
+        assert tc.commands(rows, player, 300.0, 1, None, [80]) == [ImmediateOrder(80, macros.PICKUP)]
+        foe = _unit(90, 1, -4800, 2900, 1, 0, "ogru")
+        tc = Teacher(0, "human", random.Random(0))
+        assert tc.commands(np.vstack([rows, foe]), player, 300.0, 1, None, [80]) == []  # (a fight: later)
+    finally:
+        fx.set_macros(0)

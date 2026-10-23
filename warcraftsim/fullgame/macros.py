@@ -12,8 +12,14 @@
              (fgself-123/124), the policy learned "build a hall" and built it at home: 26-30% of its games had a
              second hall there, 0.2% an expansion. It may be given while the natural is free (no hall or haunted mine
              there, its camp gone) and the player can pay for the hall; the agent then sends the build order.
+    pick up  (--macros 2) a hero picks up the nearest item lying within PICKUP_NEAR (a creep's drop: Echo Isles' camps
+             drop one each, a permanent item, a potion or a tome, and the policy had no way to take them): the harness
+             reports the items on the ground its player sees (protocol.Observation.ground) and right-clicks the nearest
+             (protocol.PickUp). It may be given while a hero of the player's has one that near (and a free slot, but
+             for a powerup).
 
-A vocabulary gets the order once (extend; "macros" marks it), and a network loaded with --macros grows to it (grow:
+A vocabulary gets the orders of its level once (extend; "macros" marks the level), and a network loaded with --macros
+grows to them (grow:
 its row in the order head starts rarer than any order the policy gives, its embedding the build orders' mean)."""
 
 from __future__ import annotations
@@ -26,7 +32,10 @@ from . import features as fx
 EXPAND = 990001  # (no game order has these ids: the agent's own)
 CREEP = 990002
 MIX = 990003
-ORDERS = (EXPAND, CREEP, MIX)
+PICKUP = 990004
+ORDERS = (EXPAND, CREEP, MIX)  # --macros 1
+LEVELS = {1: ORDERS, 2: ORDERS + (PICKUP,)}
+PICKUP_NEAR = 1000.0  # (a hero this near an item may pick it up: the harness takes the nearest within it)
 HALLS = {"human": "htow", "orc": "ogre", "undead": "unpl", "nightelf": "etol"}
 WORKERS = ("hpea", "opeo", "uaco", "ewsp")
 MINES = {int.from_bytes(c.encode(), "big") for c in ("ngol", "ugol", "egol")}
@@ -42,25 +51,34 @@ def code(c: str) -> int:
     return int.from_bytes(c.encode(), "big")
 
 
-def extended(vocab: dict) -> bool:
+def orders(level: int | None = None) -> tuple[int, ...]:
+    """The macro orders of a --macros level (None: this process's, features.MACROS, at least 1)."""
+    level = (fx.MACROS or 1) if level is None else level
+    return LEVELS[min(int(level), max(LEVELS))] if level else ()
+
+
+def extended(vocab: dict, level: int | None = None) -> bool:
     have = {tuple(o) for o in vocab["orders"]}
-    return all((o, fx.IMMEDIATE) in have for o in ORDERS)
+    return all((o, fx.IMMEDIATE) in have for o in orders(level))
 
 
-def extend(vocab: dict) -> dict:
-    """`vocab` with the macro orders at its end (immediate orders) -> a new vocabulary."""
-    if extended(vocab):
+def extend(vocab: dict, level: int | None = None) -> dict:
+    """`vocab` with the macro orders of a level (None: this process's) at its end (immediate orders) -> a new
+    vocabulary."""
+    level = int((fx.MACROS or 1) if level is None else level)
+    if extended(vocab, level):
         return vocab
-    orders = [list(o) for o in vocab["orders"]]
-    for o in ORDERS:  # (in this order: a vocabulary with the first ones gets the later ones after them)
-        if [o, fx.IMMEDIATE] not in orders:
-            orders.append([o, fx.IMMEDIATE])
+    out = [list(o) for o in vocab["orders"]]
+    for o in orders(level):  # (in this order: a vocabulary with the first ones gets the later ones after them)
+        if [o, fx.IMMEDIATE] not in out:
+            out.append([o, fx.IMMEDIATE])
     names = {**(vocab.get("order_names") or {}), str(EXPAND): "expand", str(CREEP): "creep the natural",
-             str(MIX): "train the target's mix"}
+             str(MIX): "train the target's mix", str(PICKUP): "pick up an item"}
     counts = dict(vocab.get("counts") or {})
     if "orders" in counts:
-        counts["orders"] = list(counts["orders"]) + [0] * (len(orders) - len(counts["orders"]))
-    return {**vocab, "orders": orders, "order_names": names, "counts": counts, "macros": 1}
+        counts["orders"] = list(counts["orders"]) + [0] * (len(out) - len(counts["orders"]))
+    return {**vocab, "orders": out, "order_names": names, "counts": counts,
+            "macros": max(level, int(vocab.get("macros") or 0))}
 
 
 @torch.no_grad()
@@ -93,7 +111,7 @@ def grow(net, old: dict, new: dict):
 
 def allow(net, vocab: dict) -> None:
     """Who may give the macro orders (net's allowed table, in place): expand a worker, creep whatever may attack-move
-    and is no worker."""
+    and is no worker, mix a building that trains army units, pick up a hero."""
     oix = {tuple(o): c for c, o in enumerate(vocab["orders"], start=1)}
     tix = {int(t): i + 1 for i, t in enumerate(vocab["types"])}
     k = oix.get((EXPAND, fx.IMMEDIATE))
@@ -111,6 +129,11 @@ def allow(net, vocab: dict) -> None:
         for b in {m for u, ms in _makers().items() if army(u) for m in ms}:
             if code(b) in tix:
                 net.allowed[tix[code(b)], k] = True
+    k = oix.get((PICKUP, fx.IMMEDIATE))
+    if k is not None:
+        for t, i in tix.items():
+            if fx.is_hero_code(fx.rawcode(t)):
+                net.allowed[i, k] = True
 
 
 def army(c: str) -> bool:
@@ -130,6 +153,24 @@ def mix_choice(target: dict[str, float], have: dict[str, float], building: str, 
     makes = [u for u, ms in _makers().items() if building in ms and u in target]
     best = max(((target[u] - have.get(u, 0.0), u) for u in makes if can(u)), default=None)
     return best[1] if best is not None and best[0] > 0 else None
+
+
+def pickable(rows: np.ndarray, player: int, ground) -> list[int]:
+    """pick up: the player's heroes (their ids) with an item lying within PICKUP_NEAR that the player sees
+    (`ground`: protocol.Observation.ground) and a free slot for it (none needed for a powerup)."""
+    bit = 1 << player
+    items = [(x, y, pw) for _, x, y, vis, pw in ground if vis & bit]
+    if not items:
+        return []
+    out = []
+    heroes = np.flatnonzero((rows[:, fx.C_OWNER] == player) & (rows[:, fx.C_FLAGS] & fx.HERO != 0)
+                            & (rows[:, fx.C_FLAGS] & fx.DEAD == 0))
+    for i in heroes.tolist():
+        free = rows.shape[1] <= fx.C_ITEM0 or bool((rows[i, fx.C_ITEM0:fx.C_ITEM0 + 6] == 0).any())
+        hx, hy = float(rows[i, fx.C_X]), float(rows[i, fx.C_Y])
+        if any((free or pw) and (x - hx) ** 2 + (y - hy) ** 2 < PICKUP_NEAR ** 2 for x, y, pw in items):
+            out.append(int(rows[i, fx.C_ID]))
+    return out
 
 
 def natural(rows: np.ndarray, start: tuple[float, float] | None):

@@ -26,7 +26,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from ..protocol import (Build, Buy, Command, EventKind, ImmediateOrder, LearnSkill, Observation, PointOrder,
+from ..protocol import (Build, Buy, Command, EventKind, ImmediateOrder, LearnSkill, Observation, PickUp, PointOrder,
                         TargetDestructable, TargetOrder)
 from ..runtime.instance import Agent, BuiltinAI, GameInstance, GameSetup
 from . import features as fx
@@ -60,7 +60,7 @@ def unit_rows(obs: Observation, t: int) -> np.ndarray:
 
 REPAIR = 852024  # the order a worker resumes a building with
 ATTACK = 851983
-EXPAND, CREEP, MIX = 990001, 990002, 990003  # (macros.EXPAND, macros.CREEP, macros.MIX)
+EXPAND, CREEP, MIX, PICKUP = 990001, 990002, 990003, 990004  # (macros.EXPAND, .CREEP, .MIX, .PICKUP)
 HAUNT = int.from_bytes(b"ugol", "big")
 EXPAND_HALLS = {r: int.from_bytes(h.encode(), "big") for r, h in (("human", "htow"), ("orc", "ogre"), ("nightelf", "etol"))}
 CANCEL = 851976  # a building's queue: its last unit
@@ -68,6 +68,8 @@ TIERS = {int.from_bytes(c.encode(), "big") for c in ("hkee", "hcas", "ostr", "of
 REVIVE = 852039  # an altar's revival of a dead hero: a target order on it (its training order is refused; tested
 # 2026-10-22: accepted ~7 s after the death, at 425 x 0.4 gold for a level 1 hero)
 BUY_REACH, BUY_ARRIVED = 500.0, 6  # (a buyer this near its shop this many steps: free again, _release_buyers)
+PICKUP_COMMIT_STEPS = 8  # (a hero sent to pick up an item: 4 s to walk there, macros.PICKUP_NEAR at ~300 a second,
+# unless it picks something up before)
 BUY_COMMIT_STEPS = 120  # (a unit sent to buy: 60 s to walk there, the harness keeps the purchase pending meanwhile; a
 # worker from its start reached the tavern, unseen, in 77 steps)
 
@@ -124,9 +126,12 @@ class BCAgent:
                     if res == "gold" and hasattr(c, "target"):  # (its mine: another one is a transfer, not redundant)
                         self.view.mine_of[unit] = c.target
         buying = getattr(self, "buying_since", {})
-        for c, ok in zip(cmds, results):  # (a buy the game refused: the unit is free again)
+        picking = getattr(self, "picking_since", {})
+        for c, ok in zip(cmds, results):  # (a buy or a pick-up the game refused: the unit is free again)
             if not ok and isinstance(c, Buy):
                 buying.pop(c.unit, None)
+            elif not ok and isinstance(c, PickUp):
+                picking.pop(c.unit, None)
 
     def _sample(self, logits: torch.Tensor) -> torch.Tensor:
         return torch.distributions.Categorical(logits=logits / self.temperature).sample()
@@ -134,10 +139,15 @@ class BCAgent:
     def observe(self, obs: Observation, t: int, rows: np.ndarray | None = None) -> dict | None:
         """This step's view (features.View.step), or None when the player has no units. `rows`:
         unit_rows(obs, t) when already made (both sides of a self-play game share them)."""
+        picking = getattr(self, "picking_since", {})
+        rows = unit_rows(obs, t) if rows is None else rows
         for e in obs.events:
             if int(e.kind) == int(EventKind.TREE_DEATH):
                 self.trees.pop(e.a, None)
-        rows = unit_rows(obs, t) if rows is None else rows
+            elif int(e.kind) == int(EventKind.ITEM_PICKUP):
+                picking.pop(e.a, None)  # (a hero sent to pick up an item: free again once it holds one)
+                if e.c and (rows[:, fx.C_ID] == e.a).any() and int(rows[rows[:, fx.C_ID] == e.a][0, fx.C_OWNER]) == self.player:
+                    self.picked_up = getattr(self, "picked_up", 0) + 1  # (an item off the ground: the episode row)
         self.t = t
         p = obs.players.get(self.player)
         me = (np.asarray([t, self.player, p.gold, p.lumber, p.food_used, p.food_cap, p.upkeep, p.gold_gathered,
@@ -146,6 +156,7 @@ class BCAgent:
         q = obs.players.get(1 - self.player)  # (the privileged block: the value only, features.View.priv)
         opp = (np.asarray([t, 1 - self.player, q.gold, q.lumber, q.food_used, q.food_cap, q.upkeep]) if q is not None
                else None)
+        self.view.ground = getattr(obs, "ground", ())  # (--macros 2: the items lying on the ground, macros.pickable)
         st = self.view.step(rows, me, events, t, opp)
         sel = st["sel"][:st["n_own"]]  # the workers busy with a building order, and since when
         busy = {int(u) for u, f, o in zip(sel[:, fx.C_ID], sel[:, fx.C_FLAGS], sel[:, fx.C_ORDER])
@@ -201,6 +212,12 @@ class BCAgent:
                     self.view.expanding = (self.t + fx.EXPAND_PENDING_STEPS, unit)
                     mine, _, _, hx, hy = where
                     out.append(TargetOrder(unit, HAUNT, mine) if race == "undead" else Build(unit, EXPAND_HALLS[race], hx, hy))
+            elif kind == fx.IMMEDIATE and oid == PICKUP:  # (--macros 2: the nearest item lying near the hero)
+                if unit in getattr(self.view, "pickers", ()):
+                    from .macros import PICKUP_NEAR
+                    out.append(PickUp(unit, int(PICKUP_NEAR)))
+                    self.pickup_orders = getattr(self, "pickup_orders", 0) + 1
+                    self.__dict__.setdefault("picking_since", {})[unit] = self.t
             elif kind == fx.IMMEDIATE and oid in self.view.dead_heroes:  # (a dead hero's order at an altar: its revival)
                 out.append(TargetOrder(unit, REVIVE, self.view.dead_heroes[oid]))
             elif kind == fx.IMMEDIATE and oid in TIERS and unit in self.view.busy and self.view.making.get(unit, (4,))[0] != 4:
@@ -270,8 +287,10 @@ class BCAgent:
         turned it back long before it reached the tavern: no tavern hero hired in thousands of games)."""
         since = self.building_since.get(unit)
         bought = getattr(self, "buying_since", {}).get(unit)
+        picking = getattr(self, "picking_since", {}).get(unit)
         return ((since is not None and self.t - since < fx.BUILD_COMMIT_STEPS)
-                or (bought is not None and self.t - bought[0] < BUY_COMMIT_STEPS))
+                or (bought is not None and self.t - bought[0] < BUY_COMMIT_STEPS)
+                or (picking is not None and self.t - picking < PICKUP_COMMIT_STEPS))
 
     def _release_buyers(self, sel: np.ndarray) -> None:
         """Buyers free again once they have been in reach of their shop BUY_ARRIVED steps (the sale went through or

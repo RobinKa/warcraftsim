@@ -48,6 +48,7 @@ def observation(seq, full, units, removed=(), stray=False, damage=False, orders=
         toks += rec("R", [uid])
     toks += rec("E", [1, 1048600, 1048601, 1751674721]) + rec("E", [99, 1, 2, 3])
     toks += rec("C", [1]) + rec("C", [0]) + rec("I", [1048600, 851983, 1, -100, 200, 0])
+    toks += rec("G", [1886545264, -4800, -2400, 1, 0]) + rec("G", [1952740208, 300, 0, 3, 1])  # items on the ground
     toks += ["sound\\foo.wav", "3.5", "Q"] + rec("K", [100, -200]) + ["X"]  # strays: dropped
     return ("\n".join(toks) + "\n").encode("latin-1")
 
@@ -57,6 +58,7 @@ def _same(a, b):
            (b.seq, b.game_ms, b.game_over, b.version, b.damaged_records, b.camera)
     assert a.players == b.players and a.events == b.events and a.command_results == b.command_results
     assert a.issued == b.issued and a.orders == b.orders and a.destructables == b.destructables
+    assert a.ground == b.ground and len(a.ground) == 2
     assert list(a.units) == list(b.units), "the merged unit tables differ"
 
 

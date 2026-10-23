@@ -394,7 +394,7 @@ def configure_for(path) -> None:
         if mercs and not bool(ck["model"]["allowed"][:, mercs].any()):
             neutral = 2
     fx.set_neutral(neutral)
-    fx.set_macros(bool(vocab.get("macros")))
+    fx.set_macros(int(vocab.get("macros") or 0))
     fx.set_z(c.get("z", 0))
     if c.get("gx", 0) >= 3:  # (the unit channels it reads: all of them, a run's --features zeros only its weights)
         fx.ACTIVE_F = fx.F

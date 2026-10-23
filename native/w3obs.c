@@ -18,7 +18,7 @@
 #define UCOLS (UF + HERO_EXTRA + 1) /* + whether the hero fields are there */
 #define HERO_FLAG 1
 
-enum { F_T = 4, F_P = 14, F_O = 1, F_D = 5, F_E = 4, F_C = 1, F_U = UF, F_R = 1, F_K = 2, F_I = 6 };
+enum { F_T = 4, F_P = 14, F_O = 1, F_D = 5, F_E = 4, F_C = 1, F_U = UF, F_R = 1, F_K = 2, F_I = 6, F_G = 5 };
 
 typedef struct { int32_t *v; int n, cap, width; } Rows;
 
@@ -49,7 +49,7 @@ typedef struct {
 
 typedef struct {
     Table t;
-    Rows players, events, results, issued, orders, dests, removed, units; /* this observation */
+    Rows players, events, results, issued, orders, dests, removed, units, ground; /* this observation */
     int32_t header[16];
     char *line;  /* scratch */
     int64_t *toks;
@@ -172,17 +172,17 @@ void *w3obs_new(void) {
     s->t.hcap = 4096;
     s->t.keys = calloc(s->t.hcap, sizeof(int32_t));
     s->t.vals = calloc(s->t.hcap, sizeof(int32_t));
-    Rows *rs[] = {&s->players, &s->events, &s->results, &s->issued, &s->orders, &s->dests, &s->removed, &s->units};
-    int w[] = {F_P, F_E, F_C, F_I, F_O, F_D, F_R, UCOLS};
-    for (int i = 0; i < 8; i++) rs[i]->width = w[i];
+    Rows *rs[] = {&s->players, &s->events, &s->results, &s->issued, &s->orders, &s->dests, &s->removed, &s->units, &s->ground};
+    int w[] = {F_P, F_E, F_C, F_I, F_O, F_D, F_R, UCOLS, F_G};
+    for (int i = 0; i < 9; i++) rs[i]->width = w[i];
     return s;
 }
 
 void w3obs_free(void *p) {
     State *s = p;
     if (!s) return;
-    Rows *rs[] = {&s->players, &s->events, &s->results, &s->issued, &s->orders, &s->dests, &s->removed, &s->units};
-    for (int i = 0; i < 8; i++) free(rs[i]->v);
+    Rows *rs[] = {&s->players, &s->events, &s->results, &s->issued, &s->orders, &s->dests, &s->removed, &s->units, &s->ground};
+    for (int i = 0; i < 9; i++) free(rs[i]->v);
     free(s->t.rows); free(s->t.live); free(s->t.keys); free(s->t.vals); free(s->toks); free(s->is_tag);
     free(s);
 }
@@ -190,7 +190,7 @@ void w3obs_free(void *p) {
 static int base_fields(char tag) {
     switch (tag) {
     case 'T': return F_T; case 'P': return F_P; case 'O': return F_O; case 'D': return F_D; case 'E': return F_E;
-    case 'C': return F_C; case 'U': return F_U; case 'R': return F_R; case 'K': return F_K; case 'I': return F_I;
+    case 'C': return F_C; case 'U': return F_U; case 'R': return F_R; case 'K': return F_K; case 'I': return F_I; case 'G': return F_G;
     default: return 0;
     }
 }
@@ -285,8 +285,8 @@ static int tokenize(State *s, const char *d, int len) {
  * -2 (out of memory). The results: w3obs_header / w3obs_rows. */
 int w3obs_parse(void *p, const char *data, int len) {
     State *s = p;
-    Rows *rs[] = {&s->players, &s->events, &s->results, &s->issued, &s->orders, &s->dests, &s->removed, &s->units};
-    for (int i = 0; i < 8; i++) rs[i]->n = 0;
+    Rows *rs[] = {&s->players, &s->events, &s->results, &s->issued, &s->orders, &s->dests, &s->removed, &s->units, &s->ground};
+    for (int i = 0; i < 9; i++) rs[i]->n = 0;
     memset(s->header, 0, sizeof(s->header));
     s->header[H_VERSION] = -1;
     s->header[H_FULL] = 1;
@@ -326,6 +326,7 @@ int w3obs_parse(void *p, const char *data, int len) {
         case 'C': err = rows_push(&s->results, f, n); break;
         case 'I': err = rows_push(&s->issued, f, n); break;
         case 'R': err = rows_push(&s->removed, f, n); break;
+        case 'G': err = rows_push(&s->ground, f, n); break;
         case 'P': err = rows_push(&s->players, f, n); break;
         case 'O': err = rows_push(&s->orders, f, n); break;
         case 'T': s->header[H_SEQ] = f[0]; s->header[H_MS] = f[1]; s->header[H_OVER] = f[2] != 0;
@@ -366,11 +367,11 @@ int w3obs_table(void *p, int32_t *out, int cap) {
 
 const int32_t *w3obs_header(void *p) { return ((State *)p)->header; }
 
-/* which: 0 players, 1 events, 2 results, 3 issued, 4 orders, 5 dests, 6 removed, 7 unit deltas */
+/* which: 0 players, 1 events, 2 results, 3 issued, 4 orders, 5 dests, 6 removed, 7 unit deltas, 8 ground items */
 const int32_t *w3obs_rows(void *p, int which, int *n, int *width) {
     State *s = p;
-    Rows *rs[] = {&s->players, &s->events, &s->results, &s->issued, &s->orders, &s->dests, &s->removed, &s->units};
-    if (which < 0 || which > 7) { *n = 0; *width = 0; return NULL; }
+    Rows *rs[] = {&s->players, &s->events, &s->results, &s->issued, &s->orders, &s->dests, &s->removed, &s->units, &s->ground};
+    if (which < 0 || which > 8) { *n = 0; *width = 0; return NULL; }
     *n = rs[which]->n;
     *width = rs[which]->width;
     return rs[which]->v;

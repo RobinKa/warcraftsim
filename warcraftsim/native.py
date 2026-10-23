@@ -157,6 +157,7 @@ class NativeObs:
         obs.full = bool(h[_H_FULL])
         obs.removed = self._rows(6)[:, 0].tolist()
         obs.issued = issued
+        obs.ground = [tuple(v) for v in self._rows(8).tolist()]
         obs.camera = (float(h[_H_CAM_X]), float(h[_H_CAM_Y])) if h[_H_CAMERA] else None
         return obs
 

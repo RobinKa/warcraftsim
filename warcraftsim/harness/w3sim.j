@@ -83,6 +83,11 @@ globals
     integer array w3s_buy_item
     integer array w3s_buy_ttl
     integer w3s_nbuy = 0
+    // a pick-up (op 9): the hero, the nearest item found so far and its squared distance, whether it has a free slot
+    unit w3s_pick_u = null
+    item w3s_pick_best = null
+    real w3s_pick_d = 0.0
+    boolean w3s_pick_free = false
     integer array w3s_qs_player
     integer array w3s_qs_type
     real array w3s_qs_x
@@ -637,6 +642,43 @@ function W3S_CPass takes nothing returns nothing
     endloop
 endfunction
 
+// an item lying on the ground (a creep's drop, a dead hero's): its type, x, y, the players whose view sees its spot
+// (as W3S_Visibility's bits; none: not written), whether it is a powerup (used on pick-up: no slot needed). Seen this
+// step (w3s_ht, its handle's key 9: the sequence), its pick-up event says it lay on the ground.
+function W3S_SerItem takes nothing returns nothing
+    local item it = GetEnumItem()
+    local real x
+    local real y
+    local integer k = 0
+    local integer bits = 0
+    if not IsItemOwned(it) and IsItemVisible(it) and GetWidgetLife(it) > 0.405 then  // (a used tome lies on as a dead item)
+        set x = GetItemX(it)
+        set y = GetItemY(it)
+        loop
+            exitwhen k >= w3s_nseer
+            if IsVisibleToPlayer(x, y, w3s_seer_p[k]) then
+                set bits = bits + w3s_seer_bit[k]
+            endif
+            set k = k + 1
+        endloop
+        call SaveInteger(w3s_ht, GetHandleId(it), 9, w3s_seq)
+        if bits != 0 then
+            call W3S_Rec("G")
+            call W3S_Tok(GetItemTypeId(it))
+            call W3S_Tok(R2I(x))
+            call W3S_Tok(R2I(y))
+            call W3S_Tok(bits)
+            if GetItemType(it) == ITEM_TYPE_POWERUP then
+                call W3S_Tok(1)
+            else
+                call W3S_Tok(0)
+            endif
+            call W3S_End()
+        endif
+    endif
+    set it = null
+endfunction
+
 function W3S_WriteObs takes nothing returns nothing
     local integer i
     set w3s_full = w3s_full or w3s_first
@@ -692,6 +734,7 @@ function W3S_WriteObs takes nothing returns nothing
             exitwhen w3s_cursor == i // a crashed chunk must not hang the game
         endloop
     endif
+    call EnumItemsInRect(bj_mapInitialPlayableArea, null, function W3S_SerItem)  // items lying on the ground
     set w3s_full = false
     // units that left the game
     if w3s_cser == 1 then
@@ -1278,6 +1321,41 @@ function W3S_BuyPending takes nothing returns nothing
     set u = null
 endfunction
 
+function W3S_PickEnum takes nothing returns nothing
+    local item it = GetEnumItem()
+    local real dx
+    local real dy
+    if not IsItemOwned(it) and IsItemVisible(it) and GetWidgetLife(it) > 0.405 and (w3s_pick_free or GetItemType(it) == ITEM_TYPE_POWERUP) and IsVisibleToPlayer(GetItemX(it), GetItemY(it), GetOwningPlayer(w3s_pick_u)) then
+        set dx = GetItemX(it) - GetUnitX(w3s_pick_u)
+        set dy = GetItemY(it) - GetUnitY(w3s_pick_u)
+        if dx * dx + dy * dy < w3s_pick_d then
+            set w3s_pick_d = dx * dx + dy * dy
+            set w3s_pick_best = it
+        endif
+    endif
+    set it = null
+endfunction
+
+// op 9: the hero picks up the nearest item lying within r that its player sees (a powerup, or with a free slot in
+// its inventory): a right-click on it
+function W3S_PickUp takes unit u, real r returns boolean
+    local rect area = Rect(GetUnitX(u) - r, GetUnitY(u) - r, GetUnitX(u) + r, GetUnitY(u) + r)
+    local boolean ok = false
+    set w3s_pick_u = u
+    set w3s_pick_best = null
+    set w3s_pick_d = r * r
+    set w3s_pick_free = UnitInventoryCount(u) < UnitInventorySize(u)
+    call EnumItemsInRect(area, null, function W3S_PickEnum)
+    if w3s_pick_best != null then
+        set ok = IssueTargetOrderById(u, 851971, w3s_pick_best)
+    endif
+    call RemoveRect(area)
+    set area = null
+    set w3s_pick_best = null
+    set w3s_pick_u = null
+    return ok
+endfunction
+
 function W3S_ClearCreeps takes real x, real y, real r returns nothing
     local group g = CreateGroup()
     local unit u
@@ -1358,6 +1436,12 @@ function W3S_ApplyOne takes integer at returns integer
                     call W3S_AddBuy(u, s, w3s_cmd[at + 3], W3S_BUY_STEPS)
                 endif
             endif
+        endif
+    elseif op == 9 then
+        // a hero picks up the nearest item lying within a radius (W3S_PickUp)
+        set n = 3
+        if W3S_Owned(u) then
+            set ok = W3S_PickUp(u, I2R(w3s_cmd[at + 2]))
         endif
     elseif op == 90 then
         set n = 4
@@ -2347,7 +2431,15 @@ function W3S_OnSummon takes nothing returns boolean
 endfunction
 
 function W3S_OnItemPickup takes nothing returns boolean
-    call W3S_Ev(18, GetHandleId(GetTriggerUnit()), GetItemTypeId(GetManipulatedItem()), 0)
+    local item it = GetManipulatedItem()
+    local integer seen = w3s_seq - LoadInteger(w3s_ht, GetHandleId(it), 9)
+    local integer ground = 0
+    if HaveSavedInteger(w3s_ht, GetHandleId(it), 9) and seen >= 0 and seen <= 2 then
+        set ground = 1  // (it lay on the ground the last steps: not a purchase)
+    endif
+    call RemoveSavedInteger(w3s_ht, GetHandleId(it), 9)
+    call W3S_Ev(18, GetHandleId(GetTriggerUnit()), GetItemTypeId(it), ground)
+    set it = null
     return false
 endfunction
 

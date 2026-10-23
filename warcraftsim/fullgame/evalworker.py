@@ -184,7 +184,7 @@ def worker_main(wid: int, cfg: dict, games: int, keys: dict, host: str, q, stop)
     fx.set_inputs(cfg.get("inputs", 1), bool(cfg.get("privileged")))
     fx.set_masks(cfg.get("tech_mask", 0), cfg.get("valid_mask", 0))
     fx.set_neutral(cfg.get("neutral", 0))
-    fx.set_macros(bool(cfg.get("macros", 0)))
+    fx.set_macros(int(cfg.get("macros", 0) or 0))
     torch.set_num_threads(1)
     sys.setswitchinterval(0.001)  # (a game thread woken by its answer waits for the GIL: 5 ms by default)
     try:
@@ -255,7 +255,7 @@ def main(argv: list[str] | None = None) -> int:
     fx.set_inputs(cfg["inputs"], bool(cfg["privileged"]))  # (before the networks: model.load gives older ones the new inputs)
     fx.set_masks(cfg["tech_mask"], cfg["valid_mask"])
     fx.set_neutral(cfg["neutral"])
-    fx.set_macros(bool(cfg.get("macros", 0)))
+    fx.set_macros(int(cfg.get("macros", 0) or 0))
     from ..data.duelmap import parse_duel_name
     if parse_duel_name(cfg["map"]) is None:  # (as selfplay.main: another map's frame; set_geometry exports it)
         from ..data.mapbuild import stock_map_path
