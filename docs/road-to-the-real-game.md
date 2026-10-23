@@ -32,7 +32,7 @@ The steps there: a frame relative to the own base (0 → 49%), a longer horizon,
 |---|---|---|
 | Strategy | the targets are whole games' builds, big and alike; the policy prefers one rush | narrow targets (a game's heroes, main army and what they need: `strategy.narrow`), more kinds of conditioning (no rush, expand, creep, harass...: `fullgame/modes.py`) |
 | Seeing | no terrain or trees; until `fgself-107` no heroes' abilities, cooldowns or items, and nothing out of sight | `--inputs 3`: hero state, what buildings make, the clock, the enemies it saw (`fgself-107`) |
-| Acting | no tavern heroes, neutral shops, mercenaries or items on the ground; orders the game refuses waste decisions | a `Buy` command (in the harness), new order classes and a teacher for them; `--tech-mask`, `--valid-mask` |
+| Acting | until `fgself-111` no tavern heroes, neutral shops or mercenaries, until `fgself-125` no expansions, until `fgself-134` no items on the ground and no night elf expansions; orders the game refuses waste decisions | a `Buy` command (in the harness), the agent's own orders for what the game spreads over many (`--macros`: expand, creep, an army mix, pick up), new order classes and a teacher for them; `--tech-mask`, `--valid-mask` |
 | Teaching | what the policy rarely stumbles on (a tavern hero, a town portal) | a heuristic teacher whose orders label the policy's steps (as the target builder does now) |
 | Rewards | outcome, material, strategy and unspent money summed into one | an advantage per reward, normalized (GDPO), weighted by how much each still varies (SAW) |
 | APM | every unit, every half second | an APM cap before games against people |
