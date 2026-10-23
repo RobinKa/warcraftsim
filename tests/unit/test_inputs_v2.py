@@ -539,10 +539,14 @@ def test_audit_fixes_orders(v2):
     assert not bot.buying_since  # (in reach a while: free again, not 60 s)
     miner = _unit(1, 0, -100, 0, 1, fx.WORKER, "uaco")
     miner[fx.C_ORDER] = 852018  # (harvesting)
-    st3 = bot.view.step(np.stack([miner, home, far, tav, gme]), None, np.zeros((0, 5), np.int64), 20)
+    bot.view.races = [2, 1]  # (undead: they mine their own haunted mines)
+    own, other = _unit(5, 0, -300, 0, 1, fx.STRUCTURE, "ugol"), _unit(7, 0, 3000, 300, 1, fx.STRUCTURE, "ugol")
+    st3 = bot.view.step(np.stack([miner, own, far, other, tav, gme]), None, np.zeros((0, 5), np.int64), 20)
     bot.view.mine_of[1] = 5
     assert bot.commands(st3, [harvest], [st3["index"][5]], [0], [0]) == []  # (its own mine: redundant)
-    assert bot.commands(st3, [harvest], [st3["index"][6]], [0], [0]) == [TargetOrder(1, fx.HARVEST, 6)]  # (another)
+    assert bot.commands(st3, [harvest], [st3["index"][7]], [0], [0]) == [TargetOrder(1, fx.HARVEST, 7)]  # (another)
+    # (a plain gold mine pointed at: the player's haunted one nearest it; an undead harvest there was refused)
+    assert bot.commands(st3, [harvest], [st3["index"][6]], [0], [0]) == [TargetOrder(1, fx.HARVEST, 7)]
 
 
 def test_audit_fixes_revival_labels_and_production(v2):
@@ -1000,3 +1004,27 @@ def test_audit3_skills_dead_buildings_held_naturals(v2):
     nat = _unit(51, 15, -4864, -3200, 1, fx.STRUCTURE, "ngol")
     keep = _unit(70, 0, -4764, -2400, 1, fx.STRUCTURE, "hkee")
     assert macros.site(np.stack([nat]), start) is not None and macros.site(np.stack([nat, keep]), start) is None
+
+
+def test_repair_only_what_needs_it(v2):
+    """A repair order goes out only for a building or machine of the player's that is damaged or unfinished (the
+    game refused the others: ~1,000-1,500 a game as human and orc); the rest are counted, not sent."""
+    from warcraftsim.fullgame.play import REPAIR, BCAgent
+    from warcraftsim.protocol import TargetOrder
+    v = {**AUDIT_VOCAB, "orders": AUDIT_VOCAB["orders"] + [[REPAIR, fx.UNIT]]}
+    k = len(v["orders"])
+    bot = BCAgent(None, v, 0, None)
+    bot.view = bot.enc.view(0, 1.0, [0, 1])
+    bot.trees, bot.building_since, bot.t = {}, {}, 0
+    peon = _unit(1, 0, -100, 0, 1, fx.WORKER, "hpea")
+    whole, hurt = _unit(2, 0, -500, 0, 1, fx.STRUCTURE, "htow"), _unit(3, 0, -800, 0, 1, fx.STRUCTURE, "halt")
+    hurt[fx.C_HP] = 100
+    st = bot.view.step(np.stack([peon, whole, hurt]), None, np.zeros((0, 5), np.int64), 0)
+    i = st["index"][1]
+    order = [0] * (i + 1)
+    order[i] = k
+    tgt = [0] * (i + 1)
+    tgt[i] = st["index"][2]
+    assert bot.commands(st, order, tgt, [0] * (i + 1), [0] * (i + 1)) == [] and bot.noop_repairs == 1
+    tgt[i] = st["index"][3]
+    assert bot.commands(st, order, tgt, [0] * (i + 1), [0] * (i + 1)) == [TargetOrder(1, REPAIR, 3)]

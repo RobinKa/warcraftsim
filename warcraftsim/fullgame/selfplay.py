@@ -1870,6 +1870,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"pickup_orders": getattr(bots[side], "pickup_orders", 0), "picked_up": getattr(bots[side], "picked_up", 0)}
            if side in bots and fx.MACROS >= 2 else {}),  # (--macros 2: items off the ground)
         **({"auto_skills": getattr(bots[side], "auto_skills", 0)} if side in bots and fx.MACROS >= 3 else {}),
+        **({"noop_repairs": bots[side].noop_repairs} if side in bots and getattr(bots[side], "noop_repairs", 0) else {}),
         # the orders the game refused (the learner's side): their share, and the kinds refused most (audit 4: never measured)
         **({"refused_share": round(sum(r for _, r in bots[side].order_results.values())
                                    / max(sum(n for n, _ in bots[side].order_results.values()), 1), 4),

@@ -62,6 +62,8 @@ REPAIR = 852024  # the order a worker resumes a building with
 ATTACK = 851983
 EXPAND, CREEP, MIX, PICKUP = 990001, 990002, 990003, 990004  # (macros.EXPAND, .CREEP, .MIX, .PICKUP)
 HAUNT = int.from_bytes(b"ugol", "big")
+MACHINES = {int.from_bytes(c.encode(), "big") for c in ("hgyr", "hmtt", "hrtt", "ocat", "ebal", "umtw")}  # (repairable)
+MINED_BY = {"undead": HAUNT, "nightelf": int.from_bytes(b"egol", "big")}  # (their own; humans and orcs: a plain one)
 EXPAND_HALLS = {r: int.from_bytes(h.encode(), "big") for r, h in (("human", "htow"), ("orc", "ogre"), ("nightelf", "etol"))}
 CANCEL = 851976  # a building's queue: its last unit
 ALTARS = [int.from_bytes(c.encode(), "big") for c in ("halt", "oalt", "uaod", "eate")]
@@ -271,15 +273,16 @@ class BCAgent:
                     out.append(PointOrder(unit, oid, int(g[fx.C_X]), int(g[fx.C_Y])))
             elif kind == fx.UNIT:
                 target = sel[int(tgt[i])]
-                if oid == fx.HARVEST and int(target[fx.C_TYPE]) not in fx.GOLD_MINES:
-                    # harvest on anything but a gold mine: the nearest mine in view (77% of the clone's
-                    # harvest orders pointed elsewhere and were refused)
-                    mines = sel[np.isin(sel[:, fx.C_TYPE], fx.GOLD_MINES)]
-                    if not len(mines):
+                if oid == fx.HARVEST:  # (a mine the player's workers can mine: the one pointed at, else the nearest;
+                    mine = self._mine(sel, int(tgt[i]), i)  # 77% of the clone's harvest orders pointed elsewhere)
+                    if mine is None:
                         continue
-                    d = (mines[:, fx.C_X] - sel[i, fx.C_X]) ** 2 + (mines[:, fx.C_Y] - sel[i, fx.C_Y]) ** 2
-                    target = mines[int(np.argmin(d))]
-                out.append(TargetOrder(unit, oid, int(target[fx.C_ID])))
+                    out.append(TargetOrder(unit, oid, mine))
+                elif oid == REPAIR and not self._repairable(target):  # (nothing to repair there: the game refuses it,
+                    self.noop_repairs = getattr(self, "noop_repairs", 0) + 1  # ~1,000-1,500 a game as human and orc,
+                    continue  # 11-35% of the policy's orders since fgself-100; not sent: what it did, as before)
+                else:
+                    out.append(TargetOrder(unit, oid, int(target[fx.C_ID])))
             elif kind == fx.TREE and self.trees:
                 tree = min(self.trees, key=lambda k: (self.trees[k][0] - x) ** 2 + (self.trees[k][1] - y) ** 2)
                 out.append(TargetDestructable(unit, oid, tree))
@@ -356,16 +359,29 @@ class BCAgent:
         return int(done[0, fx.C_ID]) if len(done) else None
 
     def _mine(self, sel: np.ndarray, k: int, i: int, plain: bool = False) -> int | None:
-        """The gold mine an order pointing at row `k` goes to: that one if it is a mine, else the nearest to unit
-        row `i` (`plain`: an unhaunted one, a haunted gold mine's site); its id, None with none in view."""
-        kinds = (fx.GOLD_MINES[0],) if plain else fx.GOLD_MINES
-        if 0 <= k < len(sel) and int(sel[k, fx.C_TYPE]) in kinds:
+        """The gold mine an order pointing at row `k` goes to: that one if the player's workers can mine it, else the
+        nearest such to the mine pointed at (or to unit row `i`); its id, None with none in view. Mined: a plain gold
+        mine by humans and orcs, the player's own haunted one by undead, its entangled one by night elves (a harvest
+        on any other was refused: 195 a game as undead, 434 as night elf; fgself-138). `plain`: a plain gold mine,
+        a haunted gold mine's site."""
+        race = fx.RACES[self.view.races[self.player]] if self.view is not None else "human"
+        want = fx.GOLD_MINES[0] if plain else MINED_BY.get(race, fx.GOLD_MINES[0])
+        ok = sel[:, fx.C_TYPE] == want
+        if not plain and race in MINED_BY:
+            ok &= sel[:, fx.C_OWNER] == self.player
+        if 0 <= k < len(sel) and ok[k]:
             return int(sel[k, fx.C_ID])
-        mines = sel[np.isin(sel[:, fx.C_TYPE], kinds)]
+        mines = sel[ok]
         if not len(mines):
             return None
-        d = (mines[:, fx.C_X] - sel[i, fx.C_X]) ** 2 + (mines[:, fx.C_Y] - sel[i, fx.C_Y]) ** 2
+        ref = sel[k] if 0 <= k < len(sel) and int(sel[k, fx.C_TYPE]) in fx.GOLD_MINES else sel[i]
+        d = (mines[:, fx.C_X] - ref[fx.C_X]) ** 2 + (mines[:, fx.C_Y] - ref[fx.C_Y]) ** 2
         return int(mines[int(np.argmin(d)), fx.C_ID])
+
+    def _repairable(self, row: np.ndarray) -> bool:
+        """A repair's target: a building or a machine of the player's that is damaged or unfinished."""
+        return (int(row[fx.C_OWNER]) == self.player and (int(row[fx.C_FLAGS]) & fx.STRUCTURE or int(row[fx.C_TYPE]) in MACHINES)
+                and (int(row[fx.C_HP]) < int(row[fx.C_MAXHP]) or int(row[fx.C_FLAGS]) & fx.CONSTRUCTING))
 
     def committed(self, unit: int) -> bool:
         """A worker busy with a building order (features.building) for less than BUILD_COMMIT_STEPS, or a unit
