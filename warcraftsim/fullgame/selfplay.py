@@ -1706,6 +1706,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                     y, _ = bots[s].enc.step_labels(bots[s].view, sts[s], lessons, me, np.zeros((0, 5), np.int64),
                                                    bots[s].trees, taught=True)
                     merge_labels(trajs[s].steps[-1], y, teach=True)
+                    av = sts[s].get("avail")  # (the lessons that teach: labelled, and an order the policy could give)
+                    tc.kept = getattr(tc, "kept", 0) + int(((y["y_order"] > 0) & (np.asarray(av)[y["y_order"]] if av is not None
+                                                                                   else True)).sum())
         built, given = {}, {}
         for s, b in builders.items():  # (--z-build: after the agents' orders, so a worker it takes is taken)
             c = b.commands(obs, made[s], t, cfg["step_seconds"], cmds[spans[s][0]:spans[s][1]] if s in spans else ())
@@ -1824,13 +1827,14 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"z_build": builders[side].log, "z_refusals": builders[side].why,
             "z_blocked": {c: dict(v) for c, v in builders[side].blocked.items()}} if side in builders else {}),
         **({"z_modes": trackers[side].report()} if side in trackers else {}),
-        **({"taught": teachers[side].taught} if side in teachers else {}),
+        **({"taught": teachers[side].taught, "taught_kept": getattr(teachers[side], "kept", 0)} if side in teachers else {}),
         **({"buy_orders": bots[side].bought, "buys": dict(getattr(bots[side], "buys", {}))}
            if side in bots and getattr(bots[side], "bought", 0) else {}),
         **({"scenario": scenario} if scenario else {}),
         **({"z_t": {c: round(v) for c, v in zs[side]["t"].items()},
             "z_made": {c: round(v) for c, v in made[side].items()}} if side in zs else {}),
-        **({"z_mix_gap": round(strat.mix_gap(prod.trained[side], zs[side]), 3)} if side in zs and zs[side].get("n") else {}),
+        **({"z_mix_gap": round(strat.mix_gap(prod.trained[side], zs[side]), 3),
+            "z_n": {c: v for c, v in zs[side]["n"].items() if strat.is_army(c)}} if side in zs and zs[side].get("n") else {}),
         **({"z": zs[side]["src"] + (" won" if zs[side]["won"] else ""), "z_items": len(zs[side]["t"]),
             "z_miss": strat.mismatch(made[side], zs[side], pool["items"][races[side]], obs.game_time),
             # (which: the strategy's items due by now and not made; made and not in it)
