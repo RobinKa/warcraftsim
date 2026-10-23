@@ -1060,9 +1060,19 @@ class View:
         """rows: this step's units (UNIT_COLS), me: the player's row (PLAYER_COLS) or None, events:
         this step's (step, kind, a, b, c)."""
         enc, player = self.enc, self.player
-        self.own_buildings.update(rows[(rows[:, C_OWNER] == player) & (rows[:, C_FLAGS] & STRUCTURE > 0), C_ID].tolist())
-        for r in events:  # production started / ended at a building
+        # the player's buildings standing now; what it knew of the others' production forgotten (a building that died
+        # mid-research had kept that research masked for the game, and its id, given to an enemy unit later, that
+        # unit's production; audit 3)
+        self.own_buildings = set(rows[(rows[:, C_OWNER] == player) & (rows[:, C_FLAGS] & STRUCTURE > 0)
+                                      & (rows[:, C_FLAGS] & DEAD == 0), C_ID].tolist())
+        for d in (self.making, self.queued):
+            for k in [k for k in d if k not in self.own_buildings]:
+                del d[k]
+        self.busy &= self.own_buildings
+        for r in events:  # production started / ended at a building of the player's (an enemy's: unseen)
             kind, a = int(r[1]), int(r[2])
+            if a not in self.own_buildings:
+                continue
             if kind in PRODUCTION_START:
                 self.busy.add(a)
                 if a in self.own_buildings:
@@ -1165,7 +1175,9 @@ class View:
                 have[k] = have.get(k, 0.0) + 1.0 / n
             self.mix_have = have
             idx = enc.order_index
-            self.mix_can = lambda u: bool(avail[idx.get((int.from_bytes(u.encode(), "big"), IMMEDIATE), 0)])
+            self.mix_can = lambda u: (k := idx.get((int.from_bytes(u.encode(), "big"), IMMEDIATE))) is not None and bool(avail[k])
+            # (a unit no train order makes, a mercenary, a zeppelin: not one it can train; class 0, no order, had
+            # read as one: the mix order available with only those lacking, and doing nothing; audit 3)
             avail[enc.mix_class] = bool(MACROS and any(s > have.get(u, 0.0) and self.mix_can(u) for u, s in target.items()))
         if avail is not None and enc.pickup_class is not None:  # (--macros 2: pick up, while a hero has an item lying
             from .macros import pickable                          # near; the ground items: play.BCAgent.observe)

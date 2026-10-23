@@ -119,3 +119,47 @@ def order_needs(vocab: dict) -> dict[tuple[int, int], int]:
         for c in by_order.get(852008 + k, ()):
             out[(-1, c)] = 12 + k
     return out
+
+
+@lru_cache(1)
+def ai_skill_orders() -> dict[str, tuple[str, ...]]:
+    """Hero code -> the built-in AI's order of its skill points (Scripts\\<race>.ai: skill[1..10] then
+    SetSkillArray(k, HERO); the constants' codes from common.ai): its ultimate at 6. Tavern heroes have none."""
+    import re
+    from ..data.mpq import GameArchives
+    text: dict[str, str] = {}
+    with GameArchives() as g:
+        for name in ("common", "human", "orc", "undead", "elf"):
+            text[name] = g.read(f"Scripts\\{name}.ai").decode("latin-1")
+    consts = dict(re.findall(r"constant\s+integer\s+(\w+)\s*=\s*'(\w{4})'", text["common"]))
+    out: dict[str, tuple[str, ...]] = {}
+    for name in ("human", "orc", "undead", "elf"):
+        skill: dict[int, str] = {}
+        for m in re.finditer(r"set\s+skill\[\s*(\d+)\]\s*=\s*(\w+)|call\s+SetSkillArray\(\s*\d+\s*,\s*(\w+)\s*\)", text[name]):
+            if m.group(1):
+                skill[int(m.group(1))] = consts.get(m.group(2), m.group(2))
+            elif skill and m.group(3) in consts:
+                out.setdefault(consts[m.group(3)], tuple(skill[i] for i in sorted(skill)))
+    return out
+
+
+def next_skill(hero: str, levels, hero_level: int) -> str | None:
+    """The ability a hero with a skill point learns next (selfplay --macros 3: a point the policy left unspent): the
+    built-in AI's order for it (ai_skill_orders), else its ultimate when it may, else its least learned ability; None
+    when none may be learned now. `levels`: its abilities' levels per slot (the harness's)."""
+    slots = hero_table().get(fourcc(hero), ())
+    def can(k: int) -> bool:
+        a = slots[k] if k < len(slots) else None
+        return a is not None and levels[k] < a.levels and hero_level >= a.hero_level_for(levels[k] + 1)
+    index = {a.code: k for k, a in enumerate(slots) if a is not None}
+    need: dict[str, int] = {}
+    for code in ai_skill_orders().get(hero, ()):
+        need[code] = need.get(code, 0) + 1
+        k = index.get(code)
+        if k is not None and levels[k] < need[code] and can(k):
+            return code
+    ready = [k for k in range(len(slots)) if can(k)]
+    if not ready:
+        return None
+    ult = [k for k in ready if slots[k].req_level >= 6]
+    return slots[ult[0] if ult else min(ready, key=lambda k: (levels[k], k))].code

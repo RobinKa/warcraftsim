@@ -88,6 +88,7 @@ globals
     item w3s_pick_best = null
     real w3s_pick_d = 0.0
     boolean w3s_pick_free = false
+    rect w3s_clear_rect = null  // (op 88: the cleared area, its dropped items swept)
     integer array w3s_qs_player
     integer array w3s_qs_type
     real array w3s_qs_x
@@ -1356,6 +1357,10 @@ function W3S_PickUp takes unit u, real r returns boolean
     return ok
 endfunction
 
+function W3S_ClearItem takes nothing returns nothing
+    call RemoveItem(GetEnumItem())
+endfunction
+
 function W3S_ClearCreeps takes real x, real y, real r returns nothing
     local group g = CreateGroup()
     local unit u
@@ -1370,6 +1375,11 @@ function W3S_ClearCreeps takes real x, real y, real r returns nothing
     endloop
     call DestroyGroup(g)
     set g = null
+    // the items its creeps dropped as they died (the map's drop triggers): a scenario's cleared camp is no free loot
+    set w3s_clear_rect = Rect(x - r, y - r, x + r, y + r)
+    call EnumItemsInRect(w3s_clear_rect, null, function W3S_ClearItem)
+    call RemoveRect(w3s_clear_rect)
+    set w3s_clear_rect = null
 endfunction
 
 function W3S_ApplyOne takes integer at returns integer

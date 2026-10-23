@@ -40,6 +40,9 @@ HALLS = {"human": "htow", "orc": "ogre", "undead": "unpl", "nightelf": "etol"}
 WORKERS = ("hpea", "opeo", "uaco", "ewsp")
 MINES = {int.from_bytes(c.encode(), "big") for c in ("ngol", "ugol", "egol")}
 HAUNTED = int.from_bytes(b"ugol", "big")
+# what holds a natural: a hall of any tier, a haunted or an entangled mine (a keep there had read as a free natural)
+HOLDS = [int.from_bytes(c.encode(), "big") for c in
+         ("htow", "hkee", "hcas", "ogre", "ostr", "ofrt", "unpl", "unp1", "unp2", "etol", "etoa", "etoe", "ugol", "egol")]
 NATURAL_FROM_START = 1500.0  # (the main mine is nearer its start)
 CAMP_NEAR = 900.0  # creeps this near the natural's mine guard it
 TAKEN_NEAR = 1000.0  # a hall or a haunted mine this near it: taken
@@ -195,7 +198,7 @@ def camp(rows: np.ndarray, start: tuple[float, float] | None) -> tuple[float, fl
     mx, my = float(nat[fx.C_X]), float(nat[fx.C_Y])
     alive = rows[rows[:, fx.C_FLAGS] & fx.DEAD == 0]
     dist = np.hypot(alive[:, fx.C_X] - mx, alive[:, fx.C_Y] - my)
-    halls = np.isin(alive[:, fx.C_TYPE], [code(h) for h in HALLS.values()] + [HAUNTED]) & (alive[:, fx.C_OWNER] <= 1)
+    halls = np.isin(alive[:, fx.C_TYPE], HOLDS) & (alive[:, fx.C_OWNER] <= 1)
     if (halls & (dist < TAKEN_NEAR)).any() or not ((alive[:, fx.C_OWNER] == 12) & (dist < CAMP_NEAR)).any():
         return None
     return mx, my
@@ -219,7 +222,7 @@ def site(rows: np.ndarray, start: tuple[float, float] | None) -> tuple[int, floa
     mx, my = float(nat[fx.C_X]), float(nat[fx.C_Y])
     alive = rows[rows[:, fx.C_FLAGS] & fx.DEAD == 0]
     dist = np.hypot(alive[:, fx.C_X] - mx, alive[:, fx.C_Y] - my)
-    halls = np.isin(alive[:, fx.C_TYPE], [code(h) for h in HALLS.values()] + [HAUNTED]) & (alive[:, fx.C_OWNER] <= 1)
+    halls = np.isin(alive[:, fx.C_TYPE], HOLDS) & (alive[:, fx.C_OWNER] <= 1)
     if (halls & (dist < TAKEN_NEAR)).any() or ((alive[:, fx.C_OWNER] == 12) & (dist < CAMP_NEAR)).any():
         return None
     ox, oy = EXPAND_SPOTS.get((int(round(mx)), int(round(my))), (None, None))

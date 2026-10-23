@@ -1365,8 +1365,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         """--macros: a due expansion (the race's hall or a haunted mine among the due items) with the natural free:
         its cost kept from the agent's other orders (the expand order takes its hall's mask), else None."""
         from .macros import site
-        hall = {"human": "htow", "orc": "ogre", "undead": "ugol"}.get(self.race)
-        if not fx.MACROS or hall is None or self.costs is None or not any(c in (hall, "unpl") for _, c in due):
+        hall = {"human": "htow", "orc": "ogre", "undead": "ugol", "nightelf": "etol"}.get(self.race)
+        if not fx.MACROS or hall is None or self.costs is None or not any(c in (hall, "unpl", "etol") for _, c in due):
             return None
         from .play import unit_rows
         q = obs.players.get(self.side)
@@ -1717,7 +1717,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             if s in spans and trajs[s].steps:
                 av, oix = sts[s].get("avail"), bots[s].enc.order_index
                 can = (None if av is None else  # (the units the policy could train now: the army mix teaches only those)
-                       lambda u, k=fx.IMMEDIATE, av=av, oix=oix: bool(av[oix.get((int.from_bytes(u.encode(), "big"), k), 0)]))
+                       lambda u, k=fx.IMMEDIATE, av=av, oix=oix: (c := oix.get((int.from_bytes(u.encode(), "big"), k))) is not None
+                       and bool(av[c]))
                 c = tc.commands(rows, obs.players.get(s), obs.game_time, t, can, getattr(bots[s].view, "pickers", ()))
                 q = obs.players.get(s)
                 if c and q is not None:
@@ -1782,6 +1783,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                 if code in EXPANSION_ITEMS and not prod.expansions[s]:
                     continue  # (a hall or a haunted mine: made only as an expansion, not a second one at home)
                 made[s].setdefault(code, obs.game_time)
+            if prod.expansions[s]:  # (an expansion made the target's hall whatever it took: undead's targets name a
+                for code in EXPANSION_ITEMS & set(zs[s].get("t") or {}):  # necropolis, the expand order haunts the
+                    made[s].setdefault(code, obs.game_time)              # mine; 40 of 123 such games read missed)
         rows_next = unit_rows(obs, t) if trackers else None
         for s, tk in trackers.items():  # (--z-modes: evaluation games too, their rows' report)
             p_ = obs.players.get(s)
@@ -1853,6 +1857,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
            if side in bots and getattr(bots[side], "bought", 0) else {}),
         **({"pickup_orders": getattr(bots[side], "pickup_orders", 0), "picked_up": getattr(bots[side], "picked_up", 0)}
            if side in bots and fx.MACROS >= 2 else {}),  # (--macros 2: items off the ground)
+        **({"auto_skills": getattr(bots[side], "auto_skills", 0)} if side in bots and fx.MACROS >= 3 else {}),
         **({"scenario": scenario} if scenario else {}),
         **({"z_t": {c: round(v) for c, v in zs[side]["t"].items()},
             "z_made": {c: round(v) for c, v in made[side].items()}} if side in zs else {}),
@@ -1865,8 +1870,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             "z_extra": sorted(c for c, t0 in made[side].items() if t0 <= min(obs.game_time, strat.horizon(zs[side])) and zs[side]["t"].get(c, 1e9) > min(obs.game_time, strat.horizon(zs[side])) and c in pool["items"][races[side]])} if side in zs else {}),
         **({"branch": round(replay["t"] * cfg["step_seconds"]), "branch_same": same} if replay is not None else {}),
         **({} if train else {"eval": True, "eval_key": opp.get("eval_tag") or opp.get("eval_key") or "current"})}
-    out_q.put({"episode": ep})
-    if grpo is not None:
+    out_q.put({"episode": dict(ep)})  # (a copy: the queue pickles later, and a filmed game's trace goes into ep below;
+    if grpo is not None:                # 354 rows of 0.1-1.5 MB in the episode files; audit 3)
         grpo["same"] = same
         if rec is not None and "h" in rec and t > rec["t"] + 20:  # (the game reached its branch with a minute to go)
             grpo["record"] = rec
@@ -3152,8 +3157,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--z-mix-reward", type=float, default=0.0, help="--z-mix: the strategy potential's term for the "
                     "army trained against the target's mix (minus this times their total variation, 0 to 1)")
     ap.add_argument("--macros", type=int, default=0, help="the agent's own orders for what the game spreads over many "
-                    "(macros.py: 1 expand, creep, mix; 2 also pick up, a hero takes the items lying near; every network "
-                    "loaded grows to them)")
+                    "(macros.py: 1 expand, creep, mix; 2 also pick up, a hero takes the items lying near; 3 also a skill "
+                    "point left unspent 10 s is spent as the built-in AI would; every network loaded grows to them)")
     ap.add_argument("--memory-fade", type=int, default=0, help="inputs 3: the remembered enemies fade into the learner's "
                     "attention over this many updates (its bias on them from -8 to 0; older networks and the anchor "
                     "keep them hidden at -30); 0: as loaded")

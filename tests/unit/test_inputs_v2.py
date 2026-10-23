@@ -959,3 +959,44 @@ def test_teacher_first_hero_without_a_target(v2):
     assert tc.commands(np.stack([hall, peon, altar, pal]), player, 140.0, 150) == []  # (it has one)
     targeted = Teacher(0, "human", random.Random(0), {"t": {"hfoo": 100.0}})
     assert targeted.commands(np.stack([hall, peon]), player, 60.0, 2) == []
+
+
+def test_audit3_skills_dead_buildings_held_naturals(v2):
+    """Audit 3: --macros 3 spends a skill point the policy left unspent 10 s (the AI's order: the Mountain King's
+    second Storm Bolt before its Avatar); the view forgets a building that died (its research masked no more) and
+    an enemy's production; a keep holds the natural; the mix order's units are those a train order makes."""
+    from warcraftsim.fullgame import macros
+    from warcraftsim.fullgame.play import SKILL_WAIT_STEPS, BCAgent
+    from warcraftsim.protocol import LearnSkill
+    mk = _unit(5, 0, -5000, 2900, 1, fx.HERO, "Hmkg")
+    mk[fx.C_HLEVEL], mk[fx.C_SKILLPTS] = 6, 1
+    for k, lv in enumerate((3, 1, 1, 0)):  # (slots: Thunder Clap, Storm Bolt, Bash, Avatar)
+        mk[fx.C_ABIL0 + 2 * k] = lv
+    bot = BCAgent(None, AUDIT_VOCAB, 0, None)
+    fx.set_macros(3)
+    try:
+        bot.t = 0
+        assert bot._auto_skills(np.stack([mk]), []) == []  # (the policy's to spend first)
+        bot.t = SKILL_WAIT_STEPS
+        assert bot._auto_skills(np.stack([mk]), []) == [LearnSkill(5, code("AHtb"))]
+        mk[fx.C_ABIL0 + 2], mk[fx.C_ABIL0 + 4] = 3, 1  # (Storm Bolt 3, Bash 1: the AI's next is its ultimate)
+        bot.t = 2 * SKILL_WAIT_STEPS
+        assert bot._auto_skills(np.stack([mk]), []) == [LearnSkill(5, code("AHav"))]
+        bot.t = 3 * SKILL_WAIT_STEPS
+        assert bot._auto_skills(np.stack([mk]), [LearnSkill(5, code("AHbh"))]) == []  # (the policy spends it)
+    finally:
+        fx.set_macros(0)
+    view = fx.Encoder(AUDIT_VOCAB).view(0, 1.0, [0, 1])
+    altar = _unit(3, 0, -2500, 0, 1, fx.STRUCTURE, "halt")
+    ev = np.asarray([[0, 8, 3, code("Rhst"), 0], [0, 5, 9, code("ogru"), 0]], np.int64)  # (research at it; an enemy's)
+    enemy = _unit(9, 1, 2500, 0, 1, fx.STRUCTURE, "obar")
+    view.step(np.stack([altar, enemy]), None, ev, 0)
+    assert 3 in view.making and 3 in view.busy and 9 not in view.busy
+    dead = altar.copy()
+    dead[fx.C_FLAGS] |= fx.DEAD
+    view.step(np.stack([dead, enemy]), None, np.zeros((0, 5), np.int64), 1)
+    assert 3 not in view.making and 3 not in view.busy
+    start = (-5184.0, 2944.0)
+    nat = _unit(51, 15, -4864, -3200, 1, fx.STRUCTURE, "ngol")
+    keep = _unit(70, 0, -4764, -2400, 1, fx.STRUCTURE, "hkee")
+    assert macros.site(np.stack([nat]), start) is not None and macros.site(np.stack([nat, keep]), start) is None

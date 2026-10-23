@@ -227,7 +227,8 @@ class Teacher:
         near = lambda r, rad: np.hypot(r[:, fx.C_X] - mx, r[:, fx.C_Y] - my) < rad  # noqa: E731
         hall = fourcc(HALL[self.race])
         workers = alive[np.isin(alive[:, fx.C_TYPE], list(WORKERS)) & (alive[:, fx.C_FLAGS] & HIDDEN == 0)]
-        taken = alive[np.isin(alive[:, fx.C_TYPE], [hall, HAUNTED]) & near(alive, 1000.0)]
+        from .macros import HOLDS  # (a hall of any tier, a haunted or an entangled mine)
+        taken = alive[np.isin(alive[:, fx.C_TYPE], HOLDS) & near(alive, 1000.0)]
         if len(taken):  # (taken: once finished, three workers to mine there)
             if (taken[:, fx.C_FLAGS] & fx.CONSTRUCTING > 0).all() or (near(workers, 900.0).sum() >= 4) or not len(workers):
                 return []

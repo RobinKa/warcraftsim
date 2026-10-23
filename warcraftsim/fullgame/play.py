@@ -75,6 +75,7 @@ TIERS = {int.from_bytes(c.encode(), "big") for c in ("hkee", "hcas", "ostr", "of
 REVIVE = 852039  # an altar's revival of a dead hero: a target order on it (its training order is refused; tested
 # 2026-10-22: accepted ~7 s after the death, at 425 x 0.4 gold for a level 1 hero)
 BUY_REACH, BUY_ARRIVED = 500.0, 6  # (a buyer this near its shop this many steps: free again, _release_buyers)
+SKILL_WAIT_STEPS = 20  # (--macros 3: a skill point unspent this long, 10 s, is spent for the policy)
 PICKUP_COMMIT_STEPS = 8  # (a hero sent to pick up an item: 4 s to walk there, macros.PICKUP_NEAR at ~300 a second,
 # unless it picks something up before)
 BUY_COMMIT_STEPS = 120  # (a unit sent to buy: 60 s to walk there, the harness keeps the purchase pending meanwhile; a
@@ -280,8 +281,41 @@ class BCAgent:
                 self.sent_resources.append(res)
         if fx.MACROS and fx.RACES[self.view.races[self.player]] == "nightelf" and getattr(self, "rows", None) is not None:
             out += self._entangle(self.rows)  # (--macros: the expansion's mine; the policy has no entangle order)
-            self.sent_resources += [None] * (len(out) - len(self.sent_resources))
+        if fx.MACROS >= 3 and getattr(self, "rows", None) is not None:
+            out += self._auto_skills(self.rows, out)  # (--macros 3: a skill point the policy left unspent)
+        self.sent_resources += [None] * (len(out) - len(self.sent_resources))
         self.issued += len(out)
+        return out
+
+    def _auto_skills(self, rows: np.ndarray, given: list) -> list[Command]:
+        """--macros 3: a hero of the player's with a skill point it has not spent for SKILL_WAIT_STEPS learns the
+        ability the built-in AI's order for it names (herodata.next_skill). The policy spent its points on 2.8% of
+        the steps it had one: 51 of 128 heroes ended their games with points unspent, and 4 of 42 that reached level
+        6 learned their ultimate (the AI's 68 of 68; audit 3)."""
+        from .herodata import next_skill
+        if rows.shape[1] < fx.ROW_COLS:
+            return []
+        learning = {c.hero for c in given if isinstance(c, LearnSkill)}
+        wait = self.__dict__.setdefault("skill_since", {})
+        heroes = rows[(rows[:, fx.C_OWNER] == self.player) & (rows[:, fx.C_FLAGS] & fx.HERO != 0)
+                      & (rows[:, fx.C_FLAGS] & fx.DEAD == 0) & (rows[:, fx.C_SKILLPTS] > 0)]
+        out: list[Command] = []
+        for r in heroes:
+            hid = int(r[fx.C_ID])
+            since = wait.setdefault(hid, self.t)
+            if hid in learning:
+                wait[hid] = self.t
+                continue
+            if self.t - since < SKILL_WAIT_STEPS:
+                continue
+            code = next_skill(fx.rawcode(int(r[fx.C_TYPE])), [int(r[fx.C_ABIL0 + 2 * k]) for k in range(4)],
+                              int(r[fx.C_HLEVEL]))
+            if code is not None:
+                out.append(LearnSkill(hid, int.from_bytes(code.encode(), "big")))
+                wait[hid] = self.t
+                self.auto_skills = getattr(self, "auto_skills", 0) + 1
+        for hid in [h for h in wait if h not in set(heroes[:, fx.C_ID].tolist())]:
+            del wait[hid]  # (spent, or dead)
         return out
 
     def _entangle(self, rows: np.ndarray) -> list[Command]:
