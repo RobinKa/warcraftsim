@@ -48,6 +48,6 @@ flowchart LR
 * [The whole-game model](model.md): tokens, transformer, action heads.
 * [Experiments](experiments.md): what worked and what did not.
 * [The road to the real game](road-to-the-real-game.md): what is still missing.
-* [Optimizations](optimizations.md): how a step became fast.
+* [Optimizations](optimizations.md): how a step became fast. [Speeding up the game itself](game-speedups.md): the shim's hooks, the virtual clock and the game's functions rewritten with the same results.
 * [Architecture](architecture.md): how Python drives the game.
 * Related work: [AlphaStar](related/alphastar.md), [OpenAI Five](related/openai-five.md) and [robot learning](related/robot-learning.md), and how this project differs.

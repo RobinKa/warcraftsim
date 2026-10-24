@@ -152,6 +152,7 @@ python -m warcraftsim dashboard
 | [Experiments](docs/experiments.md) | what worked and what did not |
 | [The road to the real game](docs/road-to-the-real-game.md) | what is still missing before games against people |
 | [Optimizations](docs/optimizations.md) | how a step became fast |
+| [Speeding up the game itself](docs/game-speedups.md) | the virtual clock, drawing nothing, and the game's own functions rewritten with the same results |
 | [Architecture](docs/architecture.md) | how Python drives the game |
 | Related work | [AlphaStar](docs/related/alphastar.md), [OpenAI Five](docs/related/openai-five.md), [reward shaping](docs/related/reward-shaping.md), [robot learning](docs/related/robot-learning.md) |
 | Reference | [ideas](docs/reference/ideas.md) (where each came from, what became of it), [experiment log](docs/reference/experiment-log.md), [engine notes](docs/reference/engine-notes.md), [optimization log](docs/reference/optimization-log.md), [human replays](docs/reference/human-replays.md), [what AlphaStar and OpenAI Five found](docs/reference/ideas-from-alphastar-and-openai-five.md), [usage](docs/reference/usage.md), [GPU unlock](docs/reference/gpu-unlock.md), [scaling up the CPUs](docs/reference/scaling-cpus.md) |
