@@ -30,6 +30,31 @@
  *      at every game's first step and when the type registry changes
  * 128  soft float: count leading zeros (0x9a0330) as LZCNT; the integer square root (0x9a2150, 16 rounds of
  *      digit-by-digit) as floor(sqrt(double))
+ * 4096 the path search's other integer square root (0x99b740: Newton's method with two divisions a round, called
+ *      twice per node relaxed by the long-range search 0x8a3d00) as floor(sqrt(double)): the executable's own
+ *      code gives floor(sqrt(x)) for every one of the 2^32 inputs (run natively, ~/tools/wt-cuts2-out/isqrt2),
+ *      and a self-test against it in the process before hooking
+ * 8192 a unit's ability by id (0x6d6570, thiscall find(unit, id, isa, by_base, a, b); UnitIsSleeping asks it for
+ *      'Asla' for every unit every step): the same walk of the unit's ability list in C, the agent lookups of the
+ *      list's links inlined (0x7fc7e0 -> 0x4707f0: reads), the ability's type still asked of its virtual getter, and
+ *      on the main thread IsA(type, id) remembered per (type, id) for the game (the engine memoizes it too, in its
+ *      type registry: the remembered answer is the one its first call gave; forgotten at every game's first step
+ *      and when the world changes)
+ * 16384 the widget grid's walk over a query's cells (0x8092a0 -> 0x809170 per cell -> 0x809030 per entry; every
+ *      area enumeration, e.g. the harness's EnumItemsInRect over the whole map every step) in C: the same stores
+ *      in the same order (the grid's stamp counter, each entry's stamp, the query's results), without a call per
+ *      cell and per entry
+ * 32768 (units.c) a unit's handle turned into its object once per unit of the harness's pass: the natives' conversions
+ *      (0x483940 to a unit, 0x483ba0 to a widget: the JASS state, the handle table, a type check, the agent's
+ *      liveness, a reference taken and given back, two exception frames) remembered from the first native of the
+ *      unit to its last, the same pointer the conversion gives (nothing between them changes the handle or its
+ *      object; forgotten when the unit is dropped from the group)
+ * 65536 Wine-level: an observation and its header in one send (sync.c; each send is a few wineserver requests), and the
+ *      calling thread's own priority remembered (GetThreadPriority(GetCurrentThread()) around the game's timing code,
+ *      a wineserver request each time; the remembered value is the one the last SetThreadPriority through the
+ *      executable's imports set, or the first query's)
+ * 131072 Wine-level (sync.c): the controller's TCP connection made and used with Linux system calls instead of Winsock (no
+ *      wineserver requests in the step sync)
  *
  * Offsets are for the 1.29.2.9231 executable (RVAs; see ~/tools/w3analysis/report.md).
  */
@@ -514,6 +539,354 @@ static void install_softfloat(void) {
     }
 }
 
+/* 4096: the Newton square root */
+#define VA_ISQRT2 0x99b740 /* cdecl unsigned isqrt(unsigned) */
+static IsqrtFn Isqrt2_orig;
+
+static unsigned __cdecl Isqrt2_hook(unsigned x) {
+    double d = (double)(int)(x >> 1) * 2.0 + (double)(x & 1), r; /* (exact: x < 2^32) */
+    __asm__("sqrtsd %1, %0" : "=x"(r) : "x"(d));
+    return (unsigned)(int)r; /* (r <= 65536: truncated) */
+}
+
+static void install_isqrt2(void) {
+    BYTE *sq = VA_(VA_ISQRT2);
+    static const BYTE code[] = {0x55, 0x8b, 0xec, 0x53, 0x8b, 0x5d, 0x08, 0x56, 0x57, 0x81, 0xfb, 0xff, 0x00, 0x00, 0x00};
+    if (memcmp(sq, code, sizeof code) != 0) {
+        shim_log("cuts: isqrt2: unexpected code, not hooked");
+        return;
+    }
+    /* the replacement against the code: edge cases, every k*k - 1, k*k and k*k + 1, a sweep */
+    int bad = 0;
+    for (unsigned k = 0, v = 99991; k < (1u << 18) + 65536 * 3 && !bad; k++, v = v * 1664525u + 1013904223u) {
+        unsigned t;
+        if (k < 65536 * 3)
+            t = (k / 3) * (k / 3) + (k % 3) - 1; /* (k = 0: 0xffffffff) */
+        else if (k < 65536 * 3 + 4096)
+            t = k - 65536 * 3;
+        else
+            t = v;
+        bad = ((IsqrtFn)(void *)sq)(t) != Isqrt2_hook(t);
+    }
+    if (!bad && hook(VA_ISQRT2 - 0x400000, (void *)Isqrt2_hook, (void **)&Isqrt2_orig, "isqrt2"))
+        shim_log("cuts: isqrt2 (0x99b740) as floor(sqrt(double))");
+    else if (bad)
+        shim_log("cuts: isqrt2: MISMATCH in the self-test, not hooked");
+}
+
+/* 8192: a unit's ability by id */
+#define VA_FINDABIL 0x6d6570  /* thiscall BYTE *find(unit, id, isa, by_base, a, b), ret 0x14 */
+#define G_AGENTS 0x1178f10    /* the agent table: +0xc/+0x1c the low ids' (entries of 8 bytes, count), +0x2c/+0x3c the high */
+#define G_WORLD 0x115e9ec
+typedef BYTE *(__fastcall *FindAbilFn)(BYTE *, void *, int, int, int, int, int);
+typedef int(__fastcall *VGetFn)(BYTE *);
+static FindAbilFn FindAbil_orig;
+static IsaFn Isa_fn;
+#define AISA_SLOTS 4096
+static struct {
+    int a, b, r;
+} g_aisa[AISA_SLOTS];
+static DWORD g_aisa_world;
+static LONG g_aisa_seen_gen = -1;
+static volatile LONG g_fa_calls, g_fa_isa_hits, g_fa_isa_miss;
+
+static inline BYTE *agent_lookup(DWORD id, DWORD gen) { /* 0x4707f0 */
+    BYTE *t = *(BYTE **)VA_(G_AGENTS);
+    DWORD *e;
+    if (!(id & 0x80000000u)) {
+        if (id >= *(DWORD *)(t + 0x1c))
+            return NULL;
+        e = (DWORD *)(*(BYTE **)(t + 0xc) + id * 8);
+    } else {
+        id &= 0x7fffffffu;
+        if (id >= *(DWORD *)(t + 0x3c))
+            return NULL;
+        e = (DWORD *)(*(BYTE **)(t + 0x2c) + id * 8);
+    }
+    if (e[0] != 0xfffffffeu)
+        return NULL;
+    BYTE *o = (BYTE *)(size_t)e[1];
+    return *(DWORD *)(o + 0x18) == gen ? o : NULL;
+}
+
+static inline BYTE *link_obj(const DWORD *pair) { /* 0x7fc7e0 */
+    BYTE *o = agent_lookup(pair[0], pair[1]);
+    return o && *(DWORD *)(o + 0x20) == 0 ? *(BYTE **)(o + 0x54) : NULL;
+}
+
+static int isa_memo(int a, int b) {
+    if (b == 0x2b616761 || a == b)
+        return 1;
+    DWORD world = *(DWORD *)VA_(G_WORLD);
+    if (!world || GetCurrentThreadId() != g_step_tid)
+        return Isa_fn(a, b);
+    if (world != g_aisa_world || g_aisa_seen_gen != g_isa_gen) {
+        memset(g_aisa, 0, sizeof g_aisa);
+        g_aisa_world = world;
+        g_aisa_seen_gen = g_isa_gen;
+    }
+    unsigned k = ((unsigned)a * 2654435761u ^ (unsigned)b * 40503u) >> 20; /* (12 bits) */
+    if (g_aisa[k].a == a && g_aisa[k].b == b && (a || b)) {
+        g_fa_isa_hits++;
+        return g_aisa[k].r;
+    }
+    int r = Isa_fn(a, b);
+    g_aisa[k].a = a;
+    g_aisa[k].b = b;
+    g_aisa[k].r = r;
+    g_fa_isa_miss++;
+    return r;
+}
+
+static BYTE *__fastcall FindAbil_hook(BYTE *u, void *edx, int id, int isa, int by_base, int fa, int fb) {
+    switch (id) { /* (the ids kept in fields of the unit) */
+    case 0x414e6275: case 0x41486275: case 0x41456275: case 0x41476275: case 0x414f6275: case 0x41556275:
+        return *(BYTE **)(u + 0x400);
+    case 0x41486572:
+        return *(BYTE **)(u + 0x3fc);
+    case 0x41496e76:
+        return *(BYTE **)(u + 0x404);
+    case 0x4161746b:
+        return *(BYTE **)(u + 0x3f4);
+    case 0x416d6f76:
+        return *(BYTE **)(u + 0x3f8);
+    }
+    g_fa_calls++;
+    if ((*(DWORD *)(u + 0x3ec) & *(DWORD *)(u + 0x3e8)) == 0xffffffffu)
+        return NULL;
+    BYTE *p = link_obj((DWORD *)(u + 0x3e8));
+    while (p) {
+        BYTE *cur = p;
+        p = (*(DWORD *)(cur + 0x28) & *(DWORD *)(cur + 0x24)) == 0xffffffffu ? NULL : link_obj((DWORD *)(cur + 0x24));
+        if ((cur[0x20] & 0x20) ? fb : fa) {
+            int base = *(int *)(cur + 0x34);
+            int v = ((VGetFn)(*(void ***)cur)[0x1c / 4])(cur);
+            if ((by_base ? base : v) == id)
+                return cur;
+            if (isa && isa_memo(v, id))
+                return cur;
+        }
+    }
+    return NULL;
+}
+
+static void install_findabil(void) {
+    BYTE *f = VA_(VA_FINDABIL), *lk = VA_(0x7fc7e0), *ag = VA_(0x4707f0);
+    /* the code this replaces, as read (the walk at 0x6d65ff, the link lookup, the agent table's address) */
+    static const BYTE walk[] = {0x8b, 0x81, 0xec, 0x03, 0x00, 0x00, 0x81, 0xc1, 0xe8, 0x03, 0x00, 0x00};
+    static const BYTE link[] = {0xff, 0x71, 0x04, 0xff, 0x31, 0xe8};
+    if (memcmp(f + 0x8f, walk, sizeof walk) != 0 || memcmp(lk, link, sizeof link) != 0 ||
+        *(DWORD *)(ag + 8) != (DWORD)(size_t)VA_(G_AGENTS) || f[0xe6] != 0xff || f[0xe7] != 0x50 || f[0xe8] != 0x1c) {
+        shim_log("cuts: find ability: unexpected code, not hooked");
+        return;
+    }
+    Isa_fn = (IsaFn)(void *)VA_(VA_ISA);
+    if (hook(VA_FINDABIL - 0x400000, (void *)FindAbil_hook, (void **)&FindAbil_orig, "find ability"))
+        shim_log("cuts: a unit's ability by id in C (0x6d6570), IsA remembered on the main thread");
+}
+
+/* 16384: the grid walk */
+#define VA_GRIDCELLS 0x8092a0 /* thiscall void cells(query, grid, int rect[4]), ret 8 */
+#define VA_GRIDCELL 0x809170  /* thiscall void cell(query, grid, index, stamp), ret 0xc */
+#define VA_WMASK 0x809030     /* cdecl uint64 mask(widget) */
+#define VA_QGROW 0x9919c0     /* thiscall char grow(query, bytes, 1), ret 8 */
+typedef void(__fastcall *GridCellsFn)(BYTE *, void *, BYTE *, int *);
+typedef char(__fastcall *QGrowFn)(BYTE *, void *, unsigned, int);
+static GridCellsFn GridCells_orig;
+static volatile LONG g_gw_calls, g_gw_cells, g_gw_big;
+
+static inline void grid_entry(BYTE *q, DWORD kind, BYTE *o, DWORD stamp, DWORD cs) {
+    if (kind == 0x2000000)
+        return;
+    DWORD st = *(DWORD *)(o + 0x38);
+    if (st == stamp || st == cs || st == 0xffffffffu)
+        return;
+    if (kind != 0x1000000) {
+        *(DWORD *)(o + 0x38) = cs;
+        return;
+    }
+    /* 0x809030's mask (the low and high words), against the query's */
+    DWORD f40 = *(DWORD *)(o + 0x40), s34 = *(DWORD *)(o + 0x34);
+    DWORD low = 1u << ((f40 >> 5) & 7);
+    DWORD mlo = ((low & 2) ? 1u : 0u) << (f40 & 31);
+    DWORD mhi = ((((((2 - ((s34 >> 26) & 1)) << 2) | (2 - ((s34 >> 25) & 1))) << 2) | (2 - ((f40 >> 8) & 1))) << 8) | low;
+    if (((mlo & *(DWORD *)(q + 0x48)) | ((*(DWORD *)(o + 0x44) >> 28) & 1) | (mhi & *(DWORD *)(q + 0x4c))) == 0) {
+        DWORD cnt = *(DWORD *)(q + 0x1c), cap = *(DWORD *)(q + 0x18);
+        int ok = 1;
+        if (cnt + 1 > cap) {
+            DWORD grow = *(DWORD *)(q + 0x14);
+            if (!grow)
+                ok = 0;
+            else {
+                DWORD need = cnt - cap + 1, add = grow > need ? grow : need;
+                if (((QGrowFn)(void *)VA_(VA_QGROW))(q, NULL, (cap + add) * 8, 1))
+                    *(DWORD *)(q + 0x18) += add;
+                else
+                    ok = 0;
+            }
+        }
+        if (ok) { /* (0x809400 for one entry) */
+            DWORD c = *(DWORD *)(q + 0x1c);
+            *(DWORD *)(q + 0x1c) = c + 1;
+            DWORD *arr = *(DWORD **)(q + 0xc);
+            arr[c * 2] = (DWORD)(size_t)o;
+            arr[c * 2 + 1] = 0;
+        }
+    }
+    *(DWORD *)(o + 0x38) = stamp;
+}
+
+/* a cell's list: its entries read first (the links only; processing never changes them) and their widgets
+ * prefetched, then processed in the list's order as 0x809170 does (the walk is bound by the widgets' cache
+ * misses: ~5,000 entries a step for the whole map) */
+#define GW_BATCH 64
+static inline void grid_cell(BYTE *q, BYTE *g, unsigned idx, DWORD stamp) {
+    DWORD e = (*(DWORD **)(g + 0x28))[idx] & 0xffffff;
+    if (e == 0xffffff)
+        return;
+    DWORD cs = ++*(DWORD *)(g + 0xb4);
+    DWORD kinds[GW_BATCH];
+    BYTE *objs[GW_BATCH];
+    do {
+        int n = 0;
+        BYTE *ents = *(BYTE **)(g + 0x78);
+        while (e != 0xffffff && n < GW_BATCH) {
+            DWORD *ent = (DWORD *)(ents + e * 8);
+            DWORD w = ent[0];
+            kinds[n] = w & 0xff000000;
+            objs[n] = (BYTE *)(size_t)ent[1];
+            if (kinds[n] != 0x2000000) {
+                __builtin_prefetch(objs[n] + 0x34, 1);
+                __builtin_prefetch(objs[n] + 0x44, 0);
+            }
+            n++;
+            e = w & 0xffffff;
+        }
+        for (int k = 0; k < n; k++)
+            grid_entry(q, kinds[k], objs[k], stamp, cs);
+    } while (e != 0xffffff);
+}
+
+static void __fastcall GridCells_hook(BYTE *q, void *edx, BYTE *g, int *r) {
+    int y1 = *(int *)(g + 0x60), x1 = *(int *)(g + 0x5c), y0 = *(int *)(g + 0x58), x0 = *(int *)(g + 0x54);
+    if (r[3] < y1)
+        y1 = r[3];
+    if (r[2] < x1)
+        x1 = r[2];
+    if (r[1] > y0)
+        y0 = r[1];
+    if (r[0] > x0)
+        x0 = r[0];
+    if (x0 >= x1 || y0 >= y1)
+        return;
+    g_gw_calls++;
+    g_gw_cells += (x1 - x0) * (y1 - y0);
+    if ((x1 - x0) * (y1 - y0) > 1000)
+        g_gw_big++;
+    DWORD stamp = ++*(DWORD *)(g + 0xb4);
+    if (*(BYTE **)(q + 0x20))
+        *(DWORD *)(*(BYTE **)(q + 0x20) + 0x38) = stamp;
+    for (unsigned i = (unsigned)x0; i < (unsigned)x1; i++)
+        for (unsigned j = (unsigned)y0; j < (unsigned)y1; j++)
+            grid_cell(q, g, *(DWORD *)(g + 0x3c) * i + j, stamp);
+}
+
+static void install_gridwalk(void) {
+    BYTE *f = VA_(VA_GRIDCELLS), *c = VA_(VA_GRIDCELL), *m = VA_(VA_WMASK);
+    /* the code as read: the call per cell, the per-entry mask call, the push's helpers */
+    if (f[0x8d] != 0xe8 || f + 0x92 + *(int32_t *)(f + 0x8e) != c || c[0x87] != 0xe8 ||
+        c + 0x8c + *(int32_t *)(c + 0x88) != m || c[0xdb] != 0xe8 || c + 0xe0 + *(int32_t *)(c + 0xdc) != VA_(VA_QGROW) ||
+        c[0xf8] != 0xe8 || c + 0xfd + *(int32_t *)(c + 0xf9) != VA_(0x809400) || memcmp(m + 0x40 - 0x30, "\x8b\x43\x40\xc1\xe8\x05", 6) != 0) {
+        shim_log("cuts: grid walk: unexpected code, not hooked");
+        return;
+    }
+    if (hook(VA_GRIDCELLS - 0x400000, (void *)GridCells_hook, (void **)&GridCells_orig, "grid walk"))
+        shim_log("cuts: the widget grid's walk in C (0x8092a0)");
+}
+
+/* 32768: a unit's handle converted once per unit of the pass */
+#define VA_H2UNIT 0x483940   /* cdecl CUnit *h2unit(handle) */
+#define VA_H2WIDGET 0x483ba0 /* cdecl CWidget *h2widget(handle) */
+typedef BYTE *(__cdecl *H2Fn)(int);
+static H2Fn H2Unit_orig, H2Widget_orig;
+static int g_h2_on, g_h2u_h, g_h2w_h;
+static BYTE *g_h2u_p, *g_h2w_p;
+static volatile LONG g_h2_hits, g_h2_miss;
+
+void cuts_unit_begin(int on) { /* units.c: a unit's natives begin (on) or end (0); forgotten either way */
+    g_h2u_h = g_h2w_h = 0;
+    g_h2_on = on && (g_cuts & 32768) && H2Unit_orig;
+}
+
+static BYTE *__cdecl H2Unit_hook(int h) {
+    if (g_h2_on && h && h == g_h2u_h) {
+        g_h2_hits++;
+        return g_h2u_p;
+    }
+    BYTE *r = H2Unit_orig(h);
+    if (g_h2_on) {
+        g_h2u_h = h;
+        g_h2u_p = r;
+        g_h2_miss++;
+    }
+    return r;
+}
+
+static BYTE *__cdecl H2Widget_hook(int h) {
+    if (g_h2_on && h && h == g_h2w_h) {
+        g_h2_hits++;
+        return g_h2w_p;
+    }
+    BYTE *r = H2Widget_orig(h);
+    if (g_h2_on) {
+        g_h2w_h = h;
+        g_h2w_p = r;
+        g_h2_miss++;
+    }
+    return r;
+}
+
+static void install_h2(void) {
+    static const BYTE code[] = {0x55, 0x8b, 0xec, 0x6a, 0xff, 0x68};
+    BYTE *u = VA_(VA_H2UNIT), *w = VA_(VA_H2WIDGET);
+    if (memcmp(u, code, sizeof code) != 0 || memcmp(w, code, sizeof code) != 0) {
+        shim_log("cuts: handle conversions: unexpected code, not hooked");
+        return;
+    }
+    if (hook(VA_H2UNIT - 0x400000, (void *)H2Unit_hook, (void **)&H2Unit_orig, "handle to unit") &&
+        hook(VA_H2WIDGET - 0x400000, (void *)H2Widget_hook, (void **)&H2Widget_orig, "handle to widget"))
+        shim_log("cuts: a unit's handle converted once per unit of the pass");
+}
+
+/* 65536: the calling thread's priority remembered */
+static int(WINAPI *GetThreadPriority_orig)(HANDLE);
+static BOOL(WINAPI *SetThreadPriority_orig)(HANDLE, int);
+static __thread int t_prio, t_prio_known; /* (per thread) */
+static volatile LONG g_prio_hits, g_prio_miss;
+
+static int WINAPI GetThreadPriority_hook(HANDLE h) {
+    if (h == GetCurrentThread() && t_prio_known) {
+        g_prio_hits++;
+        return t_prio;
+    }
+    int p = GetThreadPriority_orig(h);
+    if (h == GetCurrentThread() && p != THREAD_PRIORITY_ERROR_RETURN) {
+        t_prio = p;
+        t_prio_known = 1;
+        g_prio_miss++;
+    }
+    return p;
+}
+
+static BOOL WINAPI SetThreadPriority_hook(HANDLE h, int p) {
+    BOOL ok = SetThreadPriority_orig(h, p);
+    if (h == GetCurrentThread())
+        t_prio_known = 0; /* (the next query asks again: what Wine made of it) */
+    else
+        t_prio_known = 0;
+    return ok;
+}
+
 static int hook(DWORD rva, void *fn, void **orig, const char *name) {
     BYTE *p = g_base + rva;
     if (!(p[0] == 0x55 && p[1] == 0x8b && p[2] == 0xec)) {
@@ -561,13 +934,29 @@ void cuts_install(int draw) {
         hook(VA_RELAX - 0x400000, (void *)Relax_hook, (void **)&Relax_orig, "A* relax");
     if (g_cuts & 2048)
         hook(VA_ISA - 0x400000, (void *)Isa_hook, (void **)&Isa_orig, "IsA");
+    if (g_cuts & 4096)
+        install_isqrt2();
+    if (g_cuts & 8192)
+        install_findabil();
+    if (g_cuts & 16384)
+        install_gridwalk();
+    if (g_cuts & 32768)
+        install_h2();
+    if (g_cuts & 65536) {
+        if (iat_hook((HMODULE)g_base, "KERNEL32.dll", "GetThreadPriority", GetThreadPriority_hook, (void **)&GetThreadPriority_orig) &&
+            iat_hook((HMODULE)g_base, "KERNEL32.dll", "SetThreadPriority", SetThreadPriority_hook, (void **)&SetThreadPriority_orig))
+            shim_log("cuts: the calling thread's priority remembered; observations in one send");
+        else
+            shim_log("cuts: thread priority imports not found");
+    }
     shim_log("cuts installed: %d", g_cuts);
 }
 
 void cuts_report(void) {
     if (g_cuts)
         shim_log("cuts/s: mapver hits=%ld miss=%ld paint skipped=%ld events reused=%ld new=%ld textures=%ld "
-                 "rings=%ld (orig %ld) cells hit=%ld miss=%ld fhash hit=%ld miss=%ld relax=%ld early=%ld isa hit=%ld miss=%ld",
+                 "rings=%ld (orig %ld) cells hit=%ld miss=%ld fhash hit=%ld miss=%ld relax=%ld early=%ld isa hit=%ld miss=%ld "
+                 "findabil=%ld (isa hit %ld miss %ld) gridwalk=%ld (big %ld) cells=%ld h2 hit=%ld miss=%ld prio hit=%ld miss=%ld",
                  InterlockedExchange(&g_mv_hits, 0), InterlockedExchange(&g_mv_miss, 0),
                  InterlockedExchange(&g_paint_skipped, 0), InterlockedExchange(&g_evt_reused, 0),
                  InterlockedExchange(&g_evt_new, 0), InterlockedExchange(&g_tex_skipped, 0),
@@ -575,5 +964,10 @@ void cuts_report(void) {
                  InterlockedExchange(&g_cell_hits, 0), InterlockedExchange(&g_cell_miss, 0),
                  InterlockedExchange(&g_fh_hits, 0), InterlockedExchange(&g_fh_miss, 0),
                  InterlockedExchange(&g_relax_n, 0), InterlockedExchange(&g_relax_early, 0),
-                 InterlockedExchange(&g_isa_hits, 0), InterlockedExchange(&g_isa_miss, 0));
+                 InterlockedExchange(&g_isa_hits, 0), InterlockedExchange(&g_isa_miss, 0),
+                 InterlockedExchange(&g_fa_calls, 0), InterlockedExchange(&g_fa_isa_hits, 0),
+                 InterlockedExchange(&g_fa_isa_miss, 0), InterlockedExchange(&g_gw_calls, 0),
+                 InterlockedExchange(&g_gw_big, 0), InterlockedExchange(&g_gw_cells, 0),
+                 InterlockedExchange(&g_h2_hits, 0), InterlockedExchange(&g_h2_miss, 0),
+                 InterlockedExchange(&g_prio_hits, 0), InterlockedExchange(&g_prio_miss, 0));
 }

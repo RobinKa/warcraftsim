@@ -102,6 +102,7 @@ void turbo_set(int ms);
 void cuts_install(int draw); /* W3SIM_CUTS (cuts.c) */
 int cuts_flags(void);
 void cuts_game_start(void); /* a game's first step (units.c) */
+void cuts_unit_begin(int on); /* units.c: a unit's natives begin (1) / end (0) (W3SIM_CUTS & 32768) */
 extern volatile DWORD g_step_tid; /* sync.c: the thread that steps the game */
 void cuts_report(void);
 int turbo_get(void);

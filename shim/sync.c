@@ -93,7 +93,55 @@ static int ends_with_ci(const wchar_t *s, const wchar_t *suffix, size_t suffix_l
     return 1;
 }
 
+/* W3SIM_CUTS & 131072: the controller's connection made and used with Linux system calls (int 0x80: the game runs as a
+ * 32-bit Linux process under Wine), not Winsock: each send and recv through Wine is a few wineserver requests (the
+ * socket's async I/O); the stream is the same TCP connection to the same port */
+static int g_raw; /* g_sock holds a Linux fd */
+
+static inline int lx3(int nr, int a, int b, int c) {
+    int r;
+    __asm__ volatile("int $0x80" : "=a"(r) : "a"(nr), "b"(a), "c"(b), "d"(c) : "memory");
+    return r;
+}
+static inline int lx5(int nr, int a, int b, int c, int d, int e) {
+    int r;
+    __asm__ volatile("int $0x80" : "=a"(r) : "a"(nr), "b"(a), "c"(b), "d"(c), "S"(d), "D"(e) : "memory");
+    return r;
+}
+enum { LX_READ = 3, LX_WRITE = 4, LX_CLOSE = 6, LX_SOCKET = 359, LX_CONNECT = 362, LX_SETSOCKOPT = 366 };
+#define LX_EINTR 4
+
+static int raw_connect(void) {
+    for (int attempt = 0; attempt < 200; attempt++) {
+        int fd = lx3(LX_SOCKET, 2 /* AF_INET */, 1 /* SOCK_STREAM */, 0);
+        if (fd < 0)
+            return 0;
+        struct {
+            unsigned short family, port;
+            unsigned addr;
+            char zero[8];
+        } sa = {2, htons((u_short)g_port), htonl(INADDR_LOOPBACK), {0}};
+        int r;
+        do
+            r = lx3(LX_CONNECT, fd, (int)(size_t)&sa, sizeof sa);
+        while (r == -LX_EINTR);
+        if (r == 0) {
+            int one = 1;
+            lx5(LX_SETSOCKOPT, fd, 6 /* IPPROTO_TCP */, 1 /* TCP_NODELAY */, (int)(size_t)&one, 4);
+            g_sock = (SOCKET)fd;
+            g_raw = 1;
+            shim_log("connected to controller on port %d (Linux socket, fd %d)", g_port, fd);
+            return 1;
+        }
+        lx3(LX_CLOSE, fd, 0, 0);
+        Sleep(50);
+    }
+    return 0;
+}
+
 static int connect_controller(void) {
+    if ((cuts_flags() & 131072) && raw_connect())
+        return 1;
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
         return 0;
@@ -119,7 +167,9 @@ static int connect_controller(void) {
 
 static int send_all(const char *buf, int len) {
     while (len > 0) {
-        int n = send(g_sock, buf, len, 0);
+        int n = g_raw ? lx3(LX_WRITE, (int)g_sock, (int)(size_t)buf, len) : send(g_sock, buf, len, 0);
+        if (g_raw && n == -LX_EINTR)
+            continue;
         if (n <= 0)
             return 0;
         buf += n;
@@ -147,7 +197,10 @@ static int recv_line(char *buf, int cap) {
         }
         if (g_rlen == (int)sizeof g_rbuf)
             g_rlen = 0; /* an overlong line: drop it */
-        int got = recv(g_sock, g_rbuf + g_rlen, (int)sizeof g_rbuf - g_rlen, 0);
+        int got = g_raw ? lx3(LX_READ, (int)g_sock, (int)(size_t)(g_rbuf + g_rlen), (int)sizeof g_rbuf - g_rlen)
+                        : recv(g_sock, g_rbuf + g_rlen, (int)sizeof g_rbuf - g_rlen, 0);
+        if (g_raw && got == -LX_EINTR)
+            continue;
         if (got <= 0)
             return 0;
         g_rlen += got;
@@ -226,7 +279,28 @@ static void sync_point(void) {
     int obs_len = obs_take(&obs);
     int n = obs_len >= 0 ? _snprintf(msg, sizeof msg, "OBS %ld %d\n", ++g_counter, obs_len)
                          : _snprintf(msg, sizeof msg, "OBS %ld\n", ++g_counter);
-    int sent = send_all(msg, n) && (obs_len <= 0 || send_all(obs, obs_len));
+    int sent;
+    if ((cuts_flags() & 65536) && obs_len > 0) { /* (one send: each is a few wineserver requests) */
+        static char *one;
+        static int one_cap;
+        if (n + obs_len > one_cap) {
+            int cap = one_cap ? one_cap : 65536;
+            while (cap < n + obs_len)
+                cap *= 2;
+            char *b = realloc(one, cap);
+            if (b) {
+                one = b;
+                one_cap = cap;
+            }
+        }
+        if (n + obs_len <= one_cap) {
+            memcpy(one, msg, n);
+            memcpy(one + n, obs, obs_len);
+            sent = send_all(one, n + obs_len);
+        } else
+            sent = send_all(msg, n) && send_all(obs, obs_len);
+    } else
+        sent = send_all(msg, n) && (obs_len <= 0 || send_all(obs, obs_len));
     obs_reset();
     if (!sent || !recv_line(reply, sizeof reply)) {
         shim_log("controller connection lost; exiting");

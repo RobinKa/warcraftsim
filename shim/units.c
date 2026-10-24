@@ -354,6 +354,7 @@ static void unit_record(int u) {
 }
 
 static void drop(int u) { /* out of the group of all units, its table entries with it; an "R" record */
+    cuts_unit_begin(0);
     n2(GroupRemoveUnit, g_all, u);
     n2(FlushChildHashtable, g_ht, u);
     if (g_nremoved == g_removed_cap) {
@@ -370,6 +371,7 @@ static void drop(int u) { /* out of the group of all units, its table entries wi
 /* a unit of the pass: W3S_EnumAdd (with pruning), W3S_CountDecisive / W3S_CountAlive, W3S_SerUnit */
 static void pass_unit(int u) {
     g_cur.u = 0;
+    cuts_unit_begin(1);
     int typ = n1(GetUnitTypeId, u);
     if (typ == 0) { /* removed from the game */
         drop(u);
@@ -403,6 +405,7 @@ static void pass_unit(int u) {
             drop(u);
     }
     unit_record(u);
+    cuts_unit_begin(0);
     g_cur.u = 0;
 }
 
