@@ -4,7 +4,7 @@
 
 Reinforcement learning on the **real Warcraft III** (Legacy TFT 1.29.2) under Wine on Linux, driven step by step from Python. Nothing is reimplemented: the game's own engine runs every unit, spell, building and AI script, headless and many times faster than real time.
 
-The agent plays the **whole game** (economy, buildings, tech, armies, heroes) on the ladder map **Echo Isles** under the game's own rules. It wins **~95% of its games against the built-in AI at its hardest setting** (insane, no handicap), about **1.8× the built-in AI's own record** in the same matchups. Now it learns to play many strategies: target build orders, narrower ones and more kinds of conditioning (no rush, expand, creep, harass, ...).
+The agent plays the **whole game** (economy, buildings, tech, armies, heroes) on the ladder map **Echo Isles** under the game's own rules. It wins **~97% of its games against the built-in AI at its hardest setting** (insane, no handicap), about twice the built-in AI's own record in the same matchups. It expands, creeps, techs, hires tavern heroes, picks up items and revives its heroes. Now it learns to play many strategies: given a target build order (from the AI's games or people's replays) it wins ~68% against insane, and the work is on following the target closely.
 
 <p align="center"><img src="docs/media/whole-game.jpg" width="960" alt="A whole-game replay with the policy's panel"></p>
 
@@ -15,12 +15,12 @@ The agent plays the **whole game** (economy, buildings, tech, armies, heroes) on
 ```mermaid
 xychart-beta
   title "The real game on Echo Isles: games won against the untaxed insane AI"
-  x-axis ["first try", "longer horizon", "build search", "half shaping", "less KL pull", "strategies", "fast rules"]
+  x-axis ["first try", "longer horizon", "build search", "half shaping", "less KL pull", "strategies", "fast rules", "the game's rules fixed, expansions"]
   y-axis "% won" 0 --> 100
-  bar [49, 59, 62, 72, 82, 89, 95]
+  bar [49, 59, 62, 72, 82, 89, 95, 97]
 ```
 
-Each bar is the best policy of a step (`fgself-56`, `-62`, `-68`, `-73`, `-77`, `-78`, `-100`), measured in its own run's evaluation games: the real game, all race matchups, nothing trained on them. The last step trains on Echo Isles with faster rules toward target build orders a builder teaches, and is judged on the real game. Before Echo Isles the agent learned on small, fast "duel" maps: **79%** against the built-in AI in 2-minute games, then **80% against insane** in 6-minute games. [Experiments](docs/experiments.md) has what worked and what did not; the [experiment log](docs/reference/experiment-log.md) has every run.
+Each bar is the best policy of a step (`fgself-56`, `-62`, `-68`, `-73`, `-77`, `-78`, `-100`, `-139`), measured in its own run's evaluation games: the real game, all race matchups, nothing trained on them. From `fgself-100` on it trains on Echo Isles with faster rules toward target build orders a builder teaches, and is judged on the real game; the last step is six audits' worth of the game's rules made right (the free first hero, revivals, expansions, refused orders) and orders of the agent's own to expand, creep and pick up items. Before Echo Isles the agent learned on small, fast "duel" maps: **79%** against the built-in AI in 2-minute games, then **80% against insane** in 6-minute games. [Experiments](docs/experiments.md) has what worked and what did not; the [experiment log](docs/reference/experiment-log.md) has every run.
 
 ## How it works
 
@@ -154,7 +154,7 @@ python -m warcraftsim dashboard
 | [Optimizations](docs/optimizations.md) | how a step became fast |
 | [Architecture](docs/architecture.md) | how Python drives the game |
 | Related work | [AlphaStar](docs/related/alphastar.md), [OpenAI Five](docs/related/openai-five.md), [reward shaping](docs/related/reward-shaping.md), [robot learning](docs/related/robot-learning.md) |
-| Reference | [ideas](docs/reference/ideas.md) (where each came from, what became of it), [experiment log](docs/reference/experiment-log.md), [engine notes](docs/reference/engine-notes.md), [optimization log](docs/reference/optimization-log.md), [human replays](docs/reference/human-replays.md), [what AlphaStar and OpenAI Five found](docs/reference/ideas-from-alphastar-and-openai-five.md), [usage](docs/reference/usage.md) |
+| Reference | [ideas](docs/reference/ideas.md) (where each came from, what became of it), [experiment log](docs/reference/experiment-log.md), [engine notes](docs/reference/engine-notes.md), [optimization log](docs/reference/optimization-log.md), [human replays](docs/reference/human-replays.md), [what AlphaStar and OpenAI Five found](docs/reference/ideas-from-alphastar-and-openai-five.md), [usage](docs/reference/usage.md), [GPU unlock](docs/reference/gpu-unlock.md), [scaling up the CPUs](docs/reference/scaling-cpus.md) |
 
 ## Citation
 

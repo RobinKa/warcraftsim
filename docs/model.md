@@ -10,13 +10,13 @@ E is the number of units in view (at most 160). O is the number of own units (at
 flowchart TB
   subgraph IN["Inputs, one step"]
     F["unit numbers<br/>[E, 29] (+53: --inputs 3)"]
-    TY["unit type ids<br/>[E] of 147"]
+    TY["unit type ids<br/>[E] of 162"]
     CO["current order ids<br/>[E] of 156"]
-    PL["player numbers<br/>[80] + strategy [128]<br/>(+20 kinds, +3 clock)"]
+    PL["player numbers<br/>[80] + strategy [212]<br/>(items, kinds, army mix) + clock [3]"]
     PV["whole-game numbers<br/>[23], the value only"]
   end
   F --> LF["Linear →192"]
-  TY --> ET["Embedding 147×192"]
+  TY --> ET["Embedding 162×192"]
   CO --> EC["Embedding 156×192"]
   LF --> SUM(("+"))
   ET --> SUM
@@ -34,8 +34,8 @@ flowchart TB
   PV --> PP["Linear 23→192 · ReLU · Linear 192→192<br/>(starts at 0)"] --> VH
   U --> OI["for each own unit i: concat u_i, c [384]"]
   C --> OI
-  OI --> OH["Order head<br/>Linear 384→192 · ReLU · Linear 192→399"] --> MSK["mask: the unit type's orders,<br/>what the player can pay for and has the tech for,<br/>a hero's state · class 0 = none"] --> O1["order o_i [O]"]
-  O1 --> OE["Embedding 399×192 of o_i"]
+  OI --> OH["Order head<br/>Linear 384→192 · ReLU · Linear 192→489"] --> MSK["mask: the unit type's orders,<br/>what the player can pay for and has the tech for,<br/>a hero's state · class 0 = none"] --> O1["order o_i [O]"]
+  O1 --> OE["Embedding 489×192 of o_i"]
   OE --> CD["concat u_i + emb, c [384]<br/>Linear 384→192 · ReLU · LayerNorm"]
   U --> CD
   C --> CD
@@ -64,7 +64,7 @@ flowchart TB
 A unit token is the sum of three parts:
 
 * a linear layer on 29 numbers (the table below),
-* a learned vector for its unit type (147 types),
+* a learned vector for its unit type (162 types: the four races', the creeps', and since `fgself-111` the tavern's heroes, the mercenaries and the neutral buildings),
 * a learned vector for its current order (156 orders).
 
 | index | channel |
@@ -94,7 +94,7 @@ With `--inputs 3` (`fgself-107`; the new channels start with zero weights, so a 
 | 101 – 105 | own building: what it makes now (a worker, an army unit, a hero, research, its next tier) |
 | 106, 107 | an enemy it remembers (out of sight now), seen how long ago ÷ 60 s: those come after the units in sight |
 
-The **player token** has 80 numbers of what the player knows, then the target strategy (208 in the runs with strategy conditioning since `fgself-78`):
+The **player token** has 80 numbers of what the player knows, then the target strategy (212 numbers since `fgself-130`), then the time of day:
 
 | index | channel |
 |---|---|
@@ -104,6 +104,7 @@ The **player token** has 80 numbers of what the player knows, then the target st
 | 14 – 79 | the player's level of each of 66 upgrades |
 | 80 – 207 | the target strategy (zeros: none): per item slot of the race (64), whether the target makes it and when ÷ 900 s |
 | (+20) | with `--z-modes`: per conditioning kind (10), on, and its parameter |
+| (+64) | with `--z-mix`: the target's army mix, each army unit's share |
 | (+3) | with `--inputs 2` or `3`: the time of day (sine, cosine) and whether it is night |
 
 The **value head** also reads 23 numbers of the whole game that the player does not see: the enemy's gold, lumber and supply, and for both players their workers, army, buildings, heroes, hero levels, army hit points and where the army is. The policy never sees them.
@@ -158,3 +159,5 @@ There are no tokens per time step and no time encoding. The order of the steps i
 * Masks allow only orders that the unit's type gave in the demonstrations, and that the player can pay for now. `--tech-mask`: and has the tech for (`features.TechMask`, from the game's tables). `--valid-mask`: a hero's orders it can carry out now (`FullGameNet.unit_valid`, from its hero channels: a cast needs the ability learned, cooled down and the mana; learning a skill needs a point; using an item needs one in the slot).
 * The chosen order goes into the target heads, so a target depends on its order.
 * The action's log-probability is the order's plus the target heads that the order uses.
+* The orders are the game's own (move, attack, harvest, build, train, research, cast, learn a skill, use an item, buy at a neutral building: 489 classes with "none") and, with `--macros`, four of the agent's own that the actor carries out with the game's orders: **expand** (a worker builds a hall at the natural, where people build it; undead haunt its mine, night elves' tree of life entangles it), **creep the natural** (attack-move to the camp guarding it), **train the target's mix** (a building trains the unit its target's army lacks most) and **pick up an item** (a hero near an item on the ground). `--macros 3` also spends a hero's skill points the policy leaves unspent for 10 s, in the built-in AI's order.
+* The actor leaves out orders the game would refuse (it counts them: the episode rows' `refused`): a repair of what needs none, a power build without lumber, a harvest at a mine the race cannot mine, a tier while the hall trains (its queue cancelled first).

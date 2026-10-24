@@ -28,8 +28,8 @@ flowchart LR
   L -- "weights" --> I
 ```
 
-* The games set the speed again: the learner waits ~1 s for each batch of 8,192 steps.
-* The learner's update takes ~2.4 s on duelfast and ~4 s in the real game (5 layers, more units). The cloning loss had cost a third of it.
+* The CPU sets the speed (2026-10-24, `fgself-139` on `echofast`, 64 games, ~1,730 agent steps a second): the games take about half of the 32 threads, the 8 actors' Python ~0.8 of a core each, and the learner waits ~2.2 s for each batch of 8,192 steps while its update takes ~2.9 s. The CPU is ~3% idle.
+* The GPU has room: the inference loop's rounds take ~9 ms, the learner's update is mostly small kernels, and the BF16 unlock made no difference to the steps a second ([GPU unlock](reference/gpu-unlock.md)). A game waits ~13 ms a step for its orders (a round to start and to finish), which is why more games than cores pay off.
 * A game step costs ~7 ms of CPU on native Linux, less with the equivalent speedups of the game's own code.
 
 ## The largest fixes
@@ -51,12 +51,14 @@ flowchart LR
 14b. The game's own code, round 2 (2026-10-24, branch `game-cuts-2`, `--game-cuts 521721`): UnitIsSleeping's ability walk and the grid walk behind EnumItemsInRect in C, a unit's handle converted once per unit, the long-range search's square root as sqrt, the step sync's socket through Linux system calls (no wineserver requests), the players' records and the result's check in the shim: -18% of a game's main thread a step (-21% with wineserver), the same simulation at every step on 54 replays and 8 new recordings.
 15. The learner's intake (2026-10-12): plain arrays from the shared rows (a memmap subclass was slow to unpickle), 4 workers for the cloning batches: ~1,600 → ~2,000 steps/s with evaluation games.
 16. No advice and no cloning loss from the built-in AI (2026-10-14, a recipe change that the policy no longer needed): no shadow AI in the games, no labels or cloning batches in the updates: ~1,900 → ~2,220 steps/s.
+18. The actors' Python (2026-10-24): the tech mask's tables read once a process (they had been read from the game's archives at every game's start), the shared buffer's slices as plain arrays, the units' features in C (`native/w3feat.c`: View.step 1,002 → 556 µs a side-step, the same features), and 8 games an actor in the CPU this freed: ~1,494 → ~1,730 steps/s. Wine off the system D-Bus: each game prefix's device manager had asked the udisks service for every disk ~0.4 times a second, and the service took ~1.5 cores.
 17. Evaluation games on a second machine (2026-10-17, `fullgame/evalworker.py` and `scripts/remote_eval.py`: [a remote evaluation worker](architecture.md#a-remote-evaluation-worker)): a laptop (WSL2, 8 cores, RTX 3050 Ti) plays 16 at a time, ~790 games an hour (12 at a time: ~710), beside the run's own ~380-490. A verdict (~300 games a policy) takes ~30 minutes instead of 1.5-2 hours: `fgself-76` had 786 evaluation games in the matchups both policies played within 40 minutes, 496 of them the laptop's.
 
 ## What remains
 
 * The games: pathing (~35-55% of the main thread after round 2), the other agent timers, attack and fog; the units pass's natives (~8%).
-* The actors' features in Python (~40% of an actor's CPU).
+* The actors' Python (~0.8 of a core each, ~20% of the machine): the masks and the rest of the per-step view, the teacher and the target builder.
+* More machines: training games on a second machine with the 3090 doing their inference ([scaling up the CPUs](reference/scaling-cpus.md)); then the learner's update (~2.9 s per 8,192 steps) becomes the limit.
 * The video renderer: 3.4 cores while it renders.
 * Other work on the machine: a headless Chrome from another project takes ~10 cores in bursts.
 * Longer steps on long games: about 1.4× more game time per CPU, at the cost of half the decisions.

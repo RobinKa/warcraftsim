@@ -22,14 +22,15 @@ flowchart LR
 * **The harness** writes each observation and issues the orders with the game's own functions.
 * **The shim** runs the game's clock as fast as the CPU allows and stops the game at each step.
 * **The `.wgc` file** starts a game with no menus: the map, the slots and the built-in AI levels.
-* **The game's own code, faster** (`shim/cuts.c`, `--game-cuts`): the shim replaces some of the game's functions with equivalent faster ones. Replays prove the same simulation at every step.
+* **The game's own code, faster** (`shim/cuts.c`, `--game-cuts`): the shim replaces some of the game's functions with equivalent faster ones. Replays prove the same simulation at every step. With `--game-cuts 521721` (2026-10-24) the shim also talks to Python through Linux system calls instead of Wine's sockets, and writes the players' records and checks the game's result itself instead of the harness's JASS.
+* **Wine** runs each game in a prefix of its own, with no audio, gamepad or system D-Bus (each prefix's device manager had polled the disk service), drawing into an Xvfb screen of 320×240 with nothing drawn.
 * **Other rules** go into a copy of the map as the game's unit and upgrade tables (`data/duelmap.py`): the duel maps, and Echo Isles with duelfast's rules (`echofast`).
 
 ## Self-play
 
 ```mermaid
 flowchart LR
-  A["8 actor processes<br/>6 games + 1 evaluation game each"] -- "views (shared memory)" --> I["Inference loop<br/>C++ thread in the learner, CUDA graphs"]
+  A["8 actor processes<br/>8 games + 1 evaluation game each"] -- "views (shared memory)" --> I["Inference loop<br/>C++ thread in the learner, CUDA graphs"]
   I -- "orders" --> A
   A -- "trajectories" --> L["Learner<br/>PPO + UPGO, CUDA graphs"]
   L -- "weights" --> I
@@ -37,6 +38,7 @@ flowchart LR
 ```
 
 * One GPU context holds the learner and the inference loop. The loop has no Python in its hot path.
+* An actor turns each game's observation into the policy's view: the observation parsed in C (`native/w3obs.c`), the units' features in C (`native/w3feat.c`, 2026-10-24), the masks and the rest in Python. Its games share one Python process, so its threads take turns on the GIL; an actor uses ~0.8 of a core.
 * The video director (`video.Director`) moves the camera in whole-game replays, because 1.29's replays have no automatic camera. It follows the largest fight, raids on buildings too. Between fights it rotates: the learner's army, its base, the opponent's army, its base.
 
 ## A remote evaluation worker

@@ -31,7 +31,7 @@ flowchart LR
 flowchart LR
   U["Units in view<br/>≤160 · 29 numbers + type + order<br/>(--inputs 3: + hero state, production, memory)"] --> N["Transformer"]
   P["Player<br/>gold · lumber · supply · upgrades<br/>target strategy · (clock)"] --> N
-  N --> O["Each own unit:<br/>an order (~400)"]
+  N --> O["Each own unit:<br/>an order (~490)"]
   O --> X["Its target:<br/>a unit or a point"]
 ```
 
@@ -40,7 +40,8 @@ flowchart LR
 * `--inputs 3` adds per hero its abilities' levels, whether each can be cast now (learned, cooled down, the mana), their cooldowns, whether a skill point may go there, and its items (usable, heals, mana, a town portal); per building what it makes (a worker, an army unit, a hero, research, a tier); and the time of day (night: creeps sleep, night elves hide).
 * The agent does not see terrain or trees.
 * Every own unit gets an order every half second: train, build, research, move, attack, cast, use an item, harvest, learn a skill. The orders are those the built-in AI gave in the demonstrations, and with `--neutral` the neutral buildings' wares (tavern heroes, the goblin merchant's items).
-* `--macros` adds orders of the agent's own for what the game spreads over many: expand (a worker builds the race's hall at the natural expansion where people build theirs; undead haunt the mine, night elves' tree of life entangles it), creep (attack-move to the natural's camp), mix (a building trains its target's army mix). `--macros 2` adds pick up: a hero takes the nearest item lying within 1,000 (the harness reports the items on the ground each player sees; creeps drop them).
+* `--macros` adds orders of the agent's own for what the game spreads over many: expand (a worker builds the race's hall at the natural expansion where people build theirs; undead haunt the mine, night elves' tree of life entangles it), creep (attack-move to the natural's camp), mix (a building trains its target's army mix). `--macros 2` adds pick up: a hero takes the nearest item lying within 1,000 (the harness reports the items on the ground each player sees; creeps drop them). `--macros 3` also spends a hero's skill points the policy leaves unspent for 10 s, in the built-in AI's order.
+* Orders the game would refuse are not sent (each is counted in the episode row): a repair of what needs none or a power build without lumber, a harvest at a mine the race cannot mine, a hall's tier while it trains (its queue is cancelled first).
 * Masks: a unit's type gets only the orders its type got in the demonstrations, and only what the player can pay for. `--tech-mask` also masks what the player lacks the tech for (a building, a tier, a research's next level, the hero limit), `--valid-mask` a hero's orders it can't carry out now (an ability not learned, cooling down or without the mana, no skill point, an empty item slot).
 * [The whole-game model](model.md) shows the tokens, the transformer and the action heads.
 
@@ -48,9 +49,17 @@ flowchart LR
 
 * **The built-in AI** (normal, insane). The real game against it is the yardstick.
 * **A curriculum**: the AI loses a share of its income until the learner wins half its games.
-* **Itself and past snapshots.** Between races, the stronger race pays a tax. A new run forked from another starts with its parent's past snapshots, their records and the curriculum's levels (`--league-from`), not a league of one.
+* **Itself and past snapshots.** Between races, the stronger race pays a tax; with `--win-balance` the side a model of past games expects to win (by races, targets and whether the opponent is a past snapshot) pays it, so each game is close to even. A new run forked from another starts with its parent's past snapshots, their records and the curriculum's levels (`--league-from`), not a league of one.
 * **A main exploiter** (`--exploiter-share`, as in AlphaStar): a second network that trains only against the learner. In AlphaStar's league mix (`fgself-103`) it made no lasting difference.
+* **Scenarios** (`--scenarios`, a fifth of the training games): the game starts with the natural's camp gone, armies between the bases, a raid or extra money.
 * **You**: `fullgame/versus.py` opens the game in a window.
+
+## Teachers
+
+Two heuristic teachers label the learner's steps with what they would order; the labels pull the policy toward them (`--teach-coef`), and nothing they say is carried out.
+
+* **The target builder** (`--z-build 2`): the earliest item of the side's target that is due and neither made nor under way, or what it needs first (the tech tree), when the player can pay for it.
+* **The teacher** (`--teach`): a first hero in games without a target (with `--teach 2` the target's first hero, as soon as the altar stands), a tavern hero, the expansion and its camp, an army mix, a town portal or a potion when a hero is low, an item picked up.
 
 ## Rewards
 
