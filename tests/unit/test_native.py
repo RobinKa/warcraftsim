@@ -85,6 +85,23 @@ def test_native_matches_python():
     assert py.damaged_records == 0 and any(True for _ in py.units)
 
 
+def test_cancelled_frame_leaves_the_table():
+    """A cancelled frame (event 4) is removed outright by the game, and no removed record comes: both merges drop it
+    (it had stayed for good, a ghost that drew ~900 refused repairs a human game; audit 9)."""
+    from warcraftsim.native import NativeObs
+    rng = random.Random(2)
+    native, table = NativeObs(), {}
+    units = [unit(i, rng=rng) for i in range(1048576, 1048580)]
+    data = observation(0, True, units, rng=rng)
+    merge_observation(table, parse_token_lines(data, ()))
+    native.merge(native.parse(data, ()))
+    cancel = observation(1, False, [], rng=rng).replace(b"\nC\n", ("\n" + "\n".join(rec("E", [4, 1048577, 0, 0])) + "\nC\n").encode(), 1)
+    py = merge_observation(table, parse_token_lines(cancel, ()))
+    c = native.merge(native.parse(cancel, ()))
+    assert [u.id for u in py.units] == [1048576, 1048578, 1048579]
+    assert c.unit_array[:, 0].tolist() == [1048576, 1048578, 1048579]
+
+
 def test_native_rejects_partial():
     from warcraftsim.native import NativeObs
     from warcraftsim.protocol import ProtocolError

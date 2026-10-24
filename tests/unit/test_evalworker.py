@@ -101,7 +101,7 @@ def test_remote_eval_manager_follows_the_run(tmp_path, monkeypatch):
     (tmp_path / "runs/x/checkpoints/1.pt").write_bytes(b"")
     for run in ("r1", "r2"):
         (tmp_path / "runs" / run).mkdir()
-    monkeypatch.setattr(rm.Manager, "push_code", lambda self: True)
+    monkeypatch.setattr(rm.Manager, "push_code", lambda self, rev="HEAD": True)
     monkeypatch.setattr(rm, "newest_checkpoint", lambda run: "0000000000000100.pt")
     configs = {"r1": {"map": "echo100", "eval_checkpoints": "None"}, "r2": {"map": "echo100", "eval_checkpoints": "None"}}
     monkeypatch.setattr(rm, "run_info", lambda run: {"config": configs[run]})

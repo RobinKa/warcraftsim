@@ -349,6 +349,11 @@ int w3obs_merge(void *p) {
     for (int k = 0; k < s->units.n; k++)
         if (table_put(t, s->units.v + (size_t)k * UCOLS)) return -2;
     for (int k = 0; k < s->removed.n; k++) table_remove(t, s->removed.v[k]);
+    /* a cancelled frame (event 4, a = the structure): the game removes it outright and the units pass never sees it
+       again, so no removed record came; it stayed in the table for good, a ghost every repair at it refused (~900 a
+       human game; audit 9). A stopgap until the passes report units gone without dying (a wisp an ancient took). */
+    for (int k = 0; k < s->events.n; k++)
+        if (s->events.v[(size_t)k * F_E] == 4) table_remove(t, s->events.v[(size_t)k * F_E + 1]);
     if (t->dead > 64 && t->dead * 2 > t->n) table_compact(t);
     int live = t->n - t->dead;
     s->header[H_NUNITS] = live;

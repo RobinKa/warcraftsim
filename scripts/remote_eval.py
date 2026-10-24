@@ -11,9 +11,9 @@ Every --every seconds, when the host answers:
 * the run: --run, else the live one (its learner's process here). When it ends (no learner for --grace
   minutes), the worker stops (with --run this exits too); following the live run, a new run gets the worker.
 * a launch of the run with other settings for its evaluation games (SETTINGS: other evaluation checkpoints, map,
-  rules; a restart with the same ones leaves the worker be), new committed code, or a worker that is not running:
-  the commit's code is mirrored there (git archive HEAD of warcraftsim/, scripts/, native/, and the built shim:
-  edits not committed stay here), run.json, vocab.json and the evaluation checkpoints sent (at their paths relative
+  rules; a restart with the same ones leaves the worker be), a launch from another commit, or a worker that is not
+  running: the run's commit's code is mirrored there (run.json's launch.git; git archive of warcraftsim/, scripts/,
+  native/, and the built shim: edits not committed and later commits stay here), run.json, vocab.json and the evaluation checkpoints sent (at their paths relative
   to the repository), and the worker (re)started as a systemd user service (systemd-run --user, niced: it outlives
   the ssh session, `systemctl --user stop` ends all of it). A worker playing for another launch, or for a run that
   ended or gave way, is drained first (SIGUSR1: its games in flight finish, then it exits): a row is written only
@@ -124,7 +124,7 @@ def launch_key(info: dict) -> str:
     ids), not the commit: a commit of docs or a dashboard change leaves it be."""
     c = info.get("config", {})
     h = hashlib.sha1()
-    for line in subprocess.run(["git", "ls-tree", "-r", "HEAD", "--", *CODE], cwd=ROOT, capture_output=True,
+    for line in subprocess.run(["git", "ls-tree", "-r", code_rev(info), "--", *CODE], cwd=ROOT, capture_output=True,
                                text=True).stdout.splitlines():
         if not line.split("\t", 1)[-1].startswith(("warcraftsim/dashboard/", "scripts/")):
             h.update(line.encode())
@@ -132,6 +132,16 @@ def launch_key(info: dict) -> str:
         if (ROOT / f).exists():
             h.update(f.encode() + b"\0" + (ROOT / f).read_bytes())
     return hashlib.sha1(json.dumps([c.get(k) for k in SETTINGS] + [h.hexdigest()]).encode()).hexdigest()[:10]
+
+
+def code_rev(info: dict) -> str:
+    """The commit the run was launched from (run.json's launch.git), else HEAD: a commit made here meanwhile is not
+    the run's code (HEAD had been archived: the laptop played audit 8's unpushed commit for a run launched before it,
+    and its evaluation's rules differed from the run's training; audit 9)."""
+    rev = ((info.get("launch") or {}).get("git") or {}).get("commit")
+    if rev and subprocess.run(["git", "cat-file", "-e", f"{rev}^{{commit}}"], cwd=ROOT, capture_output=True).returncode == 0:
+        return rev
+    return "HEAD"
 
 
 def eval_checkpoints(info: dict) -> list[str]:
@@ -154,7 +164,8 @@ def newest_checkpoint(run: str) -> str | None:
     return cks[-1] if cks else None
 
 
-CODE = ("warcraftsim", "scripts", "native", "pyproject.toml")  # what the worker runs: these at HEAD, and the built shim
+CODE = ("warcraftsim", "scripts", "native", "pyproject.toml")  # what the worker runs: these at the run's commit, and the
+# built shim
 SHIM = ("build/shim/w3shim.dll", "build/shim/w3launch.exe")
 DRAIN_MINUTES = 20.0  # (the worker's own limit is 15: then it is stopped)
 
@@ -230,7 +241,7 @@ class Manager:
         log(f"starting the worker for {self.run} (launch {key}): code, run files, checkpoints")
         self.h.run(f"systemctl --user stop {UNIT} 2>/dev/null; systemctl --user reset-failed {UNIT} 2>/dev/null; "
                    f"mkdir -p {shlex.quote(self.remote('checkpoints'))}", timeout=120)
-        if not self.push_code():
+        if not self.push_code(code_rev(info)):
             return False
         evals = eval_checkpoints(info)
         missing = [p for p in evals if not (ROOT / p).exists()]
@@ -264,10 +275,10 @@ class Manager:
         log(f"worker started: {self.a.games} games for {self.run}")
         return True
 
-    def push_code(self) -> bool:
-        """HEAD's code there (git archive: tracked files only, as committed), and the built shim."""
+    def push_code(self, rev: str = "HEAD") -> bool:
+        """The run's commit's code there (git archive: tracked files only, as committed), and the built shim."""
         try:
-            arc = subprocess.run(["git", "archive", "HEAD", "--", *CODE], cwd=ROOT, capture_output=True, timeout=120)
+            arc = subprocess.run(["git", "archive", rev, "--", *CODE], cwd=ROOT, capture_output=True, timeout=120)
             r = subprocess.run(SSH + [self.h.host, f"cd {shlex.quote(self.a.remote_dir)} && tar -x -m -f -"],
                                input=arc.stdout, capture_output=True, timeout=600)
         except subprocess.TimeoutExpired:

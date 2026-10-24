@@ -461,6 +461,9 @@ def merge_observation(table: dict[int, Unit], obs: Observation) -> Observation:
         table[u.id] = u
     for uid in obs.removed:
         table.pop(uid, None)
+    for e in obs.events:  # (a cancelled frame: removed outright, no removed record; native/w3obs.c, audit 9)
+        if int(e.kind) == EventKind.CONSTRUCT_CANCEL:
+            table.pop(e.a, None)
     obs.units = list(table.values())
     obs.full = True
     return obs

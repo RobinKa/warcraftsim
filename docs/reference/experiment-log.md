@@ -1614,6 +1614,45 @@ Two notes:
 
 **`fgself-144`** (from `fgself-143`'s newest, ~21:45): **audit 7's fixes**, the target's first hero taught as soon as the altar stands (the lesson `fgself-140` meant), its tavern hero at its place among the target's heroes, and evaluation without the relaunches' bias; also round 4 of the game's code (`--game-cuts 17179866617`: the harness's tokens, commands and items in the shim, the name hash in one pass, soft float as SSE where it is IEEE; −3-6% of a game's main thread). Otherwise `fgself-143` (`fgself-130` fixed in the league, 25% of the past snapshots' games). Head to head with its start and `fgself-130`.
 
+**`fgself-144`, judged at 23:30: level** (on the games of its own code, 21:27-22:21; the laptop then played audit 8's unpushed commit, see below):
+* 50.3% of 143 head to head with `fgself-130`, 48.3% of 117 with its start.
+* Against insane 95% of 130 (its start 98.5%), with a target 49% of 133.
+* The target's first hero is the policy's first 70% of the time (`fgself-140`: 50-66%). Tavern lessons fire (443 in 1,769 target games, from 68 in 3,000), hires still ~8% of the targets with one.
+* Kept: its lessons are the corrected ones.
+
+**Audit 9 (2026-10-24 night, the behaviour of recent games again).** It found:
+* **Ghost units: a unit that leaves the game without dying stayed in the table for good.** Cancelled frames (all races, the built-in AI's too) and the wisps an ancient takes keep their last state. The units passes write a removed record only for a unit seen dead or with type 0, and the game's enumeration never yields one removed outright.
+  * Every repair at a ghost frame is refused: the ~900 refused repairs a human game, money never the cause (the probes had used real frames).
+  * The builder's resume lesson retried them every 20 steps, for good: 83,347 of `fgself-144`'s human builder lessons, ~90%. The policy took up repairing (on 521 of 732 steps in one game; orc target games in the third with the fewest repair attempts won 85%, the others 15% and 6%).
+  * A ghost altar read as "being built" to the teacher (no hero in 6-9% of those human games). With audit 8's one-of rule it blocked every altar: no hero in 40% of undead games on the laptop since 22:21.
+  * The ghosts come from the policy cancelling its own frames (cancel is allowed on buildings for their queues): undead 9.8 a filmed game, orc 6.7.
+  * Stopgap now: a cancel event drops the frame from the table (native/w3obs.c and protocol.merge_observation). Consumed wisps still stay.
+* **The laptop evaluated with HEAD, not the run's commit:** a local commit relaunched it onto other rules than the run trained with. Now it gets run.json's launch commit.
+
+Open, for the next runs:
+* the units passes reporting units gone without dying (wisps an ancient took);
+* no cancel on the policy's own frames;
+* the builder's resume lesson: a retry cap, and not ahead of due items;
+* the builder's reserve voiding its own labels: a later affordable item labelled but masked; the supply building should be exempt;
+* supply-first by the item's own food, not +2;
+* a running budget of the step's money in the agent's orders (several paid orders in one step overspend);
+* the revive mask's 60 s (revivals take up to 110 s in the real game);
+* full 7-slot queues;
+* later research levels priced at level 1;
+* War Stomp, Hex, Banish, Far Sight and Scout missing from the vocabulary;
+* targeted items used untargeted;
+* the tavern lesson's exact hero count (269 of 289 human games with a tavern first hero made an altar hero first);
+* the evaluation pool's raw click times + 45 s (tier items due ~95 s before that player had them);
+* bookkeeping:
+  * `z_build`'s accepted counts and `z_refusals` are empty under `--z-build 2`;
+  * echofast games against the untaxed AI are labelled "(real)".
+
+Real game behaviour, not bugs:
+* With a target the policy plays a long economic game and loses it (human: 20% won, 23 minutes, 35 workers; 90%, 12 minutes without a target).
+* Lumber starvation: human 53 lumber a minute and undead 45 (`fgself-120`: 120 and 71). Lumber is the main blocker of target items (the float penalty may push against saving it: a suspicion).
+* The night elf lumber hoard grew from 960 to ~3,200 held on average since `fgself-139`.
+* Heroes cast ~0.5 spells a hero-minute (0.9-2.0 in `fgself-120`-`125`).
+
 **Skill ratings** (the user's idea, the dashboard's Ratings view): a Bradley-Terry fit on the Elo scale over every evaluation game in the real game, the insane AI at 1500. At 22:45: `fgself-106`'s last checkpoint 2128 ± 24, `fgself-102`'s 11841833 1977 ± 8, `fgself-100`'s best 1956 ± 9.
 
 **Queued (2026-10-19, the user's idea): GRPO.** The game is deterministic (lockstep multiplayer needs it), so a group of games can start from one state and differ only by the policy's sampled actions; each game's advantage is its return against the group's mean (and spread), with no value function (DeepSeek's GRPO). Plan: (1) check determinism: the harness has no seed control yet; the map script would call `SetRandomSeed` at start, and two games with one seed and the same orders (none, or a replayed order log) must give identical unit rows step for step, the built-in AI included. (2) The main design (agreed with the user): branch mid-game. A game from one start gives little credit for any decision (a whole game's result over hundreds of them), so: play a game, pick a state at step t (e.g. 2-8 game minutes, near a decision that matters: a tier, an attack), replay the same seed and orders to t in G (~8) games side by side, then let each continue with its own sampled actions; each continuation's advantage is its return against the group's mean and spread, the policy loss on the steps after t, the KL to the anchor kept, beside the usual GAE games. Replaying to t is cheap on `echofast` (a game runs ~13x real time). If replays drift (the built-in AI's threads), the fallback is the game's own save and load (`SaveGame` / `LoadGame` in single player; whether the AI scripts survive a load must be checked). (3) Only if branching fails: groups from one start (races, seed, target, opponent). Compare to the current recipe at equal steps. **The determinism check (2026-10-19, engine notes):** with a seed (`GameSetup.seed`, new), games between agents with the same orders are identical step for step; games with the built-in AI are not (they differ after 13-18 s). So GRPO branches come from self-play games (against past snapshots and itself); with a seed each player now also starts at its own start location (4 of 4 seeded games identical for 300 steps). Left to build: the branch scheduler (replay a game's orders to step t in G games, then sample) and the group-relative policy loss.
