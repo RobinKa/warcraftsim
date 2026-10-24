@@ -2903,9 +2903,25 @@ class GraphedUpdate:
         self.pg_coef = torch.ones((), device=device)
         self.lstd = torch.ones((), device=device)  # (the units' own advantages' spread: --unit-credit)
         self.umean, self.ustd = torch.zeros((), device=device), torch.ones((), device=device)  # (--upgo)
+        self._losses = self._loss
+        mode = getattr(args, "update_fuse", "") or ""
+        if mode:  # --update-fuse: the forward passes and the losses compiled (inductor: fused kernels; max-autotune:
+            import torch._dynamo.config as dc  # its matrix multiplies tuned too) before the step's graph is captured,
+            for k in ("cache_size_limit", "recompile_limit"):  # as the inference server's calls (a compiled function
+                if hasattr(dc, k):  # per shape: the entity widths, with the labels' keys or not)
+                    setattr(dc, k, max(getattr(dc, k), 64))
+            self._losses = torch.compile(self._loss, mode=mode, dynamic=False)
 
     def _step(self, s: dict, b: dict | None) -> dict:
         """One minibatch's step on the static inputs `s` (and the cloning batch `b`): no GPU syncs."""
+        loss, out = self._losses(s, b)
+        loss.backward()
+        out["grad_norm"] = torch.nn.utils.clip_grad_norm_(self.net.parameters(), self.args.max_grad_norm, foreach=True)
+        self.opt.step()
+        return out
+
+    def _loss(self, s: dict, b: dict | None) -> tuple:
+        """The step's forward passes and losses: (the loss, the statistics)."""
         net, ref, args = self.net, self.ref, self.args
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=bool(args.bf16), cache_enabled=False):
             seq = (s["B"], s["T"], s["h0"], None)
@@ -2951,13 +2967,10 @@ class GraphedUpdate:
                                     stats=False, width=b["width"])
                 loss = loss + args.bc_coef * l_bc
                 out["loss/bc"] = l_bc
-        loss.backward()
-        out["grad_norm"] = torch.nn.utils.clip_grad_norm_(net.parameters(), args.max_grad_norm, foreach=True)
-        self.opt.step()
         with torch.no_grad():
             out["loss/kl"] = (((ratio - 1) - log_ratio) * own).sum() / n_units
             out["loss/clipfrac"] = (((ratio - 1).abs() > args.clip).float() * own).sum() / n_units
-        return out
+        return loss, out
 
     def _static(self, mb: dict, b: dict | None) -> tuple[dict, dict | None]:
         s = {k: v.clone() for k, v in mb.items() if isinstance(v, torch.Tensor)}
@@ -3479,6 +3492,8 @@ def main(argv: list[str] | None = None) -> int:
                                                                      "loop this long (during the update its rounds took "
                                                                      "~10x their GPU time; the learner waits for data "
                                                                      "about as long as it updates)")
+    ap.add_argument("--update-fuse", default="", help="the update's forward passes and losses compiled before its CUDA "
+                    "graphs are captured (torch.compile's mode: default, max-autotune-no-cudagraphs; empty: eager)")
     ap.add_argument("--cuda-graphs", type=int, default=1, help="the update's minibatch steps as CUDA graphs (GraphedUpdate; "
                                                              "networks with memory)")
     ap.add_argument("--compile", type=int, default=1, help="the actors' network calls as CUDA graphs")

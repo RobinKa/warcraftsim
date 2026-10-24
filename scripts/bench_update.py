@@ -88,6 +88,8 @@ def make_steps(paths, vocab, costs, net, device, n_steps: int, chunk: int = 64, 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--checkpoint", type=Path, required=True)
+    ap.add_argument("--run", help="a run whose input settings the features take (scripts/bench_view.setup: --inputs, "
+                                  "the masks, --neutral, --macros, the map's frame)")
     ap.add_argument("--ref", type=Path, help="the KL term's clone")
     ap.add_argument("--data", type=Path, nargs="+", required=True, help="demonstrations: the steps and the cloning batches")
     ap.add_argument("--steps", type=int, default=8192)
@@ -101,9 +103,14 @@ def main() -> int:
     ap.add_argument("--bc-batch", type=int, default=64, help="steps of demonstrations a minibatch's cloning loss reads")
     a = ap.parse_args()
     device = torch.device(a.device)
+    if a.run:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from bench_view import setup
+        setup(a.run)
     torch.manual_seed(0); random.seed(0); np.random.seed(0)
     net, ck = load(a.checkpoint, device)
-    vocab = ck["vocab"]
+    vocab = ck.get("vocab") or __import__("json").loads((Path("runs") / a.run / "vocab.json").read_text())  # (a run's
+    # current.pt: its vocabulary is the run's)
     ref = load(a.ref, device, memory=False)[0] if a.ref else None
     if ref is not None:
         ref.eval()

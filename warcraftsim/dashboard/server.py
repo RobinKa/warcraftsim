@@ -241,6 +241,10 @@ class _EpisodeSeries:
                     rows, vals = self.extra.setdefault(name, ([], []))
                     rows.append(n0 + i)
                     vals.append(float(v))
+                if "balance_tax" in e:  # (a game between agents: the tax charged, from the learner's side: > 0 it paid;
+                    rows, vals = self.extra.setdefault(f"wtax/{kind}", ([], []))  # by the races' balance, or by
+                    rows.append(n0 + i)  # --win-balance's model of who is expected to win)
+                    vals.append(float(e["balance_tax"]))
             r, b = e.get("race"), e.get("opponent_race")
             if r in MATCHUP_RACES and b in MATCHUP_RACES:
                 x = e.get("outcome", 0)
