@@ -73,6 +73,39 @@ scripts/remote_eval.py --host robin@laptop-wsl [--run fgself-76] [--games 16]   
 scripts/remote_eval.py --host robin@laptop-wsl --status | --stop
 ```
 
+## Remote actors
+
+Training games on another machine, for the learner here and its inference (`selfplay --remote-games N`, `fullgame/gateway.py` here, `fullgame/remoteactor.py` there; the wire format in `fullgame/wire.py`). The other machine needs no GPU and no weights: its actors' network calls are answered by the run's own inference server.
+
+```mermaid
+flowchart LR
+  subgraph BOX["Another machine"]
+    A["remoteactor: actor processes<br/>games, features, play_one"]
+  end
+  subgraph MAIN["The run's machine"]
+    G["gateway: N game slots<br/>(a pipe and two shared rows each)"]
+    I["inference server<br/>(the C++ loop)"]
+    Q["learner's queue"]
+  end
+  A -- "calls (float16 entities, zstd)" --> G
+  G -- "answers" --> A
+  G --> I
+  A -- "trajectories, episode rows" --> G
+  G --> Q
+```
+
+* A slot is what a local game has: a pipe to the inference server and two rows of the shared memory. A remote game's connection takes a free one; its calls go through it as a local game's, so the same networks and past snapshots answer them, and the server does not know the difference.
+* Its trajectories and episode rows go into the learner's queue as a local actor's (the rows with `host`). When the learner is a batch behind, the gateway stops reading and TCP holds the remote games back.
+* At its start the remote side gets the actors' settings (the learner's own), vocab.json, the strategy pool and Wine's settings; the league's launches every 5 s. It plays no evaluation games and films no videos; its draws are seeded with its name.
+* Only a machine with the shared key (`~/.config/warcraftsim/remote.key`, made by the gateway's first start) and the learner's code (a hash of the package's actor code, the native sources and the built shim) gets in. Nothing it sends is unpickled.
+* A connection closed frees its slot; a machine gone without a word frees its slots in ~2 minutes (TCP keepalive). The learner gone, the remote games wait for it 10 minutes, then end as a local actor's would.
+* A side-step on recorded Echo Isles games (56 entities): ~3.8 KB up for the call, ~2.2 KB for the trajectory, ~1.4 KB down (zstd; zlib on Python before 3.14 is ~15% more). ~1,900 side-steps a second are ~11 MB/s up: a wired link.
+
+```
+python -m warcraftsim.fullgame.selfplay ... --remote-games 56 [--remote-port 8770] [--remote-bind <this machine's address>]
+python -m warcraftsim.fullgame.remoteactor --host <the run's machine> --actors 8 --games-per-actor 7   # there
+```
+
 ## One step
 
 ```mermaid

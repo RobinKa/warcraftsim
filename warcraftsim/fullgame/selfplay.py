@@ -7,7 +7,8 @@ learner (this process), which trains the policy and a value head with PPO:
 * Actors: each runs a few games (threads) and batches its agents' network calls on the GPU. An
   agent sees and orders as the clone does in fullgame/play.py (play.BCAgent's view and commands).
   Games of one setup (races, built-in AI or not) run one after another in one process
-  (GameInstance.restart reloads the map).
+  (GameInstance.restart reloads the map). Actors on other machines (--remote-games,
+  fullgame/remoteactor.py there) send their calls and steps over TCP to a gateway here (fullgame/gateway.py).
 * The league (league.json): the learner plays itself (both sides train), past snapshots
   (prioritized fictitious self-play: the ones it beats less, more often) and the built-in AI (a
   fixed anchor: the win rate against it is the run's yardstick, "script:ai-<difficulty>").
@@ -2038,10 +2039,16 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
     fx.set_masks(cfg.get("tech_mask", 0), cfg.get("valid_mask", 0))
     fx.set_neutral(cfg.get("neutral", 0))
     fx.set_macros(int(cfg.get("macros", 0) or 0))
+    if cfg.get("remote"):  # (fullgame/remoteactor.py: the calls and the steps over TCP to the learner's gateway)
+        from .remoteactor import NetInference
+        out_q = NetInference(cfg["remote"])  # (its request() and the learner's queue's put() both)
     out_q.cancel_join_thread()  # exiting must not wait to flush trajectories nobody reads any more
     torch.set_num_threads(1)
     try:
-        if conns is not None:  # the inference server makes the network calls (no GPU context here)
+        if cfg.get("remote"):
+            sys.setswitchinterval(0.001)
+            infer = out_q
+        elif conns is not None:  # the inference server makes the network calls (no GPU context here)
             sys.setswitchinterval(0.001)  # (a game thread woken by its answer waits for the GIL: 5 ms by default)
             shared = SharedRows(*cfg["shared_rows"]) if cfg.get("shared_rows") else None
             per = cfg["games_per_actor"] + cfg.get("eval_games_per_actor", 0)
@@ -3504,6 +3511,14 @@ def main(argv: list[str] | None = None) -> int:
                                                                   "side by side, a CUDA stream each")
     ap.add_argument("--infer-past-slots", type=int, default=4, help="past snapshots a round runs side by side "
                                                                      "(a network copy each)")
+    ap.add_argument("--remote-games", type=int, default=0, help="game slots for actors on other machines "
+                                                                "(fullgame/remoteactor.py there): their calls and steps come "
+                                                                "over TCP to a gateway here (fullgame/gateway.py)")
+    ap.add_argument("--remote-port", type=int, default=8770, help="the gateway's TCP port (--remote-games)")
+    ap.add_argument("--remote-bind", default="0.0.0.0", help="the gateway's address (e.g. this machine's LAN or "
+                                                             "Tailscale address only)")
+    ap.add_argument("--remote-key", default="", help="the key file remote actors must have (default: wire.KEY_PATH, "
+                                                     "made at the gateway's first start)")
     ap.add_argument("--wine", default="", help="another Wine's bin folder (e.g. GE-Proton's files/bin; "
                                               "runtime.wine.use_wine): its own prefixes")
     ap.add_argument("--fsync", type=int, default=0, help="with --wine (a Proton build): Wine's synchronization "
@@ -3831,23 +3846,41 @@ def main(argv: list[str] | None = None) -> int:
     # a pipe per game to the inference server: [actor][game] -> (the game's end, the server's)
     pipes = [[ctx.Pipe() for _ in range(args.games_per_actor + args.eval_games_per_actor)] if args.central_inference
              else None for _ in range(args.actors)]
+    # --remote-games: the gateway's slots, as a local actor's games: a pipe each to the server, two rows each after
+    # the local games' (fullgame/gateway.py)
+    if args.remote_games and not (args.central_inference and args.infer_shm):
+        raise SystemExit("--remote-games needs --central-inference 1 and --infer-shm 1")
+    remote_pipes = [ctx.Pipe() for _ in range(args.remote_games)]
+    local_rows = 2 * args.actors * (args.games_per_actor + args.eval_games_per_actor)
     shared_path = None
     if args.central_inference and args.infer_shm:  # the view steps and answers: two rows a game
         shared_path = f"/dev/shm/warcraftsim-{args.name}-{os.getpid()}.rows"
         c = net.config
-        cfg["shared_rows"] = SharedRows(shared_path, 2 * args.actors * (args.games_per_actor + args.eval_games_per_actor),
-                                        c["G"], c["n_orders"],
+        cfg["shared_rows"] = SharedRows(shared_path, local_rows + 2 * args.remote_games, c["G"], c["n_orders"],
                                         c["d"] if net.memory else 0, create=True).spec
     actors = [ctx.Process(target=actor_main, args=(w, cfg, out_q, stop, render_q, pipes[w] and [a for a, _ in pipes[w]]),
                           daemon=True) for w in range(args.actors)]
+    if remote_pipes:
+        from .gateway import gateway_main
+        files = {"vocab": Path(cfg["vocab"]).read_text(),
+                 "z_pool": Path(cfg["z_pool"]).read_text() if cfg.get("z_pool") else None}
+        hello = {"run": args.name, "cfg": cfg, "files": files, "start_update": cfg["start_update"],
+                 "wine": {"wine": args.wine, "fsync": bool(args.fsync), "ntsync": bool(args.ntsync)}}
+        from . import wire
+        wire.pack_value(hello)  # (a setting the wire cannot carry: here, not at a remote machine's first connection)
+        actors.append(ctx.Process(target=gateway_main, args=(cfg, [a for a, _ in remote_pipes], local_rows, out_q, stop,
+                                                             {"port": args.remote_port, "bind": args.remote_bind,
+                                                              "key": args.remote_key or None, "hello": hello}),
+                                  daemon=True))
+    server_conns = [b for ps in pipes for _, b in ps] + [b for _, b in remote_pipes] if args.central_inference else []
     infer_thread = native = None
     if args.central_inference and args.infer_native:
         pass  # (set up below, after the actors started: its graphs take ~1 minute)
     elif args.central_inference and args.infer_in_learner:
-        infer_thread = threading.Thread(target=inference_main, args=(cfg, [b for ps in pipes for _, b in ps], stop, True),
+        infer_thread = threading.Thread(target=inference_main, args=(cfg, server_conns, stop, True),
                                         daemon=True, name="inference")
     elif args.central_inference:
-        actors.append(ctx.Process(target=inference_main, args=(cfg, [b for ps in pipes for _, b in ps], stop), daemon=True))
+        actors.append(ctx.Process(target=inference_main, args=(cfg, server_conns, stop), daemon=True))
     if args.video_every > 0:
         actors.append(ctx.Process(target=render_main, args=(cfg, render_q, stop), daemon=True))
     for p in actors:
@@ -3856,7 +3889,7 @@ def main(argv: list[str] | None = None) -> int:
         infer_thread.start()
     if args.central_inference and args.infer_native:  # the server's loop in C++ in this process (native_infer)
         from .native_infer import NativeServer
-        native = NativeServer(cfg, [b for ps in pipes for _, b in ps], device, split)
+        native = NativeServer(cfg, server_conns, device, split)
         native.start()
     _pin(cfg, "learner")  # (after the others started: they would inherit it)
     info.update(status="training", started=time.time())
