@@ -192,8 +192,8 @@ class BCAgent:
         st = self.view.step(rows, me, events, t, opp)
         sel = st["sel"][:st["n_own"]]  # the workers busy with a building order (features.building), and since when
         cur = sel[:, fx.C_ORDER]  # (by masks: a unit at a time, numpy's scalars, had been ~1% of an actor's time)
-        busy = set(sel[(sel[:, fx.C_FLAGS] & fx.WORKER > 0)
-                       & ((cur >= fx.TYPE_CODE) | ((cur == REPAIR) if self.repair_builds else False)), fx.C_ID].tolist())
+        to_build = (cur >= fx.TYPE_CODE) | ((cur == REPAIR) if self.repair_builds else False)
+        busy = set(sel[(sel[:, fx.C_FLAGS] & fx.WORKER > 0) & to_build, fx.C_ID].tolist())
         self.building_since = {u: self.building_since.get(u, t) for u in busy}
         return st if st["n_own"] > 0 else None
 
