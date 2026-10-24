@@ -1593,6 +1593,25 @@ Two notes:
 * 52% of 85 head to head with `fgself-130` (`fgself-142`: 34.5%), 48% of 60 with its start.
 * Against insane 89%. With a target 49% of 73, falling (`fgself-142` 69%, `fgself-143` before 20:30 58%; human 5 of 22, orc 1 of 11), though its targets are followed as before (56% of the due items, `fgself-142` 57%).
 
+**Audit 8 (2026-10-24 evening, the behaviour of recent games, the user's ask).** It started from what the games show, not from the code's changes:
+* **An expand order held the hall's cost back a second time.** The game takes a building's cost at its order (five build orders in filmed games: the full cost on the next step), but the mask kept the hall's cost until the frame stood, for the 25-35 s walk (60 s when the game refused the order). Every paid order was masked meanwhile: a penalty on expanding. Target games kept it too (the builder's reserve while the hall was due). Now nothing is kept, and a refused expand frees the macro at once.
+* **Duplicate buildings.** Each unit samples its own order, so 2-3 workers picked the same building in a step (26 of 202 build choices in filmed games). In short won games, extra one-of buildings (orc 1.78 a game: two war mills in 52%; a second altar in 25-30% of human and night elf games). Now a building of a kind once a step, and never a second altar, upgrade building or shop while one stands, is a frame, or a worker is on its way to build it.
+* **About half the deaths were never counted.** A dead unit is mostly gone from the step that reports its death, and the owner was looked up in that step's table. This hit `lost`, `kills` and `creeps` in every row (deaths ≈ 48% of what was made in long losses), the harass kind's kill count (its penalty overstated) and the builder's bookkeeping. Owners are now kept as last seen.
+* **Tavern hires were paid at the sale with nothing kept** for the ~33 s walk, and two workers could buy the same hero: 10,475 hire orders made 308 hires (old teacher). A hire on its way now keeps its money from the other paid orders, and only one worker hires a hero at a time.
+* **Orders the tech mask could not see:**
+  * troll berserkers: the berserker upgrade isn't in the vocabulary, so they can never be trained; ~59 refused a game as orc.
+  * abilities a research teaches: footmen's defend (~23 a game), crypt fiends' burrow (~31) and web (~9).
+
+  These are now masked until the research is done.
+* **Smaller ones:**
+  * Undead and night elf repairs of full-health buildings (restoration, renew: ~214 refused an undead game) are now filtered like human repairs. Undead and night elf frames take no helpers.
+  * The night elf expansion lesson never stopped: wisps in an entangled mine are hidden, so it never saw 4 there, and it fired 22 times in a long game.
+  * The laptop's with-target rows carried no version.
+  * The food cap above 100 (the game counts farms past its ceiling) was shown in the overlay and used by the teacher's checks: both now clamp at 100.
+* **Real game behaviour, not bugs:** food used up to 112 (the built-in AI does it too); necropolises rebuilt in losses; 4.5% ties at 40 minutes.
+* **Open:** human repairs of frames are refused ~900 times a human game in fgself-143, in the real game too (215), with money at hand. Two probe games found every such repair accepted (from mining, carrying, hidden or idle workers, the builder itself, five helpers, all at once, an abandoned frame, with fgself-143's and fgself-144's game cuts). The cause is still unknown.
+* **Expansions, the user's question:** without a target the policy takes the expand order when the natural is free (38-81% of the scenario games with the camp gone), but never with the camp standing. No lesson teaches clearing the camp without a target, and the policy doesn't creep on its own. With a target that asks for one: 21-57% with the camp standing, 53-89% with it gone.
+
 **`fgself-144`** (from `fgself-143`'s newest, ~21:45): **audit 7's fixes**, the target's first hero taught as soon as the altar stands (the lesson `fgself-140` meant), its tavern hero at its place among the target's heroes, and evaluation without the relaunches' bias; also round 4 of the game's code (`--game-cuts 17179866617`: the harness's tokens, commands and items in the shim, the name hash in one pass, soft float as SSE where it is IEEE; −3-6% of a game's main thread). Otherwise `fgself-143` (`fgself-130` fixed in the league, 25% of the past snapshots' games). Head to head with its start and `fgself-130`.
 
 **Skill ratings** (the user's idea, the dashboard's Ratings view): a Bradley-Terry fit on the Elo scale over every evaluation game in the real game, the insane AI at 1500. At 22:45: `fgself-106`'s last checkpoint 2128 ± 24, `fgself-102`'s 11841833 1977 ± 8, `fgself-100`'s best 1956 ± 9.

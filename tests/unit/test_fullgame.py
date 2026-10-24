@@ -1324,6 +1324,26 @@ def test_production_counts_a_haunted_mine_as_an_expansion():
     assert prod.row(0, obs)["expansions"] == 1
 
 
+def test_production_counts_deaths_of_units_already_gone():
+    """A dead unit is mostly gone from the step that reports its death: its owner as last seen counts it (the step's
+    own table had missed ~half of the deaths, kills and creeps; audit 8)."""
+    from types import SimpleNamespace as NS
+
+    from warcraftsim.fullgame.trace import Production
+
+    code = lambda c: int.from_bytes(c.encode(), "big")  # noqa: E731
+    player = NS(gold=0, lumber=0, food_used=5, food_cap=12, gold_gathered=0, lumber_gathered=0, start_x=0.0, start_y=0.0)
+    units = [NS(id=5, type_id=code("hfoo"), owner=0, x=0.0, y=0.0), NS(id=6, type_id=code("ogru"), owner=1, x=10.0, y=0.0),
+             NS(id=7, type_id=code("nkob"), owner=12, x=20.0, y=0.0)]
+    obs = NS(players={0: player, 1: player}, units=units, events=[], game_time=1.0)
+    prod = Production()
+    prod.step(obs)
+    gone = NS(players={0: player, 1: player}, units=[units[1]], game_time=2.0,
+              events=[NS(kind=1, a=5, b=6, c=0), NS(kind=1, a=7, b=6, c=0)])  # (the footman and the kobold removed)
+    prod.step(gone)
+    assert (prod.lost[0], prod.kills[1], prod.creeps[1]) == (1, 1, 1)
+
+
 def test_league_keeps_fixed_opponents(tmp_path):
     """--league-add: a "fixed:" member stays however many snapshots come; the others keep the first and the newest."""
     from warcraftsim.fullgame.selfplay import League, Member

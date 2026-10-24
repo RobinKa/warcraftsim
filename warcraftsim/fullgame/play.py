@@ -59,6 +59,12 @@ def unit_rows(obs: Observation, t: int) -> np.ndarray:
 
 
 REPAIR = 852024  # the order a worker resumes a building with
+RESTORE, RENEW = 852202, 852161  # (undead acolytes' and night elf wisps' repairs: finished buildings only)
+# buildings a player needs one of (altars, the upgrade buildings, the shops): a second never sent (each unit samples
+# its own order: 2-3 workers had built one in a step; a second altar, war mill or graveyard in 24-52% of short won
+# games; audit 8)
+ONE_OF = {int.from_bytes(c.encode(), "big") for c in ("halt", "oalt", "uaod", "eate", "hbla", "ofor", "ugrv", "edob",
+                                                      "hvlt", "ovln", "utom", "eden", "otto", "usap", "obea")}
 ATTACK = 851983
 EXPAND, CREEP, MIX, PICKUP = 990001, 990002, 990003, 990004  # (macros.EXPAND, .CREEP, .MIX, .PICKUP)
 HAUNT = int.from_bytes(b"ugol", "big")
@@ -142,6 +148,11 @@ class BCAgent:
                     self.view.assign[unit] = res
                     if res == "gold" and hasattr(c, "target"):  # (its mine: another one is a transfer, not redundant)
                         self.view.mine_of[unit] = c.target
+        pending = getattr(self.view, "expanding", None)
+        if pending is not None and any(not ok and getattr(c, "unit", None) == pending[1]  # (a refused expand: no other
+                                       and (getattr(c, "building", None) in EXPAND_HALLS.values() or getattr(c, "order", None) == HAUNT)
+                                       for c, ok in zip(cmds, results)):  # blocked for its 60 s; audit 8)
+            self.view.expanding = None
         buying = getattr(self, "buying_since", {})
         tally = self.__dict__.setdefault("order_results", {})  # (per kind of order: sent, refused; the episode row)
         ctx = self.__dict__.setdefault("refused_ctx", [])  # (the first refused orders' context: the episode row)
@@ -189,6 +200,8 @@ class BCAgent:
         opp = (np.asarray([t, 1 - self.player, q.gold, q.lumber, q.food_used, q.food_cap, q.upkeep]) if q is not None
                else None)
         self.view.ground = getattr(obs, "ground", ())  # (--macros 2: the items lying on the ground, macros.pickable)
+        hiring = getattr(self, "hiring", {})  # (a tavern hero's hire on its way: its money kept, View.hire_class)
+        self.view.hire_class = next((self.enc.order_index.get((oid, fx.UNIT)) for oid in hiring.values()), None)
         st = self.view.step(rows, me, events, t, opp)
         sel = st["sel"][:st["n_own"]]  # the workers busy with a building order (features.building), and since when
         cur = sel[:, fx.C_ORDER]  # (by masks: a unit at a time, numpy's scalars, had been ~1% of an actor's time)
@@ -203,6 +216,7 @@ class BCAgent:
         out: list[Command] = []
         self._release_buyers(st["sel"][:st["n_own"]])
         expanded = False  # (--macros: one expand order a step)
+        built: set[int] = set()  # (one building of a kind a step)
         self.last_sent: list[tuple[int, int]] = []  # (order id, kind) of what it sent: the video's panel
         self.sent_resources: list[str | None] = []  # per command: what it sends the worker to harvest (accepted())
         sel = st["sel"]
@@ -268,7 +282,11 @@ class BCAgent:
                 out.append(LearnSkill(unit, oid))
             elif kind == fx.POINT:
                 x, y = fx.bins_world(int(bx[i]), int(by[i]), self.view.sign)
-                out.append(Build(unit, oid, x, y) if oid >= TYPE_CODE else PointOrder(unit, oid, x, y))
+                if oid < TYPE_CODE:
+                    out.append(PointOrder(unit, oid, x, y))
+                elif oid not in built and not (oid in ONE_OF and self._has_building(oid)):  # (each unit samples its own
+                    built.add(oid)  # order: 2-3 workers had built one building in a step, and a second altar, war mill
+                    out.append(Build(unit, oid, x, y))  # or graveyard came in 24-52% of short won games; audit 8)
             elif kind == fx.UNIT and oid in self.view.dead_heroes:  # (a dead tavern hero's hire: its revival at an altar of
                 altar = self._altar(sel[:st["n_own"]])            # the player's; tested 2026-10-23: 0.4 of its gold, as
                 if altar is not None:                             # an altar hero's)
@@ -277,7 +295,14 @@ class BCAgent:
                 shop = sel[int(tgt[i])]                    # the one pointed at, if it sells it, else the nearest that
                 if not sells(int(shop[fx.C_TYPE]), oid):   # does (a new order's pointer has no reason to pick the
                     shop = nearest_shop(sel, oid, sel[i])  # tavern: no hire in thousands of games)
+                hero = fx.is_hero_code(fx.rawcode(oid))
+                hiring = self.__dict__.setdefault("hiring", {})
+                if hero and (oid in hiring.values() or oid in built):  # (a hero hired by one worker at a time)
+                    shop = None
                 if shop is not None:
+                    if hero:  # (paid at the sale, ~33 s later: its money kept meanwhile; 10,475 hire orders had made
+                        hiring[unit] = oid  # 308 hires, the money spent during the walk; audit 8)
+                        built.add(oid)
                     out.append(Buy(unit, int(shop[fx.C_ID]), oid))
                     self.__dict__.setdefault("buying_since", {})[unit] = (self.t, float(shop[fx.C_X]), float(shop[fx.C_Y]))
                     self.bought = getattr(self, "bought", 0) + 1
@@ -300,7 +325,7 @@ class BCAgent:
                     if mine is None:
                         continue
                     out.append(TargetOrder(unit, oid, mine))
-                elif oid == REPAIR and (not self._repairable(target) or int(sel[i, fx.C_ORDER]) == REPAIR):  # (nothing
+                elif oid in (REPAIR, RESTORE, RENEW) and (not self._repairable(target) or int(sel[i, fx.C_ORDER]) == oid):  # (nothing
                     # to repair there, or repairing already: the game refuses both,
                     self.noop_repairs = getattr(self, "noop_repairs", 0) + 1  # ~1,000-1,500 a game as human and orc,
                     continue  # 11-35% of the policy's orders since fgself-100; not sent: what it did, as before)
@@ -463,10 +488,18 @@ class BCAgent:
         """A repair's target: a building or a machine of the player's that is damaged or unfinished (a frame: while the
         player has the lumber it costs, or the gold of one that costs none)."""
         fl = int(row[fx.C_FLAGS])
-        orc = fx.rawcode(int(row[fx.C_TYPE]))[:1] == "o"  # (an orc frame takes no helpers: refused, tested 2026-10-23)
-        return (int(row[fx.C_OWNER]) == self.player and (fl & fx.STRUCTURE or int(row[fx.C_TYPE]) in MACHINES)
-                and ((int(row[fx.C_HP]) < int(row[fx.C_MAXHP]) and not fl & fx.CONSTRUCTING)
-                     or (fl & fx.CONSTRUCTING and not orc and self._can_power_build(row))))
+        human = fx.rawcode(int(row[fx.C_TYPE]))[:1] == "h"  # (only a human frame takes helpers: an orc one refused, tested
+        return (int(row[fx.C_OWNER]) == self.player and (fl & fx.STRUCTURE or int(row[fx.C_TYPE]) in MACHINES)  # 2026-10-23;
+                and ((int(row[fx.C_HP]) < int(row[fx.C_MAXHP]) and not fl & fx.CONSTRUCTING)  # undead and night elf ones
+                     or (fl & fx.CONSTRUCTING and human and self._can_power_build(row))))  # build themselves)
+
+    def _has_building(self, oid: int) -> bool:
+        """The player has a building of type `oid` (finished or a frame) or a worker on its way to build one."""
+        rows = getattr(self, "rows", None)
+        if rows is None:
+            return False
+        own = rows[(rows[:, fx.C_OWNER] == self.player) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0)]
+        return bool(((own[:, fx.C_TYPE] == oid) | (own[:, fx.C_ORDER] == oid)).any())
 
     def _can_power_build(self, row: np.ndarray) -> bool:
         """A helper at a frame costs a share of the building's price as it builds (AbilityData Ahrp: 0.15), and the game
@@ -498,16 +531,19 @@ class BCAgent:
             return
         pos = {int(u): (float(x), float(y)) for u, x, y in sel[:, [fx.C_ID, fx.C_X, fx.C_Y]].tolist()}
         near = self.__dict__.setdefault("buy_near", {})
-        for unit, (_, sx, sy) in list(buying.items()):
+        hiring = getattr(self, "hiring", {})
+        for unit, (t0, sx, sy) in list(buying.items()):
             p = pos.get(unit)
-            if p is None:
+            if p is None or self.t - t0 >= BUY_COMMIT_STEPS:
                 buying.pop(unit, None)
                 near.pop(unit, None)
+                hiring.pop(unit, None)
             elif (p[0] - sx) ** 2 + (p[1] - sy) ** 2 < BUY_REACH ** 2:
                 near[unit] = near.get(unit, 0) + 1
                 if near[unit] >= BUY_ARRIVED:
                     buying.pop(unit, None)
                     near.pop(unit, None)
+                    hiring.pop(unit, None)
 
     def act(self, obs: Observation, t: int) -> list[Command]:
         st = self.observe(obs, t)

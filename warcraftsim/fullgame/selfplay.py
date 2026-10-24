@@ -1365,8 +1365,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         owner = dict(zip(ua[:, 0].tolist(), ua[:, 2].tolist())) if ua is not None else {u.id: u.owner for u in obs.units}
         for e in obs.events:
             k = int(e.kind)
-            if owner.get(e.a) != self.side:
-                continue
+            if owner.get(e.a) != self.side and not (k == 1 and (e.a in self.site or e.a in self.busy)):  # (a dead
+                continue  # unit is mostly gone from the step that reports it: its own sites and makers known; audit 8)
             if k == 2:  # construction: a=structure, b=type
                 self.site[e.a] = rawcode(e.b)
                 self.started[rawcode(e.b)] = now
@@ -1454,7 +1454,7 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             types, hero = {u.type for u in done}, any(getattr(u, "is_hero", False) for u in mine)
         have = techtree.counts_as(types | {c for c in made if c[0] == "R"}, self.race)
         heroes = len({c for c in (*made, *self.started) if techtree.is_hero(c) or fx.is_hero_code(c)})
-        expansion = self._expansion_reserve(obs, due, p, t)  # (--macros: money kept for a due expansion)
+        expansion = self._expansion_reserve(obs, due, p, t, own)  # (--macros: money kept for a due expansion)
         self.first_free = heroes == 0 and not hero  # (a free first hero)
         save = expansion
         for _, c in due:
@@ -1479,12 +1479,16 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         self.reserve = save
         return []
 
-    def _expansion_reserve(self, obs, due: list, p, t: int):
+    def _expansion_reserve(self, obs, due: list, p, t: int, own=None):
         """--macros: a due expansion (the race's hall or a haunted mine among the due items) with the natural free:
-        its cost kept from the agent's other orders (the expand order takes its hall's mask), else None."""
+        its cost kept from the agent's other orders (the expand order takes its hall's mask), else None. None while a
+        worker is on its way to build it (`own`: the side's rows, native columns; the game took the cost at the
+        order, and keeping it again had masked every paid order during the walk; audit 8)."""
         from .macros import site
         hall = {"human": "htow", "orc": "ogre", "undead": "ugol", "nightelf": "etol"}.get(self.race)
         if not fx.MACROS or hall is None or self.costs is None or not any(c in (hall, "unpl", "etol") for _, c in due):
+            return None
+        if own is not None and np.isin(own[:, 10], [int.from_bytes(c.encode(), "big") for c in (hall, "unpl", "etol")]).any():
             return None
         from .play import unit_rows
         q = obs.players.get(self.side)

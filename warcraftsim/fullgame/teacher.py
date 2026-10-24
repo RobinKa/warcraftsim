@@ -254,12 +254,14 @@ class Teacher:
         mx, my = float(nat[fx.C_X]), float(nat[fx.C_Y])
         near = lambda r, rad: np.hypot(r[:, fx.C_X] - mx, r[:, fx.C_Y] - my) < rad  # noqa: E731
         hall = fourcc(HALL[self.race])
-        workers = alive[fx.isin(alive[:, fx.C_TYPE], WORKER_CODES) & (alive[:, fx.C_FLAGS] & HIDDEN == 0)]
-        from .macros import HOLD_CODES  # (a hall of any tier, a haunted or an entangled mine)
+        any_worker = fx.isin(alive[:, fx.C_TYPE], WORKER_CODES)
+        workers = alive[any_worker & (alive[:, fx.C_FLAGS] & HIDDEN == 0)]
+        mining = alive[any_worker]  # (with those inside a mine: wisps in an entangled one are hidden, and the lesson
+        from .macros import HOLD_CODES  # had never seen 4 there: 22 a long night elf game; audit 8)
         taken = alive[fx.isin(alive[:, fx.C_TYPE], HOLD_CODES)]  # (the distance only to those: per step)
         taken = taken[near(taken, 1000.0)]
         if len(taken):  # (taken: once finished, three workers to mine there)
-            if (taken[:, fx.C_FLAGS] & fx.CONSTRUCTING > 0).all() or (near(workers, 900.0).sum() >= 4) or not len(workers):
+            if (taken[:, fx.C_FLAGS] & fx.CONSTRUCTING > 0).all() or (near(mining, 900.0).sum() >= 4) or not len(workers):
                 return []
             target = alive[fx.isin(alive[:, fx.C_TYPE], OWN_MINE_CODES)]
             target = target[near(target, 1000.0)]

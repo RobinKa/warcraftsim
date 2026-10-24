@@ -316,7 +316,7 @@ SHOP_IDS = np.array([int.from_bytes(c.encode(), "big") for c in ("ntav", "ngme",
 
 
 CREEP_ARMY, CREEP_FROM = 6, 150.0  # --macros: creep the natural's camp with 6 army units or more, from second 150
-EXPAND_PENDING_STEPS = 120  # --macros: an expand order under way this long (the walk, ~30 s): no other, its cost kept
+EXPAND_PENDING_STEPS = 120  # --macros: an expand order under way this long (the walk, ~30 s): no other (refused: none)
 # selfplay --macros: the agent's own orders for what the game spreads over many (fullgame/macros.py: expand)
 MACROS = int(os.environ.get("WARCRAFTSIM_MACROS", "0") or 0)  # (its level: 2 adds pick up, macros.LEVELS)
 
@@ -415,18 +415,20 @@ def revive_costs(enc: "Encoder", rows: np.ndarray, player: int, dead: np.ndarray
     return c
 
 
-def affordable(costs: np.ndarray, gold: int, lumber: int, fu: int, fc: int, reserve=None) -> np.ndarray:
+def affordable(costs: np.ndarray, gold: int, lumber: int, fu: int, fc: int, reserve=None, also=None) -> np.ndarray:
     """[n_orders + 1] bool: the order classes the player can pay for (row 0, no order: always). `reserve`
     (order class, gold, lumber), --z-build: what the target's next item needs is kept from the others
-    (the item itself as before; free orders stay)."""
+    (the item itself as before; free orders stay). `also`: another one kept (a tavern hero's hire on its way)."""
     c = costs
     fc = min(fc, FOOD_MAX)  # (the game's ceiling: farms past it give nothing; at 100 every unit was refused; audit 4)
     avail = (c[:, 0] <= gold) & (c[:, 1] <= lumber) & ((c[:, 2] == 0) | (fu + c[:, 2] <= fc))
-    if reserve is not None:
-        k, rg, rl = reserve
-        keep = avail[k]
+    kept = [r for r in (reserve, also) if r is not None]
+    if kept:
+        rg, rl = sum(r[1] for r in kept), sum(r[2] for r in kept)
+        keep = {r[0]: avail[r[0]] for r in kept}
         avail &= ((c[:, 0] <= max(0, gold - rg)) & (c[:, 1] <= max(0, lumber - rl))) | (c[:, :2].sum(1) == 0)
-        avail[k] = keep
+        for k, v in keep.items():
+            avail[k] = v
     avail[0] = True
     return avail
 
@@ -910,12 +912,21 @@ def _paid_orders(enc: "Encoder", rows: np.ndarray, st: dict, me, trees: dict) ->
 Encoder._paid = lambda self, rows, st, me, trees: _paid_orders(self, rows, st, me, trees)
 
 
+# what the tech tree's tables miss (audit 8: refused in the game): a unit an upgrade enables (troll berserkers: the
+# berserker upgrade turns the headhunters, ~59 refused a game as orc), and abilities a research teaches (footmen's
+# defend ~23 a game, crypt fiends' burrow ~31 and web ~9)
+UNIT_RESEARCH = {"otbk": "Robk"}
+ABILITY_RESEARCH = {852055: "Rhde", 852056: "Rhde", 852533: "Rubu", 852534: "Rubu", 852211: "Ruwb", 852212: "Ruwb",
+                    852213: "Ruwb"}  # (defend, undefend, burrow, unburrow, web, webon, weboff)
+
+
 class TechMask:
     """--tech-mask: which order classes a player has the tech for (fullgame/techtree.py, the game's own
     tables): a unit or building whose requirements it has finished (a hall counts as each lower tier), a
     research's next level (not past its last, not one under way), a hero while it has fewer than 3 and none
     of that type, with what its place among them needs (an altar, then each tier). Orders without a unit,
-    building or research code: always. Cached while what it has stays the same (most steps)."""
+    building or research code: always, but for those a research teaches (ABILITY_RESEARCH). Cached while what it
+    has stays the same (most steps)."""
 
     def __init__(self, vocab: dict, race: str):
         from . import techtree as tt
@@ -923,6 +934,7 @@ class TechMask:
         self.items = [(c, rawcode(o)) for c, (o, k) in enumerate(vocab["orders"], start=1)
                       if o >= TYPE_CODE and k in (IMMEDIATE, POINT, UNIT)]  # (UNIT: a neutral building's ware)
         self.wares = {c for c, (o, k) in enumerate(vocab["orders"], start=1) if o >= TYPE_CODE and k == UNIT}
+        self.abilities = [(c, ABILITY_RESEARCH[o]) for c, (o, k) in enumerate(vocab["orders"], start=1) if o in ABILITY_RESEARCH]
         if self.wares:  # (in stock from this game second on: neutral.stock_times)
             from .neutral import stock_times
             self.stock = stock_times()
@@ -960,7 +972,10 @@ class TechMask:
             elif tt.is_hero(code):
                 ok[c] = len(heroes) < 3 and code not in heroes and not tt.missing(code, self.race, have, len(heroes), self.tree)
             else:
-                ok[c] = not tt.missing(code, self.race, have, 0, self.tree)
+                ok[c] = (not tt.missing(code, self.race, have, 0, self.tree)
+                         and (code not in UNIT_RESEARCH or levels.get(UNIT_RESEARCH[code], 0) > 0))
+        for c, r in self.abilities:
+            ok[c] = levels.get(r, 0) > 0
         self._key, self._ok = key, ok
         return ok
 
@@ -1266,13 +1281,11 @@ class View:
         if enc.costs is not None:  # what the player can pay for now (orders beyond it are masked)
             c = enc.costs_first if free else revive_costs(enc, rows, self.player, dead)
             gold, lumber, fu, fc = (int(me[2]), int(me[3]), int(me[4]), int(me[5])) if me is not None else (0, 0, 0, 0)
-            reserve = self.reserve
-            pending = getattr(self, "expanding", None)  # (--macros: an expand order on its way: its hall's cost kept until
-            if pending is not None and t < pending[0] and getattr(self, "expand_site", None) is not None:  # the frame
-                via = enc.expand_via.get(RACES[self.races[player]])  # stands; the policy spent it during the walk, and
-                if via is not None:  # sent the next wave of workers: 63 hall orders, no hall, in a filmed game; audit 1)
-                    reserve = (via, int(c[via][0]), int(c[via][1]))
-            avail = affordable(c, gold, lumber, fu, fc, reserve)
+            # (an expand order on its way keeps no money: the game takes a building's cost at its order, and the hall's
+            # cost kept again during the walk had masked every paid order for 25-60 s, a penalty on expanding; the
+            # pending expand only blocks a second one, below; audit 8)
+            k = getattr(self, "hire_class", None)  # (a tavern hero's hire on its way: paid at the sale, play.BCAgent)
+            avail = affordable(c, gold, lumber, fu, fc, self.reserve, None if k is None else (k, int(c[k][0]), int(c[k][1])))
             if enc.tech:  # (--tech-mask)
                 self.t_now = t
                 avail &= self.tech_allowed(rows, built, own_hero, dead)

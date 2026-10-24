@@ -313,7 +313,11 @@ def test_neutral_wares_as_orders(v2, tmp_path):
         st = bot.view.step(np.stack([peon, tav]), None, np.zeros((0, 5), np.int64), 0)
         assert bot.commands(st, [hire], [1], [0], [0]) == [Buy(1, 9, code("Npbm"))]
         assert bot.commands(st, [hire], [0], [0], [0]) == []  # (on its way: committed, no other order)
+        assert bot.hiring == {1: code("Npbm")}  # (its money kept while on its way: paid at the sale)
+        assert bot.view.step(np.stack([peon, tav]), None, np.zeros((0, 5), np.int64), 1) is not None
         bot.buying_since = {}
+        assert bot.commands(st, [hire], [0], [0], [0]) == []  # (the same hero: one worker hires it at a time)
+        bot.hiring = {}
         assert bot.commands(st, [hire], [0], [0], [0]) == [Buy(1, 9, code("Npbm"))]  # (pointed elsewhere: the tavern)
         m = fx.TechMask(v, "human")
         early = m.allowed(frozenset({"htow", "halt"}), {}, frozenset(), frozenset(), now=60.0)
@@ -322,6 +326,39 @@ def test_neutral_wares_as_orders(v2, tmp_path):
         assert not m.allowed(frozenset({"htow"}), {}, frozenset(), frozenset(), now=200.0)[hire]  # (an altar first)
     finally:
         fx.set_neutral(False)
+
+
+def test_tech_mask_research_gated_orders(v2):
+    """What the tech tree's tables miss: troll berserkers (the berserker upgrade turns the headhunters) and abilities a
+    research teaches (defend, burrow, web) are masked until it is done (refused in the game before; audit 8)."""
+    from warcraftsim.fullgame.techtree import tree
+    tree()
+    vocab = {**VOCAB, "orders": [[code("otbk"), fx.IMMEDIATE], [852055, fx.IMMEDIATE], [852533, fx.IMMEDIATE],
+                                 [852211, fx.UNIT], [851983, fx.UNIT]]}
+    base = frozenset({"ogre", "obar", "oalt", "ofor", "otto", "ostr", "osld", "ovln", "obea", "otrb"})
+    ok = fx.TechMask(vocab, "orc").allowed(base, {}, frozenset(), frozenset())
+    assert ok.tolist() == [True, False, False, False, False, True]
+    ok = fx.TechMask(vocab, "orc").allowed(base, {"Robk": 1, "Rhde": 1, "Rubu": 1, "Ruwb": 1}, frozenset(), frozenset())
+    assert ok.tolist() == [True, True, True, True, True, True]
+
+
+def test_one_of_buildings_once(v2):
+    """Each unit samples its own order: a building of a kind once a step, and a second altar (or upgrade building, or
+    shop) never while one stands, is a frame or a worker is on its way to build it (audit 8)."""
+    from warcraftsim.fullgame.play import BCAgent
+    from warcraftsim.protocol import Build
+    v = {**VOCAB, "orders": [[code("halt"), fx.POINT], [code("hbar"), fx.POINT]]}
+    bot = BCAgent(None, v, 0, None)
+    bot.view = bot.enc.view(0, 1.0, [0, 1])
+    bot.trees, bot.building_since, bot.t = {}, {}, 0
+    w1, w2, w3 = (_unit(i, 0, -5000 + 100 * i, 2900, 1, fx.WORKER, "hpea") for i in (2, 3, 4))
+    bot.rows = np.stack([_unit(1, 0, -5184, 2944, 1, fx.STRUCTURE, "htow"), w1, w2, w3])
+    st = {"sel": bot.rows, "n_own": 4}
+    cmds = bot.commands(st, [0, 1, 1, 2], [0] * 4, [10] * 4, [10] * 4)
+    assert [c.building for c in cmds if isinstance(c, Build)] == [code("halt"), code("hbar")]
+    bot.rows = np.stack([*bot.rows, _unit(9, 0, -4500, 2900, 1, fx.STRUCTURE | fx.CONSTRUCTING, "halt")])
+    st = {"sel": bot.rows, "n_own": 5}
+    assert [c.building for c in bot.commands(st, [0, 1, 2, 0, 0], [0] * 5, [10] * 5, [10] * 5)] == [code("hbar")]
 
 
 def test_teacher_lessons_and_merged_labels(v2):
@@ -715,9 +752,12 @@ def test_expand_macro(v2):
         order[i] = k
         assert bot.commands(st, order, [0] * (i + 1), [0] * (i + 1), [0] * (i + 1)) == [Build(2, code("htow"), -4764.0, -2400.0)]
         st = bot.view.step(np.stack(home), rich, np.zeros((0, 5), np.int64), 2)
-        assert not st["avail"][k]  # (one under way: no other expand meanwhile, its hall's cost kept)
-        assert not bot.view.step(np.stack(home), np.asarray([0, 0, 250, 300, 5, 12, 0]), np.zeros((0, 5), np.int64), 3)["avail"][4]
-        bot.view.expanding = None
+        assert not st["avail"][k]  # (one under way: no other expand meanwhile)
+        # (no money kept for it: the game took the hall's cost at the order; kept again, every paid order was masked
+        # during the walk; audit 8)
+        assert bot.view.step(np.stack(home), np.asarray([0, 0, 250, 300, 5, 12, 0]), np.zeros((0, 5), np.int64), 3)["avail"][4]
+        bot.accepted([Build(2, code("htow"), -4764.0, -2400.0)], [False])  # (refused: another expand may come)
+        assert bot.view.expanding is None
         bot.view.races = [2, 1]  # (undead: the mine haunted)
         st = bot.view.step(np.stack(home), rich, np.zeros((0, 5), np.int64), 2)
         assert bot.commands(st, order, [0] * (i + 1), [0] * (i + 1), [0] * (i + 1)) == [TargetOrder(2, code("ugol"), 51)]
@@ -1100,3 +1140,13 @@ def test_teacher_target_first_hero(v2):
     assert c == [ImmediateOrder(3, code("Hamg"))]                     # of these lessons back, audit 7)
     tavern_first = Teacher(0, "human", random.Random(0), {"t": {"Nalc": 60.0, "Hamg": 300.0}}, target_hero=True)
     assert tavern_first.first is None and tavern_first.pick == code("Nalc")
+
+
+def test_affordable_keeps_a_pending_hire(v2):
+    """A tavern hero's hire on its way keeps its money from the other paid orders (paid at the sale, ~33 s later), with
+    the target's next item's kept too (audit 8)."""
+    costs = np.array([[0, 0, 0], [425, 100, 5], [135, 0, 2], [180, 50, 0], [0, 0, 0]])
+    ok = fx.affordable(costs, 600, 200, 10, 30, None, (1, 425, 100))
+    assert ok.tolist() == [True, True, True, False, True]  # (the hire itself and footmen; not an altar on top)
+    ok = fx.affordable(costs, 600, 200, 10, 30, (3, 180, 50), (1, 425, 100))
+    assert ok.tolist() == [True, True, False, True, True]  # (both kept: each itself, nothing else paid)

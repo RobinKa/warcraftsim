@@ -159,6 +159,9 @@ class Production:
         self.expansions: dict[int, list[float]] = {0: [], 1: []}  # each expansion's game second
         self.halls_home = {0: 0, 1: 0}  # more halls that are no expansion (at home, or at no mine)
         self.creeps = {0: 0, 1: 0}  # neutral units killed (creeping)
+        # each unit's owner as last seen (kept after it is gone: a dead unit is mostly removed from the step that
+        # reports its death, and the step's own table had missed ~half of the deaths, kills and creeps; audit 8)
+        self.owners: dict[int, int] = {}
         from .features import codes
         self._hired_codes = codes(HIRED)  # (features.isin's)
 
@@ -190,11 +193,12 @@ class Production:
         if self.mines is None:
             self.mines = [(u.x, u.y) for u in obs.units if rawcode(u.type_id) in MINES]
         events = [e for e in obs.events if int(e.kind) in (1, 3, 6, 9, 12)]
-        if not events:
+        if not events and self.steps % 4 != 1:  # (the owners every 4 steps and on the steps with events)
             return
         ua = getattr(obs, "unit_array", None)
-        owner = (dict(zip(ua[:, 0].tolist(), ua[:, 2].tolist())) if ua is not None and len(ua)
-                 else {u.id: u.owner for u in obs.units})
+        owner = self.owners
+        owner.update(zip(ua[:, 0].tolist(), ua[:, 2].tolist()) if ua is not None and len(ua)
+                     else ((u.id, u.owner) for u in obs.units))
         for e in events:
             k = int(e.kind)
             if k == 6:  # a unit trained: a=building, b=the unit, c=its type

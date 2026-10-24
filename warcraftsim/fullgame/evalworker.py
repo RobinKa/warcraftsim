@@ -170,8 +170,8 @@ class Rows:
         if e.get("eval_key") in self.keys:
             e["eval_key"] = self.keys[e["eval_key"]]
         e["host"] = self.host
-        if e.get("eval_key") == "current":
-            e["version"] = self.infer.nets.version
+        if e.get("eval_key") in ("current", "current+z", "current+zg") or str(e.get("eval_key", "")).startswith("vs "):
+            e["version"] = self.infer.nets.version  # (the current policy's games: with a target too; audit 8)
         self.q.put(e)
 
 

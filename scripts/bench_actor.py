@@ -286,7 +286,7 @@ def replay(a) -> int:
         diff = same(ref["cmds"], out["cmds"], "cmds") + same(ref["puts"], out["puts"], "puts") \
             + same(ref["episode"], out["episode"], "episode")
         print(f"compared {len(out['cmds'])} steps' commands, {len(out['puts'])} puts, the episode row: "
-              f"{len(diff)} differences" + "".join(f"\n  {d}" for d in diff[:12]))
+              f"{len(diff)} differences" + "".join(f"\n  {d}" for d in diff[:int(os.environ.get("BENCH_DIFFS", 12))]))
     return 0
 
 

@@ -87,6 +87,8 @@ class Tracker:
         self.v = {k: 0.0 for k in modes}
         self.done: set[str] = set()  # (a goal reached: no violation later)
         self.kills = 0
+        self.enemy_seen: set[int] = set()
+        self.mine_seen: set[int] = set()
         self.t = 0.0
 
     def step(self, rows: np.ndarray, events, food_used: int, now: float) -> float:
@@ -99,10 +101,10 @@ class Tracker:
         army = mine[(fl & (STRUCTURE | WORKER) == 0)]
         d2 = (army[:, C_X] - self.enemy[0]) ** 2 + (army[:, C_Y] - self.enemy[1]) ** 2
         near = int((d2 < NEAR * NEAR).sum())
-        if "harass" in m:
-            enemy_ids = {int(r[1]) for r in rows[(rows[:, C_OWNER] == 1 - s) & (rows[:, C_FLAGS] & WORKER > 0)]}
-            mine_ids = {int(i) for i in mine[:, 1]}
-            self.kills += sum(1 for e in events if int(e.kind) == DEATH and e.a in enemy_ids and e.b in mine_ids)
+        if "harass" in m:  # (the enemy's workers and its own units as seen so far: a dead unit is mostly gone from the
+            self.enemy_seen.update(rows[(rows[:, C_OWNER] == 1 - s) & (rows[:, C_FLAGS] & WORKER > 0), 1].tolist())
+            self.mine_seen.update(mine[:, 1].tolist())  # step that reports its death: ~half the kills missed; audit 8)
+            self.kills += sum(1 for e in events if int(e.kind) == DEATH and e.a in self.enemy_seen and e.b in self.mine_seen)
         for k, x in m.items():
             if k in self.done:
                 continue
