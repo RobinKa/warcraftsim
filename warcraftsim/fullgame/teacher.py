@@ -230,7 +230,8 @@ class Teacher:
         if sx is None or not len(mines):
             return []
         d = np.hypot(mines[:, fx.C_X] - sx, mines[:, fx.C_Y] - sy)
-        far = np.argsort(d)[d[np.argsort(d)] > NATURAL_FROM_START]
+        o = np.argsort(d)
+        far = o[d[o] > NATURAL_FROM_START]
         if not len(far):
             return []
         nat = mines[far[0]]
@@ -239,11 +240,13 @@ class Teacher:
         hall = fourcc(HALL[self.race])
         workers = alive[fx.isin(alive[:, fx.C_TYPE], WORKER_CODES) & (alive[:, fx.C_FLAGS] & HIDDEN == 0)]
         from .macros import HOLD_CODES  # (a hall of any tier, a haunted or an entangled mine)
-        taken = alive[fx.isin(alive[:, fx.C_TYPE], HOLD_CODES) & near(alive, 1000.0)]
+        taken = alive[fx.isin(alive[:, fx.C_TYPE], HOLD_CODES)]  # (the distance only to those: per step)
+        taken = taken[near(taken, 1000.0)]
         if len(taken):  # (taken: once finished, three workers to mine there)
             if (taken[:, fx.C_FLAGS] & fx.CONSTRUCTING > 0).all() or (near(workers, 900.0).sum() >= 4) or not len(workers):
                 return []
-            target = alive[fx.isin(alive[:, fx.C_TYPE], OWN_MINE_CODES) & near(alive, 1000.0)]
+            target = alive[fx.isin(alive[:, fx.C_TYPE], OWN_MINE_CODES)]
+            target = target[near(target, 1000.0)]
             if self.race == "nightelf" and not len(target):
                 return []  # (its tree of life entangles the mine first)
             mine_id = int(target[0, fx.C_ID]) if len(target) else int(nat[fx.C_ID])
@@ -251,7 +254,8 @@ class Teacher:
             pick = far_w[np.argsort(np.hypot(far_w[:, fx.C_X] - mx, far_w[:, fx.C_Y] - my))[:3]]
             return ([TargetOrder(int(w[fx.C_ID]), HARVEST, mine_id) for w in pick]
                     if len(pick) and self._due("expansion: workers", t) else [])
-        creeps = rows[(rows[:, fx.C_OWNER] == 12) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0) & near(rows, CAMP_NEAR)]
+        creeps = rows[(rows[:, fx.C_OWNER] == 12) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0)]
+        creeps = creeps[near(creeps, CAMP_NEAR)]
         if len(creeps):  # (guarded. Sending the whole army to clear it every 10 s (fgself-123) lost the games that had
             # an expansion due, 13% won to 32%. With --macros: its heroes, while the army is 6 units or more, are shown
             # the creep order (the policy decides who goes with them))
