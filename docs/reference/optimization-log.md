@@ -354,6 +354,42 @@ Everything with the harness change (`--game-cuts 521721` = 1529 + the seven) aga
 
 262144 changes the map (the harness), and a replay plays back only on the map it was recorded on, so the run's replays cannot check it. Instead: 8 live echofast games with the new harness (AI against AI with all races, scripted agents, agents against the AI; won, lost, a tie at the time limit; 10,997 steps) recorded with `W3SIM_COBS_CHECK=1`, where the harness writes its own records and the shim compares its records and results with them at every step (no mismatch), then each replay played back on the JASS path (259577) and on the shim's (521721): identical at every step, raw observation bytes included, and identical to the live games. What the new path leaves out are getters (slot states, player states, alliances, start locations, I2S and Preload): nothing in the simulation reads them.
 
+## The game's own code, round 3: pathing (2026-10-24, branch `game-cuts-3`)
+
+perf's counters were back (`kernel.perf_event_paranoid` = 1), so this round measured instructions a step (identical from run to run: a playback is deterministic) and recorded the main thread with call chains (`perf record --call-graph fp`, the shim built with frame pointers; `scripts/cut_ab.py` takes `CUTAB_PERF_RECORD` and `CUTAB_PERF_EVENTS`).
+
+Where the main thread's cycles went with `--game-cuts 521721`:
+
+| part | short game vs the AI (fgself-139) | fgself-140 game (agents) | 40-minute agents' game |
+|---|---|---|---|
+| pathing (the system tick 0x8b5220) | 32% | 50% | 56% |
+| of it: the local A* search (0x8bf8b0) | 5% | 11% | 17% |
+| of it: the long-range search (0x8a4800 -> 0x8a3bf0) | 7% | 18% | 3% |
+| of it: the pathing map's update (0x8b7b30) | 6% | 4% | 4% |
+| of it: collision / proximity (0x8bbc50) | 3% | 3% | 5% |
+| the harness's JASS (units pass ~11%) | 24% | 19% | 22% |
+| attack / fog | 7% / 4% | 7% / 4% | 2% / 4% |
+
+Pathing's cost is spread over dozens of functions and much of it waits on memory (IPC 1.2-1.6): the soft float's calls alone are ~25% of pathing (multiply 0x99ffe0, add 0x9a01c0, ...: called from everywhere, no single caller worth rewriting), the cell lookups of the long-range search (0x8a20a0) and the grid's cell lists. Results must stay bit for bit: the open lists are binary heaps whose pop order on equal keys is part of the result, and the searches leave state in the shared widget grid (type-2 node entries, stamps) and node arrays that later searches read.
+
+| bit | what | M instructions a step, the 40-minute game / a fgself-140 game (alone, on 521721) | main-thread CPU (one pair each) |
+|---|---|---|---|
+| 524288 | the long-range search's relaxation (0x8a3d00) in C: the neighbour's square root after the early return, the heap push inline | -0.5% / -2.1% | -0.7% / -1.7% |
+| 1048576 | the local A* search's loop (0x8bf8b0) in C: the open list's pop and push inline (the same binary heap, the same sift steps), the ring of cells and each cell's node remembered for the run in one array, the relaxation with its heuristic after the early return; new nodes still made by the game's code (0x8bcf30 -> 0x8c22c0, 0x8a3480) | -1.7% / -1.3% | -3.6% / 0% |
+| 2097152 | (with 128) the soft float's integer square root (0x9a2150) as an inline sqrtsd | -0.2% / -0.1% | 0% / -0.8% |
+| 4194304 | the pathing map's cell update (0x8b78b0: four sub-cell queries 0x8be7a0 -> 0x8be420) in C, the same stores in the same order | -1.4% / -1.4% | -1.9% / -2.8% |
+| 8388608 | the units pass's per-unit values of the harness's table kept by the shim (the record's hash, "reported dead"; "under construction" mirrored from the table's natives): no hashtable lookups per unit | -0.6% / -0.8% | -2.8% / -4.2% |
+| 16777216 | (with 8192) a unit without an ability of the sleep's type remembered while its ability list's head is the same (CUnit::AddAbility 0x6d4560 links every new ability at the head; W3SIM_SLEEPCHECK=1 checks every answer) | -0.2% / -0.2% | -1.8% / -2.6% |
+| 33554432 | (with 131072; `GameInstance` also listens on a Unix socket) the step sync over a Unix socket (W3SIM_SOCK) instead of TCP loopback | 0 | -1.8% the game's main thread; the controller thread's sync -6% (0.33 -> 0.31 ms a step) |
+
+Pathing's own instructions (perf samples, 0x8b5220 inclusive): 40.9 -> 38.9 M a step on the 40-minute game (-4.9%), 18.1 -> 16.9 M on a fgself-140 game (-6.8%): A* -9 to -11%, the long-range search -8 to -13%, the map update -22 to -28%.
+
+Everything (`--game-cuts 33551865` against 521721, both played back at the same time): 45 replays, 48,766 steps, identical at every step (raw observation bytes included): main thread **-4.6% instructions, -6.6% CPU** (steps-weighted; fgself-140's 5 replays -4.7% and -7.1%, fgself-139's 22 -4.8% and -6.5%, the 8 new-harness recordings -4.3% and -6.3%, fgself-137's 6 and four old duelfast recordings alike). The Unix socket (33554432, on top): 4 more playbacks identical (two with the full digest and against the live recording).
+
+Tried and dropped: huge pages (the shim's madvise(MADV_HUGEPAGE) and MADV_COLLAPSE through `int 0x80` on the private regions or the whole address space: ~35 MB in huge pages, dTLB misses -4 to -6% (~13,000 a step), no change in CPU: the TLB's misses are at most ~2% of a step); a binary observation format (the shim's text tokens are 0.2% of its main thread, the actor's parse and merge 31 µs an observation, much of it the Observation's objects).
+
+What is left in pathing: the long-range search as a whole (0x8a3bf0 with its ~20 expansion helpers, 0x8a20a0's four-level cell lookups: up to 18% of a fgself-140 game), the soft float's calls (~25% of pathing, spread over many callers), collision and proximity (0x8bbc50, 3-5%). Beside it: the harness's command application in JASS (~3.5%), EnumItemsInRect's whole-map walk (~2%, memory-bound), fog (~4%).
+
 ## The learner's intake (2026-10-12)
 
 With 8 evaluation games, the last-order features and the opponent-aware value, the run fell to ~1,550-1,600 steps/s and the learner's update to ~4.4-4.7 s (3.3 s in the morning). py-spy on the learner's main thread (20 s): ~33% receiving and unpickling the actors' trajectories, of which the answers' arrays were `np.memmap` subclasses (`astype` keeps the subclass of the shared rows; unpickling them rebuilds memmaps); ~18% waiting for the cloning loss's batches from its 2 data workers; ~13% in the update's pauses for the inference loop (by design); and before that, the last-order features' per-unit loop ran in those workers even when `--features 50` zeroed it (an update alone 3.2 → 2.7 s once skipped).

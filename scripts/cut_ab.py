@@ -393,11 +393,12 @@ def cmd_play(a) -> int:
     def play(run: dict) -> None:
         g, obs = run["g"], run["obs"]
         perf = None
+        me = threading.get_native_id()
         try:
             pid = game_pid(g.prefix)
             c0 = thread_cpu(pid) if pid else {}
             for t in range(a.steps):
-                run["digests"].append(digest(obs))
+                run["digests"].append(digest(obs) if not a.light else {"ms": obs.game_ms})
                 if t == a.warmup:
                     if t == 0:
                         g.step([])  # (to find the main thread)
@@ -414,6 +415,7 @@ def cmd_play(a) -> int:
                     run["cpu0"], run["pcpu0"], run["t0"], run["s0"] = thread_cpu(pid)[tid], proc_cpu(pid), time.time(), t
                     run["pp"] = prefix_pids(g.prefix)
                     run["ns0"], run["ws0"], run["oth0"] = thread_ns(pid, tid), pids_cpu(run["pp"]["wineserver"]), pids_cpu(run["pp"]["other"])
+                    run["py0"] = thread_ns(os.getpid(), me)
                 if a.window and perf and t > a.warmup and (t - a.warmup) % a.window == 0:
                     w = perf.stop()
                     run.setdefault("windows", []).append(w.get("instructions", 0) / a.window / 1e6)
@@ -433,6 +435,7 @@ def cmd_play(a) -> int:
                 run["steps_measured"] = len(run["digests"]) - run["s0"]
                 run["cpu"] = thread_cpu(pid)[run["tid"]] - run["cpu0"]
                 run["ns"] = thread_ns(pid, run["tid"]) - run["ns0"]
+                run["py"] = thread_ns(os.getpid(), me) - run["py0"]
                 run["ws"] = pids_cpu(run["pp"]["wineserver"]) - run["ws0"]
                 run["oth"] = pids_cpu(run["pp"]["other"]) - run["oth0"]
                 run["pcpu"] = proc_cpu(pid) - run["pcpu0"]
@@ -460,20 +463,21 @@ def cmd_play(a) -> int:
     for run in runs:
         p = run.get("perf") or {}
         n = max(run.get("steps_measured", 0), 1)
-        live_cmp = compare(live, run["digests"]) if live else "-"
-        base_cmp = compare(runs[0]["digests"], run["digests"]) if run is not runs[0] else "-"
+        live_cmp = compare(live, run["digests"]) if live and not a.light else "-"
+        base_cmp = (compare(runs[0]["digests"], run["digests"]) if not a.light else "light") if run is not runs[0] else "-"
         if run is not runs[0]:
             base_cmp += "; " + compare_raw(runs[0]["raw"], run["raw"])
         row = {"variant": run["variant"], "rep": run["rep"], "steps": n, "error": run.get("error"),
                "instr": p.get("instructions", 0) / n / 1e6, "cycles": p.get("cycles", 0) / n / 1e6,
                "task_ms": p.get("task-clock", 0) / n, "cpu_ms": run.get("ns", 0) / 1e6 / n,
                "ws_ms": 1000 * run.get("ws", 0) / n, "oth_ms": 1000 * run.get("oth", 0) / n,
+               "py_ms": run.get("py", 0) / 1e6 / n,
                "pcpu_ms": 1000 * run.get("pcpu", 0) / n, "live": live_cmp, "base": base_cmp,
-               "hashes": [step_hash(d) for d in run["digests"]]}
+               "hashes": [step_hash(d) for d in run["digests"]] if not a.light else []}
         rows.append(row)
         row["windows"] = run.get("windows", [])
         print(f"| {row['variant']} | {row['rep']} | {n} | {row['instr']:.2f} | "
-              f"{row['cpu_ms']:.3f} | {row['pcpu_ms']:.2f} | {row['ws_ms']:.2f} | {row['oth_ms']:.2f} | {live_cmp} | {base_cmp} |" + (f" ERROR {row['error']}" if row["error"] else ""),
+              f"{row['cpu_ms']:.3f} | {row['pcpu_ms']:.2f} | {row['ws_ms']:.2f} | {row['oth_ms']:.2f} | {live_cmp} | {base_cmp} | py {row['py_ms']:.3f} |" + (f" ERROR {row['error']}" if row["error"] else ""),
               flush=True)
     extra = [k for k in (runs[0].get("perf") or {}) if k not in ("instructions", "cycles", "task-clock")]
     for run, row in zip(runs, rows):
@@ -592,6 +596,8 @@ def main() -> int:
     p.add_argument("--tag", default="")
     p.add_argument("--window", type=int, default=0, help="also the instructions per step in windows of this many steps")
     p.add_argument("--json")
+    p.add_argument("--light", action="store_true", help="no digests (the raw observation bytes still compared): the "
+                   "controller thread's own CPU a step is then mostly the step sync's")
     p.add_argument("--tmp", default=str(Path.home() / "tools/wt-cuts2-out/perf"))
     ap.add_argument("--wine", default=str(Path.home() / "wc3/ge/GE-Proton10-34/files/bin"))
     a = ap.parse_args()

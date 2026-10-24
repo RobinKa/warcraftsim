@@ -61,6 +61,7 @@
  *      (CUnit::AddAbility 0x6d4560 puts a new ability at the head)
  * 2097152 (with 128) the soft float's integer square root (0x9a2150) as the inline sqrtsd of 4096 instead of the libm call
  *      (the same floor(sqrt(x)) for every input)
+ * 33554432 (sync.c, with 131072) the step sync over the controller's Unix socket (W3SIM_SOCK) instead of TCP loopback
  * 262144 (units.c, with the harness's W3S_CSerInit handshake) the harness's players' records and its check of the game's
  *      result made by the shim with the same natives (W3SIM_COBS_CHECK=1: the harness does both as well and the shim
  *      compares); needs the harness from this change (older maps never ask)
