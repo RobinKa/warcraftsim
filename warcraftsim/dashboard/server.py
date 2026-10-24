@@ -856,6 +856,20 @@ class Dashboard:
                                                     "checkpoint": str(ck), "you": you, "agent": agent}))
         return True, "started"
 
+    # ---- games rendered on request: a run's policy in a game set up as asked (fullgame/render_request.py, the
+    # Render button), a queue played one at a time on this machine, the videos in runs/renders (the Videos page) ----
+    def renders(self) -> dict:
+        from ..fullgame import render_request
+        return render_request.listing(self.runs_dir)
+
+    def render_options(self, run: str, where: str = "real") -> dict:
+        from ..fullgame import render_request
+        return render_request.options(run, self.runs_dir, where)
+
+    def start_render(self, req: dict) -> tuple[bool, str]:
+        from ..fullgame import render_request
+        return render_request.submit(req, self.runs_dir)
+
     def _sweep_dir(self, group: str) -> Path | None:
         if not group or group.startswith(".") or "/" in group or "\\" in group:
             return None
@@ -1711,6 +1725,11 @@ def make_handler(dash: Dashboard, docs: Docs | None = None):
                 return self._json(dash.videos())
             if path == "/api/challenges":
                 return self._json(dash.challenges())
+            if path == "/api/renders":
+                return self._json(dash.renders())
+            if path == "/api/render-options":
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                return self._json(dash.render_options(qs.get("run", [""])[0], qs.get("map", ["real"])[0]))
             if path == "/api/docs":
                 return self._json(docs.list())
             if path.startswith("/api/docs/"):
@@ -1738,6 +1757,14 @@ def make_handler(dash: Dashboard, docs: Docs | None = None):
                 except json.JSONDecodeError:
                     return self._json({"error": "expected JSON"}, 400)
                 ok, msg = dash.start_challenge(req if isinstance(req, dict) else {})
+                return self._json({"ok": ok, "message": msg}, 200 if ok else 400)
+            if path == "/api/render":  # (a game rendered on request: queued, played on this machine)
+                length = int(self.headers.get("Content-Length") or 0)
+                try:
+                    req = json.loads(self.rfile.read(min(length, 4096)) or b"{}")
+                except json.JSONDecodeError:
+                    return self._json({"error": "expected JSON"}, 400)
+                ok, msg = dash.start_render(req if isinstance(req, dict) else {})
                 return self._json({"ok": ok, "message": msg}, 200 if ok else 400)
             if path.startswith("/api/runs/") and path.endswith("/notes"):
                 length = int(self.headers.get("Content-Length") or 0)

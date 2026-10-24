@@ -1700,6 +1700,11 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             zm[side] = zmodes.draw(random, cfg["z_modes"]) if cfg.get("z_modes") else {}
             zs[side] = target(cfg, bots[side].view, strat.scaled(st, cfg.get("z_time_scale", 1.0)), pool, races[side],
                               vocab, zm[side])
+    for s, st in (opp.get("targets") or {}).items():  # (a game rendered on request: each policy side's target, chosen
+        if int(s) in bots and st:                      # by render_request.py)
+            s, pool = int(s), strategy_pool(cfg)
+            zm[s] = zmodes.draw(random, cfg["z_modes"]) if cfg.get("z_modes") else {}
+            zs[s] = target(cfg, bots[s].view, strat.scaled(st, cfg.get("z_time_scale", 1.0)), pool, races[s], vocab, zm[s])
     if replay is not None:  # (the source's targets)
         zs = {s: target(cfg, bots[s].view, st, pool, races[s], vocab, replay.get("zm", {}).get(s))
               for s, st in replay["zs"].items()}
@@ -2070,11 +2075,8 @@ def render_main(cfg: dict, render_q, stop) -> None:
     import signal
 
     from ..runtime import reaper
-    from ..video import render_replay
-    from .overlay import FullGameOverlay
     signal.signal(signal.SIGTERM, _exit)
     _pin(cfg, "games")
-    run_dir = Path(cfg["run_dir"])
     try:
         while not stop.is_set() and os.getppid() == cfg["learner_pid"]:
             try:
@@ -2086,18 +2088,28 @@ def render_main(cfg: dict, render_q, stop) -> None:
                     job = render_q.get_nowait()
                 except queue.Empty:
                     break
-            setup, replay, stem, trace, row, t = job
             try:
-                out = render_replay(setup, Path(replay), run_dir / "videos" / f"{stem}.mp4", name=f"fgvid{cfg['slot']}",
-                                    crf=28, overlay=FullGameOverlay(trace) if trace else None, fit_all=True,
-                                    max_steps=cfg["max_steps"] + 40, nice=RENDER_NICE)
-                with open(run_dir / "media.jsonl", "a") as f:
-                    f.write(json.dumps({"time": time.time(), "kind": "video", "file": str(out.relative_to(run_dir)),
-                                        **row}) + "\n")
+                render_video(cfg, job)
             except Exception as e:  # noqa: BLE001 (one video fewer)
-                print(f"video: {stem} not rendered: {e}", flush=True)
+                print(f"video: {job[2]} not rendered: {e}", flush=True)
     finally:
         reaper.reap()
+
+
+def render_video(cfg: dict, job: tuple, nice: int = RENDER_NICE) -> Path:
+    """One filmed game's video (film_game's job: its replay with the policy's panel), listed in the run's
+    media.jsonl -> the video's file. The run's renderer's, and a game rendered on request's (render_request.py:
+    `nice` 0, its process niced already)."""
+    from ..video import render_replay
+    from .overlay import FullGameOverlay
+    run_dir = Path(cfg["run_dir"])
+    setup, replay, stem, trace, row, t = job
+    out = render_replay(setup, Path(replay), run_dir / "videos" / f"{stem}.mp4", name=f"fgvid{cfg['slot']}",
+                        crf=28, overlay=FullGameOverlay(trace) if trace else None, fit_all=True,
+                        max_steps=cfg["max_steps"] + 40, nice=nice)
+    with open(run_dir / "media.jsonl", "a") as f:
+        f.write(json.dumps({"time": time.time(), "kind": "video", "file": str(out.relative_to(run_dir)), **row}) + "\n")
+    return out
 
 
 def _exit(*_):
