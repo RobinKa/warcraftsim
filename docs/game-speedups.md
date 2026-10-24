@@ -124,7 +124,7 @@ Tried and dropped: pooling the events of the game's loopback messages (4: nothin
 | round 1 (2026-10-12): bits 1, 8, 16, 32, 64, 128, 256, 1024 | 1529 | 28.4 → 19.3 M instructions (-32%); CPU -16 to -28% | 24 replays |
 | round 2 (2026-10-24): bits 4096 to 262144 | 521721 | -18.4% against round 1 (-20.7% with wineserver; -31% in games between agents) | 54 replays (60,772 steps), and 8 new recordings in the check mode for 262144, which changes the harness |
 | round 3 (2026-10-24): bits 524288 to 33554432 | 67106297 | -4.6% instructions, -6.6% CPU against round 2 | 45 replays (48,766 steps) |
-| round 4 (2026-10-24): bits 67108864 to 8589934592 (`W3SIM_CUTS` read as 64 bits) | 17179866617 | against round 3: on games of the new harness -8 to -9% instructions and -3 to -6% CPU (-15% with 50 commands a step); on older runs' replays, whose harness never asks for the harness bits, -6.3% and -1.5% | 63 replays (63,792 steps); 15 recordings of the new harness, 4 of them also played back with round 3's shim (its JASS paths: identical) |
+| round 4 (2026-10-24): bits 67108864 to 8589934592 (`W3SIM_CUTS` read as 64 bits) | 17179866617 | against round 3: on games of the new harness -8 to -9% instructions and -3 to -6% CPU (-15% with 50 commands a step); on older runs' replays, whose harness never asks for the harness bits, -6.3% and -1.5% | 63 replays (63,792 steps); 17 recordings of the new harness (pairs and recorded AI orders among them), 6 also played back with round 3's shim (its JASS paths: identical) |
 
 ## Wine
 
