@@ -121,13 +121,14 @@ class Teacher:
             return []
         out = []
         fl, typ = rows[:, fx.C_FLAGS], rows[:, fx.C_TYPE]  # (masks over all the rows, copies of the few they pick:
-        own, living, hero = rows[:, fx.C_OWNER] == self.side, fl & fx.DEAD == 0, fl & fx.HERO > 0  # a copy of every
-        alive = rows[own & living]  # living unit a step had been ~9% of an actor's time)
-        heroes = rows[own & hero]  # (dead ones count: they can be revived)
-        live_heroes = rows[own & living & hero]
+        own, living = rows[:, fx.C_OWNER] == self.side, fl & fx.DEAD == 0  # (a copy of every living unit a step had
+        alive = fx.own_alive(rows, self.side, own & living)  # been ~9% of an actor's time; the living own ones: the
+        heroes = rows[own & (fl & fx.HERO > 0)]  # trackers' copy of the step before. Dead heroes count: revived)
+        fa = alive[:, fx.C_FLAGS]
+        live_heroes = alive[fa & fx.HERO > 0]
         # the neutral buildings: on the game's minimap from the start
         tavern, merchant = rows[living & (typ == TAVERN)], rows[living & (typ == MERCHANT)]
-        done = typ[own & living & (fl & fx.STRUCTURE > 0) & (fl & fx.CONSTRUCTING == 0)]
+        done = alive[(fa & fx.STRUCTURE > 0) & (fa & fx.CONSTRUCTING == 0), fx.C_TYPE]
         n_heroes = len(heroes)
         if self.first is not None and n_heroes == 0 and now >= FIRST_HERO_FROM:
             out += self._first_hero(alive, player, t)
@@ -230,7 +231,8 @@ class Teacher:
         if sx is None or not len(mines):
             return []
         d = np.hypot(mines[:, fx.C_X] - sx, mines[:, fx.C_Y] - sy)
-        far = np.argsort(d)[d[np.argsort(d)] > NATURAL_FROM_START]
+        o = np.argsort(d)
+        far = o[d[o] > NATURAL_FROM_START]
         if not len(far):
             return []
         nat = mines[far[0]]
@@ -239,11 +241,13 @@ class Teacher:
         hall = fourcc(HALL[self.race])
         workers = alive[fx.isin(alive[:, fx.C_TYPE], WORKER_CODES) & (alive[:, fx.C_FLAGS] & HIDDEN == 0)]
         from .macros import HOLD_CODES  # (a hall of any tier, a haunted or an entangled mine)
-        taken = alive[fx.isin(alive[:, fx.C_TYPE], HOLD_CODES) & near(alive, 1000.0)]
+        taken = alive[fx.isin(alive[:, fx.C_TYPE], HOLD_CODES)]  # (the distance only to those: per step)
+        taken = taken[near(taken, 1000.0)]
         if len(taken):  # (taken: once finished, three workers to mine there)
             if (taken[:, fx.C_FLAGS] & fx.CONSTRUCTING > 0).all() or (near(workers, 900.0).sum() >= 4) or not len(workers):
                 return []
-            target = alive[fx.isin(alive[:, fx.C_TYPE], OWN_MINE_CODES) & near(alive, 1000.0)]
+            target = alive[fx.isin(alive[:, fx.C_TYPE], OWN_MINE_CODES)]
+            target = target[near(target, 1000.0)]
             if self.race == "nightelf" and not len(target):
                 return []  # (its tree of life entangles the mine first)
             mine_id = int(target[0, fx.C_ID]) if len(target) else int(nat[fx.C_ID])
@@ -251,7 +255,8 @@ class Teacher:
             pick = far_w[np.argsort(np.hypot(far_w[:, fx.C_X] - mx, far_w[:, fx.C_Y] - my))[:3]]
             return ([TargetOrder(int(w[fx.C_ID]), HARVEST, mine_id) for w in pick]
                     if len(pick) and self._due("expansion: workers", t) else [])
-        creeps = rows[(rows[:, fx.C_OWNER] == 12) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0) & near(rows, CAMP_NEAR)]
+        creeps = rows[(rows[:, fx.C_OWNER] == 12) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0)]
+        creeps = creeps[near(creeps, CAMP_NEAR)]
         if len(creeps):  # (guarded. Sending the whole army to clear it every 10 s (fgself-123) lost the games that had
             # an expansion due, 13% won to 32%. With --macros: its heroes, while the army is 6 units or more, are shown
             # the creep order (the policy decides who goes with them))

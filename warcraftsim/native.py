@@ -59,7 +59,7 @@ def lib():
         L.w3obs_table.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
         L.w3obs_header.restype = ctypes.POINTER(ctypes.c_int32)
         L.w3obs_header.argtypes = [ctypes.c_void_p]
-        L.w3obs_rows.restype = ctypes.POINTER(ctypes.c_int32)
+        L.w3obs_rows.restype = ctypes.c_void_p
         L.w3obs_rows.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)]
         if L.w3obs_ucols() != UCOLS:
             raise RuntimeError(f"{LIB}: {L.w3obs_ucols()} unit columns, expected {UCOLS}")
@@ -116,6 +116,8 @@ class NativeObs:
         self._s = self._lib.w3obs_new()
         if not self._s:
             raise MemoryError("w3obs_new")
+        self._n, self._w = ctypes.c_int(), ctypes.c_int()  # (_rows' sizes, and references to them: made once)
+        self._nw = (ctypes.byref(self._n), ctypes.byref(self._w))
 
     def __del__(self):
         s, self._s = getattr(self, "_s", None), None
@@ -123,11 +125,11 @@ class NativeObs:
             self._lib.w3obs_free(s)
 
     def _rows(self, which: int) -> np.ndarray:
-        n, w = ctypes.c_int(), ctypes.c_int()
-        ptr = self._lib.w3obs_rows(self._s, which, ctypes.byref(n), ctypes.byref(w))
-        if n.value == 0:
-            return np.zeros((0, w.value), np.int32)
-        return np.ctypeslib.as_array(ptr, shape=(n.value, w.value)).copy()
+        ptr = self._lib.w3obs_rows(self._s, which, *self._nw)  # (copied by memmove: as_array's ctypes array type
+        out = np.empty((self._n.value, self._w.value), np.int32)  # and copy had been ~10 us a call, 8 a step)
+        if len(out):
+            ctypes.memmove(out.ctypes.data, ptr, out.nbytes)
+        return out
 
     def parse(self, payload: bytes, order_names: Sequence[str]) -> Observation:
         """The observation without its units (merge() adds them): as protocol.parse_token_lines."""
@@ -144,13 +146,8 @@ class NativeObs:
             players[v[0]] = PlayerState(v[0], Race(v[1]) if v[1] in Race._value2member_map_ else Race.UNKNOWN,
                                         bool(v[2]), v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], Result(v[11]),
                                         v[12], v[13])
-        events = []
-        for k, a, b, c in self._rows(1).tolist():
-            try:
-                kind: EventKind | int = EventKind(k)
-            except ValueError:
-                kind = k
-            events.append(Event(kind, a, b, c))
+        kinds = EventKind._value2member_map_  # (EventKind(k), or k unknown: without the call and its exception)
+        events = [Event(kinds.get(k, k), a, b, c) for k, a, b, c in self._rows(1).tolist()]
         results = [bool(v[0]) for v in self._rows(2).tolist()]
         issued = [IssuedOrder(*v[:6]) for v in self._rows(3).tolist()]
         orders = self._rows(4)

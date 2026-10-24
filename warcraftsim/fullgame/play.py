@@ -190,9 +190,10 @@ class BCAgent:
                else None)
         self.view.ground = getattr(obs, "ground", ())  # (--macros 2: the items lying on the ground, macros.pickable)
         st = self.view.step(rows, me, events, t, opp)
-        sel = st["sel"][:st["n_own"]]  # the workers busy with a building order, and since when
-        busy = {int(u) for u, f, o in zip(sel[:, fx.C_ID], sel[:, fx.C_FLAGS], sel[:, fx.C_ORDER])
-                if fx.building(int(f), int(o)) or (self.repair_builds and int(o) == REPAIR and int(f) & fx.WORKER)}
+        sel = st["sel"][:st["n_own"]]  # the workers busy with a building order (features.building), and since when
+        cur = sel[:, fx.C_ORDER]  # (by masks: a unit at a time, numpy's scalars, had been ~1% of an actor's time)
+        to_build = (cur >= fx.TYPE_CODE) | ((cur == REPAIR) if self.repair_builds else False)
+        busy = set(sel[(sel[:, fx.C_FLAGS] & fx.WORKER > 0) & to_build, fx.C_ID].tolist())
         self.building_since = {u: self.building_since.get(u, t) for u in busy}
         return st if st["n_own"] > 0 else None
 
@@ -324,9 +325,14 @@ class BCAgent:
         ~2,000 trees walked in Python had taken 1.4 ms an order), then the few nearest by the Python key itself (numpy's
         square and Python's ** 2 differ in the last bit now and then: a near tie)."""
         if getattr(self, "_tree_of", None) is not self.trees or self._tree_len != len(self.trees):
-            self._tree_ids = list(self.trees)  # (trees are only taken away: a length is a version)
-            self._tree_xy = np.array([self.trees[k] for k in self._tree_ids], float).reshape(-1, 2)
-            self._tree_of, self._tree_len = self.trees, len(self.trees)
+            ids = list(self.trees)  # (trees are only taken away: a length is a version; the ones left in their order)
+            keep = (np.fromiter((k in self.trees for k in self._tree_ids), bool, len(self._tree_ids))
+                    if getattr(self, "_tree_of", None) is self.trees else None)
+            if keep is not None and int(keep.sum()) == len(ids):
+                self._tree_xy = self._tree_xy[keep]  # (made again from the dict: ~0.3 ms each time a tree fell)
+            else:
+                self._tree_xy = np.array([self.trees[k] for k in ids], float).reshape(-1, 2)
+            self._tree_ids, self._tree_of, self._tree_len = ids, self.trees, len(self.trees)
         d = (self._tree_xy[:, 0] - x) ** 2 + (self._tree_xy[:, 1] - y) ** 2
         near = np.flatnonzero(d <= d.min() * (1 + 1e-9) + 1e-6).tolist()
         return min((self._tree_ids[j] for j in near), key=lambda k: (self.trees[k][0] - x) ** 2 + (self.trees[k][1] - y) ** 2)
@@ -341,8 +347,9 @@ class BCAgent:
             return []
         learning = {c.hero for c in given if isinstance(c, LearnSkill)}
         wait = self.__dict__.setdefault("skill_since", {})
-        heroes = rows[(rows[:, fx.C_OWNER] == self.player) & (rows[:, fx.C_FLAGS] & fx.HERO != 0)
-                      & (rows[:, fx.C_FLAGS] & fx.DEAD == 0) & (rows[:, fx.C_SKILLPTS] > 0)]
+        heroes = rows[rows[:, fx.C_SKILLPTS] > 0]  # (the few with a point first: the other masks over those)
+        heroes = heroes[(heroes[:, fx.C_OWNER] == self.player) & (heroes[:, fx.C_FLAGS] & fx.HERO != 0)
+                        & (heroes[:, fx.C_FLAGS] & fx.DEAD == 0)]
         out: list[Command] = []
         for r in heroes:
             hid = int(r[fx.C_ID])
@@ -432,14 +439,20 @@ class BCAgent:
         return out + ([int(me[2]), int(me[3])] if me is not None else [])  # (the player's gold and lumber)
 
     def _miners(self, sel: np.ndarray, j: int, i: int) -> int:
-        """Workers of the player's at mine row j (within MINE_NEAR, harvesting, or in it), not counting unit row i."""
-        own = sel[:self.view_n_own] if hasattr(self, "view_n_own") else sel
-        w = own[(own[:, fx.C_FLAGS] & fx.WORKER > 0) & (own[:, fx.C_ID] != sel[i, fx.C_ID])]
-        if not len(w):
-            return 0
-        near = np.hypot(w[:, fx.C_X] - sel[j, fx.C_X], w[:, fx.C_Y] - sel[j, fx.C_Y]) < MINE_NEAR
-        mining = fx.isin(w[:, fx.C_ORDER], HARVESTING_CODES) | (w[:, fx.C_FLAGS] & HIDDEN > 0)
-        return int((near & mining).sum())
+        """Workers of the player's at mine row j (within MINE_NEAR, harvesting, or in it), not counting unit row i.
+        (Each mine's, once a step: every gold harvest ordered had counted them again for every mine.)"""
+        n = getattr(self, "view_n_own", None)
+        memo = self.__dict__.get("_miners_at")
+        if memo is None or memo[0] is not sel or memo[1] != n:
+            memo = self._miners_at = (sel, n, {})
+        ids = memo[2].get(j)
+        if ids is None:
+            own = sel[:n] if n is not None else sel
+            w = own[own[:, fx.C_FLAGS] & fx.WORKER > 0]
+            near = np.hypot(w[:, fx.C_X] - sel[j, fx.C_X], w[:, fx.C_Y] - sel[j, fx.C_Y]) < MINE_NEAR
+            mining = fx.isin(w[:, fx.C_ORDER], HARVESTING_CODES) | (w[:, fx.C_FLAGS] & HIDDEN > 0)
+            ids = memo[2][j] = w[near & mining, fx.C_ID].tolist()
+        return len(ids) - ids.count(int(sel[i, fx.C_ID]))
 
     def _at_own_mine(self, sel: np.ndarray, i: int) -> bool:
         """A unit row within MINE_NEAR of one of the player's entangled or haunted gold mines."""

@@ -107,11 +107,17 @@ def entities(enc, fx, rows: np.ndarray, player: int, sign: float, production, lu
     return sel, n_own, f[:n], types[:n], cur[:n]
 
 
+_GEO: list = [None, None, None]  # priv_sides' geometry: [what it was made from, the array, its pointer]
+
+
 def priv_sides(fx, rows: np.ndarray, player: int, sign: float, out: np.ndarray) -> None:
     """View.priv's per-side block into `out` (float32, PRIV long)."""
     rows = np.ascontiguousarray(rows, np.int64)
-    geo = geometry(fx)
-    lib().w3f_priv(rows.ctypes.data, len(rows), rows.shape[1], int(player), float(sign), geo.ctypes.data, out.ctypes.data)
+    key = (fx.STARTS, fx.DUEL_D, fx.NEAR, fx.SCALE, fx.ANCHOR_X)
+    if _GEO[0] != key:  # (made again only when the map's geometry changes: an array a step before)
+        geo = geometry(fx)
+        _GEO[:] = [key, geo, geo.ctypes.data]
+    lib().w3f_priv(rows.ctypes.data, len(rows), rows.shape[1], int(player), float(sign), _GEO[2], out.ctypes.data)
 
 
 def to_f16(a: np.ndarray) -> np.ndarray:

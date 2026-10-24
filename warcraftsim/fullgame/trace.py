@@ -37,6 +37,22 @@ def trace_step(t: int, obs: Observation, material: dict, orders: dict, **policy)
 
 
 WORKER_IDS = {int.from_bytes(c.encode(), "big") for c in ("hpea", "opeo", "uaco", "ewsp")}  # (type ids)
+_VALUES: dict[int, list] = {}  # id(values) -> [values, its size, the type ids seen (sorted), their values]
+
+
+def _type_values(values: dict, types):
+    """Each unit's value by its type id (values[str(id)], 0 for none), as float64: a sorted table of the types seen
+    so far, made again when one is new (np.unique with its inverse, each step, had been ~85 us of an actor's step)."""
+    import numpy as np
+    tab = _VALUES.get(id(values))
+    if tab is None or tab[0] is not values or tab[1] != len(values):
+        tab = _VALUES[id(values)] = [values, len(values), np.zeros(0, np.int64), np.zeros(0, np.float64)]
+    j = np.searchsorted(tab[2], types)
+    if not len(tab[2]) or not (tab[2][np.minimum(j, len(tab[2]) - 1)] == types).all():
+        tab[2] = np.union1d(tab[2], types).astype(np.int64)
+        tab[3] = np.array([values.get(str(t), 0) for t in tab[2].tolist()], float)
+        j = np.searchsorted(tab[2], types)
+    return tab[3][j]
 
 
 def material(obs, values: dict, hero_level: float = 0.0, worker_cap: int = 0) -> dict[int, float]:
@@ -51,8 +67,7 @@ def material(obs, values: dict, hero_level: float = 0.0, worker_cap: int = 0) ->
         import numpy as np
         live = ((ua[:, 11] & DEAD_FLAG) == 0) & ((ua[:, 2] == 0) | (ua[:, 2] == 1))
         a = ua[live]
-        types, inv = np.unique(a[:, 1], return_inverse=True)
-        v = np.array([values.get(str(t), 0) for t in types.tolist()], float)[inv]
+        v = _type_values(values, a[:, 1])
         if hero_level:  # (column 14: the hero's level, 0 for other units)
             v = v + hero_level * np.maximum(a[:, 14] - 1, 0)
         hp = np.where(a[:, 7] > 0, a[:, 6] / np.maximum(a[:, 7], 1), 1.0)
@@ -62,8 +77,9 @@ def material(obs, values: dict, hero_level: float = 0.0, worker_cap: int = 0) ->
                 n = int((work & (a[:, 2] == p)).sum())
                 if n > worker_cap:
                     v = np.where(work & (a[:, 2] == p), v * worker_cap / n, v)
+        vh = v * hp
         for p in (0, 1):
-            out[p] = float((v * hp)[a[:, 2] == p].sum())
+            out[p] = float(vh[a[:, 2] == p].sum())
         return out
     live = [u for u in obs.units if u.owner in (0, 1) and not int(u.flags) & DEAD_FLAG]
     n = {p: sum(u.type_id in WORKER_IDS for u in live if u.owner == p) for p in (0, 1)}
@@ -139,13 +155,15 @@ class Production:
         self.expansions: dict[int, list[float]] = {0: [], 1: []}  # each expansion's game second
         self.halls_home = {0: 0, 1: 0}  # more halls that are no expansion (at home, or at no mine)
         self.creeps = {0: 0, 1: 0}  # neutral units killed (creeping)
+        from .features import codes
+        self._hired_codes = codes(HIRED)  # (features.isin's)
 
     def _hires(self, obs) -> None:
         """A tavern hero or a mercenary of a player's seen for the first time: trained (bought, protocol.Buy)."""
-        from .features import rawcode
-        ua = getattr(obs, "unit_array", None)
-        rows = ([(int(i), int(t), int(o)) for i, t, o in ua[:, :3].tolist() if t in HIRED] if ua is not None
-                else [(u.id, u.type_id, u.owner) for u in obs.units if u.type_id in HIRED])
+        from .features import isin, rawcode
+        ua = getattr(obs, "unit_array", None)  # (their rows by a mask: each row in Python had been ~2% of a step)
+        rows = ([(int(i), int(t), int(o)) for i, t, o in ua[isin(ua[:, 1], self._hired_codes), :3].tolist()]
+                if ua is not None else [(u.id, u.type_id, u.owner) for u in obs.units if u.type_id in HIRED])
         for i, t, o in rows:
             if i not in self.hired and o in (0, 1):
                 self.hired.add(i)

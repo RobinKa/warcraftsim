@@ -179,6 +179,20 @@ PASSIVE_IDS = np.array([int.from_bytes(c.encode(), "big") for c in (
     "hhou", "otrb", "uzig", "emow", "hwtw", "hgtw", "hctw", "hatw", "owtw", "uzg1", "uzg2", "etrp", "ugol", "egol")], np.int64)
 
 
+_OWN_ALIVE: dict[int, tuple] = {}  # player -> (a step's rows, their living units of the player's)
+
+
+def own_alive(rows: np.ndarray, player: int, mask: np.ndarray | None = None) -> np.ndarray:
+    """rows[(owner == player) & living] (`mask`: that mask, when the caller has it), copied once per rows object and
+    player (play_one's rows: the trackers' at a step's end, the teacher's at the next step's start). Read only."""
+    hit = _OWN_ALIVE.get(player)
+    if hit is not None and hit[0] is rows:
+        return hit[1]
+    out = rows[(rows[:, C_OWNER] == player) & (rows[:, C_FLAGS] & DEAD == 0) if mask is None else mask]
+    _OWN_ALIVE[player] = (rows, out)
+    return out
+
+
 def codes(values) -> np.ndarray:
     """A few int codes (unit types, orders) as isin's sorted array."""
     return np.unique(np.fromiter((int(v) for v in values), np.int64))
@@ -381,12 +395,13 @@ def first_hero_free(costs: np.ndarray, vocab: dict) -> np.ndarray:
 REVIVE = (0.4, 0.1, 4.0, 700)  # MiscGame: ReviveBaseFactor, ReviveLevelFactor, ReviveMaxFactor, HeroMaxReviveCostGold
 
 
-def revive_costs(enc: "Encoder", rows: np.ndarray, player: int) -> np.ndarray:
+def revive_costs(enc: "Encoder", rows: np.ndarray, player: int, dead: np.ndarray | None = None) -> np.ndarray:
     """The encoder's costs with each dead hero's order (an altar's, the one that trained it; a tavern hero's hire) at
     its revival's: its gold times 0.4 + 0.1 per level past the first (at most 4 times it, and 700), no lumber; the costs
     as they are when no hero of the player is dead (the mask had held a dead hero's revival back for good, the audit
-    of 2026-10-22)."""
-    mine = rows[(rows[:, C_OWNER] == player) & (rows[:, C_FLAGS] & HERO > 0) & (rows[:, C_FLAGS] & DEAD > 0)]
+    of 2026-10-22). `dead`: the player's dead heroes' rows, when the caller has them."""
+    mine = (rows[(rows[:, C_OWNER] == player) & (rows[:, C_FLAGS] & HERO > 0) & (rows[:, C_FLAGS] & DEAD > 0)]
+            if dead is None else dead)
     if not len(mine):
         return enc.costs
     c = np.array(enc.costs, copy=True)
@@ -1043,7 +1058,8 @@ class View:
         """The privileged block (PRIV): the opponent's player row (PLAYER_COLS) and every living unit."""
         out = np.zeros(PRIV, np.float32)
         if opp is not None:
-            _, _, gold, lumber, fu, fc, upkeep = opp[:7]
+            _, _, gold, lumber, fu, fc, upkeep = opp[:7].tolist()  # (Python's numbers: numpy's scalars' arithmetic
+            # had cost more than the rest; the same quotients)
             out[:5] = gold / 1000.0, lumber / 1000.0, fu / 100.0, fc / 100.0, upkeep / 2.0
         from . import featnative
         if featnative.lib() is not None:  # (in C: the same numbers)
@@ -1103,27 +1119,34 @@ class View:
             return np.zeros((0, rows.shape[1]), rows.dtype), np.zeros(0, np.float32)
         return np.stack([r for _, _, r in keep]), np.asarray([a for _, a, _ in keep], np.float32)
 
-    def has_hero(self, rows: np.ndarray) -> bool:
-        """Whether the player has had a hero (dead ones stay among the rows) or makes one now: its first is free."""
-        return bool(((rows[:, C_OWNER] == self.player) & (rows[:, C_FLAGS] & HERO > 0)).any()) \
-            or any(m[0] == 2 for m in self.making.values())
+    def has_hero(self, rows: np.ndarray, own_hero: np.ndarray | None = None) -> bool:
+        """Whether the player has had a hero (dead ones stay among the rows) or makes one now: its first is free.
+        `own_hero`: the rows' mask of the player's heroes, when the caller has it."""
+        if own_hero is None:
+            own_hero = (rows[:, C_OWNER] == self.player) & (rows[:, C_FLAGS] & HERO > 0)
+        return bool(own_hero.any()) or any(m[0] == 2 for m in self.making.values())
 
-    def tech_allowed(self, rows: np.ndarray) -> np.ndarray:
+    def tech_allowed(self, rows: np.ndarray, built: np.ndarray | None = None, own_hero: np.ndarray | None = None,
+                     dead_rows: np.ndarray | None = None) -> np.ndarray:
         """--tech-mask: the order classes the player has the tech for (TechMask), from its finished buildings,
-        research, heroes (dead ones too: they count) and what it makes now."""
+        research, heroes (dead ones too: they count) and what it makes now. `built`, `own_hero`, `dead_rows`: the
+        rows' masks of the player's living buildings and of its heroes, its dead heroes' rows, when the caller has
+        them (View.step: made once a step for this and the other masks)."""
         if self.techmask is None:
             self.techmask = TechMask(self.enc.vocab, RACES[self.races[self.player]])
-        mine = rows[rows[:, C_OWNER] == self.player]
-        fl = mine[:, C_FLAGS]
-        done = frozenset(mine[(fl & STRUCTURE > 0) & (fl & DEAD == 0) & (fl & CONSTRUCTING == 0), C_TYPE].tolist())
-        heroes = frozenset(mine[fl & HERO > 0, C_TYPE].tolist())
+        if built is None:
+            own, fl = rows[:, C_OWNER] == self.player, rows[:, C_FLAGS]
+            built, own_hero = own & (fl & STRUCTURE > 0) & (fl & DEAD == 0), own & (fl & HERO > 0)
+            dead_rows = rows[own_hero & (fl & DEAD > 0)]
+        done = frozenset(rows[built & (rows[:, C_FLAGS] & CONSTRUCTING == 0), C_TYPE].tolist())
+        heroes = frozenset(rows[own_hero, C_TYPE].tolist())
         making = frozenset(m[1] for m in self.making.values() if m[0] == 2)
         since = getattr(self, "dead_since", {})  # (a hero's revival: the game takes it ~7 s after its death; the mask
         reviving = getattr(self, "reviving", {})  # (a revival under way: an altar took its order; audit 6)
-        dead = frozenset(c for i, c in mine[(fl & HERO > 0) & (fl & DEAD > 0)][:, [C_ID, C_TYPE]].tolist()
+        dead = frozenset(c for i, c in dead_rows[:, [C_ID, C_TYPE]].tolist()
                          if self.t_now - since.get(i, self.t_now) >= REVIVE_AFTER_STEPS
-                         and self.t_now - reviving.get(i, -REVIVE_STEPS) >= REVIVE_STEPS) - making  # had allowed it at
-        # once: ~30 refused a game; audit 5)
+                         and self.t_now - reviving.get(i, -REVIVE_STEPS) >= REVIVE_STEPS) - making if len(dead_rows) \
+            else frozenset()  # had allowed it at once: ~30 refused a game; audit 5. None dead: most steps)
         researching = frozenset(m[1] for m in self.making.values() if m[0] == 3)
         now = self.t_now * self.step_seconds
         key = (done, heroes | making, dead, researching, tuple(sorted(self.levels.items())), self.techmask.stocked(now))
@@ -1147,7 +1170,8 @@ class View:
         # the player's buildings standing now; what it knew of the others' production forgotten (a building that died
         # mid-research had kept that research masked for the game, and its id, given to an enemy unit later, that
         # unit's production; audit 3)
-        self.own_buildings = set(rows[own_alive & (fl & STRUCTURE > 0), C_ID].tolist())
+        built = own_alive & (fl & STRUCTURE > 0)
+        self.own_buildings = set(rows[built, C_ID].tolist())
         for d in (self.making, self.queued):
             for k in [k for k in d if k not in self.own_buildings]:
                 del d[k]
@@ -1176,7 +1200,8 @@ class View:
             if kind == RESEARCH_FINISH and a in self.own_buildings:
                 self.levels[int(r[3])] = int(r[4])
         lumber = {u for u, r in self.assign.items() if r == "lumber"}
-        dead = rows[own & (fl & HERO > 0) & (fl & DEAD > 0)]
+        own_hero = own & (fl & HERO > 0)  # (and the dead ones' rows: for the masks below too)
+        dead = rows[own_hero & (fl & DEAD > 0)]
         self.dead_heroes = {int(t): int(i) for t, i in dead[:, [C_TYPE, C_ID]].tolist()}
         since = self.__dict__.setdefault("dead_since", {})
         ids = set(dead[:, C_ID].tolist())
@@ -1198,7 +1223,8 @@ class View:
         was, was_hp = self.hp_last
         j = np.minimum(np.searchsorted(was, sel[:, C_ID]), max(len(was) - 1, 0))
         last = np.where(was[j] == sel[:, C_ID], was_hp[j], hp).astype(np.float32) if len(was) else hp.astype(np.float32)
-        f[:, A_HPD] = np.clip((hp - last) / np.maximum(sel[:, C_MAXHP], 1), -1.0, 1.0)  # (0: not in view the last step)
+        f[:, A_HPD] = np.minimum(np.maximum((hp - last) / np.maximum(sel[:, C_MAXHP], 1), -1.0), 1.0)  # (0: not in view
+        # the last step; np.clip's own overhead was most of it)
         o = np.argsort(sel[:, C_ID], kind="stable")
         self.hp_last = (sel[o, C_ID], hp[o])
         index = {u: k for k, u in enumerate(ids)} if self.active_f > A_LAST else {}
@@ -1222,7 +1248,7 @@ class View:
                 self.upgrades[enc.upgrade_index[int(r[3])]] = r[4] / 3.0
         g = np.zeros(enc.G, np.float32)
         if me is not None:
-            _, _, gold, lumber, fu, fc, upkeep = me[:7]
+            _, _, gold, lumber, fu, fc, upkeep = me[:7].tolist()  # (Python's numbers, as View.priv's)
             g[:6] = gold / 1000.0, lumber / 1000.0, fu / 100.0, fc / 100.0, upkeep / 2.0, t / 1800.0
         g[6 + self.races[player]] = 1
         g[6 + len(RACES) + self.races[1 - player]] = 1
@@ -1236,9 +1262,9 @@ class View:
             g[x:x + 3] = math.sin(ang), math.cos(ang), float(hour < DAWN or hour >= DUSK)
         g[enc.G0 + enc.ZD + enc.GX:] = self.priv(rows, opp)
         avail = None
-        free = enc.costs is not None and not self.has_hero(rows)
+        free = enc.costs is not None and not self.has_hero(rows, own_hero)
         if enc.costs is not None:  # what the player can pay for now (orders beyond it are masked)
-            c = enc.costs_first if free else revive_costs(enc, rows, self.player)
+            c = enc.costs_first if free else revive_costs(enc, rows, self.player, dead)
             gold, lumber, fu, fc = (int(me[2]), int(me[3]), int(me[4]), int(me[5])) if me is not None else (0, 0, 0, 0)
             reserve = self.reserve
             pending = getattr(self, "expanding", None)  # (--macros: an expand order on its way: its hall's cost kept until
@@ -1249,7 +1275,7 @@ class View:
             avail = affordable(c, gold, lumber, fu, fc, reserve)
             if enc.tech:  # (--tech-mask)
                 self.t_now = t
-                avail &= self.tech_allowed(rows)
+                avail &= self.tech_allowed(rows, built, own_hero, dead)
         if avail is not None and enc.expand_class is not None:  # (--macros: expand, while the natural is free and
             from .macros import site                              # its hall affordable; night elves' tree of life
             race = RACES[self.races[player]]                      # entangles its mine, play.BCAgent._entangle)

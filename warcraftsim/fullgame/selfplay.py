@@ -1385,20 +1385,35 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         return self._own
 
     def _mine(self, obs) -> list:
-        """The side's living workers and buildings (all its living units without the native table) as Unit objects,
-        once a step, made from its own rows of the native table only when an order needs them: what order() and
-        resume() pick from (every unit of the game made one each step, and their enum flags tested, had been ~10% of
-        an actor's time; its army too, ~2%)."""
+        """The side's living workers (all its living units without the native table) as Unit objects, once a step,
+        made from its own rows of the native table only when an order needs them: what order() and resume() pick
+        from (every unit of the game made one each step, and their enum flags tested, had been ~10% of an actor's
+        time; its army too, ~2%; its buildings: _done)."""
         if getattr(self, "_mine_of", None) is obs:
             return self._mine_list
         own = self._own_rows(obs)
         if own is not None:
             from ..native import unit_from_row
-            mine = [unit_from_row(r) for r in own[(own[:, 11] & (fx.WORKER | fx.STRUCTURE)) > 0].tolist()]
+            mine = [unit_from_row(r) for r in own[(own[:, 11] & fx.WORKER) > 0].tolist()]
         else:
             mine = [u for u in obs.units if u.owner == self.side and u.alive]
         self._mine_of, self._mine_list = obs, mine
         return mine
+
+    def _done(self, obs) -> list:
+        """The side's finished buildings as Unit objects, once a step (order()'s makers and halls: a unit or research
+        needs no worker, and most orders end there)."""
+        if getattr(self, "_done_of", None) is obs:
+            return self._done_list
+        own = self._own_rows(obs)
+        if own is not None:
+            from ..native import unit_from_row
+            fl = own[:, 11]
+            done = [unit_from_row(r) for r in own[(fl & fx.STRUCTURE > 0) & (fl & fx.CONSTRUCTING == 0)].tolist()]
+        else:
+            done = [u for u in self._mine(obs) if u.is_structure and not int(u.flags) & fx.CONSTRUCTING]
+        self._done_of, self._done_list = obs, done
+        return done
 
     def commands(self, obs, made: dict, t: int, step_s: float, ordered=()) -> list:
         """`ordered`: the agent's commands this step (the game refuses the same hero or next tier twice: the
@@ -1443,9 +1458,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             if item is None:
                 continue
             self.why_not = ""
-            if done is None:
-                mine = self._mine(obs)
-                done = [u for u in mine if u.is_structure and not int(u.flags) & fx.CONSTRUCTING]
+            if done is None:  # (the workers: made by order() when it needs them)
+                done = self._done(obs)
             cmds = self.order(item, obs, mine, done, p, t)
             if not cmds and self.why_not:
                 self.blocked.setdefault(item, Counter())[self.why_not] += 1
@@ -1529,9 +1543,10 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
                     return n
         return None
 
-    def order(self, c: str, obs, mine: list, done: list, p, t: int = 0) -> list | None:
+    def order(self, c: str, obs, mine: list | None, done: list, p, t: int = 0) -> list | None:
         """The commands that start `c` (a Build or an ImmediateOrder), if the side can pay for it now; a
         building without a free worker (all in a mine: a night elf's five wisps in theirs): a worker first.
+        `mine`: the side's units (_mine; None: made here when needed), `done`: its finished buildings.
         A next tier at a hall training workers: carried out, the workers' queue cancelled first (the game
         takes no upgrade behind them, and a hall trains them back to back); taught, the upgrade alone (the
         hall's decision to learn)."""
@@ -1545,6 +1560,7 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
                 return None
             kind = "nmer" if c in MERCENARIES else "ntav"
             shops = [u for u in obs.units if u.type == kind and u.alive]
+            mine = self._mine(obs) if mine is None else mine
             workers = [u for u in mine if u.is_worker and not u.is_structure and not fx.building(int(u.flags), u.order)]
             if not shops or not workers:
                 self.why_not = "no shop" if not shops else "no worker"
@@ -1559,6 +1575,7 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             from ..protocol import UnitFlags
             hall = next((u for u in done if u.type_id in HALLS), None)
             away = int(UnitFlags.HIDDEN | UnitFlags.LOADED)  # (in a mine, or loaded: refused)
+            mine = self._mine(obs) if mine is None else mine
             workers = [u for u in mine if u.is_worker and not u.is_structure and not fx.building(int(u.flags), u.order)
                        and not int(u.flags) & away]
             if not workers:
@@ -1911,10 +1928,11 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         t += 1
         prod.step(obs)
         for s in zs:  # (what each side with a strategy has made: its items' first times)
+            ms = made[s]
             for code in (*prod.trained[s], *prod.built[s], *prod.research[s]):
-                if code in EXPANSION_ITEMS and not prod.expansions[s]:
+                if code in ms or (code in EXPANSION_ITEMS and not prod.expansions[s]):
                     continue  # (a hall or a haunted mine: made only as an expansion, not a second one at home)
-                made[s].setdefault(code, obs.game_time)
+                ms[code] = obs.game_time
             if prod.expansions[s]:  # (an expansion made the target's hall whatever it took: undead's targets name a
                 for code in EXPANSION_ITEMS & set(zs[s].get("t") or {}):  # necropolis, the expand order haunts the
                     made[s].setdefault(code, obs.game_time)              # mine; 40 of 123 such games read missed)
