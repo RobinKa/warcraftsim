@@ -63,6 +63,9 @@ ATTACK = 851983
 EXPAND, CREEP, MIX, PICKUP = 990001, 990002, 990003, 990004  # (macros.EXPAND, .CREEP, .MIX, .PICKUP)
 HAUNT = int.from_bytes(b"ugol", "big")
 WISP = int.from_bytes(b"ewsp", "big")
+REFUSED_CTX = 40  # (refused orders a game whose context is kept)
+MINE_WORKERS, MINE_NEAR = 5, 350.0  # (a haunted or entangled mine's workers at most; how near they work it)
+HIDDEN = 16  # (UnitFlags.HIDDEN: a worker inside a gold mine)
 MACHINES = {int.from_bytes(c.encode(), "big") for c in ("hgyr", "hmtt", "hrtt", "ocat", "ebal", "umtw")}  # (repairable)
 MINED_BY = {"undead": HAUNT, "nightelf": int.from_bytes(b"egol", "big")}  # (their own; humans and orcs: a plain one)
 EXPAND_HALLS = {r: int.from_bytes(h.encode(), "big") for r, h in (("human", "htow"), ("orc", "ogre"), ("nightelf", "etol"))}
@@ -138,11 +141,18 @@ class BCAgent:
                         self.view.mine_of[unit] = c.target
         buying = getattr(self, "buying_since", {})
         tally = self.__dict__.setdefault("order_results", {})  # (per kind of order: sent, refused; the episode row)
+        ctx = self.__dict__.setdefault("refused_ctx", [])  # (the first refused orders' context: the episode row)
+        rows = getattr(self, "rows", None)
         for c, ok in zip(cmds, results):
             o = getattr(c, "order", None) or getattr(c, "building", None) or getattr(c, "item", None) or getattr(c, "ability", 0)
             key = f"{type(c).__name__}:{fx.rawcode(int(o)) if isinstance(o, int) and o >= TYPE_CODE else o}"
             sent, refused = tally.get(key, (0, 0))
             tally[key] = (sent + 1, refused + (not ok))
+            if not ok and len(ctx) < REFUSED_CTX and rows is not None:
+                ctx.append(self._refusal(c, key, rows))
+        for c, ok in zip(cmds, results):  # (a revival the altar took: under way, View.tech_allowed)
+            if ok and isinstance(c, TargetOrder) and c.order == REVIVE:
+                self.view.__dict__.setdefault("reviving", {})[c.target] = self.t
         picking = getattr(self, "picking_since", {})
         for c, ok in zip(cmds, results):  # (a buy or a pick-up the game refused: the unit is free again)
             if not ok and isinstance(c, Buy):
@@ -191,6 +201,7 @@ class BCAgent:
         self.last_sent: list[tuple[int, int]] = []  # (order id, kind) of what it sent: the video's panel
         self.sent_resources: list[str | None] = []  # per command: what it sends the worker to harvest (accepted())
         sel = st["sel"]
+        self.view_n_own = st["n_own"]
         for i in range(min(st["n_own"], fx.MAX_OWN, len(order))):
             c = int(order[i])
             if c == 0:
@@ -207,8 +218,9 @@ class BCAgent:
                 mine = self._mine(sel, int(tgt[i]), i)
                 same = mine is None or mine == self.view.mine_of.get(unit, self._mine(sel, -1, i))
             current = int(sel[i, fx.C_ORDER])
-            if current == fx.SMART and int(sel[i, fx.C_TYPE]) == WISP:  # (a wisp mining shows "smart": a harvest
-                current = fx.HARVEST                                     # re-sent was refused, 318 a game)
+            if current == fx.SMART and int(sel[i, fx.C_TYPE]) == WISP and self._at_own_mine(sel, i):  # (a wisp
+                current = fx.HARVEST  # mining shows "smart": a harvest re-sent was refused, 318 a game; one walking
+                # on a right-click elsewhere is not mining: its harvest goes out; audit 6)
             if fx.redundant(oid, kind, current, res, self.view.assign.get(unit), same):
                 continue  # it harvests that already
             if self.committed(unit):
@@ -372,8 +384,11 @@ class BCAgent:
         race = fx.RACES[self.view.races[self.player]] if self.view is not None else "human"
         want = fx.GOLD_MINES[0] if plain else MINED_BY.get(race, fx.GOLD_MINES[0])
         ok = sel[:, fx.C_TYPE] == want
-        if not plain and race in MINED_BY:
-            ok &= sel[:, fx.C_OWNER] == self.player
+        if not plain and race in MINED_BY:  # (its own, finished, with room: a haunted or entangled mine takes 5 workers,
+            ok &= (sel[:, fx.C_OWNER] == self.player) & (sel[:, fx.C_FLAGS] & fx.CONSTRUCTING == 0)  # the 6th's and an
+            for j in np.flatnonzero(ok).tolist():  # unfinished one's harvest refused: 550-741 a game with an expansion
+                if self._miners(sel, j, i) >= MINE_WORKERS:  # and 15+ workers; audit 6)
+                    ok[j] = False
         if 0 <= k < len(sel) and ok[k]:
             return int(sel[k, fx.C_ID])
         mines = sel[ok]
@@ -382,6 +397,35 @@ class BCAgent:
         ref = sel[k] if 0 <= k < len(sel) and int(sel[k, fx.C_TYPE]) in fx.GOLD_MINES else sel[i]
         d = (mines[:, fx.C_X] - ref[fx.C_X]) ** 2 + (mines[:, fx.C_Y] - ref[fx.C_Y]) ** 2
         return int(mines[int(np.argmin(d)), fx.C_ID])
+
+    def _refusal(self, c, key: str, rows: np.ndarray) -> list:
+        """A refused order's context: [its kind, the unit's type, flags and current order, the target's type, whose
+        (own / enemy / neutral), flags and hit points' share], for what the game refuses and why."""
+        def row(i):
+            k = np.flatnonzero(rows[:, fx.C_ID] == i)
+            return rows[k[0]] if len(k) else None
+        u = row(getattr(c, "unit", getattr(c, "hero", -1)))
+        out = [key] + ([fx.rawcode(int(u[fx.C_TYPE])), int(u[fx.C_FLAGS]), int(u[fx.C_ORDER])] if u is not None else [None] * 3)
+        t = row(c.target) if hasattr(c, "target") else None
+        if t is not None:
+            whose = "own" if int(t[fx.C_OWNER]) == self.player else "enemy" if int(t[fx.C_OWNER]) == 1 - self.player else "neutral"
+            out += [fx.rawcode(int(t[fx.C_TYPE])), whose, int(t[fx.C_FLAGS]), round(int(t[fx.C_HP]) / max(int(t[fx.C_MAXHP]), 1), 2)]
+        return out
+
+    def _miners(self, sel: np.ndarray, j: int, i: int) -> int:
+        """Workers of the player's at mine row j (within MINE_NEAR, harvesting, or in it), not counting unit row i."""
+        own = sel[:self.view_n_own] if hasattr(self, "view_n_own") else sel
+        w = own[(own[:, fx.C_FLAGS] & fx.WORKER > 0) & (own[:, fx.C_ID] != sel[i, fx.C_ID])]
+        if not len(w):
+            return 0
+        near = np.hypot(w[:, fx.C_X] - sel[j, fx.C_X], w[:, fx.C_Y] - sel[j, fx.C_Y]) < MINE_NEAR
+        mining = np.isin(w[:, fx.C_ORDER], list(fx.HARVESTING) + [fx.SMART]) | (w[:, fx.C_FLAGS] & HIDDEN > 0)
+        return int((near & mining).sum())
+
+    def _at_own_mine(self, sel: np.ndarray, i: int) -> bool:
+        """A unit row within MINE_NEAR of one of the player's entangled or haunted gold mines."""
+        m = sel[np.isin(sel[:, fx.C_TYPE], list(MINED_BY.values())) & (sel[:, fx.C_OWNER] == self.player)]
+        return bool(len(m)) and bool((np.hypot(m[:, fx.C_X] - sel[i, fx.C_X], m[:, fx.C_Y] - sel[i, fx.C_Y]) < MINE_NEAR).any())
 
     def _repairable(self, row: np.ndarray) -> bool:
         """A repair's target: a building or a machine of the player's that is damaged or unfinished."""

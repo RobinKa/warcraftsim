@@ -1406,7 +1406,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         steps; the game keeps the frame, so the item stays under way): the nearest free worker resumes it."""
         from ..protocol import TargetOrder, UnitFlags
         from .play import REPAIR
-        if self.race not in ("human", "orc"):
+        if self.race != "human":  # (an orc frame takes no repair, not even from its builder: tested 2026-10-24; its
+            # resume had been taught 140 times a game as orc, an order the game refuses; audit 6)
             return None
         frames = {u.id: u for u in obs.units if u.owner == self.side and u.alive and u.flags & UnitFlags.CONSTRUCTING}
         self.frames = {i: (u.hp, t if u.hp > self.frames.get(i, (-1, t))[0] else self.frames[i][1])
@@ -1647,7 +1648,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     builders = {s: TargetBuilder(cfg, vocab, s, zs[s], random.Random()) for s in zs} if cfg.get("z_build") else {}
     # --scenarios: a share of the training games start in a situation the harness sets up (scenarios.py)
     scenario = (random.choice(cfg["scenarios"]) if train and replay is None and cfg.get("scenarios")
-                and random.random() < cfg.get("scenario_share", 0.0) else None)
+                and "(real)" not in str(opp.get("name")) and random.random() < cfg.get("scenario_share", 0.0) else None)
+    # (not the untaxed real-game launches: they are the training's yardstick; audit 6)
     scenario_cmds = scenarios.commands(scenario, obs, side, races, random.Random()) if scenario else []
     if cfg.get("privileged") and train:  # (--opsd-*: a teacher game acts on the privileged view; the others give it beside)
         for s in trajs:
@@ -1694,7 +1696,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             base_g, base_l, took_g, took_l = gathered
             og = int(round(opp["tax"] * (p.gold_gathered - base_g))) - took_g
             ol = int(round(opp["tax"] * (p.lumber_gathered - base_l))) - took_l
-            if og or ol:
+            og, ol = (min(og, p.gold) if og > 0 else og), (min(ol, p.lumber) if ol > 0 else ol)  # (what it has: the
+            if og or ol:                                     # harness stops at 0, and the rest stays owed; audit 6)
                 cmds.append(TakeResources(taxed, og, ol))
                 p.gold, p.lumber = max(0, p.gold - og), max(0, p.lumber - ol)  # (the taxed agent sees what is left)
                 gathered = (base_g, base_l, took_g + og, took_l + ol)
@@ -1747,9 +1750,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                      for s, r in zip(live, results) if r is not None}
             trace.append(trace_step(t, obs, mat, chose, value={s: r["value"] for s, r in zip(live, results) if r},
                                     entropy={s: r["entropy"] for s, r in zip(live, results) if r}))
-        for s, tc in teachers.items() if t % 2 == 0 else ():  # (--teach: never carried out, the side's step just
-            # recorded labelled; every other step: a kind's lessons come every 20 steps at most, and each step's look
-            # at the rows had cost ~5% of an actor's time)
+        for s, tc in teachers.items():  # (--teach: never carried out, the side's step just recorded labelled; every
+            # step: a lesson the mask allows only on the step the player can pay (a first hero, an altar, the army mix)
+            # lost 40-90% of them every other step; audit 6)
             if s in spans and trajs[s].steps:
                 av, oix = sts[s].get("avail"), bots[s].enc.order_index
                 can = (None if av is None else  # (the units the policy could train now: the army mix teaches only those)
@@ -1895,6 +1898,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
            if side in bots and fx.MACROS >= 2 else {}),  # (--macros 2: items off the ground)
         **({"auto_skills": getattr(bots[side], "auto_skills", 0)} if side in bots and fx.MACROS >= 3 else {}),
         **({"noop_repairs": bots[side].noop_repairs} if side in bots and getattr(bots[side], "noop_repairs", 0) else {}),
+        **({"refused_ctx": bots[side].refused_ctx} if side in bots and getattr(bots[side], "refused_ctx", None) else {}),
         # the orders the game refused (the learner's side): their share, and the kinds refused most (audit 4: never measured)
         **({"refused_share": round(sum(r for _, r in bots[side].order_results.values())
                                    / max(sum(n for n, _ in bots[side].order_results.values()), 1), 4),
@@ -3951,19 +3955,21 @@ def main(argv: list[str] | None = None) -> int:
                     episodes += 1
                     e["episode"] = episodes
                     m = league.member(e["opponent"])
+                    scen = bool(e.get("scenario"))  # (a scenario's game is another game: 0.37-0.69 won where the
+                    # normal ones 0.49-0.80; out of the league's records, the curriculum and the win balance; audit 6)
                     taxed = league.win_balance is not None and bool(e.get("balance_tax"))
                     pulled = league.win_balance is not None and bool(e.get("z_t")) and m in league.past  # (a target
                     # costs the learner: 35% won against past snapshots with one, 54% without; audit 5)
-                    if m is not None and not e.get("eval") and not taxed and not pulled:  # (an evaluation game is no
+                    if m is not None and not e.get("eval") and not taxed and not pulled and not scen:  # (an evaluation game is no
                         m.record(e["outcome"])  # league game; a taxed one tells nothing of the opponent's strength
                         if m in league.past:     # for PFSP: 8-33% won untaxed, 42-100% taxed; audit 4)
                             league.past_recent.append(1.0 if e["outcome"] > 0.5 else 0.0 if e["outcome"] < -0.5 else 0.5)
-                    if "curriculum" in e:
+                    if "curriculum" in e and not scen:
                         league.curriculum(e["opponent"], e["outcome"], league.matchup(e["race"], e["opponent_race"]))
                     if e["opponent"] == "self" and e["race"] != e["opponent_race"] and league.win_balance is None:
                         league.balanced(e["race"], e["opponent_race"], e["outcome"])  # (--win-balance: the model's
                         # games had driven it to 0.88 of undead's income, then the fallback of a fork; audit 5)
-                    if league.win_balance is not None and "tb_x" in e:  # (--win-balance: the model's games)
+                    if league.win_balance is not None and "tb_x" in e and not scen:  # (--win-balance: the model's games)
                         league.win_balance.add(e["tb_x"], e.get("balance_tax", 0.0), e["outcome"])
                     with open(run_dir / "episodes.jsonl", "a") as f:
                         f.write(json.dumps(e) + "\n")

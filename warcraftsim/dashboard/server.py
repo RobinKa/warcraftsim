@@ -136,6 +136,9 @@ def _eval_name(e: dict) -> str | None:
     k = str(e.get("eval_key") or "current")
     if k == "current":
         return k
+    if k.startswith("vs "):  # (head to head: "vs fgself-130/0000000005534555.pt" -> "vs fgself-130/5534555"; its
+        p = Path(k[3:])      # stem alone had read as that checkpoint's own games; audit 6)
+        return f"vs {p.parent.name}/{p.stem.lstrip('0') or '0'}"
     p = Path(k)
     return f"{p.parent.parent.name}/{p.stem.lstrip('0') or '0'}" if p.parent.name == "checkpoints" else p.stem
 
@@ -499,7 +502,8 @@ def _head(path: Path, n: int) -> bytes:
         return f.read(n)
 
 
-def _tail_rows(path: Path, n: int, max_bytes: int = 48 * 1024) -> list[dict]:
+def _tail_rows(path: Path, n: int, max_bytes: int = 512 * 1024) -> list[dict]:  # (48 KB had held ~46 rows: the
+    # "last 100" read about half that; audit 6)
     """The last n parseable rows of a JSON-lines file, reading only its end."""
     try:
         size = path.stat().st_size

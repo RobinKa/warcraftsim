@@ -185,6 +185,7 @@ DEAD, STRUCTURE, CONSTRUCTING = 1024, 2, 8
 FOOD_MAX = 100  # (the game's food ceiling: a player's food cap counts farms past it)
 SUMMONED = 256  # (UnitFlags.SUMMONED)
 REVIVE_AFTER_STEPS = 16  # (a dead hero's revival is taken ~7 s after its death)
+REVIVE_STEPS = 120  # (a revival the altar took: not offered again for 60 s, or until the hero stands)
 NATURAL_EVERY = 4  # (steps between two looks at the natural expansion: free, taken, its camp standing)
 FLAG_BITS = (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 2048)  # UnitFlags but DEAD
 F0 = 3 + 2 + 4 + len(FLAG_BITS) + 3 + 2 + 1 + 2 + 1  # 29: ... production (queued, busy), and a worker on lumber
@@ -1060,8 +1061,10 @@ class View:
         heroes = {rawcode(c) for c in mine[fl & HERO > 0, C_TYPE].tolist()}
         making = {rawcode(m[1]) for m in self.making.values() if m[0] == 2}
         since = getattr(self, "dead_since", {})  # (a hero's revival: the game takes it ~7 s after its death; the mask
+        reviving = getattr(self, "reviving", {})  # (a revival under way: an altar took its order; audit 6)
         dead = frozenset(rawcode(c) for i, c in mine[(fl & HERO > 0) & (fl & DEAD > 0)][:, [C_ID, C_TYPE]].tolist()
-                         if self.t_now - since.get(i, self.t_now) >= REVIVE_AFTER_STEPS) - making  # had allowed it at
+                         if self.t_now - since.get(i, self.t_now) >= REVIVE_AFTER_STEPS
+                         and self.t_now - reviving.get(i, -REVIVE_STEPS) >= REVIVE_STEPS) - making  # had allowed it at
         # once: ~30 refused a game; audit 5)
         heroes |= making
         researching = frozenset(rawcode(m[1]) for m in self.making.values() if m[0] == 3)
@@ -1115,6 +1118,8 @@ class View:
             since.setdefault(i, t)
         for i in [i for i in since if i not in ids]:
             del since[i]
+        for i in [i for i in getattr(self, "reviving", {}) if i not in ids]:
+            del self.reviving[i]  # (alive again)
         priv = None  # (the privileged view: every enemy unit; acting on it, or beside the player's for distillation)
         if PRIVILEGED and (self.privileged_act or self.dual):
             priv = enc.entities(rows, player, self.sign, (self.queued, self.busy, self.making), lumber, omniscient=True)

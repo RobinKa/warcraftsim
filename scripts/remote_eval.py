@@ -117,9 +117,13 @@ SETTINGS = ("map", "handicap", "step_seconds", "max_minutes", "wait_floor_ms", "
 
 
 def launch_key(info: dict) -> str:
-    """The run's evaluation games' settings, as a key."""
+    """The run's evaluation games' settings and this tree's code (its commit, and its changes not committed), as a
+    key: a resume on new code with the same settings had left the worker on the old (audit 6)."""
     c = info.get("config", {})
-    return hashlib.sha1(json.dumps([c.get(k) for k in SETTINGS]).encode()).hexdigest()[:10]
+    code = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    code += subprocess.run(["git", "diff", "--stat", "HEAD", "--", "warcraftsim", "native", "scripts"], cwd=ROOT,
+                           capture_output=True, text=True).stdout
+    return hashlib.sha1(json.dumps([c.get(k) for k in SETTINGS] + [code]).encode()).hexdigest()[:10]
 
 
 def eval_checkpoints(info: dict) -> list[str]:

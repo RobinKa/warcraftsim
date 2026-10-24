@@ -121,10 +121,12 @@ def tier2(prod: dict) -> bool:
     return any(k in prod["built"] or k in prod["trained"] for k in TIER2)
 
 
-def report(eps: list[dict], label: str, rates: dict | None = None) -> None:
+def report(eps: list[dict], label: str, rates: dict | None = None, pooled: bool = False) -> None:
     # (evaluation games only: the training launches against the untaxed AI play the training map; --split eval_key
     # shows each policy apart, the headline pools the evaluated ones; audit 5)
-    real = [e for e in eps if "(real)" in e["opponent"] and e.get("eval")]
+    real = [e for e in eps if "(real)" in e["opponent"] and e.get("eval")
+            and (pooled or e.get("eval_key", "current") == "current")]  # (the current policy's, unless --pooled: the
+    # headline had pooled every evaluated policy, 84% against its own 96%; audit 6)
     won = sum(e["outcome"] > 0 for e in real)
     print(f"== {label}: real games {won} of {len(real)} won ({100 * won / max(1, len(real)):.0f}%)")
     if rates:  # against the AI's own record in the same matchups (normal and insane; easy has none)
@@ -179,7 +181,7 @@ def main() -> int:
         window = [e for e in eps if lo < e["time"] <= hi and value(e, a.split) is not None]
         for v in sorted({value(e, a.split) for e in window}):
             part = [e for e in window if value(e, a.split) == v]
-            report(part, f"{a.split} = {v}", rates)
+            report(part, f"{a.split} = {v}", rates, pooled=True)
             for kind in ("self", "past"):
                 X = [e for e in part if e["opponent"].split(":")[0] == kind]
                 print(f"   against {kind}: {len(X)} games, {100 * sum(e['outcome'] == 0 for e in X) / max(1, len(X)):.0f}% ties")
