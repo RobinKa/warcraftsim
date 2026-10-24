@@ -1201,6 +1201,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                           render_threads=0, pairs=cfg.get("pairs", 1), cuts=cfg.get("game_cuts") or None,
                           seed=rng.randint(1, cfg.get("grpo_seeds", 8)) if seeded else 0)
         per_launch = cfg["games_per_process"] * (cfg["agent_games_factor"] if agents_only else 1)
+        if evaluating:  # (a launch's games share their matchup and opponent: at 8 a launch, 34 of a policy's 40 games head
+            per_launch = min(per_launch, EVAL_PER_LAUNCH)  # to head were one matchup; evaluation's verdicts need many)
         try:
             with GameInstance(setup, name=name, timeout=120) as g:
                 obs = g.start()
@@ -2999,6 +3001,7 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
     return {k: float(torch.stack(v).float().mean()) for k, v in stats.items()}
 
 
+EVAL_PER_LAUNCH = 2  # an evaluation launch's games at most (--games-per-process is the training games')
 WIDTHS = (32, 48, 64, 96, 128, fx.MAX_ENT)  # the padded entity counts the update's CUDA graphs are captured for
 
 
