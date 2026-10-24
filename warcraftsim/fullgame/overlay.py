@@ -3,7 +3,7 @@ and for a policy what it thought (its value against the return that followed, re
 
 The data is a trace the game's player wrote while it played (fullgame/selfplay.py, play.py,
 collect.py: trace_step), one row per step:
-    {"t", "game_time", "material": {p: value}, "res": {p: [gold, lumber, food used, food cap]},
+    {"t", "game_time", "material": {p: value}, "res": {p: [gold, lumber, food used, food cap (farms past the game's 100 counted: shown at 100)]},
      "orders": {p: {label: count}}, and for policies "value", "reward", "entropy": {p: float}}
 and a header: {"sides": [{"player", "name", "kind"}], "title", "gamma", "outcome": {p: +1/0/-1}}.
 Player keys are strings (JSON).
@@ -175,7 +175,7 @@ class FullGameOverlay:
         for i, s in enumerate(self.sides):
             r = res.get(str(s["player"]))
             if r:
-                d.text((x0, y), f"{'AB'[i]}  gold {r[0]:>5}   lumber {r[1]:>5}   food {r[2]}/{r[3]}",
+                d.text((x0, y), f"{'AB'[i]}  gold {r[0]:>5}   lumber {r[1]:>5}   food {r[2]}/{min(r[3], 100)}",
                        font=self.f, fill=SIDE_COLORS[i])
                 y += 16
         y += 6

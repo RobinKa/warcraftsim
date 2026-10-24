@@ -150,7 +150,7 @@ class Teacher:
         if (self.pick is not None and len(tavern) and now >= self.pick_from and n_heroes == self.pick_at < 3
                 and (n_heroes == 0 or (can(fx.rawcode(self.pick), fx.UNIT) if can is not None
                                        else player.gold >= 425 and player.lumber >= 135))
-                and player.food_used + 5 <= player.food_cap and fourcc_in(done, ALTARS)
+                and player.food_used + 5 <= min(player.food_cap, fx.FOOD_MAX) and fourcc_in(done, ALTARS)
                 and (n_heroes == 0 or fourcc_in(done, TIER2)) and (n_heroes < 2 or fourcc_in(done, TIER3))
                 and self.pick not in set(heroes[:, fx.C_TYPE].tolist())):
             tv = tavern[0]
@@ -195,7 +195,7 @@ class Teacher:
         altars = alive[fx.isin(alive[:, fx.C_TYPE], ALTAR_CODES)]
         done = altars[altars[:, fx.C_FLAGS] & fx.CONSTRUCTING == 0]
         if len(done):
-            if (can is None or can(fx.rawcode(self.first))) and player.food_used + 5 <= player.food_cap \
+            if (can is None or can(fx.rawcode(self.first))) and player.food_used + 5 <= min(player.food_cap, fx.FOOD_MAX) \
                     and self._due("first hero", t):
                 return [ImmediateOrder(int(done[0, fx.C_ID]), self.first)]
             return []

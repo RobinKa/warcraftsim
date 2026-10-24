@@ -66,6 +66,7 @@ def order_costs(vocab: dict, map_name: str = "duelrush") -> np.ndarray:
 
 def available(costs: np.ndarray, gold: int, lumber: int, food_used: int, food_cap: int) -> np.ndarray:
     """[n_orders] bool: the order classes the player can pay for now (no order: always)."""
+    food_cap = min(food_cap, 100)  # (the game's ceiling: the cap it reports counts farms past it)
     ok = (costs[:, 0] <= gold) & (costs[:, 1] <= lumber) & ((costs[:, 2] == 0) | (food_used + costs[:, 2] <= food_cap))
     ok[0] = True
     return ok
