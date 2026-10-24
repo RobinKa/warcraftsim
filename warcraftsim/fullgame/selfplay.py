@@ -2391,11 +2391,16 @@ class League:
                    for n in self.scripts]
         agents = [{"name": "self", "kind": "self", "p": self.shares["self"] if self.past else 1.0}]
         if self.past:
-            w = [max(pfsp_weight(smoothed_rate(m), self.pfsp), 0.05) for m in self.past]  # (2 of 2 won had weighed
+            fixed = [m for m in self.past if m.name.startswith("fixed:")]  # (--league-add: their share of the past's
+            rest = [m for m in self.past if not m.name.startswith("fixed:")]  # games set, --league-add-share: by PFSP a
+            f_share = getattr(self, "fixed_share", 0.25) if fixed and rest else 1.0 if fixed else 0.0  # fixed one won
+            agents += [{"name": m.name, "kind": "past", "path": m.path,  # 2 of 2 had 1.5% of the games: it beat us 58%)
+                        "p": self.shares["past"] * f_share / len(fixed)} for m in fixed]
+            w = [max(pfsp_weight(smoothed_rate(m), self.pfsp), 0.05) for m in rest]  # (2 of 2 won had weighed
             # a snapshot 0 for good; audit 5)
             total = sum(w) or 1.0
-            agents += [{"name": m.name, "kind": "past", "path": m.path, "p": self.shares["past"] * x / total}
-                       for m, x in zip(self.past, w)]
+            agents += [{"name": m.name, "kind": "past", "path": m.path, "p": self.shares["past"] * (1 - f_share) * x / total}
+                       for m, x in zip(rest, w)]
         model = self.win_balance.coef() if self.win_balance is not None else None
         return {"launch": launch, "agents": agents, **({"balance": self.balance_taxes()} if self.balance else {}),
                 **({"win_balance": model} if model else {}),
@@ -3613,6 +3618,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--self-share", type=float, default=0.5, help="of the agent games: against itself")
     ap.add_argument("--snapshot-every", type=int, default=20, help="updates between league snapshots")
     ap.add_argument("--max-past", type=int, default=12)
+    ap.add_argument("--league-add-share", type=float, default=0.25, help="--league-add's opponents' share of the games "
+                    "against past snapshots, split evenly between them (the rest: the other snapshots by PFSP)")
     ap.add_argument("--league-add", type=Path, nargs="*", default=[], help="checkpoints the league keeps as opponents "
                     "for good (\"fixed:<run>/<steps>\": drawn as past snapshots are, by PFSP; never replaced by newer ones)")
     ap.add_argument("--league-from", help="a new run starts with this run's league (a name under --runs, or its directory): "
@@ -3976,6 +3983,7 @@ def main(argv: list[str] | None = None) -> int:
         first = run_dir / "checkpoints" / f"{0:016d}.pt"
         torch.save({**ck, "model": net.state_dict(), "config": net.config, "vocab": vocab, "agent_steps": 0}, first)
         league.add_snapshot(first, 0)  # the clone itself (a fork: its start), a past opponent
+    league.fixed_share = args.league_add_share
     for path in args.league_add:  # --league-add: opponents of the league's for good (newer snapshots replace them not)
         name = "fixed:" + "/".join(Path(path).parts[-3::2])
         if any(m.name == name for m in league.past):
