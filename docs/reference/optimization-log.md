@@ -350,6 +350,8 @@ wineserver: ~16 requests per observation: ~7 `get_thread_info` (the game's GetTh
 
 All on (`--game-cuts 259577` = 1529 + the six), against 1529, both played back at the same time: the 33 echofast self-play replays of fgself-135/137/138/139 (all race pairs, games against the AI and between agents, 400 to 4,800 steps) **main thread -10.1%, the game's processes and wineserver -12.2%** (steps-weighted: 7.87 -> 7.08 ms and 8.34 -> 7.33 ms a step; per replay -8 to -15%); fgself-139's alone -9.8% and -11.9%; over all 54 replays -9.7% and -12.1% (wineserver 0.19 -> 0.04 ms a step). Parity: 54 replays, 60,772 steps, identical at every step (every unit, player, event, AI order, command result and ground item, and the raw observation bytes, against 1529; the 13 old live recordings also against their live games): the 33 self-play replays above, the 13 duelfast recordings of 2026-10-11 (seven race pairs, insane and normal AI, scripted agents, five games per load) and 8 fgself-12 replays (duelfast, five pairs a load).
 
+Everything with the harness change (`--game-cuts 521721` = 1529 + the seven) against 1529, on 4 of the new recordings: main thread 7.72 -> 6.29 ms a step (**-18.4%**), the game's processes and wineserver -20.7% (agents' game -31%, games between AIs -15 to -18%). The new harness with the old shim takes the JASS path (identical to the shim's path and to the live game); 262144 with an old map does nothing. Tried and not kept: paint every 200 steps instead of 50 (no change).
+
 262144 changes the map (the harness), and a replay plays back only on the map it was recorded on, so the run's replays cannot check it. Instead: 8 live echofast games with the new harness (AI against AI with all races, scripted agents, agents against the AI; won, lost, a tie at the time limit; 10,997 steps) recorded with `W3SIM_COBS_CHECK=1`, where the harness writes its own records and the shim compares its records and results with them at every step (no mismatch), then each replay played back on the JASS path (259577) and on the shim's (521721): identical at every step, raw observation bytes included, and identical to the live games. What the new path leaves out are getters (slot states, player states, alliances, start locations, I2S and Preload): nothing in the simulation reads them.
 
 ## The learner's intake (2026-10-12)
@@ -402,6 +404,7 @@ Echo Isles has more units in view than the duel maps (creeps, expansions, larger
 * **The learner**: the anchor's forward for the KL term (~5% of an update), a compiled update. (The cloning loss is off since 2026-10-14.)
 * **The video renderer**: 3.4 cores while it renders.
 * **wineserver**: ~3% of a game's CPU (2026-10-24); with 131072 the step sync makes no requests.
+* **The games' main thread after `521721`**: pathing ~35-55% (the long-range search's per-node functions, its cell lookups and open list: memory-bound, each a rewrite with the same heap order and stamps), the other agent timers, attack and fog (~25%), the units pass's natives (~8%: their bodies; the conversions are memoised), EnumItemsInRect's walk (now prefetched) and the rest of W3S_Step's JASS (the K/T records, the ground items' callbacks, the commands).
 
 ## Measuring
 
