@@ -5,7 +5,7 @@ Self-play is CPU-bound: the games and the actors' Python set the speed, and the 
 ## What the workload needs
 
 * **CPU.** On the training machine (Ryzen 9 5950X, 16 Zen 3 cores) self-play makes ~1,660 agent steps per second, ~104 a core. The machine's work is the games (~49% of the CPU), the actors' Python (~36%, less since the C features of 2026-10-24) and the kernel. A games-only machine carries the same per-step work without the learner.
-* **Memory.** ~450 MB a game, plus ~650 MB for each actor process. A machine with the throughput of ours runs ~56 games: 32 GB is the minimum, which matters at today's memory prices.
+* **Memory.** ~445 MB a game as it runs now (measured, PSS: the game ~346 MB, almost all its own heap, and ~95 MB of Wine's helper processes, each game having a prefix of its own), plus ~460 MB for each actor process. A machine with the throughput of ours runs ~56 games: ~30 GB, so 32 GB as things are. The kernel's same-page merging could make it ~16 GB ([below](#memory-same-page-merging)).
 * **Inference.** Each step needs the policy's forward pass. Today the games of a run share the learner's machine and its GPU. A second machine works now for evaluation games, with inference on its own GPU (the laptop's 3050 Ti plays 16 games: [a remote evaluation worker](../architecture.md#a-remote-evaluation-worker)). Training games on another machine need more work first: the trajectories and weights sent over the network, and inference there (a small GPU, or the CPU) or sent to the 3090 over the LAN. None of this is built.
 * **No GPU for the games.** They draw nothing (Direct3D calls return at once).
 
@@ -31,7 +31,8 @@ The training machine draws ~600 W at the wall under training (CPU ~140 W, GPU ~3
 |---|---|---|---|---|---|---|
 | **Minisforum BD895i SE** board (Ryzen 9 8945HX, 16 cores) built up | £999 | ~1,890 (1.13×) | 133 W, measured | £613 | **£1,613** (£1,698) | **1,170** |
 | Minisforum BD795i SE board (Ryzen 9 7945HX, the same 16 Zen 4 cores) built up, at its sale price* | ~£969 | ~1,900-2,000 | ~133 W (as the BD895i SE) | £613 | ~£1,582 | ~1,200-1,270 |
-| Minisforum MS-A2 barebone (8945HX) + 32 GB | £1,046 | ~1,890 | ~130 W | £599 | £1,646 | 1,146 |
+| **Minisforum MS-A2 (Ryzen 9 7945HX), 32 GB, 1 TB**, complete** | **£895** | ~1,900-2,000 | ~130 W | £599 | **£1,494** | **~1,270-1,340** |
+| Minisforum MS-A2 (8945HX), 32 GB, 1 TB, complete** | £1,015 | ~1,890 | ~130 W | £599 | £1,614 | 1,171 |
 | Minisforum MS-A2 barebone with the newer Ryzen 9 9955HX (Zen 5), at its sale price*, + 32 GB | ~£1,326 | ~2,050 | ~140 W (estimate) | ~£645 | ~£1,971 | ~1,040 |
 | **Core Ultra 7 270K Plus** desktop at 125 W (assumed ~85% of its stock speed) | £1,023 | ~2,140 (1.29×) | ~194 W | £897 | **£1,920** (£2,045) | **1,116** |
 | used Ryzen 9 7950X in Eco mode (105 W), new AM5 parts | £1,017 | ~2,150 | ~213 W | £984 | £2,001 | 1,074 |
@@ -47,12 +48,15 @@ The training machine draws ~600 W at the wall under training (CPU ~140 W, GPU ~3
 | Hetzner AX102 / AX162 rented | £160 / £321 a month | ~2,290 / ~3,490 | | included | £3,967 / £8,005 | 578 / 435 |
 | AWS c8i.48xlarge / c7a.16xlarge, London, spot | £864 / £909 a month | ~5,900 / ~2,430 | | included, egress extra | £20.7k / £21.8k | 284 / 111 |
 
+\*\* The prices the user saw on minisforum.uk on 24 October 2026 (the research had £519 for the 8945HX barebone and our own memory and drive: £1,046).
+
 \* From search snapshots of minisforum.uk (its store refused more requests that day): the BD795i SE £359 (regular £559), the MS-A2 with the 9955HX £799 (regular £989), the BD790i X3D (7945HX3D) £479 but sold out. The research had priced seven Minisforum products and missed these three; there is no Minisforum ITX board with the 9955HX yet.
 
 The first six are within ~15% of each other, inside the proxy's error: a benchmark of our own games should choose among them (Hetzner rents by the hour, €0.0945 for an EX44, a cheap way to measure an Intel hybrid CPU).
 
 ## What to buy, or rent
 
+1. **A Minisforum MS-A2 with the Ryzen 9 7945HX, 32 GB and 1 TB, £895 complete.** The same 16 Zen 4 cores as the boards below, with its case, power supply and cooling, for less than building one up: ~£1,494 over two years for ~1,900-2,000 steps/s. (The 8945HX version: £1,015.)
 1. **A Minisforum BD895i SE (£389) or BD795i SE (£359 on sale; the 7945HX is the same chip a generation earlier) built into a small box, ~£970-999.** The board has its CPU soldered on; the £999 adds 32 GB of DDR5 SODIMM (£438, 2×16 GB), a 550 W power supply (£45), a case (£30), a 500 GB NVMe drive (£89) and a fan (£8, the heatsink assumed in the box): the memory is ~44% of it. A Mini-ITX board with a 16-core Ryzen 9 8945HX laptop chip, measured at ~133 W at the wall under full load and ~90% of a stock 7950X's Cinebench score at 100 W. Two years: ~£1,613 for ~1,890 steps/s, about our machine's games again. Quiet; it would sit on the LAN. The MS-A2 barebone (£519) is the same chip ready-made, at about the same total.
 2. **A Core Ultra 7 270K Plus (£310) desktop with a 125 W power limit, ~£1,023.** Two years: ~£1,920 for ~2,140 steps/s (the 85% at 125 W is an estimate). Without the limit ~2,520 steps/s for ~£2,560. AMD's alternative is a 9950X in Eco mode (~£2,206 for ~2,250).
 3. **Rent a Hetzner EX44 (£59 a month, no setup fee, unlimited traffic).** Two years: ~£1,424 for ~1,130 steps/s: ~1.45 times the cost of owning, before resale. Capacity at once, monthly cancellation, no heat or noise at home. From the UK a round trip is ~20-40 ms, so a rented machine would run inference itself, on its CPU, not call our 3090.
@@ -66,6 +70,19 @@ Not worth it:
 * **Used dual-Xeon servers**: cheap to buy, but ~£1,700-1,950 of electricity over two years, and loud.
 * **Threadripper**: registered DDR5 is ~£800 per 16 GB; a 64 GB 7960X build passes £5,000.
 * **8-core mini PCs**: ~£900 for 29k PassMark once memory is added.
+
+## Memory: same-page merging
+
+A game's ~346 MB is almost all private heap, but the games load the same map, tables and code, so much of it is the same page for page. Linux merges identical pages of processes that opt in (KSM: `prctl(PR_SET_MEMORY_MERGE)`, inherited by the processes they start, and `/sys/kernel/mm/ksm/run`). A test on 2026-10-24: 4 games on Echo Isles, a minute into the game, opted in:
+
+| | |
+|---|---|
+| memory saved | **1,014 MB** of the four games' ~1,380 MB |
+| merged, per game | ~225 MB of ~345 MB |
+| the merged pages' single copies | 93 MB |
+| ksmd's CPU | ~8% of a core (1,000 pages each 20 ms) |
+
+So a game would cost ~115 MB of its own plus a share of ~93 MB, and 55 games ~6.5 GB instead of ~19 GB. Not yet measured: how far pages drift apart over a 10-40 minute game and across reloads, Wine's helper processes and the actors opted in too, and ksmd's cost scanning ~20 GB. If it holds, a games box with 16 GB would run as many games as its CPU allows, ~£200 less on today's memory prices. The training machine does not need it (60 GB, ~42 GB used).
 
 ## Prices that move
 
