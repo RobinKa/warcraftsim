@@ -17,9 +17,6 @@ from .. import paths
 SRC = paths.REPO_ROOT / "native" / "w3feat.c"
 LIB = paths.REPO_ROOT / "build" / "native" / "libw3feat.so"
 _lib = None
-_I64 = np.ctypeslib.ndpointer(np.int64, flags="C_CONTIGUOUS")
-_F32 = np.ctypeslib.ndpointer(np.float32, flags="C_CONTIGUOUS")
-_F64 = np.ctypeslib.ndpointer(np.float64, flags="C_CONTIGUOUS")
 
 
 def _build() -> None:
@@ -48,14 +45,11 @@ def lib():
             _lib = False
             return None
         L.w3f_entities.restype = ctypes.c_int
-        L.w3f_entities.argtypes = [_I64, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_double, _F64,
-                                   _I64, ctypes.c_int, _I64, ctypes.c_int, ctypes.c_int,
-                                   ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
-                                   _I64, _I64, ctypes.c_int, _I64, ctypes.c_int, _I64, ctypes.c_int,
-                                   _I64, _I64, ctypes.c_int, _I64, _I64, ctypes.c_int,
-                                   _I64, _I64, _F32, _I64, _I64]
+        P, I, D = ctypes.c_void_p, ctypes.c_int, ctypes.c_double  # (raw pointers: ndpointer's checks per argument had
+        L.w3f_entities.argtypes = [P, I, I, I, D, P, P, I, P, I, I, I, I, I, I,  # cost more than the C itself)
+                                   P, P, I, P, I, P, I, P, P, I, P, P, I, P, P, P, P, P]
         L.w3f_priv.restype = None
-        L.w3f_priv.argtypes = [_I64, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_double, _F64, _F32]
+        L.w3f_priv.argtypes = [P, I, I, I, D, P, P]
         _lib = L
     return _lib or None
 
@@ -88,23 +82,27 @@ def entities(enc, fx, rows: np.ndarray, player: int, sign: float, production, lu
     qk, qv, nq = _keys(queued)
     bk, _, nb = _keys(busy)
     lk, _, nl = _keys(lumber)
-    if not hasattr(enc, "_native_tables"):
-        enc._native_tables = (np.ascontiguousarray(np.sort(fx.PASSIVE_IDS).astype(np.int64)),
-                              np.ascontiguousarray(np.sort(fx.SHOP_IDS).astype(np.int64)),
-                              np.ascontiguousarray(enc._type_keys, np.int64), np.ascontiguousarray(enc._type_vals, np.int64),
-                              np.ascontiguousarray(enc._cur_keys, np.int64), np.ascontiguousarray(enc._cur_vals, np.int64))
-    passive, shops, tk, tv, ck, cv = enc._native_tables
+    if getattr(enc, "_native_key", None) != (fx.STARTS, fx.F):  # (the tables, kept with their pointers)
+        arrs = (np.ascontiguousarray(np.sort(fx.PASSIVE_IDS).astype(np.int64)),
+                np.ascontiguousarray(np.sort(fx.SHOP_IDS).astype(np.int64)),
+                np.ascontiguousarray(enc._type_keys, np.int64), np.ascontiguousarray(enc._type_vals, np.int64),
+                np.ascontiguousarray(enc._cur_keys, np.int64), np.ascontiguousarray(enc._cur_vals, np.int64),
+                geometry(fx))
+        enc._native_tables = (arrs, [a.ctypes.data for a in arrs])
+        enc._native_key = (fx.STARTS, fx.F)
+    arrs, (passive, shops, tk, tv, ck, cv, geo) = enc._native_tables
     E = fx.MAX_ENT
     idx = np.empty(E, np.int64)
     counts = np.zeros(5, np.int64)
     f = np.zeros((E, fx.F), np.float32)
     types = np.zeros(E, np.int64)
     cur = np.zeros(E, np.int64)
-    n = L.w3f_entities(rows, len(rows), rows.shape[1], int(player), float(sign), geometry(fx),
-                       passive, len(passive), shops, len(shops), int(bool(fx.NEUTRAL)),
+    n = L.w3f_entities(rows.ctypes.data, len(rows), rows.shape[1], int(player), float(sign), geo,
+                       passive, len(arrs[0]), shops, len(arrs[1]), int(bool(fx.NEUTRAL)),
                        fx.MAX_OWN, E, fx.F, fx.A_POS,
-                       qk, qv, nq, bk, nb, lk, nl, tk, tv, len(tk), ck, cv, len(ck),
-                       idx, counts, f, types, cur)
+                       qk.ctypes.data, qv.ctypes.data, nq, bk.ctypes.data, nb, lk.ctypes.data, nl,
+                       tk, tv, len(arrs[2]), ck, cv, len(arrs[4]),
+                       idx.ctypes.data, counts.ctypes.data, f.ctypes.data, types.ctypes.data, cur.ctypes.data)
     if n < 0:
         raise MemoryError("w3f_entities")
     n, n_own, n_enemy, n_neutral, own_all = (int(x) for x in counts)
@@ -117,4 +115,5 @@ def entities(enc, fx, rows: np.ndarray, player: int, sign: float, production, lu
 def priv_sides(fx, rows: np.ndarray, player: int, sign: float, out: np.ndarray) -> None:
     """View.priv's per-side block into `out` (float32, PRIV long)."""
     rows = np.ascontiguousarray(rows, np.int64)
-    lib().w3f_priv(rows, len(rows), rows.shape[1], int(player), float(sign), geometry(fx), out)
+    geo = geometry(fx)
+    lib().w3f_priv(rows.ctypes.data, len(rows), rows.shape[1], int(player), float(sign), geo.ctypes.data, out.ctypes.data)

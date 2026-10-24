@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+import bisect
 import json
 import os
 import math
@@ -900,6 +901,11 @@ class TechMask:
         self.n = len(vocab["orders"]) + 1
         self._key: tuple | None = None
         self._ok = np.ones(self.n, bool)
+        self._stock_times = sorted(getattr(self, "stock", {}).values())
+
+    def stocked(self, now: float) -> int:
+        """How many wares are in stock by `now` (the mask changes with it)."""
+        return bisect.bisect_right(self._stock_times, now)
 
     def allowed(self, done: frozenset, levels: dict[str, int], heroes: frozenset, researching: frozenset,
                 now: float = 1e9, dead: frozenset = frozenset()) -> np.ndarray:
@@ -969,7 +975,8 @@ class View:
         self.busy: set[int] = set()  # buildings making something
         self.assign: dict[int, str] = {}  # own worker -> "gold" / "lumber": what its last orders sent it to
         self.mine_of: dict[int, int] = {}  # own worker -> the gold mine its last accepted gold order sent it to
-        self.hp_last: dict[int, int] = {}  # unit -> its hit points at the last step it was in view
+        self.hp_last = (np.zeros(0, np.int64), np.zeros(0, np.int64))  # the units in view the last step (sorted ids)
+        # and their hit points
         self.last_order: dict[int, tuple] = {}  # own unit -> (kind 0 none/1 point/2 unit, x, y, target, step)
         # inputs 2 and --tech-mask: what each own building makes now (its kind, A_PROD's, and code), research levels
         self.making: dict[int, tuple[int, int]] = {}
@@ -1095,36 +1102,44 @@ class View:
             self.techmask = TechMask(self.enc.vocab, RACES[self.races[self.player]])
         mine = rows[rows[:, C_OWNER] == self.player]
         fl = mine[:, C_FLAGS]
-        done = mine[(fl & STRUCTURE > 0) & (fl & DEAD == 0) & (fl & CONSTRUCTING == 0), C_TYPE]
-        heroes = {rawcode(c) for c in mine[fl & HERO > 0, C_TYPE].tolist()}
-        making = {rawcode(m[1]) for m in self.making.values() if m[0] == 2}
+        done = frozenset(mine[(fl & STRUCTURE > 0) & (fl & DEAD == 0) & (fl & CONSTRUCTING == 0), C_TYPE].tolist())
+        heroes = frozenset(mine[fl & HERO > 0, C_TYPE].tolist())
+        making = frozenset(m[1] for m in self.making.values() if m[0] == 2)
         since = getattr(self, "dead_since", {})  # (a hero's revival: the game takes it ~7 s after its death; the mask
         reviving = getattr(self, "reviving", {})  # (a revival under way: an altar took its order; audit 6)
-        dead = frozenset(rawcode(c) for i, c in mine[(fl & HERO > 0) & (fl & DEAD > 0)][:, [C_ID, C_TYPE]].tolist()
+        dead = frozenset(c for i, c in mine[(fl & HERO > 0) & (fl & DEAD > 0)][:, [C_ID, C_TYPE]].tolist()
                          if self.t_now - since.get(i, self.t_now) >= REVIVE_AFTER_STEPS
                          and self.t_now - reviving.get(i, -REVIVE_STEPS) >= REVIVE_STEPS) - making  # had allowed it at
         # once: ~30 refused a game; audit 5)
-        heroes |= making
-        researching = frozenset(rawcode(m[1]) for m in self.making.values() if m[0] == 3)
-        return self.techmask.allowed(frozenset(rawcode(c) for c in set(done.tolist())),
-                                     {rawcode(k): v for k, v in self.levels.items()}, frozenset(heroes), researching,
-                                     self.t_now * self.step_seconds, dead)
+        researching = frozenset(m[1] for m in self.making.values() if m[0] == 3)
+        now = self.t_now * self.step_seconds
+        key = (done, heroes | making, dead, researching, tuple(sorted(self.levels.items())), self.techmask.stocked(now))
+        if key == getattr(self, "_tech_key", None):  # (the type codes as they are: their names only when it changed)
+            return self._tech_ok
+        self._tech_key = key
+        self._tech_ok = self.techmask.allowed(frozenset(rawcode(c) for c in done),
+                                              {rawcode(k): v for k, v in self.levels.items()},
+                                              frozenset(rawcode(c) for c in heroes | making),
+                                              frozenset(rawcode(c) for c in researching), now,
+                                              frozenset(rawcode(c) for c in dead))
+        return self._tech_ok
 
     def step(self, rows: np.ndarray, me: np.ndarray | None, events: np.ndarray, t: int,
              opp: np.ndarray | None = None) -> dict:
         """rows: this step's units (UNIT_COLS), me: the player's row (PLAYER_COLS) or None, events:
         this step's (step, kind, a, b, c)."""
         enc, player = self.enc, self.player
+        own, fl = rows[:, C_OWNER] == player, rows[:, C_FLAGS]
+        own_alive = own & (fl & DEAD == 0)
         # the player's buildings standing now; what it knew of the others' production forgotten (a building that died
         # mid-research had kept that research masked for the game, and its id, given to an enemy unit later, that
         # unit's production; audit 3)
-        self.own_buildings = set(rows[(rows[:, C_OWNER] == player) & (rows[:, C_FLAGS] & STRUCTURE > 0)
-                                      & (rows[:, C_FLAGS] & DEAD == 0), C_ID].tolist())
+        self.own_buildings = set(rows[own_alive & (fl & STRUCTURE > 0), C_ID].tolist())
         for d in (self.making, self.queued):
             for k in [k for k in d if k not in self.own_buildings]:
                 del d[k]
         self.busy &= self.own_buildings
-        units = set(rows[(rows[:, C_OWNER] == player) & (rows[:, C_FLAGS] & DEAD == 0), C_ID].tolist())
+        units = set(rows[own_alive, C_ID].tolist())
         for d in (self.assign, self.mine_of, self.last_order):  # (a unit gone: what it harvested, its mine and its last
             for k in [k for k in d if k not in units]:            # order forgotten, not given to the next unit with its
                 del d[k]                                          # id: ~72 reuses a game; audit 4)
@@ -1148,7 +1163,7 @@ class View:
             if kind == RESEARCH_FINISH and a in self.own_buildings:
                 self.levels[int(r[3])] = int(r[4])
         lumber = {u for u, r in self.assign.items() if r == "lumber"}
-        dead = rows[(rows[:, C_OWNER] == player) & (rows[:, C_FLAGS] & HERO > 0) & (rows[:, C_FLAGS] & DEAD > 0)]
+        dead = rows[own & (fl & HERO > 0) & (fl & DEAD > 0)]
         self.dead_heroes = {int(t): int(i) for t, i in dead[:, [C_TYPE, C_ID]].tolist()}
         since = self.__dict__.setdefault("dead_since", {})
         ids = set(dead[:, C_ID].tolist())
@@ -1167,9 +1182,12 @@ class View:
             sel, n_own, f, types, cur = priv
         self.max_own, self.max_ent = max(self.max_own, enc.counts[0]), max(self.max_ent, enc.counts[1])
         ids, hp = sel[:, C_ID].tolist(), sel[:, C_HP]
-        last = np.array([self.hp_last.get(i, h) for i, h in zip(ids, hp.tolist())], np.float32)
+        was, was_hp = self.hp_last
+        j = np.minimum(np.searchsorted(was, sel[:, C_ID]), max(len(was) - 1, 0))
+        last = np.where(was[j] == sel[:, C_ID], was_hp[j], hp).astype(np.float32) if len(was) else hp.astype(np.float32)
         f[:, A_HPD] = np.clip((hp - last) / np.maximum(sel[:, C_MAXHP], 1), -1.0, 1.0)  # (0: not in view the last step)
-        self.hp_last = dict(zip(ids, hp.tolist()))
+        o = np.argsort(sel[:, C_ID], kind="stable")
+        self.hp_last = (sel[o, C_ID], hp[o])
         index = {u: k for k, u in enumerate(ids)} if self.active_f > A_LAST else {}
         if self.active_f > A_LAST:  # (a per-unit loop: skipped when the run does not use them, --features)
             f[:n_own, A_LAST + 4] = 1.0  # (never ordered: long ago)
@@ -1205,8 +1223,9 @@ class View:
             g[x:x + 3] = math.sin(ang), math.cos(ang), float(hour < DAWN or hour >= DUSK)
         g[enc.G0 + enc.ZD + enc.GX:] = self.priv(rows, opp)
         avail = None
+        free = enc.costs is not None and not self.has_hero(rows)
         if enc.costs is not None:  # what the player can pay for now (orders beyond it are masked)
-            c = enc.costs_first if not self.has_hero(rows) else revive_costs(enc, rows, self.player)
+            c = enc.costs_first if free else revive_costs(enc, rows, self.player)
             gold, lumber, fu, fc = (int(me[2]), int(me[3]), int(me[4]), int(me[5])) if me is not None else (0, 0, 0, 0)
             reserve = self.reserve
             pending = getattr(self, "expanding", None)  # (--macros: an expand order on its way: its hall's cost kept until
@@ -1230,8 +1249,7 @@ class View:
             avail[enc.expand_class] = bool(self.expand_site is not None and via is not None and avail[via] and not busy)
         if avail is not None and enc.creep_class is not None:  # (--macros: creep the natural, while its camp stands)
             from .macros import camp
-            mine = rows[(rows[:, C_OWNER] == player) & (rows[:, C_FLAGS] & DEAD == 0)]
-            army = int((mine[:, C_FLAGS] & (STRUCTURE | WORKER) == 0).sum())
+            army = int((own_alive & (fl & (STRUCTURE | WORKER) == 0)).sum())
             strong = army >= CREEP_ARMY and t * self.step_seconds >= CREEP_FROM  # (the teacher's conditions: from minute 1,
             if not strong or t - getattr(self, "_camp_at", -NATURAL_EVERY) >= NATURAL_EVERY or t < getattr(self, "_camp_at", 0):
                 self.creep_at = camp(rows, getattr(self, "start", None)) if MACROS and strong else None  # any unit sent it:
@@ -1239,7 +1257,7 @@ class View:
             avail[enc.creep_class] = self.creep_at is not None  # 436 attack-moves a game; audit 3)
         if avail is not None and enc.mix_class is not None:  # (--macros: train the target's mix, while it lacks a unit
             target = getattr(self, "mix_target", None) or {}  # the side can train now)
-            mine = rows[(rows[:, C_OWNER] == player) & (rows[:, C_FLAGS] & (DEAD | STRUCTURE | WORKER | HERO | SUMMONED) == 0)]
+            mine = rows[own & (fl & (DEAD | STRUCTURE | WORKER | HERO | SUMMONED) == 0)]
             n = max(len(mine), 1)  # (summons are no army it trained: they had lowered the trained units' shares)
             have: dict[str, float] = {}
             for c in mine[:, C_TYPE].tolist():
@@ -1260,8 +1278,7 @@ class View:
         if self.active_f < F_BASE:
             f[:, self.active_f:F_BASE] = 0.0
         out = {"n": len(sel), "sel": sel, "n_own": n_own, "ent": f, "type": types, "cur": cur, "glob": g,
-               "first_free": enc.costs is not None and not self.has_hero(rows),
-               "index": {int(i): k for k, i in enumerate(sel[:, C_ID])}, "avail": avail,
+               "first_free": free, "index": {u: k for k, u in enumerate(ids)}, "avail": avail,
                "ghost0": getattr(enc, "ghost0", len(sel)) if not self.privileged_act else len(sel)}
         if priv is not None:  # (the privileged view's global flag; its entities beside the player's: "p…")
             flag = enc.G0 + enc.ZD + enc.GX - 1
