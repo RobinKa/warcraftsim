@@ -49,7 +49,9 @@ enum {
     GetUnitCurrentOrder, IsUnitVisible, GetResourceAmount, IsUnitType, IsUnitHidden, IsUnitLoaded, UnitIsSleeping,
     IsUnitPaused, IsUnitIllusion, GetHeroXP, GetHeroSkillPoints, GetHeroLevel, UnitItemInSlot, GetItemTypeId,
     GetUnitAbilityLevel, BlzGetUnitAbilityCooldownRemaining, LoadBoolean, LoadInteger, SaveInteger, SaveBoolean,
-    HaveSavedInteger, Player, GroupRemoveUnit, FlushChildHashtable, ForGroup, N_NATIVES
+    HaveSavedInteger, Player, GroupRemoveUnit, FlushChildHashtable, ForGroup,
+    GetPlayerSlotState, IsPlayerObserver, GetPlayerRace, GetPlayerState, GetPlayerStructureCount, GetPlayerStartLocation,
+    GetStartLocationX, GetStartLocationY, GetPlayerAlliance, N_NATIVES
 };
 static const struct {
     const char *name, *sig;
@@ -66,6 +68,11 @@ static const struct {
     {"LoadInteger", "(Hhashtable;II)I;"}, {"SaveInteger", "(Hhashtable;III)V"}, {"SaveBoolean", "(Hhashtable;IIB)V"},
     {"HaveSavedInteger", "(Hhashtable;II)B"}, {"Player", "(I)Hplayer;"}, {"GroupRemoveUnit", "(Hgroup;Hunit;)V"},
     {"FlushChildHashtable", "(Hhashtable;I)V"}, {"ForGroup", "(Hgroup;C)V"},
+    {"GetPlayerSlotState", "(Hplayer;)Hplayerslotstate;"}, {"IsPlayerObserver", "(Hplayer;)B"},
+    {"GetPlayerRace", "(Hplayer;)Hrace;"}, {"GetPlayerState", "(Hplayer;Hplayerstate;)I"},
+    {"GetPlayerStructureCount", "(Hplayer;B)I"}, {"GetPlayerStartLocation", "(Hplayer;)I"},
+    {"GetStartLocationX", "(I)R"}, {"GetStartLocationY", "(I)R"},
+    {"GetPlayerAlliance", "(Hplayer;Hplayer;Halliancetype;)B"},
 };
 static void *g_fn[N_NATIVES];
 static int g_ok; /* every native found: 1, or 2 to check the records against the harness's (W3SIM_UNITS=2) */
@@ -116,6 +123,7 @@ static float r2(int k, int a, int b) {
  * player's handle (a player's id and handle are fixed for a load of the map: forgotten at a game's first step).
  * The calls that make handles (UnitItemInSlot) are made as before. */
 static int g_dedupe;
+static int g_cobs_check_env; /* W3SIM_COBS_CHECK=1: the players' records and result checked against the harness's */
 static struct {
     int u, typ, dead, owner, hero, have_hero;
 } g_cur;
@@ -354,6 +362,7 @@ static void unit_record(int u) {
 }
 
 static void drop(int u) { /* out of the group of all units, its table entries with it; an "R" record */
+    cuts_unit_begin(0);
     n2(GroupRemoveUnit, g_all, u);
     n2(FlushChildHashtable, g_ht, u);
     if (g_nremoved == g_removed_cap) {
@@ -370,6 +379,7 @@ static void drop(int u) { /* out of the group of all units, its table entries wi
 /* a unit of the pass: W3S_EnumAdd (with pruning), W3S_CountDecisive / W3S_CountAlive, W3S_SerUnit */
 static void pass_unit(int u) {
     g_cur.u = 0;
+    cuts_unit_begin(1);
     int typ = n1(GetUnitTypeId, u);
     if (typ == 0) { /* removed from the game */
         drop(u);
@@ -403,6 +413,7 @@ static void pass_unit(int u) {
             drop(u);
     }
     unit_record(u);
+    cuts_unit_begin(0);
     g_cur.u = 0;
 }
 
@@ -478,6 +489,137 @@ static void install_fg_pass(void) {
     shim_log("unit records: the pass's ForGroup without JASS (W3SIM_CUTS & 16)");
 }
 
+/* W3SIM_CUTS & 262144: the harness's players' records (W3S_SerPlayers) and its check of the game's result
+ * (W3S_CheckResult, victory 0 melee / 3 decisive, without pairs, scenarios or resets by script) made here with the same
+ * natives: in JASS they cost ~0.5 of a step's ms (a JASS call, I2S and Preload per token, and the result's loops over
+ * 24 x 24 players). The harness asks MBOX - 18 (1: on, 2: check: the harness also does both itself and the
+ * records and results are compared here, mismatches logged), then MBOX - 28, -(victory + 1) to use it;
+ *   MBOX - 19 / MBOX - 20, then -(player + 1)   an agent's player / not any more (W3S_StartAI)
+ *   MBOX - 21                                   the result's check (returns 1: the game is over)
+ *   MBOX - 22                                   the time limit reached: the players still in it tie (3)
+ *   MBOX - 24                                   the players' records go into the observation (check: kept)
+ *   MBOX - 25                                   (check) the harness's records just written, compared
+ *   MBOX - 26 / MBOX - 27, then -(value + 1)    (check) the harness's result of the next player / its game over */
+static int g_cobs, g_cobs_victory, g_cobs_over;
+static int g_cobs_agent[MAX_PLAYERS], g_cobs_result[MAX_PLAYERS];
+static int g_jres[MAX_PLAYERS], g_jres_n;
+static char g_pexp[8192];
+static int g_pexp_len, g_pobs_mark;
+static long g_cobs_checks, g_cobs_bad;
+
+static void pbuf_tok(char *b, int *len, int cap, int v, uint32_t *sum) {
+    if (sum)
+        *sum += (uint32_t)v;
+    char tmp[12];
+    int n = 0, neg = v < 0;
+    uint32_t u = neg ? 0u - (uint32_t)v : (uint32_t)v;
+    do {
+        tmp[n++] = (char)('0' + u % 10);
+        u /= 10;
+    } while (u);
+    if (*len + n + 2 > cap)
+        return;
+    if (neg)
+        b[(*len)++] = '-';
+    while (n)
+        b[(*len)++] = tmp[--n];
+    b[(*len)++] = '\n';
+}
+
+static int playing(int i, int *ph) { /* slot playing, not an observer (W3S_Active: no pairs here) */
+    int p = n1(Player, i);
+    if (ph)
+        *ph = p;
+    return n1(GetPlayerSlotState, p) == 1 && !n1(IsPlayerObserver, p);
+}
+
+static int coallied(int a, int b) { /* Blizzard.j PlayersAreCoAllied */
+    return a == b || (n3(GetPlayerAlliance, a, b, 0) && n3(GetPlayerAlliance, b, a, 0));
+}
+
+static int race_id(int r) { /* W3S_RaceId: RACE_HUMAN .. RACE_NIGHTELF are ConvertRace(1 .. 4) */
+    return r >= 1 && r <= 4 ? r : 0;
+}
+
+static int cobs_records(char *b, int cap) { /* W3S_SerPlayers */
+    int len = 0;
+    for (int i = 0; i < g_max_players && i < MAX_PLAYERS; i++) {
+        int p = n1(Player, i);
+        if (n1(GetPlayerSlotState, p) == 0 || n1(IsPlayerObserver, p))
+            continue;
+        uint32_t sum = 0;
+        if (len + 2 < cap) {
+            b[len++] = 'P';
+            b[len++] = '\n';
+        }
+        pbuf_tok(b, &len, cap, pid(i), &sum);
+        pbuf_tok(b, &len, cap, race_id(n1(GetPlayerRace, p)), &sum);
+        pbuf_tok(b, &len, cap, g_cobs_agent[i] ? 1 : 0, &sum);
+        pbuf_tok(b, &len, cap, n2(GetPlayerState, p, 1), &sum);  /* gold */
+        pbuf_tok(b, &len, cap, n2(GetPlayerState, p, 2), &sum);  /* lumber */
+        pbuf_tok(b, &len, cap, n2(GetPlayerState, p, 5), &sum);  /* food used */
+        pbuf_tok(b, &len, cap, n2(GetPlayerState, p, 4), &sum);  /* food cap */
+        pbuf_tok(b, &len, cap, n2(GetPlayerState, p, 13), &sum); /* gold upkeep rate */
+        pbuf_tok(b, &len, cap, n2(GetPlayerState, p, 15), &sum); /* gold gathered */
+        pbuf_tok(b, &len, cap, n2(GetPlayerState, p, 16), &sum); /* lumber gathered */
+        pbuf_tok(b, &len, cap, n2(GetPlayerStructureCount, p, 1), &sum);
+        pbuf_tok(b, &len, cap, g_cobs_result[i], &sum);
+        int sl = n1(GetPlayerStartLocation, p);
+        pbuf_tok(b, &len, cap, (int)r1(GetStartLocationX, sl), &sum);
+        pbuf_tok(b, &len, cap, (int)r1(GetStartLocationY, sl), &sum);
+        pbuf_tok(b, &len, cap, (int)sum, NULL);
+    }
+    return len;
+}
+
+static int cobs_check(void) { /* W3S_CheckResult (its time limit stays in JASS: MBOX - 22) */
+    if (g_cobs_over)
+        return 1;
+    int maxp = g_max_players < MAX_PLAYERS ? g_max_players : MAX_PLAYERS, ph[MAX_PLAYERS], in[MAX_PLAYERS];
+    for (int i = 0; i < maxp; i++)
+        in[i] = playing(i, &ph[i]);
+    for (int i = 0; i < maxp; i++) {
+        if (g_cobs_result[i] != 0 || !in[i])
+            continue;
+        int ally = 0; /* MeleeGetAllyStructureCount */
+        for (int j = 0; j < maxp; j++)
+            if (coallied(ph[i], ph[j]))
+                ally += n2(GetPlayerStructureCount, ph[j], 1);
+        if (g_cobs_victory == 0 && ally <= 0)
+            g_cobs_result[i] = 2;
+        else if (g_cobs_victory == 3 && (ally <= 0 || (g_halls[i] <= 0 && g_mobile[i] <= 0)))
+            g_cobs_result[i] = 2;
+    }
+    int alive = 0, allied = 1;
+    for (int i = 0; i < maxp; i++) {
+        if (g_cobs_result[i] != 0 || !in[i])
+            continue;
+        alive++;
+        for (int j = 0; j < maxp; j++)
+            if (j != i && g_cobs_result[j] == 0 && in[j] && !coallied(ph[i], ph[j]))
+                allied = 0;
+    }
+    if (alive == 0 || allied) {
+        g_cobs_over = 1;
+        for (int i = 0; i < maxp; i++)
+            if (g_cobs_result[i] == 0 && in[i])
+                g_cobs_result[i] = 1;
+    }
+    return g_cobs_over;
+}
+
+static void cobs_tie(void) {
+    g_cobs_over = 1;
+    for (int i = 0; i < g_max_players && i < MAX_PLAYERS; i++)
+        if (g_cobs_result[i] == 0 && playing(i, NULL))
+            g_cobs_result[i] = 3;
+}
+
+static void cobs_mismatch(const char *what, int a, int b) {
+    if (g_cobs_bad++ < 40)
+        shim_log("players/result in C: MISMATCH %s: the shim's %d, the harness's %d", what, a, b);
+}
+
 /* W3SIM_PROFILE: where a step's time goes (mean ms per step, every 200 steps): GO -> the pass begins
  * (the game), the pass, -> the observation ends (the result, the players, the rest), -> the sync. */
 static int g_prof;
@@ -513,6 +655,9 @@ int units_call(int key, int mbox, int *result) {
         g_ht = g_abil = g_all = g_nseer = g_pending = g_pass = g_nremoved = g_rec_len = g_pair_first = g_paired = 0;
         g_npid = 0;
         g_cur.u = 0;
+        g_cobs = g_cobs_over = g_jres_n = 0;
+        memset(g_cobs_agent, 0, sizeof g_cobs_agent);
+        memset(g_cobs_result, 0, sizeof g_cobs_result);
         cuts_game_start();
         *result = obs_capture_on() ? g_ok : 0;
         return 1;
@@ -536,6 +681,26 @@ int units_call(int key, int mbox, int *result) {
             g_pair_first = v - 1;
         else if (reg == 17)
             g_paired = v;
+        else if (reg == 19 || reg == 20) {
+            if (v >= 1 && v <= MAX_PLAYERS)
+                g_cobs_agent[v - 1] = reg == 19;
+        } else if (reg == 28) {
+            g_cobs_victory = v - 1;
+            g_cobs = g_paired || (g_cobs_victory != 0 && g_cobs_victory != 3) ? 0 : (cuts_flags() & 262144) ? (g_cobs_check_env ? 2 : 1) : 0;
+            shim_log("players/result in C: %s (victory %d)", g_cobs == 2 ? "checked against the harness's" : g_cobs ? "on" : "off", g_cobs_victory);
+        } else if (reg == 26) {
+            if (g_jres_n < MAX_PLAYERS && g_jres_n < g_max_players) {
+                if (g_cobs_result[g_jres_n] != v - 1)
+                    cobs_mismatch("a player's result", g_cobs_result[g_jres_n], v - 1);
+                g_jres[g_jres_n++] = v - 1;
+            }
+        } else if (reg == 27) {
+            g_cobs_checks++;
+            if (g_cobs_over != v - 1)
+                cobs_mismatch("game over", g_cobs_over, v - 1);
+            if (g_cobs_checks % 2000 == 0)
+                shim_log("players/result in C: %ld steps checked, %ld mismatches", g_cobs_checks, g_cobs_bad);
+        }
         else if (reg == 8) {
             if (g_nseer < MAX_PLAYERS && v >= 1 && v <= MAX_PLAYERS) {
                 g_seer_player[g_nseer] = n1(Player, v - 1);
@@ -593,8 +758,52 @@ int units_call(int key, int mbox, int *result) {
         return 1;
     }
     if (key == mbox - 5 || key == mbox - 6 || key == mbox - 8 || key == mbox - 13 || key == mbox - 14 || key == mbox - 16 ||
-        key == mbox - 17) {
+        key == mbox - 17 || key == mbox - 19 || key == mbox - 20 || key == mbox - 28 || key == mbox - 26 || key == mbox - 27) {
         g_pending = mbox - key;
+        return 1;
+    }
+    if (key == mbox - 18) { /* (W3SIM_CUTS & 262144) the players' records and the result in C: 1, or 2 to check them */
+        *result = (cuts_flags() & 262144) && g_ok == 1 ? (g_cobs_check_env ? 2 : 1) : 0;
+        return 1;
+    }
+    if (g_cobs && key == mbox - 21) {
+        g_jres_n = 0;
+        *result = cobs_check();
+        return 1;
+    }
+    if (g_cobs && key == mbox - 22) {
+        cobs_tie();
+        return 1;
+    }
+    if (g_cobs && key == mbox - 24) {
+        if (g_cobs == 2) {
+            const char *d;
+            g_pobs_mark = obs_peek(&d);
+            g_pexp_len = cobs_records(g_pexp, sizeof g_pexp);
+        } else {
+            char b[4096];
+            int n = cobs_records(b, sizeof b);
+            if (n)
+                obs_bytes(b, n);
+        }
+        return 1;
+    }
+    if (g_cobs == 2 && key == mbox - 25) {
+        const char *d;
+        int n = obs_peek(&d) - g_pobs_mark;
+        if (n != g_pexp_len || memcmp(d + g_pobs_mark, g_pexp, n) != 0) {
+            if (g_cobs_bad++ < 40) {
+                char a[160], b[160];
+                int ka = n < 150 ? n : 150, kb = g_pexp_len < 150 ? g_pexp_len : 150;
+                memcpy(a, d + g_pobs_mark, ka > 0 ? ka : 0);
+                a[ka > 0 ? ka : 0] = 0;
+                memcpy(b, g_pexp, kb);
+                b[kb] = 0;
+                for (char *c = a; *c; c++) if (*c == '\n') *c = ' ';
+                for (char *c = b; *c; c++) if (*c == '\n') *c = ' ';
+                shim_log("players/result in C: MISMATCH players' records: the harness's [%s], the shim's [%s]", a, b);
+            }
+        }
         return 1;
     }
     if (key == mbox - 7) {
@@ -628,6 +837,7 @@ void units_install(void) {
     int mode = GetEnvironmentVariableA("W3SIM_UNITS", buf, sizeof buf) ? atoi(buf) : 1;
     g_prof = GetEnvironmentVariableA("W3SIM_PROFILE", buf, sizeof buf) && buf[0] >= '1';
     g_ok = found == N_NATIVES ? mode : 0;
+    g_cobs_check_env = GetEnvironmentVariableA("W3SIM_COBS_CHECK", buf, sizeof buf) && buf[0] == '1';
     if (g_ok == 1) {
         int cuts = cuts_flags();
         g_dedupe = (cuts & 32) != 0;

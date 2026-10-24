@@ -66,6 +66,7 @@ int frame_capture_get(void);
 /* obs.c */
 void obs_install(void);
 int obs_take(const char **data); /* the captured observation's length, or -1 if none */
+int obs_peek(const char **data); /* the observation captured so far (its length) */
 void obs_reset(void);
 
 void obs_bytes(const char *s, int n); /* tokens from the shim itself (lines) */
@@ -102,6 +103,7 @@ void turbo_set(int ms);
 void cuts_install(int draw); /* W3SIM_CUTS (cuts.c) */
 int cuts_flags(void);
 void cuts_game_start(void); /* a game's first step (units.c) */
+void cuts_unit_begin(int on); /* units.c: a unit's natives begin (1) / end (0) (W3SIM_CUTS & 32768) */
 extern volatile DWORD g_step_tid; /* sync.c: the thread that steps the game */
 void cuts_report(void);
 int turbo_get(void);
