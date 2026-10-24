@@ -117,14 +117,14 @@ class Teacher:
         if player is None or rows.shape[1] < fx.ROW_COLS:
             return []
         out = []
-        fl = rows[:, fx.C_FLAGS]
-        mine = rows[(rows[:, fx.C_OWNER] == self.side)]
-        alive = mine[mine[:, fx.C_FLAGS] & fx.DEAD == 0]
-        heroes = mine[mine[:, fx.C_FLAGS] & fx.HERO > 0]  # (dead ones count: they can be revived)
-        live_heroes = alive[alive[:, fx.C_FLAGS] & fx.HERO > 0]
-        shops = rows[fl & fx.DEAD == 0]  # (the neutral buildings: on the game's minimap from the start)
-        tavern, merchant = shops[shops[:, fx.C_TYPE] == TAVERN], shops[shops[:, fx.C_TYPE] == MERCHANT]
-        done = alive[(alive[:, fx.C_FLAGS] & fx.STRUCTURE > 0) & (alive[:, fx.C_FLAGS] & fx.CONSTRUCTING == 0), fx.C_TYPE]
+        fl, typ = rows[:, fx.C_FLAGS], rows[:, fx.C_TYPE]  # (masks over all the rows, copies of the few they pick:
+        own, living, hero = rows[:, fx.C_OWNER] == self.side, fl & fx.DEAD == 0, fl & fx.HERO > 0  # a copy of every
+        alive = rows[own & living]  # living unit a step had been ~9% of an actor's time)
+        heroes = rows[own & hero]  # (dead ones count: they can be revived)
+        live_heroes = rows[own & living & hero]
+        # the neutral buildings: on the game's minimap from the start
+        tavern, merchant = rows[living & (typ == TAVERN)], rows[living & (typ == MERCHANT)]
+        done = typ[own & living & (fl & fx.STRUCTURE > 0) & (fl & fx.CONSTRUCTING == 0)]
         n_heroes = len(heroes)
         if self.first is not None and n_heroes == 0 and now >= FIRST_HERO_FROM:
             out += self._first_hero(alive, player, t)
@@ -142,7 +142,8 @@ class Teacher:
                 if self._due("tavern hero", t):  # (the nearest worker: it walks there, protocol.Buy)
                     out.append(Buy(int(workers[k, fx.C_ID]), int(tv[fx.C_ID]), self.pick))
         pickers = set(pickers or ())
-        enemies = rows[(rows[:, fx.C_OWNER] == 1 - self.side) & (fl & (fx.DEAD | fx.STRUCTURE) == 0)]
+        enemies = rows[(rows[:, fx.C_OWNER] == 1 - self.side) & (fl & (fx.DEAD | fx.STRUCTURE) == 0)] \
+            if pickers and fx.MACROS >= 2 else rows[:0]  # (only for a hero with an item near)
         for h in live_heroes:
             items = [int(v) for v in h[fx.C_ITEM0:fx.C_ITEM0 + 6]]
             # an item lying near, picked up when no enemy is near

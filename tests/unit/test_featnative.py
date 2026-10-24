@@ -54,3 +54,21 @@ def test_native_entities_match_numpy(monkeypatch):
         b = view.priv(rows, None)
         monkeypatch.setattr(featnative, "_lib", None)
         assert np.allclose(a, b, rtol=0, atol=1e-6)
+
+
+def test_to_f16_matches_numpy():
+    """The F16C conversion gives numpy's float16 values: rounding to nearest even, halves' subnormals, overflow to
+    infinity, signs and zeros."""
+    import numpy as np
+
+    from warcraftsim.fullgame.featnative import to_f16
+    rng = np.random.default_rng(0)
+    x = np.concatenate([rng.normal(0, 3, 20000), rng.uniform(-1e-4, 1e-4, 5000), rng.uniform(-1e5, 1e5, 2000),
+                        [0.0, -0.0, 65504, 65519.99, 65520, -65520, 6e-8, 3e-8, 2.9e-8, 1e-9, np.inf, -np.inf]])
+    x = x.astype(np.float32)
+    # (float32 values exactly halfway between two float16 values: the rounding's ties)
+    ties = ((np.arange(-30000, 30000, dtype=np.int64) * 8192 + 4096) & 0x7FFFFFFF).astype(np.uint32).view(np.float32)
+    for a in (x, ties[np.isfinite(ties)], x[:7].reshape(7, 1), x[:0]):
+        got = to_f16(a)
+        assert got.dtype == np.float16 and got.shape == a.shape
+        assert np.array_equal(got.view(np.uint16), a.astype(np.float16).view(np.uint16))

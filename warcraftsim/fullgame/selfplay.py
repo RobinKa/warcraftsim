@@ -55,6 +55,7 @@ from . import scenarios
 from . import strategy as strat
 from .collect import claim_slot
 from .costs import order_costs
+from .featnative import to_f16
 from .trace import DEAD_FLAG, Production, material, trace_step, unit_values  # noqa: F401
 from .play import unit_rows
 from .model import FullGameNet, act, adapt_config, anchor_kl, arch_key, evaluate, load, trained
@@ -827,7 +828,7 @@ class Trajectory:
 
     def add(self, st: dict, res: dict) -> None:
         n = st["n"]
-        self.steps.append({"ent": st["ent"].astype(np.float16), "type": st["type"].astype(np.int16),
+        self.steps.append({"ent": to_f16(st["ent"]), "type": st["type"].astype(np.int16),
                            "cur": st["cur"].astype(np.int16), "glob": st["glob"], "n": n,
                            "n_own": min(st["n_own"], fx.MAX_OWN),
                            "order": res["order"].astype(np.int16), "tgt": res["tgt"].astype(np.int16),
@@ -839,7 +840,7 @@ class Trajectory:
         if self.cfg.get("unit_credit", 0.0) > 0:  # (--unit-credit: each own unit's id, for its local reward)
             self.steps[-1]["ids"] = st["sel"][:self.steps[-1]["n_own"], fx.C_ID].astype(np.int64)
         if "pent" in st:  # (--opsd-coef: the privileged view of the step, the self-distillation's teacher's)
-            self.steps[-1].update(pent=st["pent"].astype(np.float16), ptype=st["ptype"].astype(np.int16),
+            self.steps[-1].update(pent=to_f16(st["pent"]), ptype=st["ptype"].astype(np.int16),
                                   pcur=st["pcur"].astype(np.int16), pn=st["pn"], pglob=st["pglob"])
         if self.cfg.get("reward_parts"):  # (--reward-parts: the reward by part, PART_NAMES; "reward" their sum)
             self.steps[-1]["rparts"] = np.zeros(len(PART_NAMES), np.float32)

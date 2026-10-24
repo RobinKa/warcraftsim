@@ -8,6 +8,7 @@
  * sines and cosines of float32 inputs (facing, positions) in float as numpy's float32 ufuncs (their last bit may
  * differ: the actors store the features as float16).
  */
+#include <immintrin.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -177,4 +178,30 @@ void w3f_priv(const int64_t *rows, int nrows, int ncols, int player, double sign
             o[7] = (float)fx; o[8] = (float)fy;
         }
     }
+}
+
+/* float32 -> float16 with the CPU's F16C instruction (round to nearest even, as numpy's astype): numpy converts in
+ * software, ~40 us for a step's ~100 x 106 features, ~7% of an actor's time. Returns 0 without F16C (the caller
+ * converts with numpy then). */
+__attribute__((target("avx,f16c"))) static void to_f16_vec(const float *src, uint16_t *dst, int n) {
+    int i = 0;
+    for (; i + 8 <= n; i += 8)
+        _mm_storeu_si128((__m128i *)(dst + i), _mm256_cvtps_ph(_mm256_loadu_ps(src + i), _MM_FROUND_TO_NEAREST_INT));
+    if (i < n) {
+        float buf[8] = {0};
+        uint16_t out[8];
+        memcpy(buf, src + i, sizeof(float) * (n - i));
+        _mm_storeu_si128((__m128i *)out, _mm256_cvtps_ph(_mm256_loadu_ps(buf), _MM_FROUND_TO_NEAREST_INT));
+        memcpy(dst + i, out, sizeof(uint16_t) * (n - i));
+    }
+}
+
+int w3f_to_f16(const float *src, uint16_t *dst, int n) {
+    static int ok = -1;
+    if (ok < 0)
+        ok = __builtin_cpu_supports("f16c") && __builtin_cpu_supports("avx");
+    if (!ok)
+        return 0;
+    to_f16_vec(src, dst, n);
+    return 1;
 }

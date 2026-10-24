@@ -50,6 +50,8 @@ def lib():
                                    P, P, I, P, I, P, I, P, P, I, P, P, I, P, P, P, P, P]
         L.w3f_priv.restype = None
         L.w3f_priv.argtypes = [P, I, I, I, D, P, P]
+        L.w3f_to_f16.restype = I
+        L.w3f_to_f16.argtypes = [P, P, I]
         _lib = L
     return _lib or None
 
@@ -117,3 +119,14 @@ def priv_sides(fx, rows: np.ndarray, player: int, sign: float, out: np.ndarray) 
     rows = np.ascontiguousarray(rows, np.int64)
     geo = geometry(fx)
     lib().w3f_priv(rows.ctypes.data, len(rows), rows.shape[1], int(player), float(sign), geo.ctypes.data, out.ctypes.data)
+
+
+def to_f16(a: np.ndarray) -> np.ndarray:
+    """A float32 array as float16 by the CPU's F16C instruction, the same values as numpy's astype (whose conversion
+    is in software: ~40 us a step's features); numpy's without the library or the instruction."""
+    L = lib()
+    a = np.ascontiguousarray(a, np.float32)
+    out = np.empty(a.shape, np.float16)
+    if L is None or not a.size or not L.w3f_to_f16(a.ctypes.data, out.ctypes.data, a.size):
+        return a.astype(np.float16)
+    return out
