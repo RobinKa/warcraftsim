@@ -4109,9 +4109,14 @@ def main(argv: list[str] | None = None) -> int:
             if args.noise_scale > 0 and update % args.noise_scale == 0:  # (at the weights the update starts from)
                 t_noise = time.time()
                 terms = args.noise_terms > 0 and update % args.noise_terms == 0
+                parts = None
                 if updater is not None and not terms:  # (graphed; each term's gradient stays the eager pass's)
-                    parts = updater.measure(steps, batch_chunks, warmup)
-                else:
+                    try:
+                        parts = updater.measure(steps, batch_chunks, warmup)
+                    except Exception:  # noqa: BLE001 (a measurement only: the eager pass instead)
+                        traceback.print_exc()
+                        print("graphed noise measurement failed: the eager one", flush=True)
+                if parts is None:
                     parts = ppo_update(net, ref, opt, steps, args, warmup, device, batch_chunks, None, measure=True,
                                        terms=terms)
                 measured = {**noise.add(parts, args.minibatch), "perf/noise": time.time() - t_noise}

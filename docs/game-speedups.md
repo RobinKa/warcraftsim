@@ -140,7 +140,104 @@ Each game runs in a Wine prefix of its own. Wine was a third of a game's CPU at 
 
 ## Where the time goes now
 
-With both rounds on, a game's main thread is mostly the simulation itself. Pathing is 35-55% of it (more in long games), then the other unit timers, attack and fog. The harness's pass over the units still costs ~8%, in the natives it calls. Next would be the path search's per-node functions and its heap (memory-bound, so prefetching may help, as long as the heap's order stays the same) and the per-item callback of the items' search.
+A game's main thread with every patch on (`--game-cuts 33551865`, round 3 included), by part, from `perf` call chains of three replayed games: each sample in exactly one part, so each column sums to 100%. A typical training game between agents on `echofast`:
+
+```mermaid
+%%{init: {"themeVariables": {"pie1": "#4cc38a", "pie2": "#539bf5", "pie3": "#b083f0", "pie4": "#e0a33a", "pie5": "#e5534b", "pie6": "#39c5cf", "pie7": "#8795a3", "pie8": "#c69026", "pie9": "#f47067", "pieStrokeColor": "#0b0f13", "pieOuterStrokeColor": "#0b0f13", "pieTitleTextColor": "#d7dee6", "pieLegendTextColor": "#d7dee6", "pieSectionTextColor": "#0b0f13"}}}%%
+pie showData
+  title A training game's main thread (fgself-140, 7.05 ms a step)
+  "pathing" : 55.2
+  "our harness" : 16.4
+  "unit, ability and buff timers" : 8.5
+  "target acquisition" : 6.2
+  "Wine and the kernel" : 4.6
+  "fog of war" : 3.8
+  "turns, main loop, other" : 2.5
+  "Storm's allocator" : 1.7
+  "paint" : 0.9
+```
+
+| part | a short game against the AI | a training game between agents | a 40-minute game between agents |
+|---|---|---|---|
+| **pathing** | **37.9%** | **55.2%** | **60.2%** |
+| – local A* search | 4.7% | 10.0% | 13.0% |
+| – long-range search | 5.1% | 16.1% | 11.0% |
+| – path planning and following | 6.0% | 7.9% | 11.8% |
+| – collision and proximity | 2.8% | 3.1% | 5.4% |
+| – pathing-map updates | 3.5% | 2.8% | 2.5% |
+| – other pathing (relations timer, events, small passes) | 15.8% | 15.3% | 16.5% |
+| **our harness** | **20.3%** | **16.4%** | **20.3%** |
+| – the units pass | 7.0% | 6.5% | 7.7% |
+| – the rest of the step (records, the result, commands) | 9.7% | 6.9% | 10.6% |
+| – items on the ground, event triggers, the step sync | 3.6% | 3.0% | 2.0% |
+| unit, ability and buff timers | 10.0% | 8.5% | 7.1% |
+| target acquisition | 6.5% | 6.2% | 1.9% |
+| the built-in AI (scripts and C++) | 8.8% | – | – |
+| fog of war | 4.1% | 3.8% | 3.6% |
+| Wine and the kernel | 5.3% | 4.6% | 3.6% |
+| Storm's allocator | 2.8% | 1.7% | 1.0% |
+| paint | 1.5% | 0.9% | 0.7% |
+| turns, main loop, other | 2.8% | 2.5% | 1.7% |
+| **ms a step** | **6.6** | **7.05** | **13.55** |
+
+* **Pathing is most of a game**, and more of it the longer the game: more units walk farther. Its cost is spread over ~20 small functions and the game's soft-float arithmetic (10-15% of the main thread on its own, counted inside its callers), and much of it waits on memory: an exact rewrite (the search's heap must pop equal entries in the same order, and each search leaves the grid's state for the next) took 5-7% off it, no more.
+* **Our harness is the second largest part**: every unit's record each step, the players' records and the result, the commands. Rounds 1-3 took it from most of a step to ~16-20%.
+* **Wine and the kernel are 4-5%** of the main thread (plus wineserver's ~2-3% of the games' CPU): a game without Wine would save about that, not more. The game's own code already runs natively on the CPU; Wine only answers its calls to Windows.
+* Soft float, the object system (handles, type checks: 5-6%), the script interpreter (3-6%) and Storm's string hash (1-3%) are costs inside the parts above.
+
+How it was measured: each replay played back twice side by side (`scripts/cut_ab.py`, 521721 and 33551865), `perf record -e cycles --call-graph fp` on each game's main thread (~10,000 samples for a short game, ~180,000 for the 40-minute one), each sample put in one part by its call chain (the first matching rule).
+
+## The game's code, as we understand it
+
+From Ghidra (through REA), the shim's own profiler and `perf`. Shares are of the main thread in a training game; boxes in green are where the shim replaced or skipped the game's code, in blue our harness.
+
+```mermaid
+flowchart TB
+  ML["Message loop · Storm's event dispatcher"] --> GU["GameUpdate · ~97%<br/>runs the turns due this frame"]
+  ML --> PAINT["Paint · ~1%<br/>a frame nobody sees"]:::cut
+  PACE["Turn pacing thread<br/>hands out 25 ms turns"] -. wakes .-> GU
+  GU --> PUMP["Agent-timer pump · ~90%<br/>fires every timer due this turn"]
+  PUMP --> HA["Unit timers · ~55%"]
+  PUMP --> HB["Script timers · ~25%"]
+  HA --> PT["Pathing · 55%<br/>(below)"]:::cut
+  HA --> TIM["Abilities, buffs,<br/>harvest · 8%"]:::cut
+  HA --> ATK["Target<br/>acquisition · 6%"]
+  HA --> FOG["Fog of war · 4%"]
+  HB --> STEP["The harness's step · 16%<br/>units pass, records, result,<br/>commands, step sync"]:::ours
+  HB --> AI["The built-in AI's<br/>scripts · 8%<br/>(against the AI only)"]
+  classDef cut fill:#1d3a2a,stroke:#4cc38a,color:#d7dee6
+  classDef ours fill:#1d2a3a,stroke:#539bf5,color:#d7dee6
+```
+
+Pathing, which every unit's order ends up in:
+
+```mermaid
+flowchart LR
+  ORD["An order<br/>(the harness, the AI)"] --> PLAN["Path planning<br/>and following · 8%"]
+  PLAN --> LR["Long-range search · 16%<br/>a coarse route over a<br/>four-level map hierarchy"]:::cut
+  PLAN --> AS["Local search (A-star) · 10%<br/>the grid around the unit,<br/>a binary heap"]:::cut
+  AS --> GRID["The pathing map · 3%<br/>each cell's blocked bits"]:::cut
+  LR --> GRID
+  PLAN --> COL["Collision and<br/>proximity · 3%"]
+  PLAN --> REST["Other pathing · 15%<br/>events, timers, small passes"]
+  classDef cut fill:#1d3a2a,stroke:#4cc38a,color:#d7dee6
+```
+
+Under all of these, shared services: soft-float arithmetic (10-15% of the main thread, inside its callers), the object system (handles, type checks: 5-6%), the script interpreter (3-6%), Storm's allocator and string hash (2-5%).
+
+* **Message loop and GameUpdate.** The game is a Windows message loop: every frame, GameUpdate runs the 25 ms game turns that are due. A second thread hands out the turns; the shim's virtual clock decides how fast they come, and freezes them at each step.
+* **The agent-timer pump.** Everything in the simulation is a timer on an agent (a unit, an ability, a buff, a script timer): each turn fires the ones that are due. Two handlers take nearly all the time: the units' (pathing, abilities, attacks) and the scripts'.
+* **Pathing tick.** Each unit's pathing agent plans and follows its route. **The local search** (A-star) searches the grid around the unit with a binary heap (patched: each cell's check remembered within a search, the loop and the heap in C). **The long-range search** finds a coarse route across a four-level map hierarchy, with integer square roots for its costs (patched: the relaxation in C, the square root as one instruction). **The pathing map** keeps each cell's blocked bits per movement class (its update in C). **Collision** keeps units apart.
+* **Unit, ability and buff timers.** Abilities, buffs, harvesting, gold mines, creeps (patched: a unit's ability lookup in C).
+* **Target acquisition and fog.** Units find targets in range; each turn, sight circles and line of sight make the fog.
+* **Script timers.** The JASS interpreter runs the map's timers: our harness's step every half second, and in games against it the built-in AI's scripts. Both issue orders, which the pathing tick then plans.
+* **The harness's step** (ours). The units pass (in C in the shim, its per-unit flags kept there), the players' records and the result (in the shim), the commands, the items on the ground, and the step sync with Python (over a Unix socket with Linux system calls).
+* **Shared services.** Soft-float arithmetic keeps the simulation deterministic across machines (patched: count leading zeros and square roots as single instructions). The object system turns ids and handles into objects and checks types (patched: a memoised map-version check behind `GetPlayerId`, handle conversions once per unit). Storm is the game's allocator and string hashing.
+* **Paint.** With drawing off, it still builds a frame now and then (every 50 steps), with textures that have no pixels; the Direct3D device draws nothing.
+
+The addresses of every function above, and which `--game-cuts` bit acts on each, are in `shim/cuts.c`, `shim/pathing.c` and the [optimization log](reference/optimization-log.md).
+
+## How a step got cheaper
 
 | | CPU per game step |
 |---|---|
@@ -149,5 +246,6 @@ With both rounds on, a game's main thread is mostly the simulation itself. Pathi
 | native Linux (2026-10-11) | ~7.4 ms (the game) |
 | round 1 of the rewrites (2026-10-12) | the main thread 5.92 → 4.24 ms on a self-play replay |
 | round 2 (2026-10-24) | the main thread 7.72 → 6.29 ms on Echo Isles' longer games |
+| round 3 (2026-10-24: pathing in C where it is exact, the units pass's flags in the shim, the step sync over a Unix socket) | the main thread -6.6% (7.20 → 7.05 ms on a training game, 14.53 → 13.55 ms on a 40-minute one) |
 
 The settings differ from row to row (maps, numbers of units, how loaded the machine was), so compare each row with its own "before".
