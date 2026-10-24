@@ -991,17 +991,20 @@ class View:
         if opp is not None:
             _, _, gold, lumber, fu, fc, upkeep = opp[:7]
             out[:5] = gold / 1000.0, lumber / 1000.0, fu / 100.0, fc / 100.0, upkeep / 2.0
-        alive = rows[:, C_FLAGS] & DEAD == 0
+        live = rows[rows[:, C_FLAGS] & DEAD == 0]  # (the masks made once for both sides: ~5% of an actor's time before)
+        fl, owner = live[:, C_FLAGS], live[:, C_OWNER]
+        worker, struct, hero = fl & WORKER > 0, fl & STRUCTURE > 0, fl & HERO > 0
+        army = ~worker & ~struct
         for i, who in enumerate((self.player, 1 - self.player)):
-            r = rows[alive & (rows[:, C_OWNER] == who)]
-            fl = r[:, C_FLAGS]
-            worker, struct, hero = fl & WORKER > 0, fl & STRUCTURE > 0, fl & HERO > 0
-            army = ~worker & ~struct
+            m = owner == who
+            am, hm = army & m, hero & m
             a = 5 + 9 * i
-            out[a:a + 7] = (worker.sum() / 20.0, army.sum() / 30.0, struct.sum() / 30.0, hero.sum() / 3.0,
-                            r[hero, C_HLEVEL].sum() / 20.0, r[army, C_HP].sum() / 3000.0, r[army, C_MAXHP].sum() / 3000.0)
-            if army.any():
-                out[a + 7], out[a + 8] = frame_xy(r[army, C_X].mean(), r[army, C_Y].mean(), self.sign)
+            n_army = np.count_nonzero(am)
+            out[a:a + 7] = (np.count_nonzero(worker & m) / 20.0, n_army / 30.0, np.count_nonzero(struct & m) / 30.0,
+                            np.count_nonzero(hm) / 3.0, live[hm, C_HLEVEL].sum() / 20.0, live[am, C_HP].sum() / 3000.0,
+                            live[am, C_MAXHP].sum() / 3000.0)
+            if n_army:
+                out[a + 7], out[a + 8] = frame_xy(live[am, C_X].mean(), live[am, C_Y].mean(), self.sign)
         return out
 
     def remembered(self, rows: np.ndarray, t: int) -> tuple[np.ndarray, np.ndarray]:

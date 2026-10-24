@@ -223,7 +223,7 @@ class _ReplayStalled(Exception):
 def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.PathLike, fps: int = 40,
                   speed: float = 1.0, width: int | None = None, follow_player: int | None = None,
                   max_steps: int = 20000, name: str = "render", crf: int = 23, overlay=None, audio: bool = True,
-                  music_volume: int = 40, fit_all: bool = False) -> Path:
+                  music_volume: int = 40, fit_all: bool = False, nice: int = 0) -> Path:
     """Play `replay` (saved by GameInstance.save_replay with the same setup) and write an MP4 at
     `fps`, `speed` times real time. Each frame advances the game by exactly 1000*speed/fps ms,
     ideally a multiple of the engine's 25 ms turn (40 fps at 1x, 40 fps at 2x, 60 fps at 1.5x).
@@ -244,7 +244,7 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
     script = replay_script(setup, replay)
     in_game = overlay is not None and "function W3S_VisClear" in script
     zoom = "call SetCameraField(CAMERA_FIELD_FARZ, 10000.0" in script  # the camera can zoom out (op 84)
-    setup = GameSetup(**{**setup.__dict__, "warm_spare": False, "speed": 1.0, "launch_speed": 0.03, "nice": 0, "d3d_thread": True, "render_threads": None, "draw": True,
+    setup = GameSetup(**{**setup.__dict__, "warm_spare": False, "speed": 1.0, "launch_speed": 0.03, "nice": nice, "d3d_thread": True, "render_threads": None, "draw": True,
                          "launch_timeout": 600.0,  # loading on the slow clock
                          "window": (1024, 768), "audio": audio, "music_volume": music_volume,
                          "health_bars": in_game or setup.health_bars, "mouse_scroll": False})

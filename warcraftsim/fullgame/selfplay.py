@@ -412,10 +412,11 @@ class SharedRows:
             with open(path, "wb") as f:
                 f.truncate(4 * size)
         self.mm = np.memmap(path, dtype=np.float32, mode="r+", shape=(size,))
-        at = 0
+        flat = self.mm.view(np.ndarray)  # (plain arrays over the same pages: a memmap's every slice made another
+        at = 0                           # memmap, __array_finalize__ ~5% of an actor's time)
         for name, shape in layout:
             n = int(np.prod(shape))
-            setattr(self, name, self.mm[at:at + n].reshape(shape))
+            setattr(self, name, flat[at:at + n].reshape(shape))
             at += n
         self.spec = (path, rows, G, NO, d)
 
@@ -1249,6 +1250,8 @@ WORKER_TYPES = {"human": "hpea", "orc": "opeo", "undead": "uaco", "nightelf": "e
 # a target's hall or haunted gold mine is its expansion (the starting hall is no item): made only by one far from home
 # at a gold mine (trace.Production); a second hall at home had counted (16% of fgself-122's games built one)
 EXPANSION_ITEMS = {"htow", "ogre", "unpl", "etol", "ugol"}
+RENDER_NICE = 10  # (the run's video renderer: frame-stepped, so a lower priority only slows it; at 0 it took ~2 of the
+# 32 threads from the niced games, 6% of the machine)
 UNTAXED_PAST = 0.25  # (--win-balance: the share of games against past snapshots left untaxed, PFSP's)
 WORKER_IDS = {int.from_bytes(c.encode(), "big") for c in WORKER_TYPES.values()}
 _FOOD: dict[int, int] = {}
@@ -1386,7 +1389,11 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             return None
         from .play import unit_rows
         q = obs.players.get(self.side)
-        if q is None or site(unit_rows(obs, t), (q.start_x, q.start_y)) is None:
+        if q is None:
+            return None
+        if t - getattr(self, "_site_t", -fx.NATURAL_EVERY) >= fx.NATURAL_EVERY or t < getattr(self, "_site_t", 0):
+            self._site, self._site_t = site(unit_rows(obs, t), (q.start_x, q.start_y)), t  # (every few steps: the
+        if self._site is None:                                                         # rows made again each step)
             return None
         k = self.cls.get((int.from_bytes(hall.encode(), "big"), fx.UNIT if hall == "ugol" else fx.POINT))
         if k is None:
@@ -1740,7 +1747,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                      for s, r in zip(live, results) if r is not None}
             trace.append(trace_step(t, obs, mat, chose, value={s: r["value"] for s, r in zip(live, results) if r},
                                     entropy={s: r["entropy"] for s, r in zip(live, results) if r}))
-        for s, tc in teachers.items():  # (--teach: never carried out, the side's step just recorded labelled)
+        for s, tc in teachers.items() if t % 2 == 0 else ():  # (--teach: never carried out, the side's step just
+            # recorded labelled; every other step: a kind's lessons come every 20 steps at most, and each step's look
+            # at the rows had cost ~5% of an actor's time)
             if s in spans and trajs[s].steps:
                 av, oix = sts[s].get("avail"), bots[s].enc.order_index
                 can = (None if av is None else  # (the units the policy could train now: the army mix teaches only those)
@@ -1985,7 +1994,7 @@ def render_main(cfg: dict, render_q, stop) -> None:
             try:
                 out = render_replay(setup, Path(replay), run_dir / "videos" / f"{stem}.mp4", name=f"fgvid{cfg['slot']}",
                                     crf=28, overlay=FullGameOverlay(trace) if trace else None, fit_all=True,
-                                    max_steps=cfg["max_steps"] + 40)
+                                    max_steps=cfg["max_steps"] + 40, nice=RENDER_NICE)
                 with open(run_dir / "media.jsonl", "a") as f:
                     f.write(json.dumps({"time": time.time(), "kind": "video", "file": str(out.relative_to(run_dir)),
                                         **row}) + "\n")
