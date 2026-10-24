@@ -30,9 +30,9 @@ The training machine draws ~600 W at the wall under training (CPU ~140 W, GPU ~3
 | option | upfront | steps/s (× ours) | at the wall | electricity, 2 years | total, 2 years (at 30p) | steps/s per £1,000 |
 |---|---|---|---|---|---|---|
 | **Minisforum BD895i SE** board (Ryzen 9 8945HX, 16 cores) built up | £999 | ~1,890 (1.13×) | 133 W, measured | £613 | **£1,613** (£1,698) | **1,170** |
-| Minisforum BD795i SE board (Ryzen 9 7945HX, the same 16 Zen 4 cores) built up, at its sale price* | ~£969 | ~1,900-2,000 | ~133 W (as the BD895i SE) | £613 | ~£1,582 | ~1,200-1,270 |
-| **Minisforum MS-A2 (Ryzen 9 7945HX), 32 GB, 1 TB**, complete** | **£895** | ~1,900-2,000 | ~130 W | £599 | **£1,494** | **~1,270-1,340** |
-| Minisforum MS-A2 (8945HX), 32 GB, 1 TB, complete** | £1,015 | ~1,890 | ~130 W | £599 | £1,614 | 1,171 |
+| Minisforum BD795i SE board (Ryzen 9 7945HX: the same chip as the 8945HX, renamed) built up, at its sale price* | ~£969 | ~1,890 | ~133 W (as the BD895i SE) | £613 | ~£1,582 | ~1,195 |
+| **Minisforum MS-A2 (8945HX), 32 GB, 1 TB, complete**** | **£1,015** | ~1,890 | ~130 W | £599 | **£1,614** | **1,171** |
+| Minisforum MS-A2 (Ryzen 7 7745HX: 8 cores, PassMark ~32,800), 32 GB, 1 TB, complete** | £895 | ~1,210 | ~100 W (estimate) | ~£461 | ~£1,356 | ~890 |
 | Minisforum MS-A2 barebone with the newer Ryzen 9 9955HX (Zen 5), at its sale price*, + 32 GB | ~£1,326 | ~2,050 | ~140 W (estimate) | ~£645 | ~£1,971 | ~1,040 |
 | **Core Ultra 7 270K Plus** desktop at 125 W (assumed ~85% of its stock speed) | £1,023 | ~2,140 (1.29×) | ~194 W | £897 | **£1,920** (£2,045) | **1,116** |
 | used Ryzen 9 7950X in Eco mode (105 W), new AM5 parts | £1,017 | ~2,150 | ~213 W | £984 | £2,001 | 1,074 |
@@ -56,7 +56,7 @@ The first six are within ~15% of each other, inside the proxy's error: a benchma
 
 ## What to buy, or rent
 
-1. **A Minisforum MS-A2 with the Ryzen 9 7945HX, 32 GB and 1 TB, £895 complete.** The same 16 Zen 4 cores as the boards below, with its case, power supply and cooling, for less than building one up: ~£1,494 over two years for ~1,900-2,000 steps/s. (The 8945HX version: £1,015.)
+1. **A Minisforum MS-A2 with the Ryzen 9 8945HX, 32 GB and 1 TB, £1,015 complete.** The same 16 Zen 4 cores as the boards below, with its case, power supply and cooling, for about what building one up costs: ~£1,614 over two years for ~1,890 steps/s. (The £895 version has the Ryzen 7 7745HX: 8 cores, ~1,210 steps/s, worse value.)
 1. **A Minisforum BD895i SE (£389) or BD795i SE (£359 on sale; the 7945HX is the same chip a generation earlier) built into a small box, ~£970-999.** The board has its CPU soldered on; the £999 adds 32 GB of DDR5 SODIMM (£438, 2×16 GB), a 550 W power supply (£45), a case (£30), a 500 GB NVMe drive (£89) and a fan (£8, the heatsink assumed in the box): the memory is ~44% of it. A Mini-ITX board with a 16-core Ryzen 9 8945HX laptop chip, measured at ~133 W at the wall under full load and ~90% of a stock 7950X's Cinebench score at 100 W. Two years: ~£1,613 for ~1,890 steps/s, about our machine's games again. Quiet; it would sit on the LAN. The MS-A2 barebone (£519) is the same chip ready-made, at about the same total.
 2. **A Core Ultra 7 270K Plus (£310) desktop with a 125 W power limit, ~£1,023.** Two years: ~£1,920 for ~2,140 steps/s (the 85% at 125 W is an estimate). Without the limit ~2,520 steps/s for ~£2,560. AMD's alternative is a 9950X in Eco mode (~£2,206 for ~2,250).
 3. **Rent a Hetzner EX44 (£59 a month, no setup fee, unlimited traffic).** Two years: ~£1,424 for ~1,130 steps/s: ~1.45 times the cost of owning, before resale. Capacity at once, monthly cancellation, no heat or noise at home. From the UK a round trip is ~20-40 ms, so a rented machine would run inference itself, on its CPU, not call our 3090.
