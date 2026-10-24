@@ -1674,6 +1674,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     for s in advised:
         bots[s].repair_builds = True  # (a builder the advisor pulled away resumes with "repair")
     t, t0 = 0, time.time()
+    gw0 = getattr(g, "game_wall_total", 0.0)  # (the game's own share of the wall time: the System tab)
     own_rows: dict[int, np.ndarray] = {}  # each trained side's own units at its last recorded step (--unit-credit)
     # --shared-noise: this share of the games sample every policy side's units with one noise vector a step
     # (model._gumbel_argmax: the same marginals, coordinated choices); the episode row says which
@@ -1883,6 +1884,10 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     ep = {
         "time": time.time(), "worker": wid, "opponent": opp["name"], "outcome": outcome[side],
         "return": round(ret.get(side, outcome[side]), 4), "material_lead": round(lead[side], 3), "length": t, "game_time": obs.game_time, "wall_seconds": round(time.time() - t0, 1),
+        # a step's wall time: the game simulating (from the orders sent to the next observation), the rest waiting for
+        # its orders (the actor's Python, the inference round)
+        **({"step_game_ms": round(1000 * (g.game_wall_total - gw0) / t, 2),
+            "step_wall_ms": round(1000 * (time.time() - t0) / t, 2)} if t and hasattr(g, "game_wall_total") else {}),
         "races": races, "side": side, "race": races[side], "opponent_race": races[1 - side],
         "gold": prod.row(side, obs)["gold"], "opponent_gold": prod.row(1 - side, obs)["gold"],  # (this game's)
         "orders": bots[side].issued if side in bots else 0,
@@ -3963,6 +3968,8 @@ def main(argv: list[str] | None = None) -> int:
         native = NativeServer(cfg, server_conns, device, split)
         native.start()
     _pin(cfg, "learner")  # (after the others started: they would inherit it)
+    from .sysstat import Sampler  # the machine's time by part of the run (system.jsonl: the dashboard's System tab)
+    Sampler(run_dir / "system.jsonl").start()
     info.update(status="training", started=time.time())
     save_info()
     t0 = time.time()

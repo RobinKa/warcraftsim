@@ -55,7 +55,14 @@ main { padding:14px 18px 40px; overflow:auto; min-height:0; }
 .title h2 { margin:0; font-size:18px; }
 .title .desc { color:var(--muted); }
 .cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); grid-auto-flow:row dense; gap:10px; margin-bottom:14px; }
-.card.wide { grid-column:span 2; }  /* (a card with several numbers: the real game's, the rating's) */
+.card.wide { grid-column:span 2; }
+.bneck { margin-bottom:14px; }
+.bverdict { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin-bottom:10px; }
+.bgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(420px,100%),1fr)); gap:10px; }
+.bgrid .panel.wide { grid-column:1 / -1; }
+.blegend { display:flex; flex-wrap:wrap; gap:4px 14px; margin-top:8px; font-size:12px; color:var(--muted); }
+.blegend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; vertical-align:-1px; }
+.blegend b { color:var(--text); font-weight:600; }  /* (a card with several numbers: the real game's, the rating's) */
 .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
 .card .k { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.6px; }
 .card .v { font-size:20px; font-weight:600; margin-top:3px; font-variant-numeric:tabular-nums; }
@@ -1210,6 +1217,8 @@ const SECTIONS = [
   ["System", [
     ["c-sps", "Throughput", "trainer SPS · game time vs real time",
       [TR("SPS", "trainer SPS", "#e0a33a"), ["br", "game_x_realtime", "game × realtime", "#4cc38a"]], { ymin: 0 }],
+    ["c-step", "A game step's wall time", "ms per step: the game simulating, and waiting for its orders",
+      [EP("step_game_ms", "simulating", "#4cc38a"), EP("step_wait_ms", "waiting for orders", "#e0a33a")], { ymin: 0, only: "fullgame", hideEmpty: true }],
     ["c-perf", "Trainer time per epoch", "seconds", [TR("perf/rollout", "rollout", "#e0a33a"),
       TR("perf/eval_env", "waiting for games", "#e5534b"), TR("perf/eval_model", "model forward", "#539bf5"),
       TR("perf/train", "PPO update", "#4cc38a")], { ymin: 0 }],
@@ -1298,7 +1307,7 @@ function renderMain() {
               <div class="row"><button id="savenotes">save</button><span>Ctrl+Enter saves</span></div></div>
             <div class="panel"><h3>Lineage</h3><dl class="facts" id="lineage"></dl></div>
           </div>`],
-        ...SECTIONS.map(([name, charts]) => [slug(name), name, `<div class="grid">${charts.map(box).join("")}</div>`
+        ...SECTIONS.map(([name, charts]) => [slug(name), name, (name === "System" ? `<div id="bottleneck"></div>` : "") + `<div class="grid">${charts.map(box).join("")}</div>`
           + (name === "Production" ? `<div id="production"></div>` : ""), true]),
         ["leaguetable", "League table", `<div id="leaguetable"></div>`],
         ["matchups", "Matchups", `<div id="matchups"></div>`],
@@ -1319,6 +1328,7 @@ function renderMain() {
   renderLineage(d);
   renderCheckpoints(d);
   renderProduction(d);
+  renderBottleneck(d);
   renderMatchups(d);
   chartVisibility(d);
   const match = info.kind === "match";
@@ -1912,6 +1922,71 @@ function chartVisibility(d) {
 }
 
 // whole-game self-play: what the learner and its opponent make per game, by kind of game and race
+// ---- the System tab's bottleneck view (GET /api/runs/<run>: "system", dashboard/server.py _system) ----
+const PART_COLORS = { "games": "#4cc38a", "games (other threads)": "#2e7d5b", "Wine": "#39c5cf", "Xvfb": "#2a8f97",
+                      "actors": "#539bf5", "learner": "#b083f0", "video renderer": "#e0a33a", "outside the run": "#e5534b",
+                      "unattributed": "#8795a3", "idle": "#26303b" };
+function svgStackedBar(parts, total, W, H) {  // parts: [[label, value, color]]: one bar, proportions of total
+  let x = 0;
+  return `<svg width="100%" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="height:${H}px;display:block">` +
+    parts.map(([label, v, c]) => { const w = W * v / Math.max(total, 1e-9), r = `<rect x="${x}" y="0" width="${Math.max(0, w)}" height="${H}" fill="${c}"><title>${esc(label)}: ${v.toFixed(2)}</title></rect>`; x += w; return r; }).join("") + `</svg>`;
+}
+function legendHtml(parts, unit) {
+  return `<div class="blegend">${parts.map(([label, v, c]) => `<span><i style="background:${c}"></i>${esc(label)} <b>${v.toFixed(1)}</b>${unit}</span>`).join("")}</div>`;
+}
+function svgStackedArea(rows, keys, colors, W, H, ymax) {  // rows: [{x, values: {key: v}}]: areas stacked bottom up
+  if (rows.length < 2) return "";
+  const x0 = rows[0].x, x1 = rows[rows.length - 1].x, X = x => (x - x0) / Math.max(x1 - x0, 1e-9) * W, Y = y => H - y / ymax * H;
+  const base = rows.map(() => 0), out = [];
+  for (const k of keys) {
+    const top = rows.map((r, i) => base[i] + (r.values[k] || 0));
+    const pts = rows.map((r, i) => `${X(r.x).toFixed(1)},${Y(top[i]).toFixed(1)}`).concat(rows.slice().reverse().map((r, j) => {
+      const i = rows.length - 1 - j; return `${X(r.x).toFixed(1)},${Y(base[i]).toFixed(1)}`; }));
+    out.push(`<polygon points="${pts.join(" ")}" fill="${colors[k]}" opacity="0.9"><title>${esc(k)}</title></polygon>`);
+    top.forEach((v, i) => { base[i] = v; });
+  }
+  return `<svg width="100%" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="height:${H}px;display:block">${out.join("")}</svg>`;
+}
+function renderBottleneck(d) {
+  const el = document.getElementById("bottleneck"), S = d.system;
+  if (!el) return;
+  if (!S || !(S.cpu.length || S.cycle.length)) { el.innerHTML = ""; return; }
+  const mean = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : NaN;
+  const last = S.cpu[S.cpu.length - 1], recent = S.cpu.slice(-6);  // (the last ~3 minutes)
+  const parts = Object.keys(PART_COLORS).filter(k => k !== "idle");
+  const avg = k => mean(recent.map(r => (r.cores || {})[k] || 0));
+  const ncpu = last ? last.ncpu : 0, idle = mean(recent.map(r => r.idle || 0)), busy = ncpu - idle;
+  const cyc = S.cycle.slice(-20), wait = mean(cyc.map(c => c.wait || 0)), upd = mean(cyc.map(c => c.train + c.noise));
+  const waitShare = wait / Math.max(wait + upd, 1e-9);
+  const inf = S.infer.slice(-6), latIdle = mean(inf.map(r => r.lat_idle)), latUpd = mean(inf.map(r => r.lat_update)),
+        share = mean(inf.map(r => r.rounds_update_share)), lat = latIdle * (1 - share) + latUpd * share;
+  const eps = (d.recent_episodes || []).filter(e => e.step_game_ms != null && e.step_wall_ms != null && !e.host);  // (this machine's)
+  const game = mean(eps.map(e => e.step_game_ms)), stepWait = mean(eps.map(e => e.step_wall_ms - e.step_game_ms));
+  const gpu = mean(recent.map(r => r.gpu_util).filter(v => v != null));
+  let verdict;
+  if (ncpu && busy / ncpu > 0.9 && waitShare > 0.25) verdict = `<b>CPU-bound.</b> ${busy.toFixed(1)} of ${ncpu} threads busy; the learner waits ${(100 * waitShare).toFixed(0)}% of its cycle for games.`;
+  else if (waitShare < 0.15) verdict = `<b>Learner-bound.</b> It waits for games only ${(100 * waitShare).toFixed(0)}% of its cycle: the games wait for its queue.`;
+  else if (Number.isFinite(lat) && Number.isFinite(stepWait) && lat > 0.6 * stepWait) verdict = `<b>Inference-bound.</b> A game step waits ${stepWait.toFixed(1)} ms for its orders, ~${lat.toFixed(1)} ms of it for the network.`;
+  else verdict = `<b>No single limit.</b> CPU ${ncpu ? (100 * busy / ncpu).toFixed(0) : "–"}% busy, the learner waits ${(100 * waitShare).toFixed(0)}% of its cycle.`;
+  const now = parts.map(k => [k, avg(k), PART_COLORS[k]]).filter(p => p[1] > 0.005).concat([["idle", Math.max(0, idle), PART_COLORS.idle]]);
+  const area = S.cpu.map(r => ({ x: r.steps, values: { ...(r.cores || {}), idle: r.idle } }));
+  const stepParts = Number.isFinite(game) ? [["simulating", game, "#4cc38a"], ["inference round", Math.min(lat || 0, stepWait), "#b083f0"],
+                                             ["actor's Python and its turn", Math.max(0, stepWait - (lat || 0)), "#539bf5"]] : [];
+  const cyMax = Math.max(1, ...S.cycle.map(c => (c.wait || 0) + c.train + c.noise)), CW = 900, CH = 120, bw = CW / Math.max(1, S.cycle.length);
+  const bars = S.cycle.map((c, i) => { let y = CH; return [["waiting for games", c.wait || 0, "#3a4654"], ["update", c.train, "#4cc38a"], ["noise measurement", c.noise, "#e0a33a"]]
+    .map(([lab, v, col]) => { const h = v / cyMax * CH; y -= h; return `<rect x="${(i * bw).toFixed(1)}" y="${y.toFixed(1)}" width="${Math.max(1, bw - 1).toFixed(1)}" height="${h.toFixed(1)}" fill="${col}"><title>update ${c.epoch}: ${lab} ${v.toFixed(2)} s</title></rect>`; }).join(""); }).join("");
+  el.innerHTML = `<div class="bneck">
+    <div class="bverdict">${verdict} <span class="sub">GPU ${Number.isFinite(gpu) ? gpu.toFixed(0) + "%" : "–"} busy · inference rounds ${Number.isFinite(latIdle) ? latIdle.toFixed(1) : "–"} ms with the learner idle, ${Number.isFinite(latUpd) ? latUpd.toFixed(1) : "–"} ms during its updates</span></div>
+    <div class="bgrid">
+      <div class="panel"><h3>Where the CPU goes now <span class="sub">${ncpu} threads, the last ~3 minutes</span></h3>${svgStackedBar(now, ncpu, 600, 22)}${legendHtml(now, "")}</div>
+      <div class="panel"><h3>A game step's wall time <span class="sub">the last ${eps.length} games, ms</span></h3>${stepParts.length ? svgStackedBar(stepParts, stepParts.reduce((a, p) => a + p[1], 0), 600, 22) + legendHtml(stepParts, " ms") : `<div class="sub">recorded by games since 2026-10-24 15:00</div>`}</div>
+      <div class="panel wide"><h3>The CPU over the run <span class="sub">threads by part, stacked</span></h3>${svgStackedArea(area, [...parts, "idle"], PART_COLORS, 900, 140, ncpu || 32)}</div>
+      <div class="panel wide"><h3>The learner's last ${S.cycle.length} updates <span class="sub">seconds: waiting for games, the update, the noise measurement</span></h3>
+        <svg width="100%" viewBox="0 0 ${CW} ${CH}" preserveAspectRatio="none" style="height:${CH}px;display:block">${bars}</svg>
+        ${legendHtml([["waiting for games", wait, "#3a4654"], ["update", mean(cyc.map(c => c.train)), "#4cc38a"], ["noise measurement", mean(cyc.map(c => c.noise)), "#e0a33a"]], " s (mean of the last 20)")}</div>
+    </div></div>`;
+}
+
 function renderProduction(d) {
   const tab = document.getElementById("tab-production"), box = document.getElementById("production");
   if (tab) tab.style.display = d.production ? "" : "none";

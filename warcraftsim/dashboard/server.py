@@ -84,6 +84,11 @@ EPISODE_SERIES = {
        for pre, side in (("p", "prod"), ("o", "opp_prod"))
        for k in ("army", "workers", "heroes", "food_1min", "held", "lumber", "gold", "kills", "lost", "max_food")},
 }
+EPISODE_SERIES.update({  # a game step's wall time (the System tab): the game simulating, and waiting for its orders
+    "step_game_ms": lambda e: None if e.get("host") else e.get("step_game_ms"),  # (this machine's games: not another's)
+    "step_wait_ms": lambda e: (e["step_wall_ms"] - e["step_game_ms"])
+    if "step_wall_ms" in e and "step_game_ms" in e and not e.get("host") else None,
+})
 EPISODE_SERIES.update({  # whole-game self-play, over all its games (the Behaviour tab)
     "orders": lambda e: e.get("orders") if e.get("prod") is not None else None,
     "f_kills": lambda e: (e.get("prod") or {}).get("kills"),
@@ -1574,6 +1579,8 @@ class Dashboard:
         league = _read_json(d / "league.json")
         evals = self.cache.read(d / "evals.jsonl")
         fullgame = info.get("trainer") == "fullgame"
+        system = _system(self.cache.read(d / "system.jsonl"), self.cache.read(d / "inference.jsonl"), train_rows) \
+            if fullgame else None
         production = _production(episodes[-800:]) if fullgame else None
         if fullgame:
             info["trained_seconds"] = _trained_seconds(train_rows)
@@ -1601,7 +1608,29 @@ class Dashboard:
             "media": _latest_media(d, media),
             "evals": self.cache.read(d / "evals.jsonl"),
             "league": _read_json(d / "league.json"),
+            "system": system,
         }
+
+
+def _system(sysrows: list[dict], infer: list[dict], train: list[dict]) -> dict:
+    """The System tab's bottleneck view: the machine's cores by part of the run (fullgame/sysstat.py's system.jsonl), the
+    inference loop's rounds (inference.jsonl: with the learner idle and during its updates), and the learner's last
+    updates one by one (waiting for data, the update, the noise measurement), each placed on the steps' axis."""
+    sysrows, infer = sysrows[-3000:], infer[-4000:]
+    out: dict = {"cpu": [], "infer": [], "cycle": []}
+    if sysrows:
+        st = _interp_steps([r["time"] for r in sysrows], train)
+        out["cpu"] = _downsample([{**r, "steps": st[i]} for i, r in enumerate(sysrows)], 400)
+    keys = ("round_ms", "lat_idle", "lat_update", "gpu_idle", "gpu_update", "rounds_update_share", "busy", "rows_per_s")
+    rows = [r for r in infer if "time" in r and "round_ms" in r]
+    if rows:
+        st = _interp_steps([r["time"] for r in rows], train)
+        out["infer"] = _downsample([{"time": r["time"], "steps": st[i], **{k: r.get(k) for k in keys}}
+                                    for i, r in enumerate(rows)], 400)
+    out["cycle"] = [{"epoch": r.get("epoch"), "time": r.get("time"), "wait": r.get("perf/rollout"),
+                     "train": max(0.0, (r.get("perf/train") or 0.0) - (r.get("perf/noise") or 0.0)),
+                     "noise": r.get("perf/noise") or 0.0} for r in train[-150:] if "perf/train" in r]
+    return out
 
 
 def _latest_media(d: Path, media: list[dict], n: int = 40) -> list[dict]:
