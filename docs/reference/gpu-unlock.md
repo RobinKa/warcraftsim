@@ -28,7 +28,9 @@ Self-play's speed is set mostly by the games, which run on the CPU ([optimizatio
 
 ## The effect on training
 
-To be measured on `fgself-139` (resumed at 11:00 on 2026-10-24 with both), against its own speed before the reboot: ~1,700-1,800 agent steps per second.
+Little, as expected: self-play is set by the CPU. On `fgself-139` the learner's update took ~2.75 s with both against ~2.83 s before, and it went on waiting as long again for the games' steps; agent steps per second did not change (~1,430-1,490). The GPU's share of the work was small already: the matrix multiplies of a 5-layer network over 8,192 steps are fast either way, and much of an update is kernels too small to be compute-bound.
+
+What did raise the speed the same day was on the CPU: the actors' Python (a profile found ~25% of an actor's time in avoidable work) and the run's video renderer at a lower priority, then a 7th game an actor in the CPU this freed: ~1,494 to ~1,660 agent steps per second ([experiment log](experiment-log.md), "Throughput, 2026-10-24"). The unlock leaves room for a larger network, which the GPU would now carry at little cost in the games' speed.
 
 ## Setup on this machine
 
