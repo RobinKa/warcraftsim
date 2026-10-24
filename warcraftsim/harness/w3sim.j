@@ -141,6 +141,12 @@ globals
     boolean w3s_cobs = false  // the shim writes the players' records and checks the result (W3S_CSerInit)
     boolean w3s_ccheck = false  // (and the harness does both too, for the shim to compare)
     player w3s_np = null  // the neutral passive player (the mailbox's)
+    boolean w3s_ctok = false  // the shim writes W3S_Tok's tokens itself, from integers (W3S_CSerInit)
+    player w3s_tp = null  // the player of those calls (bj_PLAYER_NEUTRAL_VICTIM: asked for nothing else)
+    boolean w3s_capply = false  // the shim applies the agents' commands (W3S_ReadCommands)
+    boolean w3s_citems = false  // the shim does W3S_SerItem for the items on the ground (W3S_WriteObs)
+    boolean w3s_anyshadow = false  // an agent's player has been advised (W3S_ShadowAI): the commands applied here
+    boolean w3s_loaded = false  // (the map's script has run its first step since it was loaded)
     integer w3s_nseer = 0  // the seers, as a list: their players and their bits in the visibility mask
     player array w3s_seer_p
     integer array w3s_seer_bit
@@ -199,7 +205,11 @@ endglobals
 // thread), so a stray entry can land inside a record; the checksum lets the reader notice.
 function W3S_Tok takes integer v returns nothing
     set w3s_sum = w3s_sum + v
-    call Preload(I2S(v))
+    if w3s_ctok then
+        call GetPlayerTechMaxAllowed(w3s_tp, v)  // (the shim writes it: no string made)
+    else
+        call Preload(I2S(v))
+    endif
 endfunction
 
 function W3S_Rec takes string tag returns nothing
@@ -208,7 +218,11 @@ function W3S_Rec takes string tag returns nothing
 endfunction
 
 function W3S_End takes nothing returns nothing
-    call Preload(I2S(w3s_sum))
+    if w3s_ctok then
+        call GetPlayerTechMaxAllowed(w3s_tp, w3s_sum)
+    else
+        call Preload(I2S(w3s_sum))
+    endif
 endfunction
 
 function W3S_Ev takes integer kind, integer a, integer b, integer c returns nothing
@@ -628,6 +642,38 @@ function W3S_CSerInit takes nothing returns nothing
         endif
         set i = i + 1
     endloop
+    // the tokens written by the shim from integers (W3S_Tok, W3S_End: no I2S and Preload a token), and the agents'
+    // commands applied by it (W3S_ReadCommands: W3S_ApplyOne's natives in the same order); not when it only checks
+    set w3s_ctok = false
+    set w3s_capply = false
+    set w3s_citems = false
+    if w3s_cser == 1 then
+        if GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 29) == 1 then
+            set w3s_tp = Player(bj_PLAYER_NEUTRAL_VICTIM)
+            call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 30)
+            call GetPlayerTechMaxAllowed(w3s_np, 0 - GetHandleId(w3s_tp))
+            call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 31)
+            call GetPlayerTechMaxAllowed(w3s_np, 0 - (W3S_VERSION + 1))
+            set w3s_ctok = true
+            set w3s_citems = GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 43) == 1
+        endif
+        if W3S_CFG_PAIRS <= 1 and GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 32) == 1 then
+            if not w3s_loaded then  // (a load's command array is all zeros)
+                call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 37)
+            endif
+            set i = 0
+            loop
+                exitwhen i >= bj_MAX_PLAYERS
+                if w3s_agent[i] or w3s_scripted[i] then
+                    call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 33)
+                    call GetPlayerTechMaxAllowed(w3s_np, 0 - (i + 1))
+                endif
+                set i = i + 1
+            endloop
+            set w3s_capply = true
+        endif
+    endif
+    set w3s_loaded = true
     // the players' records and the result's check in the shim too (melee or decisive victory, no pairs, no resets by
     // script: the result's state then lives only there); 2: the harness does both as well, and the shim compares
     set w3s_cobs = false
@@ -728,26 +774,42 @@ function W3S_WriteObs takes nothing returns nothing
     endif
     call PreloadGenClear()
     call PreloadGenStart()
-    call Preload("V")
-    call W3S_Tok(W3S_VERSION)
-    call W3S_Rec("K") // the local camera's target (watching / videos: what the footage is centred on)
-    call W3S_Tok(R2I(GetCameraTargetPositionX()))
-    call W3S_Tok(R2I(GetCameraTargetPositionY()))
-    call W3S_End()
-    call W3S_Rec("T")
-    call W3S_Tok(w3s_seq)
-    call W3S_Tok(R2I(TimerGetElapsed(w3s_clock) * 1000.0 + 0.5))
-    if w3s_over then
-        call W3S_Tok(1)
+    if w3s_ctok then
+        // the "V", "K" and "T" records by the shim: the step, the time and the flags from here
+        call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 39)
+        call GetPlayerTechMaxAllowed(w3s_np, 0 - (w3s_seq + 1))
+        call GetPlayerTechMaxAllowed(w3s_np, 0 - (R2I(TimerGetElapsed(w3s_clock) * 1000.0 + 0.5) + 1))
+        if w3s_over then
+            set i = 2
+        else
+            set i = 1
+        endif
+        if w3s_full then
+            set i = i + 2
+        endif
+        call GetPlayerTechMaxAllowed(w3s_np, 0 - i)
     else
-        call W3S_Tok(0)
+        call Preload("V")
+        call W3S_Tok(W3S_VERSION)
+        call W3S_Rec("K") // the local camera's target (watching / videos: what the footage is centred on)
+        call W3S_Tok(R2I(GetCameraTargetPositionX()))
+        call W3S_Tok(R2I(GetCameraTargetPositionY()))
+        call W3S_End()
+        call W3S_Rec("T")
+        call W3S_Tok(w3s_seq)
+        call W3S_Tok(R2I(TimerGetElapsed(w3s_clock) * 1000.0 + 0.5))
+        if w3s_over then
+            call W3S_Tok(1)
+        else
+            call W3S_Tok(0)
+        endif
+        if w3s_full then
+            call W3S_Tok(1)
+        else
+            call W3S_Tok(0)
+        endif
+        call W3S_End()
     endif
-    if w3s_full then
-        call W3S_Tok(1)
-    else
-        call W3S_Tok(0)
-    endif
-    call W3S_End()
     call W3S_SerPlayers()
     if w3s_first then
         call W3S_SerOrders()
@@ -770,6 +832,9 @@ function W3S_WriteObs takes nothing returns nothing
             call TriggerEvaluate(w3s_ser_trig)
             exitwhen w3s_cursor == i // a crashed chunk must not hang the game
         endloop
+    endif
+    if w3s_citems then
+        call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 44)  // (the next enumeration's items: the shim's W3S_SerItem)
     endif
     call EnumItemsInRect(bj_mapInitialPlayableArea, null, function W3S_SerItem)  // items lying on the ground
     set w3s_full = false
@@ -823,6 +888,9 @@ function W3S_WriteObs takes nothing returns nothing
         set i = i + 1
     endloop
     set w3s_ncres = 0
+    if w3s_capply then
+        call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 36)  // (of the commands the shim applied)
+    endif
     call Preload("X")
     call PreloadGenEnd("w3sim\\obs.txt")
 endfunction
@@ -1283,6 +1351,10 @@ function W3S_StartAI takes integer i returns boolean
     endif
     set w3s_agent[i] = false
     set w3s_shadow[i] = false
+    if w3s_capply and not w3s_scripted[i] then  // (no longer the agents' commands' player)
+        call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 34)
+        call GetPlayerTechMaxAllowed(w3s_np, 0 - (i + 1))
+    endif
     if w3s_cobs then  // (the shim writes the players' records)
         call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 20)
         call GetPlayerTechMaxAllowed(w3s_np, 0 - (i + 1))
@@ -1301,6 +1373,7 @@ function W3S_ShadowAI takes integer i returns boolean
         return false
     endif
     set w3s_shadow[i] = true
+    set w3s_anyshadow = true
     call W3S_MeleeAI(Player(i))
     return true
 endfunction
@@ -1643,18 +1716,33 @@ endfunction
 
 function W3S_ReadCommands takes nothing returns nothing
     local integer i = 0
+    local integer n
     set w3s_ncmd = W3S_Mbox(-1)  // the step sync (w3shim)
     if w3s_ncmd > 8000 then
         set w3s_ncmd = 8000
     endif
+    set n = w3s_ncmd
+    set w3s_quiet = true  // (the orders given now are the agents')
+    call W3S_BuyPending()
+    if w3s_capply then
+        // the shim applies them all (-1), or says how many integers W3S_ApplyOne may read here (past n: what the
+        // array holds there, which the steps the shim applied did not write)
+        if not w3s_anyshadow and w3s_nbuy == 0 then
+            set n = GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 35)
+        else
+            set n = GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 38)
+        endif
+        if n < 0 then
+            set w3s_quiet = false
+            return
+        endif
+    endif
     loop
-        exitwhen i >= w3s_ncmd
+        exitwhen i >= n
         set w3s_cmd[i] = W3S_Mbox(i + 1)
         set i = i + 1
     endloop
     set w3s_cursor = 0
-    set w3s_quiet = true  // (the orders given now are the agents')
-    call W3S_BuyPending()
     loop
         exitwhen w3s_cursor >= w3s_ncmd
         set i = w3s_cursor

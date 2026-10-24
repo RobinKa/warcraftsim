@@ -745,6 +745,303 @@ static void cobs_mismatch(const char *what, int a, int b) {
         shim_log("players/result in C: MISMATCH %s: the shim's %d, the harness's %d", what, a, b);
 }
 
+/* W3SIM_CUTS & 2147483648 (round 4): the agents' commands applied here (the harness's W3S_ReadCommands asks MBOX - 35
+ * after its W3S_BuyPending, when no purchase is pending and no agent's player is advised): W3S_ApplyOne's natives
+ * that act or decide, in its order, for the ops 1 (point order), 2 (target order), 3 (immediate order), 5 (hero
+ * skill), 6 (an order on a destructable), 87 (tax) and 90 (resources). A step with any other op (a build: its ring
+ * of tries uses the VM's real arithmetic), or with a command cut short by the step's end, is the harness's, as
+ * before; it then reads as many of the integers as W3S_ApplyOne reads (the mailbox returns, past this step's count,
+ * what the harness's array would hold: the last value at that place since the map was loaded, MBOX - 37). The
+ * getters W3S_ApplyOne calls only to look (W3S_Unit for the tax ops, the second owner lookup of the "advised"
+ * test, I2R) are pure; LoadUnitHandle, GetOwningPlayer, GetPlayerId, GetHeroSkillPoints and GetPlayerState are
+ * called as there, and every command's result is kept for the "C" records (MBOX - 36), which the harness wrote.
+ *   MBOX - 32                     on? (1); forgets the agents' and scripted players
+ *   MBOX - 33 / 34, -(player + 1) a player whose units take commands (W3S_Owned) / not any more (W3S_StartAI)
+ *   MBOX - 35                     apply the step's commands: -1 done, else the number of integers to read
+ *   MBOX - 36                     the "C" records of the last commands applied here
+ *   MBOX - 37                     a load's first step: the harness's command array is all zeros
+ * W3SIM_CUTS & 1073741824: MBOX - 29 (on? 1), then MBOX - 30, -(handle id): the player of W3S_Tok's calls (obs.c), and
+ * MBOX - 31, -(W3S_VERSION + 1); MBOX - 39, then -(seq + 1), -(ms + 1), -(1 + over + 2 full): the "V", "K" and "T"
+ * records written here (the camera's target from GetCameraTargetPositionX / Y and R2I, as the harness's). */
+enum {
+    LoadUnitHandle_, LoadDestructableHandle_, IssuePointOrderById_, IssueTargetOrderById_, IssueImmediateOrderById_,
+    SelectHeroSkill_, SetPlayerState_, I2R_, N_CMD_NATIVES
+};
+static const struct {
+    const char *name, *sig;
+} g_want_cmd[N_CMD_NATIVES] = {
+    {"LoadUnitHandle", "(Hhashtable;II)Hunit;"}, {"LoadDestructableHandle", "(Hhashtable;II)Hdestructable;"},
+    {"IssuePointOrderById", "(Hunit;IRR)B"}, {"IssueTargetOrderById", "(Hunit;IHwidget;)B"},
+    {"IssueImmediateOrderById", "(Hunit;I)B"}, {"SelectHeroSkill", "(Hunit;I)V"},
+    {"SetPlayerState", "(Hplayer;Hplayerstate;I)V"}, {"I2R", "(I)R"},
+};
+static void *g_cfn[N_CMD_NATIVES];
+enum { GetCameraTargetPositionX_, GetCameraTargetPositionY_, R2I_, N_TOK_NATIVES };
+static const struct {
+    const char *name, *sig;
+} g_want_tok[N_TOK_NATIVES] = {
+    {"GetCameraTargetPositionX", "()R"}, {"GetCameraTargetPositionY", "()R"}, {"R2I", "(R)I"},
+};
+static void *g_tfn[N_TOK_NATIVES];
+enum { IsItemOwned_, IsItemVisible_, GetItemX_, GetItemY_, IsVisibleToPlayer_, GetItemType_, N_ITEM_NATIVES };
+static const struct {
+    const char *name, *sig;
+} g_want_item[N_ITEM_NATIVES] = {
+    {"IsItemOwned", "(Hitem;)B"}, {"IsItemVisible", "(Hitem;)B"}, {"GetItemX", "(Hitem;)R"}, {"GetItemY", "(Hitem;)R"},
+    {"IsVisibleToPlayer", "(RRHplayer;)B"}, {"GetItemType", "(Hitem;)Hitemtype;"},
+};
+static void *g_ifn[N_ITEM_NATIVES];
+static int g_citems_ok, g_citems, g_items_arm, g_in_items;
+static long g_items_n;
+static int g_ctok_ok, g_version, g_vkt[2];
+static int g_capply_ok; /* every command native found */
+static int g_capply;    /* the harness asked MBOX - 32 this game */
+static int g_own[MAX_PLAYERS];
+static int *g_cres, g_ncres, g_cres_cap;
+static long g_ca_steps, g_ca_cmds, g_ca_declined;
+
+static int c1(int k, int a) {
+    return ((N1)g_cfn[k])(a);
+}
+static int c2(int k, int a, int b) {
+    return ((N2)g_cfn[k])(a, b);
+}
+static int c3(int k, int a, int b, int c) {
+    return ((N3)g_cfn[k])(a, b, c);
+}
+
+/* W3S_ApplyOne's n: how many integers an op takes (1000000: unknown, the step's last) */
+static int jass_len(int op) {
+    switch (op) {
+    case 80: case 97: case 98: case 99: return 1;
+    case 93: case 94: case 95: case 84: return 2;
+    case 3: case 5: case 9: case 96: return 3;
+    case 2: case 6: case 8: case 87: case 88: case 90: return 4;
+    case 1: case 4: case 91: case 83: return 5;
+    case 89: case 81: return 6;
+    case 7: return 7;
+    case 92: return 8;
+    case 82: return 9;
+    default: return 1000000;
+    }
+}
+
+static int owned(int u) { /* W3S_Owned */
+    if (!u)
+        return 0;
+    int p = owner_id(u);
+    return p >= 0 && p < MAX_PLAYERS && g_own[p];
+}
+
+/* how many integers W3S_ApplyOne may read this step (it reads w3s_cmd[at + 1] for every op, its own n, and an
+ * advised player's orders up to w3s_cmd[at + 4]); reading more than it does is harmless: past the step's count
+ * the mailbox answers what the array holds there */
+static int cmd_need(int *mine) {
+    const int *m = sync_mbox(); /* w3s_cmd[i] is m[i + 1] */
+    int n = m[0], need = n;
+    *mine = 1;
+    for (int at = 0; at < n;) {
+        int op = m[at + 1], len = jass_len(op);
+        if (at + (len > 5 ? len : 5) > need)
+            need = at + (len > 5 ? len : 5);
+        if (len == 1000000 || at + len > n || !(op == 1 || op == 2 || op == 3 || op == 5 || op == 6 || op == 87 || op == 90))
+            *mine = 0;
+        if (len == 1000000)
+            break;
+        at += len;
+    }
+    return need < 8000 ? need : 8000;
+}
+
+static int cmd_apply(void) {
+    const int *m = sync_mbox();
+    int n = m[0], mine, need = cmd_need(&mine);
+    if (!mine) {
+        g_ca_declined++;
+        return need;
+    }
+    g_ca_steps++;
+    for (int at = 0; at < n;) {
+        const int *c = m + at + 1;
+        int op = c[0], ok = 0, len = jass_len(op);
+        if (op == 87 || op == 90) { /* (the player's index; W3S_Real is the identity without pairs) */
+            int pl = n1(Player, c[1]);
+            for (int k = 0; k < 2; k++) {
+                int v = c[2 + k];
+                if (op == 87) { /* what it has now less the tax (c - 65536), at least 0 (IMaxBJ) */
+                    int d = (int)((unsigned)n2(GetPlayerState, pl, 1 + k) - ((unsigned)v - 65536u));
+                    v = 0 > d ? 0 : d;
+                }
+                ((N3)g_cfn[SetPlayerState_])(pl, 1 + k, v);
+            }
+            ok = 1;
+        } else {
+            int u = c3(LoadUnitHandle_, g_ht, c[1], 0);
+            if (owned(u)) {
+                if (op == 1) {
+                    int x = c1(I2R_, (int)((unsigned)c[3] - 65536u)), y = c1(I2R_, (int)((unsigned)c[4] - 65536u));
+                    ok = ((N4)g_cfn[IssuePointOrderById_])(u, c[2], (int)&x, (int)&y) != 0;
+                } else if (op == 2)
+                    ok = c3(IssueTargetOrderById_, u, c[2], c3(LoadUnitHandle_, g_ht, c[3], 0)) != 0;
+                else if (op == 3)
+                    ok = c2(IssueImmediateOrderById_, u, c[2]) != 0;
+                else if (op == 6)
+                    ok = c3(IssueTargetOrderById_, u, c[2], c3(LoadDestructableHandle_, g_ht, c[3], 0)) != 0;
+                else if (n1(GetHeroSkillPoints, u) > 0) { /* 5 */
+                    c2(SelectHeroSkill_, u, c[2]);
+                    ok = 1;
+                }
+            }
+        }
+        if (g_ncres == g_cres_cap) {
+            int cap = g_cres_cap ? g_cres_cap * 2 : 256;
+            int *b = realloc(g_cres, cap * sizeof *b);
+            if (b) {
+                g_cres = b;
+                g_cres_cap = cap;
+            }
+        }
+        if (g_ncres < g_cres_cap)
+            g_cres[g_ncres++] = ok;
+        g_ca_cmds++;
+        at += len;
+    }
+    return -1;
+}
+
+static void vkt_records(int flags) { /* W3S_WriteObs's first records */
+    typedef int(__cdecl * N0)(void);
+    char b[160];
+    int len = 0;
+    uint32_t sum = 0;
+    int x = ((N0)g_tfn[GetCameraTargetPositionX_])(), y = ((N0)g_tfn[GetCameraTargetPositionY_])();
+    x = ((N1)g_tfn[R2I_])((int)&x); /* (a real argument: its address) */
+    y = ((N1)g_tfn[R2I_])((int)&y);
+    memcpy(b, "V\n", 2);
+    len = 2;
+    pbuf_tok(b, &len, sizeof b, g_version, NULL);
+    memcpy(b + len, "K\n", 2);
+    len += 2;
+    pbuf_tok(b, &len, sizeof b, x, &sum);
+    pbuf_tok(b, &len, sizeof b, y, &sum);
+    pbuf_tok(b, &len, sizeof b, (int)sum, NULL);
+    memcpy(b + len, "T\n", 2);
+    len += 2;
+    sum = 0;
+    pbuf_tok(b, &len, sizeof b, g_vkt[0], &sum);
+    pbuf_tok(b, &len, sizeof b, g_vkt[1], &sum);
+    pbuf_tok(b, &len, sizeof b, flags & 1, &sum);
+    pbuf_tok(b, &len, sizeof b, (flags >> 1) & 1, &sum);
+    pbuf_tok(b, &len, sizeof b, (int)sum, NULL);
+    obs_bytes(b, len);
+}
+
+static void cmd_records(void) { /* W3S_WriteObs's "C" records: the result, its sum */
+    for (int i = 0; i < g_ncres; i++)
+        obs_bytes(g_cres[i] ? "C\n1\n1\n" : "C\n0\n0\n", 6);
+    g_ncres = 0;
+}
+
+/* W3SIM_CUTS & 8589934592 (round 4, with 1073741824): the items on the ground (W3S_WriteObs's EnumItemsInRect over the
+ * whole map) without a JASS thread per item. The native and its walk run as before; its per-item callback (0x49b200:
+ * the widget's type, its mask, the filter, the enum item's handle pushed and popped) runs here with the shim's
+ * W3S_SerItem in place of the JASS function: the same natives in its order (IsItemOwned, IsItemVisible, GetWidgetLife,
+ * GetItemX / Y, IsVisibleToPlayer per seer, SaveInteger of the step (from the "T" record's call) under key 9,
+ * GetItemTypeId, R2I, GetItemType), the "G" record written here. The harness arms it (MBOX - 44, after MBOX - 43: on?)
+ * for its next EnumItemsInRect only. */
+#define VA_ENUMITEMS 0x48ff80 /* cdecl EnumItemsInRect(rect, filter, code) native */
+#define VA_ITEM_CB 0x49b200   /* cdecl int cb(CWidget *, ctx {code, filter, jass state, code object}) */
+typedef void(__cdecl *EnumItemsFn)(int, int, int);
+typedef int(__cdecl *ItemCbFn)(BYTE *, DWORD *);
+static EnumItemsFn EnumItems_orig;
+static ItemCbFn ItemCb_orig;
+
+static void ser_item(int h) { /* W3S_SerItem */
+    if (((N1)g_ifn[IsItemOwned_])(h) || !((N1)g_ifn[IsItemVisible_])(h) || !(r1(GetWidgetLife, h) > 0.405f))
+        return;
+    int x = ((N1)g_ifn[GetItemX_])(h), y = ((N1)g_ifn[GetItemY_])(h), bits = 0;
+    for (int k = 0; k < g_nseer; k++)
+        if (((N3)g_ifn[IsVisibleToPlayer_])((int)&x, (int)&y, g_seer_player[k]))
+            bits += g_seer_bit[k];
+    ((N4)g_fn[SaveInteger])(g_ht, h, 9, g_vkt[0]);
+    if (!bits)
+        return;
+    char b[96];
+    int len = 2;
+    uint32_t sum = 0;
+    memcpy(b, "G\n", 2);
+    pbuf_tok(b, &len, sizeof b, n1(GetItemTypeId, h), &sum);
+    pbuf_tok(b, &len, sizeof b, ((N1)g_tfn[R2I_])((int)&x), &sum);
+    pbuf_tok(b, &len, sizeof b, ((N1)g_tfn[R2I_])((int)&y), &sum);
+    pbuf_tok(b, &len, sizeof b, bits, &sum);
+    pbuf_tok(b, &len, sizeof b, ((N1)g_ifn[GetItemType_])(h) == 2 /* ITEM_TYPE_POWERUP */, &sum);
+    pbuf_tok(b, &len, sizeof b, (int)sum, NULL);
+    obs_bytes(b, len);
+}
+
+static void __cdecl EnumItems_hook(int rect, int filter, int code) {
+    if (g_items_arm) {
+        g_items_arm = 0;
+        g_in_items = 1;
+        EnumItems_orig(rect, filter, code);
+        g_in_items = 0;
+        return;
+    }
+    EnumItems_orig(rect, filter, code);
+}
+
+static int __cdecl ItemCb_hook(BYTE *w, DWORD *ctx) {
+    if (!g_in_items || !w || !ctx)
+        return ItemCb_orig(w, ctx);
+    typedef int(__fastcall * VGet)(BYTE *, void *);
+    typedef int(__cdecl * TypeFn)(void);
+    typedef int(__fastcall * MaskFn)(BYTE *, void *);
+    if (((VGet)(*(void ***)w)[0x1c / 4])(w, NULL) != ((TypeFn)VA(0x6c5350))())
+        return 1;
+    if ((*(DWORD *)(w + 0x198) & *(DWORD *)(w + 0x194)) != 0xffffffffu && ((MaskFn)VA(0x7fc7e0))(w + 0x194, NULL))
+        return 1;
+    void *st = (void *)(size_t)ctx[2];
+    ((EnumPushFn)VA(VA_ENUM_PUSH))(st, NULL, 0xe, w, 0);
+    BYTE *flt = (BYTE *)(size_t)ctx[1];
+    if ((!flt || ((VGet)(*(void ***)flt)[0x78 / 4])(flt, NULL)) && ctx[3]) {
+        ((EnumPushFn)VA(VA_ENUM_PUSH))(st, NULL, 0xd, w, 0);
+        int h = ((EnumTopFn)VA(VA_ENUM_TOP))(st, NULL, 0xd);
+        if (h) {
+            g_items_n++;
+            ser_item(h);
+        }
+        ((EnumPopFn)VA(VA_ENUM_POP))(st, NULL, 0xd, 1);
+    }
+    ((EnumPopFn)VA(VA_ENUM_POP))(st, NULL, 0xe, 1);
+    return 1;
+}
+
+static void install_items(void) {
+    BYTE *f = VA(VA_ENUMITEMS), *cb = VA(VA_ITEM_CB);
+    /* the callback as read: its checks' calls, the pushes and pops, the code's run */
+    static const struct {
+        int at;
+        DWORD to;
+    } calls[] = {{0x26, 0x6c5350}, {0x47, 0x7fc7e0}, {0x58, 0x4ebf00}, {0x7b, 0x4ebf00}, {0x98, 0x4e4720}, {0xb4, 0x4ebce0}, {0xc0, 0x4ebce0}};
+    int ok = f[0] == 0x55 && f[1] == 0x8b && f[2] == 0xec && cb[0] == 0x55 && cb[1] == 0x8b && cb[2] == 0xec &&
+             cb[0x21] == 0xff && cb[0x22] == 0x50 && cb[0x23] == 0x1c && cb[0x66] == 0xff && cb[0x67] == 0x50 && cb[0x68] == 0x78;
+    for (unsigned k = 0; ok && k < sizeof calls / sizeof calls[0]; k++)
+        ok = cb[calls[k].at] == 0xe8 && cb + calls[k].at + 5 + *(int32_t *)(cb + calls[k].at + 1) == (BYTE *)VA(calls[k].to);
+    if (!ok) {
+        shim_log("items: unexpected code, not installed");
+        return;
+    }
+    MH_STATUS s = MH_Initialize();
+    if (s != MH_OK && s != MH_ERROR_ALREADY_INITIALIZED)
+        return;
+    if (MH_CreateHook(f, (void *)EnumItems_hook, (void **)&EnumItems_orig) != MH_OK || MH_EnableHook(f) != MH_OK ||
+        MH_CreateHook(cb, (void *)ItemCb_hook, (void **)&ItemCb_orig) != MH_OK || MH_EnableHook(cb) != MH_OK) {
+        shim_log("items: hook failed");
+        return;
+    }
+    g_citems = 1;
+}
+
 /* W3SIM_PROFILE: where a step's time goes (mean ms per step, every 200 steps): GO -> the pass begins
  * (the game), the pass, -> the observation ends (the result, the players, the rest), -> the sync. */
 static int g_prof;
@@ -781,6 +1078,7 @@ int units_call(int key, int mbox, int *result) {
         g_npid = 0;
         g_cur.u = 0;
         g_cobs = g_cobs_over = g_jres_n = 0;
+        g_obs_raw_player = g_capply = g_ncres = 0;
         kt_clear();
         memset(g_cobs_agent, 0, sizeof g_cobs_agent);
         memset(g_cobs_result, 0, sizeof g_cobs_result);
@@ -810,6 +1108,18 @@ int units_call(int key, int mbox, int *result) {
         else if (reg == 19 || reg == 20) {
             if (v >= 1 && v <= MAX_PLAYERS)
                 g_cobs_agent[v - 1] = reg == 19;
+        } else if (reg == 30) {
+            g_obs_raw_player = v;
+        } else if (reg == 31) {
+            g_version = v - 1;
+        } else if (reg == 39 || reg == 40) { /* the step, the time */
+            g_vkt[reg - 39] = v - 1;
+            g_pending = reg + 1;
+        } else if (reg == 41) {
+            vkt_records(v - 1);
+        } else if (reg == 33 || reg == 34) {
+            if (v >= 1 && v <= MAX_PLAYERS)
+                g_own[v - 1] = reg == 33;
         } else if (reg == 28) {
             g_cobs_victory = v - 1;
             g_cobs = g_paired || (g_cobs_victory != 0 && g_cobs_victory != 3) ? 0 : (cuts_flags() & 262144) ? (g_cobs_check_env ? 2 : 1) : 0;
@@ -936,7 +1246,61 @@ int units_call(int key, int mbox, int *result) {
         g_nseer = 0;
         return 1;
     }
+    if (key == mbox - 29) { /* (W3SIM_CUTS & 1073741824) W3S_Tok's integers here */
+        *result = (cuts_flags() & 1073741824) && g_ok == 1 && g_ctok_ok && obs_capture_on() ? 1 : 0;
+        if (*result)
+            shim_log("tokens: W3S_Tok's integers written by the shim (W3SIM_CUTS & 1073741824)");
+        return 1;
+    }
+    if (key == mbox - 32) { /* (W3SIM_CUTS & 2147483648) the agents' commands applied here */
+        g_capply = (cuts_flags() & 2147483648LL) && g_ok == 1 && g_capply_ok && !g_paired && obs_capture_on();
+        memset(g_own, 0, sizeof g_own);
+        g_ncres = 0;
+        *result = g_capply;
+        if (g_capply)
+            shim_log("commands: applied by the shim (W3SIM_CUTS & 2147483648)");
+        return 1;
+    }
+    if (key == mbox - 30 || key == mbox - 31 || key == mbox - 39 || key == mbox - 33 || key == mbox - 34) {
+        g_pending = mbox - key;
+        return 1;
+    }
+    if (g_capply && key == mbox - 35) {
+        *result = cmd_apply();
+        return 1;
+    }
+    if (g_capply && key == mbox - 38) { /* (the harness applies them: how many integers to read) */
+        int mine;
+        *result = cmd_need(&mine);
+        g_ca_declined++;
+        return 1;
+    }
+    if (key == mbox - 43) { /* (W3SIM_CUTS & 8589934592) the items on the ground here */
+        *result = g_citems && g_ok == 1 && g_ctok_ok && obs_capture_on() ? 1 : 0;
+        if (*result)
+            shim_log("items: W3S_SerItem in the shim (W3SIM_CUTS & 8589934592)");
+        return 1;
+    }
+    if (key == mbox - 44) {
+        g_items_arm = g_citems;
+        return 1;
+    }
+    if (g_capply && key == mbox - 36) {
+        cmd_records();
+        return 1;
+    }
+    if (g_capply && key == mbox - 37) { /* (the mailbox past a step's count: what the harness's array holds) */
+        int *m = sync_mbox();
+        memset(m + 1, 0, 8000 * sizeof *m);
+        return 1;
+    }
     return 0;
+}
+
+void units_cmd_report(void) {
+    if (g_ca_steps || g_ca_declined)
+        shim_log("commands/s: steps applied here %ld (%ld commands), the harness's %ld", g_ca_steps, g_ca_cmds, g_ca_declined);
+    g_ca_steps = g_ca_cmds = g_ca_declined = 0;
 }
 
 void units_install(void) {
@@ -958,7 +1322,25 @@ void units_install(void) {
                 g_fn[k] = (void *)fn;
                 found++;
             }
+        for (int k = 0; k < N_CMD_NATIVES; k++)
+            if (!g_cfn[k] && strcmp((const char *)name, g_want_cmd[k].name) == 0 && strcmp((const char *)sig, g_want_cmd[k].sig) == 0) {
+                g_cfn[k] = (void *)fn;
+                g_capply_ok++;
+            }
+        for (int k = 0; k < N_TOK_NATIVES; k++)
+            if (!g_tfn[k] && strcmp((const char *)name, g_want_tok[k].name) == 0 && strcmp((const char *)sig, g_want_tok[k].sig) == 0) {
+                g_tfn[k] = (void *)fn;
+                g_ctok_ok++;
+            }
+        for (int k = 0; k < N_ITEM_NATIVES; k++)
+            if (!g_ifn[k] && strcmp((const char *)name, g_want_item[k].name) == 0 && strcmp((const char *)sig, g_want_item[k].sig) == 0) {
+                g_ifn[k] = (void *)fn;
+                g_citems_ok++;
+            }
     }
+    g_ctok_ok = g_ctok_ok == N_TOK_NATIVES;
+    g_citems_ok = g_citems_ok == N_ITEM_NATIVES;
+    g_capply_ok = g_capply_ok == N_CMD_NATIVES;
     char buf[16];
     int mode = GetEnvironmentVariableA("W3SIM_UNITS", buf, sizeof buf) ? atoi(buf) : 1;
     g_prof = GetEnvironmentVariableA("W3SIM_PROFILE", buf, sizeof buf) && buf[0] >= '1';
@@ -973,6 +1355,8 @@ void units_install(void) {
             install_fg_pass();
         if (cuts & 8388608)
             install_kt();
+        if ((cuts_flags() & 8589934592LL) && g_citems_ok && g_ctok_ok)
+            install_items();
     }
     if (g_ok)
         shim_log("unit records: %s (%d natives)", g_ok == 2 ? "checked against the harness's" : "written by the shim", found);
