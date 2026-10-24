@@ -15,7 +15,7 @@ from pathlib import Path
 
 TICK = os.sysconf("SC_CLK_TCK")
 PARTS = ("games", "games (other threads)", "Wine", "Xvfb", "actors", "learner", "video renderer", "outside the run",
-         "unattributed")  # (the last: processes that ended within the interval, interrupts: busy, but no thread's)
+         "ended processes")  # (the last: busy, but no living process's: processes that ended within the interval)
 
 
 def _tree(root: int) -> tuple[set[int], dict[int, int]]:
@@ -40,20 +40,32 @@ def _tree(root: int) -> tuple[set[int], dict[int, int]]:
     return out, parent
 
 
-def _threads() -> dict[tuple[int, int], float]:
-    """Every thread's CPU seconds (user + kernel), by (process, thread)."""
+def _procs() -> dict[tuple[int, str], float]:
+    """Every process's CPU seconds (user + kernel, its ended threads' too), by (process, its start)."""
     out = {}
     for p in os.listdir("/proc"):
         if not p.isdigit():
             continue
         try:
-            for t in os.listdir(f"/proc/{p}/task"):
-                st = open(f"/proc/{p}/task/{t}/stat").read()
-                f = st[st.rindex(")") + 2:].split()
-                out[(int(p), int(t))] = (int(f[11]) + int(f[12])) / TICK
+            st = open(f"/proc/{p}/stat").read()
         except OSError:
             continue
+        f = st[st.rindex(")") + 2:].split()
+        out[(int(p), f[19])] = (int(f[11]) + int(f[12])) / TICK
     return out
+
+
+def _main_thread(pid: int) -> float:
+    """A process's busiest thread's CPU seconds (a game's: its main thread, the simulation)."""
+    best = 0.0
+    try:
+        for t in os.listdir(f"/proc/{pid}/task"):
+            st = open(f"/proc/{pid}/task/{t}/stat").read()
+            f = st[st.rindex(")") + 2:].split()
+            best = max(best, (int(f[11]) + int(f[12])) / TICK)
+    except OSError:
+        pass
+    return best
 
 
 def _machine() -> list[int]:
@@ -113,29 +125,32 @@ class Sampler:
 
     def run(self) -> None:
         learner = self.root or os.getpid()
-        a, ma, ta = _threads(), _machine(), time.time()
+        a, ma, ta = _procs(), _machine(), time.time()
+        mains: dict[tuple[int, str], float] = {}  # a game's main thread's CPU at the last sample
         while not self.stop.wait(self.every):
             try:
-                b, mb, tb = _threads(), _machine(), time.time()
+                b, mb, tb = _procs(), _machine(), time.time()
                 mine, parent = _tree(learner)
                 dt = max(tb - ta, 1e-6)
                 cores = {k: 0.0 for k in PARTS}
-                main: dict[int, float] = {}
-                for (pid, tid), t in b.items():
-                    d = t - a.get((pid, tid), t)
+                main, seen = 0.0, {}
+                for key, t in b.items():  # (a process new since the last sample: all its CPU so far)
+                    d = t - a.get(key, 0.0)
                     if d <= 0:
                         continue
-                    kind = self._kind(pid, mine, parent, learner)
-                    if kind == "games":  # (each game's busiest thread its main one: the simulation)
-                        main[pid] = max(main.get(pid, 0.0), d)
+                    kind = self._kind(key[0], mine, parent, learner)
                     cores[kind] += d / dt
-                games = sum(main.values()) / dt
-                cores["games (other threads)"] = max(0.0, cores["games"] - games)
-                cores["games"] = games
+                    if kind == "games":  # (each game's busiest thread its main one: the simulation)
+                        m = _main_thread(key[0])
+                        main += max(0.0, m - mains.get(key, 0.0))
+                        seen[key] = m
+                mains = seen
+                cores["games (other threads)"] = max(0.0, cores["games"] - main / dt)
+                cores["games"] = min(cores["games"], main / dt)
                 d = [y - x for x, y in zip(ma, mb)]
                 ncpu = os.cpu_count() or 1
                 idle = (d[3] + d[4]) / max(1, sum(d)) * ncpu
-                cores["unattributed"] = max(0.0, ncpu - idle - sum(cores.values()))
+                cores["ended processes"] = max(0.0, ncpu - idle - sum(cores.values()))
                 row = {"time": round(tb, 1), "ncpu": ncpu, "idle": round(idle, 2),
                        "cores": {k: round(v, 2) for k, v in cores.items()}, **_gpu()}
                 with self.path.open("a") as f:

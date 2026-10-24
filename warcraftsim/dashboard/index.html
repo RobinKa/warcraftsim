@@ -62,7 +62,10 @@ main { padding:14px 18px 40px; overflow:auto; min-height:0; }
 .bgrid .panel.wide { grid-column:1 / -1; }
 .blegend { display:flex; flex-wrap:wrap; gap:4px 14px; margin-top:8px; font-size:12px; color:var(--muted); }
 .blegend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; vertical-align:-1px; }
-.blegend b { color:var(--text); font-weight:600; }  /* (a card with several numbers: the real game's, the rating's) */
+.blegend b { color:var(--text); font-weight:600; }
+.ctip { position:fixed; display:none; z-index:30; pointer-events:none; background:var(--panel2); border:1px solid var(--line);
+        border-radius:6px; padding:6px 9px; font-size:12px; line-height:1.55; color:var(--muted); max-width:300px; }
+.ctip b { color:var(--text); } .ctip i { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:5px; }  /* (a card with several numbers: the real game's, the rating's) */
 .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
 .card .k { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.6px; }
 .card .v { font-size:20px; font-weight:600; margin-top:3px; font-variant-numeric:tabular-nums; }
@@ -1925,7 +1928,7 @@ function chartVisibility(d) {
 // ---- the System tab's bottleneck view (GET /api/runs/<run>: "system", dashboard/server.py _system) ----
 const PART_COLORS = { "games": "#4cc38a", "games (other threads)": "#2e7d5b", "Wine": "#39c5cf", "Xvfb": "#2a8f97",
                       "actors": "#539bf5", "learner": "#b083f0", "video renderer": "#e0a33a", "outside the run": "#e5534b",
-                      "unattributed": "#8795a3", "idle": "#26303b" };
+                      "ended processes": "#8795a3", "unattributed": "#8795a3", "idle": "#26303b" };
 function svgStackedBar(parts, total, W, H) {  // parts: [[label, value, color]]: one bar, proportions of total
   let x = 0;
   return `<svg width="100%" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="height:${H}px;display:block">` +
@@ -1934,19 +1937,63 @@ function svgStackedBar(parts, total, W, H) {  // parts: [[label, value, color]]:
 function legendHtml(parts, unit) {
   return `<div class="blegend">${parts.map(([label, v, c]) => `<span><i style="background:${c}"></i>${esc(label)} <b>${v.toFixed(1)}</b>${unit}</span>`).join("")}</div>`;
 }
-function svgStackedArea(rows, keys, colors, W, H, ymax) {  // rows: [{x, values: {key: v}}]: areas stacked bottom up
-  if (rows.length < 2) return "";
-  const x0 = rows[0].x, x1 = rows[rows.length - 1].x, X = x => (x - x0) / Math.max(x1 - x0, 1e-9) * W, Y = y => H - y / ymax * H;
-  const base = rows.map(() => 0), out = [];
-  for (const k of keys) {
-    const top = rows.map((r, i) => base[i] + (r.values[k] || 0));
-    const pts = rows.map((r, i) => `${X(r.x).toFixed(1)},${Y(top[i]).toFixed(1)}`).concat(rows.slice().reverse().map((r, j) => {
-      const i = rows.length - 1 - j; return `${X(r.x).toFixed(1)},${Y(base[i]).toFixed(1)}`; }));
-    out.push(`<polygon points="${pts.join(" ")}" fill="${colors[k]}" opacity="0.9"><title>${esc(k)}</title></polygon>`);
-    top.forEach((v, i) => { base[i] = v; });
+// a stacked chart drawn at the box's own width: an area over x (kind "area") or a bar per x ("bars"); axes with their
+// titles; a cursor and a tooltip where the pointer is. opts: { x: [..], series: [[label, color, values]], xLabel, yLabel,
+// ymax, xfmt, tip(i), height }
+function drawStack(box, opts) {
+  const n = opts.x.length;
+  if (!box) return;
+  if (n < 2) { box.innerHTML = `<div class="sub">not enough samples yet</div>`; return; }
+  const W = Math.max(320, box.clientWidth), H = opts.height || 160, L = 46, R = 10, T = 8, B = 34, pw = W - L - R, ph = H - T - B;
+  const tot = opts.x.map((_, i) => opts.series.reduce((a, sr) => a + (sr[2][i] || 0), 0));
+  const ymax = opts.ymax || Math.max(1e-9, ...tot) * 1.08, x0 = opts.x[0], x1 = opts.x[n - 1];
+  const X = opts.kind === "bars" ? (i => L + (i + 0.5) * pw / n) : (i => L + (opts.x[i] - x0) / Math.max(x1 - x0, 1e-9) * pw);
+  const Y = v => T + ph - v / ymax * ph, bw = pw / n, out = [];
+  const nice = m => { const e = Math.pow(10, Math.floor(Math.log10(m))), f = m / e; return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * e; };
+  const ys = nice(ymax / 4);
+  for (let v = 0; v <= ymax + 1e-9; v += ys)
+    out.push(`<line x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--line)" stroke-width="1"/><text x="${L - 6}" y="${Y(v) + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${+v.toFixed(2)}</text>`);
+  for (let k = 0; k <= 4; k++) {
+    const i = Math.round(k / 4 * (n - 1));
+    out.push(`<text x="${X(i)}" y="${T + ph + 15}" text-anchor="${k === 0 ? "start" : k === 4 ? "end" : "middle"}" font-size="11" fill="var(--muted)">${esc(opts.xfmt(opts.x[i]))}</text>`);
   }
-  return `<svg width="100%" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="height:${H}px;display:block">${out.join("")}</svg>`;
+  const base = new Array(n).fill(0);
+  for (const [label, color, vals] of opts.series) {
+    if (opts.kind === "bars") {
+      opts.x.forEach((_, i) => { const v = vals[i] || 0; if (v > 0) out.push(`<rect x="${(X(i) - bw / 2 + 0.5).toFixed(1)}" y="${Y(base[i] + v).toFixed(1)}" width="${Math.max(1, bw - 1).toFixed(1)}" height="${(Y(base[i]) - Y(base[i] + v)).toFixed(1)}" fill="${color}"/>`); base[i] += v; });
+    } else {
+      const top = base.map((b, i) => b + (vals[i] || 0));
+      const pts = opts.x.map((_, i) => `${X(i).toFixed(1)},${Y(top[i]).toFixed(1)}`).concat(opts.x.map((_, j) => n - 1 - j).map(i => `${X(i).toFixed(1)},${Y(base[i]).toFixed(1)}`));
+      out.push(`<polygon points="${pts.join(" ")}" fill="${color}" opacity="0.92"/>`);
+      top.forEach((v, i) => { base[i] = v; });
+    }
+  }
+  out.push(`<line x1="${L}" x2="${L}" y1="${T}" y2="${T + ph}" stroke="var(--muted)" stroke-width="1"/><line x1="${L}" x2="${W - R}" y1="${T + ph}" y2="${T + ph}" stroke="var(--muted)" stroke-width="1"/>`);
+  out.push(`<text x="${L + pw / 2}" y="${H - 3}" text-anchor="middle" font-size="11.5" fill="var(--text)">${esc(opts.xLabel)}</text>`);
+  out.push(`<text transform="translate(12 ${T + ph / 2}) rotate(-90)" text-anchor="middle" font-size="11.5" fill="var(--text)">${esc(opts.yLabel)}</text>`);
+  out.push(`<line class="cur" x1="0" x2="0" y1="${T}" y2="${T + ph}" stroke="var(--text)" stroke-width="1" stroke-dasharray="3 3" visibility="hidden"/>`);
+  box.innerHTML = `<svg width="${W}" height="${H}" style="display:block;touch-action:pan-y">${out.join("")}</svg>`;
+  const svg = box.firstChild, cur = svg.querySelector(".cur");
+  let tip = document.getElementById("ctip");
+  if (!tip) { tip = document.createElement("div"); tip.id = "ctip"; tip.className = "ctip"; document.body.appendChild(tip); }
+  const at = ev => {  // the sample under the pointer
+    const r = svg.getBoundingClientRect(), px = ev.clientX - r.left;
+    if (opts.kind === "bars") return Math.max(0, Math.min(n - 1, Math.floor((px - L) / bw)));
+    let best = 0, dist = Infinity;
+    for (let i = 0; i < n; i++) { const dd = Math.abs(X(i) - px); if (dd < dist) { dist = dd; best = i; } }
+    return best;
+  };
+  svg.onpointermove = ev => {
+    const i = at(ev);
+    cur.setAttribute("x1", X(i)); cur.setAttribute("x2", X(i)); cur.setAttribute("visibility", "visible");
+    tip.innerHTML = opts.tip(i); tip.style.display = "block";
+    const tw = tip.offsetWidth;
+    tip.style.left = (ev.clientX + 14 + tw > window.innerWidth ? ev.clientX - 14 - tw : ev.clientX + 14) + "px";
+    tip.style.top = (ev.clientY + 12) + "px";
+  };
+  svg.onpointerleave = () => { cur.setAttribute("visibility", "hidden"); tip.style.display = "none"; };
 }
+
 function renderBottleneck(d) {
   const el = document.getElementById("bottleneck"), S = d.system;
   if (!el) return;
@@ -1969,22 +2016,35 @@ function renderBottleneck(d) {
   else if (Number.isFinite(lat) && Number.isFinite(stepWait) && lat > 0.6 * stepWait) verdict = `<b>Inference-bound.</b> A game step waits ${stepWait.toFixed(1)} ms for its orders, ~${lat.toFixed(1)} ms of it for the network.`;
   else verdict = `<b>No single limit.</b> CPU ${ncpu ? (100 * busy / ncpu).toFixed(0) : "–"}% busy, the learner waits ${(100 * waitShare).toFixed(0)}% of its cycle.`;
   const now = parts.map(k => [k, avg(k), PART_COLORS[k]]).filter(p => p[1] > 0.005).concat([["idle", Math.max(0, idle), PART_COLORS.idle]]);
-  const area = S.cpu.map(r => ({ x: r.steps, values: { ...(r.cores || {}), idle: r.idle } }));
   const stepParts = Number.isFinite(game) ? [["simulating", game, "#4cc38a"], ["inference round", Math.min(lat || 0, stepWait), "#b083f0"],
                                              ["actor's Python and its turn", Math.max(0, stepWait - (lat || 0)), "#539bf5"]] : [];
-  const cyMax = Math.max(1, ...S.cycle.map(c => (c.wait || 0) + c.train + c.noise)), CW = 900, CH = 120, bw = CW / Math.max(1, S.cycle.length);
-  const bars = S.cycle.map((c, i) => { let y = CH; return [["waiting for games", c.wait || 0, "#3a4654"], ["update", c.train, "#4cc38a"], ["noise measurement", c.noise, "#e0a33a"]]
-    .map(([lab, v, col]) => { const h = v / cyMax * CH; y -= h; return `<rect x="${(i * bw).toFixed(1)}" y="${y.toFixed(1)}" width="${Math.max(1, bw - 1).toFixed(1)}" height="${h.toFixed(1)}" fill="${col}"><title>update ${c.epoch}: ${lab} ${v.toFixed(2)} s</title></rect>`; }).join(""); }).join("");
   el.innerHTML = `<div class="bneck">
     <div class="bverdict">${verdict} <span class="sub">GPU ${Number.isFinite(gpu) ? gpu.toFixed(0) + "%" : "–"} busy · inference rounds ${Number.isFinite(latIdle) ? latIdle.toFixed(1) : "–"} ms with the learner idle, ${Number.isFinite(latUpd) ? latUpd.toFixed(1) : "–"} ms during its updates</span></div>
     <div class="bgrid">
       <div class="panel"><h3>Where the CPU goes now <span class="sub">${ncpu} threads, the last ~3 minutes</span></h3>${svgStackedBar(now, ncpu, 600, 22)}${legendHtml(now, "")}</div>
       <div class="panel"><h3>A game step's wall time <span class="sub">the last ${eps.length} games, ms</span></h3>${stepParts.length ? svgStackedBar(stepParts, stepParts.reduce((a, p) => a + p[1], 0), 600, 22) + legendHtml(stepParts, " ms") : `<div class="sub">recorded by games since 2026-10-24 15:00</div>`}</div>
-      <div class="panel wide"><h3>The CPU over the run <span class="sub">threads by part, stacked</span></h3>${svgStackedArea(area, [...parts, "idle"], PART_COLORS, 900, 140, ncpu || 32)}</div>
-      <div class="panel wide"><h3>The learner's last ${S.cycle.length} updates <span class="sub">seconds: waiting for games, the update, the noise measurement</span></h3>
-        <svg width="100%" viewBox="0 0 ${CW} ${CH}" preserveAspectRatio="none" style="height:${CH}px;display:block">${bars}</svg>
+      <div class="panel wide"><h3>The CPU over the run <span class="sub">threads by part, stacked</span></h3><div id="bn-cpu"></div>
+        ${legendHtml(now, "")}</div>
+      <div class="panel wide"><h3>The learner's last ${S.cycle.length} updates <span class="sub">waiting for games, the update, the noise measurement</span></h3>
+        <div id="bn-cycle"></div>
         ${legendHtml([["waiting for games", wait, "#3a4654"], ["update", mean(cyc.map(c => c.train)), "#4cc38a"], ["noise measurement", mean(cyc.map(c => c.noise)), "#e0a33a"]], " s (mean of the last 20)")}</div>
     </div></div>`;
+  const keys = [...parts, "idle"].filter(k => S.cpu.some(r => (k === "idle" ? r.idle : (r.cores || {})[k]) > 0.005));
+  const val = (r, k) => k === "idle" ? (r.idle || 0) : ((r.cores || {})[k] || 0);
+  const when = t => t ? new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+  drawStack(document.getElementById("bn-cpu"), {
+    kind: "area", x: S.cpu.map(r => r.steps), series: keys.map(k => [k, PART_COLORS[k], S.cpu.map(r => val(r, k))]),
+    ymax: ncpu || undefined, xLabel: "agent steps", yLabel: "threads", xfmt: v => fmt(v, 0), height: 170,
+    tip: i => { const r = S.cpu[i]; return `<b>${fmt(r.steps, 0)} steps</b> · ${when(r.time)}<br>` + keys.slice().reverse().map(k =>
+      `<i style="background:${PART_COLORS[k]}"></i>${esc(k)} <b>${val(r, k).toFixed(1)}</b>`).join("<br>") + (r.gpu_util != null ? `<br>GPU ${r.gpu_util.toFixed(0)}% · ${r.gpu_watts != null ? r.gpu_watts.toFixed(0) + " W" : ""}` : ""); },
+  });
+  const cy = S.cycle, cyParts = [["waiting for games", "#3a4654", c => c.wait || 0], ["update", "#4cc38a", c => c.train], ["noise measurement", "#e0a33a", c => c.noise]];
+  drawStack(document.getElementById("bn-cycle"), {
+    kind: "bars", x: cy.map(c => c.epoch), series: cyParts.map(([lab, col, f]) => [lab, col, cy.map(f)]),
+    xLabel: "update", yLabel: "seconds", xfmt: v => String(v), height: 150,
+    tip: i => { const c = cy[i]; return `<b>update ${c.epoch}</b> · ${when(c.time)}<br>` + cyParts.slice().reverse().map(([lab, col, f]) =>
+      `<i style="background:${col}"></i>${lab} <b>${f(c).toFixed(2)} s</b>`).join("<br>") + `<br>${(8192 / Math.max((c.wait || 0) + c.train + c.noise, 1e-9)).toFixed(0)} steps/s`; },
+  });
 }
 
 function renderProduction(d) {

@@ -120,10 +120,11 @@ def launch_key(info: dict) -> str:
     """The run's evaluation games' settings and this tree's code (its commit, and its changes not committed), as a
     key: a resume on new code with the same settings had left the worker on the old (audit 6)."""
     c = info.get("config", {})
-    code = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
-    code += subprocess.run(["git", "diff", "--stat", "HEAD", "--", "warcraftsim", "native", "scripts"], cwd=ROOT,
-                           capture_output=True, text=True).stdout
-    return hashlib.sha1(json.dumps([c.get(k) for k in SETTINGS] + [code]).encode()).hexdigest()[:10]
+    h = hashlib.sha1()
+    for f in code_files():  # (the contents of what the worker runs: a commit of docs or a dashboard change had
+        if not f.startswith(("warcraftsim/dashboard/", "scripts/")):  # relaunched it, its games in flight lost)
+            h.update(f.encode() + b"\0" + (ROOT / f).read_bytes())
+    return hashlib.sha1(json.dumps([c.get(k) for k in SETTINGS] + [h.hexdigest()]).encode()).hexdigest()[:10]
 
 
 def eval_checkpoints(info: dict) -> list[str]:
