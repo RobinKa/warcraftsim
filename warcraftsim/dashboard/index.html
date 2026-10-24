@@ -54,7 +54,8 @@ main { padding:14px 18px 40px; overflow:auto; min-height:0; }
 .title { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:10px; }
 .title h2 { margin:0; font-size:18px; }
 .title .desc { color:var(--muted); }
-.cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:10px; margin-bottom:14px; }
+.cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); grid-auto-flow:row dense; gap:10px; margin-bottom:14px; }
+.card.wide { grid-column:span 2; }  /* (a card with several numbers: the real game's, the rating's) */
 .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
 .card .k { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.6px; }
 .card .v { font-size:20px; font-weight:600; margin-top:3px; font-variant-numeric:tabular-nums; }
@@ -234,6 +235,7 @@ table.runs tr.shown td { background:var(--panel2); }
 .run .from { color:var(--muted); }
 .run .note { color:var(--text); opacity:.8; }
 .about { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:12px; margin-bottom:14px; }
+textarea#notes { min-height:220px; }  /* (a run's notes: a few paragraphs, readable without scrolling) */
 .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
 .panel h3 { margin:0 0 8px; font-size:12px; font-weight:600; color:var(--muted); display:flex; justify-content:space-between; gap:8px; }
 .panel h3 span { font-weight:400; }
@@ -1262,6 +1264,16 @@ function seriesPoints(d, src, key) {
   return [];
 }
 
+const WIDE_CARDS = new Set(["Real game", "Rating", "Evaluation worker", "Win rate", "KL anchor"]);  // (two columns: their details)
+// the KL term's anchor: --init's checkpoint (or the policy of --ref-update updates ago), its weight, which heads, its rating
+function anchorCard(info) {
+  const c = info.config || {}, coef = +(c.ref_kl ?? 0), every = +(c.ref_update || 0);
+  if (!c.init || !(coef > 0)) return "none <small>(--ref-kl 0)</small>";
+  const m = String(c.init).match(/runs\/([^/]+)\/checkpoints\/0*(\d+)\.pt$/), name = m ? `${m[1]}/${m[2]}` : String(c.init).split("/").slice(-2).join("/");
+  const mode = { reverse: "KL(policy‖anchor), orders", forward: "KL(anchor‖policy), orders", "forward-all": "KL(anchor‖policy), every head" }[c.ref_kl_mode || "reverse"] || c.ref_kl_mode;
+  const D = ui.ratings.data, r = D && D.players.find(p => p.name === name);
+  return `${every > 0 ? `the policy ${every} updates ago` : esc(name)} <small>× ${coef} · ${esc(mode)}${every > 0 ? ` (rolling; first ${esc(name)})` : ""}${r ? ` · rated ${Math.round(r.rating)} ± ${Math.round(1.96 * (r.se || 0))}` : ""}</small>`;
+}
 function renderMain() {
   const d = state.data[state.selected]; if (!d) return;
   if (d.kind === "bc") return d.info.task === "fullgame" ? renderFullBC(d) : renderBC(d);
@@ -1346,6 +1358,7 @@ function renderMain() {
         if (!show.length) return "– <small>no rated games yet</small>";
         return show.map(p => { const e = 1.96 * (p.se || 0), rk = ranks.get(p.name);
           return `${Math.round(p.rating)} <small>(95% ${Math.round(p.rating - e)}–${Math.round(p.rating + e)}) · ${esc(p.name)}, ${p.games} games${rk ? ` · rank ${rk.rank} (${rk.lo}–${rk.hi}) of ${pool.length}` : ""}</small>`; }).join("<br>"); })()],
+      ["KL anchor", anchorCard(info)],
       ["Games", `${info.envs} <small>at once</small>`],
       ["Trained", dur(info.trained_seconds || elapsed) + (info.resumes ? ` <small>${info.resumes.length + 1} sessions</small>` : "")],
     ] : [
@@ -1354,7 +1367,7 @@ function renderMain() {
       ["Elapsed", dur(elapsed)],
       ["GPU", last["util/gpu_percent"] !== undefined ? `${fmt(last["util/gpu_percent"], 0)}% <small>${fmt(last["util/vram_used_gb"], 1)} GB</small>` : "–"],
     ]),
-  ].map(([k, v, x = ""]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div>${x}</div>`).join("");
+  ].map(([k, v, x = ""]) => `<div class="card${WIDE_CARDS.has(k) ? " wide" : ""}"><div class="k">${k}</div><div class="v">${v}</div>${x}</div>`).join("");
 
   // runs shown: the selected one (solid) and the compared ones (other line styles)
   const shown = [state.selected, ...[...state.compare].filter(n => n !== state.selected && state.data[n])];
