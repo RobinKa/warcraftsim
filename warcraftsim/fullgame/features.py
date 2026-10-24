@@ -1058,7 +1058,8 @@ class View:
         """The privileged block (PRIV): the opponent's player row (PLAYER_COLS) and every living unit."""
         out = np.zeros(PRIV, np.float32)
         if opp is not None:
-            _, _, gold, lumber, fu, fc, upkeep = opp[:7]
+            _, _, gold, lumber, fu, fc, upkeep = opp[:7].tolist()  # (Python's numbers: numpy's scalars' arithmetic
+            # had cost more than the rest; the same quotients)
             out[:5] = gold / 1000.0, lumber / 1000.0, fu / 100.0, fc / 100.0, upkeep / 2.0
         from . import featnative
         if featnative.lib() is not None:  # (in C: the same numbers)
@@ -1144,8 +1145,8 @@ class View:
         reviving = getattr(self, "reviving", {})  # (a revival under way: an altar took its order; audit 6)
         dead = frozenset(c for i, c in dead_rows[:, [C_ID, C_TYPE]].tolist()
                          if self.t_now - since.get(i, self.t_now) >= REVIVE_AFTER_STEPS
-                         and self.t_now - reviving.get(i, -REVIVE_STEPS) >= REVIVE_STEPS) - making  # had allowed it at
-        # once: ~30 refused a game; audit 5)
+                         and self.t_now - reviving.get(i, -REVIVE_STEPS) >= REVIVE_STEPS) - making if len(dead_rows) \
+            else frozenset()  # had allowed it at once: ~30 refused a game; audit 5. None dead: most steps)
         researching = frozenset(m[1] for m in self.making.values() if m[0] == 3)
         now = self.t_now * self.step_seconds
         key = (done, heroes | making, dead, researching, tuple(sorted(self.levels.items())), self.techmask.stocked(now))
@@ -1247,7 +1248,7 @@ class View:
                 self.upgrades[enc.upgrade_index[int(r[3])]] = r[4] / 3.0
         g = np.zeros(enc.G, np.float32)
         if me is not None:
-            _, _, gold, lumber, fu, fc, upkeep = me[:7]
+            _, _, gold, lumber, fu, fc, upkeep = me[:7].tolist()  # (Python's numbers, as View.priv's)
             g[:6] = gold / 1000.0, lumber / 1000.0, fu / 100.0, fc / 100.0, upkeep / 2.0, t / 1800.0
         g[6 + self.races[player]] = 1
         g[6 + len(RACES) + self.races[1 - player]] = 1
