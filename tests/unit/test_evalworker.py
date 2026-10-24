@@ -91,8 +91,9 @@ def test_real_games_count_remote_rows(tmp_path, monkeypatch):
 
 def test_remote_eval_manager_follows_the_run(tmp_path, monkeypatch):
     """scripts/remote_eval.py's looks: the worker started once, left be over a restart of the run with the same
-    evaluation settings, started again for other settings, after the host was away and for the next run, and
-    stopped when the run ended (after the grace)."""
+    evaluation settings, drained (its games in flight finish) and started again for other settings, started after
+    the host was away, drained for the next run (stopped when the drain takes too long), and drained when the run
+    ended (after the grace)."""
     rm = _script("remote_eval")
     monkeypatch.setattr(rm, "ROOT", tmp_path)
     monkeypatch.setattr(rm, "RUNS", tmp_path / "runs")
@@ -100,7 +101,7 @@ def test_remote_eval_manager_follows_the_run(tmp_path, monkeypatch):
     (tmp_path / "runs/x/checkpoints/1.pt").write_bytes(b"")
     for run in ("r1", "r2"):
         (tmp_path / "runs" / run).mkdir()
-    monkeypatch.setattr(rm, "code_files", lambda: [])
+    monkeypatch.setattr(rm.Manager, "push_code", lambda self: True)
     monkeypatch.setattr(rm, "newest_checkpoint", lambda run: "0000000000000100.pt")
     configs = {"r1": {"map": "echo100", "eval_checkpoints": "None"}, "r2": {"map": "echo100", "eval_checkpoints": "None"}}
     monkeypatch.setattr(rm, "run_info", lambda run: {"config": configs[run]})
@@ -114,6 +115,8 @@ def test_remote_eval_manager_follows_the_run(tmp_path, monkeypatch):
             if "systemd-run" in cmd:
                 calls.append(("start", cmd.split("--description=")[1].split(" -p")[0].strip("'")))
                 there.update(active="active", unit=calls[-1][1])
+            elif "SIGUSR1" in cmd:
+                calls.append(("drain", there["unit"]))
             elif "systemctl --user stop" in cmd:
                 if there["active"] == "active":
                     calls.append(("stop", there["unit"]))
@@ -139,18 +142,23 @@ def test_remote_eval_manager_follows_the_run(tmp_path, monkeypatch):
     configs["r1"] = {**configs["r1"], "lr": "1e-5"}  # (a restart with another learning rate: the same games)
     assert m.cycle() and starts() == 1
     configs["r1"] = {**configs["r1"], "eval_checkpoints": "[PosixPath('runs/x/checkpoints/1.pt')]"}
-    assert m.cycle() and calls[-2:] == [("stop", f"warcraftsim evalworker r1 {key1} 4x0"),
-                                        ("start", f"warcraftsim evalworker r1 {rm.launch_key({'config': configs['r1']})} 4x0")]
+    assert m.cycle() and calls[-1] == ("drain", f"warcraftsim evalworker r1 {key1} 4x0")
+    assert m.cycle() and calls[-1][0] == "drain" and len(calls) == 2  # (draining: its games in flight finish)
+    there.update(active="inactive", unit=f"{rm.UNIT}.service")  # (they did: it exited)
+    assert m.cycle() and calls[-1] == ("start", f"warcraftsim evalworker r1 {rm.launch_key({'config': configs['r1']})} 4x0")
     there["away"] = True
     assert m.cycle() and starts() == 2
     there.update(away=False, active="inactive", unit=f"{rm.UNIT}.service")  # (WSL powered off meanwhile)
     assert m.cycle() and calls[-1][0] == "start" and starts() == 3
-    live[:] = ["r1", "r2"]  # (the next run)
+    live[:] = ["r1", "r2"]  # (the next run: r1's worker drained, r2's own evaluation games held meanwhile)
+    assert m.cycle() and calls[-1][0] == "drain" and (tmp_path / "runs/r2/remote-eval.alive").exists()
+    m.draining -= 3600  # (a drain that takes too long: stopped)
     assert m.cycle() and [c[0] for c in calls[-2:]] == ["stop", "start"] and "r2" in calls[-1][1]
     live.clear()
     assert m.cycle() and calls[-1][0] == "start"  # (within the grace)
     m.gone_since -= 3600
-    assert m.cycle() and calls[-1] == ("stop", f"warcraftsim evalworker r2 {rm.launch_key({'config': configs['r2']})} 4x0")
+    assert m.cycle() and calls[-1] == ("drain", f"warcraftsim evalworker r2 {rm.launch_key({'config': configs['r2']})} 4x0")
+    there.update(active="inactive", unit=f"{rm.UNIT}.service")
     a.run = "r2"  # (with --run: done when it ended)
     m.gone_since = None
     assert m.cycle()

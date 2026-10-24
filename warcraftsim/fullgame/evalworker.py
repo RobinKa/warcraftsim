@@ -25,6 +25,10 @@ GPU, eager on the CPU).
 Rows: the learner's evaluation rows ("eval": true, "eval_key"), plus "host", "version" (in games of
 "current": the update of the weights it had at the game's end) and "episode" (this file's own count),
 in runs/<run>/episodes-remote.jsonl; runs/<run>/remote-worker.json is its status.
+
+SIGUSR1 drains it: the games in flight finish (their rows written), no new ones start, then it exits (at most
+DRAIN_MINUTES). A row is written only when its game ends, and losses and ties last 3-5x as long as wins: games
+cut by a relaunch were mostly long ones, and 58 relaunches on 2026-10-24 had read a true 84% as ~89.5% (audit 7).
 """
 
 from __future__ import annotations
@@ -47,6 +51,7 @@ RUNS = paths.REPO_ROOT / "runs"
 EPISODES = "episodes-remote.jsonl"
 STATUS = "remote-worker.json"
 STEPS = re.compile(r"\d+\.pt")
+DRAIN_MINUTES = 15.0  # (a game's longest: 40 game minutes, ~6 minutes here)
 
 
 def local_path(path: str, main_root: str | None) -> Path:
@@ -206,6 +211,9 @@ def worker_main(wid: int, cfg: dict, games: int, keys: dict, host: str, q, stop)
             time.sleep(3)  # launches spread out
         while not stop.is_set() and os.getppid() == cfg["learner_pid"]:
             time.sleep(1)
+        for th in threads:  # (stop set: each thread ends after the game it plays; a hard stop terminates this process)
+            while th.is_alive() and os.getppid() == cfg["learner_pid"]:
+                th.join(timeout=1)
     finally:
         reaper.reap()
 
@@ -286,9 +294,10 @@ def main(argv: list[str] | None = None) -> int:
         p = ctx.Process(target=worker_main, args=(i, cfg, split[i], keys, a.host, q, stop), daemon=True)
         p.start()
         return p
-    stopping = []
+    stopping, draining = [], []
     signal.signal(signal.SIGTERM, lambda *_: stopping.append(1))
     signal.signal(signal.SIGINT, lambda *_: stopping.append(1))
+    signal.signal(signal.SIGUSR1, lambda *_: draining.append(time.time()))
     started, done, last_ep = time.time(), 0, None
     procs = [start(i) for i in range(n_proc)]
     print(f"evaluation worker {a.host} for {a.run}: {a.games} games in {n_proc} processes ({split}) on {cfg['device']}, "
@@ -296,6 +305,12 @@ def main(argv: list[str] | None = None) -> int:
     t_status = t_ck = 0.0
     try:
         while not stopping and not (a.hours and time.time() - started > 3600 * a.hours):
+            if draining and not stop.is_set():
+                stop.set()  # (game_loop: no new game; the processes end when their games did)
+                print("draining: the games in flight finish, then the worker exits", flush=True)
+            if draining and (time.time() - draining[0] > 60 * DRAIN_MINUTES
+                             or not any(p.is_alive() for p in procs) and q.empty()):
+                break
             try:
                 e = q.get(timeout=2)
                 count += 1
@@ -312,7 +327,7 @@ def main(argv: list[str] | None = None) -> int:
                 published, v = publish_newest(run_dir, published)
                 version = v if v >= 0 else version
                 for i, p in enumerate(procs):
-                    if not p.is_alive():  # (a crashed process: its games again)
+                    if not p.is_alive() and not draining:  # (a crashed process: its games again)
                         print(f"process {i} exited ({p.exitcode}): restarted", flush=True)
                         procs[i] = start(i)
             if now - t_status > 30:

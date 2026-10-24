@@ -1065,7 +1065,8 @@ def test_teacher_target_first_hero(v2):
     target = {"t": {"halt": 30.0, "Hamg": 70.0, "hbar": 90.0, "Hmkg": 400.0}}
     assert Teacher(0, "human", random.Random(0), target).first is None  # (--teach 1: as before)
     tc = Teacher(0, "human", random.Random(0), target, target_hero=True)
-    c = tc.commands(np.stack([hall, peon, altar]), player, 50.0, 90)
-    assert c == [ImmediateOrder(3, code("Hamg"))]
+    assert tc.commands(np.stack([hall, peon]), player, 20.0, 40) == []  # (no altar: the builder's, not before 45 s)
+    c = tc.commands(np.stack([hall, peon, altar]), player, 33.0, 66)  # (before FIRST_HERO_FROM: 45 s had held 71%
+    assert c == [ImmediateOrder(3, code("Hamg"))]                     # of these lessons back, audit 7)
     tavern_first = Teacher(0, "human", random.Random(0), {"t": {"Nalc": 60.0, "Hamg": 300.0}}, target_hero=True)
     assert tavern_first.first is None and tavern_first.pick == code("Nalc")

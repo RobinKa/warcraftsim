@@ -86,8 +86,12 @@ class Sampler:
     """The run's machine time by part, every `every` seconds, into `path` (the dashboard places the rows on the
     steps' axis by their times)."""
 
-    def __init__(self, path: Path, every: float = 30.0, root: int | None = None):
+    def __init__(self, path: Path, every: float = 30.0, root: int | None = None, slot: int | None = None):
         self.path, self.every, self.root = path, every, root  # (root: the learner's process; None: this one)
+        # the run's Wine prefixes (instances/fgsp<slot>_*, its videos' fgvid<slot>; None: any run's): another run's
+        # games, or the dashboard's Render games, had counted as this run's (audit 7)
+        self.marks = ((b"/instances/fgsp", b"/instances/fgvid") if slot is None
+                      else (f"/instances/fgsp{slot}_".encode(), f"/instances/fgvid{slot}/".encode()))
         self.kinds: dict[tuple[int, str], str] = {}  # (pid, its start) -> part (kept while the process lives)
         self.stop = threading.Event()
 
@@ -105,7 +109,7 @@ class Sampler:
             env = open(f"/proc/{pid}/environ", "rb").read() if pid not in mine else b""
         except OSError:
             return "outside the run"
-        ours = pid in mine or b"/instances/fgsp" in env or b"/instances/fgvid" in env  # (Wine's processes: not children)
+        ours = pid in mine or any(m in env for m in self.marks)  # (Wine's processes: not children)
         if not ours:
             kind = "outside the run"
         elif "Warcraft III" in args:

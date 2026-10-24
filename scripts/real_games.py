@@ -182,7 +182,7 @@ def main() -> int:
         for v in sorted({value(e, a.split) for e in window}):
             part = [e for e in window if value(e, a.split) == v]
             report(part, f"{a.split} = {v}", rates, pooled=True)
-            for kind in ("self", "past"):
+            for kind in ("self", "past", "fixed"):
                 X = [e for e in part if e["opponent"].split(":")[0] == kind]
                 print(f"   against {kind}: {len(X)} games, {100 * sum(e['outcome'] == 0 for e in X) / max(1, len(X)):.0f}% ties")
         shares, n = standardised(window, a.split, rates)
@@ -196,7 +196,7 @@ def main() -> int:
     o = Counter(e["outcome"] for e in curr)
     print(f"unadvised curriculum games ({len(curr)}): won {o[1.0]}, tied {o[0.0]}, lost {o[-1.0]}; "
           f"mean tax {sum(e['ai_tax'] for e in curr) / max(1, len(curr)):.2f}")
-    for kind in ("self", "past"):
+    for kind in ("self", "past", "fixed"):
         X = [e for e in recent if e["opponent"].split(":")[0] == kind]
         print(f"against {kind}: {len(X)} games, {100 * sum(e['outcome'] == 0 for e in X) / max(1, len(X)):.0f}% ties")
     return 0

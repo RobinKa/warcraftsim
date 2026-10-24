@@ -1129,6 +1129,21 @@ def test_league_inherited_by_a_fork(tmp_path):
     assert full.scripts["script:ai-normal"].games == 0  # (the records against the AI stay the parent's)
 
 
+def test_league_inherit_skips_fixed_members(tmp_path):
+    """A fork takes its parent's past snapshots, not its fixed members (--league-add's: its own --league-add adds
+    them again), and they take no room of --max-past: the parent's first snapshot kept (audit 7: index 0, a fixed
+    member then, had been kept and a snapshot dropped)."""
+    parent = tmp_path / "fgself-1"
+    parent.mkdir()
+    lg = League(parent, ["normal"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=3, pfsp="hard")
+    lg.past = [Member("fixed:fgself-130/5.pt", path=str(parent / "f.pt"), steps=0)]
+    lg.past += [Member(f"past:{s}", path=str(parent / f"{s}.pt"), steps=s) for s in (0, 10, 20)]
+    lg.write()
+    child = League(tmp_path / "fgself-2", ["normal"], {"ai": 0.5, "self": 0.5, "past": 0.5}, max_past=3, pfsp="hard")
+    names = child.inherit(json.loads((parent / "league.json").read_text()), "fgself-1", lambda p: True)
+    assert names == ["past:fgself-1/0", "past:fgself-1/20"]
+
+
 def test_gradient_noise_scale():
     """NoiseMeter and NoiseScale on gradients drawn as G + noise / sqrt(b) (per-step noise S = I * s2):
     |G|^2 and tr(S) come out unbiased, their averaged ratio is B_simple = tr(S) / |G|^2; in Adam's metric

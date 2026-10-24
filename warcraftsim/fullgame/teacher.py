@@ -88,11 +88,12 @@ class Teacher:
         self.taught: dict[str, int] = {}  # each kind's lessons this game (the episode row)
         # (a game without a target: its first hero from the altar, FIRST_HEROES)
         self.first = fourcc(rng.choice(FIRST_HEROES.get(race, FIRST_HEROES["human"]))) if target is None else None
-        if target is not None and target_hero:
+        self.first_from = FIRST_HERO_FROM  # (the target's hero: as soon as the altar stands, the mask and food permitting;
+        if target is not None and target_hero:  # 45 s had held 71% of its lessons back: the altar was up at ~33 s, audit 7)
             from .techtree import is_hero
             heroes = sorted((t, c) for c, t in target.get("t", {}).items() if is_hero(c))
             if heroes and heroes[0][1] not in TAVERN_HEROES:  # (a tavern hero first: the tavern's lesson below)
-                self.first = fourcc(heroes[0][1])
+                self.first, self.first_from = fourcc(heroes[0][1]), 0.0
         self.rng = rng
         self.race = race
         due = [v for c, v in (target or {}).get("t", {}).items() if c in (HALL.get(race), "ugol")]
@@ -130,8 +131,8 @@ class Teacher:
         tavern, merchant = rows[living & (typ == TAVERN)], rows[living & (typ == MERCHANT)]
         done = alive[(fa & fx.STRUCTURE > 0) & (fa & fx.CONSTRUCTING == 0), fx.C_TYPE]
         n_heroes = len(heroes)
-        if self.first is not None and n_heroes == 0 and now >= FIRST_HERO_FROM:
-            out += self._first_hero(alive, player, t)
+        if self.first is not None and n_heroes == 0 and now >= self.first_from:  # (the altar itself from 45 s: a target's
+            out += self._first_hero(alive, player, t, build=now >= FIRST_HERO_FROM)  # builder teaches it when due)
         # a tavern hero: the first with an altar (with a target), the second with tier 2
         if (self.pick is not None and len(tavern) and now >= 135.0 and n_heroes < 2
                 and (n_heroes > 0 or self.first is None)
@@ -173,7 +174,7 @@ class Teacher:
             out += self._mix(alive, t)
         return out
 
-    def _first_hero(self, alive: np.ndarray, player, t: int) -> list:
+    def _first_hero(self, alive: np.ndarray, player, t: int, build: bool = True) -> list:
         """A side without a hero: its altar trains its first hero, and with no altar (nor one being built) a worker
         builds one near its hall; each when the policy could order it (`can`)."""
         can = getattr(self, "can", None)
@@ -184,7 +185,7 @@ class Teacher:
                     and self._due("first hero", t):
                 return [ImmediateOrder(int(done[0, fx.C_ID]), self.first)]
             return []
-        if len(altars):
+        if len(altars) or not build:
             return []  # (being built)
         code = ALTAR.get(self.race)
         workers = alive[fx.isin(alive[:, fx.C_TYPE], WORKER_CODES) & (alive[:, fx.C_FLAGS] & HIDDEN == 0)

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ctypes
 import fcntl
+import hashlib
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
@@ -25,7 +26,30 @@ from .protocol import (HERO_ABILITY_SLOTS, PROTOCOL_VERSION, Destructable, Event
                        Observation, PlayerState, ProtocolError, Race, Result, Unit, UnitFlags)
 
 SRC = paths.REPO_ROOT / "native" / "w3obs.c"
-LIB = paths.REPO_ROOT / "build" / "native" / "libw3obs.so"
+
+
+def lib_path(src, name: str):
+    """A native library's file: its name holds its source's hash (a time check had kept a stale one where a copy
+    keeps the files' times: rsync -a, git archive; audit 7)."""
+    return paths.REPO_ROOT / "build" / "native" / f"lib{name}-{hashlib.sha1(src.read_bytes()).hexdigest()[:12]}.so"
+
+
+def build_lib(src, lib, flags=()) -> None:
+    """Builds `lib` from `src` (one build at a time: actor processes start together); the older builds go."""
+    lib.parent.mkdir(parents=True, exist_ok=True)
+    with open(lib.parent / ".build.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if lib.exists():
+            return
+        tmp = lib.with_suffix(".so.tmp")
+        subprocess.run(["gcc", "-O2", "-shared", "-fPIC", "-o", str(tmp), str(src), *flags], check=True)
+        tmp.replace(lib)
+        for old in lib.parent.glob(lib.name.rsplit("-", 1)[0] + "*.so"):  # (mapped by a live process: it keeps it)
+            if old != lib:
+                old.unlink(missing_ok=True)
+
+
+LIB = lib_path(SRC, "w3obs")
 # unit_array columns: the U record's fields, then the hero fields (0 for others), then whether they're set
 (C_ID, C_TYPE, C_OWNER, C_X, C_Y, C_FACING, C_HP, C_MAXHP, C_MANA, C_MAXMANA, C_ORDER, C_FLAGS, C_VIS, C_RESOURCE,
  C_HLEVEL, C_HXP, C_SKILLPTS) = range(17)
@@ -35,22 +59,11 @@ _H_SEQ, _H_MS, _H_OVER, _H_FULL, _H_VERSION, _H_DAMAGED, _H_ENDED, _H_CAMERA, _H
 _lib = None
 
 
-def _build() -> None:
-    LIB.parent.mkdir(parents=True, exist_ok=True)
-    with open(LIB.parent / ".build.lock", "w") as lock:  # one build at a time (actor processes start together)
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        if LIB.exists() and LIB.stat().st_mtime >= SRC.stat().st_mtime:
-            return
-        tmp = LIB.with_suffix(".so.tmp")
-        subprocess.run(["gcc", "-O2", "-shared", "-fPIC", "-o", str(tmp), str(SRC)], check=True)
-        tmp.replace(LIB)
-
-
 def lib():
     global _lib
     if _lib is None:
-        if not LIB.exists() or LIB.stat().st_mtime < SRC.stat().st_mtime:
-            _build()
+        if not LIB.exists():
+            build_lib(SRC, LIB)
         L = ctypes.CDLL(str(LIB))  # (CDLL: the GIL is released during calls)
         L.w3obs_new.restype = ctypes.c_void_p
         L.w3obs_free.argtypes = [ctypes.c_void_p]

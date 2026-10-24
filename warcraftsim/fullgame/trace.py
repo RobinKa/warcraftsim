@@ -37,22 +37,26 @@ def trace_step(t: int, obs: Observation, material: dict, orders: dict, **policy)
 
 
 WORKER_IDS = {int.from_bytes(c.encode(), "big") for c in ("hpea", "opeo", "uaco", "ewsp")}  # (type ids)
-_VALUES: dict[int, list] = {}  # id(values) -> [values, its size, the type ids seen (sorted), their values]
+_VALUES: dict[int, tuple] = {}  # id(values) -> (values, its size, the type ids seen (sorted), their values)
 
 
 def _type_values(values: dict, types):
     """Each unit's value by its type id (values[str(id)], 0 for none), as float64: a sorted table of the types seen
-    so far, made again when one is new (np.unique with its inverse, each step, had been ~85 us of an actor's step)."""
+    so far, made again when one is new (np.unique with its inverse, each step, had been ~85 us of an actor's step).
+    The table is replaced whole: an actor's game threads share it (keys and values set apart, a thread had read new
+    keys with old values: wrong values or an IndexError; audit 7)."""
     import numpy as np
     tab = _VALUES.get(id(values))
     if tab is None or tab[0] is not values or tab[1] != len(values):
-        tab = _VALUES[id(values)] = [values, len(values), np.zeros(0, np.int64), np.zeros(0, np.float64)]
-    j = np.searchsorted(tab[2], types)
-    if not len(tab[2]) or not (tab[2][np.minimum(j, len(tab[2]) - 1)] == types).all():
-        tab[2] = np.union1d(tab[2], types).astype(np.int64)
-        tab[3] = np.array([values.get(str(t), 0) for t in tab[2].tolist()], float)
-        j = np.searchsorted(tab[2], types)
-    return tab[3][j]
+        tab = (values, len(values), np.zeros(0, np.int64), np.zeros(0, np.float64))
+    keys, vals = tab[2], tab[3]
+    j = np.searchsorted(keys, types)
+    if not len(keys) or not (keys[np.minimum(j, len(keys) - 1)] == types).all():
+        keys = np.union1d(keys, types).astype(np.int64)
+        vals = np.array([values.get(str(t), 0) for t in keys.tolist()], float)
+        _VALUES[id(values)] = (values, len(values), keys, vals)
+        j = np.searchsorted(keys, types)
+    return vals[j]
 
 
 def material(obs, values: dict, hero_level: float = 0.0, worker_cap: int = 0) -> dict[int, float]:

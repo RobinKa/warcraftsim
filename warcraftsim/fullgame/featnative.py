@@ -6,40 +6,28 @@ scripts/bench_view.py --compare checks both give the same features."""
 from __future__ import annotations
 
 import ctypes
-import fcntl
 import os
 import subprocess
 
 import numpy as np
 
-from .. import paths
+from .. import native, paths
 
 SRC = paths.REPO_ROOT / "native" / "w3feat.c"
-LIB = paths.REPO_ROOT / "build" / "native" / "libw3feat.so"
+LIB = native.lib_path(SRC, "w3feat")
 _lib = None
 
 
-def _build() -> None:
-    LIB.parent.mkdir(parents=True, exist_ok=True)
-    with open(LIB.parent / ".build.lock", "w") as lock:  # (one build at a time: actor processes start together)
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        if LIB.exists() and LIB.stat().st_mtime >= SRC.stat().st_mtime:
-            return
-        tmp = LIB.with_suffix(".so.tmp")
-        subprocess.run(["gcc", "-O2", "-shared", "-fPIC", "-o", str(tmp), str(SRC), "-lm"], check=True)
-        tmp.replace(LIB)
-
-
 def lib():
-    """The library (built when missing or older than its source), or None (no compiler, or turned off)."""
+    """The library (built when missing: its name holds its source's hash), or None (no compiler, or turned off)."""
     global _lib
     if _lib is None:
         if os.environ.get("WARCRAFTSIM_PY_FEATURES") == "1":
             _lib = False
             return None
         try:
-            if not LIB.exists() or LIB.stat().st_mtime < SRC.stat().st_mtime:
-                _build()
+            if not LIB.exists():
+                native.build_lib(SRC, LIB, ["-lm"])
             L = ctypes.CDLL(str(LIB))
         except (OSError, subprocess.CalledProcessError):
             _lib = False

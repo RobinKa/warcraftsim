@@ -1123,14 +1123,16 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
     paired: list[tuple] = []  # an evaluation slot's next launches: one matchup for every policy in turn
     mirrored: list[tuple] = []  # (--eval-vs) the next launch against a checkpoint: the last one's races swapped
     alive = Path(cfg["run_dir"]) / "remote-eval.alive"  # (scripts/remote_eval.py: its games still arrive)
+    began = time.time()
     while not stop.is_set() and os.getppid() == cfg["learner_pid"]:
         if evaluating and cfg.get("eval_fallback", 0) > 0:  # --eval-fallback: another machine plays them while
             try:                                            # its games keep coming; these only when they stop
-                if time.time() - alive.stat().st_mtime < cfg["eval_fallback"]:
-                    time.sleep(15)
-                    continue
-            except FileNotFoundError:
-                pass
+                fresh = time.time() - alive.stat().st_mtime < cfg["eval_fallback"]
+            except FileNotFoundError:  # (none yet, a fork's start: as long again for the worker's first games; they had
+                fresh = time.time() - began < cfg["eval_fallback"]  # played an unpaired launch or two, audit 7)
+            if fresh:
+                time.sleep(15)
+                continue
         if not evaluating and cfg.get("grpo_share", 0.0) > 0 and run_branch(wid, k, cfg, vocab, infer, out_q, name):
             continue  # (a branch of another slot's game first: its group waits for it)
         try:
@@ -2340,10 +2342,12 @@ class League:
         levels and balance (the parent's last levels fit the fork's start, its weights). Snapshots
         are renamed "past:<run>/<steps>" (steps count per run); those named after a run keep their
         names. The records against the built-in AI and itself stay the parent's (the new run's
-        charts start clean). Returns the members taken."""
+        charts start clean). The parent's fixed members (--league-add) are not taken: the fork's own --league-add
+        adds them again. Returns the members taken."""
         taken = []
         for row in summary.get("members", []):
-            if not row.get("path") or row["name"] in self.scripts or row["name"] in self.real or not usable(row["path"]):
+            if (not row.get("path") or row["name"] in self.scripts or row["name"] in self.real or row["name"].startswith("fixed:")
+                    or not usable(row["path"])):
                 continue
             kind, _, rest = row["name"].partition(":")
             m = Member(row["name"] if "/" in rest else f"{kind}:{run}/{rest}", path=row["path"], steps=row.get("steps", 0))
@@ -2351,8 +2355,10 @@ class League:
             m.recent = list(row.get("recent") or [])
             self.past.append(m)
             taken.append(m.name)
-        if len(self.past) > self.max_past - 1:  # (room for the new run's own first snapshot; the first kept)
-            del self.past[1:len(self.past) - self.max_past + 2]
+        movable = [i for i, m in enumerate(self.past) if not m.name.startswith("fixed:")]
+        extra = len(movable) - (self.max_past - 1)  # (room for the new run's own first snapshot; the first kept, and
+        for i in reversed(movable[1:1 + extra] if extra > 0 else []):  # fixed members: audit 7)
+            del self.past[i]
         self._restore_levels(summary)
         return [m.name for m in self.past]
 
@@ -3056,7 +3062,7 @@ class GraphedUpdate:
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=bool(args.bf16), cache_enabled=False):
             seq = (s["B"], s["T"], s["h0"], None)
             ev = evaluate(net, s["ent"], s["type"], s["cur"], s["mask"], s["glob"], s["n_own"],
-                          s["order"], s["tgt"], s["bx"], s["by"], s["avail"], seq=seq)
+                          s["order"], s["tgt"], s["bx"], s["by"], s.get("avail"), seq=seq)
             value = ev["value"].float()
             own = s["own"].float()
             n_units = own.sum().clamp(min=1)
@@ -3079,7 +3085,7 @@ class GraphedUpdate:
             if ref is not None and args.ref_kl > 0:
                 with torch.no_grad():
                     ev_ref = evaluate(ref, s["ent"], s["type"], s["cur"], s["mask"], s["glob"], s["n_own"],
-                                      s["order"], s["tgt"], s["bx"], s["by"], s["avail"], seq=seq if ref.memory else None)
+                                      s["order"], s["tgt"], s["bx"], s["by"], s.get("avail"), seq=seq if ref.memory else None)
                 ref_kl = (anchor_kl(ev, ev_ref, getattr(args, "ref_kl_mode", "reverse")) * own).sum() / n_units
                 loss = loss + args.ref_kl * ref_kl
             out["loss/ref_kl"] = ref_kl
@@ -3963,7 +3969,8 @@ def main(argv: list[str] | None = None) -> int:
         if league.win_balance is not None and (run_dir / "episodes.jsonl").exists():
             from collections import deque as _deque
             with open(run_dir / "episodes.jsonl") as fh:  # (its newest games between agents: the model again)
-                rows = [json.loads(line) for line in _deque((x for x in fh if '"tb_x"' in x), maxlen=3000)]
+                rows = [json.loads(line) for line in _deque((x for x in fh if '"tb_x"' in x and '"scenario"' not in x),
+                                                                maxlen=3000)]
             league.win_balance.restore([(r["tb_x"], r.get("balance_tax", 0.0), (r["outcome"] + 1.0) / 2.0) for r in rows])
     else:
         if args.league_from:  # (a fork: its parent's opponents, then its own start)
@@ -3976,7 +3983,8 @@ def main(argv: list[str] | None = None) -> int:
                 if (src / "episodes.jsonl").exists():
                     from collections import deque as _deque
                     with open(src / "episodes.jsonl") as fh:
-                        rows = [json.loads(line) for line in _deque((x for x in fh if '"tb_x"' in x), maxlen=3000)]
+                        rows = [json.loads(line) for line in _deque((x for x in fh if '"tb_x"' in x and '"scenario"' not in x),
+                                                                maxlen=3000)]
                     league.win_balance.restore([(r["tb_x"], r.get("balance_tax", 0.0), (r["outcome"] + 1.0) / 2.0)
                                                 for r in rows])
             print(f"league from {src.name}: {len(taken)} past snapshots ({', '.join(taken)})", flush=True)
@@ -4102,7 +4110,7 @@ def main(argv: list[str] | None = None) -> int:
         native.start()
     _pin(cfg, "learner")  # (after the others started: they would inherit it)
     from .sysstat import Sampler  # the machine's time by part of the run (system.jsonl: the dashboard's System tab)
-    Sampler(run_dir / "system.jsonl").start()
+    Sampler(run_dir / "system.jsonl", slot=slot).start()
     info.update(status="training", started=time.time())
     save_info()
     t0 = time.time()

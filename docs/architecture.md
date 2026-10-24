@@ -56,7 +56,7 @@ flowchart LR
     W["evalworker: 8 processes of 2 games<br/>their own inference (GPU)"]
   end
   L --> M
-  M -- "code, run.json, vocab.json, checkpoints (rsync)" --> W
+  M -- "HEAD's code (git archive), run.json, vocab.json, checkpoints (rsync)" --> W
   W -- "new rows (ssh)" --> M
   M --> E
 ```
@@ -65,7 +65,8 @@ flowchart LR
 * Its "current" is the run's newest checkpoint, a few minutes behind the learner's live weights. The other policies are the run's `--eval-checkpoints`.
 * Its draws are seeded by the run's name, the worker's name and where it started: other matchups than the run machine's.
 * Its rows are the learner's evaluation rows plus `host` and `version` (the update "current" played with). `real_games.py`, `run_status.sh` and the dashboard read them with the run's own; `real_games.py --split host` shows them apart, `--no-remote` leaves them out.
-* The manager runs the worker as a systemd user service there. It starts it again when it died or the machine came back, and stops it when the run ends or another run is live. A restart of the run with other settings for its evaluation games, or a worker started anew, gets this tree's code.
+* The manager runs the worker as a systemd user service there. It starts it again when it died or the machine came back. A restart of the run with other settings for its evaluation games, new committed code, or a worker started anew, gets HEAD's code (git archive: edits not committed stay here).
+* Before a relaunch, and when the run ends or another run is live, the worker is drained: its games in flight finish, then it exits (SIGUSR1, at most 15 minutes). A row is written only when its game ends, and losses and ties last 3-5 times as long as wins, so the games a relaunch cut were mostly those. 58 relaunches on 2026-10-24 (then on any edit saved) read a true 84% as ~89.5% (audit 7).
 * A machine for it: the repository in `~/warcraftsim` with a venv (torch), GE-Proton's Wine in `~/wc3/ge` and the game in `~/wc3/legacy-1.29` (copied), `scripts/build_native.sh` (StormLib, pjass), and the 32-bit libraries the [engine notes](reference/engine-notes.md) list. The manager copies the shim.
 
 ```

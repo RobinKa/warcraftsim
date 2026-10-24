@@ -183,19 +183,21 @@ def _matchup_kind(e: dict) -> list[str]:
         return ["curriculum"]
     if o == "self":
         return ["self"]
-    return ["past"] if o.startswith("past:") else []
+    return ["past"] if o.startswith("past:") else ["fixed"] if o.startswith("fixed:") else []
 
 
 def _opponent_kind(o: str) -> str | None:
     """An episode's opponent as the League tab's tie and loss charts name it: the script
     ("ai-normal": curriculum games when the run has one; "ai-normal (real)": the untaxed AI),
-    "itself", "past snapshots" or "exploiter"."""
+    "itself", "past snapshots", "fixed opponents" (--league-add's) or "exploiter"."""
     if o.startswith("script:"):
         return o.split(":", 1)[1]
     if o == "self":
         return "itself"
     if o.startswith("past:"):
         return "past snapshots"
+    if o.startswith("fixed:"):
+        return "fixed opponents"
     return "exploiter" if o.startswith("exploiter") else None
 
 
@@ -1635,6 +1637,7 @@ def _system(sysrows: list[dict], infer: list[dict], train: list[dict]) -> dict:
     if sysrows:
         st = _interp_steps([r["time"] for r in sysrows], train)
         out["cpu"] = _downsample([{**r, "steps": st[i]} for i, r in enumerate(sysrows)], 400)
+        out["cpu_recent"] = sysrows[-6:]  # (the last ~3 minutes: the thinned series' last 6 had spanned up to ~19)
     keys = ("round_ms", "lat_idle", "lat_update", "gpu_idle", "gpu_update", "rounds_update_share", "busy", "rows_per_s")
     rows = [r for r in infer if "time" in r and "round_ms" in r]
     if rows:

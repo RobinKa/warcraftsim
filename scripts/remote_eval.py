@@ -11,12 +11,14 @@ Every --every seconds, when the host answers:
 * the run: --run, else the live one (its learner's process here). When it ends (no learner for --grace
   minutes), the worker stops (with --run this exits too); following the live run, a new run gets the worker.
 * a launch of the run with other settings for its evaluation games (SETTINGS: other evaluation checkpoints, map,
-  rules; a restart with the same ones leaves the worker be), or a worker that is not running: this tree's code is
-  mirrored there (the tracked and new files of warcraftsim/, scripts/, native/ and the built shim: what a run
-  launched now would use), run.json, vocab.json and the evaluation checkpoints sent (at their paths relative to
-  the repository), and the worker (re)started as a systemd user service (systemd-run --user, niced: it outlives
-  the ssh session, `systemctl --user stop` ends all of it). New code for the worker: --stop, and the manager
-  starts it again with it.
+  rules; a restart with the same ones leaves the worker be), new committed code, or a worker that is not running:
+  the commit's code is mirrored there (git archive HEAD of warcraftsim/, scripts/, native/, and the built shim:
+  edits not committed stay here), run.json, vocab.json and the evaluation checkpoints sent (at their paths relative
+  to the repository), and the worker (re)started as a systemd user service (systemd-run --user, niced: it outlives
+  the ssh session, `systemctl --user stop` ends all of it). A worker playing for another launch, or for a run that
+  ended or gave way, is drained first (SIGUSR1: its games in flight finish, then it exits): a row is written only
+  when its game ends, losses and ties last 3-5x as long as wins, and the games cut by relaunches were mostly
+  those (58 relaunches on 2026-10-24, on any edit saved here, had read a true 84% as ~89.5%: audit 7).
 * the run's newest checkpoint, at most every --push-every seconds: the worker's "current"; the host keeps the
   newest --keep it was sent.
 * the worker's new rows (complete lines, by count), their times moved by the host's clock offset when it is off
@@ -117,12 +119,17 @@ SETTINGS = ("map", "handicap", "step_seconds", "max_minutes", "wait_floor_ms", "
 
 
 def launch_key(info: dict) -> str:
-    """The run's evaluation games' settings and this tree's code (its commit, and its changes not committed), as a
-    key: a resume on new code with the same settings had left the worker on the old (audit 6)."""
+    """The run's evaluation games' settings and the committed code the worker runs, as a key: a resume on new code
+    with the same settings had left the worker on the old (audit 6). By the files' contents at HEAD (git's blob
+    ids), not the commit: a commit of docs or a dashboard change leaves it be."""
     c = info.get("config", {})
     h = hashlib.sha1()
-    for f in code_files():  # (the contents of what the worker runs: a commit of docs or a dashboard change had
-        if not f.startswith(("warcraftsim/dashboard/", "scripts/")):  # relaunched it, its games in flight lost)
+    for line in subprocess.run(["git", "ls-tree", "-r", "HEAD", "--", *CODE], cwd=ROOT, capture_output=True,
+                               text=True).stdout.splitlines():
+        if not line.split("\t", 1)[-1].startswith(("warcraftsim/dashboard/", "scripts/")):
+            h.update(line.encode())
+    for f in SHIM:
+        if (ROOT / f).exists():
             h.update(f.encode() + b"\0" + (ROOT / f).read_bytes())
     return hashlib.sha1(json.dumps([c.get(k) for k in SETTINGS] + [h.hexdigest()]).encode()).hexdigest()[:10]
 
@@ -147,13 +154,9 @@ def newest_checkpoint(run: str) -> str | None:
     return cks[-1] if cks else None
 
 
-def code_files() -> list[str]:
-    """What the worker runs: this tree's tracked and new (not ignored) files of the package, the scripts and the
-    native sources, and the built shim."""
-    out = subprocess.run(["git", "ls-files", "-co", "--exclude-standard", "--", "warcraftsim", "scripts", "native",
-                          "pyproject.toml"], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")
-    files = [f for f in out if f and (ROOT / f).is_file()]
-    return files + [f"build/shim/{f}" for f in ("w3shim.dll", "w3launch.exe") if (ROOT / "build" / "shim" / f).exists()]
+CODE = ("warcraftsim", "scripts", "native", "pyproject.toml")  # what the worker runs: these at HEAD, and the built shim
+SHIM = ("build/shim/w3shim.dll", "build/shim/w3launch.exe")
+DRAIN_MINUTES = 20.0  # (the worker's own limit is 15: then it is stopped)
 
 
 class Manager:
@@ -168,6 +171,7 @@ class Manager:
         self.away = False
         self.misses = 0  # the host's unanswered looks in a row
         self.notified = False  # the user was told it is down (then also that it is back)
+        self.draining: float | None = None  # the worker told to finish its games and exit, since
 
     def remote(self, rel: str = "") -> str:
         return f"{self.a.remote_dir}/runs/{self.run}/{rel}"
@@ -226,7 +230,7 @@ class Manager:
         log(f"starting the worker for {self.run} (launch {key}): code, run files, checkpoints")
         self.h.run(f"systemctl --user stop {UNIT} 2>/dev/null; systemctl --user reset-failed {UNIT} 2>/dev/null; "
                    f"mkdir -p {shlex.quote(self.remote('checkpoints'))}", timeout=120)
-        if not self.h.rsync(code_files()):
+        if not self.push_code():
             return False
         evals = eval_checkpoints(info)
         missing = [p for p in evals if not (ROOT / p).exists()]
@@ -259,6 +263,46 @@ class Manager:
         self.key = key
         log(f"worker started: {self.a.games} games for {self.run}")
         return True
+
+    def push_code(self) -> bool:
+        """HEAD's code there (git archive: tracked files only, as committed), and the built shim."""
+        try:
+            arc = subprocess.run(["git", "archive", "HEAD", "--", *CODE], cwd=ROOT, capture_output=True, timeout=120)
+            r = subprocess.run(SSH + [self.h.host, f"cd {shlex.quote(self.a.remote_dir)} && tar -x -m -f -"],
+                               input=arc.stdout, capture_output=True, timeout=600)
+        except subprocess.TimeoutExpired:
+            return False
+        if arc.returncode or r.returncode:
+            log(f"code not sent: {(arc.stderr or r.stderr).decode(errors='replace').strip()[-300:]}")
+            return False
+        return self.h.rsync([f for f in SHIM if (ROOT / f).exists()])
+
+    def drain(self, why: str) -> bool:
+        """The worker told to finish its games and exit (True: it has; the caller goes on). Stopped when it takes
+        longer than DRAIN_MINUTES (or its systemd unit's main process can't be signalled)."""
+        if self.draining is None:
+            r = self.h.run(f"systemctl --user kill --kill-whom=main -s SIGUSR1 {UNIT}", timeout=60)
+            if r is None:
+                return False
+            if r.returncode:
+                self.stop_worker(f"{why}; not drained: {r.stderr.strip()[-200:]}")
+                return True
+            self.draining = time.time()
+            log(f"draining the worker ({why}): its games in flight finish first")
+            return False
+        if time.time() - self.draining > 60 * DRAIN_MINUTES:
+            self.stop_worker(f"{why}; still draining after {DRAIN_MINUTES:.0f} minutes")
+            self.draining = None
+            return True
+        return False
+
+    def hold_local(self, run: str) -> None:
+        """The run's own evaluation games wait (--eval-fallback) while the worker drains or starts: at a fork's start
+        they had played an unpaired launch or two (64 games of one checkpoint, 0 of the other: audit 7). Before a
+        start only when the file is missing: a worker that never starts lets them play after --eval-fallback."""
+        f = RUNS / run / "remote-eval.alive"
+        if (RUNS / run).is_dir() and (self.draining is not None or not f.exists()):
+            f.touch()
 
     def pull(self, st: dict) -> None:
         """The host's new rows, appended here (by count: complete lines only; one manager at a time, as --stop
@@ -330,11 +374,16 @@ class Manager:
             self.away = False
         if self.run is not None:  # (its rows first: a stop or a switch below must not lose them)
             self.pull(st)
+        if st["active"] != "active":
+            self.draining = None
         unit = st["unit"].split()
         playing = unit[2] if st["active"] == "active" and unit[:2] == ["warcraftsim", "evalworker"] else None
         if self.run is not None and (self.run != target or ended):
             if playing == self.run:
-                self.stop_worker(f"{self.run} ended" if ended else f"{target} is the live run now")
+                if not self.drain(f"{self.run} ended" if ended else f"{target} is the live run now"):
+                    if not ended:
+                        self.hold_local(target)
+                    return True
                 st = self.state() or st
                 self.pull(st)  # (its last games)
                 playing = None
@@ -353,9 +402,11 @@ class Manager:
             return True
         key = launch_key(info)
         if not (st["active"] == "active" and st["unit"] == self.description(key)):
-            if target in live:  # (a new launch of the run, or no worker: started, with this tree's code)
-                if st["active"] == "active":
-                    log(f"the worker plays for another launch ({st['unit']})")
+            if target in live:  # (a new launch of the run, or no worker: started, with HEAD's code)
+                if st["active"] == "active" and not self.drain(f"the worker plays for another launch ({st['unit']})"):
+                    self.hold_local(target)
+                    return True
+                self.hold_local(target)
                 self.start_worker(info)
             return True
         self.key = key

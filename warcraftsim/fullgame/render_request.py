@@ -397,7 +397,9 @@ def play_and_render(r: dict, runs: Path, update) -> dict:
         with open(out_dir / "episodes.jsonl", "a") as f:  # (the video's info: videos.VideoIndex matches it by time)
             f.write(json.dumps({**{k: v for k, v in ep.items() if k not in ("eval", "eval_key")}, "request": r["id"]}) + "\n")
         video = render_video(cfg, (setup_, replay, stem, trace, row, t), nice=0)
-        return {"video": str(video.relative_to(out_dir)), "outcome": ep["outcome"], "game_time": round(ep["game_time"], 1),
+        # (the list shows "A vs B": A's result; the game's row is the followed policy's, b's when it follows b; audit 7)
+        return {"video": str(video.relative_to(out_dir)), "outcome": ep["outcome"] if q["follow"] == "a" else -ep["outcome"],
+                "game_time": round(ep["game_time"], 1),
                 "races": [races[slot_a], races[1 - slot_a]], "targets": tg, "version": version, "slot_a": slot_a}
     finally:
         slot_lock.close()

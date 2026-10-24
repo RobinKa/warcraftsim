@@ -1248,7 +1248,7 @@ function matchupStyle(name) {
 // series named by opponent (chart option opponents): a colour per AI difficulty or kind of opponent, dashed
 // for the curriculum's taxed AI ("ai-normal"), solid for the real game ("ai-normal (real)") and the agents
 const OPPONENT_COLORS = [["easy", "#4cc38a"], ["normal", "#e0a33a"], ["insane", "#e5534b"], ["itself", "#539bf5"],
-                         ["past", "#b083f0"], ["exploiter", "#8795a3"]];
+                         ["past", "#b083f0"], ["fixed", "#f56ed2"], ["exploiter", "#8795a3"]];
 function opponentStyle(name) {
   const c = OPPONENT_COLORS.find(([k]) => name.includes(k));
   return c ? { color: c[1], dash: name.startsWith("ai-") && !name.includes("(real)") ? [6, 3] : [] } : null;
@@ -2008,7 +2008,7 @@ function renderBottleneck(d) {
   if (!el) return;
   if (!S || !(S.cpu.length || S.cycle.length)) { el.innerHTML = ""; return; }
   const mean = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : NaN;
-  const last = S.cpu[S.cpu.length - 1], recent = S.cpu.slice(-6);  // (the last ~3 minutes)
+  const recent = S.cpu_recent || S.cpu.slice(-6), last = recent[recent.length - 1];  // (the last ~3 minutes)
   const parts = Object.keys(PART_COLORS).filter(k => k !== "idle");
   const avg = k => mean(recent.map(r => (r.cores || {})[k] || 0));
   const ncpu = last ? last.ncpu : 0, idle = mean(recent.map(r => r.idle || 0)), busy = ncpu - idle;
@@ -2124,6 +2124,7 @@ function renderMatchups(d) {
     [M.self, "Against itself", "both sides the learner, so the races alone differ (each game counted from both sides); the stronger race's income taxed", balance],
     [M.curriculum, "Curriculum games against the built-in AI", "the AI's income taxed by the matchup's curriculum level", aiTax],
     [M.past, "Against past snapshots", "the learner's race by the snapshot's (taxed between races as against itself)", null],
+    [M.fixed, "Against fixed opponents", "--league-add's checkpoints, kept for good: a set share of the past snapshots' games", null],
   ].filter(p => p[0]);
   const seg = (key, opts, cur) => `<span class="seg">${opts.map(([v, label]) => `<button data-mu="${key}" data-v="${v}" class="${v === cur ? "on" : ""}">${label}</button>`).join("")}</span>`;
   box.innerHTML = `<div class="mu-bar">${seg("window", [["recent", "recent games"], ["all", "whole run"]], win)}
