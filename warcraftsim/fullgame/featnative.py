@@ -56,19 +56,13 @@ def lib():
     return _lib or None
 
 
-def _keys(d) -> tuple[np.ndarray, np.ndarray, int]:
-    """A dict (or a set: values 1) as sorted int64 keys and values."""
-    if not d:
-        z = np.zeros(1, np.int64)
-        return z, z, 0
-    if isinstance(d, dict):
-        k = np.fromiter(d.keys(), np.int64, len(d))
-        v = np.fromiter(d.values(), np.int64, len(d))
-    else:
-        k = np.fromiter(d, np.int64, len(d))
-        v = np.ones(len(d), np.int64)
-    o = np.argsort(k)
-    return np.ascontiguousarray(k[o]), np.ascontiguousarray(v[o]), len(d)
+def _keyed(queued, busy, lumber) -> tuple[np.ndarray, int, int, int]:
+    """The production's queued counts (a dict; a set: 1 each), its busy buildings and the lumber harvesters (sets or
+    dicts' keys) as one int64 array: queued's sorted keys, their values, busy's sorted, lumber's sorted (and a 0, so
+    that it is never empty); their lengths. (An array, a sort and a pointer each had been ~30 us a step.)"""
+    q = sorted(queued.items()) if isinstance(queued, dict) else [(k, 1) for k in sorted(queued)]
+    b, lm = sorted(busy), sorted(lumber)
+    return np.array([*(k for k, _ in q), *(v for _, v in q), *b, *lm, 0], np.int64), len(q), len(b), len(lm)
 
 
 def geometry(fx) -> np.ndarray:
@@ -81,9 +75,9 @@ def entities(enc, fx, rows: np.ndarray, player: int, sign: float, production, lu
     L = lib()
     rows = np.ascontiguousarray(rows, np.int64)
     queued, busy = (production[0], production[1]) if production is not None else ({}, set())
-    qk, qv, nq = _keys(queued)
-    bk, _, nb = _keys(busy)
-    lk, _, nl = _keys(lumber)
+    keys, nq, nb, nl = _keyed(queued, busy, lumber)
+    qk = keys.ctypes.data
+    qv, bk, lk = qk + 8 * nq, qk + 16 * nq, qk + 8 * (2 * nq + nb)
     if getattr(enc, "_native_key", None) != (fx.STARTS, fx.F):  # (the tables, kept with their pointers)
         arrs = (np.ascontiguousarray(np.sort(fx.PASSIVE_IDS).astype(np.int64)),
                 np.ascontiguousarray(np.sort(fx.SHOP_IDS).astype(np.int64)),
@@ -94,20 +88,19 @@ def entities(enc, fx, rows: np.ndarray, player: int, sign: float, production, lu
         enc._native_key = (fx.STARTS, fx.F)
     arrs, (passive, shops, tk, tv, ck, cv, geo) = enc._native_tables
     E = fx.MAX_ENT
-    idx = np.empty(E, np.int64)
-    counts = np.zeros(5, np.int64)
+    out = np.zeros(3 * E + 5, np.int64)  # (the indices, types, current orders and counts: one array, one pointer)
+    o = out.ctypes.data
     f = np.zeros((E, fx.F), np.float32)
-    types = np.zeros(E, np.int64)
-    cur = np.zeros(E, np.int64)
     n = L.w3f_entities(rows.ctypes.data, len(rows), rows.shape[1], int(player), float(sign), geo,
                        passive, len(arrs[0]), shops, len(arrs[1]), int(bool(fx.NEUTRAL)),
                        fx.MAX_OWN, E, fx.F, fx.A_POS,
-                       qk.ctypes.data, qv.ctypes.data, nq, bk.ctypes.data, nb, lk.ctypes.data, nl,
+                       qk, qv, nq, bk, nb, lk, nl,
                        tk, tv, len(arrs[2]), ck, cv, len(arrs[4]),
-                       idx.ctypes.data, counts.ctypes.data, f.ctypes.data, types.ctypes.data, cur.ctypes.data)
+                       o, o + 24 * E, f.ctypes.data, o + 8 * E, o + 16 * E)
     if n < 0:
         raise MemoryError("w3f_entities")
-    n, n_own, n_enemy, n_neutral, own_all = (int(x) for x in counts)
+    n, n_own, n_enemy, n_neutral, own_all = out[3 * E:].tolist()
+    idx, types, cur = out[:E], out[E:2 * E], out[2 * E:3 * E]
     sel = rows[idx[:n]]
     enc.ghost0 = min(n, n_own + n_enemy + n_neutral)
     enc.counts = (own_all, n_own + n_enemy + n_neutral)
