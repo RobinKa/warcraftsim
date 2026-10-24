@@ -1337,15 +1337,24 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
                 for c in self.busy.pop(e.a, ()):
                     self.started.pop(c, None)
 
+    def _own_rows(self, obs):
+        """The side's living units' rows of the native table (native.py's columns), once a step; None without one."""
+        if getattr(self, "_rows_of", None) is not obs:
+            ua = getattr(obs, "unit_array", None)
+            self._rows_of = obs
+            self._own = ua[(ua[:, 2] == self.side) & ((ua[:, 11] & fx.DEAD) == 0)] if ua is not None else None
+        return self._own
+
     def _mine(self, obs) -> list:
-        """The side's living units, once a step: Unit objects made from the native table's rows of its own (every
-        unit of the game made one each step, and their enum flags tested, had been ~10% of an actor's time)."""
+        """The side's living units as Unit objects, once a step, made from its own rows of the native table only when
+        an order needs them (every unit of the game made one each step, and their enum flags tested, had been ~10% of
+        an actor's time)."""
         if getattr(self, "_mine_of", None) is obs:
             return self._mine_list
-        ua = getattr(obs, "unit_array", None)
-        if ua is not None:
+        own = self._own_rows(obs)
+        if own is not None:
             from ..native import unit_from_row
-            mine = [unit_from_row(r) for r in ua[(ua[:, 2] == self.side) & ((ua[:, 11] & fx.DEAD) == 0)].tolist()]
+            mine = [unit_from_row(r) for r in own.tolist()]
         else:
             mine = [u for u in obs.units if u.owner == self.side and u.alive]
         self._mine_of, self._mine_list = obs, mine
@@ -1374,18 +1383,29 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         if not due:
             self.reserve = None
             return []
-        mine = self._mine(obs)
-        done = [u for u in mine if u.is_structure and not int(u.flags) & fx.CONSTRUCTING]
-        have = techtree.counts_as({u.type for u in done} | {c for c in made if c[0] == "R"}, self.race)
+        own = self._own_rows(obs)
+        mine = done = None  # (Unit objects: made when an order needs them)
+        if own is not None:  # (the finished buildings' types and a hero from the rows: native.py's columns)
+            fl = own[:, 11]
+            types = {fx.rawcode(c) for c in set(own[(fl & fx.STRUCTURE > 0) & (fl & fx.CONSTRUCTING == 0), 1].tolist())}
+            hero = bool((fl & 1).any())
+        else:
+            mine = self._mine(obs)
+            done = [u for u in mine if u.is_structure and not int(u.flags) & fx.CONSTRUCTING]
+            types, hero = {u.type for u in done}, any(getattr(u, "is_hero", False) for u in mine)
+        have = techtree.counts_as(types | {c for c in made if c[0] == "R"}, self.race)
         heroes = len({c for c in (*made, *self.started) if techtree.is_hero(c) or fx.is_hero_code(c)})
         expansion = self._expansion_reserve(obs, due, p, t)  # (--macros: money kept for a due expansion)
-        self.first_free = heroes == 0 and not any(getattr(u, "is_hero", False) for u in mine)  # (a free first hero)
+        self.first_free = heroes == 0 and not hero  # (a free first hero)
         save = expansion
         for _, c in due:
-            item = self.next_step(c, have, {u.type for u in done}, heroes, t)
+            item = self.next_step(c, have, types, heroes, t)
             if item is None:
                 continue
             self.why_not = ""
+            if done is None:
+                mine = self._mine(obs)
+                done = [u for u in mine if u.is_structure and not int(u.flags) & fx.CONSTRUCTING]
             cmds = self.order(item, obs, mine, done, p, t)
             if not cmds and self.why_not:
                 self.blocked.setdefault(item, Counter())[self.why_not] += 1
@@ -1430,20 +1450,23 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         if self.race != "human":  # (an orc frame takes no repair, not even from its builder: tested 2026-10-24; its
             # resume had been taught 140 times a game as orc, an order the game refuses; audit 6)
             return None
-        mine = self._mine(obs)
-        frames = {u.id: u for u in mine if int(u.flags) & fx.CONSTRUCTING}
-        self.frames = {i: (u.hp, t if u.hp > self.frames.get(i, (-1, t))[0] else self.frames[i][1])
-                       for i, u in frames.items()}
-        stalled = [frames[i] for i, (_, since) in self.frames.items() if t - since >= 20]
-        workers = [u for u in mine if u.is_worker and not u.is_structure
+        own = self._own_rows(obs)  # (each frame's id -> its hit points and place; from the rows: native.py's columns)
+        frames = ({i: (hp, x, y) for i, x, y, hp in own[(own[:, 11] & fx.CONSTRUCTING) > 0][:, [0, 3, 4, 6]].tolist()}
+                  if own is not None else {u.id: (u.hp, u.x, u.y) for u in self._mine(obs) if int(u.flags) & fx.CONSTRUCTING})
+        self.frames = {i: (hp, t if hp > self.frames.get(i, (-1, t))[0] else self.frames[i][1])
+                       for i, (hp, _, _) in frames.items()}
+        stalled = [i for i, (_, since) in self.frames.items() if t - since >= 20]
+        if not stalled:
+            return None
+        workers = [u for u in self._mine(obs) if u.is_worker and not u.is_structure
                    and not fx.building(int(u.flags), u.order) and u.order != REPAIR
                    and not int(u.flags) & int(UnitFlags.HIDDEN | UnitFlags.LOADED)]
-        if not stalled or not workers:
+        if not workers:
             return None
-        f = stalled[0]
-        w = min(workers, key=lambda u: (u.x - f.x) ** 2 + (u.y - f.y) ** 2)
-        self.frames[f.id] = (f.hp, t)  # (another try in 20 steps if it still gains nothing)
-        return TargetOrder(w.id, REPAIR, f.id)
+        f, (hp, x, y) = stalled[0], frames[stalled[0]]
+        w = min(workers, key=lambda u: (u.x - x) ** 2 + (u.y - y) ** 2)
+        self.frames[f] = (hp, t)  # (another try in 20 steps if it still gains nothing)
+        return TargetOrder(w.id, REPAIR, f)
 
     def next_step(self, c: str, have: set, types: set, heroes: int, t: int, depth: int = 0) -> str | None:
         """The item to start toward `c` now: `c` when the player has what it needs (`have`: techtree.counts_as;
