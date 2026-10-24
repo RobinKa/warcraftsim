@@ -447,7 +447,15 @@ static HANDLE WINAPI CreateFileW_hook(LPCWSTR name, DWORD access, DWORD share, L
 typedef int(__cdecl *GetTechMaxFn)(int player, int techid);
 static GetTechMaxFn GetTechMax_orig;
 
+int *sync_mbox(void) {
+    return g_mbox;
+}
+
 static int __cdecl GetTechMax_hook(int player, int techid) {
+    if (player == g_obs_raw_player && player) { /* (W3SIM_CUTS & 1073741824) a token from the harness's W3S_Tok */
+        obs_raw_tok(techid);
+        return 0;
+    }
     if (techid >= MBOX - 1 && techid <= MBOX + MBOX_MAX) {
         if (techid == MBOX - 1) {
             if (g_enabled)

@@ -66,6 +66,18 @@
  *      result made by the shim with the same natives (W3SIM_COBS_CHECK=1: the harness does both as well and the shim
  *      compares); needs the harness from this change (older maps never ask)
  *
+ * Round 4 (W3SIM_CUTS is parsed as 64 bits from here on):
+ * 67108864, 134217728, 268435456, 536870912 (softfloat.c) the soft float's multiply, float-to-int truncation, floor and
+ *      int-to-float as SSE instructions where each is provably the IEEE operation (the rest by the original)
+ * 1073741824 (units.c, obs.c, sync.c; with the harness's W3S_CSerInit handshake) W3S_Tok's integers written by the shim
+ *      (GetPlayerTechMaxAllowed(the token player, v): no I2S string, no Preload a token), and the "V", "K" and "T"
+ *      records made by it (the camera's target with the same natives; the step, the time and the flags from the harness)
+ * 2147483648 (units.c, with the handshake) the agents' commands applied by the shim, W3S_ApplyOne's natives in its order
+ *      (ops 1, 2, 3, 5, 6, 87, 90; a step with any other op, or with a pending purchase or an advised player, the
+ *      harness's as before), the "C" records of their results written by it
+ * 4294967296 the name hash 0x433890 (every JASS identifier the VM resolves; file names too) in one pass, the same value
+ *      (checked against the executable's own at install)
+ *
  * Offsets are for the 1.29.2.9231 executable (RVAs; see ~/tools/w3analysis/report.md).
  */
 #include "w3shim.h"
@@ -82,12 +94,14 @@
 #define RVA_BLP_DECODE 0x43cdf0 /* int __thiscall decode_mips(BLP *, int format, int *table, unsigned first) */
 #define RVA_MIP_ALLOC 0x8becc0  /* int __cdecl mip_alloc(int format, unsigned w, unsigned h, int fill) */
 
-static int g_cuts = -1;
+static long long g_cuts = -1;
 
-int cuts_flags(void) {
+long long cuts_flags(void) { /* (64 bits: bits from 2^31 on are round 4's) */
     if (g_cuts < 0) {
-        char buf[16];
-        g_cuts = GetEnvironmentVariableA("W3SIM_CUTS", buf, sizeof buf) ? atoi(buf) : 0;
+        char buf[32];
+        g_cuts = GetEnvironmentVariableA("W3SIM_CUTS", buf, sizeof buf) ? _strtoi64(buf, NULL, 10) : 0;
+        if (g_cuts < 0)
+            g_cuts = 0;
     }
     return g_cuts;
 }
@@ -860,6 +874,99 @@ static void install_gridwalk(void) {
         shim_log("cuts: the widget grid's walk in C (0x8092a0)");
 }
 
+/* 4294967296 (round 4): the name hash (0x433890, cdecl unsigned hash(const char *name)): the name upper-cased ('a'-'z'
+ * less 0x20, '/' as '\\', at most 1023 bytes) into a 1 KB buffer, then Jenkins' lookup2 (0x4347f0, init 0) over it.
+ * Every JASS identifier the VM resolves goes through it (its symbol tables, 0x8cdca0: 1-3 % of the main thread with
+ * the AI's scripts). The same function in one pass, the bytes mapped by a table as they are read, no buffer. */
+static BYTE g_nh_up[256];
+#define NH_MIX(a, b, c)                                                                                                \
+    do {                                                                                                               \
+        a -= b; a -= c; a ^= (c >> 13);                                                                                \
+        b -= c; b -= a; b ^= (a << 8);                                                                                 \
+        c -= a; c -= b; c ^= (b >> 13);                                                                                \
+        a -= b; a -= c; a ^= (c >> 12);                                                                                \
+        b -= c; b -= a; b ^= (a << 16);                                                                                \
+        c -= a; c -= b; c ^= (b >> 5);                                                                                 \
+        a -= b; a -= c; a ^= (c >> 3);                                                                                 \
+        b -= c; b -= a; b ^= (a << 10);                                                                                \
+        c -= a; c -= b; c ^= (b >> 15);                                                                                \
+    } while (0)
+
+static inline unsigned nh_word(const BYTE *k) {
+    return (unsigned)g_nh_up[k[0]] | ((unsigned)g_nh_up[k[1]] << 8) | ((unsigned)g_nh_up[k[2]] << 16) |
+           ((unsigned)g_nh_up[k[3]] << 24);
+}
+
+static unsigned nh_compute(const BYTE *s, unsigned len);
+
+static unsigned __cdecl NameHash_hook(const BYTE *s) {
+    unsigned len = 0;
+    while (len < 1023 && s[len])
+        len++;
+    return nh_compute(s, len);
+}
+
+static unsigned nh_compute(const BYTE *s, unsigned len) {
+    unsigned a = 0x9e3779b9u, b = 0x9e3779b9u, c = 0, n = len;
+    const BYTE *k = s;
+    for (; n >= 12; n -= 12, k += 12) {
+        a += nh_word(k);
+        b += nh_word(k + 4);
+        c += nh_word(k + 8);
+        NH_MIX(a, b, c);
+    }
+    c += len;
+    switch (n) {
+    case 11: c += (unsigned)g_nh_up[k[10]] << 24; /* fall through */
+    case 10: c += (unsigned)g_nh_up[k[9]] << 16;  /* fall through */
+    case 9: c += (unsigned)g_nh_up[k[8]] << 8;    /* fall through */
+    case 8: b += (unsigned)g_nh_up[k[7]] << 24;   /* fall through */
+    case 7: b += (unsigned)g_nh_up[k[6]] << 16;   /* fall through */
+    case 6: b += (unsigned)g_nh_up[k[5]] << 8;    /* fall through */
+    case 5: b += g_nh_up[k[4]];                   /* fall through */
+    case 4: a += (unsigned)g_nh_up[k[3]] << 24;   /* fall through */
+    case 3: a += (unsigned)g_nh_up[k[2]] << 16;   /* fall through */
+    case 2: a += (unsigned)g_nh_up[k[1]] << 8;    /* fall through */
+    case 1: a += g_nh_up[k[0]];                   /* fall through */
+    default: break;
+    }
+    NH_MIX(a, b, c);
+    return c;
+}
+
+static void install_namehash(void) {
+    BYTE *f = VA_(0x433890);
+    static const BYTE code[] = {0x55, 0x8b, 0xec, 0x81, 0xec, 0x04, 0x04, 0x00, 0x00};
+    if (memcmp(f, code, sizeof code) != 0 || f[0x67] != 0xe8 || f + 0x6c + *(int32_t *)(f + 0x68) != VA_(0x4347f0)) {
+        shim_log("cuts: name hash: unexpected code, not hooked");
+        return;
+    }
+    for (int i = 0; i < 256; i++)
+        g_nh_up[i] = (BYTE)(i >= 'a' && i <= 'z' ? i - 0x20 : i == '/' ? '\\' : i);
+    /* against the executable's own: every length to 1100 (past its 1023-byte cut), random bytes, then words */
+    typedef unsigned(__cdecl * HashFn)(const BYTE *);
+    static BYTE buf[1200];
+    unsigned r = 12345;
+    for (int k = 0; k < 60000; k++) {
+        int len = k < 1101 ? k : (int)(r % 64);
+        for (int i = 0; i < len; i++) {
+            r = r * 1664525u + 1013904223u;
+            BYTE v = (BYTE)(r >> 24);
+            buf[i] = (k & 1) ? (v ? v : 1) : (BYTE)("aZ/\\_09zA.:"[v % 11]);
+        }
+        buf[len] = 0;
+        unsigned n = 0;
+        while (n < 1023 && buf[n])
+            n++;
+        if (((HashFn)(void *)f)(buf) != nh_compute(buf, n)) {
+            shim_log("cuts: name hash: MISMATCH in the self-test (length %d), not hooked", len);
+            return;
+        }
+    }
+    if (hook(0x433890 - 0x400000, (void *)NameHash_hook, NULL, "name hash"))
+        shim_log("cuts: the name hash in one pass (W3SIM_CUTS & 4294967296)");
+}
+
 /* 32768: a unit's handle converted once per unit of the pass */
 #define VA_H2UNIT 0x483940   /* cdecl CUnit *h2unit(handle) */
 #define VA_H2WIDGET 0x483ba0 /* cdecl CWidget *h2widget(handle) */
@@ -1005,6 +1112,8 @@ void cuts_install(int draw) {
         install_gridwalk();
     if (g_cuts & 32768)
         install_h2();
+    if (g_cuts & 4294967296LL)
+        install_namehash();
     if (g_cuts & 65536) {
         if (iat_hook((HMODULE)g_base, "KERNEL32.dll", "GetThreadPriority", GetThreadPriority_hook, (void **)&GetThreadPriority_orig) &&
             iat_hook((HMODULE)g_base, "KERNEL32.dll", "SetThreadPriority", SetThreadPriority_hook, (void **)&SetThreadPriority_orig))
@@ -1012,12 +1121,15 @@ void cuts_install(int draw) {
         else
             shim_log("cuts: thread priority imports not found");
     }
-    shim_log("cuts installed: %d", g_cuts);
+    softfloat_install(g_cuts);
+    shim_log("cuts installed: %lld", g_cuts);
 }
 
 void cuts_report(void) {
     if (g_cuts & (524288 | 1048576 | 4194304))
         pathing_report();
+    if (g_cuts & 2147483648LL)
+        units_cmd_report();
     if (g_cuts)
         shim_log("cuts/s: mapver hits=%ld miss=%ld paint skipped=%ld events reused=%ld new=%ld textures=%ld "
                  "rings=%ld (orig %ld) cells hit=%ld miss=%ld fhash hit=%ld miss=%ld relax=%ld early=%ld isa hit=%ld miss=%ld "

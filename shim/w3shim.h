@@ -70,10 +70,14 @@ int obs_peek(const char **data); /* the observation captured so far (its length)
 void obs_reset(void);
 
 void obs_bytes(const char *s, int n); /* tokens from the shim itself (lines) */
+extern int g_obs_raw_player;          /* (W3SIM_CUTS & 1073741824) the handle id of W3S_Tok's player */
+void obs_raw_tok(int v);              /* one of W3S_Tok's integers, as its token */
+int *sync_mbox(void);                 /* the mailbox: [0] the count, then the command integers */
 int obs_capture_on(void);
 
 /* units.c: unit records written by the shim (W3SIM_UNITS=0: by the harness, 2: both, compared) */
 void units_install(void);
+void units_cmd_report(void); /* (W3SIM_CUTS & 2147483648) the commands applied, per second */
 int units_call(int key, int mbox, int *result);
 void units_verify_token(const char *s);
 void units_mark(int phase); /* W3SIM_PROFILE: a step's phases (0 GO, 3 the observation ends, 4 the sync) */
@@ -101,11 +105,12 @@ void syncstat_install(void);   /* W3SIM_PROFILE=4: the game's synchronization ca
 void syncstat_report(double secs);
 void turbo_set(int ms);
 void cuts_install(int draw); /* W3SIM_CUTS (cuts.c) */
-int cuts_flags(void);
+long long cuts_flags(void);
+void softfloat_install(long long cuts); /* W3SIM_CUTS 67108864.. (softfloat.c) */
 void cuts_game_start(void); /* a game's first step (units.c) */
 void cuts_unit_begin(int on); /* units.c: a unit's natives begin (1) / end (0) (W3SIM_CUTS & 32768) */
 extern volatile DWORD g_step_tid; /* sync.c: the thread that steps the game */
 void cuts_report(void);
-void pathing_install(int cuts); /* W3SIM_CUTS 524288, 1048576 (pathing.c) */
+void pathing_install(long long cuts); /* W3SIM_CUTS 524288, 1048576, 4194304 (pathing.c) */
 void pathing_report(void);
 int turbo_get(void);

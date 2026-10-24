@@ -55,6 +55,26 @@ static void __cdecl Preload_hook(int h) {
     }
 }
 
+/* W3SIM_CUTS & 1073741824 (with the harness's W3S_CSerInit handshake, units.c): W3S_Tok's integers as
+ * GetPlayerTechMaxAllowed(the token player, v) calls (sync.c), written here as the token Preload(I2S(v)) would
+ * have been: no JASS string made (I2S: a format, the string table's lookup and insert, its release) */
+int g_obs_raw_player;
+
+void obs_raw_tok(int v) {
+    if (!g_installed || g_ready)
+        return;
+    char b[12];
+    int n = 12;
+    unsigned u = v < 0 ? 0u - (unsigned)v : (unsigned)v;
+    do {
+        b[--n] = (char)('0' + u % 10);
+        u /= 10;
+    } while (u);
+    if (v < 0)
+        b[--n] = '-';
+    append(b + n, 12 - n);
+}
+
 /* tokens written by the shim itself (units.c: lines, each ending in a newline), as if the harness had sent them */
 void obs_bytes(const char *s, int n) {
     if (g_installed && !g_ready && n > 0) {

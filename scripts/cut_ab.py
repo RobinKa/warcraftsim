@@ -250,6 +250,73 @@ class Scripted:
         return out
 
 
+class _Raw:
+    """A command as raw integers (e.g. one cut short by the step's end)."""
+    playback = False
+
+    def __init__(self, ints: list[int]):
+        self.ints = ints
+
+    def encode(self) -> list[int]:
+        return list(self.ints)
+
+
+class RichScripted(Scripted):
+    """Scripted's orders plus every kind the harness applies, now and then: taxes and resources (ops 87, 90), hero
+    skills (5, on units that are no heroes: refused), orders on destructables (6), builds (4), purchases (8: pending
+    ones), pick-ups (9), orders for units the agent does not own, unknown units, and a command cut short by the step's
+    end (its missing integers read from the harness's array as earlier steps left it)."""
+
+    RATES = {"tax": 0.15, "set": 0.004, "skill": 0.08, "tree": 0.08, "build": 0.02, "buy": 0.01, "pick": 0.02, "foreign": 0.08,
+             "unknown": 0.03, "short": 0.03}
+    TRAIN = {"tax": 0.1, "set": 0.0, "skill": 0.01, "tree": 0.15, "build": 0.02, "buy": 0.0005, "pick": 0.0005, "foreign": 0.01,
+             "unknown": 0.0, "short": 0.0}  # (about the ops' shares in training games' commands)
+
+    def __init__(self, seed: int, train: bool = False):
+        super().__init__(seed)
+        self.trees: list[int] = []
+        self.rate = self.TRAIN if train else self.RATES
+
+    def commands(self, g: GameInstance, obs, players: list[int]) -> list:
+        from warcraftsim.protocol import (Build, Buy, LearnSkill, PickUp, PointOrder, SetResources, TakeResources,
+                                          TargetDestructable, TargetOrder, UnitFlags, fourcc)
+        if obs.destructables:
+            self.trees = [d.id for d in obs.destructables]
+        out = super().commands(g, obs, players)
+        r = self.rng
+        units = [u for u in obs.units if not (u.flags & UnitFlags.DEAD)]
+        for p in players:
+            mine = [u for u in units if u.owner == p]
+            workers = [u for u in mine if u.flags & UnitFlags.WORKER]
+            if r.random() < self.rate["tax"]:
+                out.append(TakeResources(p, r.randint(-20, 40), r.randint(-10, 20)))
+            if r.random() < self.rate["set"]:
+                out.append(SetResources(p, r.randint(200, 900), r.randint(100, 500)))
+            if mine and r.random() < self.rate["skill"]:
+                out.append(LearnSkill(r.choice(mine).id, "AHbz"))
+            if workers and self.trees and r.random() < self.rate["tree"]:
+                out.append(TargetDestructable(r.choice(workers).id, 851971, r.choice(self.trees)))
+            if workers and r.random() < self.rate["build"]:
+                w = r.choice(workers)
+                out.append(Build(w.id, {1: "hhou", 2: "otrb", 3: "uzig", 4: "emow"}.get(int(obs.players[p].race), "hhou"),
+                                 w.x + r.uniform(-400, 400), w.y + r.uniform(-400, 400)))
+            if mine and r.random() < self.rate["buy"]:
+                shops = [u for u in units if u.owner not in obs.players and u.flags & UnitFlags.STRUCTURE]
+                if shops:
+                    out.append(Buy(r.choice(mine).id, r.choice(shops).id, fourcc("phea")))
+            if mine and r.random() < self.rate["pick"]:
+                out.append(PickUp(r.choice(mine).id, 600))
+            if units and r.random() < self.rate["foreign"]:  # (a unit of someone else's: not the agent's to command)
+                u = r.choice(units)
+                out.append(PointOrder(u.id, 851986, u.x + 100, u.y))
+            if r.random() < self.rate["unknown"]:
+                out.append(TargetOrder(r.randint(1, 2000000), 851971, r.randint(1, 2000000)))
+        if out and r.random() < self.rate["short"] and units:  # (cut short: its x, y, or both missing)
+            u = r.choice(units)
+            out.append(_Raw([1, u.id, 851986, 65536 + int(u.x)][: r.randint(2, 4)]))
+        return out
+
+
 # ---- record ---------------------------------------------------------------------------------------------
 
 def make_setup(spec: dict) -> GameSetup:
@@ -308,7 +375,7 @@ def cmd_record(a) -> int:
     env = dict(x.split("=", 1) for x in a.env.split(",") if x) if a.env else {}
     g, obs = launch(setup, f"cutprobe_rec_{out.name}", env, Path(a.shim) if a.shim else None, None)
     agents = list(setup.agent_players)
-    pol = Scripted(a.seed)
+    pol = RichScripted(a.seed, a.rich == "train") if a.rich else Scripted(a.seed)
     digests = []
     try:
         for game in range(a.games):
@@ -511,7 +578,7 @@ def cmd_live(a) -> int:
         for vi, (name, env, shim) in enumerate(variants):
             g, obs = launch(setup, f"cutprobe{a.tag}_{vi}_{r}", env, shim, None)
             runs.append({"variant": name, "rep": r, "g": g, "obs": obs, "digests": [], "raw": raw_tap(g)})
-    pol = Scripted(a.seed or 1)
+    pol = RichScripted(a.seed or 1, a.rich == "train") if a.rich else Scripted(a.seed or 1)
     try:
         for run in runs:
             run["pid"] = game_pid(run["g"].prefix)
@@ -573,6 +640,8 @@ def main() -> int:
     r.add_argument("--max-seconds", type=float, default=0.0, help="the game's time limit (a tie), default 1200 s")
     r.add_argument("--env", default="")
     r.add_argument("--shim")
+    r.add_argument("--rich", nargs="?", const="all", default="", help="every kind of command the harness applies "
+                   "(RichScripted; =train: about as often as in training)")
     lv = sub.add_parser("live")
     lv.add_argument("--variant", action="append", required=True)
     lv.add_argument("--kind", default="mixed", choices=["ai", "agents", "mixed"])
@@ -586,6 +655,8 @@ def main() -> int:
     lv.add_argument("--repeat", type=int, default=1)
     lv.add_argument("--tag", default="L")
     lv.add_argument("--record-ai-orders", action="store_true")
+    lv.add_argument("--rich", nargs="?", const="all", default="", help="every kind of command the harness applies "
+                    "(RichScripted; =train: about as often as in training)")
     p = sub.add_parser("play")
     p.add_argument("--replay", required=True)
     p.add_argument("--variant", action="append", required=True)

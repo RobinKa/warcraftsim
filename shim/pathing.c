@@ -477,7 +477,7 @@ static int check_call(DWORD at, DWORD target) {
     return p[0] == 0xe8 && p + 5 + *(int32_t *)(p + 1) == VA_(target);
 }
 
-void pathing_install(int cuts) {
+void pathing_install(long long cuts) {
     if (!(cuts & (524288 | 1048576 | 4194304)))
         return;
     if (MH_Initialize() != MH_OK && MH_Initialize() != MH_ERROR_ALREADY_INITIALIZED)
