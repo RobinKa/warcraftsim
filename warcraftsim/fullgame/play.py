@@ -180,6 +180,7 @@ class BCAgent:
         p = obs.players.get(self.player)
         me = (np.asarray([t, self.player, p.gold, p.lumber, p.food_used, p.food_cap, p.upkeep, p.gold_gathered,
                           p.lumber_gathered, p.structures, int(p.result)]) if p is not None else None)
+        self.me = me
         events = np.asarray([(t, int(e.kind), e.a, e.b, e.c) for e in obs.events], np.int64).reshape(-1, 5)
         q = obs.players.get(1 - self.player)  # (the privileged block: the value only, features.View.priv)
         opp = (np.asarray([t, 1 - self.player, q.gold, q.lumber, q.food_used, q.food_cap, q.upkeep]) if q is not None
@@ -400,7 +401,8 @@ class BCAgent:
 
     def _refusal(self, c, key: str, rows: np.ndarray) -> list:
         """A refused order's context: [its kind, the unit's type, flags and current order, the target's type, whose
-        (own / enemy / neutral), flags and hit points' share], for what the game refuses and why."""
+        (own / enemy / neutral), flags and hit points' share, the player's gold and lumber], for what the game refuses
+        and why."""
         def row(i):
             k = np.flatnonzero(rows[:, fx.C_ID] == i)
             return rows[k[0]] if len(k) else None
@@ -410,7 +412,8 @@ class BCAgent:
         if t is not None:
             whose = "own" if int(t[fx.C_OWNER]) == self.player else "enemy" if int(t[fx.C_OWNER]) == 1 - self.player else "neutral"
             out += [fx.rawcode(int(t[fx.C_TYPE])), whose, int(t[fx.C_FLAGS]), round(int(t[fx.C_HP]) / max(int(t[fx.C_MAXHP]), 1), 2)]
-        return out
+        me = getattr(self, "me", None)
+        return out + ([int(me[2]), int(me[3])] if me is not None else [])  # (the player's gold and lumber)
 
     def _miners(self, sel: np.ndarray, j: int, i: int) -> int:
         """Workers of the player's at mine row j (within MINE_NEAR, harvesting, or in it), not counting unit row i."""
@@ -428,12 +431,24 @@ class BCAgent:
         return bool(len(m)) and bool((np.hypot(m[:, fx.C_X] - sel[i, fx.C_X], m[:, fx.C_Y] - sel[i, fx.C_Y]) < MINE_NEAR).any())
 
     def _repairable(self, row: np.ndarray) -> bool:
-        """A repair's target: a building or a machine of the player's that is damaged or unfinished."""
+        """A repair's target: a building or a machine of the player's that is damaged or unfinished (a frame: while the
+        player has the lumber it costs, or the gold of one that costs none)."""
         fl = int(row[fx.C_FLAGS])
         orc = fx.rawcode(int(row[fx.C_TYPE]))[:1] == "o"  # (an orc frame takes no helpers: refused, tested 2026-10-23)
         return (int(row[fx.C_OWNER]) == self.player and (fl & fx.STRUCTURE or int(row[fx.C_TYPE]) in MACHINES)
                 and ((int(row[fx.C_HP]) < int(row[fx.C_MAXHP]) and not fl & fx.CONSTRUCTING)
-                     or (fl & fx.CONSTRUCTING and not orc)))
+                     or (fl & fx.CONSTRUCTING and not orc and self._can_power_build(row))))
+
+    def _can_power_build(self, row: np.ndarray) -> bool:
+        """A helper at a frame costs a share of the building's price as it builds (AbilityData Ahrp: 0.15), and the game
+        refuses the order with none of the lumber (tested 2026-10-24: 5 gold and no lumber refused, no gold and 5
+        lumber or 1 and 1 taken): ~275 refused a game as human, a frame's helpers sent on after the lumber ran out."""
+        me, enc = getattr(self, "me", None), self.view.enc
+        k = enc.order_index.get((int(row[fx.C_TYPE]), fx.POINT))
+        if me is None or k is None or enc.costs is None:
+            return True
+        gold, lumber = int(enc.costs[k][0]), int(enc.costs[k][1])
+        return int(me[3]) >= 1 if lumber > 0 else int(me[2]) >= 1 or gold == 0
 
     def committed(self, unit: int) -> bool:
         """A worker busy with a building order (features.building) for less than BUILD_COMMIT_STEPS, or a unit

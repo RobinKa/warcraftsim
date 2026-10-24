@@ -87,6 +87,9 @@ def wine_env(prefix: Path, **extra: str) -> dict[str, str]:
         # no Mono/Gecko prompts, no menu entries, no audio device (sound is off anyway)
         WINEDLLOVERRIDES="mscoree,mshtml=;winemenubuilder.exe=d;winealsa.drv,winepulse.drv,wineoss.drv=d",
         WINEARCH="win64",
+        # no system D-Bus: each prefix's device manager (winedevice.exe, mountmgr) asked udisks for every disk ~0.4
+        # times a second, and with 57 prefixes the udisks daemon took ~1.5 cores (2026-10-24)
+        DBUS_SYSTEM_BUS_ADDRESS="unix:path=/nonexistent",
     )
     from .display import SOFTWARE_GL
     env.update(SOFTWARE_GL)  # never the GPU (see display.SOFTWARE_GL)

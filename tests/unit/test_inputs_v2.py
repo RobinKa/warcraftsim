@@ -1028,3 +1028,23 @@ def test_repair_only_what_needs_it(v2):
     assert bot.commands(st, order, tgt, [0] * (i + 1), [0] * (i + 1)) == [] and bot.noop_repairs == 1
     tgt[i] = st["index"][3]
     assert bot.commands(st, order, tgt, [0] * (i + 1), [0] * (i + 1)) == [TargetOrder(1, REPAIR, 3)]
+
+
+def test_power_build_needs_lumber(v2):
+    """A helper's repair at a frame goes out only while the player has lumber (gold for a building that costs no
+    lumber): the game refused it without (tested 2026-10-24), ~275 a game as human."""
+    from warcraftsim.fullgame.play import REPAIR, BCAgent
+    hbar, hlum = (int.from_bytes(c.encode(), "big") for c in ("hbar", "hlum"))
+    v = {**AUDIT_VOCAB, "orders": AUDIT_VOCAB["orders"] + [[REPAIR, fx.UNIT], [hbar, fx.POINT], [hlum, fx.POINT]]}
+    bot = BCAgent(None, v, 0, None)
+    bot.view = bot.enc.view(0, 1.0, [0, 1])
+    costs = np.zeros((len(v["orders"]) + 1, 3), np.int64)
+    costs[bot.enc.order_index[(hbar, fx.POINT)]] = (160, 60, 0)
+    costs[bot.enc.order_index[(hlum, fx.POINT)]] = (120, 0, 0)
+    bot.enc.costs = costs
+    frame, mill = _unit(2, 0, -500, 0, 1, fx.STRUCTURE | fx.CONSTRUCTING, "hbar"), \
+        _unit(3, 0, -800, 0, 1, fx.STRUCTURE | fx.CONSTRUCTING, "hlum")
+    me = lambda g, l: np.asarray([0, 0, g, l, 5, 12, 0, 0, 0, 2, 0])  # noqa: E731
+    for (g, l), ok_frame, ok_mill in (((5, 0), False, True), ((0, 5), True, False), ((1, 1), True, True), ((0, 0), False, False)):
+        bot.me = me(g, l)
+        assert bot._repairable(frame) == ok_frame and bot._repairable(mill) == ok_mill, (g, l)
