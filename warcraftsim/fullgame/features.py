@@ -182,13 +182,13 @@ PASSIVE_IDS = np.array([int.from_bytes(c.encode(), "big") for c in (
 _OWN_ALIVE: dict[int, tuple] = {}  # player -> (a step's rows, their living units of the player's)
 
 
-def own_alive(rows: np.ndarray, player: int) -> np.ndarray:
-    """rows[(owner == player) & living], made once per rows object and player (play_one's rows: the trackers' at a
-    step's end, the teacher's at the next step's start; the two sides' alike). Read only."""
+def own_alive(rows: np.ndarray, player: int, mask: np.ndarray | None = None) -> np.ndarray:
+    """rows[(owner == player) & living] (`mask`: that mask, when the caller has it), copied once per rows object and
+    player (play_one's rows: the trackers' at a step's end, the teacher's at the next step's start). Read only."""
     hit = _OWN_ALIVE.get(player)
     if hit is not None and hit[0] is rows:
         return hit[1]
-    out = rows[(rows[:, C_OWNER] == player) & (rows[:, C_FLAGS] & DEAD == 0)]
+    out = rows[(rows[:, C_OWNER] == player) & (rows[:, C_FLAGS] & DEAD == 0) if mask is None else mask]
     _OWN_ALIVE[player] = (rows, out)
     return out
 

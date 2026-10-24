@@ -121,9 +121,9 @@ class Teacher:
             return []
         out = []
         fl, typ = rows[:, fx.C_FLAGS], rows[:, fx.C_TYPE]  # (masks over all the rows, copies of the few they pick:
-        living = fl & fx.DEAD == 0  # a copy of every living unit a step had been ~9% of an actor's time; the living
-        alive = fx.own_alive(rows, self.side)  # own ones: the trackers' of the step before, the same rows)
-        heroes = rows[(rows[:, fx.C_OWNER] == self.side) & (fl & fx.HERO > 0)]  # (dead ones count: they can be revived)
+        own, living = rows[:, fx.C_OWNER] == self.side, fl & fx.DEAD == 0  # a copy of every living unit a step had been
+        alive = fx.own_alive(rows, self.side, own & living)  # ~9% of an actor's time; the living own ones: the trackers'
+        heroes = rows[own & (fl & fx.HERO > 0)]  # copy of the step before, the same rows. Dead heroes count: revived)
         fa = alive[:, fx.C_FLAGS]
         live_heroes = alive[fa & fx.HERO > 0]
         # the neutral buildings: on the game's minimap from the start
