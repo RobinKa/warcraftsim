@@ -285,6 +285,13 @@ body.page-view .layout { grid-template-columns:1fr; }
 .modal .state { color:var(--accent); } .modal .hist { margin-top:14px; border-top:1px solid var(--line); padding-top:8px; }
 .modal .hist div { display:flex; gap:10px; flex-wrap:wrap; padding:4px 0; border-bottom:1px solid var(--line); font-size:12.5px; }
 .modal .hist .r { font-weight:600; } .modal .hist a { color:var(--blue); }
+/* the Render window: a game set up as asked, rendered into a video (fullgame/render_request.py) */
+.render-btn { background:var(--panel2); color:var(--accent); border:1px solid var(--line); border-radius:6px; padding:3px 10px;
+  cursor:pointer; font:inherit; font-size:12px; vertical-align:middle; }
+.modal .pair { display:flex; gap:6px; flex-wrap:wrap; align-items:center; min-width:0; }
+#render .form { grid-template-columns:auto minmax(0, 1fr); } #render select { min-width:0; }
+.modal input[type=number] { background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:5px; padding:4px 6px; font:inherit; width:64px; }
+.modal .hist pre { width:100%; margin:2px 0 0; white-space:pre-wrap; color:var(--bad); font-size:11.5px; }
 /* the Ratings view */
 .ratings h2 { margin:0 0 6px; font-size:18px; } .ratings .sub { color:var(--muted); max-width:860px; margin:0 0 12px; }
 .ratings .bar { display:flex; flex-wrap:wrap; gap:6px 16px; align-items:center; margin:0 0 10px; color:var(--muted); }
@@ -1515,8 +1522,10 @@ function renderReplays(d) {
     el.innerHTML = `<div class="rp-top">
         <div class="seg" id="rp-kind"><button data-k="video">Game videos<span class="n"></span></button><button data-k="render">Trajectory renders<span class="n"></span></button></div>
         <div class="seg" id="rp-out"><button data-o="all">all</button><button data-o="win">wins</button><button data-o="loss">losses</button><button data-o="tie">ties</button></div>
+        ${runType(state.runs.find(r => r.name === run) || {}) === "selfplay" ? `<button class="render-btn" id="rp-render" title="a game of this run's policy set up as you ask, rendered into a video">Render a game</button>` : ""}
         <span id="rp-hint"></span></div>
       <div class="replays"><div><div class="viewer" id="rp-viewer"></div><div id="rp-info"></div></div><div class="playlist" id="rp-list"></div></div>`;
+    const rb = document.getElementById("rp-render"); if (rb) rb.onclick = () => openRender(run);
     el.querySelectorAll("#rp-kind button").forEach(b => b.onclick = () => { ui.replay.kind = b.dataset.k; ui.replay.file = null; renderReplays(d); });
     el.querySelectorAll("#rp-out button").forEach(b => b.onclick = () => { ui.replay.outcome = b.dataset.o; renderReplays(d); });
   }
@@ -2328,7 +2337,7 @@ function renderVideos() {
   if (!D || state.view !== "videos") return;
   if (m.dataset.vframe !== "1") {  // the page's frame, once
     m.dataset.vframe = "1";
-    m.innerHTML = `<div class="videos"><h2>Videos</h2>
+    m.innerHTML = `<div class="videos"><h2>Videos <button class="render-btn" id="v-render" title="a game set up as you ask, rendered into a video">Render a game</button></h2>
       <div class="sub">Every run's game videos (a training game every few minutes, rendered in the background), newest first, with both sides' heroes, the learner's target and how the game went. Search by a hero, a unit, a building, a run or a race: every word must match.</div>
       <div class="vbar"><input type="search" id="vq" placeholder="search: Pandaren, Far Seer, fgself-135, Tauren…" autocomplete="off">
         <div class="seg" id="v-out"><button data-o="all">all</button><button data-o="win">wins</button><button data-o="loss">losses</button><button data-o="tie">ties</button></div>
@@ -2336,6 +2345,7 @@ function renderVideos() {
         <span id="v-tags">${Object.keys(VTAGS).map(k => `<button class="tg" data-t="${k}">${k}</button>`).join(" ")}</span>
         <span id="v-count"></span></div>
       <div class="replays"><div><div class="viewer" id="v-viewer"></div><div id="v-info"></div></div><div class="playlist" id="v-list"></div></div></div>`;
+    document.getElementById("v-render").onclick = () => openRender();
     const q = document.getElementById("vq"); q.value = V.q;
     q.oninput = () => { V.q = q.value; saveUrl(false); renderVideos(); };
     m.querySelectorAll("#v-out button").forEach(b => b.onclick = () => { V.outcome = b.dataset.o; renderVideos(); });
@@ -2538,6 +2548,115 @@ function renderChallenge() {
     C.msg = j.ok ? "the game window opens in a few seconds" : (j.message || j.error || "not started");
     pollChallenge();
   };
+}
+
+// ---- the Render window: a run's policy in a game set up as asked, rendered into a video with the followed policy's
+// panel (GET /api/render-options, /api/renders, POST /api/render: fullgame/render_request.py; videos in runs/renders) ----
+ui.render = { timer: null, opts: null, list: null, f: null, msg: "" };
+const rdRuns = () => (state.runs || []).filter(r => runType(r) === "selfplay").map(r => r.name);
+const rdPolicy = (spec, run) => spec === "current" ? `${run} current` : (p => `${p[p.length - 3]}/${parseInt(p[p.length - 1])}`)(spec.split("/"));
+async function openRender(run) {
+  let m = document.getElementById("render");
+  if (!m) {
+    m = document.createElement("div"); m.id = "render"; m.className = "modal";
+    m.onclick = ev => { if (ev.target === m) closeRender(); };
+    document.body.appendChild(m);
+  }
+  m.hidden = false;
+  const R = ui.render;
+  const f = R.f || (R.f = { run: "", map: "real", a: "current", bKind: "ai:insane", b: "current", raceA: "random", raceB: "random",
+                            tA: "none", tB: "none", follow: "a", minutes: "15" });
+  if (run) f.run = run;
+  if (!(state.runs || []).length) {  // (the Videos view opened first: the runs listed now)
+    m.innerHTML = `<div class="box"><p class="sub">listing the runs…</p></div>`;
+    try { state.runs = await getJSON("/api/runs"); } catch (e) { /* (an empty list) */ }
+  }
+  const runs = rdRuns();
+  if (!runs.includes(f.run)) f.run = runs[0] || "";
+  rdList();
+  clearInterval(R.timer);
+  R.timer = setInterval(() => { if (!document.hidden) rdList(); }, 3000);
+  await rdOptions();
+}
+function closeRender() { const m = document.getElementById("render"); if (m) m.hidden = true; clearInterval(ui.render.timer); }
+async function rdOptions() {  // the run's policies and its strategies' builds (on the map asked for)
+  const R = ui.render, f = R.f;
+  R.opts = null; rdForm();
+  try { R.opts = await getJSON(`/api/render-options?run=${encodeURIComponent(f.run)}&map=${f.map}`); } catch (e) { R.opts = { error: String(e) }; }
+  const pols = (R.opts.policies || []).map(p => p.value);
+  if (!pols.includes(f.a)) f.a = "current";
+  if (!pols.includes(f.b)) f.b = "current";
+  rdForm();
+}
+function rdForm() {
+  const m = document.getElementById("render"), R = ui.render, f = R.f, O = R.opts || {};
+  if (!m || m.hidden) return;
+  const opt = (v, label, cur) => `<option value="${esc(v)}" ${String(v) === String(cur) ? "selected" : ""}>${esc(label)}</option>`;
+  const policy = (id, cur) => `<select id="${id}">${(O.policies || []).map(p => opt(p.value, p.label, cur)).join("")}</select>`;
+  const race = (id, cur) => `<select id="${id}">${Object.entries(RACE_NAMES).map(([k, n]) => opt(k, n, cur)).join("")}</select>`;
+  const target = (id, r, cur) => `<select id="${id}" title="its target strategy: none, one drawn as in evaluation, or a build of the run's strategies (heroes · army, how many)">
+    ${opt("none", "no target", cur)}${opt("random", "random target", cur)}${(((O.builds || {})[r]) || []).map(([sig, n, , h, a]) =>
+      opt("sig:" + sig, `${h.join(" + ") || "no hero"} · ${a.join(" + ")} (${n})`, cur)).join("")}</select>`;
+  const vsPolicy = f.bKind === "policy";
+  if (!vsPolicy) { f.tB = "none"; if (f.follow === "b") f.follow = "a"; }
+  const maps = O.maps || {};
+  m.innerHTML = `<div class="box"><div class="row" style="margin:0"><h2>Render a game</h2><button class="close" title="close">×</button></div>
+    <p class="sub">Played as the run's evaluation games, then rendered with the followed policy's panel. One at a time, on this machine.</p>
+    <div class="form">
+      <label>run</label><select id="rd-run">${rdRuns().map(n => opt(n, n, f.run)).join("")}</select>
+      <label>map</label><select id="rd-map">${opt("real", maps.real || "evaluation map", f.map)}${opt("training", maps.training || "training map", f.map)}</select>
+      <label>A</label><div class="pair">${policy("rd-a", f.a)}${race("rd-race-a", f.raceA)}${target("rd-t-a", f.raceA, f.tA)}</div>
+      <label>B</label><div class="pair"><select id="rd-b-kind">${["insane", "normal", "easy"].map(l => opt("ai:" + l, l + " AI", f.bKind)).join("")}${opt("policy", "a policy", f.bKind)}</select>
+        ${vsPolicy ? policy("rd-b", f.b) : ""}${race("rd-race-b", f.raceB)}${vsPolicy ? target("rd-t-b", f.raceB, f.tB) : ""}</div>
+      <label>follows</label><select id="rd-follow">${opt("a", "A", f.follow)}${vsPolicy ? opt("b", "B", f.follow) : ""}</select>
+      <label>minutes</label><div class="pair"><input type="number" id="rd-min" min="1" max="${O.max_minutes || 40}" step="1" value="${esc(f.minutes)}"><span style="color:var(--muted)">of game time at most</span></div>
+    </div>
+    <div class="row"><button class="go" id="rd-go" ${O.policies ? "" : "disabled"}>Render</button>
+      <span style="color:var(--muted)" id="rd-msg">${esc(O.error || R.msg)}</span></div>
+    <div class="hist" id="rd-list"></div></div>`;
+  m.querySelector(".close").onclick = closeRender;
+  const on = (id, fn) => { const el = document.getElementById(id); if (el) el.onchange = () => fn(el.value); };
+  on("rd-run", v => { f.run = v; rdOptions(); });
+  on("rd-map", v => { f.map = v; rdOptions(); });
+  on("rd-a", v => { f.a = v; }); on("rd-b", v => { f.b = v; });
+  on("rd-race-a", v => { f.raceA = v; if (f.tA.startsWith("sig:")) f.tA = "none"; rdForm(); });
+  on("rd-race-b", v => { f.raceB = v; if (f.tB.startsWith("sig:")) f.tB = "none"; rdForm(); });
+  on("rd-t-a", v => { f.tA = v; }); on("rd-t-b", v => { f.tB = v; });
+  on("rd-b-kind", v => { f.bKind = v; rdForm(); });
+  on("rd-follow", v => { f.follow = v; });
+  const mi = document.getElementById("rd-min"); mi.oninput = () => { f.minutes = mi.value; };
+  document.getElementById("rd-go").onclick = async () => {
+    const msg = document.getElementById("rd-msg"); msg.textContent = "…";
+    const body = { run: f.run, map: f.map, a: f.a, races: [f.raceA, f.raceB], targets: [f.tA, f.tB], follow: f.follow, minutes: +f.minutes,
+                   b: vsPolicy ? { kind: "policy", policy: f.b } : { kind: "ai", difficulty: f.bKind.slice(3) } };
+    const r = await fetch("/api/render", { method: "POST", body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    R.msg = j.ok ? `queued: request ${j.message}` : (j.message || j.error || "not queued");
+    msg.textContent = R.msg;
+    rdList();
+  };
+  rdListHtml();
+}
+async function rdList() {
+  try { ui.render.list = await getJSON("/api/renders"); } catch (e) { ui.render.list = { error: String(e) }; }
+  rdListHtml();
+}
+function rdListHtml() {  // the requests, newest first: their state, the video when done, the error's last lines when failed
+  const box = document.getElementById("rd-list"), L = ui.render.list;
+  if (!box || !L) return;
+  const when = t => new Date(t * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  const mins = (a, b) => `${((b - a) / 60).toFixed(1)} min`;
+  box.innerHTML = L.error ? `<div style="color:var(--bad)">${esc(L.error)}</div>` : (L.requests || []).length ? L.requests.map(r => {
+    const q = r.request, rc = r.races || q.races, tg = r.targets || q.targets;
+    const vs = q.b.kind === "ai" ? `${q.b.difficulty} AI` : rdPolicy(q.b.policy, q.run);
+    const tgt = tg.some(t => t !== "none") ? `<span title="targets">${tg.map(t => esc(t.replace(/^sig:/, ""))).join(" / ")}</span>` : "";
+    const st = r.state === "done" ? `<span class="r">${outcomeText(r.outcome)}</span><span>${mins(r.started, r.finished)}</span>
+        <a href="/files/renders/${esc(r.video)}" target="_blank">video ↗</a><a href="/videos" onclick="closeRender(); openVideos('renders'); return false">in Videos</a>`
+      : r.state === "failed" ? `<span style="color:var(--bad)">failed</span>`
+      : `<span class="state">${r.state}…${r.started ? " " + mins(r.started, Date.now() / 1000) : ""}</span>`;
+    return `<div><span>#${r.id} ${when(r.time)}</span><span>${esc(rdPolicy(q.a, q.run))} (${RACE_NAMES[rc[0]] || rc[0]}) vs ${esc(vs)} (${RACE_NAMES[rc[1]] || rc[1]})</span>
+      ${tgt}<span>${q.minutes} min · ${q.map}</span>${st}${r.error ? `<pre>${esc(r.error)}</pre>` : ""}</div>`;
+  }).join("") : `<div style="color:var(--muted)">no requests yet</div>`;
 }
 
 // ---- the Lineage view: what each run, cloning fit and demonstration collection came from ------------
