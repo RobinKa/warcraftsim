@@ -1337,6 +1337,13 @@ function renderMain() {
         return down ? `<span style="color:var(--bad, #e5534b)">silent ${m.toFixed(0)} min</span> <small>· this machine's fallback plays the evaluation games</small>`
           : `${m < 1 ? "up" : `last game ${m.toFixed(0)} min ago`} <small>· the laptop plays the evaluation games${r.fallback ? " · this machine's wait" : ""}</small>`; })()]] : []),
       ["Real game", info.real_game ? `${(100 * info.real_game.wins).toFixed(0)}% <small>won · ${(100 * info.real_game.ties).toFixed(0)}% tied · last ${info.real_game.games} ${info.real_game.evaluation ? "evaluation games" : "vs the built-in AI"}${Object.entries(info.real_game.vs || {}).map(([k, v]) => ` · ${esc(k)}: ${(100 * v).toFixed(0)}%`).join("")}</small>` : "–"],
+      ["Rating", (() => { const D = ratingsForRun(); if (!D) return "–";
+        const R = ui.ratings, pool = D.players.filter(p => R.kinds[p.kind] && (p.kind === "anchor" || p.games >= R.min)), ranks = ratingRanks(pool);
+        const mine = D.players.filter(p => p.run === state.selected && (p.kind === "current" || p.kind === "+z")).sort((a, b) => (b.last || 0) - (a.last || 0));
+        const show = ["current", "+z"].map(k => mine.find(p => p.kind === k)).filter(Boolean);
+        if (!show.length) return "– <small>no rated games yet</small>";
+        return show.map(p => { const e = 1.96 * (p.se || 0), rk = ranks.get(p.name);
+          return `${Math.round(p.rating)} <small>(95% ${Math.round(p.rating - e)}–${Math.round(p.rating + e)}) · ${esc(p.name)}, ${p.games} games${rk ? ` · rank ${rk.rank} (${rk.lo}–${rk.hi}) of ${pool.length}` : ""}</small>`; }).join("<br>"); })()],
       ["Games", `${info.envs} <small>at once</small>`],
       ["Trained", dur(info.trained_seconds || elapsed) + (info.resumes ? ` <small>${info.resumes.length + 1} sessions</small>` : "")],
     ] : [
@@ -2224,21 +2231,58 @@ function renderVideos() {
 }
 
 // ---- the Ratings view: skill ratings from every run's evaluation games (GET /api/ratings, dashboard/ratings.py) ----
-ui.ratings = { data: null, kinds: { checkpoint: true, current: true, "+z": false, anchor: true }, min: 30, all: false };
+ui.ratings = { data: null, kinds: { checkpoint: true, current: true, "+z": false, anchor: true }, min: 30, all: false, sort: "rating" };
+// the table's order: the rating, either end of its 95% interval (a cautious or a hopeful ranking), games, last played
+const RATING_SORTS = { rating: ["rating", p => p.rating], low: ["95% low end", p => p.rating - 1.96 * (p.se || 0)],
+                       high: ["95% high end", p => p.rating + 1.96 * (p.se || 0)], games: ["games", p => p.games],
+                       last: ["last played", p => p.last || 0] };
 const RATING_KINDS = { checkpoint: ["a checkpoint", "#539bf5"], current: ["a run's policy, by the hour", "#4cc38a"],
                        "+z": ["with a target strategy", "#e0a33a"], anchor: ["the insane AI (1500)", "#d7dee6"] };
+// each policy's rank by rating among `players` and its 95% interval: ratings drawn from their estimates (normal, mean the
+// rating, sd its standard error, independently: the fit's covariances left out) 2,000 times, each time ranked; cached
+function ratingRanks(players) {
+  const key = players.map(p => p.name).join("|") + (ui.ratings.data?.updated || "");
+  if (ui.ratings.rankKey === key) return ui.ratings.ranks;
+  const n = players.length, draws = 2000, ranks = players.map(() => new Int32Array(draws));
+  let seed = 12345; const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+  const v = new Float64Array(n), idx = [...Array(n).keys()];
+  for (let d = 0; d < draws; d++) {
+    for (let i = 0; i < n; i++) {
+      const u1 = Math.max(rnd(), 1e-12), u2 = rnd();
+      v[i] = players[i].rating + (players[i].se || 0) * Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+    }
+    idx.sort((a, b) => v[b] - v[a]);
+    idx.forEach((i, r) => { ranks[i][d] = r + 1; });
+  }
+  const byMean = [...Array(n).keys()].sort((a, b) => players[b].rating - players[a].rating), out = new Map();
+  byMean.forEach((i, r) => { const s = Array.from(ranks[i]).sort((a, b) => a - b);
+    out.set(players[i].name, { rank: r + 1, lo: s[Math.floor(0.025 * draws)], hi: s[Math.min(draws - 1, Math.floor(0.975 * draws))] }); });
+  ui.ratings.rankKey = key; ui.ratings.ranks = out;
+  return out;
+}
+const rankText = r => r ? `${r.rank} <small>(${r.lo === r.hi ? r.lo : `${r.lo}–${r.hi}`})</small>` : "–";
+// the ratings for a run's page (its Rating card): loaded once, again after 10 minutes, without opening the tab
+function ratingsForRun() {
+  const R = ui.ratings;
+  if ((!R.data || Date.now() - (R.fetched || 0) > 600e3) && !R.loading) {
+    R.loading = true;
+    getJSON("/api/ratings").then(d => { R.data = d; R.fetched = Date.now(); }).catch(() => {}).finally(() => { R.loading = false; });
+  }
+  return R.data;
+}
 async function openRatings() {
   state.view = "ratings"; setNav(); saveUrl(true);
   const m = document.getElementById("main"); m.dataset.run = "";
   if (!ui.ratings.data) m.innerHTML = `<div class="empty">rating the policies… (the first time: a scan of every run's games)</div>`;
-  try { ui.ratings.data = await getJSON("/api/ratings"); } catch (e) { m.innerHTML = `<div class="empty">no ratings: ${esc(e)}</div>`; return; }
+  try { ui.ratings.data = await getJSON("/api/ratings"); ui.ratings.fetched = Date.now(); } catch (e) { m.innerHTML = `<div class="empty">no ratings: ${esc(e)}</div>`; return; }
   renderRatings();
 }
 function renderRatings() {
   const R = ui.ratings, D = R.data, m = document.getElementById("main");
   if (!D || state.view !== "ratings") return;
-  const shown = D.players.filter(p => R.kinds[p.kind] && (p.kind === "anchor" || p.games >= R.min));
-  const rows = R.all ? shown : shown.slice(0, 40);
+  const key = (RATING_SORTS[R.sort] || RATING_SORTS.rating)[1];
+  const shown = D.players.filter(p => R.kinds[p.kind] && (p.kind === "anchor" || p.games >= R.min)).sort((a, b) => key(b) - key(a));
+  const rows = R.all ? shown : shown.slice(0, 40), ranks = ratingRanks(shown);
   if (!rows.length) { m.innerHTML = `<div class="empty">no policy with ${R.min}+ rated games of the kinds chosen</div>`; return; }
   const date = t => t ? new Date(t * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "–";
   const ci = p => p.se == null ? "fixed" : `${Math.round(p.rating - 1.96 * p.se)} – ${Math.round(p.rating + 1.96 * p.se)}`;
@@ -2247,10 +2291,11 @@ function renderRatings() {
   m.innerHTML = `<div class="ratings"><h2>Skill ratings</h2>
     <p class="sub">A Bradley–Terry fit on the Elo scale over ${D.games.toLocaleString()} evaluation games in the real game (Echo Isles, the game's rules): each policy's games against the insane AI, which is 1500, and its head-to-head games against frozen checkpoints. A run's policy is rated by the hour since the run started (h0, h1, …). Bars: 95% intervals. Ties count half.</p>
     <div class="bar">${toggles}<label>at least <input id="rmin" type="number" min="1" value="${R.min}" style="width:4.5em"> games</label>
-      <label><input type="checkbox" id="rall" ${R.all ? "checked" : ""}> all ${shown.length}</label></div>
+      <label><input type="checkbox" id="rall" ${R.all ? "checked" : ""}> all ${shown.length}</label>
+      <label>sort by <select id="rsort">${Object.entries(RATING_SORTS).map(([k, [label]]) => `<option value="${k}" ${R.sort === k ? "selected" : ""}>${label}</option>`).join("")}</select></label></div>
     <div class="rplot" id="rplot"></div><div class="tip" id="rtip"></div>
-    <table class="rtable"><tr><th>#</th><th>policy</th><th>rating</th><th>95%</th><th>games</th><th>score</th><th>last played</th></tr>
-    ${rows.map((p, i) => `<tr data-run="${esc(p.run || "")}"><td>${i + 1}</td><td><i style="background:${RATING_KINDS[p.kind][1]}"></i>${esc(p.name)}</td>
+    <table class="rtable"><tr><th title="the rank by rating, and its 95% interval (ratings drawn from their uncertainty)">rank (95%)</th><th>policy</th><th data-sort="rating">rating</th><th>95% <span data-sort="low">low</span> – <span data-sort="high">high</span></th><th data-sort="games">games</th><th>score</th><th data-sort="last">last played</th></tr>
+    ${rows.map((p, i) => `<tr data-run="${esc(p.run || "")}"><td>${rankText(ranks.get(p.name))}</td><td><i style="background:${RATING_KINDS[p.kind][1]}"></i>${esc(p.name)}</td>
       <td><b>${Math.round(p.rating)}</b></td><td>${ci(p)}</td><td>${p.games}</td><td>${(100 * p.score).toFixed(0)}%</td><td>${date(p.last)}</td></tr>`).join("")}</table></div>`;
   // the plot: one row per policy, its rating a dot, its 95% interval a line; the anchor's rating a dashed line
   const W = Math.max(320, m.querySelector(".ratings").clientWidth), rowH = 18, padL = Math.min(190, W * 0.38), padR = 16, top = 22;
@@ -2271,7 +2316,8 @@ function renderRatings() {
   plot.querySelectorAll("g[data-i]").forEach(g => {
     const p = rows[+g.dataset.i];
     g.onpointermove = ev => { tip.style.display = "block"; tip.style.left = (ev.clientX + 14) + "px"; tip.style.top = (ev.clientY + 10) + "px";
-      tip.innerHTML = `<b>${esc(p.name)}</b><br>rating ${Math.round(p.rating)} (95%: ${ci(p)})<br>${p.games} games, scored ${(100 * p.score).toFixed(0)}%<br>${date(p.first)} – ${date(p.last)}`; };
+      const rk = ranks.get(p.name);
+      tip.innerHTML = `<b>${esc(p.name)}</b><br>rating ${Math.round(p.rating)} (95%: ${ci(p)})${rk ? `<br>rank ${rk.rank} (95%: ${rk.lo}–${rk.hi})` : ""}<br>${p.games} games, scored ${(100 * p.score).toFixed(0)}%<br>${date(p.first)} – ${date(p.last)}`; };
     g.onpointerleave = () => { tip.style.display = "none"; };
     if (p.run) g.onclick = () => openRun(p.run);
   });
@@ -2279,6 +2325,10 @@ function renderRatings() {
   m.querySelectorAll("input[data-kind]").forEach(cb => cb.onchange = () => { R.kinds[cb.dataset.kind] = cb.checked; renderRatings(); });
   document.getElementById("rmin").onchange = ev => { R.min = Math.max(1, +ev.target.value || 1); renderRatings(); };
   document.getElementById("rall").onchange = ev => { R.all = ev.target.checked; renderRatings(); };
+  document.getElementById("rsort").onchange = ev => { R.sort = ev.target.value; renderRatings(); };
+  m.querySelectorAll(".rtable [data-sort]").forEach(h => { h.style.cursor = "pointer"; h.title = "sort by it";
+    if (h.dataset.sort === R.sort) h.style.color = "var(--accent)";
+    h.onclick = () => { R.sort = h.dataset.sort; renderRatings(); }; });
 }
 
 // ---- the Challenge window: play a policy in the game, on this machine's desktop (GET /api/challenges, POST
