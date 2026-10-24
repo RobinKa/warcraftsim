@@ -2,6 +2,8 @@
 
 The game's CPU sets the speed. The [optimization log](reference/optimization-log.md) has every fix with its numbers.
 
+Since 2026-10-24 the RTX 3090's BF16 rate is unlocked and its power limit is 400 W: matrix multiplies 1.4 to 1.8 times faster ([GPU unlock](reference/gpu-unlock.md)).
+
 ## Self-play throughput
 
 ```mermaid
