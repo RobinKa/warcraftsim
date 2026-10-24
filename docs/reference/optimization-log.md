@@ -423,6 +423,21 @@ The learner then waited ~1.3 s for each batch: the games set the speed again.
 
 Echo Isles has more units in view than the duel maps (creeps, expansions, larger armies), so a step costs the actors and the learner more. ~3,400 games an hour (2026-10-17), ~15 game minutes each on average: the wins are short (~10 minutes), the losses long (~26).
 
+## The afternoon of 2026-10-24: the learner compiled, the actors, the bottleneck view
+
+* **The update compiled** (`--update-fuse default`): the update's forward passes and losses compiled by torch.compile (inductor: fused kernels) before the minibatch step's CUDA graph is captured, as the inference loop's calls already were: an update of 8,192 steps alone 1.38 → 0.64 s (`scripts/bench_update.py --run`), in the run ~2.8 → ~1.5 s. Each minibatch shape (entity width, labels or not) compiles once, 25-45 s the first time; the caches are kept in `~/.cache/torchinductor` (under `/tmp`, a RAM disk here, they were lost at every reboot).
+* **The noise scale's spikes**: its measurement (an extra pass over the batch) ran eager every 10 updates, ~4 s; now every 50, through captured graphs of the compiled pass.
+* **The bottleneck view** (the System tab; `fullgame/sysstat.py` samples the machine every 30 s into `system.jsonl`): the CPU by part of the run per process (ended threads counted, new processes from their start), a game step's wall time (simulating, waiting for its orders), the learner's updates one by one. It found the video renderer at ~2.2 cores and the relaunches' churn at ~2.2 (4 games a launch: ~1.1).
+* **The actors' per-step Python**, a second round (`scripts/bench_actor.py` replays `play_one` on recorded games: the same commands, chunks and episode rows): 5.88 → 3.87 M instructions a side-step; in the run the actors' CPU a step 3.36 → 2.67 ms and ~2,010 → ~2,170 steps/s.
+* **12 actors of 6 games** instead of 8 of 9 (each actor had been near its GIL's one core): level, kept.
+
+| `fgself-140` → `fgself-141` | steps/s | games' CPU a step | actors' CPU a step |
+|---|---|---|---|
+| `fgself-140`, round 2 of the game's code, 15:20-16:00 | 1,786 | 9.20 ms | 3.50 ms |
+| `fgself-141`, round 3, 16:12-16:31 | 1,936 | 8.83 ms | 3.35 ms |
+| 12 actors of 6, 16:37-16:52 | ~2,010 | 9.5 ms | 3.36 ms |
+| the actors' Python, 17:27-17:45 | **~2,170** | 9.4 ms | **2.67 ms** |
+
 ## Dead ends
 
 * 8 actor processes of 4 games instead of 4 of 8 (627 against 644 steps/s).
