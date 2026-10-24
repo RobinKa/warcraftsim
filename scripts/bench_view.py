@@ -107,7 +107,9 @@ def main() -> int:
                 key = f"{k}_{i}"
                 if v is None and key not in ref.files:
                     continue
-                if key not in ref.files or not np.array_equal(np.asarray(v), ref[key]):
+                same = key in ref.files and (np.allclose(np.asarray(v), ref[key], rtol=0, atol=1e-6) if k == "ent"
+                                             and np.shape(v) == ref[key].shape else np.array_equal(np.asarray(v), ref[key]))
+                if not same:  # (ent: float32 sines and cosines may differ in their last bit between numpy and C)
                     bad += 1
                     if bad <= 5:
                         print("differs:", key)

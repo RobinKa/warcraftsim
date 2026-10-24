@@ -16,6 +16,8 @@ For player p at step t:
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 import json
 import os
 import math
@@ -85,6 +87,18 @@ def _unsqueeze(e):
         return e
     k = (DUEL_D - 2 * NEAR) / (D - 2 * NEAR)
     return np.where(e <= NEAR, e, np.where(e >= DUEL_D - NEAR, e + (D - DUEL_D), NEAR + (e - NEAR) / k))
+
+
+def _frame_xy1(x: float, y: float, sign: float) -> tuple[float, float]:
+    """frame_xy for one point, in plain floats (the same float64 arithmetic: numpy's calls on numbers had made the
+    privileged block's two points ~a fifth of View.step)."""
+    ox, oy = own_start(sign)
+    d = sign * (x - ox)
+    D = STARTS[1][0] - STARTS[0][0]
+    if abs(D - DUEL_D) >= 1e-6:
+        k = (DUEL_D - 2 * NEAR) / (D - 2 * NEAR)
+        d = d if d <= NEAR else d - (D - DUEL_D) if d >= D - NEAR else NEAR + (d - NEAR) * k
+    return d / SCALE + ANCHOR_X, (y - oy) / SCALE
 
 
 def frame_xy(x, y, sign: float):
@@ -429,8 +443,13 @@ def build_vocab(paths: list[str | Path], min_count: int = 5) -> dict:
             "order_names": {str(k): v for k, v in names.items()}}
 
 
-def rawcode(v: int) -> str:
-    return int(v).to_bytes(4, "big").decode("latin-1")
+@lru_cache(maxsize=8192)
+def _rawcode(v: int) -> str:
+    return v.to_bytes(4, "big").decode("latin-1")
+
+
+def rawcode(v: int) -> str:  # (memoised: ~30 a step in the tech mask's key alone)
+    return _rawcode(int(v))
 
 
 def order_label(order: int, kind: int, names: dict[int, str]) -> str:
@@ -601,6 +620,20 @@ class Encoder:
         (inputs 3, View.remembered): the enemies seen before and out of sight now, (their rows as last seen, seconds
         since), after those in sight (self.ghost0: the first). `omniscient` (the privileged view): every enemy unit,
         those out of sight after those in sight and marked (A_HID)."""
+        if ghosts is None and not omniscient and A_HID < 0:  # (in C, featnative.py: the same features, ~10x faster)
+            from . import featnative
+            if featnative.lib() is not None:
+                import sys
+                sel, n_own, f, types, cur = featnative.entities(self, sys.modules[__name__], rows, player, sign,
+                                                                production, lumber)
+                if F > F_BASE:
+                    self._hero_block(sel, n_own, f)
+                    making = production[2] if production is not None and len(production) > 2 else None
+                    if making:  # (inputs 2: what each own building makes, View.making)
+                        k = _lookup(sel[:n_own, C_ID], *_sorted_map({b: m[0] + 1 for b, m in making.items()}))
+                        hit = np.nonzero(k > 0)[0]
+                        f[hit, A_PROD + k[hit] - 1] = 1.0
+                return sel, n_own, f, types, cur
         alive = rows[:, C_FLAGS] & DEAD == 0
         vis = (rows[:, C_VIS] >> player) & 1 == 1
         own = rows[alive & (rows[:, C_OWNER] == player)]
@@ -992,6 +1025,11 @@ class View:
         if opp is not None:
             _, _, gold, lumber, fu, fc, upkeep = opp[:7]
             out[:5] = gold / 1000.0, lumber / 1000.0, fu / 100.0, fc / 100.0, upkeep / 2.0
+        from . import featnative
+        if featnative.lib() is not None:  # (in C: the same numbers)
+            import sys
+            featnative.priv_sides(sys.modules[__name__], rows, self.player, self.sign, out)
+            return out
         live = rows[rows[:, C_FLAGS] & DEAD == 0]  # (the masks made once for both sides: ~5% of an actor's time before)
         fl, owner = live[:, C_FLAGS], live[:, C_OWNER]
         worker, struct, hero = fl & WORKER > 0, fl & STRUCTURE > 0, fl & HERO > 0
@@ -1005,7 +1043,7 @@ class View:
                             np.count_nonzero(hm) / 3.0, live[hm, C_HLEVEL].sum() / 20.0, live[am, C_HP].sum() / 3000.0,
                             live[am, C_MAXHP].sum() / 3000.0)
             if n_army:
-                out[a + 7], out[a + 8] = frame_xy(live[am, C_X].mean(), live[am, C_Y].mean(), self.sign)
+                out[a + 7], out[a + 8] = _frame_xy1(float(live[am, C_X].mean()), float(live[am, C_Y].mean()), self.sign)
         return out
 
     def remembered(self, rows: np.ndarray, t: int) -> tuple[np.ndarray, np.ndarray]:
@@ -1047,8 +1085,8 @@ class View:
 
     def has_hero(self, rows: np.ndarray) -> bool:
         """Whether the player has had a hero (dead ones stay among the rows) or makes one now: its first is free."""
-        mine = rows[rows[:, C_OWNER] == self.player]
-        return bool((mine[:, C_FLAGS] & HERO > 0).any()) or any(m[0] == 2 for m in self.making.values())
+        return bool(((rows[:, C_OWNER] == self.player) & (rows[:, C_FLAGS] & HERO > 0)).any()) \
+            or any(m[0] == 2 for m in self.making.values())
 
     def tech_allowed(self, rows: np.ndarray) -> np.ndarray:
         """--tech-mask: the order classes the player has the tech for (TechMask), from its finished buildings,
