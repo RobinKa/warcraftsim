@@ -1385,15 +1385,16 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         return self._own
 
     def _mine(self, obs) -> list:
-        """The side's living units as Unit objects, once a step, made from its own rows of the native table only when
-        an order needs them (every unit of the game made one each step, and their enum flags tested, had been ~10% of
-        an actor's time)."""
+        """The side's living workers and buildings (all its living units without the native table) as Unit objects,
+        once a step, made from its own rows of the native table only when an order needs them: what order() and
+        resume() pick from (every unit of the game made one each step, and their enum flags tested, had been ~10% of
+        an actor's time; its army too, ~2%)."""
         if getattr(self, "_mine_of", None) is obs:
             return self._mine_list
         own = self._own_rows(obs)
         if own is not None:
             from ..native import unit_from_row
-            mine = [unit_from_row(r) for r in own.tolist()]
+            mine = [unit_from_row(r) for r in own[(own[:, 11] & (fx.WORKER | fx.STRUCTURE)) > 0].tolist()]
         else:
             mine = [u for u in obs.units if u.owner == self.side and u.alive]
         self._mine_of, self._mine_list = obs, mine
@@ -1497,9 +1498,9 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         stalled = [i for i, (_, since) in self.frames.items() if t - since >= 20]
         if not stalled:
             return None
+        away = int(UnitFlags.HIDDEN | UnitFlags.LOADED)
         workers = [u for u in self._mine(obs) if u.is_worker and not u.is_structure
-                   and not fx.building(int(u.flags), u.order) and u.order != REPAIR
-                   and not int(u.flags) & int(UnitFlags.HIDDEN | UnitFlags.LOADED)]
+                   and not fx.building(int(u.flags), u.order) and u.order != REPAIR and not int(u.flags) & away]
         if not workers:
             return None
         f, (hp, x, y) = stalled[0], frames[stalled[0]]
@@ -1557,8 +1558,9 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         if (k := self.cls.get((code, fx.POINT))) is not None:  # a building: the worker nearest the hall
             from ..protocol import UnitFlags
             hall = next((u for u in done if u.type_id in HALLS), None)
+            away = int(UnitFlags.HIDDEN | UnitFlags.LOADED)  # (in a mine, or loaded: refused)
             workers = [u for u in mine if u.is_worker and not u.is_structure and not fx.building(int(u.flags), u.order)
-                       and not u.flags & (UnitFlags.HIDDEN | UnitFlags.LOADED)]  # (not in a mine: refused)
+                       and not int(u.flags) & away]
             if not workers:
                 self.why_not = "no worker"
                 w = WORKER_TYPES.get(self.race)
