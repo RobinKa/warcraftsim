@@ -24,6 +24,8 @@ import random
 
 import numpy as np
 
+from .features import codes, isin
+
 KINDS = ("no_rush", "rush", "expand", "no_expand", "workers", "creep", "harass", "scout", "army", "low_upkeep")
 EXCLUSIVE = (("no_rush", "rush"), ("expand", "no_expand"), ("low_upkeep", "army"))
 MDIM = 2 * len(KINDS)  # the strategy block's part: per kind, on and its parameter (scaled to ~[0, 1])
@@ -40,6 +42,7 @@ INTEGER = {"workers", "creep", "harass", "army"}
 HERO, STRUCTURE, WORKER, DEAD = 1, 2, 4, 1024
 C_TYPE, C_OWNER, C_X, C_Y, C_FLAGS, C_HLEVEL = 2, 3, 4, 5, 12, 15
 GOLD_MINES = {int.from_bytes(c.encode(), "big") for c in ("ngol", "ugol", "egol")}
+GOLD_MINE_CODES = codes(GOLD_MINES)
 EXPANSION_FROM_START, EXPANSION_AT_MINE = 1500.0, 1000.0  # (as trace.Production's expansions)
 HALLS = {int.from_bytes(c.encode(), "big") for c in
          ("htow", "hkee", "hcas", "ogre", "ostr", "ofrt", "unpl", "unp1", "unp2", "etol", "etoa", "etoe")}
@@ -79,6 +82,8 @@ class Tracker:
         a second hall at home met "expand" and broke "no_expand", the audit of 2026-10-22)."""
         self.modes, self.side, self.enemy, self.own = dict(modes), side, enemy_start, own_start
         self.food, self.worker_types = food, worker_types  # (unit type -> its food; the workers' types)
+        self.worker_codes = codes(worker_types)  # (features.isin's: per step)
+        self.hall_codes = codes(set(HALLS) | ({int.from_bytes(b"ugol", "big")} if own_start is not None else set()))
         self.v = {k: 0.0 for k in modes}
         self.done: set[str] = set()  # (a goal reached: no violation later)
         self.kills = 0
@@ -109,12 +114,12 @@ class Tracker:
                 elif now >= x:
                     self.v[k] = 1.0
             elif k in ("expand", "no_expand"):
-                kinds = list(HALLS) + ([int.from_bytes(b"ugol", "big")] if self.own is not None else [])  # (undead: a haunted
-                hall = mine[np.isin(mine[:, C_TYPE], kinds) & (fl & STRUCTURE > 0)]  # mine far from home; audit 4)
+                # (undead: a haunted mine far from home; audit 4)
+                hall = mine[isin(mine[:, C_TYPE], self.hall_codes) & (fl & STRUCTURE > 0)]
                 if self.own is None:
                     halls = len(hall)
                 else:  # (the main hall and those at another gold mine)
-                    gm = rows[np.isin(rows[:, C_TYPE], list(GOLD_MINES))]
+                    gm = rows[isin(rows[:, C_TYPE], GOLD_MINE_CODES)]
                     far = (hall[:, C_X] - self.own[0]) ** 2 + (hall[:, C_Y] - self.own[1]) ** 2 > EXPANSION_FROM_START ** 2
                     at = (((hall[:, None, C_X] - gm[None, :, C_X]) ** 2 + (hall[:, None, C_Y] - gm[None, :, C_Y]) ** 2)
                           .min(1, initial=1e18) < EXPANSION_AT_MINE ** 2) if len(gm) else np.zeros(len(hall), bool)
@@ -135,7 +140,7 @@ class Tracker:
                 self.v[k] = min(1.0, self.v[k] + dt / HORIZON)
             elif k in ("workers", "creep", "harass", "army"):
                 at = {"workers": 480.0, "creep": 420.0, "harass": 600.0, "army": 600.0}[k]
-                have = (int(np.isin(mine[:, C_TYPE], list(self.worker_types)).sum()) if k == "workers"
+                have = (int(isin(mine[:, C_TYPE], self.worker_codes).sum()) if k == "workers"
                         else int(mine[fl & HERO > 0, C_HLEVEL].max(initial=0)) if k == "creep"
                         else self.kills if k == "harass"
                         else sum(self.food.get(int(c), 0) for c in army[army[:, C_FLAGS] & HERO == 0, C_TYPE]))

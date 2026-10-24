@@ -43,6 +43,7 @@ HAUNTED = int.from_bytes(b"ugol", "big")
 # what holds a natural: a hall of any tier, a haunted or an entangled mine (a keep there had read as a free natural)
 HOLDS = [int.from_bytes(c.encode(), "big") for c in
          ("htow", "hkee", "hcas", "ogre", "ostr", "ofrt", "unpl", "unp1", "unp2", "etol", "etoa", "etoe", "ugol", "egol")]
+MINE_CODES, HOLD_CODES = fx.codes(MINES), fx.codes(HOLDS)  # (as features.isin's sorted arrays)
 NATURAL_FROM_START = 1500.0  # (the main mine is nearer its start)
 CAMP_NEAR = 900.0  # creeps this near the natural's mine guard it
 TAKEN_NEAR = 1000.0  # a hall or a haunted mine this near it: taken
@@ -182,7 +183,7 @@ def natural(rows: np.ndarray, start: tuple[float, float] | None):
     if start is None:
         return None
     sx, sy = start
-    mines = rows[np.isin(rows[:, fx.C_TYPE], list(MINES)) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0)]
+    mines = rows[fx.isin(rows[:, fx.C_TYPE], MINE_CODES) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0)]
     if not len(mines):
         return None
     d = np.hypot(mines[:, fx.C_X] - sx, mines[:, fx.C_Y] - sy)
@@ -199,7 +200,7 @@ def camp(rows: np.ndarray, start: tuple[float, float] | None) -> tuple[float, fl
     mx, my = float(nat[fx.C_X]), float(nat[fx.C_Y])
     alive = rows[rows[:, fx.C_FLAGS] & fx.DEAD == 0]
     dist = np.hypot(alive[:, fx.C_X] - mx, alive[:, fx.C_Y] - my)
-    halls = np.isin(alive[:, fx.C_TYPE], HOLDS) & (alive[:, fx.C_OWNER] <= 1)
+    halls = fx.isin(alive[:, fx.C_TYPE], HOLD_CODES) & (alive[:, fx.C_OWNER] <= 1)
     if (halls & (dist < TAKEN_NEAR)).any() or not ((alive[:, fx.C_OWNER] == 12) & (dist < CAMP_NEAR)).any():
         return None
     return mx, my
@@ -211,7 +212,7 @@ def site(rows: np.ndarray, start: tuple[float, float] | None) -> tuple[int, floa
     if start is None:
         return None
     sx, sy = start
-    mines = rows[np.isin(rows[:, fx.C_TYPE], list(MINES)) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0)]
+    mines = rows[fx.isin(rows[:, fx.C_TYPE], MINE_CODES) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0)]
     if not len(mines):
         return None
     d = np.hypot(mines[:, fx.C_X] - sx, mines[:, fx.C_Y] - sy)
@@ -223,7 +224,7 @@ def site(rows: np.ndarray, start: tuple[float, float] | None) -> tuple[int, floa
     mx, my = float(nat[fx.C_X]), float(nat[fx.C_Y])
     alive = rows[rows[:, fx.C_FLAGS] & fx.DEAD == 0]
     dist = np.hypot(alive[:, fx.C_X] - mx, alive[:, fx.C_Y] - my)
-    halls = np.isin(alive[:, fx.C_TYPE], HOLDS) & (alive[:, fx.C_OWNER] <= 1)
+    halls = fx.isin(alive[:, fx.C_TYPE], HOLD_CODES) & (alive[:, fx.C_OWNER] <= 1)
     if (halls & (dist < TAKEN_NEAR)).any() or ((alive[:, fx.C_OWNER] == 12) & (dist < CAMP_NEAR)).any():
         return None
     ox, oy = EXPAND_SPOTS.get((int(round(mx)), int(round(my))), (None, None))

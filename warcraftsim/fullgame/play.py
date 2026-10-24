@@ -75,6 +75,9 @@ ENTANGLE = 852147  # a tree of life's entangle gold mine (tested 2026-10-23: giv
 # nearer and the mine is entangled ~9 s on)
 TREES_OF_LIFE = [int.from_bytes(c.encode(), "big") for c in ("etol", "etoa", "etoe")]
 NGOL, EGOL = int.from_bytes(b"ngol", "big"), int.from_bytes(b"egol", "big")
+# (as features.isin's sorted arrays: per step)
+TREE_CODES, ALTAR_CODES, MINED_CODES = fx.codes(TREES_OF_LIFE), fx.codes(ALTARS), fx.codes(MINED_BY.values())
+HARVESTING_CODES = fx.codes(list(fx.HARVESTING) + [fx.SMART])
 ENTANGLE_NEAR, ENTANGLE_EVERY = 1200.0, 20  # (a tree this near a mine no one entangled: the order, again after so
 # many steps until it is)
 TIERS = {int.from_bytes(c.encode(), "big") for c in ("hkee", "hcas", "ostr", "ofrt", "unp1", "unp2", "etoa", "etoe")}
@@ -203,10 +206,9 @@ class BCAgent:
         self.sent_resources: list[str | None] = []  # per command: what it sends the worker to harvest (accepted())
         sel = st["sel"]
         self.view_n_own = st["n_own"]
-        for i in range(min(st["n_own"], fx.MAX_OWN, len(order))):
+        n = min(st["n_own"], fx.MAX_OWN, len(order))
+        for i in np.flatnonzero(np.asarray(order[:n])).tolist():  # (the units given an order: most are given none)
             c = int(order[i])
-            if c == 0:
-                continue
             oid, kind = self.orders[c]
             if kind == fx.UNIT:
                 ttype = int(sel[int(tgt[i]), fx.C_TYPE])
@@ -215,9 +217,10 @@ class BCAgent:
                 res = fx.harvest_resource(oid, kind, None)
             unit = int(sel[i, fx.C_ID])
             same = True  # (gold from another mine than its own: a transfer, not redundant)
+            gold_mine = None
             if res == "gold" and kind == fx.UNIT:
-                mine = self._mine(sel, int(tgt[i]), i)
-                same = mine is None or mine == self.view.mine_of.get(unit, self._mine(sel, -1, i))
+                gold_mine = mine = self._mine(sel, int(tgt[i]), i)  # (its own mine looked for only when it has none)
+                same = mine is None or mine == (self.view.mine_of[unit] if unit in self.view.mine_of else self._mine(sel, -1, i))
             current = int(sel[i, fx.C_ORDER])
             if current == fx.SMART and int(sel[i, fx.C_TYPE]) == WISP and self._at_own_mine(sel, i):  # (a wisp
                 current = fx.HARVEST  # mining shows "smart": a harvest re-sent was refused, 318 a game; one walking
@@ -227,7 +230,6 @@ class BCAgent:
             if self.committed(unit):
                 continue  # on its way to build, or building: another order would cancel it
             self.last_sent.append((oid, kind))
-            x, y = fx.bins_world(int(bx[i]), int(by[i]), self.view.sign)
             if kind == fx.IMMEDIATE and oid == MIX:  # (--macros: the building trains its target's army mix)
                 from .macros import mix_choice
                 unit_code = mix_choice(getattr(self.view, "mix_target", None) or {}, getattr(self.view, "mix_have", {}),
@@ -264,6 +266,7 @@ class BCAgent:
             elif kind == fx.SKILL:
                 out.append(LearnSkill(unit, oid))
             elif kind == fx.POINT:
+                x, y = fx.bins_world(int(bx[i]), int(by[i]), self.view.sign)
                 out.append(Build(unit, oid, x, y) if oid >= TYPE_CODE else PointOrder(unit, oid, x, y))
             elif kind == fx.UNIT and oid in self.view.dead_heroes:  # (a dead tavern hero's hire: its revival at an altar of
                 altar = self._altar(sel[:st["n_own"]])            # the player's; tested 2026-10-23: 0.4 of its gold, as
@@ -291,7 +294,8 @@ class BCAgent:
             elif kind == fx.UNIT:
                 target = sel[int(tgt[i])]
                 if oid == fx.HARVEST:  # (a mine the player's workers can mine: the one pointed at, else the nearest;
-                    mine = self._mine(sel, int(tgt[i]), i)  # 77% of the clone's harvest orders pointed elsewhere)
+                    mine = gold_mine if res == "gold" else self._mine(sel, int(tgt[i]), i)  # 77% of the clone's harvest
+                    # orders pointed elsewhere; the mine found above, once)
                     if mine is None:
                         continue
                     out.append(TargetOrder(unit, oid, mine))
@@ -302,8 +306,8 @@ class BCAgent:
                 else:
                     out.append(TargetOrder(unit, oid, int(target[fx.C_ID])))
             elif kind == fx.TREE and self.trees:
-                tree = min(self.trees, key=lambda k: (self.trees[k][0] - x) ** 2 + (self.trees[k][1] - y) ** 2)
-                out.append(TargetDestructable(unit, oid, tree))
+                x, y = fx.bins_world(int(bx[i]), int(by[i]), self.view.sign)
+                out.append(TargetDestructable(unit, oid, self._nearest_tree(x, y)))
             if len(out) > len(self.sent_resources):  # (aligned with out: accepted() pairs them; a tier's queue cancels
                 self.sent_resources += [None] * (len(out) - len(self.sent_resources) - 1) + [res]  # before it: none;
                 # one entry for its seven commands had paired the step's later orders with others' resources; audit 4)
@@ -314,6 +318,18 @@ class BCAgent:
         self.sent_resources += [None] * (len(out) - len(self.sent_resources))
         self.issued += len(out)
         return out
+
+    def _nearest_tree(self, x: float, y: float) -> int:
+        """min(self.trees, key=its squared distance to (x, y)), the same tree: the distances in numpy first (the dict of
+        ~2,000 trees walked in Python had taken 1.4 ms an order), then the few nearest by the Python key itself (numpy's
+        square and Python's ** 2 differ in the last bit now and then: a near tie)."""
+        if getattr(self, "_tree_of", None) is not self.trees or self._tree_len != len(self.trees):
+            self._tree_ids = list(self.trees)  # (trees are only taken away: a length is a version)
+            self._tree_xy = np.array([self.trees[k] for k in self._tree_ids], float).reshape(-1, 2)
+            self._tree_of, self._tree_len = self.trees, len(self.trees)
+        d = (self._tree_xy[:, 0] - x) ** 2 + (self._tree_xy[:, 1] - y) ** 2
+        near = np.flatnonzero(d <= d.min() * (1 + 1e-9) + 1e-6).tolist()
+        return min((self._tree_ids[j] for j in near), key=lambda k: (self.trees[k][0] - x) ** 2 + (self.trees[k][1] - y) ** 2)
 
     def _auto_skills(self, rows: np.ndarray, given: list) -> list[Command]:
         """--macros 3: a hero of the player's with a skill point it has not spent for SKILL_WAIT_STEPS learns the
@@ -351,7 +367,7 @@ class BCAgent:
         entangled entangles it (the expand order builds a tree of life at the natural; its mine is mined once
         entangled, and the policy has no order for that)."""
         fl = rows[:, fx.C_FLAGS]
-        trees = rows[(rows[:, fx.C_OWNER] == self.player) & np.isin(rows[:, fx.C_TYPE], TREES_OF_LIFE)
+        trees = rows[(rows[:, fx.C_OWNER] == self.player) & fx.isin(rows[:, fx.C_TYPE], TREE_CODES)
                      & (fl & (fx.CONSTRUCTING | fx.DEAD) == 0)]
         mines = rows[(rows[:, fx.C_TYPE] == NGOL) & (fl & fx.DEAD == 0)]
         if not len(trees) or not len(mines):
@@ -373,7 +389,7 @@ class BCAgent:
     @staticmethod
     def _altar(own: np.ndarray) -> int | None:
         """A finished altar of the player's (`own`: its units' rows), its id, or None."""
-        done = own[np.isin(own[:, fx.C_TYPE], ALTARS) & (own[:, fx.C_FLAGS] & (fx.CONSTRUCTING | fx.DEAD) == 0)]
+        done = own[fx.isin(own[:, fx.C_TYPE], ALTAR_CODES) & (own[:, fx.C_FLAGS] & (fx.CONSTRUCTING | fx.DEAD) == 0)]
         return int(done[0, fx.C_ID]) if len(done) else None
 
     def _mine(self, sel: np.ndarray, k: int, i: int, plain: bool = False) -> int | None:
@@ -422,12 +438,12 @@ class BCAgent:
         if not len(w):
             return 0
         near = np.hypot(w[:, fx.C_X] - sel[j, fx.C_X], w[:, fx.C_Y] - sel[j, fx.C_Y]) < MINE_NEAR
-        mining = np.isin(w[:, fx.C_ORDER], list(fx.HARVESTING) + [fx.SMART]) | (w[:, fx.C_FLAGS] & HIDDEN > 0)
+        mining = fx.isin(w[:, fx.C_ORDER], HARVESTING_CODES) | (w[:, fx.C_FLAGS] & HIDDEN > 0)
         return int((near & mining).sum())
 
     def _at_own_mine(self, sel: np.ndarray, i: int) -> bool:
         """A unit row within MINE_NEAR of one of the player's entangled or haunted gold mines."""
-        m = sel[np.isin(sel[:, fx.C_TYPE], list(MINED_BY.values())) & (sel[:, fx.C_OWNER] == self.player)]
+        m = sel[fx.isin(sel[:, fx.C_TYPE], MINED_CODES) & (sel[:, fx.C_OWNER] == self.player)]
         return bool(len(m)) and bool((np.hypot(m[:, fx.C_X] - sel[i, fx.C_X], m[:, fx.C_Y] - sel[i, fx.C_Y]) < MINE_NEAR).any())
 
     def _repairable(self, row: np.ndarray) -> bool:

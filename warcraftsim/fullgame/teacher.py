@@ -53,7 +53,10 @@ GAP = 20  # steps between two lessons of a kind
 HALL = {"human": "htow", "orc": "ogre", "undead": "unpl", "nightelf": "etol"}
 HALLS_ALL = ("htow", "hkee", "hcas", "ogre", "ostr", "ofrt", "unpl", "unp1", "unp2", "etol", "etoa", "etoe")
 HAUNTED, ENTANGLED = fourcc("ugol"), fourcc("egol")
+HALL_CODES, OWN_MINE_CODES = fx.codes(fourcc(h) for h in HALLS_ALL), fx.codes((HAUNTED, ENTANGLED))
 MINES = {fourcc(c) for c in ("ngol", "ugol", "egol")}
+# (the sets above as features.isin's sorted arrays)
+WORKER_CODES, ALTAR_CODES, MINE_CODES = fx.codes(WORKERS), fx.codes(ALTARS), fx.codes(MINES)
 # where people built their halls at Echo Isles' natural expansions (95 games of 1.29: the mine -> the hall's offset)
 EXPAND_SPOTS = {(-4864, -3200): (100, 800), (4352, -3200): (-300, 700)}
 NATURAL_FROM_START = 1500.0  # (the main mine is nearer its start)
@@ -135,7 +138,7 @@ class Teacher:
                 and player.food_used + 5 <= player.food_cap and fourcc_in(done, ALTARS)
                 and (n_heroes == 0 or fourcc_in(done, TIER2)) and self.pick not in set(heroes[:, fx.C_TYPE].tolist())):
             tv = tavern[0]
-            workers = alive[np.isin(alive[:, fx.C_TYPE], list(WORKERS))]
+            workers = alive[fx.isin(alive[:, fx.C_TYPE], WORKER_CODES)]
             if len(workers):
                 d = np.hypot(workers[:, fx.C_X] - tv[fx.C_X], workers[:, fx.C_Y] - tv[fx.C_Y])
                 k = int(np.argmin(d))
@@ -173,7 +176,7 @@ class Teacher:
         """A side without a hero: its altar trains its first hero, and with no altar (nor one being built) a worker
         builds one near its hall; each when the policy could order it (`can`)."""
         can = getattr(self, "can", None)
-        altars = alive[np.isin(alive[:, fx.C_TYPE], list(ALTARS))]
+        altars = alive[fx.isin(alive[:, fx.C_TYPE], ALTAR_CODES)]
         done = altars[altars[:, fx.C_FLAGS] & fx.CONSTRUCTING == 0]
         if len(done):
             if (can is None or can(fx.rawcode(self.first))) and player.food_used + 5 <= player.food_cap \
@@ -183,9 +186,9 @@ class Teacher:
         if len(altars):
             return []  # (being built)
         code = ALTAR.get(self.race)
-        workers = alive[np.isin(alive[:, fx.C_TYPE], list(WORKERS)) & (alive[:, fx.C_FLAGS] & HIDDEN == 0)
+        workers = alive[fx.isin(alive[:, fx.C_TYPE], WORKER_CODES) & (alive[:, fx.C_FLAGS] & HIDDEN == 0)
                         & (alive[:, fx.C_FLAGS] & fx.STRUCTURE == 0)]
-        halls = alive[np.isin(alive[:, fx.C_TYPE], [fourcc(h) for h in HALLS_ALL])]
+        halls = alive[fx.isin(alive[:, fx.C_TYPE], HALL_CODES)]
         if code is None or not len(workers) or (can is not None and not can(code, fx.POINT)) or not self._due("altar", t):
             return []
         at = halls[0] if len(halls) else workers[0]
@@ -223,7 +226,7 @@ class Teacher:
         """The next step of taking the natural expansion: clearing its camp, the hall (undead: the haunted mine), the
         workers that mine there."""
         sx, sy = getattr(player, "start_x", None), getattr(player, "start_y", None)
-        mines = rows[np.isin(rows[:, fx.C_TYPE], list(MINES)) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0)]
+        mines = rows[fx.isin(rows[:, fx.C_TYPE], MINE_CODES) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0)]
         if sx is None or not len(mines):
             return []
         d = np.hypot(mines[:, fx.C_X] - sx, mines[:, fx.C_Y] - sy)
@@ -234,13 +237,13 @@ class Teacher:
         mx, my = float(nat[fx.C_X]), float(nat[fx.C_Y])
         near = lambda r, rad: np.hypot(r[:, fx.C_X] - mx, r[:, fx.C_Y] - my) < rad  # noqa: E731
         hall = fourcc(HALL[self.race])
-        workers = alive[np.isin(alive[:, fx.C_TYPE], list(WORKERS)) & (alive[:, fx.C_FLAGS] & HIDDEN == 0)]
-        from .macros import HOLDS  # (a hall of any tier, a haunted or an entangled mine)
-        taken = alive[np.isin(alive[:, fx.C_TYPE], HOLDS) & near(alive, 1000.0)]
+        workers = alive[fx.isin(alive[:, fx.C_TYPE], WORKER_CODES) & (alive[:, fx.C_FLAGS] & HIDDEN == 0)]
+        from .macros import HOLD_CODES  # (a hall of any tier, a haunted or an entangled mine)
+        taken = alive[fx.isin(alive[:, fx.C_TYPE], HOLD_CODES) & near(alive, 1000.0)]
         if len(taken):  # (taken: once finished, three workers to mine there)
             if (taken[:, fx.C_FLAGS] & fx.CONSTRUCTING > 0).all() or (near(workers, 900.0).sum() >= 4) or not len(workers):
                 return []
-            target = alive[np.isin(alive[:, fx.C_TYPE], [HAUNTED, ENTANGLED]) & near(alive, 1000.0)]
+            target = alive[fx.isin(alive[:, fx.C_TYPE], OWN_MINE_CODES) & near(alive, 1000.0)]
             if self.race == "nightelf" and not len(target):
                 return []  # (its tree of life entangles the mine first)
             mine_id = int(target[0, fx.C_ID]) if len(target) else int(nat[fx.C_ID])
@@ -276,5 +279,11 @@ class Teacher:
         return [Build(int(w[fx.C_ID]), hall, x, y)]
 
 
+_CODES: dict[int, tuple] = {}  # (a set of codes -> (the set, its sorted array): fourcc_in's, kept by identity)
+
+
 def fourcc_in(types: np.ndarray, codes: set[int]) -> bool:
-    return bool(np.isin(types, list(codes)).any())
+    c = _CODES.get(id(codes))
+    if c is None or c[0] is not codes:
+        c = _CODES[id(codes)] = (codes, fx.codes(codes))
+    return bool(fx.isin(types, c[1]).any())

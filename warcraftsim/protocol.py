@@ -160,21 +160,22 @@ class Unit:
     def type(self) -> str:
         return rawcode(self.type_id)
 
+    # (an int's &, not the enum's: the enum makes a UnitFlags of each result, ~3 us a test, per unit per step)
     @property
     def alive(self) -> bool:
-        return not (self.flags & UnitFlags.DEAD)
+        return not int.__and__(self.flags, 1024)  # (UnitFlags.DEAD)
 
     @property
     def is_hero(self) -> bool:
-        return bool(self.flags & UnitFlags.HERO)
+        return bool(int.__and__(self.flags, 1))  # (UnitFlags.HERO)
 
     @property
     def is_structure(self) -> bool:
-        return bool(self.flags & UnitFlags.STRUCTURE)
+        return bool(int.__and__(self.flags, 2))  # (UnitFlags.STRUCTURE)
 
     @property
     def is_worker(self) -> bool:
-        return bool(self.flags & UnitFlags.WORKER)
+        return bool(int.__and__(self.flags, 4))  # (UnitFlags.WORKER)
 
     @property
     def idle(self) -> bool:

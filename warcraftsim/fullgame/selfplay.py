@@ -821,6 +821,45 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
         complete(pending)
 
 
+def pack_steps(steps: list[dict]) -> tuple:
+    """A chunk's steps as a few arrays: each key's arrays (one dtype, the same shape past the first axis)
+    concatenated with their lengths, any other key's values as a list; each step's keys in their order. (Each
+    step's ~20 small arrays pickled one by one had cost an actor ~40 us a step and the learner ~50 to unpickle.)"""
+    layouts: dict[tuple, int] = {}
+    which = [layouts.setdefault(tuple(s), len(layouts)) for s in steps]
+    cols = {}
+    for key in dict.fromkeys(k for lay in layouts for k in lay):
+        vals = [s[key] for s in steps if key in s] if len(layouts) > 1 else [s[key] for s in steps]
+        v0, same = vals[0], False
+        if type(v0) is np.ndarray and v0.ndim and not v0.dtype.hasobject:
+            try:
+                same = len({(type(v), v.dtype, v.ndim, v.shape[1:]) for v in vals}) == 1
+            except AttributeError:  # (a None, a number)
+                pass
+        cols[key] = (np.concatenate(vals), [len(v) for v in vals]) if same else (None, vals)
+    return list(layouts), which, cols
+
+
+def unpack_steps(packed: tuple) -> list[dict]:
+    """pack_steps' steps back: the same keys in the same order, the same values (each array a view of its key's)."""
+    layouts, which, cols = packed
+    nxt = {}
+    for key, (arr, vals) in cols.items():
+        if arr is not None:
+            ends = np.cumsum(vals).tolist()
+            vals = [arr[a:b] for a, b in zip([0, *ends[:-1]], ends)]
+        nxt[key] = iter(vals).__next__
+    return [{k: nxt[k]() for k in layouts[w]} for w in which]
+
+
+class PackedSteps(list):
+    """A chunk's steps for the learner's queue: pickled as pack_steps' arrays, out of the queue a plain list
+    (unpack_steps). The remote games' wire encodes it as the list it is."""
+
+    def __reduce__(self):
+        return unpack_steps, (pack_steps(self),)
+
+
 class Trajectory:
     """One trained side's steps; complete chunks (GAE with the values it acted with) go to the learner.
     `hold` (GRPO, a branch of a game): every step is kept until release() adds the group's advantage."""
@@ -902,7 +941,7 @@ class Trajectory:
                 q1 = s["reward"] + (0.0 if s["done"] else gamma * v1)
                 g, v1 = G, s["value"]
         for i in range(0, len(steps), self.cfg["chunk"]):  # (a held game's: in pieces)
-            self.out_q.put({"steps": steps[i:i + self.cfg["chunk"]], "info": self.info})
+            self.out_q.put({"steps": PackedSteps(steps[i:i + self.cfg["chunk"]]), "info": self.info})
         self.steps = self.steps[-1:] if bootstrap else []
 
 
@@ -1318,7 +1357,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             del self.started[c]
         if not obs.events:
             return
-        owner = {u.id: u.owner for u in obs.units}
+        ua = getattr(obs, "unit_array", None)  # (the native table's columns, not a Unit object per unit: see _mine)
+        owner = dict(zip(ua[:, 0].tolist(), ua[:, 2].tolist())) if ua is not None else {u.id: u.owner for u in obs.units}
         for e in obs.events:
             k = int(e.kind)
             if owner.get(e.a) != self.side:
@@ -1335,6 +1375,30 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             elif k in (6, 7, 9, 10, 12, 13) or k == 1:
                 for c in self.busy.pop(e.a, ()):
                     self.started.pop(c, None)
+
+    def _own_rows(self, obs):
+        """The side's living units' rows of the native table (native.py's columns), once a step; None without one."""
+        if getattr(self, "_rows_of", None) is not obs:
+            ua = getattr(obs, "unit_array", None)
+            self._rows_of = obs
+            self._own = ua[(ua[:, 2] == self.side) & ((ua[:, 11] & fx.DEAD) == 0)] if ua is not None else None
+        return self._own
+
+    def _mine(self, obs) -> list:
+        """The side's living workers and buildings (all its living units without the native table) as Unit objects,
+        once a step, made from its own rows of the native table only when an order needs them: what order() and
+        resume() pick from (every unit of the game made one each step, and their enum flags tested, had been ~10% of
+        an actor's time; its army too, ~2%)."""
+        if getattr(self, "_mine_of", None) is obs:
+            return self._mine_list
+        own = self._own_rows(obs)
+        if own is not None:
+            from ..native import unit_from_row
+            mine = [unit_from_row(r) for r in own[(own[:, 11] & (fx.WORKER | fx.STRUCTURE)) > 0].tolist()]
+        else:
+            mine = [u for u in obs.units if u.owner == self.side and u.alive]
+        self._mine_of, self._mine_list = obs, mine
+        return mine
 
     def commands(self, obs, made: dict, t: int, step_s: float, ordered=()) -> list:
         """`ordered`: the agent's commands this step (the game refuses the same hero or next tier twice: the
@@ -1359,18 +1423,29 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         if not due:
             self.reserve = None
             return []
-        mine = [u for u in obs.units if u.owner == self.side and u.alive]
-        done = [u for u in mine if u.is_structure and not u.flags & UnitFlags.CONSTRUCTING]
-        have = techtree.counts_as({u.type for u in done} | {c for c in made if c[0] == "R"}, self.race)
+        own = self._own_rows(obs)
+        mine = done = None  # (Unit objects: made when an order needs them)
+        if own is not None:  # (the finished buildings' types and a hero from the rows: native.py's columns)
+            fl = own[:, 11]
+            types = {fx.rawcode(c) for c in set(own[(fl & fx.STRUCTURE > 0) & (fl & fx.CONSTRUCTING == 0), 1].tolist())}
+            hero = bool((fl & 1).any())
+        else:
+            mine = self._mine(obs)
+            done = [u for u in mine if u.is_structure and not int(u.flags) & fx.CONSTRUCTING]
+            types, hero = {u.type for u in done}, any(getattr(u, "is_hero", False) for u in mine)
+        have = techtree.counts_as(types | {c for c in made if c[0] == "R"}, self.race)
         heroes = len({c for c in (*made, *self.started) if techtree.is_hero(c) or fx.is_hero_code(c)})
         expansion = self._expansion_reserve(obs, due, p, t)  # (--macros: money kept for a due expansion)
-        self.first_free = heroes == 0 and not any(getattr(u, "is_hero", False) for u in mine)  # (a free first hero)
+        self.first_free = heroes == 0 and not hero  # (a free first hero)
         save = expansion
         for _, c in due:
-            item = self.next_step(c, have, {u.type for u in done}, heroes, t)
+            item = self.next_step(c, have, types, heroes, t)
             if item is None:
                 continue
             self.why_not = ""
+            if done is None:
+                mine = self._mine(obs)
+                done = [u for u in mine if u.is_structure and not int(u.flags) & fx.CONSTRUCTING]
             cmds = self.order(item, obs, mine, done, p, t)
             if not cmds and self.why_not:
                 self.blocked.setdefault(item, Counter())[self.why_not] += 1
@@ -1415,19 +1490,23 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         if self.race != "human":  # (an orc frame takes no repair, not even from its builder: tested 2026-10-24; its
             # resume had been taught 140 times a game as orc, an order the game refuses; audit 6)
             return None
-        frames = {u.id: u for u in obs.units if u.owner == self.side and u.alive and u.flags & UnitFlags.CONSTRUCTING}
-        self.frames = {i: (u.hp, t if u.hp > self.frames.get(i, (-1, t))[0] else self.frames[i][1])
-                       for i, u in frames.items()}
-        stalled = [frames[i] for i, (_, since) in self.frames.items() if t - since >= 20]
-        workers = [u for u in obs.units if u.owner == self.side and u.alive and u.is_worker and not u.is_structure
-                   and not fx.building(int(u.flags), u.order) and u.order != REPAIR
-                   and not u.flags & (UnitFlags.HIDDEN | UnitFlags.LOADED)]
-        if not stalled or not workers:
+        own = self._own_rows(obs)  # (each frame's id -> its hit points and place; from the rows: native.py's columns)
+        frames = ({i: (hp, x, y) for i, x, y, hp in own[(own[:, 11] & fx.CONSTRUCTING) > 0][:, [0, 3, 4, 6]].tolist()}
+                  if own is not None else {u.id: (u.hp, u.x, u.y) for u in self._mine(obs) if int(u.flags) & fx.CONSTRUCTING})
+        self.frames = {i: (hp, t if hp > self.frames.get(i, (-1, t))[0] else self.frames[i][1])
+                       for i, (hp, _, _) in frames.items()}
+        stalled = [i for i, (_, since) in self.frames.items() if t - since >= 20]
+        if not stalled:
             return None
-        f = stalled[0]
-        w = min(workers, key=lambda u: (u.x - f.x) ** 2 + (u.y - f.y) ** 2)
-        self.frames[f.id] = (f.hp, t)  # (another try in 20 steps if it still gains nothing)
-        return TargetOrder(w.id, REPAIR, f.id)
+        away = int(UnitFlags.HIDDEN | UnitFlags.LOADED)
+        workers = [u for u in self._mine(obs) if u.is_worker and not u.is_structure
+                   and not fx.building(int(u.flags), u.order) and u.order != REPAIR and not int(u.flags) & away]
+        if not workers:
+            return None
+        f, (hp, x, y) = stalled[0], frames[stalled[0]]
+        w = min(workers, key=lambda u: (u.x - x) ** 2 + (u.y - y) ** 2)
+        self.frames[f] = (hp, t)  # (another try in 20 steps if it still gains nothing)
+        return TargetOrder(w.id, REPAIR, f)
 
     def next_step(self, c: str, have: set, types: set, heroes: int, t: int, depth: int = 0) -> str | None:
         """The item to start toward `c` now: `c` when the player has what it needs (`have`: techtree.counts_as;
@@ -1479,8 +1558,9 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         if (k := self.cls.get((code, fx.POINT))) is not None:  # a building: the worker nearest the hall
             from ..protocol import UnitFlags
             hall = next((u for u in done if u.type_id in HALLS), None)
+            away = int(UnitFlags.HIDDEN | UnitFlags.LOADED)  # (in a mine, or loaded: refused)
             workers = [u for u in mine if u.is_worker and not u.is_structure and not fx.building(int(u.flags), u.order)
-                       and not u.flags & (UnitFlags.HIDDEN | UnitFlags.LOADED)]  # (not in a mine: refused)
+                       and not int(u.flags) & away]
             if not workers:
                 self.why_not = "no worker"
                 w = WORKER_TYPES.get(self.race)

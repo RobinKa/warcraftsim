@@ -67,9 +67,15 @@ def lib():
     return _lib
 
 
+_FLAGS: dict[int, UnitFlags] = {}  # (each flags' value as UnitFlags, made once: the enum's call per unit was slow)
+
+
 def unit_from_row(r) -> Unit:
+    f = _FLAGS.get(r[C_FLAGS])
+    if f is None:
+        f = _FLAGS[r[C_FLAGS]] = UnitFlags(r[C_FLAGS])
     u = Unit(r[C_ID], r[C_TYPE], r[C_OWNER], r[C_X], r[C_Y], r[C_FACING], r[C_HP], r[C_MAXHP], r[C_MANA], r[C_MAXMANA],
-             r[C_ORDER], UnitFlags(r[C_FLAGS]), r[C_VIS], r[C_RESOURCE])
+             r[C_ORDER], f, r[C_VIS], r[C_RESOURCE])
     if r[C_HERO]:
         u.hero_level, u.hero_xp, u.skill_points = r[C_HLEVEL], r[C_HXP], r[C_SKILLPTS]
         u.items = tuple(r[C_ITEMS:C_ITEMS + 6])

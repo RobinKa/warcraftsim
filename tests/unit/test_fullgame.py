@@ -56,6 +56,36 @@ def test_trajectory_upgo():
     assert [round(s["uadv"], 4) for s in steps] == [-0.3, 0.4, -0.3, 1.0]
 
 
+def test_packed_steps_round_trip():
+    import pickle
+    from multiprocessing.reduction import ForkingPickler
+
+    from warcraftsim.fullgame.selfplay import PackedSteps
+    rng = np.random.default_rng(0)
+    steps = []
+    for k in range(7):
+        n = (0, 3, 5, 0, 2, 4, 1)[k]
+        s = {"ent": rng.random((n, 6)).astype(np.float16), "type": np.arange(n, dtype=np.int16), "n": n,
+             "value": float(rng.random()), "done": k == 6, "version": -1 if k == 2 else 4,
+             "avail": None if k == 3 else rng.random(9) > 0.5,  # (a None among arrays: kept as a list)
+             "h": np.zeros(4, np.float32 if k != 5 else np.float64),  # (another dtype: kept as a list)
+             "z": np.float32(0.5), "zero": np.array(1.0)}
+        if k % 3 == 1:  # (labels on some steps, in another key order)
+            s = {"y_order": np.full(n, 7, np.int16), **s}
+        steps.append(s)
+    msg = pickle.loads(ForkingPickler.dumps({"steps": PackedSteps(steps), "info": {"worker": 1}}))
+    assert type(msg["steps"]) is list and msg["info"] == {"worker": 1}
+    assert len(msg["steps"]) == len(steps)
+    for a, b in zip(steps, msg["steps"]):
+        assert list(a) == list(b)  # the same keys, in the same order
+        for k, v in a.items():
+            if isinstance(v, np.ndarray):
+                assert type(b[k]) is np.ndarray and b[k].dtype == v.dtype and b[k].shape == v.shape
+                assert np.array_equal(b[k], v)
+            else:
+                assert type(b[k]) is type(v) and b[k] == v
+
+
 def test_league_spec(tmp_path):
     lg = League(tmp_path, ["normal"], {"ai": 0.25, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard")
     spec = lg.spec()
