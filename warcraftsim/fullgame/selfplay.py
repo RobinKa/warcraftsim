@@ -1659,7 +1659,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                 elif cfg.get("opsd_coef", 0.0) > 0:
                     bots[s].view.dual = True
     # --teach: a heuristic teacher's lessons (teacher.py: a tavern hero, a town portal, a potion) label the learner's steps
-    teachers = ({s: Teacher(s, races[s], random.Random(), zs.get(s)) for s in trajs if keys[s] == "current"}
+    teachers = ({s: Teacher(s, races[s], random.Random(), zs.get(s), target_hero=cfg.get("teach", 0) >= 2)
+                 for s in trajs if keys[s] == "current"}
                 if cfg.get("teach") and replay is None else {})
     zphi = {s: 0.0 for s in zs}  # their strategy potentials at the last recorded step
     # the built-in AI advises the learner's sides (opp["advise"]): its orders label their steps
@@ -3239,7 +3240,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--scenario-share", type=float, default=0.0, help="--scenarios: the share of the training games")
     ap.add_argument("--teach", type=int, default=0, help="a heuristic teacher (teacher.py: a tavern hero with a worker, "
                     "a town portal, a potion when a hero is low) labels the learner's steps, never carried out; "
-                    "--opd-coef the labels' weight; needs --neutral 1")
+                    "--opd-coef the labels' weight; needs --neutral 1. 2: with a target, its first hero from the altar "
+                    "taught too (when that is its first hero)")
     ap.add_argument("--tech-mask", type=int, default=0, help="mask the orders the player lacks the tech for "
                     "(features.TechMask: buildings, tiers, research levels, the hero limit)")
     ap.add_argument("--valid-mask", type=int, default=0, help="mask each hero's orders it can't carry out now: an "

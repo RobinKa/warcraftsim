@@ -69,9 +69,11 @@ USESLOT = 852008
 class Teacher:
     """One side's lessons in one game (commands: what it would order now)."""
 
-    def __init__(self, side: int, race: str, rng: random.Random, target: dict | None = None):
+    def __init__(self, side: int, race: str, rng: random.Random, target: dict | None = None, target_hero: bool = False):
         """`target` (the side's target strategy, if it has one): its tavern hero is the one taught, and none when it
-        has none (another hero would break a narrow target)."""
+        has none (another hero would break a narrow target). `target_hero` (--teach 2): its first hero from the altar
+        taught too, when that is its first hero (the builder taught it only once due: the policy had made another one
+        ~10-20 s before, and the second needs a tier; 25-37% of the first heroes were the target's, chance among 3-4)."""
         from .neutral import TAVERN_HEROES
         self.side = side
         if target is None:
@@ -83,6 +85,11 @@ class Teacher:
         self.taught: dict[str, int] = {}  # each kind's lessons this game (the episode row)
         # (a game without a target: its first hero from the altar, FIRST_HEROES)
         self.first = fourcc(rng.choice(FIRST_HEROES.get(race, FIRST_HEROES["human"]))) if target is None else None
+        if target is not None and target_hero:
+            from .techtree import is_hero
+            heroes = sorted((t, c) for c, t in target.get("t", {}).items() if is_hero(c))
+            if heroes and heroes[0][1] not in TAVERN_HEROES:  # (a tavern hero first: the tavern's lesson below)
+                self.first = fourcc(heroes[0][1])
         self.rng = rng
         self.race = race
         due = [v for c, v in (target or {}).get("t", {}).items() if c in (HALL.get(race), "ugol")]

@@ -1048,3 +1048,24 @@ def test_power_build_needs_lumber(v2):
     for (g, l), ok_frame, ok_mill in (((5, 0), False, True), ((0, 5), True, False), ((1, 1), True, True), ((0, 0), False, False)):
         bot.me = me(g, l)
         assert bot._repairable(frame) == ok_frame and bot._repairable(mill) == ok_mill, (g, l)
+
+
+def test_teacher_target_first_hero(v2):
+    """--teach 2: with a target, its first hero from the altar is taught as soon as the altar stands (the builder had
+    taught it only once due, after the policy had made another); a target whose first hero is a tavern's: the
+    tavern's lesson, none at the altar."""
+    import random
+    from types import SimpleNamespace
+
+    from warcraftsim.fullgame.teacher import Teacher
+    from warcraftsim.protocol import ImmediateOrder
+    player = SimpleNamespace(gold=500, lumber=300, food_used=10, food_cap=22, start_x=-5184, start_y=2944)
+    hall, peon = _unit(1, 0, -5184, 2944, 1, fx.STRUCTURE, "htow"), _unit(2, 0, -5000, 2900, 1, fx.WORKER, "hpea")
+    altar = _unit(3, 0, -4500, 2900, 1, fx.STRUCTURE, "halt")
+    target = {"t": {"halt": 30.0, "Hamg": 70.0, "hbar": 90.0, "Hmkg": 400.0}}
+    assert Teacher(0, "human", random.Random(0), target).first is None  # (--teach 1: as before)
+    tc = Teacher(0, "human", random.Random(0), target, target_hero=True)
+    c = tc.commands(np.stack([hall, peon, altar]), player, 50.0, 90)
+    assert c == [ImmediateOrder(3, code("Hamg"))]
+    tavern_first = Teacher(0, "human", random.Random(0), {"t": {"Nalc": 60.0, "Hamg": 300.0}}, target_hero=True)
+    assert tavern_first.first is None and tavern_first.pick == code("Nalc")
