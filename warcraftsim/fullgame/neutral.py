@@ -11,6 +11,8 @@ by creeps), the goblin merchant south of the middle its items (a town portal aft
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 import torch
 
 TAVERN, MERCHANT, CAMP, MARKET = "ntav", "ngme", "nmer", "nmrk"
@@ -178,8 +180,10 @@ def grow(net, old: dict, new: dict):
     return out.train(net.training)
 
 
+@lru_cache(1)
 def stock_times() -> dict[str, float]:
-    """A ware's first game second at its building (UnitBalance's / ItemData's stockStart)."""
+    """A ware's first game second at its building (UnitBalance's / ItemData's stockStart). (Read once: every game's
+    tech mask had opened the game's archives for it, 11% of an actor's time.)"""
     from ..data.mpq import GameArchives
     from ..data.objects import parse_slk
     with GameArchives() as g:

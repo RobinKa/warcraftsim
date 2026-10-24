@@ -185,6 +185,7 @@ DEAD, STRUCTURE, CONSTRUCTING = 1024, 2, 8
 FOOD_MAX = 100  # (the game's food ceiling: a player's food cap counts farms past it)
 SUMMONED = 256  # (UnitFlags.SUMMONED)
 REVIVE_AFTER_STEPS = 16  # (a dead hero's revival is taken ~7 s after its death)
+NATURAL_EVERY = 4  # (steps between two looks at the natural expansion: free, taken, its camp standing)
 FLAG_BITS = (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 2048)  # UnitFlags but DEAD
 F0 = 3 + 2 + 4 + len(FLAG_BITS) + 3 + 2 + 1 + 2 + 1  # 29: ... production (queued, busy), and a worker on lumber
 # then (2026-10-12; a checkpoint from before gets zero weights for them, model.load): the hit points' change since
@@ -1174,7 +1175,10 @@ class View:
         if avail is not None and enc.expand_class is not None:  # (--macros: expand, while the natural is free and
             from .macros import site                              # its hall affordable; night elves' tree of life
             race = RACES[self.races[player]]                      # entangles its mine, play.BCAgent._entangle)
-            self.expand_site = site(rows, getattr(self, "start", None)) if MACROS else None
+            if t - getattr(self, "_site_at", -NATURAL_EVERY) >= NATURAL_EVERY or t < getattr(self, "_site_at", 0):
+                self.expand_site = site(rows, getattr(self, "start", None)) if MACROS else None  # (every
+                self._site_at = t  # NATURAL_EVERY steps: a natural is taken or freed over seconds; 4% of an actor's
+                # time when every step)
             via = enc.expand_via.get(race)
             busy = getattr(self, "expanding", None) is not None and t < self.expanding[0]
             avail[enc.expand_class] = bool(self.expand_site is not None and via is not None and avail[via] and not busy)
@@ -1183,7 +1187,9 @@ class View:
             mine = rows[(rows[:, C_OWNER] == player) & (rows[:, C_FLAGS] & DEAD == 0)]
             army = int((mine[:, C_FLAGS] & (STRUCTURE | WORKER) == 0).sum())
             strong = army >= CREEP_ARMY and t * self.step_seconds >= CREEP_FROM  # (the teacher's conditions: from minute 1,
-            self.creep_at = camp(rows, getattr(self, "start", None)) if MACROS and strong else None  # any unit sent it:
+            if not strong or t - getattr(self, "_camp_at", -NATURAL_EVERY) >= NATURAL_EVERY or t < getattr(self, "_camp_at", 0):
+                self.creep_at = camp(rows, getattr(self, "start", None)) if MACROS and strong else None  # any unit sent it:
+                self._camp_at = t
             avail[enc.creep_class] = self.creep_at is not None  # 436 attack-moves a game; audit 3)
         if avail is not None and enc.mix_class is not None:  # (--macros: train the target's mix, while it lacks a unit
             target = getattr(self, "mix_target", None) or {}  # the side can train now)
