@@ -821,6 +821,45 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
         complete(pending)
 
 
+def pack_steps(steps: list[dict]) -> tuple:
+    """A chunk's steps as a few arrays: each key's arrays (one dtype, the same shape past the first axis)
+    concatenated with their lengths, any other key's values as a list; each step's keys in their order. (Each
+    step's ~20 small arrays pickled one by one had cost an actor ~40 us a step and the learner ~50 to unpickle.)"""
+    layouts: dict[tuple, int] = {}
+    which = [layouts.setdefault(tuple(s), len(layouts)) for s in steps]
+    cols = {}
+    for key in dict.fromkeys(k for lay in layouts for k in lay):
+        vals = [s[key] for s in steps if key in s] if len(layouts) > 1 else [s[key] for s in steps]
+        v0, same = vals[0], False
+        if type(v0) is np.ndarray and v0.ndim and not v0.dtype.hasobject:
+            try:
+                same = len({(type(v), v.dtype, v.ndim, v.shape[1:]) for v in vals}) == 1
+            except AttributeError:  # (a None, a number)
+                pass
+        cols[key] = (np.concatenate(vals), [len(v) for v in vals]) if same else (None, vals)
+    return list(layouts), which, cols
+
+
+def unpack_steps(packed: tuple) -> list[dict]:
+    """pack_steps' steps back: the same keys in the same order, the same values (each array a view of its key's)."""
+    layouts, which, cols = packed
+    nxt = {}
+    for key, (arr, vals) in cols.items():
+        if arr is not None:
+            ends = np.cumsum(vals).tolist()
+            vals = [arr[a:b] for a, b in zip([0, *ends[:-1]], ends)]
+        nxt[key] = iter(vals).__next__
+    return [{k: nxt[k]() for k in layouts[w]} for w in which]
+
+
+class PackedSteps(list):
+    """A chunk's steps for the learner's queue: pickled as pack_steps' arrays, out of the queue a plain list
+    (unpack_steps). The remote games' wire encodes it as the list it is."""
+
+    def __reduce__(self):
+        return unpack_steps, (pack_steps(self),)
+
+
 class Trajectory:
     """One trained side's steps; complete chunks (GAE with the values it acted with) go to the learner.
     `hold` (GRPO, a branch of a game): every step is kept until release() adds the group's advantage."""
@@ -902,7 +941,7 @@ class Trajectory:
                 q1 = s["reward"] + (0.0 if s["done"] else gamma * v1)
                 g, v1 = G, s["value"]
         for i in range(0, len(steps), self.cfg["chunk"]):  # (a held game's: in pieces)
-            self.out_q.put({"steps": steps[i:i + self.cfg["chunk"]], "info": self.info})
+            self.out_q.put({"steps": PackedSteps(steps[i:i + self.cfg["chunk"]]), "info": self.info})
         self.steps = self.steps[-1:] if bootstrap else []
 
 

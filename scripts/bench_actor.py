@@ -1,10 +1,11 @@
 """An actor's per-step Python on a recorded game, without the game or the network: selfplay.play_one and all it
 calls (the observation's parse, the view, the policy's orders as commands, the teacher, the target builder, the
-trajectory and its chunks to the learner), timed per side-step, and its outputs kept to compare another
+trajectory and its chunks to the learner, pickled for its queue), timed per side-step, and its outputs kept to compare another
 implementation's with (every step's commands, every chunk put to the learner, the episode row).
 
     python scripts/bench_actor.py record --run fgself-140 --races human undead --out runs/bench/actor-hu.pkl
     python scripts/bench_actor.py replay runs/bench/actor-hu.pkl [--reps 3] [--profile] [--save ref.pkl | --compare ref.pkl]
+        [--instructions] [--root another-tree]
 
 record plays one real game between the run's current policy and itself on the run's training map (the policy on the
 CPU; its answers and every observation the game sent are kept); replay feeds play_one those observations (through the
@@ -16,11 +17,13 @@ import argparse
 import copy
 import cProfile
 import json
+import os
 import pickle
 import pstats
 import random
 import sys
 import time
+from multiprocessing.reduction import ForkingPickler
 from pathlib import Path
 
 import numpy as np
@@ -78,13 +81,14 @@ def settings(run: str) -> tuple[dict, dict]:
 
 
 class Queue:
-    """play_one's out_q: what it puts, kept."""
+    """play_one's out_q: what it puts, pickled as the learner's queue does in the actor (its feeder thread), and
+    unpickled as the learner does when compared."""
 
     def __init__(self):
         self.items: list = []
 
     def put(self, msg) -> None:
-        self.items.append(msg)
+        self.items.append(ForkingPickler.dumps(msg))
 
     def cancel_join_thread(self) -> None:
         pass
@@ -187,13 +191,32 @@ class Answers:
         return out
 
 
-def replay_once(rec: dict, cfg: dict, vocab: dict, prof=None) -> tuple[float, dict]:
+class PerfControl:
+    """perf stat's counters on only around play_one (BENCH_PERF_CTL="ctl fifo,ack fifo": perf stat -D -1 --control
+    on those fifos; bench-out's driver): the record's loading, its copies and the comparison left out."""
+
+    def __init__(self):
+        spec = os.environ.get("BENCH_PERF_CTL")
+        self.fds = (os.open(spec.split(",")[0], os.O_WRONLY), os.open(spec.split(",")[1], os.O_RDONLY)) if spec else None
+
+    def __call__(self, cmd: str) -> None:
+        if self.fds:
+            os.write(self.fds[0], cmd.encode() + b"\n")
+            os.read(self.fds[1], 16)  # (its ack: counting has started / stopped)
+
+
+PERF: PerfControl | None = None
+
+
+def replay_once(rec: dict, cfg: dict, vocab: dict, prof=None, count: bool = False) -> tuple[float, dict]:
     from warcraftsim.fullgame import selfplay
     random.seed(rec["seed"])
     random.Random = _Seeded
     g, q = Game(rec), Queue()
     answers = Answers(copy.deepcopy(rec["answers"]))
     obs = g.start()
+    if count:
+        PERF("enable")
     t0 = time.process_time()  # (this process's CPU: the machine is busy with a run, wall time is noisy)
     if prof:
         prof.enable()
@@ -201,15 +224,10 @@ def replay_once(rec: dict, cfg: dict, vocab: dict, prof=None) -> tuple[float, di
                            train=True)
     if prof:
         prof.disable()
-    return time.process_time() - t0, {"cmds": g.sent, "puts": q.items, "episode": ep}
-
-
-def unpacked(msg: dict) -> dict:
-    """A chunk message's steps as dicts, packed or not (selfplay.unpack_steps)."""
-    if "packed" in msg:
-        from warcraftsim.fullgame.selfplay import unpack_steps
-        return {**{k: v for k, v in msg.items() if k != "packed"}, "steps": unpack_steps(msg["packed"])}
-    return msg
+    dt = time.process_time() - t0
+    if count:
+        PERF("disable")
+    return dt, {"cmds": g.sent, "puts": q.items, "episode": ep}
 
 
 def same(a, b, path="") -> list[str]:
@@ -241,9 +259,11 @@ def replay(a) -> int:
     cfg, vocab = settings(rec["run"])
     cfg.pop("_wine")
     prof = cProfile.Profile() if a.profile else None
+    global PERF
+    PERF = PerfControl()
     times, out = [], None
-    for r in range(a.reps):
-        dt, out = replay_once(rec, cfg, vocab, prof if r == a.reps - 1 else None)
+    for r in range(a.reps):  # (counted by perf: the reps after the first, the caches warm as in an actor's later games)
+        dt, out = replay_once(rec, cfg, vocab, prof if r == a.reps - 1 else None, count=r > 0)
         times.append(dt)
     n = sum(len(x) for x in rec["answers"])
     best = min(times)
@@ -254,7 +274,7 @@ def replay(a) -> int:
         pstats.Stats(prof).sort_stats("tottime").print_stats(30)
     for k in ("time", "wall_seconds", "step_wall_ms", "step_game_ms"):  # (the clock's)
         out["episode"].pop(k, None)
-    out["puts"] = [unpacked(m) for m in out["puts"]]
+    out["puts"] = [pickle.loads(m) for m in out["puts"]]  # (as the learner gets them)
     for m in out["puts"]:
         for k in ("time", "wall_seconds", "step_wall_ms", "step_game_ms"):
             (m.get("episode") or {}).pop(k, None)
@@ -267,6 +287,37 @@ def replay(a) -> int:
             + same(ref["episode"], out["episode"], "episode")
         print(f"compared {len(out['cmds'])} steps' commands, {len(out['puts'])} puts, the episode row: "
               f"{len(diff)} differences" + "".join(f"\n  {d}" for d in diff[:12]))
+    return 0
+
+
+def counted(argv: list[str]) -> int:
+    """This replay again under perf stat, counting play_one's warm reps only (PerfControl): user-space instructions a
+    side-step, steadier than CPU time on a machine a run keeps busy (math libraries on one thread, string hashes fixed:
+    their spinning and set orders had moved the counts by up to 20%)."""
+    import re
+    import subprocess
+    import tempfile
+    a = [x for x in argv if x != "--instructions"]
+    with tempfile.TemporaryDirectory() as d:
+        ctl, ack = os.path.join(d, "ctl"), os.path.join(d, "ack")
+        os.mkfifo(ctl)
+        os.mkfifo(ack)
+        cfd, afd = os.open(ctl, os.O_RDWR), os.open(ack, os.O_RDWR)
+        env = {**os.environ, "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1",
+               "PYTHONHASHSEED": "0", "BENCH_PERF_CTL": f"{ctl},{ack}"}
+        r = subprocess.run(["perf", "stat", "-x,", "-e", "instructions:u", "-D", "-1", "--control", f"fd:{cfd},{afd}",
+                            sys.executable, __file__, *a], capture_output=True, text=True, pass_fds=(cfd, afd), env=env)
+        os.close(cfd)
+        os.close(afd)
+    print(r.stdout, end="")
+    m = re.search(r"^(\d+),,instructions", r.stderr, re.M)
+    sides = re.search(r"(\d+) side-steps", r.stdout)
+    reps = re.search(r"best of (\d+)", r.stdout)
+    if not (m and sides and reps) or int(reps.group(1)) < 2:
+        print(r.stderr[-2000:], "(no count: perf stat, and --reps 2 or more)")
+        return 1
+    print(f"{int(m.group(1)) / (int(reps.group(1)) - 1) / int(sides.group(1)) / 1e6:.3f} M instructions a side-step "
+          f"(user space, play_one's warm reps)")
     return 0
 
 
@@ -285,7 +336,10 @@ def main() -> int:
     p.add_argument("--save", type=Path)
     p.add_argument("--compare", type=Path)
     p.add_argument("--root", type=Path, help="another tree's warcraftsim to time (e.g. the code before a change)")
+    p.add_argument("--instructions", action="store_true", help="count instructions instead (perf stat)")
     a = ap.parse_args()
+    if getattr(a, "instructions", False):
+        return counted(sys.argv[1:])
     if getattr(a, "root", None):
         sys.path.insert(0, str(a.root.resolve()))
     return record(a) if a.cmd == "record" else replay(a)
