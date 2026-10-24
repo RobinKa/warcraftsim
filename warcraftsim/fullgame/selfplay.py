@@ -49,6 +49,10 @@ from typing import Callable
 import numpy as np
 import torch
 
+# torch.compile's caches on disk (by default under /tmp, a RAM disk on this machine: lost at every reboot, ~1 GB of
+# memory held): the inference calls' and the update's compiled kernels are loaded from here at a restart
+os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR", str(Path.home() / ".cache" / "torchinductor"))
+
 from . import features as fx
 from . import modes as zmodes
 from . import scenarios
