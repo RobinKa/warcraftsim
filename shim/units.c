@@ -51,7 +51,7 @@ enum {
     GetUnitAbilityLevel, BlzGetUnitAbilityCooldownRemaining, LoadBoolean, LoadInteger, SaveInteger, SaveBoolean,
     HaveSavedInteger, Player, GroupRemoveUnit, FlushChildHashtable, ForGroup,
     GetPlayerSlotState, IsPlayerObserver, GetPlayerRace, GetPlayerState, GetPlayerStructureCount, GetPlayerStartLocation,
-    GetStartLocationX, GetStartLocationY, GetPlayerAlliance, N_NATIVES
+    GetStartLocationX, GetStartLocationY, GetPlayerAlliance, RemoveSavedBoolean, FlushParentHashtable, N_NATIVES
 };
 static const struct {
     const char *name, *sig;
@@ -73,6 +73,7 @@ static const struct {
     {"GetPlayerStructureCount", "(Hplayer;B)I"}, {"GetPlayerStartLocation", "(Hplayer;)I"},
     {"GetStartLocationX", "(I)R"}, {"GetStartLocationY", "(I)R"},
     {"GetPlayerAlliance", "(Hplayer;Hplayer;Halliancetype;)B"},
+    {"RemoveSavedBoolean", "(Hhashtable;II)V"}, {"FlushParentHashtable", "(Hhashtable;)V"},
 };
 static void *g_fn[N_NATIVES];
 static int g_ok; /* every native found: 1, or 2 to check the records against the harness's (W3SIM_UNITS=2) */
@@ -239,6 +240,119 @@ static void tok(int v) {
     rec_bytes(buf, len);
 }
 
+/* W3SIM_CUTS & 8388608: the harness table's per-unit values the pass reads kept here, by handle id: key 3 (the last
+ * record's hash) and key 4 (reported dead), which only this pass reads and writes, and key 1 (under construction),
+ * which the harness writes on its construction events: its SaveBoolean / RemoveSavedBoolean / FlushChildHashtable /
+ * FlushParentHashtable calls on the table are mirrored here (hooks on the natives). Each LoadBoolean / HaveSavedInteger /
+ * LoadInteger / SaveInteger was a hashtable lookup per unit per step. */
+#define KT_BASE 0x100000
+static int g_kt;
+static BYTE *g_k1, *g_k3h, *g_k4;
+static uint32_t *g_k3;
+static unsigned g_kcap;
+
+static int kt_slot(int h) {
+    unsigned i = (unsigned)h - KT_BASE;
+    if (i < g_kcap)
+        return (int)i;
+    if (i >= (1u << 22))
+        return -1;
+    unsigned cap = g_kcap ? g_kcap : 65536;
+    while (cap <= i)
+        cap *= 2;
+    BYTE *a = realloc(g_k1, cap), *b = realloc(g_k3h, cap), *d = realloc(g_k4, cap);
+    uint32_t *c = realloc(g_k3, cap * sizeof *c);
+    if (a)
+        g_k1 = a;
+    if (b)
+        g_k3h = b;
+    if (d)
+        g_k4 = d;
+    if (c)
+        g_k3 = c;
+    if (!a || !b || !c || !d)
+        return -1;
+    memset(g_k1 + g_kcap, 0, cap - g_kcap);
+    memset(g_k3h + g_kcap, 0, cap - g_kcap);
+    memset(g_k4 + g_kcap, 0, cap - g_kcap);
+    memset(g_k3 + g_kcap, 0, (cap - g_kcap) * sizeof *g_k3);
+    g_kcap = cap;
+    return (int)i;
+}
+
+static void kt_clear(void) {
+    if (!g_kcap)
+        return;
+    memset(g_k1, 0, g_kcap);
+    memset(g_k3h, 0, g_kcap);
+    memset(g_k4, 0, g_kcap);
+}
+
+typedef void(__cdecl *SaveBoolFn)(int, int, int, int);
+typedef void(__cdecl *RemBoolFn)(int, int, int);
+typedef void(__cdecl *FlushChildFn)(int, int);
+typedef void(__cdecl *FlushParentFn)(int);
+static SaveBoolFn SaveBool_orig;
+static RemBoolFn RemBool_orig;
+static FlushChildFn FlushChild_orig;
+static FlushParentFn FlushParent_orig;
+
+static void __cdecl SaveBool_hook(int ht, int parent, int child, int v) {
+    if (g_kt && ht == g_ht && child == 1) {
+        int i = kt_slot(parent);
+        if (i >= 0)
+            g_k1[i] = v != 0;
+    }
+    SaveBool_orig(ht, parent, child, v);
+}
+
+static void __cdecl RemBool_hook(int ht, int parent, int child) {
+    if (g_kt && ht == g_ht && child == 1) {
+        int i = kt_slot(parent);
+        if (i >= 0)
+            g_k1[i] = 0;
+    }
+    RemBool_orig(ht, parent, child);
+}
+
+static void __cdecl FlushChild_hook(int ht, int parent) {
+    if (g_kt && ht == g_ht) {
+        unsigned i = (unsigned)parent - KT_BASE;
+        if (i < g_kcap)
+            g_k1[i] = g_k3h[i] = g_k4[i] = 0;
+    }
+    FlushChild_orig(ht, parent);
+}
+
+static void __cdecl FlushParent_hook(int ht) {
+    if (g_kt && ht == g_ht)
+        kt_clear();
+    FlushParent_orig(ht);
+}
+
+static void install_kt(void) {
+    static const int which[4] = {SaveBoolean, RemoveSavedBoolean, FlushChildHashtable, FlushParentHashtable};
+    void *hooks[4] = {(void *)SaveBool_hook, (void *)RemBool_hook, (void *)FlushChild_hook, (void *)FlushParent_hook};
+    void **origs[4] = {(void **)&SaveBool_orig, (void **)&RemBool_orig, (void **)&FlushChild_orig, (void **)&FlushParent_orig};
+    for (int k = 0; k < 4; k++) {
+        BYTE *f = g_fn[which[k]];
+        if (!(f[0] == 0x55 && f[1] == 0x8b && f[2] == 0xec)) {
+            shim_log("unit records: table natives: unexpected code, not installed");
+            return;
+        }
+    }
+    MH_STATUS st = MH_Initialize();
+    if (st != MH_OK && st != MH_ERROR_ALREADY_INITIALIZED)
+        return;
+    for (int k = 0; k < 4; k++)
+        if (MH_CreateHook(g_fn[which[k]], hooks[k], origs[k]) != MH_OK || MH_EnableHook(g_fn[which[k]]) != MH_OK) {
+            shim_log("unit records: table natives: hook failed");
+            return;
+        }
+    g_kt = 1;
+    shim_log("unit records: the table's per-unit values kept by the shim (W3SIM_CUTS & 8388608)");
+}
+
 /* W3S_SerUnit: the unit's record, if it changed since it was last written (or on a full snapshot) */
 static void unit_record(int u) {
     /* (the order of the calls is W3S_SerUnit's: some of them make handles) */
@@ -251,7 +365,8 @@ static void unit_record(int u) {
         flags += 2;
     if (n2(IsUnitType, u, TYPE_PEON))
         flags += 4;
-    if (n3(LoadBoolean, g_ht, u, 1))
+    int ki = g_kt && !g_paired ? kt_slot(u) : -1;
+    if (ki >= 0 ? g_k1[ki] : n3(LoadBoolean, g_ht, u, 1))
         flags += 8; /* under construction */
     if (n1(IsUnitHidden, u))
         flags += 16;
@@ -324,11 +439,20 @@ static void unit_record(int u) {
         g_v_hash = h;
         g_v_n = g_v_got = g_v_bad = g_v_open = 0;
     } else {
-        if (!g_full && n3(HaveSavedInteger, g_ht, u, 3) && (uint32_t)n3(LoadInteger, g_ht, u, 3) == h)
-            return;
-        ((N4)g_fn[SaveInteger])(g_ht, u, 3, (int)h);
-        if (dead)
-            ((N4)g_fn[SaveBoolean])(g_ht, u, 4, 1);
+        if (ki >= 0) {
+            if (!g_full && g_k3h[ki] && g_k3[ki] == h)
+                return;
+            g_k3[ki] = h;
+            g_k3h[ki] = 1;
+            if (dead)
+                g_k4[ki] = 1;
+        } else {
+            if (!g_full && n3(HaveSavedInteger, g_ht, u, 3) && (uint32_t)n3(LoadInteger, g_ht, u, 3) == h)
+                return;
+            ((N4)g_fn[SaveInteger])(g_ht, u, 3, (int)h);
+            if (dead)
+                ((N4)g_fn[SaveBoolean])(g_ht, u, 4, 1);
+        }
         rec_bytes("U", 1);
     }
     g_sum = 0;
@@ -409,7 +533,8 @@ static void pass_unit(int u) {
             g_cur.hero = hero;
             g_cur.have_hero = 1;
         }
-        if (!hero && n3(LoadBoolean, g_ht, u, 4))
+        int ki = g_kt && !g_paired ? kt_slot(u) : -1;
+        if (!hero && (ki >= 0 ? g_k4[ki] : n3(LoadBoolean, g_ht, u, 4)))
             drop(u);
     }
     unit_record(u);
@@ -656,6 +781,7 @@ int units_call(int key, int mbox, int *result) {
         g_npid = 0;
         g_cur.u = 0;
         g_cobs = g_cobs_over = g_jres_n = 0;
+        kt_clear();
         memset(g_cobs_agent, 0, sizeof g_cobs_agent);
         memset(g_cobs_result, 0, sizeof g_cobs_result);
         cuts_game_start();
@@ -845,6 +971,8 @@ void units_install(void) {
             shim_log("unit records: getters once per unit, player ids by handle (W3SIM_CUTS & 32)");
         if (cuts & 16)
             install_fg_pass();
+        if (cuts & 8388608)
+            install_kt();
     }
     if (g_ok)
         shim_log("unit records: %s (%d natives)", g_ok == 2 ? "checked against the harness's" : "written by the shim", found);

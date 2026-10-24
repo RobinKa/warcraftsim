@@ -139,7 +139,41 @@ static int raw_connect(void) {
     return 0;
 }
 
+/* W3SIM_CUTS & 33554432 (with 131072): the controller's Unix socket (W3SIM_SOCK, a path in the instance's folder)
+ * instead of TCP loopback: the same stream; the kernel's work per send and recv is smaller on both sides */
+static int unix_connect(void) {
+    char path[108];
+    DWORD n = GetEnvironmentVariableA("W3SIM_SOCK", path, sizeof path);
+    if (!n || n >= sizeof path)
+        return 0;
+    int fd = lx3(LX_SOCKET, 1 /* AF_UNIX */, 1 /* SOCK_STREAM */, 0);
+    if (fd < 0)
+        return 0;
+    struct {
+        unsigned short family;
+        char path[108];
+    } sa;
+    memset(&sa, 0, sizeof sa);
+    sa.family = 1;
+    memcpy(sa.path, path, n);
+    int r;
+    do
+        r = lx3(LX_CONNECT, fd, (int)(size_t)&sa, (int)(2 + n + 1));
+    while (r == -LX_EINTR);
+    if (r != 0) {
+        lx3(LX_CLOSE, fd, 0, 0);
+        shim_log("controller's Unix socket %s: connect failed (%d), TCP", path, r);
+        return 0;
+    }
+    g_sock = (SOCKET)fd;
+    g_raw = 1;
+    shim_log("connected to controller on %s (Linux Unix socket, fd %d)", path, fd);
+    return 1;
+}
+
 static int connect_controller(void) {
+    if ((cuts_flags() & (131072 | 33554432)) == (131072 | 33554432) && unix_connect())
+        return 1;
     if ((cuts_flags() & 131072) && raw_connect())
         return 1;
     WSADATA wsa;

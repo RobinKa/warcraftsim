@@ -20,6 +20,7 @@ import json
 import os
 import random
 import shutil
+import select
 import socket
 import subprocess
 import threading
@@ -406,7 +407,7 @@ def _winpath(p: Path) -> str:
 
 
 # Attributes that belong to one game process; a warm spare's are swapped in on restart.
-_PROCESS_ATTRS = ("name", "_own_display", "_display", "proc", "_server", "_conn", "_rfile", "prefix", "ipc_dir",
+_PROCESS_ATTRS = ("name", "_own_display", "_display", "proc", "_server", "_userver", "_conn", "_rfile", "prefix", "ipc_dir",
                   "inst_dir", "_last_seq", "_units", "last_obs", "_sent_at", "_need_snapshot", "_cmd_log",
                   "_proc_episode", "_proc_steps", "_name_lock")
 
@@ -423,6 +424,7 @@ class GameInstance:
         self._display = display
         self.proc: subprocess.Popen | None = None
         self._server: socket.socket | None = None
+        self._userver: socket.socket | None = None  # the step sync's Unix socket (a shim with W3SIM_CUTS & 33554432)
         self._conn: socket.socket | None = None
         self._rfile = None
         self._last_seq: int | None = None
@@ -596,6 +598,17 @@ class GameInstance:
         self._server.listen(1)
         port = self._server.getsockname()[1]
         self.inst_dir.mkdir(parents=True, exist_ok=True)
+        # also a Unix socket in the instance's folder: a shim with W3SIM_CUTS & 33554432 connects there (Linux system
+        # calls: a small send and recv a step cost less than on TCP loopback, on both sides); TCP for the others
+        usock = self.inst_dir / "sync.sock"
+        if len(str(usock)) < 100:
+            try:
+                usock.unlink(missing_ok=True)
+                self._userver = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                self._userver.bind(str(usock))
+                self._userver.listen(1)
+            except OSError:
+                self._userver = None
         log_path = self.inst_dir / "shim.log"
         env = wine.wine_env(self.prefix, DISPLAY=self._display, W3SIM_PORT=str(port),
                             # real time until the game starts: a fast clock during loading becomes a
@@ -607,6 +620,8 @@ class GameInstance:
                             W3SIM_AUDIO="1" if self.setup.audio else "0",
                             W3SIM_DRAW="1" if self.setup.draw else "0",
                             W3SIM_LOG=_winpath(log_path))
+        if self._userver is not None:
+            env["W3SIM_SOCK"] = str(usock)
         if self.setup.render_threads is not None:
             env["LP_NUM_THREADS"] = str(self.setup.render_threads)
         if self.setup.cuts is not None:
@@ -625,9 +640,14 @@ class GameInstance:
         reaper.track(proc, lambda: (prefix and wine.kill_prefix(prefix), proc.kill()))
         # 10-20% of launches hang at a black screen before the map loads (any screen size; not
         # understood yet): a load reaches the harness within ~10-20 s even with every core busy
-        self._server.settimeout(min(self.timeout, self.setup.launch_timeout))
+        wait = min(self.timeout, self.setup.launch_timeout)
+        self._server.settimeout(wait)
         try:
-            self._conn, _ = self._server.accept()
+            listeners = [self._server] + ([self._userver] if self._userver is not None else [])
+            ready, _, _ = select.select(listeners, [], [], wait)
+            if not ready:
+                raise socket.timeout()
+            self._conn, _ = ready[0].accept()
         except socket.timeout:
             if self._own_display:  # keep a picture of what the game was showing
                 try:
@@ -640,7 +660,8 @@ class GameInstance:
                     shutil.copyfile(self.inst_dir / log, self.inst_dir / f"launch-timeout-{log}")
             raise GameError(f"game did not reach the harness within {min(self.timeout, self.setup.launch_timeout):.0f}s "
                             f"(see {self.inst_dir})")
-        self._conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        if self._conn.family == socket.AF_INET:
+            self._conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self._conn.settimeout(self.timeout)
         self._rfile = self._conn.makefile("rb")
         self._last_seq = None
@@ -1011,13 +1032,18 @@ class GameInstance:
                 self._conn.sendall(b"QUIT\n")
             except OSError:
                 pass
-        for s in (self._rfile, self._conn, self._server):
+        for s in (self._rfile, self._conn, self._server, self._userver):
             try:
                 if s:
                     s.close()
             except OSError:
                 pass
-        self._rfile = self._conn = self._server = None
+        if self._userver is not None:
+            try:
+                (self.inst_dir / "sync.sock").unlink(missing_ok=True)
+            except OSError:
+                pass
+        self._rfile = self._conn = self._server = self._userver = None
         reaper.untrack(self.proc)
         if self.proc:
             try:

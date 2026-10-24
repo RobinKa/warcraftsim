@@ -49,8 +49,8 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved) {
     char path[MAX_PATH];
     if (GetEnvironmentVariableA("W3SIM_LOG", path, sizeof path))
         g_log = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, 0, NULL);
-    shim_log("w3shim %s attached: pid=%lu base=%p cmdline=%s", W3SHIM_VERSION, GetCurrentProcessId(), g_base,
-             GetCommandLineA());
+    shim_log("w3shim %s attached: pid=%lu base=%p shim=%p cmdline=%s", W3SHIM_VERSION, GetCurrentProcessId(), g_base,
+             (void *)inst, GetCommandLineA());
 
     clock_install(env_double("W3SIM_SPEED", 1.0), (DWORD)env_double("W3SIM_WAIT_FLOOR", 0));
     sync_install();

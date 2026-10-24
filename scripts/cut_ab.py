@@ -180,7 +180,8 @@ class Perf:
         if NO_PERF:
             self.p = None
             return
-        self.p = subprocess.Popen(["perf", "stat", "-t", str(tid), "-e", "instructions:u,cycles:u,task-clock",
+        self.p = subprocess.Popen(["perf", "stat", "-t", str(tid), "-e",
+                                   os.environ.get("CUTAB_PERF_EVENTS", "instructions:u,cycles:u,task-clock"),
                                    "-x", ",", "-o", str(out)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(0.3)
 
@@ -195,12 +196,28 @@ class Perf:
         for line in self.out.read_text().splitlines():
             parts = line.split(",")
             if len(parts) >= 3 and parts[0] and parts[0][0].isdigit():
-                name = parts[2].split(":")[0]
+                name = parts[2].split(":")[0].split("/")[0]
                 try:
                     res[name] = float(parts[0])
                 except ValueError:
                     pass
         return res
+
+
+class PerfRecord:
+    """perf record on one thread (CUTAB_PERF_RECORD="-e cycles:u -c 200000 ..." in the variant's env)."""
+
+    def __init__(self, tid: int, out: Path, args: str):
+        self.p = subprocess.Popen(["perf", "record", "-t", str(tid), "-o", str(out)] + args.split(),
+                                  stdout=subprocess.DEVNULL, stderr=open(str(out) + ".err", "w"))
+        time.sleep(0.3)
+
+    def stop(self) -> None:
+        self.p.send_signal(signal.SIGINT)
+        try:
+            self.p.wait(60)
+        except subprocess.TimeoutExpired:
+            self.p.kill()
 
 
 # ---- a simple agent: workers harvest, halls train workers, units attack-move now and then -----------------
@@ -366,18 +383,22 @@ def cmd_play(a) -> int:
     runs = []  # (variant, repeat, game, obs)
     for r in range(a.repeat):
         for vi, (name, env, shim) in enumerate(variants):
+            env = dict(env)
+            prec = env.pop("CUTAB_PERF_RECORD", "")
             g, obs = launch(setup, f"cutprobe{a.tag}_{vi}_{r}", env, shim, replay)
-            runs.append({"variant": name, "rep": r, "g": g, "obs": obs, "digests": [], "perf": None, "raw": raw_tap(g)})
+            runs.append({"variant": name, "rep": r, "g": g, "obs": obs, "digests": [], "perf": None, "raw": raw_tap(g),
+                         "prec": prec})
     barrier = threading.Barrier(len(runs))
 
     def play(run: dict) -> None:
         g, obs = run["g"], run["obs"]
         perf = None
+        me = threading.get_native_id()
         try:
             pid = game_pid(g.prefix)
             c0 = thread_cpu(pid) if pid else {}
             for t in range(a.steps):
-                run["digests"].append(digest(obs))
+                run["digests"].append(digest(obs) if not a.light else {"ms": obs.game_ms})
                 if t == a.warmup:
                     if t == 0:
                         g.step([])  # (to find the main thread)
@@ -389,9 +410,12 @@ def cmd_play(a) -> int:
                     except threading.BrokenBarrierError:
                         pass
                     perf = Perf(tid, tmp / f"perf_{run['variant']}_{run['rep']}.txt")
+                    if run["prec"]:
+                        run["precp"] = PerfRecord(tid, tmp / f"perf_{a.tag}_{run['variant']}_{run['rep']}.data", run["prec"])
                     run["cpu0"], run["pcpu0"], run["t0"], run["s0"] = thread_cpu(pid)[tid], proc_cpu(pid), time.time(), t
                     run["pp"] = prefix_pids(g.prefix)
                     run["ns0"], run["ws0"], run["oth0"] = thread_ns(pid, tid), pids_cpu(run["pp"]["wineserver"]), pids_cpu(run["pp"]["other"])
+                    run["py0"] = thread_ns(os.getpid(), me)
                 if a.window and perf and t > a.warmup and (t - a.warmup) % a.window == 0:
                     w = perf.stop()
                     run.setdefault("windows", []).append(w.get("instructions", 0) / a.window / 1e6)
@@ -401,6 +425,8 @@ def cmd_play(a) -> int:
                     break
                 obs = g.step([])
                 run["obs"] = obs
+            if run.get("precp"):
+                run["precp"].stop()
             if perf:
                 run["perf"] = perf.stop()
                 for w in run.get("perf_parts", []):  # (the windows' counts add up)
@@ -409,6 +435,7 @@ def cmd_play(a) -> int:
                 run["steps_measured"] = len(run["digests"]) - run["s0"]
                 run["cpu"] = thread_cpu(pid)[run["tid"]] - run["cpu0"]
                 run["ns"] = thread_ns(pid, run["tid"]) - run["ns0"]
+                run["py"] = thread_ns(os.getpid(), me) - run["py0"]
                 run["ws"] = pids_cpu(run["pp"]["wineserver"]) - run["ws0"]
                 run["oth"] = pids_cpu(run["pp"]["other"]) - run["oth0"]
                 run["pcpu"] = proc_cpu(pid) - run["pcpu0"]
@@ -436,21 +463,27 @@ def cmd_play(a) -> int:
     for run in runs:
         p = run.get("perf") or {}
         n = max(run.get("steps_measured", 0), 1)
-        live_cmp = compare(live, run["digests"]) if live else "-"
-        base_cmp = compare(runs[0]["digests"], run["digests"]) if run is not runs[0] else "-"
+        live_cmp = compare(live, run["digests"]) if live and not a.light else "-"
+        base_cmp = (compare(runs[0]["digests"], run["digests"]) if not a.light else "light") if run is not runs[0] else "-"
         if run is not runs[0]:
             base_cmp += "; " + compare_raw(runs[0]["raw"], run["raw"])
         row = {"variant": run["variant"], "rep": run["rep"], "steps": n, "error": run.get("error"),
                "instr": p.get("instructions", 0) / n / 1e6, "cycles": p.get("cycles", 0) / n / 1e6,
                "task_ms": p.get("task-clock", 0) / n, "cpu_ms": run.get("ns", 0) / 1e6 / n,
                "ws_ms": 1000 * run.get("ws", 0) / n, "oth_ms": 1000 * run.get("oth", 0) / n,
+               "py_ms": run.get("py", 0) / 1e6 / n,
                "pcpu_ms": 1000 * run.get("pcpu", 0) / n, "live": live_cmp, "base": base_cmp,
-               "hashes": [step_hash(d) for d in run["digests"]]}
+               "hashes": [step_hash(d) for d in run["digests"]] if not a.light else []}
         rows.append(row)
         row["windows"] = run.get("windows", [])
         print(f"| {row['variant']} | {row['rep']} | {n} | {row['instr']:.2f} | "
-              f"{row['cpu_ms']:.3f} | {row['pcpu_ms']:.2f} | {row['ws_ms']:.2f} | {row['oth_ms']:.2f} | {live_cmp} | {base_cmp} |" + (f" ERROR {row['error']}" if row["error"] else ""),
+              f"{row['cpu_ms']:.3f} | {row['pcpu_ms']:.2f} | {row['ws_ms']:.2f} | {row['oth_ms']:.2f} | {live_cmp} | {base_cmp} | py {row['py_ms']:.3f} |" + (f" ERROR {row['error']}" if row["error"] else ""),
               flush=True)
+    extra = [k for k in (runs[0].get("perf") or {}) if k not in ("instructions", "cycles", "task-clock")]
+    for run, row in zip(runs, rows):
+        p = run.get("perf") or {}
+        if extra:
+            print(f"{row['variant']} per step: " + ", ".join(f"{k} {p.get(k, 0) / row['steps']:.0f}" for k in extra))
     if a.window:
         for row in rows:
             print(f"{row['variant']} M instr/step by {a.window}-step window: " + " ".join(f"{w:.1f}" for w in row["windows"]))
@@ -563,6 +596,8 @@ def main() -> int:
     p.add_argument("--tag", default="")
     p.add_argument("--window", type=int, default=0, help="also the instructions per step in windows of this many steps")
     p.add_argument("--json")
+    p.add_argument("--light", action="store_true", help="no digests (the raw observation bytes still compared): the "
+                   "controller thread's own CPU a step is then mostly the step sync's")
     p.add_argument("--tmp", default=str(Path.home() / "tools/wt-cuts2-out/perf"))
     ap.add_argument("--wine", default=str(Path.home() / "wc3/ge/GE-Proton10-34/files/bin"))
     a = ap.parse_args()
