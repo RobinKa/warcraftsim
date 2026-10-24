@@ -140,7 +140,7 @@ Each game runs in a Wine prefix of its own. Wine was a third of a game's CPU at 
 
 ## Where the time goes now
 
-A game's main thread with every patch on (`--game-cuts 33551865`, round 3 included), by part, from `perf` call chains of three replayed games: each sample in exactly one part, so each column sums to 100%. A typical training game between agents on `echofast`:
+A game's main thread with the patches of rounds 1-3 on (`--game-cuts 33551865`; the runs use 67106297, which adds the step sync over a Unix socket), by part, from `perf` call chains of three replayed games: each sample in exactly one part, so each column sums to 100%. A typical training game between agents on `echofast`:
 
 ```mermaid
 %%{init: {"themeVariables": {"pie1": "#4cc38a", "pie2": "#539bf5", "pie3": "#b083f0", "pie4": "#e0a33a", "pie5": "#e5534b", "pie6": "#39c5cf", "pie7": "#8795a3", "pie8": "#c69026", "pie9": "#f47067", "pieStrokeColor": "#0b0f13", "pieOuterStrokeColor": "#0b0f13", "pieTitleTextColor": "#d7dee6", "pieLegendTextColor": "#d7dee6", "pieSectionTextColor": "#0b0f13"}}}%%
