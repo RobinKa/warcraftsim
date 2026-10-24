@@ -2619,11 +2619,20 @@ class NoiseScale:
     without steps (ppo_update(measure=True)): measured over the update's first epoch instead, Adam's
     steps between the minibatches made their gradients partly cancel, and |G|^2 came out < 0 in 95% of
     fgself-76's updates. The measurements' |G|^2 and tr(S) are averaged first (an exponential mean
-    with its start's bias corrected), then divided: one batch's |G|^2 can be < 0."""
+    with its start's bias corrected), then divided: one batch's |G|^2 can be < 0. One measurement's
+    |G|^2 and tr(S) vary by three orders of magnitude: the means are kept in the run (`path`, read again
+    on a resume, a fork's from its parent's) over ~20 measurements; started anew at every restart over
+    ~10, the scale had jumped 5,000 to 450,000 in a morning of restarts (2026-10-24)."""
 
-    def __init__(self, decay: float = 0.9):
-        self.decay = decay
+    def __init__(self, decay: float = 0.95, path: Path | None = None, parent: Path | None = None):
+        self.decay, self.path = decay, path
         self.mean: dict[str, list] = {}  # name -> [measurements, |G|^2's mean, tr(S)'s mean]
+        for src in (path, parent):
+            try:
+                self.mean = {k: list(v) for k, v in json.loads(Path(src).read_text()).items()}
+                break
+            except (TypeError, OSError, ValueError):
+                continue
 
     def add(self, parts: dict[str, tuple[float, float]], minibatch: int) -> dict:
         """The noise scales from a measurement's parts (NoiseMeter.parts) as train.jsonl keys: the whole
@@ -2646,6 +2655,13 @@ class NoiseScale:
             out[key] = scale
             if name == "all":
                 out["grad/snr"] = minibatch / scale
+        if self.path is not None:
+            try:
+                tmp = Path(self.path).with_suffix(".tmp")
+                tmp.write_text(json.dumps(self.mean))
+                tmp.replace(self.path)
+            except OSError:
+                pass
         return out
 
 
@@ -3844,7 +3860,8 @@ def main(argv: list[str] | None = None) -> int:
                                      else (0, 0, 0))
     bc_iter = None
     updater = GraphedUpdate(net, ref, opt, args, device) if graphed else None
-    noise = NoiseScale()  # (--noise-scale)
+    noise = NoiseScale(path=run_dir / "noise_scale.json",  # (--noise-scale; a fork's start: its parent's means)
+                       parent=(args.runs / args.league_from / "noise_scale.json") if args.league_from else None)
     # the exploiter's updates as CUDA graphs too (eager, an update of 4,096 steps took the learner ~3-5 s
     # every ~15 s: a quarter of its time)
     x_updater = GraphedUpdate(xnet, ref, xopt, args, device) if graphed and xnet is not None else None
