@@ -121,13 +121,14 @@ class Teacher:
             return []
         out = []
         fl, typ = rows[:, fx.C_FLAGS], rows[:, fx.C_TYPE]  # (masks over all the rows, copies of the few they pick:
-        own, living, hero = rows[:, fx.C_OWNER] == self.side, fl & fx.DEAD == 0, fl & fx.HERO > 0  # a copy of every
-        alive = rows[own & living]  # living unit a step had been ~9% of an actor's time)
-        heroes = rows[own & hero]  # (dead ones count: they can be revived)
-        live_heroes = rows[own & living & hero]
+        living = fl & fx.DEAD == 0  # a copy of every living unit a step had been ~9% of an actor's time; the living
+        alive = fx.own_alive(rows, self.side)  # own ones: the trackers' of the step before, the same rows)
+        heroes = rows[(rows[:, fx.C_OWNER] == self.side) & (fl & fx.HERO > 0)]  # (dead ones count: they can be revived)
+        fa = alive[:, fx.C_FLAGS]
+        live_heroes = alive[fa & fx.HERO > 0]
         # the neutral buildings: on the game's minimap from the start
         tavern, merchant = rows[living & (typ == TAVERN)], rows[living & (typ == MERCHANT)]
-        done = typ[own & living & (fl & fx.STRUCTURE > 0) & (fl & fx.CONSTRUCTING == 0)]
+        done = alive[(fa & fx.STRUCTURE > 0) & (fa & fx.CONSTRUCTING == 0), fx.C_TYPE]
         n_heroes = len(heroes)
         if self.first is not None and n_heroes == 0 and now >= FIRST_HERO_FROM:
             out += self._first_hero(alive, player, t)

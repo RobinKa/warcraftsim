@@ -24,7 +24,7 @@ import random
 
 import numpy as np
 
-from .features import codes, isin
+from .features import codes, isin, own_alive
 
 KINDS = ("no_rush", "rush", "expand", "no_expand", "workers", "creep", "harass", "scout", "army", "low_upkeep")
 EXCLUSIVE = (("no_rush", "rush"), ("expand", "no_expand"), ("low_upkeep", "army"))
@@ -94,7 +94,7 @@ class Tracker:
         -> the sum of the violations so far."""
         dt, self.t = max(0.0, now - self.t), now
         s, m = self.side, self.modes
-        mine = rows[(rows[:, C_OWNER] == s) & (rows[:, C_FLAGS] & DEAD == 0)]
+        mine = own_alive(rows, s)
         fl = mine[:, C_FLAGS]
         army = mine[(fl & (STRUCTURE | WORKER) == 0)]
         d2 = (army[:, C_X] - self.enemy[0]) ** 2 + (army[:, C_Y] - self.enemy[1]) ** 2

@@ -179,6 +179,20 @@ PASSIVE_IDS = np.array([int.from_bytes(c.encode(), "big") for c in (
     "hhou", "otrb", "uzig", "emow", "hwtw", "hgtw", "hctw", "hatw", "owtw", "uzg1", "uzg2", "etrp", "ugol", "egol")], np.int64)
 
 
+_OWN_ALIVE: dict[int, tuple] = {}  # player -> (a step's rows, their living units of the player's)
+
+
+def own_alive(rows: np.ndarray, player: int) -> np.ndarray:
+    """rows[(owner == player) & living], made once per rows object and player (play_one's rows: the trackers' at a
+    step's end, the teacher's at the next step's start; the two sides' alike). Read only."""
+    hit = _OWN_ALIVE.get(player)
+    if hit is not None and hit[0] is rows:
+        return hit[1]
+    out = rows[(rows[:, C_OWNER] == player) & (rows[:, C_FLAGS] & DEAD == 0)]
+    _OWN_ALIVE[player] = (rows, out)
+    return out
+
+
 def codes(values) -> np.ndarray:
     """A few int codes (unit types, orders) as isin's sorted array."""
     return np.unique(np.fromiter((int(v) for v in values), np.int64))
