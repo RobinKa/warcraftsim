@@ -347,7 +347,8 @@ MAX_DOC = 512 * 1024
 DOC_NAME = __import__("re").compile(r"((reference|proposals|related)/)?[a-z0-9][a-z0-9-]{0,63}")
 DOC_GROUPS = ("", "proposals", "related", "reference")  # the tab's sections: docs/*.md, then docs/<group>/*.md
 # the Docs tab: docs/*.md (short, first the ones a reader starts with), then docs/reference/*.md (the details)
-DOC_ORDER = ("overview", "environments", "model", "experiments", "road-to-the-real-game", "optimizations", "architecture")
+DOC_ORDER = ("overview", "environments", "model", "experiments", "road-to-the-real-game", "optimizations", "game-speedups",
+             "architecture")
 
 
 class Docs:
