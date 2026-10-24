@@ -310,10 +310,26 @@ def mix(strategy: dict | None, items: list[str]) -> np.ndarray:
     return z
 
 
+_PER_STRATEGY: dict = {}  # (what, id(a), id(b)) -> (a, b, a value computed from them once; a few games' worth)
+
+
+def _once(what: str, a, b, make):
+    """make() for these two objects (a strategy's dicts, a race's items), computed once while they live (per step
+    they had been ~3% of an actor's time)."""
+    key = (what, id(a), id(b))
+    hit = _PER_STRATEGY.get(key)
+    if hit is None or hit[0] is not a or hit[1] is not b:
+        if len(_PER_STRATEGY) > 64:
+            _PER_STRATEGY.clear()
+        hit = _PER_STRATEGY[key] = (a, b, make())
+    return hit[2]
+
+
 def mix_gap(trained: dict[str, int], strategy: dict, least: int = 5) -> float:
     """--z-mix: how far the army a side trained is from its strategy's (the total variation of the two mixes, 0 to
     1); 0 while it trained fewer than `least` army units or the strategy has no army."""
-    want = {c: v for c, v in (strategy.get("n") or {}).items() if is_army(c) and v > 0}
+    n = strategy.get("n") or {}
+    want = _once("want", n, None, lambda: {c: v for c, v in n.items() if is_army(c) and v > 0}) if n else {}
     have = {c: v for c, v in trained.items() if is_army(c) and v > 0}
     tw, th = sum(want.values()), sum(have.values())
     if not tw or th < least:
@@ -338,7 +354,8 @@ def mismatch(made: dict[str, float], strategy: dict, items: list[str], now: floa
     now = min(now, horizon(strategy))
     t = strategy["t"]
     if strategy.get("narrow"):  # (its own items as any strategy's; outside them, heroes and army units only)
-        return sum((made.get(c, 1e9) <= now) != (t.get(c, 1e9) <= now) for c in items if c in t or restricted(c))
+        counted = _once("narrow", t, items, lambda: [c for c in items if c in t or restricted(c)])
+        return sum((made.get(c, 1e9) <= now) != (t.get(c, 1e9) <= now) for c in counted)
     return sum((made.get(c, 1e9) <= now) != (t.get(c, 1e9) <= now) for c in items)
 
 
