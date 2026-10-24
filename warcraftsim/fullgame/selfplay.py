@@ -1318,7 +1318,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             del self.started[c]
         if not obs.events:
             return
-        owner = {u.id: u.owner for u in obs.units}
+        ua = getattr(obs, "unit_array", None)  # (the native table's columns, not a Unit object per unit: see _mine)
+        owner = dict(zip(ua[:, 0].tolist(), ua[:, 2].tolist())) if ua is not None else {u.id: u.owner for u in obs.units}
         for e in obs.events:
             k = int(e.kind)
             if owner.get(e.a) != self.side:
@@ -1335,6 +1336,20 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             elif k in (6, 7, 9, 10, 12, 13) or k == 1:
                 for c in self.busy.pop(e.a, ()):
                     self.started.pop(c, None)
+
+    def _mine(self, obs) -> list:
+        """The side's living units, once a step: Unit objects made from the native table's rows of its own (every
+        unit of the game made one each step, and their enum flags tested, had been ~10% of an actor's time)."""
+        if getattr(self, "_mine_of", None) is obs:
+            return self._mine_list
+        ua = getattr(obs, "unit_array", None)
+        if ua is not None:
+            from ..native import unit_from_row
+            mine = [unit_from_row(r) for r in ua[(ua[:, 2] == self.side) & ((ua[:, 11] & fx.DEAD) == 0)].tolist()]
+        else:
+            mine = [u for u in obs.units if u.owner == self.side and u.alive]
+        self._mine_of, self._mine_list = obs, mine
+        return mine
 
     def commands(self, obs, made: dict, t: int, step_s: float, ordered=()) -> list:
         """`ordered`: the agent's commands this step (the game refuses the same hero or next tier twice: the
@@ -1359,8 +1374,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         if not due:
             self.reserve = None
             return []
-        mine = [u for u in obs.units if u.owner == self.side and u.alive]
-        done = [u for u in mine if u.is_structure and not u.flags & UnitFlags.CONSTRUCTING]
+        mine = self._mine(obs)
+        done = [u for u in mine if u.is_structure and not int(u.flags) & fx.CONSTRUCTING]
         have = techtree.counts_as({u.type for u in done} | {c for c in made if c[0] == "R"}, self.race)
         heroes = len({c for c in (*made, *self.started) if techtree.is_hero(c) or fx.is_hero_code(c)})
         expansion = self._expansion_reserve(obs, due, p, t)  # (--macros: money kept for a due expansion)
@@ -1415,13 +1430,14 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         if self.race != "human":  # (an orc frame takes no repair, not even from its builder: tested 2026-10-24; its
             # resume had been taught 140 times a game as orc, an order the game refuses; audit 6)
             return None
-        frames = {u.id: u for u in obs.units if u.owner == self.side and u.alive and u.flags & UnitFlags.CONSTRUCTING}
+        mine = self._mine(obs)
+        frames = {u.id: u for u in mine if int(u.flags) & fx.CONSTRUCTING}
         self.frames = {i: (u.hp, t if u.hp > self.frames.get(i, (-1, t))[0] else self.frames[i][1])
                        for i, u in frames.items()}
         stalled = [frames[i] for i, (_, since) in self.frames.items() if t - since >= 20]
-        workers = [u for u in obs.units if u.owner == self.side and u.alive and u.is_worker and not u.is_structure
+        workers = [u for u in mine if u.is_worker and not u.is_structure
                    and not fx.building(int(u.flags), u.order) and u.order != REPAIR
-                   and not u.flags & (UnitFlags.HIDDEN | UnitFlags.LOADED)]
+                   and not int(u.flags) & int(UnitFlags.HIDDEN | UnitFlags.LOADED)]
         if not stalled or not workers:
             return None
         f = stalled[0]

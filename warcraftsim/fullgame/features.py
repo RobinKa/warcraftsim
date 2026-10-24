@@ -179,6 +179,19 @@ PASSIVE_IDS = np.array([int.from_bytes(c.encode(), "big") for c in (
     "hhou", "otrb", "uzig", "emow", "hwtw", "hgtw", "hctw", "hatw", "owtw", "uzg1", "uzg2", "etrp", "ugol", "egol")], np.int64)
 
 
+def codes(values) -> np.ndarray:
+    """A few int codes (unit types, orders) as isin's sorted array."""
+    return np.unique(np.fromiter((int(v) for v in values), np.int64))
+
+
+def isin(a: np.ndarray, sorted_codes: np.ndarray) -> np.ndarray:
+    """np.isin(a, sorted_codes) for a 1-d int array and a few codes sorted (codes()): a binary search (np.isin's
+    general path took ~60-100 us a call on a step's rows, ~30,000 calls a game in an actor)."""
+    if not len(sorted_codes):
+        return np.zeros(len(a), bool)
+    return sorted_codes[np.minimum(np.searchsorted(sorted_codes, a), len(sorted_codes) - 1)] == a
+
+
 def building(flags: int, current: int) -> bool:
     """A worker whose current order is a building: on its way to the site or constructing. The
     policy picks every unit's order every step; another order cancels the build, and the clone did
