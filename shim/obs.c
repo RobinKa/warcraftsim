@@ -81,6 +81,12 @@ int obs_capture_on(void) {
     return g_installed;
 }
 
+/* the observation captured so far (units.c's check of its players' records against the harness's) */
+int obs_peek(const char **data) {
+    *data = g_buf;
+    return g_len;
+}
+
 int obs_take(const char **data) {
     if (!g_ready)
         return -1;

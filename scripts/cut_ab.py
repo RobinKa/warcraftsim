@@ -285,6 +285,8 @@ def cmd_record(a) -> int:
     out.mkdir(parents=True, exist_ok=True)
     spec = {"kind": a.kind, "map": a.map, "races": a.races.split(","), "pairs": a.pairs, "steps": a.steps,
             "games": a.games, "record_ai_orders": a.record_ai_orders, "difficulty": a.difficulty}
+    if a.max_seconds:
+        spec["max_game_seconds"] = a.max_seconds
     setup = make_setup(spec)
     env = dict(x.split("=", 1) for x in a.env.split(",") if x) if a.env else {}
     g, obs = launch(setup, f"cutprobe_rec_{out.name}", env, Path(a.shim) if a.shim else None, None)
@@ -535,6 +537,7 @@ def main() -> int:
     r.add_argument("--pairs", type=int, default=1)
     r.add_argument("--record-ai-orders", action="store_true")
     r.add_argument("--seed", type=int, default=1)
+    r.add_argument("--max-seconds", type=float, default=0.0, help="the game's time limit (a tie), default 1200 s")
     r.add_argument("--env", default="")
     r.add_argument("--shim")
     lv = sub.add_parser("live")

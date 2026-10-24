@@ -318,6 +318,40 @@ In the run: **2,276 steps/s** (10:00-10:10, 48 games) against ~2,100; the learne
 
 Rejected by the study: remembering paths between searches (moving units change the search's inputs), faster soft-float arithmetic (the cost is the calls), the agent-id lookup (already an array), `UnitIsSleeping` only for neutral units (a charmed creep could differ). Left: the harness's JASS (~11% of the main thread), its native calls (~8%), the node lookup and open list of A* (~5%).
 
+## The game's own code, round 2 (2026-10-24, `--game-cuts 259577`; branch `game-cuts-2`)
+
+A subagent profiled today's self-play games (fgself-139's replays played back with `--game-cuts 1529`, the shim's raw sampler `W3SIM_PROFILE=5`, Ghidra) and replaced more of the main thread's hot code with code that gives the same results. perf's counters were not available (`kernel.perf_event_paranoid` is 4 again after the reboot), so the gains below are CPU time (`/proc/<pid>/task/<tid>/schedstat`), each variant played back at the same time as its base on the loaded machine (pairs of games; a pair's noise ~1-2%).
+
+Where the run's CPU went (2026-10-24 12:05, 56 training games): the games 16.6 cores (52% of the machine), their main threads 91% of that; wineserver 0.5 cores (~3% of the games' CPU, not ~10% any more); the video renderer's game ~2 cores. The main thread with 1529 (raw samples):
+
+| part | short game vs the AI | 15-minute agents' game | 40-minute agents' game |
+|---|---|---|---|
+| pathing (the system tick, other pathing timers) | 32% | 43% | 54% |
+| other agent timers (abilities, harvest, buffs, the AI's C++) | 21% | 13% | 15% |
+| **the harness**: units pass (units.c's natives; UnitIsSleeping a third of it) | 11% | 13% | 12% |
+| **the harness**: the rest of W3S_Step's JASS, its orders, EnumItemsInRect over the whole map, event triggers | 10% | 12% | 9% |
+| attack (target acquisition) | 7% | 8% | 2% |
+| fog | 4% | 5% | 5% |
+| paint (every 50 steps), turn other, unattributed | 15% | 7% | 3% |
+
+Timing marks in a live game's harness (wall ms a step, loaded machine): the units pass 0.7, W3S_CheckResult 0.17, the K/T/players' records 0.33 (a JASS call, I2S and Preload per token), EnumItemsInRect 0.2-0.37, the commands 0.05-0.16; the simulation between steps 4.6-5.9.
+
+wineserver: ~16 requests per observation: ~7 `get_thread_info` (the game's GetThreadPriority around its timing code, on the main thread and one other) and ~9 for the socket of the step sync (two sends, a recv, their async results and waits).
+
+| bit | what | main thread CPU a step (paired playbacks) |
+|---|---|---|
+| 4096 | the long-range path search's integer square root (0x99b740: Newton's method, two divisions a round, twice per node relaxed) as floor(sqrt(double)): the executable's own code run natively over all 2^32 inputs gives floor(sqrt) for every one | -1.4% (40-minute game, 2 x 2,900 steps) |
+| 8192 | a unit's ability by id (0x6d6570; UnitIsSleeping asks it for 'Asla' for every unit every step, 0.28 ms a step) in C: the list's agent lookups inlined, IsA(type, id) remembered per game on the main thread | -2.5% |
+| 16384 | the widget grid's walk (0x8092a0 -> 0x809170 -> 0x809030; EnumItemsInRect walks ~4,000 cells and ~5,000 entries a step) in C, a cell's widgets prefetched (the walk is bound by their cache misses; without the prefetch ~-1%) | -2.7% |
+| 32768 | a unit's handle converted to its object once per unit of the pass (the natives' 0x483940 / 0x483ba0, ~30 a unit) | -1.3% |
+| 65536 | Wine: an observation and its header in one send; the calling thread's priority remembered | wineserver requests 15.7 -> 7.9 an observation, its CPU 0.22 -> 0.16 ms a step |
+| 131072 | Wine: the step sync's TCP connection made and used with Linux system calls (`int 0x80`: the game is a 32-bit Linux process) instead of Winsock | -4.4 to -6% (the client side of each wineserver round trip was ~50 µs); wineserver 0.16 -> 0.03-0.09 ms |
+| 262144 | the harness's players' records (W3S_SerPlayers) and its check of the result (W3S_CheckResult: loops over 24 x 24 players, MeleeGetAllyStructureCount for each) made by the shim with the same natives; a harness change (W3S_CSerInit asks for it; melee or decisive victory, no pairs, scenarios or resets by script) | -6.4% (8 new recordings, against the same harness's JASS path) |
+
+All on (`--game-cuts 259577` = 1529 + the six), against 1529, both played back at the same time: the 33 echofast self-play replays of fgself-135/137/138/139 (all race pairs, games against the AI and between agents, 400 to 4,800 steps) **main thread -10.1%, the game's processes and wineserver -12.2%** (steps-weighted: 7.87 -> 7.08 ms and 8.34 -> 7.33 ms a step; per replay -8 to -15%); fgself-139's alone -9.8% and -11.9%; over all 54 replays -9.7% and -12.1% (wineserver 0.19 -> 0.04 ms a step). Parity: 54 replays, 60,772 steps, identical at every step (every unit, player, event, AI order, command result and ground item, and the raw observation bytes, against 1529; the 13 old live recordings also against their live games): the 33 self-play replays above, the 13 duelfast recordings of 2026-10-11 (seven race pairs, insane and normal AI, scripted agents, five games per load) and 8 fgself-12 replays (duelfast, five pairs a load).
+
+262144 changes the map (the harness), and a replay plays back only on the map it was recorded on, so the run's replays cannot check it. Instead: 8 live echofast games with the new harness (AI against AI with all races, scripted agents, agents against the AI; won, lost, a tie at the time limit; 10,997 steps) recorded with `W3SIM_COBS_CHECK=1`, where the harness writes its own records and the shim compares its records and results with them at every step (no mismatch), then each replay played back on the JASS path (259577) and on the shim's (521721): identical at every step, raw observation bytes included, and identical to the live games. What the new path leaves out are getters (slot states, player states, alliances, start locations, I2S and Preload): nothing in the simulation reads them.
+
 ## The learner's intake (2026-10-12)
 
 With 8 evaluation games, the last-order features and the opponent-aware value, the run fell to ~1,550-1,600 steps/s and the learner's update to ~4.4-4.7 s (3.3 s in the morning). py-spy on the learner's main thread (20 s): ~33% receiving and unpickling the actors' trajectories, of which the answers' arrays were `np.memmap` subclasses (`astype` keeps the subclass of the shared rows; unpickling them rebuilds memmaps); ~18% waiting for the cloning loss's batches from its 2 data workers; ~13% in the update's pauses for the inference loop (by design); and before that, the last-order features' per-unit loop ran in those workers even when `--features 50` zeroed it (an update alone 3.2 → 2.7 s once skipped).
@@ -367,12 +401,12 @@ Echo Isles has more units in view than the duel maps (creeps, expansions, larger
 * **Longer steps on longer games.** Half the step's CPU is per step (harness, sync, Python), half is simulation; 1 s steps would give ~1.4× the game time per CPU, at the cost of half the decisions.
 * **The learner**: the anchor's forward for the KL term (~5% of an update), a compiled update. (The cloning loss is off since 2026-10-14.)
 * **The video renderer**: 3.4 cores while it renders.
-* **wineserver**: ~10% of a step.
+* **wineserver**: ~3% of a game's CPU (2026-10-24); with 131072 the step sync makes no requests.
 
 ## Measuring
 
 * `py-spy record --threads --idle` on a process (it pauses the process while sampling: an update measured during a profile is slower).
-* `perf record -a` (`/usr/lib/linux-tools/5.15.0-194-generic/perf`).
+* `perf record -a` (`/usr/lib/linux-tools/5.15.0-194-generic/perf`; counters need `kernel.perf_event_paranoid` <= 2, Ubuntu's default 4 refuses them: `scripts/cut_ab.py` then reports CPU time from schedstat).
 * `scripts/bench_env.py` (env steps/s, CPU per process and thread kind), `scripts/bench_train.py`, `W3SIM_PROFILE=1..3` (the shim's per-second profile in each game's `shim.log`).
 * `runs/<run>/inference.jsonl` (the server's rounds, rows, waits); `scripts/selfplay_status.py <run>`.
 * `scripts/production_probe.py` and `scripts/order_probability.py`: what a policy does at its buildings, and how likely it is to give the built-in AI's orders.

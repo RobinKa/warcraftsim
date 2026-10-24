@@ -138,6 +138,8 @@ globals
     constant integer W3S_TYPE_CODE = 16777216  // order ids at or above it are unit / building / upgrade codes
     integer w3s_pair = 0  // the game of this load (W3S_CFG_PAIRS)
     integer w3s_cser = 0  // the shim makes the pass over the units (1; 2: it checks its records against the harness's)
+    boolean w3s_cobs = false  // the shim writes the players' records and checks the result (W3S_CSerInit)
+    boolean w3s_ccheck = false  // (and the harness does both too, for the shim to compare)
     player w3s_np = null  // the neutral passive player (the mailbox's)
     integer w3s_nseer = 0  // the seers, as a list: their players and their bits in the visibility mask
     player array w3s_seer_p
@@ -507,6 +509,12 @@ endfunction
 function W3S_SerPlayers takes nothing returns nothing
     local integer i = 0
     local player p
+    if w3s_cobs then
+        call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 24)  // (the shim writes them)
+        if not w3s_ccheck then
+            return
+        endif
+    endif
     loop
         exitwhen i >= bj_MAX_PLAYERS
         set p = Player(i)
@@ -535,6 +543,9 @@ function W3S_SerPlayers takes nothing returns nothing
         set i = i + 1
     endloop
     set p = null
+    if w3s_ccheck then
+        call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 25)  // (the shim compares its records with these)
+    endif
 endfunction
 
 function W3S_SerDestructable takes nothing returns nothing
@@ -617,6 +628,28 @@ function W3S_CSerInit takes nothing returns nothing
         endif
         set i = i + 1
     endloop
+    // the players' records and the result's check in the shim too (melee or decisive victory, no pairs, no resets by
+    // script: the result's state then lives only there); 2: the harness does both as well, and the shim compares
+    set w3s_cobs = false
+    set w3s_ccheck = false
+    if W3S_CFG_PAIRS <= 1 and not W3S_CFG_SCENARIO and W3S_CFG_MELEE_RESET == "" and (W3S_CFG_VICTORY == 0 or W3S_CFG_VICTORY == 3) then
+        set i = GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 18)
+        if i == 1 or i == 2 then
+            set w3s_cobs = true
+            set w3s_ccheck = i == 2
+            set i = 0
+            loop
+                exitwhen i >= bj_MAX_PLAYERS
+                if w3s_agent[i] then
+                    call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 19)
+                    call GetPlayerTechMaxAllowed(w3s_np, 0 - (i + 1))
+                endif
+                set i = i + 1
+            endloop
+            call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 28)
+            call GetPlayerTechMaxAllowed(w3s_np, 0 - (W3S_CFG_VICTORY + 1))
+        endif
+    endif
 endfunction
 
 function W3S_CPassEnum takes nothing returns nothing
@@ -632,6 +665,9 @@ function W3S_CPass takes nothing returns nothing
     endif
     call ForGroup(w3s_all, function W3S_CPassEnum)
     call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 15)
+    if w3s_cobs and not w3s_ccheck then
+        return  // (the counts are the shim's: W3S_CheckResult)
+    endif
     loop
         exitwhen i >= bj_MAX_PLAYERS
         if GetPlayerSlotState(Player(i)) == PLAYER_SLOT_STATE_PLAYING then
@@ -1247,6 +1283,10 @@ function W3S_StartAI takes integer i returns boolean
     endif
     set w3s_agent[i] = false
     set w3s_shadow[i] = false
+    if w3s_cobs then  // (the shim writes the players' records)
+        call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 20)
+        call GetPlayerTechMaxAllowed(w3s_np, 0 - (i + 1))
+    endif
     call W3S_MeleeAI(Player(i))
     return true
 endfunction
@@ -1661,6 +1701,14 @@ function W3S_CheckResult takes nothing returns nothing
     if w3s_over then
         return
     endif
+    if w3s_cobs and not w3s_ccheck then  // (the shim's, from the counts of its pass; the time limit here)
+        set w3s_over = GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 21) == 1
+        if W3S_CFG_MAX_GAME_S > 0 and not w3s_over and TimerGetElapsed(w3s_clock) >= W3S_CFG_MAX_GAME_S then
+            call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 22)
+            set w3s_over = true
+        endif
+        return
+    endif
     if w3s_cser == 1 then
         // (counted in W3S_CPass)
     elseif W3S_CFG_VICTORY == 1 then
@@ -1723,6 +1771,24 @@ function W3S_CheckResult takes nothing returns nothing
             endif
             set i = i + 1
         endloop
+    endif
+    if w3s_ccheck then  // the shim's own check, then the harness's results for it to compare
+        if GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 21) != 1 and W3S_CFG_MAX_GAME_S > 0 and TimerGetElapsed(w3s_clock) >= W3S_CFG_MAX_GAME_S then
+            call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 22)
+        endif
+        set i = 0
+        loop
+            exitwhen i >= bj_MAX_PLAYERS
+            call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 26)
+            call GetPlayerTechMaxAllowed(w3s_np, 0 - (w3s_result[i] + 1))
+            set i = i + 1
+        endloop
+        call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 27)
+        if w3s_over then
+            call GetPlayerTechMaxAllowed(w3s_np, 0 - 2)
+        else
+            call GetPlayerTechMaxAllowed(w3s_np, 0 - 1)
+        endif
     endif
     set p = null
 endfunction

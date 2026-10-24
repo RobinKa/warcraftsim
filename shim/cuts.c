@@ -55,6 +55,9 @@
  *      executable's imports set, or the first query's)
  * 131072 Wine-level (sync.c): the controller's TCP connection made and used with Linux system calls instead of Winsock (no
  *      wineserver requests in the step sync)
+ * 262144 (units.c, with the harness's W3S_CSerInit handshake) the harness's players' records and its check of the game's
+ *      result made by the shim with the same natives (W3SIM_COBS_CHECK=1: the harness does both as well and the shim
+ *      compares); needs the harness from this change (older maps never ask)
  *
  * Offsets are for the 1.29.2.9231 executable (RVAs; see ~/tools/w3analysis/report.md).
  */

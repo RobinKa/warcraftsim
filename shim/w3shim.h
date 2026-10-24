@@ -66,6 +66,7 @@ int frame_capture_get(void);
 /* obs.c */
 void obs_install(void);
 int obs_take(const char **data); /* the captured observation's length, or -1 if none */
+int obs_peek(const char **data); /* the observation captured so far (its length) */
 void obs_reset(void);
 
 void obs_bytes(const char *s, int n); /* tokens from the shim itself (lines) */
