@@ -2,7 +2,7 @@
 
 Where the project's ideas came from and what became of them. Many are the user's; others come from AlphaStar and OpenAI Five ([what those papers found](ideas-from-alphastar-and-openai-five.md)), from LLM reinforcement learning, from image generation, or from our own runs. Each experiment's numbers are in the [experiment log](experiment-log.md).
 
-## The queue (2026-10-20)
+## The queue (2026-10-20, updated 2026-10-24)
 
 In the order they run. The code for each is in place unless it says otherwise.
 
@@ -17,6 +17,9 @@ In the order they run. The code for each is in place unless it says otherwise.
 | Self-distillation with privileged information (OPSD) | the user, from LLM training | the same network given what the player can't see is the teacher; a KL pulls the policy without it toward it; never in evaluation | built (`--opsd-share`, `--opsd-coef`) |
 | Scenarios and weight averaging | the user (the micro curriculum, kept on); model soups, task arithmetic | mid-game situations the harness sets up; specialists forked from one checkpoint, merged by averaging their weights | built (`--scenarios`, `scripts/average_weights.py`) |
 | Skill ratings | the user (the insane AI's win rate is spent) | a Bradley–Terry rating over every evaluation game, the insane AI at 1500: the dashboard's Ratings view | done |
+| The target's first hero taught at the altar | ours (`fgself-139`'s first heroes matched the target's by chance) | the teacher's first-hero lesson names the target's, as soon as the altar stands (`--teach 2`) | running (`fgself-140`) |
+| Training games on a second machine | the user (a games box ordered, 2026-10-24) | games and actors there, their inference on the 3090 over the network, trajectories to the learner | being built |
+| Same-page merging of the games' memory | ours | the games' identical pages shared by the kernel (`PR_SET_MEMORY_MERGE`): ~225 of a game's ~345 MB in a test | to try in a run |
 | Human data | AlphaStar (Fig. 3E, its largest gain) | a cloning loss on people's 95 Echo Isles games, played back in our client | later |
 | Fewer decisions, spatial point heads | AlphaStar (action rate), SC2LE | a "keep this order k steps" head; points on a map, not x then y | later |
 
@@ -38,6 +41,9 @@ In the order they run. The code for each is in place unless it says otherwise.
 | More games as the weaker races | ours | undead 79% → 89% (`fgself-102`) |
 | The anchor at the best checkpoint | ours | no slide after the peak (`fgself-101`) |
 | Forward KL on every head, UPGO, a moving anchor, a value that sees the opponent | AlphaStar | forward KL and UPGO: large gains; the opponent's information for the value: kept, level |
+| The RTX 3090's BF16 rate unlocked (gpu-unlock), 400 W | the user | matrix multiplies 1.4-1.8× faster; self-play's speed unchanged (CPU-bound) ([GPU unlock](gpu-unlock.md)) |
+| More of the game's code faster (Ghidra, REA), wineserver | the user | round 2 of `--game-cuts`: -18% of a game's main thread, the same simulation |
+| The actors' Python in C | the user (the levers of 2026-10-24) | the units' features in C: View.step 1,002 → 556 µs a side-step; with 8 games an actor ~1,665 → ~1,730 steps/s |
 | A larger network | ours | 5 layers helped on the duel maps; 8 level, and the user's direction: no more layers without a clear gain |
 
 ## Sources

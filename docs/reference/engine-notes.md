@@ -93,6 +93,16 @@ Before the mailbox, actions went through a file the harness loaded with `Preload
 * **A game the built-in AI never starts.** About 1 game in 28,000 ends within its first second with the learner the winner: the AI's player never comes in. Its row has no food at one minute.
 * **No automatic camera in 1.29 replays.** The game's replay viewer has none: the renderer moves the camera itself (`video.Director`: the fight, else the players' armies and bases in turn).
 
+* **Orders the game refuses** (tested in the game, 2026-10-22 to 24; `play.BCAgent` leaves them out and counts them in the episode rows' `refused`):
+  * Repair (852024): refused for a worker repairing already, a building at full health, an orc frame under construction (orc frames take no helpers) and a hall during its upgrade. A human peasant's power build (a second one at a frame) is refused with no lumber (5 gold and 0 lumber refused; 0 gold and 5 lumber, or 1 and 1, taken); its cost (AbilityData `Ahrp` DataC: 0.15 of the building's) is charged as it builds.
+  * Harvest (852018): undead mine only a haunted gold mine (`ugol`), night elves only an entangled one (`egol`), each their own and finished, at most 5 workers; a wisp mining shows "smart" as its order, and a harvest re-sent to it is refused.
+  * A hall's next tier is refused while it trains workers: the queue is cancelled first.
+  * A dead hero is revived with REVIVE (852039) targeted at an altar of the player's; its training order is refused. The game takes the revival ~7 s after the death, at 0.4 of its gold plus 0.1 per level past the first (at most 4× and 700, no lumber: MiscGame's `Revive*`), a tavern hero too.
+  * The first hero is free (`PLAYER_STATE_RESOURCE_HERO_TOKENS`); the tavern stands in the fog at the start, so a Buy is refused until the tavern has been seen.
+* **Wine and D-Bus** (2026-10-24). Each prefix's device manager (`winedevice.exe`, mountmgr) asks the udisks service over the system D-Bus for every disk (`GetManagedObjects`) about 0.4 times a second; with 57 prefixes the service took ~1.5 cores. The games run with `DBUS_SYSTEM_BUS_ADDRESS` pointing nowhere (`runtime.wine.wine_env`).
+* **Linux system calls from the game** (2026-10-24, `--game-cuts` 131072). GE-Proton's Wine runs the game as a 32-bit Linux process, so the shim can make the step sync's TCP connection with `int 0x80` (socket, connect, read, write) and skip Winsock and its wineserver requests; it falls back to Winsock when that fails.
+* **Same pages across games** (2026-10-24). Of a game's ~346 MB (almost all private heap under Wine), ~225 MB are identical page for page with other games' (the same map, tables and code): the kernel's same-page merging (`prctl(PR_SET_MEMORY_MERGE)`) saved ~1 GB of 4 games' ~1.4 GB in a test.
+
 ## Offsets used by the shim (1.29.2.9231, sha256 3f2ed012…0eed)
 
 | RVA | What |
