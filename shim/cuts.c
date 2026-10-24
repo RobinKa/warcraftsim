@@ -57,6 +57,8 @@
  *      wineserver requests in the step sync)
  * 524288, 1048576, 4194304: pathing.c (the long-range search's relaxation, the local A* search's loop, the pathing map's
  *      cell update)
+ * 16777216 (with 8192) a unit without an ability of the sleep's type remembered while its ability list's head is the same
+ *      (CUnit::AddAbility 0x6d4560 puts a new ability at the head)
  * 2097152 (with 128) the soft float's integer square root (0x9a2150) as the inline sqrtsd of 4096 instead of the libm call
  *      (the same floor(sqrt(x)) for every input)
  * 262144 (units.c, with the harness's W3S_CSerInit handshake) the harness's players' records and its check of the game's
@@ -448,8 +450,10 @@ static DWORD g_isa_reg;
 static volatile LONG g_isa_hits, g_isa_miss, g_isa_gen;
 static LONG g_isa_seen_gen;
 
+void cuts_sleep_reset(void);
 void cuts_game_start(void) {
     InterlockedIncrement(&g_isa_gen);
+    cuts_sleep_reset();
 }
 
 static int __cdecl Isa_hook(int a, int b) {
@@ -651,7 +655,7 @@ static int isa_memo(int a, int b) {
     return r;
 }
 
-static BYTE *__fastcall FindAbil_hook(BYTE *u, void *edx, int id, int isa, int by_base, int fa, int fb) {
+static inline BYTE *findabil_walk(BYTE *u, int id, int isa, int by_base, int fa, int fb) {
     switch (id) { /* (the ids kept in fields of the unit) */
     case 0x414e6275: case 0x41486275: case 0x41456275: case 0x41476275: case 0x414f6275: case 0x41556275:
         return *(BYTE **)(u + 0x400);
@@ -681,6 +685,44 @@ static BYTE *__fastcall FindAbil_hook(BYTE *u, void *edx, int id, int isa, int b
         }
     }
     return NULL;
+}
+
+/* 16777216: a unit with no ability of the sleep's type ('Asla', what UnitIsSleeping asks for every unit every step)
+ * remembered with its ability list's head: CUnit::AddAbility (0x6d4560) puts every new ability at the head of the
+ * list (the head's agent ids change), a removal adds nothing and an ability's type is its class's, so while the head is
+ * the same the unit still has none. W3SIM_SLEEPCHECK=1: the walk is made anyway and compared (mismatches logged). */
+#define SLEEP_SLOTS 4096
+static struct {
+    BYTE *u;
+    DWORD h0, h1;
+} g_sl[SLEEP_SLOTS];
+static int g_sl_on, g_sl_check;
+static long g_sl_hits, g_sl_miss, g_sl_bad;
+
+static BYTE *__fastcall FindAbil_hook(BYTE *u, void *edx, int id, int isa, int by_base, int fa, int fb) {
+    if (!(g_sl_on && id == 0x41736c61 && isa && !by_base && fa && fb && GetCurrentThreadId() == g_step_tid))
+        return findabil_walk(u, id, isa, by_base, fa, fb);
+    unsigned k = ((unsigned)(size_t)u >> 4) & (SLEEP_SLOTS - 1);
+    DWORD h0 = *(DWORD *)(u + 0x3e8), h1 = *(DWORD *)(u + 0x3ec);
+    if (g_sl[k].u == u && g_sl[k].h0 == h0 && g_sl[k].h1 == h1) {
+        g_sl_hits++;
+        if (g_sl_check && findabil_walk(u, id, isa, by_base, fa, fb) && g_sl_bad++ < 40)
+            shim_log("cuts: sleep cache: MISMATCH for unit %p (head %08lx %08lx)", u, h0, h1);
+        return NULL;
+    }
+    BYTE *r = findabil_walk(u, id, isa, by_base, fa, fb);
+    g_sl_miss++;
+    if (!r) {
+        g_sl[k].u = u;
+        g_sl[k].h0 = h0;
+        g_sl[k].h1 = h1;
+    } else if (g_sl[k].u == u)
+        g_sl[k].u = NULL;
+    return r;
+}
+
+void cuts_sleep_reset(void) { /* (a game's first step) */
+    memset(g_sl, 0, sizeof g_sl);
 }
 
 static void install_findabil(void) {
@@ -950,8 +992,14 @@ void cuts_install(int draw) {
         hook(VA_ISA - 0x400000, (void *)Isa_hook, (void **)&Isa_orig, "IsA");
     if (g_cuts & 4096)
         install_isqrt2();
-    if (g_cuts & 8192)
+    if (g_cuts & 8192) {
+        char sc[8];
+        g_sl_on = (g_cuts & 16777216) != 0;
+        g_sl_check = g_sl_on && GetEnvironmentVariableA("W3SIM_SLEEPCHECK", sc, sizeof sc) && sc[0] == '1';
         install_findabil();
+        if (g_sl_on)
+            shim_log("cuts: units without a sleep ability remembered with their ability list's head%s", g_sl_check ? " (checked)" : "");
+    }
     if (g_cuts & 16384)
         install_gridwalk();
     if (g_cuts & 32768)
