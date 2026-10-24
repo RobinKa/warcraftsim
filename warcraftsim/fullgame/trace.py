@@ -155,13 +155,15 @@ class Production:
         self.expansions: dict[int, list[float]] = {0: [], 1: []}  # each expansion's game second
         self.halls_home = {0: 0, 1: 0}  # more halls that are no expansion (at home, or at no mine)
         self.creeps = {0: 0, 1: 0}  # neutral units killed (creeping)
+        from .features import codes
+        self._hired_codes = codes(HIRED)  # (features.isin's)
 
     def _hires(self, obs) -> None:
         """A tavern hero or a mercenary of a player's seen for the first time: trained (bought, protocol.Buy)."""
-        from .features import rawcode
-        ua = getattr(obs, "unit_array", None)
-        rows = ([(int(i), int(t), int(o)) for i, t, o in ua[:, :3].tolist() if t in HIRED] if ua is not None
-                else [(u.id, u.type_id, u.owner) for u in obs.units if u.type_id in HIRED])
+        from .features import isin, rawcode
+        ua = getattr(obs, "unit_array", None)  # (their rows by a mask: each row in Python had been ~2% of a step)
+        rows = ([(int(i), int(t), int(o)) for i, t, o in ua[isin(ua[:, 1], self._hired_codes), :3].tolist()]
+                if ua is not None else [(u.id, u.type_id, u.owner) for u in obs.units if u.type_id in HIRED])
         for i, t, o in rows:
             if i not in self.hired and o in (0, 1):
                 self.hired.add(i)
