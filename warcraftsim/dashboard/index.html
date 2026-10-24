@@ -11,10 +11,10 @@
 /* the page fills the window: the run list and the run's page scroll on their own */
 body { margin:0; font:13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--text);
        height:100vh; height:100dvh; display:flex; flex-direction:column; overflow:hidden; }
-header { flex:none; display:flex; align-items:center; gap:14px; padding:10px 18px; border-bottom:1px solid var(--line); background:#12171d; }
+header { flex:none; display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; padding:10px 18px; border-bottom:1px solid var(--line); background:#12171d; }
+header h1, header .topnav, header #nav-challenge { flex:none; }  /* (the tabs whole: the controls on the right wrap first) */
 header h1 { font-size:16px; margin:0; letter-spacing:.3px; }
 header h1 span { color:var(--accent); }
-header .sub { color:var(--muted); }
 header .right { margin-left:auto; color:var(--muted); display:flex; gap:10px; align-items:center; }
 .layout { flex:1; min-height:0; display:grid; grid-template-columns:270px 1fr; }
 aside { border-right:1px solid var(--line); padding:10px 0 0 10px; background:#12171d; min-height:0;
@@ -322,7 +322,8 @@ body.page-view main { padding:18px 28px 40px; }
 .md .mermaid { background:#0b0f13; border:1px solid var(--line); border-radius:6px; padding:12px; margin:12px 0; text-align:center; overflow-x:auto; }
 .md .mermaid:not([data-processed]) { white-space:pre; text-align:left; font:12px/1.4 ui-monospace, monospace; color:var(--muted); }
 .docs { display:grid; grid-template-columns:260px minmax(0,1fr); gap:22px; align-items:start; max-width:1500px; }
-.docs .list { position:sticky; top:0; display:flex; flex-direction:column; gap:4px; }
+.docs .list { position:sticky; top:0; display:flex; flex-direction:column; gap:4px; max-height:calc(100dvh - 100px); overflow-y:auto;
+              padding-right:4px; }  /* (its own scrollbar: the list is taller than a laptop's screen) */
 .docs .list a { display:block; padding:7px 10px; border:1px solid var(--line); border-radius:6px; background:var(--panel); color:var(--text);
                 text-decoration:none; cursor:pointer; }
 .docs .list a:hover { border-color:#4a5868; }
@@ -359,7 +360,6 @@ body.page-view main { padding:18px 28px 40px; }
 /* a phone: the run list slides in over the page (☰), the panels one a row, wide tables scroll */
 @media (max-width: 760px) {
   header { flex-wrap:wrap; gap:8px 10px; padding:8px 10px; }
-  header .sub { display:none; }
   header h1 { font-size:15px; }
   #menu { display:inline-block; }
   body.page-view #menu { display:none; }
@@ -392,7 +392,7 @@ body.page-view main { padding:18px 28px 40px; }
   .md table { font-size:12px; }
   .spaces ol { columns:1; }
   .docs { grid-template-columns:1fr; gap:12px; }
-  .docs .list { position:static; order:2; }  /* (the document first, the list of the others after it) */
+  .docs .list { position:static; order:2; max-height:none; overflow:visible; }  /* (the document first, the list of the others after it) */
   .doc { padding:12px 14px 18px; }
   .md { font-size:14px; }
   body.page-view main { padding:12px 10px 30px; }
@@ -405,7 +405,7 @@ body.page-view main { padding:18px 28px 40px; }
 <body>
 <header>
   <button id="menu" title="the runs">☰</button>
-  <h1>warcraft<span>sim</span></h1><span class="sub">Warcraft III 1.29 · self-play training dashboard</span>
+  <h1>warcraft<span>sim</span></h1>
   <span class="seg topnav"><button id="nav-runs" class="on">Runs</button><button id="nav-lineage">Lineage</button><button id="nav-ratings">Ratings</button><button id="nav-videos">Videos</button><button id="nav-docs">Docs</button></span>
   <button id="nav-challenge" class="challenge-btn" title="play against a policy in the game">⚔ Challenge</button>
   <div class="right"><label class="smooth" title="exponential moving average over the points of every chart"><span class="lbl">smoothing</span>
@@ -422,7 +422,7 @@ body.page-view main { padding:18px 28px 40px; }
       <div class="row"><label title="list only the compared runs (and the one shown)"><input type="checkbox" id="selonly"> show selected only</label></div>
     </div>
     <div id="runs"></div></aside>
-  <main id="main"><div class="empty">No runs yet. Start one with <code>python -m warcraftsim.puffer.train --task micro</code>.</div></main>
+  <main id="main"><div class="empty">Loading the runs…</div></main>
 </div>
 <script>
 const COLORS = ["#e0a33a", "#539bf5", "#4cc38a", "#e5534b", "#b083f0", "#39c5cf", "#f47067", "#c69026"];
