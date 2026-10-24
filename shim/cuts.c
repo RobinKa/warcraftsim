@@ -55,6 +55,10 @@
  *      executable's imports set, or the first query's)
  * 131072 Wine-level (sync.c): the controller's TCP connection made and used with Linux system calls instead of Winsock (no
  *      wineserver requests in the step sync)
+ * 524288, 1048576, 4194304: pathing.c (the long-range search's relaxation, the local A* search's loop, the pathing map's
+ *      cell update)
+ * 2097152 (with 128) the soft float's integer square root (0x9a2150) as the inline sqrtsd of 4096 instead of the libm call
+ *      (the same floor(sqrt(x)) for every input)
  * 262144 (units.c, with the harness's W3S_CSerInit handshake) the harness's players' records and its check of the game's
  *      result made by the shim with the same natives (W3SIM_COBS_CHECK=1: the harness does both as well and the shim
  *      compares); needs the harness from this change (older maps never ask)
@@ -490,6 +494,12 @@ static unsigned __cdecl isqrt_orig_c(unsigned x) { /* (the original, transcribed
     return root >> 1;
 }
 
+static unsigned __cdecl Isqrt_fast(unsigned x) { /* (2097152: 0x9a2150 too as the inline sqrtsd; the same values) */
+    double d = (double)(int)(x >> 1) * 2.0 + (double)(x & 1), r;
+    __asm__("sqrtsd %1, %0" : "=x"(r) : "x"(d));
+    return (unsigned)(int)r;
+}
+
 static unsigned __cdecl Isqrt_hook(unsigned x) {
     return (unsigned)__builtin_sqrt((double)x);
 }
@@ -533,9 +543,9 @@ static void install_softfloat(void) {
         for (unsigned k = 0, v = 12345; k < 1u << 18 && !bad; k++, v = v * 1664525u + 1013904223u) {
             unsigned t = k < 4096 ? k * k + (k & 1 ? 0u : ~0u) : v;
             unsigned o = ((IsqrtFn)(void *)sq)(t);
-            bad = o != isqrt_orig_c(t) || o != Isqrt_hook(t);
+            bad = o != isqrt_orig_c(t) || o != Isqrt_hook(t) || o != Isqrt_fast(t);
         }
-        if (!bad && hook(VA_ISQRT - 0x400000, (void *)Isqrt_hook, (void **)&Isqrt_orig, "isqrt"))
+        if (!bad && hook(VA_ISQRT - 0x400000, (void *)((g_cuts & 2097152) ? Isqrt_fast : Isqrt_hook), (void **)&Isqrt_orig, "isqrt"))
             shim_log("cuts: isqrt as floor(sqrt(double))");
         else if (bad)
             shim_log("cuts: isqrt: MISMATCH in the self-test, not hooked");
@@ -924,7 +934,8 @@ void cuts_install(int draw) {
     }
     if ((g_cuts & 8) && !draw)
         hook(RVA_BLP_DECODE, (void *)BlpDecode_hook, (void **)&BlpDecode_orig, "texture decode");
-    if (g_cuts & 64) {
+    pathing_install(g_cuts); /* (1048576 replaces 64's A* run: the loop in C remembers the ring's cells itself) */
+    if ((g_cuts & 64) && !(g_cuts & 1048576)) {
         Cell_fn = (CellFn)(void *)VA_(VA_CELL);
         if (hook(VA_ASTAR - 0x400000, (void *)Astar_hook, (void **)&Astar_orig, "A* run"))
             hook(VA_RING - 0x400000, (void *)Ring_hook, (void **)&Ring_orig, "A* ring");
@@ -956,6 +967,8 @@ void cuts_install(int draw) {
 }
 
 void cuts_report(void) {
+    if (g_cuts & (524288 | 1048576 | 4194304))
+        pathing_report();
     if (g_cuts)
         shim_log("cuts/s: mapver hits=%ld miss=%ld paint skipped=%ld events reused=%ld new=%ld textures=%ld "
                  "rings=%ld (orig %ld) cells hit=%ld miss=%ld fhash hit=%ld miss=%ld relax=%ld early=%ld isa hit=%ld miss=%ld "
