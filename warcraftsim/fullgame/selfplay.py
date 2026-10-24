@@ -1923,10 +1923,11 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         t += 1
         prod.step(obs)
         for s in zs:  # (what each side with a strategy has made: its items' first times)
+            ms = made[s]
             for code in (*prod.trained[s], *prod.built[s], *prod.research[s]):
-                if code in EXPANSION_ITEMS and not prod.expansions[s]:
+                if code in ms or (code in EXPANSION_ITEMS and not prod.expansions[s]):
                     continue  # (a hall or a haunted mine: made only as an expansion, not a second one at home)
-                made[s].setdefault(code, obs.game_time)
+                ms[code] = obs.game_time
             if prod.expansions[s]:  # (an expansion made the target's hall whatever it took: undead's targets name a
                 for code in EXPANSION_ITEMS & set(zs[s].get("t") or {}):  # necropolis, the expand order haunts the
                     made[s].setdefault(code, obs.game_time)              # mine; 40 of 123 such games read missed)
