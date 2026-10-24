@@ -2902,6 +2902,8 @@ class GraphedUpdate:
         self.net, self.ref, self.opt, self.args, self.device = net, ref, opt, args, device
         self.graphs: dict[tuple, tuple] = {}
         self.pool = torch.cuda.graph_pool_handle()
+        self.mgraphs: dict[tuple, tuple] = {}  # (the noise measurement's: GraphedUpdate.measure)
+        self.mpool = torch.cuda.graph_pool_handle()
         self.mean = torch.zeros((), device=device)
         self.std = torch.ones((), device=device)
         self.pg_coef = torch.ones((), device=device)
@@ -3027,7 +3029,49 @@ class GraphedUpdate:
         self.graphs[key] = (graph, s, sb, out)
         return self.graphs[key]
 
-    def update(self, steps: list[dict], chunks: list[list[dict]], warmup: bool, bc_iter=None) -> dict:
+    def _capture_grad(self, key: tuple, mb: dict, b: dict | None) -> tuple:
+        """The noise measurement's step (the forward passes, the losses and the backward pass; no clip, no step: the
+        weights stay put) as a graph of its own, in a pool of its own: its gradients are read after each replay."""
+        s, sb = self._static(mb, b)
+        params = list(self.net.parameters())
+        side = torch.cuda.Stream()
+        side.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(side):
+            for _ in range(2):
+                for p in params:
+                    p.grad = None
+                loss, _ = self._losses(s, sb)
+                loss.backward()
+        torch.cuda.current_stream().wait_stream(side)
+        for p in params:
+            p.grad = None
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, pool=self.mpool, capture_error_mode="thread_local"):
+            loss, _ = self._losses(s, sb)
+            loss.backward()
+        grads = [p.grad for p in params]
+        for p in params:
+            p.grad = None  # (the update's graphs have their own)
+        self.mgraphs[key] = (graph, s, sb, grads)
+        return self.mgraphs[key]
+
+    def measure(self, steps: list[dict], chunks: list[list[dict]], warmup: bool) -> dict:
+        """ppo_update(measure=True)'s gradient noise parts at these weights (NoiseMeter.parts: one pass over the batch,
+        no steps), each minibatch's gradient from a captured graph (eager, the pass had taken ~4 s of a ~1.5 s update;
+        its terms one by one stay eager: ppo_update(terms=True))."""
+        self._prepare(steps, warmup)
+        self.net.train()
+        meter = NoiseMeter(self.net, self.opt)
+        for key, mb, b in self._batches(chunks, None, 1):
+            graph, s, sb, grads = self.mgraphs.get(key) or self._capture_grad(key, mb, b)
+            self._fill(s, mb, sb, b)
+            graph.replay()
+            meter.add("all", grads)
+        self.net.eval()
+        return meter.parts(len(steps) / max(1, meter.k.get("all", 1)))
+
+    def _prepare(self, steps: list[dict], warmup: bool) -> np.ndarray:
+        """The batch's advantage statistics and the orders the teacher's labels allow, into the graphs' inputs."""
         args, net, device = self.args, self.net, self.device
         advs = np.array([s["adv"] for s in steps], np.float32)
         self.mean.fill_(float(advs.mean()))
@@ -3045,34 +3089,41 @@ class GraphedUpdate:
                 net.allowed[ty, yy] = True  # ("none" sets class 0: always allowed)
         if self.ref is not None:
             self.ref.allowed.copy_(net.allowed)
-        net.train()
+        return advs
+
+    def _batches(self, chunks: list[list[dict]], bc_iter, epochs: int):
+        """The minibatches made on the CPU (their copies to the GPU queued): (their graph's key, the minibatch, the
+        cloning batch)."""
+        args, device = self.args, self.device
         seqs = pieces(chunks, args.seq_len)
         per_mb = max(1, args.minibatch // args.seq_len)
         labels = getattr(args, "opd_coef", 0.0) > 0
+        for _ in range(epochs):
+            widths = np.array([max(s["n"] for s in q) for q in seqs])
+            for idx in minibatches(widths, per_mb, args.pad_groups):
+                width = _width(int(widths[idx].max()))
+                mb = collate_seq([seqs[i] for i in idx], device, width=width, B=per_mb, T=args.seq_len, labels=labels)
+                b = None
+                if bc_iter is not None and args.bc_coef > 0:
+                    b = dict(next(bc_iter))
+                    bw = _width(int(b["mask"].any(0).nonzero().max()) + 1)  # (on the CPU: no wait)
+                    b = {k: (v[:, :bw] if v.dim() >= 2 and v.shape[1] == b["mask"].shape[1] else v) for k, v in b.items()}
+                    if b["mask"].shape[1] < bw:  # (pad to the width)
+                        b = {k: (torch.nn.functional.pad(v, (0, 0) * (v.dim() - 2) + (0, bw - v.shape[1]))
+                                 if v.dim() >= 2 and v.shape[1] == b["mask"].shape[1] else v) for k, v in b.items()}
+                    b = {k: (v.contiguous().pin_memory() if isinstance(v, torch.Tensor) else v)  # (see to_device)
+                         for k, v in b.items()}
+                    b["width"] = bw
+                yield (width, b["width"] if b is not None else 0, mb["pent"].shape[1] if "pent" in mb else 0,
+                       tuple(sorted(k for k, v in mb.items() if isinstance(v, torch.Tensor)))), mb, b
+
+    def update(self, steps: list[dict], chunks: list[list[dict]], warmup: bool, bc_iter=None) -> dict:
+        args, net = self.args, self.net
+        advs = self._prepare(steps, warmup)
+        net.train()
         outs: list[dict] = []
-
-        def prepared():  # the minibatches made on the CPU (their copies to the GPU queued)
-            for _ in range(args.epochs):
-                widths = np.array([max(s["n"] for s in q) for q in seqs])
-                for idx in minibatches(widths, per_mb, args.pad_groups):
-                    width = _width(int(widths[idx].max()))
-                    mb = collate_seq([seqs[i] for i in idx], device, width=width, B=per_mb, T=args.seq_len, labels=labels)
-                    b = None
-                    if bc_iter is not None and args.bc_coef > 0:
-                        b = dict(next(bc_iter))
-                        bw = _width(int(b["mask"].any(0).nonzero().max()) + 1)  # (on the CPU: no wait)
-                        b = {k: (v[:, :bw] if v.dim() >= 2 and v.shape[1] == b["mask"].shape[1] else v) for k, v in b.items()}
-                        if b["mask"].shape[1] < bw:  # (pad to the width)
-                            b = {k: (torch.nn.functional.pad(v, (0, 0) * (v.dim() - 2) + (0, bw - v.shape[1]))
-                                     if v.dim() >= 2 and v.shape[1] == b["mask"].shape[1] else v) for k, v in b.items()}
-                        b = {k: (v.contiguous().pin_memory() if isinstance(v, torch.Tensor) else v)  # (see to_device)
-                             for k, v in b.items()}
-                        b["width"] = bw
-                    yield (width, b["width"] if b is not None else 0, mb["pent"].shape[1] if "pent" in mb else 0,
-                           tuple(sorted(k for k, v in mb.items() if isinstance(v, torch.Tensor)))), mb, b
-
         pause = getattr(args, "update_pause_ms", 0)
-        batches = prepared()
+        batches = self._batches(chunks, bc_iter, args.epochs)
         nxt = next(batches, None)
         while nxt is not None:
             key, mb, b = nxt
@@ -4050,8 +4101,12 @@ def main(argv: list[str] | None = None) -> int:
             part_stats = parts_pass(net, batch_chunks, args, device) if args.reward_parts else {}  # (--reward-parts)
             if args.noise_scale > 0 and update % args.noise_scale == 0:  # (at the weights the update starts from)
                 t_noise = time.time()
-                parts = ppo_update(net, ref, opt, steps, args, warmup, device, batch_chunks, None, measure=True,
-                                   terms=args.noise_terms > 0 and update % args.noise_terms == 0)
+                terms = args.noise_terms > 0 and update % args.noise_terms == 0
+                if updater is not None and not terms:  # (graphed; each term's gradient stays the eager pass's)
+                    parts = updater.measure(steps, batch_chunks, warmup)
+                else:
+                    parts = ppo_update(net, ref, opt, steps, args, warmup, device, batch_chunks, None, measure=True,
+                                       terms=terms)
                 measured = {**noise.add(parts, args.minibatch), "perf/noise": time.time() - t_noise}
             if updater is not None:
                 try:
