@@ -8,9 +8,10 @@ selfplay --teach 1 (needs --neutral 1: the orders it teaches are the neutral bui
                    race's usual first heroes (the game's draw), and with no altar the worker nearest its hall builds one
                    450-800 from it, as the target builder places buildings. Without a target the human policy built an
                    altar in a fifth of its games (`fgself-134`): it rushed the built-in AI down and lost to policies.
-    a tavern hero: the worker nearest the tavern hires one (the game's draw of the race's usual picks), as the first hero
-                   when the player has an altar and none (with a target), or the second with a tier-2 hall, from 135 s,
-                   the money there
+    a tavern hero: the worker nearest the tavern hires one: with a target its tavern hero, when the side has as many
+                   heroes as come before it in the target (its next hero); without, the game's draw of the race's usual
+                   picks as the second hero, from 135 s. With an altar, the tier the hero count needs (2 for the second,
+                   3 for the third) and the money
     a town portal: a hero near the goblin merchant buys one when it has none and a free slot, from 440 s
     a potion:      a hero below 40% of its hit points drinks what heals in its inventory
     an item:       (--macros 2) a hero with an item lying near (macros.pickable) and no enemy unit within ENEMY_NEAR
@@ -48,6 +49,8 @@ FIRST_HEROES = {"human": ("Hamg", "Hmkg", "Hpal"), "orc": ("Obla", "Ofar", "Otch
                 "nightelf": ("Edem", "Ekee", "Emoo")}
 FIRST_HERO_FROM = 45.0
 TIER2 = {fourcc(c) for c in ("hkee", "hcas", "ostr", "ofrt", "unp1", "unp2", "etoa", "etoe")}
+TIER3 = {fourcc(c) for c in ("hcas", "ofrt", "unp2", "etoe")}
+TAVERN_FROM = 135.0  # (a game without a target: its tavern hero, the second, from then)
 TAVERN, MERCHANT, PORTAL = fourcc("ntav"), fourcc("ngme"), fourcc("stwp")
 GAP = 20  # steps between two lessons of a kind
 HALL = {"human": "htow", "orc": "ogre", "undead": "unpl", "nightelf": "etol"}
@@ -79,11 +82,19 @@ class Teacher:
         ~10-20 s before, and the second needs a tier; 25-37% of the first heroes were the target's, chance among 3-4)."""
         from .neutral import TAVERN_HEROES
         self.side = side
+        # the tavern hero taught, and the heroes the side has when it is hired: a target's, at its place among the
+        # target's heroes (its next hero), as soon as the altar, the tier and the money permit. (As the first or
+        # second hero only, from 135 s: the lesson had fired 68 times in 3,000 target games, ~1,300 of them with a
+        # tavern hero; by 135 s a first hero was the altar's, and a third was never taught: audit 7's sequel)
+        self.pick_at, self.pick_from = 1, TAVERN_FROM
         if target is None:
             self.pick = fourcc(rng.choice(PICKS.get(race, PICKS["human"])))
         else:
-            mine = sorted((t, c) for c, t in target.get("t", {}).items() if c in TAVERN_HEROES)
-            self.pick = fourcc(mine[0][1]) if mine else None
+            from .techtree import is_hero
+            heroes = [c for _, c in sorted((t, c) for c, t in target.get("t", {}).items() if is_hero(c))]
+            k = next((i for i, c in enumerate(heroes) if c in TAVERN_HEROES), None)
+            self.pick = fourcc(heroes[k]) if k is not None else None
+            self.pick_at, self.pick_from = (k if k is not None else 0), 0.0
         self.last: dict[str, int] = {}
         self.taught: dict[str, int] = {}  # each kind's lessons this game (the episode row)
         # (a game without a target: its first hero from the altar, FIRST_HEROES)
@@ -133,12 +144,15 @@ class Teacher:
         n_heroes = len(heroes)
         if self.first is not None and n_heroes == 0 and now >= self.first_from:  # (the altar itself from 45 s: a target's
             out += self._first_hero(alive, player, t, build=now >= FIRST_HERO_FROM)  # builder teaches it when due)
-        # a tavern hero: the first with an altar (with a target), the second with tier 2
-        if (self.pick is not None and len(tavern) and now >= 135.0 and n_heroes < 2
-                and (n_heroes > 0 or self.first is None)
-                and (n_heroes == 0 or player.gold >= 425 and player.lumber >= 135)  # (the first hero is free: food only)
+        # a tavern hero: when the side has as many heroes as come before it (the target's, or one), with an altar, the
+        # tier the hero count needs (the second hero tier 2, the third tier 3) and the money (the mask's, else 425/135;
+        # the first hero is free: food only)
+        if (self.pick is not None and len(tavern) and now >= self.pick_from and n_heroes == self.pick_at < 3
+                and (n_heroes == 0 or (can(fx.rawcode(self.pick), fx.UNIT) if can is not None
+                                       else player.gold >= 425 and player.lumber >= 135))
                 and player.food_used + 5 <= player.food_cap and fourcc_in(done, ALTARS)
-                and (n_heroes == 0 or fourcc_in(done, TIER2)) and self.pick not in set(heroes[:, fx.C_TYPE].tolist())):
+                and (n_heroes == 0 or fourcc_in(done, TIER2)) and (n_heroes < 2 or fourcc_in(done, TIER3))
+                and self.pick not in set(heroes[:, fx.C_TYPE].tolist())):
             tv = tavern[0]
             workers = alive[fx.isin(alive[:, fx.C_TYPE], WORKER_CODES)]
             if len(workers):

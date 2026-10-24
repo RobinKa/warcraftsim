@@ -335,9 +335,9 @@ def test_teacher_lessons_and_merged_labels(v2):
     rows = np.stack([_unit(1, 0, 0, 0, 1, fx.WORKER, "hpea"), _unit(2, 0, -3000, 0, 1, fx.STRUCTURE, "halt"),
                      _unit(9, 15, 1000, 0, 1, fx.STRUCTURE, "ntav"), _unit(8, 15, 0, -2000, 1, fx.STRUCTURE, "ngme")])
     rich = SimpleNamespace(gold=900, lumber=300, food_used=10, food_cap=30)
-    assert tc.commands(rows, rich, 100.0, 0) == []  # (the tavern sells from 135 s)
-    assert tc.commands(rows, rich, 200.0, 1) == [Buy(1, 9, tc.pick)]
-    assert tc.commands(rows, rich, 201.0, 2) == []  # (a lesson every GAP steps)
+    assert tc.commands(rows, rich, 20.0, 0) == [Buy(1, 9, tc.pick)]  # (its first hero: as soon as the altar stands)
+    assert tc.commands(rows, rich, 21.0, 2) == []  # (a lesson every GAP steps)
+    assert tc.commands(rows, rich, 200.0, 21) == [Buy(1, 9, tc.pick)]
     hero = _hero(0, items=("phea", "stwp"))
     hero[fx.C_HP], hero[fx.C_X], hero[fx.C_Y] = 200, 0, -1500
     lessons = tc.commands(np.stack([*rows, hero]), rich, 500.0, 40)
@@ -1048,6 +1048,36 @@ def test_power_build_needs_lumber(v2):
     for (g, l), ok_frame, ok_mill in (((5, 0), False, True), ((0, 5), True, False), ((1, 1), True, True), ((0, 0), False, False)):
         bot.me = me(g, l)
         assert bot._repairable(frame) == ok_frame and bot._repairable(mill) == ok_mill, (g, l)
+
+
+def test_teacher_tavern_hero_at_its_place(v2):
+    """A target's tavern hero is taught when the side has as many heroes as come before it in the target (its next
+    hero), with the tier that hero count needs and the money (the mask's); without a target, the second hero from
+    135 s (audit 7's sequel: as the first or second only, from 135 s, the lesson fired 68 times in 3,000 games)."""
+    import random
+    from types import SimpleNamespace
+
+    from warcraftsim.fullgame.teacher import Teacher
+    from warcraftsim.protocol import Buy
+    player = SimpleNamespace(gold=900, lumber=300, food_used=10, food_cap=40)
+    base = [_unit(1, 0, 0, 0, 1, fx.WORKER, "hpea"), _unit(2, 0, -3000, 0, 1, fx.STRUCTURE, "halt"),
+            _unit(9, 15, 1000, 0, 1, fx.STRUCTURE, "ntav")]
+    h1, h2 = _hero(0), _hero(0)
+    h1[fx.C_ID], h2[fx.C_ID] = 101, 102
+    h2[fx.C_TYPE] = code("Hmkg")
+    keep, castle = _unit(3, 0, -3500, 0, 1, fx.STRUCTURE, "hkee"), _unit(4, 0, -3500, 500, 1, fx.STRUCTURE, "hcas")
+    third = {"t": {"Hamg": 60.0, "Hmkg": 300.0, "Npbm": 600.0}}  # (its tavern hero the third)
+    tc = Teacher(0, "human", random.Random(0), third)
+    assert tc.commands(np.stack([*base, keep, h1]), player, 300.0, 0) == []  # (one hero: the target's next is Hmkg)
+    assert tc.commands(np.stack([*base, keep, h1, h2]), player, 400.0, 40) == []  # (two: tier 3 needed)
+    assert tc.commands(np.stack([*base, castle, h1, h2]), player, 400.0, 80) == [Buy(1, 9, code("Npbm"))]
+    poor = lambda u, k=fx.IMMEDIATE: False  # (the mask: not the money)
+    assert tc.commands(np.stack([*base, castle, h1, h2]), player, 400.0, 120, poor) == []
+    second = Teacher(0, "human", random.Random(0), {"t": {"Hamg": 60.0, "Nalc": 250.0}})
+    assert second.commands(np.stack([*base, keep, h1]), player, 150.0, 0) == [Buy(1, 9, code("Nalc"))]
+    free = Teacher(0, "human", random.Random(0))  # (no target: the second hero, from 135 s)
+    assert free.commands(np.stack([*base, keep, h1]), player, 100.0, 0) == []
+    assert free.commands(np.stack([*base, keep, h1]), player, 140.0, 40) == [Buy(1, 9, free.pick)]
 
 
 def test_teacher_target_first_hero(v2):
