@@ -100,8 +100,9 @@ def main() -> None:
         return
     flags: list[list[str]] = []
     for w in words:  # [flag, values...] in order
-        if w.startswith("--"):
-            flags.append([w])
+        m = re.fullmatch(r"(--[a-z0-9][a-z0-9-]*)(?:=(.*))?", w, re.S)  # (a flag, or --flag=value; a note that
+        if m:                                                               # starts with "--" is a value)
+            flags.append([m.group(1)] + ([m.group(2)] if m.group(2) is not None else []))
         elif flags:
             flags[-1].append(w)
     flags = [f for f in flags if f[0] not in ("--note", "--title", "--resume", "--resume-weights")]  # (one-shot flags)
@@ -114,9 +115,9 @@ def main() -> None:
     if args.weights:
         argv += ["--resume-weights", str(args.weights)]
     if args.note:
-        argv += ["--note", args.note]
+        argv += [f"--note={args.note}"]  # (as one word: a note that starts with "--" is no flag)
     if args.title:
-        argv += ["--title", args.title]
+        argv += [f"--title={args.title}"]
     with open(ROOT / "runs" / f"{args.name}.log", "a") as log:
         subprocess.Popen(argv, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     print("launched:", " ".join(shlex.quote(a) for a in argv[1:]))

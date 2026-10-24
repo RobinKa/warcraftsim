@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shlex
 import subprocess
 import sys
@@ -45,8 +46,9 @@ def main() -> None:
     weights = (weights if weights.is_absolute() else ROOT / weights).resolve()
     flags: list[list[str]] = []
     for w in words:  # [flag, values...] in order
-        if w.startswith("--"):
-            flags.append([w])
+        m = re.fullmatch(r"(--[a-z0-9][a-z0-9-]*)(?:=(.*))?", w, re.S)  # (a flag, or --flag=value; a note that
+        if m:                                                               # starts with "--" is a value)
+            flags.append([m.group(1)] + ([m.group(2)] if m.group(2) is not None else []))
         elif flags:
             flags[-1].append(w)
     flags = [f for f in flags if f[0] not in ("--name", "--note", "--title", "--resume", "--resume-weights",
@@ -57,8 +59,8 @@ def main() -> None:
         if v:
             flags.append([f"--{k}", *v.split()])
     argv = [sys.executable, "-m", "warcraftsim.fullgame.selfplay", "--name", args.child,
-            *[w for f in flags for w in f], "--start-weights", str(weights.relative_to(ROOT)), "--note", args.note,
-            *(["--title", args.title] if args.title else []),
+            *[w for f in flags for w in f], "--start-weights", str(weights.relative_to(ROOT)), f"--note={args.note}",
+            *([f"--title={args.title}"] if args.title else []),
             *(["--league-from", args.league or args.parent] if (args.league or "") != "none" else [])]
     with open(ROOT / "runs" / f"{args.child}.log", "a") as log:
         subprocess.Popen(argv, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
