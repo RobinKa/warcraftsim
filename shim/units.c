@@ -783,6 +783,16 @@ static const struct {
     {"GetCameraTargetPositionX", "()R"}, {"GetCameraTargetPositionY", "()R"}, {"R2I", "(R)I"},
 };
 static void *g_tfn[N_TOK_NATIVES];
+enum { IsItemOwned_, IsItemVisible_, GetItemX_, GetItemY_, IsVisibleToPlayer_, GetItemType_, N_ITEM_NATIVES };
+static const struct {
+    const char *name, *sig;
+} g_want_item[N_ITEM_NATIVES] = {
+    {"IsItemOwned", "(Hitem;)B"}, {"IsItemVisible", "(Hitem;)B"}, {"GetItemX", "(Hitem;)R"}, {"GetItemY", "(Hitem;)R"},
+    {"IsVisibleToPlayer", "(RRHplayer;)B"}, {"GetItemType", "(Hitem;)Hitemtype;"},
+};
+static void *g_ifn[N_ITEM_NATIVES];
+static int g_citems_ok, g_citems, g_items_arm, g_in_items;
+static long g_items_n;
 static int g_ctok_ok, g_version, g_vkt[2];
 static int g_capply_ok; /* every command native found */
 static int g_capply;    /* the harness asked MBOX - 32 this game */
@@ -930,6 +940,106 @@ static void cmd_records(void) { /* W3S_WriteObs's "C" records: the result, its s
     for (int i = 0; i < g_ncres; i++)
         obs_bytes(g_cres[i] ? "C\n1\n1\n" : "C\n0\n0\n", 6);
     g_ncres = 0;
+}
+
+/* W3SIM_CUTS & 8589934592 (round 4, with 1073741824): the items on the ground (W3S_WriteObs's EnumItemsInRect over the
+ * whole map) without a JASS thread per item. The native and its walk run as before; its per-item callback (0x49b200:
+ * the widget's type, its mask, the filter, the enum item's handle pushed and popped) runs here with the shim's
+ * W3S_SerItem in place of the JASS function: the same natives in its order (IsItemOwned, IsItemVisible, GetWidgetLife,
+ * GetItemX / Y, IsVisibleToPlayer per seer, SaveInteger of the step (from the "T" record's call) under key 9,
+ * GetItemTypeId, R2I, GetItemType), the "G" record written here. The harness arms it (MBOX - 44, after MBOX - 43: on?)
+ * for its next EnumItemsInRect only. */
+#define VA_ENUMITEMS 0x48ff80 /* cdecl EnumItemsInRect(rect, filter, code) native */
+#define VA_ITEM_CB 0x49b200   /* cdecl int cb(CWidget *, ctx {code, filter, jass state, code object}) */
+typedef void(__cdecl *EnumItemsFn)(int, int, int);
+typedef int(__cdecl *ItemCbFn)(BYTE *, DWORD *);
+static EnumItemsFn EnumItems_orig;
+static ItemCbFn ItemCb_orig;
+
+static void ser_item(int h) { /* W3S_SerItem */
+    if (((N1)g_ifn[IsItemOwned_])(h) || !((N1)g_ifn[IsItemVisible_])(h) || !(r1(GetWidgetLife, h) > 0.405f))
+        return;
+    int x = ((N1)g_ifn[GetItemX_])(h), y = ((N1)g_ifn[GetItemY_])(h), bits = 0;
+    for (int k = 0; k < g_nseer; k++)
+        if (((N3)g_ifn[IsVisibleToPlayer_])((int)&x, (int)&y, g_seer_player[k]))
+            bits += g_seer_bit[k];
+    ((N4)g_fn[SaveInteger])(g_ht, h, 9, g_vkt[0]);
+    if (!bits)
+        return;
+    char b[96];
+    int len = 2;
+    uint32_t sum = 0;
+    memcpy(b, "G\n", 2);
+    pbuf_tok(b, &len, sizeof b, n1(GetItemTypeId, h), &sum);
+    pbuf_tok(b, &len, sizeof b, ((N1)g_tfn[R2I_])((int)&x), &sum);
+    pbuf_tok(b, &len, sizeof b, ((N1)g_tfn[R2I_])((int)&y), &sum);
+    pbuf_tok(b, &len, sizeof b, bits, &sum);
+    pbuf_tok(b, &len, sizeof b, ((N1)g_ifn[GetItemType_])(h) == 2 /* ITEM_TYPE_POWERUP */, &sum);
+    pbuf_tok(b, &len, sizeof b, (int)sum, NULL);
+    obs_bytes(b, len);
+}
+
+static void __cdecl EnumItems_hook(int rect, int filter, int code) {
+    if (g_items_arm) {
+        g_items_arm = 0;
+        g_in_items = 1;
+        EnumItems_orig(rect, filter, code);
+        g_in_items = 0;
+        return;
+    }
+    EnumItems_orig(rect, filter, code);
+}
+
+static int __cdecl ItemCb_hook(BYTE *w, DWORD *ctx) {
+    if (!g_in_items || !w || !ctx)
+        return ItemCb_orig(w, ctx);
+    typedef int(__fastcall * VGet)(BYTE *, void *);
+    typedef int(__cdecl * TypeFn)(void);
+    typedef int(__fastcall * MaskFn)(BYTE *, void *);
+    if (((VGet)(*(void ***)w)[0x1c / 4])(w, NULL) != ((TypeFn)VA(0x6c5350))())
+        return 1;
+    if ((*(DWORD *)(w + 0x198) & *(DWORD *)(w + 0x194)) != 0xffffffffu && ((MaskFn)VA(0x7fc7e0))(w + 0x194, NULL))
+        return 1;
+    void *st = (void *)(size_t)ctx[2];
+    ((EnumPushFn)VA(VA_ENUM_PUSH))(st, NULL, 0xe, w, 0);
+    BYTE *flt = (BYTE *)(size_t)ctx[1];
+    if ((!flt || ((VGet)(*(void ***)flt)[0x78 / 4])(flt, NULL)) && ctx[3]) {
+        ((EnumPushFn)VA(VA_ENUM_PUSH))(st, NULL, 0xd, w, 0);
+        int h = ((EnumTopFn)VA(VA_ENUM_TOP))(st, NULL, 0xd);
+        if (h) {
+            g_items_n++;
+            ser_item(h);
+        }
+        ((EnumPopFn)VA(VA_ENUM_POP))(st, NULL, 0xd, 1);
+    }
+    ((EnumPopFn)VA(VA_ENUM_POP))(st, NULL, 0xe, 1);
+    return 1;
+}
+
+static void install_items(void) {
+    BYTE *f = VA(VA_ENUMITEMS), *cb = VA(VA_ITEM_CB);
+    /* the callback as read: its checks' calls, the pushes and pops, the code's run */
+    static const struct {
+        int at;
+        DWORD to;
+    } calls[] = {{0x26, 0x6c5350}, {0x47, 0x7fc7e0}, {0x58, 0x4ebf00}, {0x7b, 0x4ebf00}, {0x98, 0x4e4720}, {0xb4, 0x4ebce0}, {0xc0, 0x4ebce0}};
+    int ok = f[0] == 0x55 && f[1] == 0x8b && f[2] == 0xec && cb[0] == 0x55 && cb[1] == 0x8b && cb[2] == 0xec &&
+             cb[0x21] == 0xff && cb[0x22] == 0x50 && cb[0x23] == 0x1c && cb[0x66] == 0xff && cb[0x67] == 0x50 && cb[0x68] == 0x78;
+    for (unsigned k = 0; ok && k < sizeof calls / sizeof calls[0]; k++)
+        ok = cb[calls[k].at] == 0xe8 && cb + calls[k].at + 5 + *(int32_t *)(cb + calls[k].at + 1) == (BYTE *)VA(calls[k].to);
+    if (!ok) {
+        shim_log("items: unexpected code, not installed");
+        return;
+    }
+    MH_STATUS s = MH_Initialize();
+    if (s != MH_OK && s != MH_ERROR_ALREADY_INITIALIZED)
+        return;
+    if (MH_CreateHook(f, (void *)EnumItems_hook, (void **)&EnumItems_orig) != MH_OK || MH_EnableHook(f) != MH_OK ||
+        MH_CreateHook(cb, (void *)ItemCb_hook, (void **)&ItemCb_orig) != MH_OK || MH_EnableHook(cb) != MH_OK) {
+        shim_log("items: hook failed");
+        return;
+    }
+    g_citems = 1;
 }
 
 /* W3SIM_PROFILE: where a step's time goes (mean ms per step, every 200 steps): GO -> the pass begins
@@ -1165,6 +1275,16 @@ int units_call(int key, int mbox, int *result) {
         g_ca_declined++;
         return 1;
     }
+    if (key == mbox - 43) { /* (W3SIM_CUTS & 8589934592) the items on the ground here */
+        *result = g_citems && g_ok == 1 && g_ctok_ok && obs_capture_on() ? 1 : 0;
+        if (*result)
+            shim_log("items: W3S_SerItem in the shim (W3SIM_CUTS & 8589934592)");
+        return 1;
+    }
+    if (key == mbox - 44) {
+        g_items_arm = g_citems;
+        return 1;
+    }
     if (g_capply && key == mbox - 36) {
         cmd_records();
         return 1;
@@ -1212,8 +1332,14 @@ void units_install(void) {
                 g_tfn[k] = (void *)fn;
                 g_ctok_ok++;
             }
+        for (int k = 0; k < N_ITEM_NATIVES; k++)
+            if (!g_ifn[k] && strcmp((const char *)name, g_want_item[k].name) == 0 && strcmp((const char *)sig, g_want_item[k].sig) == 0) {
+                g_ifn[k] = (void *)fn;
+                g_citems_ok++;
+            }
     }
     g_ctok_ok = g_ctok_ok == N_TOK_NATIVES;
+    g_citems_ok = g_citems_ok == N_ITEM_NATIVES;
     g_capply_ok = g_capply_ok == N_CMD_NATIVES;
     char buf[16];
     int mode = GetEnvironmentVariableA("W3SIM_UNITS", buf, sizeof buf) ? atoi(buf) : 1;
@@ -1229,6 +1355,8 @@ void units_install(void) {
             install_fg_pass();
         if (cuts & 8388608)
             install_kt();
+        if ((cuts_flags() & 8589934592LL) && g_citems_ok && g_ctok_ok)
+            install_items();
     }
     if (g_ok)
         shim_log("unit records: %s (%d natives)", g_ok == 2 ? "checked against the harness's" : "written by the shim", found);

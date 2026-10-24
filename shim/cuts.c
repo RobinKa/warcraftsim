@@ -77,6 +77,8 @@
  *      harness's as before), the "C" records of their results written by it
  * 4294967296 the name hash 0x433890 (every JASS identifier the VM resolves; file names too) in one pass, the same value
  *      (checked against the executable's own at install)
+ * 8589934592 (units.c, with 1073741824 and the handshake) the items on the ground: EnumItemsInRect's per-item callback
+ *      runs the shim's W3S_SerItem (the same natives in its order) instead of a JASS thread per item
  *
  * Offsets are for the 1.29.2.9231 executable (RVAs; see ~/tools/w3analysis/report.md).
  */

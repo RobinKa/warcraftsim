@@ -144,6 +144,7 @@ globals
     boolean w3s_ctok = false  // the shim writes W3S_Tok's tokens itself, from integers (W3S_CSerInit)
     player w3s_tp = null  // the player of those calls (bj_PLAYER_NEUTRAL_VICTIM: asked for nothing else)
     boolean w3s_capply = false  // the shim applies the agents' commands (W3S_ReadCommands)
+    boolean w3s_citems = false  // the shim does W3S_SerItem for the items on the ground (W3S_WriteObs)
     boolean w3s_anyshadow = false  // an agent's player has been advised (W3S_ShadowAI): the commands applied here
     boolean w3s_loaded = false  // (the map's script has run its first step since it was loaded)
     integer w3s_nseer = 0  // the seers, as a list: their players and their bits in the visibility mask
@@ -645,6 +646,7 @@ function W3S_CSerInit takes nothing returns nothing
     // commands applied by it (W3S_ReadCommands: W3S_ApplyOne's natives in the same order); not when it only checks
     set w3s_ctok = false
     set w3s_capply = false
+    set w3s_citems = false
     if w3s_cser == 1 then
         if GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 29) == 1 then
             set w3s_tp = Player(bj_PLAYER_NEUTRAL_VICTIM)
@@ -653,6 +655,7 @@ function W3S_CSerInit takes nothing returns nothing
             call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 31)
             call GetPlayerTechMaxAllowed(w3s_np, 0 - (W3S_VERSION + 1))
             set w3s_ctok = true
+            set w3s_citems = GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 43) == 1
         endif
         if W3S_CFG_PAIRS <= 1 and GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 32) == 1 then
             if not w3s_loaded then  // (a load's command array is all zeros)
@@ -829,6 +832,9 @@ function W3S_WriteObs takes nothing returns nothing
             call TriggerEvaluate(w3s_ser_trig)
             exitwhen w3s_cursor == i // a crashed chunk must not hang the game
         endloop
+    endif
+    if w3s_citems then
+        call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 44)  // (the next enumeration's items: the shim's W3S_SerItem)
     endif
     call EnumItemsInRect(bj_mapInitialPlayableArea, null, function W3S_SerItem)  // items lying on the ground
     set w3s_full = false
