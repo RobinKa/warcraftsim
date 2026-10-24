@@ -4,6 +4,19 @@ warcraftsim trains on the real Warcraft III 1.29, so the game's own engine runs 
 
 The shim (`shim/`, a DLL in the game process) does it, with the harness (JASS in the map). Per-fix numbers are in the [optimization log](reference/optimization-log.md); [optimizations](optimizations.md) has the whole pipeline.
 
+## Whose time it was
+
+A game step's CPU went to four kinds of work, and each needed a different kind of fix:
+
+| whose work | what was slow | the fix | where it is |
+|---|---|---|---|
+| **Ours: the harness and the step sync** | the observation written through files and the orders compiled as JASS each step; the pass over the units in JASS; the players' records and the result in JASS; game functions the harness called for every unit or the whole map each step; the socket through Wine | our own code made faster, in C in the shim; where the cost was a game function we called too often, that function made faster | [a step without files](#a-step-without-files), [our harness](#our-harness) |
+| **The game's presentation** | drawing (in software under Wine), textures, the wall clock, background threads polling | the shim stops or skips it: nobody watches | [time](#time-a-virtual-clock), [drawing nothing](#drawing-nothing) |
+| **The game's simulation** | pathfinding, the type and version checks, the integer square roots | the game's own functions patched: rewritten with the same results | [the game's own code](#the-games-own-code) |
+| **Wine** | wineserver round trips for events, files and sockets | another Wine build, settings, and fewer calls | [Wine](#wine) |
+
+Our own share was larger than it looked. In round 1 of the patches about a quarter of the gain was the harness's, half the game's simulation and the rest its drawing; in round 2 nearly all of it was the harness's (its JASS, its socket, and two game functions it called for every unit and over the whole map each step), and only one patch, a square root in pathfinding, was the game's simulation.
+
 ## Getting in
 
 ```mermaid
@@ -21,17 +34,9 @@ flowchart TB
 * **JASS natives from C.** The executable registers every native with the same instruction pattern (`push signature; push name; push function; call`). Scanning for it gives each native's address, ~1,400 of them. They are plain cdecl functions: handles and integers by value, a real returned as its bits in `eax`. So the shim can call `GetUnitX` or `IsUnitType` directly, as the harness would.
 * **A mailbox.** The harness talks to the shim through a native it otherwise has no use for: `GetPlayerTechMaxAllowed` on the neutral passive player, with negative keys as messages. The shim hooks it, so a JASS call becomes a function call into C, with an integer each way.
 
-## Time: a virtual clock
-
-The game runs on the wall clock: half a second of game time takes half a second. The shim gives it a clock of its own (`shim/clock.c`): virtual time = real time × speed, frozen while Python decides.
-
-* **Speed.** The clock runs ~2.5× faster than the game can keep up with, adapting as the machine's load changes. Far faster made things worse: the game's background threads wake more often and load wineserver.
-* **Cheap to read.** The game reads its clock thousands of times a turn. Under Wine `QueryPerformanceCounter` can be a system call, so the virtual clock is built on the CPU's time-stamp counter, published through a seqlock that no reader ever blocks on.
-* **Frozen at every step.** While Python decides, virtual time stands still, and the game sees no gap.
-* **Waits that don't spin.** A thread that waits 100 ms in game time waits 100 ms ÷ speed in real time, and at high speeds that rounded to zero: polling threads spun at 5,000-11,000 wakeups a second, each a call into wineserver. A floor of 1-5 ms on those waits gave +60% games a second.
-* **Threads asleep while frozen** (2026-10-03). A frozen clock can't reach a timeout, so a background thread's timed wait now blocks until the clock runs again, then times out as it would have. Together with Wine's gamepad, USB and Bluetooth drivers left out (the HID driver's event loop woke every millisecond in every game): 22% less CPU a step.
-
 ## A step without files
+
+*Ours: the harness's input and output.*
 
 The harness started with the tools JASS has for files: it wrote the observation with `Preload` and read the orders with `Preloader`. Under Wine each file operation is a round trip to wineserver, and `Preloader` *compiles* the file it reads as JASS.
 
@@ -42,7 +47,40 @@ The harness started with the tools JASS has for files: it wrote the observation 
 | the units | three passes in JASS, ~35 native calls and a few hundred JASS instructions per unit: 9-13 ms a step with 150 units and 32 games running | the shim's pass in C (`shim/units.c`), calling the same natives itself: ~4 ms |
 | the step sync | | the mailbox native freezes the clock, sends the observation over a socket to Python and blocks until the orders come back |
 
+## Our harness
+
+*Ours: the harness's work each step.*
+
+Some of the slowest work in a step was ours: the harness asked the game for more than it needed, in the slowest way the game offers (JASS), every half second. These fixes change our code, or a game function only because our harness called it far more often than the game does. Each is a bit of `--game-cuts` (`W3SIM_CUTS`), checked by replays like the patches below.
+
+| bit | what was slow | the fix | gain |
+|---|---|---|---|
+| 16 | the harness's pass over the units ran a JASS thread per unit (`ForGroup`) | the group's units go straight to the shim's pass in C | -2.05 M instructions a step |
+| 32 | the shim's pass called each pure getter twice per unit | once | -0.21 M |
+| 32768 | each native the pass calls converted the unit's handle to its object again, ~30 times a unit | once per unit | -1.3% of the main thread |
+| 8192 | `UnitIsSleeping`, which the harness asks of every unit every step, walks the unit's whole ability list through virtual calls and type checks (a game function; the game itself asks it rarely) | the same walk in C with the list's lookups inlined, and the type check remembered per game | -2.5% |
+| 16384 | `EnumItemsInRect` over the whole map (the harness's items on the ground) walked ~4,000 grid cells and ~5,000 entries a step, stalling on a cache miss at each (a game function, called by us over the whole map) | the same walk in C, prefetching each cell's entries | -2.7% |
+| 262144 | the players' records and the check of who won, in JASS: a call, an `I2S` and a `Preload` per token, and loops over 24 × 24 players | written by the shim with the same natives; a check mode runs both and compares them every step | -6.4% |
+| 65536 | two socket sends per observation; the game asks Wine for its thread's priority around its timing code | one send; the priority remembered | wineserver requests 15.7 → 7.9 an observation |
+| 131072 | the step sync's socket went through Winsock: a few wineserver round trips per call | **Linux system calls from inside the Windows program**: under GE-Proton's Wine the game is a 32-bit Linux process, so the shim opens and uses the TCP connection with `int 0x80` and Wine never sees it (Winsock stays the fallback) | -4.4 to -6% |
+
+Together with the step without files above, the harness went from most of a step (in JASS: ~7 ms for the orders, 9-13 ms for the units with 150 of them) to ~10% of the main thread.
+
+## Time: a virtual clock
+
+*The game's presentation: time as a player feels it.*
+
+The game runs on the wall clock: half a second of game time takes half a second. The shim gives it a clock of its own (`shim/clock.c`): virtual time = real time × speed, frozen while Python decides.
+
+* **Speed.** The clock runs ~2.5× faster than the game can keep up with, adapting as the machine's load changes. Far faster made things worse: the game's background threads wake more often and load wineserver.
+* **Cheap to read.** The game reads its clock thousands of times a turn. Under Wine `QueryPerformanceCounter` can be a system call, so the virtual clock is built on the CPU's time-stamp counter, published through a seqlock that no reader ever blocks on.
+* **Frozen at every step.** While Python decides, virtual time stands still, and the game sees no gap.
+* **Waits that don't spin.** A thread that waits 100 ms in game time waits 100 ms ÷ speed in real time, and at high speeds that rounded to zero: polling threads spun at 5,000-11,000 wakeups a second, each a call into wineserver. A floor of 1-5 ms on those waits gave +60% games a second.
+* **Threads asleep while frozen** (2026-10-03). A frozen clock can't reach a timeout, so a background thread's timed wait now blocks until the clock runs again, then times out as it would have. Together with Wine's gamepad, USB and Bluetooth drivers left out (the HID driver's event loop woke every millisecond in every game): 22% less CPU a step.
+
 ## Drawing nothing
+
+*The game's presentation: what a player sees.*
 
 Nobody watches a training game. Under Wine, Direct3D 9 becomes OpenGL, and Mesa draws it in software on the CPU.
 
@@ -53,47 +91,37 @@ Nobody watches a training game. Under Wine, Direct3D 9 becomes OpenGL, and Mesa 
 
 Videos are rendered from the games' replays in a process of their own, which draws.
 
-## Equivalent rewrites of the game's own code (`--game-cuts`)
+## The game's own code
 
-The game is a 2002-era C++ program built for a single-core PC with an x87 FPU, and some of its hot functions show it. Two rounds (2026-10-11/12 and 2026-10-24), each by a subagent, found and replaced them:
+*The game's simulation: its functions patched.*
+
+The game is a 2002-era C++ program built for a single-core PC with an x87 FPU, and some of its hot functions show it. These patches change the game's simulation code, keeping every result the same. Two rounds (2026-10-11/12 and 2026-10-24), each by a subagent:
 
 1. **Profile.** A raw stack sampler in the shim (`W3SIM_PROFILE=5`) and `perf stat -t` per thread show where the main thread's time goes: pathing ~35-55%, unit and ability timers ~15-20%, our harness ~15-25%, attack and fog the rest.
 2. **Read the code.** Ghidra, driven through [REA](https://github.com/morluto/rea) (an MCP server for Ghidra), decompiles the hot functions.
-3. **Replace.** A function in `shim/cuts.c` that gives the same results, hooked over the original, behind a bit of `W3SIM_CUTS` (`--game-cuts`).
+3. **Replace.** A function in `shim/cuts.c` that gives the same results, hooked over the original (MinHook at its fixed address), behind a bit of `W3SIM_CUTS` (`--game-cuts`).
 4. **Prove it.** `scripts/cut_ab.py` plays a recorded game back with and without the bit, side by side. At every step it compares every unit, player, event, the built-in AI's orders, each command's result, the items on the ground, and in round 2 the observation's raw bytes. One differing step and the bit doesn't ship.
 
-### Round 1 (2026-10-12, `--game-cuts 1529`)
-
-| bit | the game did | now | main thread, M instructions a step |
+| bit | the game did | now | gain |
 |---|---|---|---|
-| 16 | the harness's pass over the units ran a JASS thread per unit (`ForGroup`) | the group's units go straight to the C pass | -2.05 |
-| 64 | A* asked, for every node, whether each cell in a ring around it is blocked: 90% of the questions were repeats within one search | each cell's answer remembered for the length of one search (nothing in a search changes it), with its side effects replayed | -1.72 |
-| 1 | `GetPlayerId` and `Player()` copied the map's 14 KB info block onto the stack to read one field (a 24-player compatibility check), 20,000-40,000 times a second | the answer memoised | -1.32 |
-| 256 | paint ~8 times a wall second, drawing off | every 50 steps | -1.0 |
-| 1024 | A* computed a neighbour's heuristic before an early return that usually discarded it | after it, with the same stores in the same order | -0.87 |
-| 32 | the C pass called each pure getter twice per unit | once | -0.21 |
-| 128 | soft-float helpers: count leading zeros as a loop, an integer square root as 16 rounds of digit-by-digit | `lzcnt`, and `floor(sqrt(double))`, checked equal over all 2³² inputs | -0.82 (the AI's code) |
-| 8 | JPEG-decoded textures that are never drawn | no pixels | -0.29 |
-
-All on: a self-play replay 28.4 → 19.3 M instructions a step (-32%), the main thread's CPU -16 to -28%. Same results on 24 replays.
-
-### Round 2 (2026-10-24, `--game-cuts 521721`)
-
-| bit | the game did | now | main thread a step |
-|---|---|---|---|
-| 4096 | the long-range path search took an integer square root by Newton's method, two divisions a round, twice for every node it relaxed | `floor(sqrt(double))`. To check it, the executable's own routine was run natively over all 2³² inputs. It matches for every one, and the shim re-checks it in the process before hooking | -1.4% |
-| 8192 | `UnitIsSleeping` (the harness asks it of every unit, every step) walked the unit's whole ability list through virtual calls and type checks | the same walk in C with the list's lookups inlined, and the type check `IsA(type, id)` remembered per game | -2.5% |
-| 16384 | `EnumItemsInRect` over the whole map (for the items on the ground) walked ~4,000 grid cells and ~5,000 entries a step, stalling on a cache miss at each | the same walk in C, prefetching each cell's entries before reading them | -2.7% (-1% without the prefetch) |
-| 32768 | each native converted the unit's handle to its object again, ~30 times a unit | once per unit of the pass | -1.3% |
-| 65536 | two socket sends per observation (the header, then the body); the game asks Wine for its thread's priority around its timing code | one send; the priority remembered | wineserver requests 15.7 → 7.9 an observation |
-| 131072 | the step sync's socket went through Winsock, a few wineserver round trips per call | **Linux system calls from inside the Windows program.** Under GE-Proton's Wine the game is a 32-bit Linux process, so the shim opens the TCP connection with `int 0x80` (socket, connect, read, write) and Wine never sees it; Winsock remains the fallback | -4.4 to -6% |
-| 262144 | the harness wrote the players' records and checked who had won in JASS: a call, an `I2S` and a `Preload` per token, and loops over 24 × 24 players | the shim, with the same natives. A check mode runs both paths and compares them every step | -6.4% |
-
-All on, against round 1: the main thread **-18.4%** a step, -20.7% with wineserver, and -31% in games between agents. Same results over 54 replays (60,772 steps). The last bit changes the harness, and a replay only plays back on the map it was recorded with. So it was checked on 8 new games recorded in the check mode, then played back on both paths.
+| 64 | A* asked, for every node, whether each cell in a ring around it is blocked: 90% of the questions were repeats within one search | each cell's answer remembered for the length of one search (nothing in a search changes it), with its side effects replayed | -1.72 M instructions a step |
+| 1024 | A* computed a neighbour's heuristic before an early return that usually discarded it | after it, with the same stores in the same order | -0.87 M |
+| 4096 | the long-range path search took an integer square root by Newton's method, two divisions a round, twice for every node it relaxed | `floor(sqrt(double))`: the executable's own routine, run natively over all 2³² inputs, matches it for every one, and the shim re-checks it in the process before hooking | -1.4% of the main thread |
+| 1 | `GetPlayerId` and `Player()` copied the map's 14 KB info block onto the stack to read one field (a 24-player compatibility check), 20,000-40,000 times a second (the harness and the AI's scripts call them constantly) | the answer memoised | -1.32 M |
+| 128 | soft-float helpers: count leading zeros as a loop, an integer square root as 16 rounds of digit-by-digit | `lzcnt`, and `floor(sqrt(double))`, checked equal over all 2³² inputs | -0.82 M (the AI's code) |
 
 Tried and dropped: pooling the events of the game's loopback messages (4: nothing), a cache for the type check `IsA` (2048: little, and delicate), Storm's allocator hashing its caller's source file name on every allocation (512: nothing measurable), paint every 200 steps (no change).
 
+### What the rounds gave
+
+| | `--game-cuts` | the main thread a step | checked on |
+|---|---|---|---|
+| round 1 (2026-10-12): bits 1, 8, 16, 32, 64, 128, 256, 1024 | 1529 | 28.4 → 19.3 M instructions (-32%); CPU -16 to -28% | 24 replays |
+| round 2 (2026-10-24): bits 4096 to 262144 | 521721 | -18.4% against round 1 (-20.7% with wineserver; -31% in games between agents) | 54 replays (60,772 steps), and 8 new recordings in the check mode for 262144, which changes the harness |
+
 ## Wine
+
+*Wine.*
 
 Each game runs in a Wine prefix of its own. Wine was a third of a game's CPU at first.
 
