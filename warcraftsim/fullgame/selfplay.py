@@ -2305,8 +2305,9 @@ class League:
 
     def add_snapshot(self, path: Path, steps: int, name: str | None = None) -> None:
         self.past.append(Member(name or f"past:{steps}", path=str(path), steps=steps))
-        if len(self.past) > self.max_past:  # keep the first (the clone) and the newest
-            del self.past[1]
+        movable = [i for i, m in enumerate(self.past) if not m.name.startswith("fixed:")]  # (--league-add's: for good)
+        if len(movable) > self.max_past:  # keep the first (the clone) and the newest
+            del self.past[movable[1]]
 
     def restore(self, summary: dict) -> None:
         """Members and records from a league.json (resuming a run)."""
@@ -3609,6 +3610,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--self-share", type=float, default=0.5, help="of the agent games: against itself")
     ap.add_argument("--snapshot-every", type=int, default=20, help="updates between league snapshots")
     ap.add_argument("--max-past", type=int, default=12)
+    ap.add_argument("--league-add", type=Path, nargs="*", default=[], help="checkpoints the league keeps as opponents "
+                    "for good (\"fixed:<run>/<steps>\": drawn as past snapshots are, by PFSP; never replaced by newer ones)")
     ap.add_argument("--league-from", help="a new run starts with this run's league (a name under --runs, or its directory): "
                     "its past snapshots that fit (this map's point bins, the same orders) with their records, "
                     "and its curriculum levels and balance (scripts/selfplay_fork.py: the parent's)")
@@ -3931,6 +3934,20 @@ def main(argv: list[str] | None = None) -> int:
     league.real_share = args.real_share
     if args.shaping_anneal > 0:  # (the games from the start: the weight at this run's update)
         league.shaping = shaping_now(args, resumed["update"] if resumed else 0)
+    def usable(path: str) -> bool:
+        if not Path(path).exists():
+            return False
+        c = torch.load(path, map_location="cpu", weights_only=False)
+        if fx.NEUTRAL and c.get("vocab"):  # (--neutral: model.load extends it)
+            from .neutral import extend_vocab
+            c["vocab"] = extend_vocab(c["vocab"])
+        if fx.MACROS and c.get("vocab"):  # (--macros: and its orders after them)
+            from .macros import extend as with_macros
+            c["vocab"] = with_macros(c["vocab"])
+        from .neutral import same_orders  # (--neutral: a reordering of the run's fits, Nets.get)
+        return (c["config"].get("bins", 128) == fx.BINS and c.get("vocab") is not None
+                and (c["vocab"] == vocab or bool(fx.NEUTRAL) and same_orders(c["vocab"], vocab))
+                and adapt_config(c["config"])["G"] == net.config["G"])  # (the run's rows' width: a strategy block or none)
     if resumed is not None and (run_dir / "league.json").exists():
         league.restore(json.loads((run_dir / "league.json").read_text()))
         if league.win_balance is not None and (run_dir / "episodes.jsonl").exists():
@@ -3942,20 +3959,6 @@ def main(argv: list[str] | None = None) -> int:
         if args.league_from:  # (a fork: its parent's opponents, then its own start)
             src = Path(args.league_from) if Path(args.league_from).is_dir() else args.runs / args.league_from
 
-            def usable(path: str) -> bool:
-                if not Path(path).exists():
-                    return False
-                c = torch.load(path, map_location="cpu", weights_only=False)
-                if fx.NEUTRAL and c.get("vocab"):  # (--neutral: model.load extends it)
-                    from .neutral import extend_vocab
-                    c["vocab"] = extend_vocab(c["vocab"])
-                if fx.MACROS and c.get("vocab"):  # (--macros: and its orders after them)
-                    from .macros import extend as with_macros
-                    c["vocab"] = with_macros(c["vocab"])
-                from .neutral import same_orders  # (--neutral: a reordering of the run's fits, Nets.get)
-                return (c["config"].get("bins", 128) == fx.BINS and c.get("vocab") is not None
-                        and (c["vocab"] == vocab or bool(fx.NEUTRAL) and same_orders(c["vocab"], vocab))
-                        and adapt_config(c["config"])["G"] == net.config["G"])  # (the run's rows' width: a strategy block or none)
             taken = league.inherit(json.loads((src / "league.json").read_text()), src.name, usable)
             if league.win_balance is not None:  # (--win-balance: the parent's records of taxed games no measure of the
                 for m in league.past:           # snapshots for PFSP; its newest games between agents the model's start)
@@ -3970,6 +3973,15 @@ def main(argv: list[str] | None = None) -> int:
         first = run_dir / "checkpoints" / f"{0:016d}.pt"
         torch.save({**ck, "model": net.state_dict(), "config": net.config, "vocab": vocab, "agent_steps": 0}, first)
         league.add_snapshot(first, 0)  # the clone itself (a fork: its start), a past opponent
+    for path in args.league_add:  # --league-add: opponents of the league's for good (newer snapshots replace them not)
+        name = "fixed:" + "/".join(Path(path).parts[-3::2])
+        if any(m.name == name for m in league.past):
+            continue
+        if not usable(str(path)):
+            print(f"--league-add {path}: left out (its point bins, vocabulary or inputs differ from the run's)", flush=True)
+            continue
+        league.past.insert(0, Member(name, path=str(path), steps=0))
+        print(f"league: {name} added for good", flush=True)
     league.write()
     publish(net, resumed["update"] if resumed else 0, run_dir)
     x_update = x_since = 0  # the exploiter's updates (its weights' version), and since its last restart

@@ -1307,3 +1307,13 @@ def test_production_counts_a_haunted_mine_as_an_expansion():
     prod.step(obs)
     prod.step(NS(**{**vars(obs), "events": [NS(kind=3, a=11, b=code("ugol"), c=0)], "game_time": 400.0}))
     assert prod.row(0, obs)["expansions"] == 1
+
+
+def test_league_keeps_fixed_opponents(tmp_path):
+    """--league-add: a "fixed:" member stays however many snapshots come; the others keep the first and the newest."""
+    from warcraftsim.fullgame.selfplay import League, Member
+    lg = League(tmp_path, ["normal"], {"ai": 0.25, "self": 0.5, "past": 0.5}, max_past=2, pfsp="hard")
+    lg.past.insert(0, Member("fixed:fgself-130/5534555.pt", path="x.pt", steps=0))
+    for s in (1, 2, 3, 4):
+        lg.add_snapshot(tmp_path / f"{s}.pt", s)
+    assert [m.name for m in lg.past] == ["fixed:fgself-130/5534555.pt", "past:1", "past:4"]
