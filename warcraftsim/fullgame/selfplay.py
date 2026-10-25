@@ -1970,8 +1970,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                        lambda u, k=fx.IMMEDIATE, av=av, oix=oix: (c := oix.get((int.from_bytes(u.encode(), "big"), k))) is not None
                        and bool(av[c]))
                 b = builders.get(s)  # (the target's next items short of lumber, the side's choppers: the lumber lesson)
-                tc.economy = (bool(b is not None and getattr(b, "lumber_short", False)),
-                              {u for u, r in bots[s].view.assign.items() if r == "lumber"}, bots[s].trees)
+                tc.economy = (bool(b is not None and getattr(b, "lumber_short", False)),  # (the choppers: the view's of
+                              bots[s].view.lumber_now, bots[s].trees)  # this step, View.step's set of them; read only)
                 c = tc.commands(rows, obs.players.get(s), obs.game_time, t, can, getattr(bots[s].view, "pickers", ()))
                 q = obs.players.get(s)
                 if c and q is not None:

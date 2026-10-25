@@ -1282,8 +1282,8 @@ class View:
                 self.levels[int(r[3])] = int(r[4])
             if kind in (8, 10):  # (research started or cancelled: no longer queued)
                 getattr(self, "pending_research", {}).pop(int(r[3]), None)
-        lumber = {u for u, r in self.assign.items() if r == "lumber"}
-        if fast:  # (its dead heroes: type, id, level)
+        lumber = self.lumber_now = {u for u, r in self.assign.items() if r == "lumber"}  # (the step's choppers: the
+        if fast:  # (its dead heroes: type, id, level)                              # teacher's too, play_one)
             dead_types, dead_ids = dead3[0::3], dead3[1::3]
             self.dead_heroes = dict(zip(dead_types, dead_ids))
             ids = set(dead_ids)

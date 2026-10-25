@@ -146,11 +146,11 @@ def view_step(enc, fx, view, rows: np.ndarray, player: int, sign: float, product
     rows = np.ascontiguousarray(rows, np.int64)
     nrows, ncols = rows.shape
     queued, busy, making = production
-    q = sorted(queued.items())
+    qk = sorted(queued)
     b, lm = sorted(busy), sorted(lumber)
-    m = sorted((k, v[0] + 1) for k, v in making.items()) if making and fx.F > fx.F_BASE else ()
+    mk = sorted(making) if making and fx.F > fx.F_BASE else []
     # (an array.array of the Python ints and its address: numpy's array of a list took ~3x the instructions)
-    keys = _array("q", [*(k for k, _ in q), *(v for _, v in q), *b, *lm, *(k for k, _ in m), *(v for _, v in m), 0])
+    keys = _array("q", qk + [queued[k] for k in qk] + b + lm + mk + [making[k][0] + 1 for k in mk] + [0])
     ka = keys.buffer_info()[0]
     last = view.hp_last
     got = getattr(view, "_hp_addr", None)
@@ -166,7 +166,7 @@ def view_step(enc, fx, view, rows: np.ndarray, player: int, sign: float, product
     f = np.zeros((cap + 1, fx.F), np.float32)  # (its last row: the privileged numbers)
     sel = np.empty((max(cap, 1), ncols), np.int64)
     fa, oa = addr(f), addr(out)
-    nq, nb, nl, nm = len(q), len(b), len(lm), len(m)
+    nq, nb, nl, nm = len(qk), len(b), len(lm), len(mk)
     va = view.__dict__.get("_view_args")  # (the arguments in one array of the view's, its address kept: w3f_view_a)
     if va is None:
         a = _array("q", bytes(8 * 18))
