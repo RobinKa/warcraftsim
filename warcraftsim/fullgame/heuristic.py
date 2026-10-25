@@ -28,11 +28,16 @@ Nothing in it learns. Every half second it:
   army reaches the plan's size (or the enemy's army just died at its base), attack-moving to the enemy's buildings it
   knows (else its start, then the other mines) while the leaders wait for the rest. In a fight each unit attacks
   the enemy in reach with the least hit points left after the damage the others already aim at it (focus fire
-  without overkill), hurt melee units step back while they are hit, and the army retreats home when the enemies
+  without overkill; by default its ranged units only, OPTIONS["focus"]), and the army retreats home when the enemies
   near it are clearly stronger (Lanchester: hit points times damage a second, both sides).
 
-Plans (PLANS) give each race's build order, army mix, heroes and timings. `log`: a timeline (a line every 30 game
-seconds and the army's decisions) for heuristic_match's rows (summary())."""
+Plans give a race's build order, army mix, tiers, heroes, towers, expansion and attack timings: PLANS holds each
+race's default (orc's is the tuned one, ~50% against the learner), STRATEGIES the family of 14 (per race a tier-1
+rush, a tier-2 army with a second hero, casters, a fast expansion for orc and human), played by name
+(HeuristicAgent(..., strategy="orc-raiders")). OPTIONS are switches for side-by-side variants (heuristic_match.py
+--variant). `log`: a timeline (a line every 30 game seconds and the army's decisions) for heuristic_match's rows
+(summary()). Its games recorded (heuristic_match.py --record, collect.Recorder) are demonstrations in collect.py's
+format; selfplay --teach-heuristic uses a strategy's macro orders as lessons."""
 
 from __future__ import annotations
 
@@ -283,6 +288,7 @@ OPTIONS = {
     "hold_home": 0,  # a wave as strong as the army is met near the hall (its towers, burrows with their peons; 1: with
     # patient attacks 2 of 9 won, against 15 of 32: off)
     "strategy": "",  # a STRATEGIES name (else the race's PLANS one)
+    "guard_mine": 0,  # against undead and orc the rally point (and the towers by it) between the hall and its mine
     "strict_budget": 0,  # 1: money kept for a due building short of lumber holds every other order back (the check
     # before 2026-10-25's fix: in effect buildings and supply first)
 }
@@ -508,6 +514,8 @@ class HeuristicAgent:
         na = max(math.hypot(*away), 1.0)
         self.away = (away[0] / na, away[1] / na)  # from the mine through the hall
         self.rally = (self.start[0] + RALLY_OUT * self.toward[0], self.start[1] + RALLY_OUT * self.toward[1])
+        if self.opt["guard_mine"] and self.enemy_race in ("undead", "orc"):  # (the army waits by the miners: the
+            self.rally = ((self.start[0] + mx) / 2, (self.start[1] + my) / 2)  # learner's undead raided them from 2 min)
         # the natural expansion: the mine nearest the start but its own, and where its hall goes
         others = sorted((m for m in self.mines if m != self.main_mine),
                         key=lambda m: math.hypot(self.mines[m][0] - self.start[0], self.mines[m][1] - self.start[1]))

@@ -3669,7 +3669,7 @@ def main(argv: list[str] | None = None) -> int:
                     "on echofast, half costs and a third of the build times)")
     ap.add_argument("--eval-z", type=int, default=0, help="with --z-pool: the current policy also plays evaluation "
                     "games with a target strategy (eval_key current+z: the same weights, paired on the same matchups)")
-    ap.add_argument("--z-src", default="", choices=["", "human", "ai"], help="draw only the strategies of people's "
+    ap.add_argument("--z-src", default="", choices=["", "human", "ai", "heuristic"], help="draw only the strategies of people's "
                     "replays (human) or of the built-in AI's games (ai); default: both")
     ap.add_argument("--heuristic-share", type=float, default=0.0,
                     help="this share of the training launches between agents play the learner against the hand-written "
