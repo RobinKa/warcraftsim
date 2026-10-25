@@ -205,3 +205,194 @@ int w3f_to_f16(const float *src, uint16_t *dst, int n) {
     to_f16_vec(src, dst, n);
     return 1;
 }
+
+/* View.step's per-step work for one player in one pass (featnative.view_step): the entities as w3f_entities (their
+ * rows copied into `sel`), the hero block (A_HERO: features.Encoder._hero_block), what each own building makes
+ * (A_PROD), the hit points' change since the view's last step (A_HPD; and this step's ids and hit points sorted by id,
+ * for the next), the columns [active_f, f_base) zeroed (View.step's own zeroing), the privileged block's per-side
+ * numbers (w3f_priv, when `priv`), and the own entities' workers on a building order or repairing and their frames
+ * (play.BCAgent). Every number as the numpy code makes it.
+ *
+ * tabs (int64, made once per encoder): featnative.view_tables' T_ entries. keys: queued's sorted ids, their counts,
+ * busy's sorted ids, lumber's sorted ids, making's sorted ids, their kinds + 1 (nq, nq, nb, nl, nm, nm long). prev,
+ * prev_hp: the view's last sorted ids and their hit points (nprev each). out (int64): idx [0, E), types [E, 2E), cur [2E, 3E),
+ * the sorted ids [3E, 4E), their hit points [4E, 5E), then from 5E a packed list: n, n_own, n_enemy, n_neutral,
+ * own_all; 3 counts; the segments they count: the own entities' workers on a building order, those repairing, the
+ * own entities' frames. Returns the packed list's length, or -1 (memory). */
+enum { T_PASSIVE, T_NPASSIVE, T_SHOPS, T_NSHOPS, T_TYPEK, T_TYPEV, T_NTYPE, T_CURK, T_CURV, T_NCUR, T_GEO, T_MAXOWN,
+       T_MAXENT, T_F, T_APOS, T_FBASE, T_AHPD, T_AHERO, T_APROD, T_HTYPES, T_NHERO, T_HSLOTS, T_ITEMK, T_NITEM,
+       T_ITEMV, T_NEUTRAL, T_DOHERO, T_ROWCOLS, T_MAXL, T_N };
+#define C_ITEM0 18
+#define C_ABIL0 24
+#define CONSTRUCTING 8
+#define SUMMONED 256
+#define REPAIR 852024
+
+static int cmp_pair(const void *a, const void *b) {
+    const int64_t *x = a, *y = b;
+    return x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : (x[1] < y[1] ? -1 : x[1] > y[1]);
+}
+
+static int lower(const int64_t *keys, int n, int64_t v) {
+    int lo = 0, hi = n;
+    while (lo < hi) {
+        int mid = (lo + hi) / 2;
+        if (keys[mid] < v) lo = mid + 1; else hi = mid;
+    }
+    return lo;
+}
+
+int w3f_view(const int64_t *rows, int nrows, int ncols, int player, double sign, const int64_t *tabs,
+             const int64_t *keys, int nq, int nb, int nl, int nm, const int64_t *prev, const int64_t *prev_hp, int nprev,
+             int active_f, int64_t *out, float *f, int64_t *sel, float *priv) {
+    const double *geo = (const double *)tabs[T_GEO];
+    int E = (int)tabs[T_MAXENT], F = (int)tabs[T_F], fb = (int)tabs[T_FBASE];
+    int64_t counts[5];
+    int n = w3f_entities(rows, nrows, ncols, player, sign, geo, (const int64_t *)tabs[T_PASSIVE], (int)tabs[T_NPASSIVE],
+                         (const int64_t *)tabs[T_SHOPS], (int)tabs[T_NSHOPS], (int)tabs[T_NEUTRAL], (int)tabs[T_MAXOWN],
+                         E, F, (int)tabs[T_APOS], keys, keys + nq, nq, keys + 2 * nq, nb, keys + 2 * nq + nb, nl,
+                         (const int64_t *)tabs[T_TYPEK], (const int64_t *)tabs[T_TYPEV], (int)tabs[T_NTYPE],
+                         (const int64_t *)tabs[T_CURK], (const int64_t *)tabs[T_CURV], (int)tabs[T_NCUR],
+                         out, counts, f, out + E, out + 2 * E);
+    if (n < 0) return -1;
+    int n_own = (int)counts[1];
+    const int64_t *mk = keys + 2 * nq + nb + nl, *mv = mk + nm;
+    int a_hpd = (int)tabs[T_AHPD], a_hero = (int)tabs[T_AHERO], a_prod = (int)tabs[T_APROD];
+    int do_hero = (int)tabs[T_DOHERO] && ncols >= (int)tabs[T_ROWCOLS];
+    const int64_t *htypes = (const int64_t *)tabs[T_HTYPES], *itemk = (const int64_t *)tabs[T_ITEMK];
+    const double *hslots = (const double *)tabs[T_HSLOTS], *itemv = (const double *)tabs[T_ITEMV];
+    int nhero = (int)tabs[T_NHERO], nitem = (int)tabs[T_NITEM], slot_w = 6 + (int)tabs[T_MAXL];
+    /* (a slot: present, has a cast order, levels, the hero level its first needs, levels skipped, mana costs' count,
+     * the mana costs) */
+    int64_t *sid = out + 3 * E, *shp = out + 4 * E;
+    int64_t *pairs = malloc(sizeof(int64_t) * 2 * (n + 1));
+    if (!pairs) return -1;
+    for (int k = 0; k < n; k++) {
+        const int64_t *r = rows + (size_t)out[k] * ncols;
+        memcpy(sel + (size_t)k * ncols, r, sizeof(int64_t) * ncols);
+        float *o = f + (size_t)k * F;
+        /* the hit points' change: the last step's of the same id (the first in its sorted ids), else its own */
+        double last = (double)(float)r[C_HP];
+        if (nprev) {
+            int j = lower(prev, nprev, r[C_ID]);
+            if (j > nprev - 1) j = nprev - 1;
+            if (prev[j] == r[C_ID]) last = (double)(float)prev_hp[j];
+        }
+        double d = ((double)r[C_HP] - last) / (double)(r[C_MAXHP] > 1 ? r[C_MAXHP] : 1);
+        d = d > -1.0 ? d : -1.0;
+        d = d < 1.0 ? d : 1.0;
+        o[a_hpd] = (float)d;
+        pairs[2 * k] = r[C_ID];
+        pairs[2 * k + 1] = k;
+        if (k < n_own && nm) {  /* what an own building makes */
+            int j = lower(mk, nm, r[C_ID]);
+            if (j < nm && mk[j] == r[C_ID] && mv[j] > 0) o[a_prod + mv[j] - 1] = 1.0f;
+        }
+        if (do_hero && (r[C_FLAGS] & HERO)) {
+            int h = lower(htypes, nhero, r[C_TYPE]);
+            const double *slots = (h < nhero && htypes[h] == r[C_TYPE]) ? hslots + (size_t)h * 4 * slot_w : NULL;
+            for (int s = 0; s < 4; s++) {
+                int64_t lvl = r[C_ABIL0 + 2 * s], cd = r[C_ABIL0 + 2 * s + 1];
+                int a = a_hero + 4 * s;
+                o[a] = (float)((double)lvl / 3.0);
+                const double *ab = slots ? slots + s * slot_w : NULL;
+                if (k >= n_own || !ab || ab[0] == 0) continue;
+                double c = (double)cd / 10.0 / 60.0;
+                o[a + 2] = (float)(c < 1.0 ? c : 1.0);
+                int64_t nmana = (int64_t)ab[5];
+                double cost = (nmana && lvl > 0) ? ab[6 + ((lvl < nmana ? lvl : nmana) - 1)] : 0.0;
+                o[a + 1] = (ab[1] != 0 && lvl > 0 && cd == 0 && (double)r[C_MANA] >= cost) ? 1.0f : 0.0f;
+                int64_t skip = (int64_t)ab[4] ? (int64_t)ab[4] : 2;
+                o[a + 3] = (r[C_SKILLPTS] > 0 && lvl < (int64_t)ab[2] && r[C_HLEVEL] >= (int64_t)ab[3] + lvl * skip)
+                           ? 1.0f : 0.0f;
+            }
+            for (int s = 0; s < 6; s++) {
+                int64_t it = r[C_ITEM0 + s];
+                if (!it) continue;
+                int b = a_hero + 4 * 4 + 5 * s;
+                o[b] = 1.0f;
+                int j = lower(itemk, nitem, it);
+                if (j < nitem && itemk[j] == it)
+                    for (int q = 0; q < 4; q++) o[b + 1 + q] = (float)itemv[4 * j + q];
+            }
+        }
+        if (active_f < fb) memset(o + active_f, 0, sizeof(float) * (fb - active_f));
+    }
+    qsort(pairs, n, sizeof(int64_t) * 2, cmp_pair);  /* (by id, then position: numpy's stable argsort) */
+    for (int k = 0; k < n; k++) {
+        sid[k] = pairs[2 * k];
+        shp[k] = sel[(size_t)pairs[2 * k + 1] * ncols + C_HP];
+    }
+    free(pairs);
+    int64_t *pk = out + 5 * E, *seg = pk + 8;
+    int at = 0;
+    for (int q = 0; q < 5; q++) pk[q] = counts[q];
+    pk[5] = pk[6] = pk[7] = 0;
+    for (int k = 0; k < n_own; k++) {
+        const int64_t *r = sel + (size_t)k * ncols;
+        if ((r[C_FLAGS] & WORKER) && r[C_ORDER] >= TYPE_CODE) { seg[at++] = r[C_ID]; pk[5]++; }
+    }
+    for (int k = 0; k < n_own; k++) {
+        const int64_t *r = sel + (size_t)k * ncols;
+        if ((r[C_FLAGS] & WORKER) && r[C_ORDER] == REPAIR) { seg[at++] = r[C_ID]; pk[6]++; }
+    }
+    for (int k = 0; k < n_own; k++) {
+        const int64_t *r = sel + (size_t)k * ncols;
+        if (r[C_FLAGS] & CONSTRUCTING) { seg[at++] = r[C_ID]; pk[7]++; }
+    }
+    if (priv) w3f_priv(rows, nrows, ncols, player, sign, geo, priv);
+    return 8 + at;
+}
+
+/* View.step's masks of one player's rows (featnative.side), into `out` (int64, at least 7 + 8 * nrows): 7 counts,
+ * then the segments they count: its living buildings' ids, its living units' ids, its dead heroes (type, id, level:
+ * 3 each), its heroes' types (the dead too), its finished buildings' types, (the 6th count: its army's size, no
+ * segment), the types of its living units that are no building, worker, hero or summon. Returns the list's length. */
+int w3f_side(const int64_t *rows, int nrows, int ncols, int player, int64_t *out) {
+    int64_t *cnt = out, *seg = out + 7;
+    int at = 0;
+    for (int q = 0; q < 7; q++) cnt[q] = 0;
+    for (int pass = 0; pass <= 6; pass++) {
+        if (pass == 5) continue;
+        for (int i = 0; i < nrows; i++) {
+            const int64_t *r = rows + (size_t)i * ncols;
+            if (r[C_OWNER] != player) continue;
+            int64_t fl = r[C_FLAGS];
+            int alive = (fl & DEAD) == 0;
+            switch (pass) {
+            case 0:
+                if (alive && (fl & STRUCTURE)) { seg[at++] = r[C_ID]; cnt[0]++; }
+                if (alive && !(fl & (STRUCTURE | WORKER))) cnt[5]++;
+                break;
+            case 1: if (alive) { seg[at++] = r[C_ID]; cnt[1]++; } break;
+            case 2:
+                if ((fl & HERO) && !alive) { seg[at++] = r[C_TYPE]; seg[at++] = r[C_ID]; seg[at++] = r[C_HLEVEL]; cnt[2]++; }
+                break;
+            case 3: if (fl & HERO) { seg[at++] = r[C_TYPE]; cnt[3]++; } break;
+            case 4: if (alive && (fl & STRUCTURE) && !(fl & CONSTRUCTING)) { seg[at++] = r[C_TYPE]; cnt[4]++; } break;
+            case 6: if (!(fl & (DEAD | STRUCTURE | WORKER | HERO | SUMMONED))) { seg[at++] = r[C_TYPE]; cnt[6]++; } break;
+            }
+        }
+    }
+    return 7 + at;
+}
+
+/* features.affordable: [n] 0/1 the order classes the player can pay for (costs [n][3]: gold, lumber, food); `nkept`
+ * classes k1, k2 (their gold and lumber summed: rg, rl) kept from the others, each as it was before. */
+void w3f_afford(const int64_t *c, int n, int64_t gold, int64_t lumber, int64_t fu, int64_t fc, int nkept, int64_t k1,
+                int64_t k2, int64_t rg, int64_t rl, uint8_t *avail) {
+    if (fc > 100) fc = 100;
+    int64_t g2 = gold - rg > 0 ? gold - rg : 0, l2 = lumber - rl > 0 ? lumber - rl : 0;
+    uint8_t v1 = 0, v2 = 0;
+    for (int i = 0; i < n; i++) {
+        const int64_t *r = c + 3 * i;
+        uint8_t a = r[0] <= gold && r[1] <= lumber && (r[2] == 0 || fu + r[2] <= fc);
+        if (nkept >= 1 && i == k1) v1 = a;
+        if (nkept >= 2 && i == k2) v2 = a;
+        if (nkept && a) a = (r[0] <= g2 && r[1] <= l2) || r[0] + r[1] == 0;
+        avail[i] = a;
+    }
+    if (nkept >= 1) avail[k1] = v1;
+    if (nkept >= 2) avail[k2] = v2;
+    if (n) avail[0] = 1;
+}

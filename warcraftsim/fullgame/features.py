@@ -27,6 +27,18 @@ from pathlib import Path
 
 import numpy as np
 
+_LAZY: dict = {}  # (the sibling modules the actors' per-step code uses, imported on first use: an import statement in a
+# function took ~5,000 instructions a call; this module imports none at its top, so it loads by path too)
+
+
+def _mod(name: str):
+    m = _LAZY.get(name)
+    if m is None:
+        import importlib
+        import sys
+        m = _LAZY[name] = sys.modules[__name__] if name == "" else importlib.import_module(f".{name}", __package__)
+    return m
+
 # The frame a player sees positions in: relative to its own start location, at the duel maps' scale (SCALE
 # world units a unit of position), x mirrored for the player on the right, its start where the duel maps'
 # left base is (ANCHOR_X, 0). On the duel maps (starts at (-2300, 0) and (2300, 0)) that is their frame of
@@ -403,11 +415,16 @@ def revive_costs(enc: "Encoder", rows: np.ndarray, player: int, dead: np.ndarray
     of 2026-10-22). `dead`: the player's dead heroes' rows, when the caller has them."""
     mine = (rows[(rows[:, C_OWNER] == player) & (rows[:, C_FLAGS] & HERO > 0) & (rows[:, C_FLAGS] & DEAD > 0)]
             if dead is None else dead)
-    if not len(mine):
+    return _revive(enc, mine[:, [C_TYPE, C_HLEVEL]].tolist() if len(mine) else [])
+
+
+def _revive(enc: "Encoder", dead: list) -> np.ndarray:
+    """revive_costs from the dead heroes' [type, level]s (View.step's: featnative.side's, or their rows')."""
+    if not dead:
         return enc.costs
     c = np.array(enc.costs, copy=True)
     base, per, most, cap = REVIVE
-    for t, lvl in mine[:, [C_TYPE, C_HLEVEL]].tolist():
+    for t, lvl in dead:
         k = enc.order_index.get((int(t), IMMEDIATE)) or enc.order_index.get((int(t), UNIT))
         if k is not None:
             g = int(enc.costs[k][0])
@@ -653,11 +670,9 @@ class Encoder:
         since), after those in sight (self.ghost0: the first). `omniscient` (the privileged view): every enemy unit,
         those out of sight after those in sight and marked (A_HID)."""
         if ghosts is None and not omniscient and A_HID < 0:  # (in C, featnative.py: the same features, ~10x faster)
-            from . import featnative
+            featnative = _mod("featnative")
             if featnative.lib() is not None:
-                import sys
-                sel, n_own, f, types, cur = featnative.entities(self, sys.modules[__name__], rows, player, sign,
-                                                                production, lumber)
+                sel, n_own, f, types, cur = featnative.entities(self, _mod(""), rows, player, sign, production, lumber)
                 if F > F_BASE:
                     self._hero_block(sel, n_own, f)
                     making = production[2] if production is not None and len(production) > 2 else None
@@ -752,8 +767,8 @@ class Encoder:
         heroes = np.nonzero(sel[:, C_FLAGS] & HERO)[0]
         if not len(heroes):
             return
-        from .herodata import hero_table, item_table
-        table, items = hero_table(), item_table()
+        herodata = _mod("herodata")
+        table, items = herodata.hero_table(), herodata.item_table()
         for i in heroes.tolist():
             r = sel[i].tolist()
             own = i < n_own  # (an enemy's: its levels and items, as the game shows them)
@@ -1085,10 +1100,9 @@ class View:
             _, _, gold, lumber, fu, fc, upkeep = opp[:7].tolist()  # (Python's numbers: numpy's scalars' arithmetic
             # had cost more than the rest; the same quotients)
             out[:5] = gold / 1000.0, lumber / 1000.0, fu / 100.0, fc / 100.0, upkeep / 2.0
-        from . import featnative
+        featnative = _mod("featnative")
         if featnative.lib() is not None:  # (in C: the same numbers)
-            import sys
-            featnative.priv_sides(sys.modules[__name__], rows, self.player, self.sign, out)
+            featnative.priv_sides(_mod(""), rows, self.player, self.sign, out)
             return out
         live = rows[rows[:, C_FLAGS] & DEAD == 0]  # (the masks made once for both sides: ~5% of an actor's time before)
         fl, owner = live[:, C_FLAGS], live[:, C_OWNER]
@@ -1143,44 +1157,53 @@ class View:
             return np.zeros((0, rows.shape[1]), rows.dtype), np.zeros(0, np.float32)
         return np.stack([r for _, _, r in keep]), np.asarray([a for _, a, _ in keep], np.float32)
 
-    def has_hero(self, rows: np.ndarray, own_hero: np.ndarray | None = None) -> bool:
+    def has_hero(self, rows: np.ndarray, own_hero: np.ndarray | None = None, hero_types: list | None = None) -> bool:
         """Whether the player has had a hero (dead ones stay among the rows) or makes one now: its first is free.
-        `own_hero`: the rows' mask of the player's heroes, when the caller has it."""
-        if own_hero is None:
-            own_hero = (rows[:, C_OWNER] == self.player) & (rows[:, C_FLAGS] & HERO > 0)
-        return (bool(own_hero.any()) or any(m[0] == 2 for m in self.making.values())
+        `own_hero`: the rows' mask of the player's heroes, when the caller has it (or `hero_types`: their types)."""
+        if hero_types is not None:
+            had = bool(hero_types)
+        else:
+            if own_hero is None:
+                own_hero = (rows[:, C_OWNER] == self.player) & (rows[:, C_FLAGS] & HERO > 0)
+            had = bool(own_hero.any())
+        return (had or any(m[0] == 2 for m in self.making.values())
                 or bool(getattr(self, "hiring_heroes", ())))  # (a tavern hire on its way: the first hero; audit 10)
 
     def tech_allowed(self, rows: np.ndarray, built: np.ndarray | None = None, own_hero: np.ndarray | None = None,
-                     dead_rows: np.ndarray | None = None) -> np.ndarray:
+                     dead_rows: np.ndarray | None = None, done_types: list | None = None, hero_types: list | None = None,
+                     dead_pairs: list | None = None) -> np.ndarray:
         """--tech-mask: the order classes the player has the tech for (TechMask), from its finished buildings,
         research, heroes (dead ones too: they count) and what it makes now. `built`, `own_hero`, `dead_rows`: the
         rows' masks of the player's living buildings and of its heroes, its dead heroes' rows, when the caller has
-        them (View.step: made once a step for this and the other masks)."""
+        them (View.step: made once a step for this and the other masks; or `done_types`, `hero_types` and `dead_pairs`,
+        its finished buildings' and heroes' types and its dead heroes' [id, type]s: featnative.side's)."""
         if self.techmask is None:
             self.techmask = TechMask(self.enc.vocab, RACES[self.races[self.player]])
-        if built is None:
-            own, fl = rows[:, C_OWNER] == self.player, rows[:, C_FLAGS]
-            built, own_hero = own & (fl & STRUCTURE > 0) & (fl & DEAD == 0), own & (fl & HERO > 0)
-            dead_rows = rows[own_hero & (fl & DEAD > 0)]
-        done = frozenset(rows[built & (rows[:, C_FLAGS] & CONSTRUCTING == 0), C_TYPE].tolist())
-        heroes = frozenset(rows[own_hero, C_TYPE].tolist())
+        if done_types is not None:
+            done, heroes = frozenset(done_types), frozenset(hero_types)
+        else:
+            if built is None:
+                own, fl = rows[:, C_OWNER] == self.player, rows[:, C_FLAGS]
+                built, own_hero = own & (fl & STRUCTURE > 0) & (fl & DEAD == 0), own & (fl & HERO > 0)
+                dead_rows = rows[own_hero & (fl & DEAD > 0)]
+            done = frozenset(rows[built & (rows[:, C_FLAGS] & CONSTRUCTING == 0), C_TYPE].tolist())
+            heroes = frozenset(rows[own_hero, C_TYPE].tolist())
+            dead_pairs = dead_rows[:, [C_ID, C_TYPE]].tolist() if len(dead_rows) else []
         making = frozenset(m[1] for m in self.making.values() if m[0] == 2) | frozenset(getattr(self, "hiring_heroes", ()))
         # (a tavern hire on its way counts as a hero: the altar's free hero had been trained during the walk, the tavern
         # hero then a second without tier 2; 0 of 1,630 targets with a tavern first hero got one first; audit 10)
         since = getattr(self, "dead_since", {})  # (a hero's revival: the game takes it ~7 s after its death; the mask
         reviving = getattr(self, "reviving", {})  # (a revival under way: an altar took its order; audit 6)
-        dead = frozenset(c for i, c in dead_rows[:, [C_ID, C_TYPE]].tolist()
+        dead = frozenset(c for i, c in dead_pairs
                          if self.t_now - since.get(i, self.t_now) >= REVIVE_AFTER_STEPS
-                         and self.t_now - reviving.get(i, -REVIVE_STEPS) >= REVIVE_STEPS) - making if len(dead_rows) \
+                         and self.t_now - reviving.get(i, -REVIVE_STEPS) >= REVIVE_STEPS) - making if dead_pairs \
             else frozenset()  # had allowed it at once: ~30 refused a game; audit 5. None dead: most steps)
         pending = getattr(self, "pending_research", {})
         for code in [c for c, (b, t0) in pending.items() if b not in self.own_buildings or self.t_now - t0 > 240]:
             del pending[code]  # (its building gone, or two minutes on: given up)
         researching = frozenset(m[1] for m in self.making.values() if m[0] == 3) | frozenset(pending)
         if any(m[0] == 4 for m in self.making.values()):  # (a tier under way: its next type not again, as research;
-            from . import techtree as tt  # refused ~400-580 a tier type in fgself-146; audit 10)
-            up = tt.tree().upgrades
+            up = _mod("techtree").tree().upgrades  # refused ~400-580 a tier type in fgself-146; audit 10)
             researching |= frozenset(int.from_bytes(to.encode(), "big") for m in self.making.values() if m[0] == 4
                                      for to in up.get(rawcode(m[1]), ()))
         now = self.t_now * self.step_seconds
@@ -1200,18 +1223,34 @@ class View:
         """rows: this step's units (UNIT_COLS), me: the player's row (PLAYER_COLS) or None, events:
         this step's (step, kind, a, b, c)."""
         enc, player = self.enc, self.player
-        own, fl = rows[:, C_OWNER] == player, rows[:, C_FLAGS]
-        own_alive = own & (fl & DEAD == 0)
+        # (in C, featnative.view_step and side: the masks below and the entities in two calls, the same numbers; the
+        # numpy code for the remembered enemies and the privileged view, or without the library)
+        featnative = _mod("featnative")
+        fast = A_HID < 0 and not PRIVILEGED and INPUTS < 3 and featnative.lib() is not None
+        if fast:
+            pk = featnative.side(rows, player)
+            n_built, n_alive, n_dead, n_heroes, n_done, army_n = pk[:6]
+            o = 7
+            built_ids, o = pk[o:o + n_built], o + n_built
+            alive_ids, o = pk[o:o + n_alive], o + n_alive
+            dead3, o = pk[o:o + 3 * n_dead], o + 3 * n_dead
+            hero_types, o = pk[o:o + n_heroes], o + n_heroes
+            done_types, o = pk[o:o + n_done], o + n_done
+            mix_types = pk[o:o + pk[6]]
+            own = fl = own_alive = built = own_hero = dead = None
+        else:
+            own, fl = rows[:, C_OWNER] == player, rows[:, C_FLAGS]
+            own_alive = own & (fl & DEAD == 0)
+            built = own_alive & (fl & STRUCTURE > 0)
         # the player's buildings standing now; what it knew of the others' production forgotten (a building that died
         # mid-research had kept that research masked for the game, and its id, given to an enemy unit later, that
         # unit's production; audit 3)
-        built = own_alive & (fl & STRUCTURE > 0)
-        self.own_buildings = set(rows[built, C_ID].tolist())
+        self.own_buildings = set(built_ids) if fast else set(rows[built, C_ID].tolist())
         for d in (self.making, self.queued):
             for k in [k for k in d if k not in self.own_buildings]:
                 del d[k]
         self.busy &= self.own_buildings
-        units = set(rows[own_alive, C_ID].tolist())
+        units = set(alive_ids) if fast else set(rows[own_alive, C_ID].tolist())
         for d in (self.assign, self.mine_of, self.last_order):  # (a unit gone: what it harvested, its mine and its last
             for k in [k for k in d if k not in units]:            # order forgotten, not given to the next unit with its
                 del d[k]                                          # id: ~72 reuses a game; audit 4)
@@ -1237,11 +1276,16 @@ class View:
             if kind in (8, 10):  # (research started or cancelled: no longer queued)
                 getattr(self, "pending_research", {}).pop(int(r[3]), None)
         lumber = {u for u, r in self.assign.items() if r == "lumber"}
-        own_hero = own & (fl & HERO > 0)  # (and the dead ones' rows: for the masks below too)
-        dead = rows[own_hero & (fl & DEAD > 0)]
-        self.dead_heroes = {int(t): int(i) for t, i in dead[:, [C_TYPE, C_ID]].tolist()}
+        if fast:  # (its dead heroes: type, id, level)
+            dead_types, dead_ids = dead3[0::3], dead3[1::3]
+            self.dead_heroes = dict(zip(dead_types, dead_ids))
+            ids = set(dead_ids)
+        else:
+            own_hero = own & (fl & HERO > 0)  # (and the dead ones' rows: for the masks below too)
+            dead = rows[own_hero & (fl & DEAD > 0)]
+            self.dead_heroes = {int(t): int(i) for t, i in dead[:, [C_TYPE, C_ID]].tolist()}
+            ids = set(dead[:, C_ID].tolist())
         since = self.__dict__.setdefault("dead_since", {})
-        ids = set(dead[:, C_ID].tolist())
         for i in ids:
             since.setdefault(i, t)
         for i in [i for i in since if i not in ids]:
@@ -1249,21 +1293,32 @@ class View:
         for i in [i for i in getattr(self, "reviving", {}) if i not in ids]:
             del self.reviving[i]  # (alive again)
         priv = None  # (the privileged view: every enemy unit; acting on it, or beside the player's for distillation)
-        if PRIVILEGED and (self.privileged_act or self.dual):
-            priv = enc.entities(rows, player, self.sign, (self.queued, self.busy, self.making), lumber, omniscient=True)
-        sel, n_own, f, types, cur = enc.entities(rows, player, self.sign, (self.queued, self.busy, self.making), lumber,
-                                                 self.remembered(rows, t) if INPUTS >= 3 and not self.privileged_act else None)
-        if priv is not None and self.privileged_act:
-            sel, n_own, f, types, cur = priv
-        self.max_own, self.max_ent = max(self.max_own, enc.counts[0]), max(self.max_ent, enc.counts[1])
-        ids, hp = sel[:, C_ID].tolist(), sel[:, C_HP]
-        was, was_hp = self.hp_last
-        j = np.minimum(np.searchsorted(was, sel[:, C_ID]), max(len(was) - 1, 0))
-        last = np.where(was[j] == sel[:, C_ID], was_hp[j], hp).astype(np.float32) if len(was) else hp.astype(np.float32)
-        f[:, A_HPD] = np.minimum(np.maximum((hp - last) / np.maximum(sel[:, C_MAXHP], 1), -1.0), 1.0)  # (0: not in view
-        # the last step; np.clip's own overhead was most of it)
-        o = np.argsort(sel[:, C_ID], kind="stable")
-        self.hp_last = (sel[o, C_ID], hp[o])
+        if fast:
+            sel, n_own, f, types, cur, vk, pv = featnative.view_step(enc, _mod(""), self, rows, player, self.sign,
+                                                                     (self.queued, self.busy, self.making), lumber, True)
+            n, _, n_enemy, n_neutral, own_all, nbw, nrw, nfr = vk[:8]
+            enc.ghost0 = min(n, n_own + n_enemy + n_neutral)
+            enc.counts = (own_all, n_own + n_enemy + n_neutral)
+            self._marks = (vk[8:8 + nbw], vk[8 + nbw:8 + nbw + nrw], vk[8 + nbw + nrw:8 + nbw + nrw + nfr])
+            self.max_own, self.max_ent = max(self.max_own, enc.counts[0]), max(self.max_ent, enc.counts[1])
+            ids = sel[:, C_ID].tolist()
+        else:
+            if PRIVILEGED and (self.privileged_act or self.dual):
+                priv = enc.entities(rows, player, self.sign, (self.queued, self.busy, self.making), lumber, omniscient=True)
+            sel, n_own, f, types, cur = enc.entities(rows, player, self.sign, (self.queued, self.busy, self.making), lumber,
+                                                     self.remembered(rows, t) if INPUTS >= 3 and not self.privileged_act else None)
+            if priv is not None and self.privileged_act:
+                sel, n_own, f, types, cur = priv
+            self.max_own, self.max_ent = max(self.max_own, enc.counts[0]), max(self.max_ent, enc.counts[1])
+            ids, hp = sel[:, C_ID].tolist(), sel[:, C_HP]
+            was, was_hp = self.hp_last
+            j = np.minimum(np.searchsorted(was, sel[:, C_ID]), max(len(was) - 1, 0))
+            last = np.where(was[j] == sel[:, C_ID], was_hp[j], hp).astype(np.float32) if len(was) else hp.astype(np.float32)
+            f[:, A_HPD] = np.minimum(np.maximum((hp - last) / np.maximum(sel[:, C_MAXHP], 1), -1.0), 1.0)  # (0: not in
+            # view the last step; np.clip's own overhead was most of it)
+            o = np.argsort(sel[:, C_ID], kind="stable")
+            self.hp_last = (sel[o, C_ID], hp[o])
+            self._marks = None
         index = {u: k for k, u in enumerate(ids)} if self.active_f > A_LAST else {}
         if self.active_f > A_LAST:  # (a per-unit loop: skipped when the run does not use them, --features)
             f[:n_own, A_LAST + 4] = 1.0  # (never ordered: long ago)
@@ -1297,24 +1352,37 @@ class View:
             ang = 2.0 * math.pi * hour / 24.0
             x = enc.G0 + enc.ZD
             g[x:x + 3] = math.sin(ang), math.cos(ang), float(hour < DAWN or hour >= DUSK)
-        g[enc.G0 + enc.ZD + enc.GX:] = self.priv(rows, opp)
+        if fast:  # (View.priv's numbers: the per-side block made by view_step)
+            if opp is not None:
+                _, _, o_gold, o_lumber, o_fu, o_fc, o_upkeep = opp[:7].tolist()
+                pv[:5] = o_gold / 1000.0, o_lumber / 1000.0, o_fu / 100.0, o_fc / 100.0, o_upkeep / 2.0
+            g[enc.G0 + enc.ZD + enc.GX:] = pv
+        else:
+            g[enc.G0 + enc.ZD + enc.GX:] = self.priv(rows, opp)
         avail = None
-        free = enc.costs is not None and not self.has_hero(rows, own_hero)
+        free = enc.costs is not None and not (self.has_hero(rows, hero_types=hero_types) if fast
+                                              else self.has_hero(rows, own_hero))
         self.free_hero = free  # (the agent's step budget: the same costs, play.BCAgent.commands)
         if enc.costs is not None:  # what the player can pay for now (orders beyond it are masked)
-            c = enc.costs_first if free else revive_costs(enc, rows, self.player, dead)
+            c = (enc.costs_first if free else
+                 _revive(enc, list(zip(dead_types, dead3[2::3]))) if fast else revive_costs(enc, rows, self.player, dead))
             gold, lumber, fu, fc = (int(me[2]), int(me[3]), int(me[4]), int(me[5])) if me is not None else (0, 0, 0, 0)
             # (an expand order on its way keeps no money: the game takes a building's cost at its order, and the hall's
             # cost kept again during the walk had masked every paid order for 25-60 s, a penalty on expanding; the
             # pending expand only blocks a second one, below; audit 8)
             k = getattr(self, "hire_class", None)  # (a tavern hero's hire on its way: paid at the sale, play.BCAgent; the
             hire = None if k is None or getattr(self, "hire_free", False) else (k, int(c[k][0]), int(c[k][1]))  # first free)
-            avail = affordable(c, gold, lumber, fu, fc, self.reserve, hire)
+            kept = [r for r in (self.reserve, hire) if r is not None]
+            avail = featnative.afford(c, gold, lumber, fu, fc, kept) if fast else None
+            if avail is None:
+                avail = affordable(c, gold, lumber, fu, fc, self.reserve, hire)
             if enc.tech:  # (--tech-mask)
                 self.t_now = t
-                avail &= self.tech_allowed(rows, built, own_hero, dead)
+                avail &= (self.tech_allowed(rows, done_types=done_types, hero_types=hero_types,
+                                            dead_pairs=list(zip(dead_ids, dead_types))) if fast
+                          else self.tech_allowed(rows, built, own_hero, dead))
         if avail is not None and enc.expand_class is not None:  # (--macros: expand, while the natural is free and
-            from .macros import site                              # its hall affordable; night elves' tree of life
+            site = _mod("macros").site                            # its hall affordable; night elves' tree of life
             race = RACES[self.races[player]]                      # entangles its mine, play.BCAgent._entangle)
             if t - getattr(self, "_site_at", -NATURAL_EVERY) >= NATURAL_EVERY or t < getattr(self, "_site_at", 0):
                 self.expand_site = site(rows, getattr(self, "start", None)) if MACROS else None  # (every
@@ -1324,8 +1392,8 @@ class View:
             busy = getattr(self, "expanding", None) is not None and t < self.expanding[0]
             avail[enc.expand_class] = bool(self.expand_site is not None and via is not None and avail[via] and not busy)
         if avail is not None and enc.creep_class is not None:  # (--macros: creep the natural, while its camp stands)
-            from .macros import camp
-            army = int((own_alive & (fl & (STRUCTURE | WORKER) == 0)).sum())
+            camp = _mod("macros").camp
+            army = army_n if fast else int((own_alive & (fl & (STRUCTURE | WORKER) == 0)).sum())
             strong = army >= CREEP_ARMY and t * self.step_seconds >= CREEP_FROM  # (the teacher's conditions: from minute 1,
             if not strong or t - getattr(self, "_camp_at", -NATURAL_EVERY) >= NATURAL_EVERY or t < getattr(self, "_camp_at", 0):
                 self.creep_at = camp(rows, getattr(self, "start", None)) if MACROS and strong else None  # any unit sent it:
@@ -1333,12 +1401,19 @@ class View:
             avail[enc.creep_class] = self.creep_at is not None  # 436 attack-moves a game; audit 3)
         if avail is not None and enc.mix_class is not None:  # (--macros: train the target's mix, while it lacks a unit
             target = getattr(self, "mix_target", None) or {}  # the side can train now)
-            mine = rows[own & (fl & (DEAD | STRUCTURE | WORKER | HERO | SUMMONED) == 0)]
-            n = max(len(mine), 1)  # (summons are no army it trained: they had lowered the trained units' shares)
+            if not fast:
+                mix_types = rows[own & (fl & (DEAD | STRUCTURE | WORKER | HERO | SUMMONED) == 0), C_TYPE].tolist()
+            n = max(len(mix_types), 1)  # (summons are no army it trained: they had lowered the trained units' shares)
             have: dict[str, float] = {}
-            for c in mine[:, C_TYPE].tolist():
-                k = rawcode(int(c))
-                have[k] = have.get(k, 0.0) + 1.0 / n
+            per: dict[int, int] = {}  # (each type's count, in the order first met: its share is 1 / n added that many
+            for c in mix_types:       # times, as one unit at a time had added it)
+                per[c] = per.get(c, 0) + 1
+            inc = 1.0 / n
+            for c, m in per.items():
+                v = 0.0
+                for _ in range(m):
+                    v += inc
+                have[rawcode(int(c))] = v
             self.mix_have = have
             idx = enc.order_index
             self.mix_can = lambda u: (k := idx.get((int.from_bytes(u.encode(), "big"), IMMEDIATE))) is not None and bool(avail[k])
@@ -1346,13 +1421,13 @@ class View:
             # read as one: the mix order available with only those lacking, and doing nothing; audit 3)
             avail[enc.mix_class] = bool(MACROS and any(s > have.get(u, 0.0) and self.mix_can(u) for u, s in target.items()))
         if avail is not None and enc.pickup_class is not None:  # (--macros 2: pick up, while a hero has an item lying
-            from .macros import pickable                          # near; the ground items: play.BCAgent.observe)
+            pickable = _mod("macros").pickable                    # near; the ground items: play.BCAgent.observe)
             self.pickers = pickable(rows, player, getattr(self, "ground", ())) if MACROS >= 2 else []
             avail[enc.pickup_class] = bool(self.pickers)
         if self.zmask is not None and t < self.zmask_until:  # (--z-enforce: only the target's items)
             avail = self.zmask.copy() if avail is None else avail & self.zmask
-        if self.active_f < F_BASE:
-            f[:, self.active_f:F_BASE] = 0.0
+        if self.active_f < F_BASE and (not fast or self.active_f > A_LAST):  # (view_step's: zeroed there, unless the
+            f[:, self.active_f:F_BASE] = 0.0                                   # last orders' loop above wrote some)
         out = {"n": len(sel), "sel": sel, "n_own": n_own, "ent": f, "type": types, "cur": cur, "glob": g,
                "first_free": free, "index": {u: k for k, u in enumerate(ids)}, "avail": avail,
                "ghost0": getattr(enc, "ghost0", len(sel)) if not self.privileged_act else len(sel)}

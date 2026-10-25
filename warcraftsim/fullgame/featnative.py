@@ -40,8 +40,158 @@ def lib():
         L.w3f_priv.argtypes = [P, I, I, I, D, P, P]
         L.w3f_to_f16.restype = I
         L.w3f_to_f16.argtypes = [P, P, I]
+        L.w3f_view.restype = I
+        L.w3f_view.argtypes = [P, I, I, I, D, P, P, I, I, I, I, P, P, I, I, P, P, P, P]
+        L.w3f_side.restype = I
+        L.w3f_side.argtypes = [P, I, I, I, P]
+        L.w3f_afford.restype = None
+        Q = ctypes.c_int64
+        L.w3f_afford.argtypes = [P, I, Q, Q, Q, Q, I, Q, Q, Q, Q, P]
         _lib = L
     return _lib or None
+
+
+_from_buffer, _addressof = ctypes.c_char.from_buffer, ctypes.addressof
+
+
+def addr(a: np.ndarray) -> int:
+    """A C-contiguous array's address: of a ctypes char over its buffer when it is writable and not empty (numpy's
+    .ctypes.data made a Python object of its own each time, ~3x the instructions), else .ctypes.data."""
+    try:
+        return _addressof(_from_buffer(a))
+    except (TypeError, ValueError, BufferError):
+        return a.ctypes.data
+
+
+_ROWS: tuple = (None, 0)  # (the last rows given and their address: a step's calls share them. One tuple, replaced
+# whole: an actor's game threads share it)
+
+
+def _rows_addr(rows: np.ndarray) -> int:
+    global _ROWS
+    got = _ROWS
+    if got[0] is not rows:
+        got = _ROWS = (rows, addr(rows))
+    return got[1]
+
+
+T_N = 29  # (w3f_view's tables: the T_ entries)
+
+
+def view_tables(enc, fx) -> tuple | None:
+    """w3f_view's fixed tables for this encoder and the features' module as they are (kept on the encoder with their
+    addresses; made again when the map's geometry or the inputs change): None when a hero ability has more mana
+    costs than the table holds (the Python hero block then)."""
+    key = (fx.STARTS, fx.F, fx.NEUTRAL, fx.MAX_OWN, fx.MAX_ENT)
+    got = getattr(enc, "_view_tables", None)
+    if got is not None and got[0] == key:
+        return got[1]
+    arrs = [np.ascontiguousarray(np.sort(fx.PASSIVE_IDS).astype(np.int64)),
+            np.ascontiguousarray(np.sort(fx.SHOP_IDS).astype(np.int64)),
+            np.ascontiguousarray(enc._type_keys, np.int64), np.ascontiguousarray(enc._type_vals, np.int64),
+            np.ascontiguousarray(enc._cur_keys, np.int64), np.ascontiguousarray(enc._cur_vals, np.int64),
+            geometry(fx)]
+    do_hero = fx.F > fx.F_BASE
+    htypes, hslots, itemk, itemv, maxl = np.zeros(1, np.int64), np.zeros(1), np.zeros(1, np.int64), np.zeros(4), 1
+    if do_hero:
+        from .herodata import hero_table, item_table
+        table, items = hero_table(), item_table()
+        maxl = max([len(a.mana) for slots in table.values() for a in slots if a is not None] + [1])
+        if maxl > 64:
+            enc._view_tables = (key, None)
+            return None
+        ht = sorted(table)
+        hs = np.zeros((max(len(ht), 1), 4, 6 + maxl))
+        for i, t in enumerate(ht):
+            for s, a in enumerate(tuple(table[t])[:4]):
+                if a is not None:
+                    hs[i, s, :6] = (1, 1 if a.order else 0, a.levels, a.req_level, a.level_skip, len(a.mana))
+                    hs[i, s, 6:6 + len(a.mana)] = a.mana
+        htypes = np.asarray(ht or [0], np.int64)
+        hslots = np.ascontiguousarray(hs.reshape(-1))
+        ik = sorted(items)
+        itemk = np.asarray(ik or [0], np.int64)
+        itemv = np.ascontiguousarray(np.asarray([items[k] for k in ik] or [(0, 0, 0, 0)], np.float64).reshape(-1))
+    arrs += [htypes, hslots, itemk, itemv]
+    p = [a.ctypes.data for a in arrs]
+    t = np.zeros(T_N + 3, np.int64)
+    t[:T_N] = [p[0], len(arrs[0]), p[1], len(arrs[1]), p[2], p[3], len(arrs[2]), p[4], p[5], len(arrs[4]), p[6],
+               fx.MAX_OWN, fx.MAX_ENT, fx.F, fx.A_POS, fx.F_BASE, fx.A_HPD, fx.A_HERO, fx.A_PROD,
+               p[7], len(htypes) if do_hero and len(hero_table()) else 0, p[8], p[9],
+               len(itemk) if do_hero and len(item_table()) else 0, p[10], int(bool(fx.NEUTRAL)), int(do_hero),
+               fx.ROW_COLS, maxl]
+    got = (arrs, t, t.ctypes.data)
+    enc._view_tables = (key, got)
+    return got
+
+
+def view_step(enc, fx, view, rows: np.ndarray, player: int, sign: float, production, lumber, priv: bool):
+    """w3f_view for View.step (`view`: its hp_last, the last step's sorted ids and hit points, kept with their addresses
+    in view._hp_addr): (sel, n_own, f, types, cur, the packed list (a Python list), privileged numbers (float32 [PRIV],
+    the per-side block filled) or None); None without its tables. view.hp_last becomes this step's."""
+    tabs = view_tables(enc, fx)
+    if tabs is None:
+        return None
+    L = lib()
+    rows = np.ascontiguousarray(rows, np.int64)
+    nrows, ncols = rows.shape
+    queued, busy, making = production
+    q = sorted(queued.items())
+    b, lm = sorted(busy), sorted(lumber)
+    m = sorted((k, v[0] + 1) for k, v in making.items()) if making and fx.F > fx.F_BASE else ()
+    keys = np.array([*(k for k, _ in q), *(v for _, v in q), *b, *lm, *(k for k, _ in m), *(v for _, v in m), 0],
+                    np.int64)
+    ka = addr(keys)
+    last = view.hp_last
+    got = getattr(view, "_hp_addr", None)
+    if got is not None and got[0] is last:
+        pa, ha = got[1], got[2]
+    else:  # (made by another path: contiguous copies, kept with it)
+        pv, ph = np.ascontiguousarray(last[0], np.int64), np.ascontiguousarray(last[1], np.int64)
+        view._hp_keep = (pv, ph)
+        pa, ha = (addr(pv), addr(ph)) if len(pv) else (0, 0)
+    E = fx.MAX_ENT
+    cap = min(E, nrows)
+    out = np.empty(8 * E + 16, np.int64)
+    f = np.zeros((cap + 1, fx.F), np.float32)  # (its last row: the privileged numbers)
+    sel = np.empty((max(cap, 1), ncols), np.int64)
+    fa, oa = addr(f), addr(out)
+    nq, nb, nl, nm = len(q), len(b), len(lm), len(m)
+    k = L.w3f_view(_rows_addr(rows), nrows, ncols, int(player), float(sign), tabs[2], ka, nq, nb, nl, nm, pa, ha,
+                   len(last[0]), int(view.active_f), oa, fa, addr(sel), fa + 4 * cap * fx.F if priv else 0)
+    if k < 0:
+        raise MemoryError("w3f_view")
+    pk = out[5 * E:5 * E + k].tolist()
+    n = pk[0]
+    view.hp_last = hp = (out[3 * E:3 * E + n], out[4 * E:4 * E + n])
+    view._hp_addr = (hp, oa + 24 * E, oa + 32 * E)
+    return sel[:n], pk[1], f[:n], out[E:E + n], out[2 * E:2 * E + n], pk, f[cap, :fx.PRIV] if priv else None
+
+
+def side(rows: np.ndarray, player: int) -> list:
+    """w3f_side: one player's masks of a step's rows, as a list: 7 counts, then the segments they count (its living
+    buildings' ids, its living units' ids, its dead heroes' (type, id, level), its heroes' types, its finished
+    buildings' types, (its army's size), its plain living units' types)."""
+    rows = np.ascontiguousarray(rows, np.int64)
+    out = np.empty(8 + 8 * len(rows), np.int64)
+    k = lib().w3f_side(_rows_addr(rows), len(rows), rows.shape[1], int(player), addr(out))
+    return out[:k].tolist()
+
+
+def afford(costs: np.ndarray, gold: int, lumber: int, fu: int, fc: int, kept: list) -> np.ndarray | None:
+    """features.affordable in C (costs: int64 [n, 3], C-contiguous; kept: its (class, gold, lumber)s), None when it
+    can't (other costs, a kept class out of range)."""
+    L = lib()
+    n = len(costs)
+    if (L is None or costs.dtype != np.int64 or costs.ndim != 2 or costs.shape[1] != 3 or not costs.flags.c_contiguous
+            or not n or any(not 0 <= r[0] < n for r in kept) or len(kept) > 2):
+        return None
+    out = np.empty(n, np.bool_)
+    k1 = kept[0][0] if kept else 0
+    k2 = kept[1][0] if len(kept) > 1 else 0
+    rg, rl = (sum(r[1] for r in kept), sum(r[2] for r in kept)) if kept else (0, 0)
+    L.w3f_afford(addr(costs), n, gold, lumber, fu, fc, len(kept), k1, k2, rg, rl, addr(out))
+    return out
 
 
 def _keyed(queued, busy, lumber) -> tuple[np.ndarray, int, int, int]:

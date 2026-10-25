@@ -209,10 +209,18 @@ class BCAgent:
         # money not kept; its full price had been, audit 11)
         self.view.hiring_heroes = frozenset(hiring.values())  # counts as a hero: the masks' hero count, audit 10)
         st = self.view.step(rows, me, events, t, opp)
-        sel = st["sel"][:st["n_own"]]  # the workers busy with a building order (features.building), and since when
-        cur = sel[:, fx.C_ORDER]  # (by masks: a unit at a time, numpy's scalars, had been ~1% of an actor's time)
-        to_build = (cur >= fx.TYPE_CODE) | ((cur == REPAIR) if self.repair_builds else False)
-        busy = set(sel[(sel[:, fx.C_FLAGS] & fx.WORKER > 0) & to_build, fx.C_ID].tolist())
+        # the workers busy with a building order (features.building), and since when (the view's own entities' workers
+        # on a building order, repairing, and its frames, when featnative made them: View._marks)
+        marks = getattr(self.view, "_marks", None)
+        if marks is not None:
+            busy = set(marks[0]) | set(marks[1]) if self.repair_builds else set(marks[0])
+            self._frames_of = (st, marks[2])
+        else:
+            sel = st["sel"][:st["n_own"]]
+            cur = sel[:, fx.C_ORDER]  # (by masks: a unit at a time, numpy's scalars, had been ~1% of an actor's time)
+            to_build = (cur >= fx.TYPE_CODE) | ((cur == REPAIR) if self.repair_builds else False)
+            busy = set(sel[(sel[:, fx.C_FLAGS] & fx.WORKER > 0) & to_build, fx.C_ID].tolist())
+            self._frames_of = None
         self.building_since = {u: self.building_since.get(u, t) for u in busy}
         return st if st["n_own"] > 0 else None
 
@@ -274,7 +282,9 @@ class BCAgent:
         sel = st["sel"]
         self.view_n_own = st["n_own"]
         own_sel = sel[:st["n_own"]]
-        frames = set(own_sel[(own_sel[:, fx.C_FLAGS] & fx.CONSTRUCTING) > 0, fx.C_ID].tolist())
+        fr = getattr(self, "_frames_of", None)  # (its frames: observe's, of this step's view)
+        frames = set(fr[1]) if fr is not None and fr[0] is st else set(
+            own_sel[(own_sel[:, fx.C_FLAGS] & fx.CONSTRUCTING) > 0, fx.C_ID].tolist())
         n = min(st["n_own"], fx.MAX_OWN, len(order))
         for i in np.flatnonzero(np.asarray(order[:n])).tolist():  # (the units given an order: most are given none)
             c = int(order[i])
