@@ -42,7 +42,14 @@ def variant_class(spec: str | None):
     mod, _, rest = spec.partition(":")
     name, _, opts = rest.partition(":")
     cls = getattr(importlib.import_module(f"warcraftsim.fullgame.{mod}"), name or "HeuristicAgent")
-    kw = {k: float(v) if "." in v else int(v) for k, v in (o.split("=") for o in opts.split(",") if o)}
+    def value(v: str):
+        for cast in (int, float):
+            try:
+                return cast(v)
+            except ValueError:
+                pass
+        return v
+    kw = {k: value(v) for k, v in (o.split("=") for o in opts.split(",") if o)}
     return functools.partial(cls, **kw) if kw else cls
 
 

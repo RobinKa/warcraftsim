@@ -22,6 +22,8 @@ def test_players_of_a_row():
               "opponent": "script:ai-insane (real)"}, "r", 0) == ("fgself-102/11841833", "insane AI")
     assert p({"eval": True, "eval_key": "vs fgself-102/0000000011841833.pt", "opponent": "eval-vs:x", "time": 5}, "r", 0) \
         == ("r h0", "fgself-102/11841833")
+    assert p({"eval": True, "eval_key": "vs heuristic:orc", "opponent": "heuristic:orc", "time": 3700}, "r", 0) \
+        == ("r h1", "heuristic:orc")  # (--eval-heuristic: the hand-written player)
     assert p({"eval": True, "eval_key": "current", "opponent": "script:ai-insane"}, "r", 0) is None  # (the taxed AI)
     assert p({"eval_key": "current", "opponent": "script:ai-insane (real)"}, "r", 0) is None  # (a training game)
     # a checkpoint of a run without the shops, in a run with them since they could be bought: a player of its own

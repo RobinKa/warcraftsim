@@ -94,7 +94,9 @@ PLANS: dict[str, Plan] = {
         race="orc", worker="opeo", hall="ogre", supply="otrb", supply_food=10, altar="oalt",
         heroes=("Ofar",),
         builds=((0.0, 0, "oalt", 1), (0.0, 0, "obar", 1), (55.0, 9, "obar", 2), (110.0, 14, "obar", 3),
-                (300.0, 34, "ofor", 1)),
+                (240.0, 26, "ofor", 1)),
+        # watch towers in front of the base (the learner's waves fight it there; the lumber had piled up unspent)
+        towers=((300.0, "owtw", 2), (420.0, "owtw", 4)),
         army=(("ogru", 1.0), ("ohun", 1.0)),
         research=((360.0, "Rome"), (480.0, "Rora"), (600.0, "Roar")),
         lumber_workers=((0.0, 3),),  # (5 had floated 600-1,300 lumber: peons the army lacked)
@@ -181,8 +183,12 @@ OPTIONS = {
     "hero_behind": 1,  # the hero follows behind the army's centre instead of walking in first
     "sticky": 1,  # a unit keeps its target while it is in reach and not dying already
     "pull": 0,  # hurt melee units step back while hit
-    "focus": 1,  # each unit in a fight attacks the weakest enemy in reach (0: they attack-move, the game picks)
+    "focus": 2,  # each unit in a fight attacks the weakest enemy in reach (0: they attack-move, the game picks; 2:
+    # ranged units only; 16 games each on the same matchups, 2026-10-25: 1 and 0 level, 17 and 16 of 32 won)
     "spells": 1,  # heroes cast their spells
+    "towers": 1,  # enemy towers that shoot are fight targets
+    "hero_home": 1,  # a hurt hero walks home until healed
+    "towers_built": 1,  # the plan's towers in front of the base
 }
 
 
@@ -360,6 +366,9 @@ class HeuristicAgent:
         self.side, self.enemy, self.race = side, 1 - side, race
         self.opt = {**OPTIONS, **options}  # (switches for side-by-side variants: heuristic_match.py --variant)
         self.plan = plan or PLANS[race]
+        if self.opt.get("hero"):  # (another first hero: a variant)
+            import dataclasses
+            self.plan = dataclasses.replace(self.plan, heroes=(str(self.opt["hero"]),))
         self.rng = rng or random.Random()
         self.map_name = map_name
         try:  # (the map's rules: echofast's costs are halved, the training games' map)
@@ -875,9 +884,10 @@ class HeuristicAgent:
             if not c:  # (not affordable yet: its money kept from the army)
                 self._keep(*self._cost(code))
             break
-        for at, code, n in self.plan.towers:
+        for at, code, n in self.plan.towers if self.opt["towers_built"] else ():
             if self.now >= at and self.have[code] < n and self._tech_ok(code):
-                out += self._build(code, near=self.rally)
+                hx, hy = self.home  # (between the hall and the rally point: where the waves come in)
+                out += self._build(code, near=((hx + self.rally[0]) / 2, (hy + self.rally[1]) / 2))
                 break
         return out
 
@@ -1267,6 +1277,8 @@ class HeuristicAgent:
         out: dict[int, list[Command]] = {}
         creeping = self.mode == "creep"
         foes = self.enemy_units + [c for c in self.creeps if creeping or self._creep_awake(c, units)]
+        if self.opt["towers"]:  # (towers that shoot: in the fight's targets; attack-moving units had ignored them for
+            foes += [b for b in self.enemy_buildings if b.type_id in TOWERS_ATTACK]  # the units around them)
         if not foes:
             for u in units:  # (no enemy in sight: a hero sent home stays until healed)
                 if u.id in self.hero_home:
@@ -1280,7 +1292,7 @@ class HeuristicAgent:
         assigned: Counter = Counter()
         for u in sorted(units, key=lambda u: (not u.is_hero, u.id)):
             d = np.hypot(fx_ - u.x, fy_ - u.y)
-            if u.is_hero and (u.hp < HERO_LOW * u.max_hp or u.id in self.hero_home):
+            if u.is_hero and self.opt["hero_home"] and (u.hp < HERO_LOW * u.max_hp or u.id in self.hero_home):
                 if u.hp >= HERO_OK * u.max_hp:
                     self.hero_home.discard(u.id)
                 else:
@@ -1302,6 +1314,8 @@ class HeuristicAgent:
             data = unit_data().get(u.type, (0,) * 9)
             rng = max(data[4], 100.0)
             melee = rng <= 150
+            if melee and self.opt["focus"] == 2:  # (ranged units only: melee ones attack-move, the game picks)
+                continue
             # a hurt melee unit steps back while it is hit (the attackers chase or switch: both waste their blows)
             if self.opt["pull"] and melee and not u.is_hero and not u.flags & SUMMONED and u.hp < 0.3 * u.max_hp \
                     and self.hp_last.get(u.id, u.hp) > u.hp and self.t - self.pulled_at.get(u.id, -99) > 40:
@@ -1345,6 +1359,8 @@ class HeuristicAgent:
                     s *= 1.3
                 if e.owner == CREEPS:
                     s *= 1.5
+                if e.is_structure:  # (a tower: after the units in reach, its hit points count less, it shoots on)
+                    s = s * 0.5 + 300.0
                 s += d[k] * (0.8 if melee else 0.2)
                 if score is None or s < score:
                     best, score = e, s

@@ -50,7 +50,9 @@ def players_of(row: dict, run: str, start: float, untrained=lambda run: False) -
     def named(path: str) -> str | None:
         c = checkpoint_name(path)
         return c + " +shops" if c is not None and late and untrained(c.split("/")[0]) else c
-    if key.startswith("vs "):
+    if key.startswith("vs heuristic:"):  # (--eval-heuristic: the hand-written player, a player of its own that does not
+        b = key[3:]                       # change: fullgame/heuristic.py)
+    elif key.startswith("vs "):
         b = named(key)
         if b is None:
             return None
@@ -165,7 +167,8 @@ class Ratings:
         w[0 if won else 1 if lost else 2] += 1
         for p in pair:
             m = self.state["meta"].setdefault(p, {"run": p.split()[0].split("/")[0] if p != ANCHOR else "",
-                                                  "kind": ("anchor" if p == ANCHOR else "+z" if p.endswith("+z") or
+                                                  "kind": ("anchor" if p == ANCHOR else "heuristic" if p.startswith("heuristic:")
+                                                           else "+z" if p.endswith("+z") or
                                                            p.endswith("+zg") else "checkpoint" if "/" in p else "current"),
                                                   "first": t, "last": t})
             m["first"], m["last"] = min(m["first"], t), max(m["last"], t)
