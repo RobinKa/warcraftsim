@@ -7,7 +7,7 @@ strategy's next item needs before the item."""
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 
 RACE_FILES = {"human": "Human", "orc": "Orc", "undead": "Undead", "nightelf": "NightElf"}
@@ -21,12 +21,16 @@ class Tree:
     makers: dict[str, tuple[str, ...]]  # an item -> the building types that train, research or upgrade to it
     needs: dict[str, tuple[tuple[str, ...], ...]]  # an item -> what each level needs (a hero: as the 1st, 2nd, 3rd)
     upgrades: dict[str, tuple[str, ...]]  # a building type -> the types it upgrades to (a hall: its next tier)
+    # an item -> per level, the research levels its needs ask for beyond the first ("Requiresamount": Mark of the Talon
+    # needs Druid of the Talon training at level 2; ignored before, ~10 refused a night elf game; audit 11)
+    amounts: dict[str, dict[int, dict[str, int]]] = field(default_factory=dict)
 
 
 def parse(texts: list[str]) -> Tree:
     makers: dict[str, list[str]] = {}
     upgrades: dict[str, tuple[str, ...]] = {}
     needs: dict[str, dict[int, tuple[str, ...]]] = {}
+    amounts: dict[str, dict[int, tuple[str, ...]]] = {}
     for text in texts:
         sec = None
         for line in text.splitlines():
@@ -46,8 +50,17 @@ def parse(texts: list[str]) -> Tree:
                         makers[c].append(sec)
             elif (m := re.fullmatch(r"Requires(\d*)", k)) is not None:
                 needs.setdefault(sec, {})[int(m.group(1) or 0)] = codes
+            elif (m := re.fullmatch(r"Requiresamount(\d*)", k)) is not None:
+                amounts.setdefault(sec, {})[int(m.group(1) or 0)] = codes
+    levels: dict[str, dict[int, dict[str, int]]] = {}
+    for sec, per in amounts.items():  # (each level's amounts beside its codes; a research among them asked past level 1)
+        for lvl, vals in per.items():
+            codes = needs.get(sec, {}).get(lvl, ())
+            got = {c: int(v) for c, v in zip(codes, vals) if c.startswith("R") and v.isdigit() and int(v) > 1}
+            if got:
+                levels.setdefault(sec, {})[lvl] = got
     return Tree({c: tuple(v) for c, v in makers.items()},
-                {c: tuple(d.get(i, ()) for i in range(max(d) + 1)) for c, d in needs.items()}, upgrades)
+                {c: tuple(d.get(i, ()) for i in range(max(d) + 1)) for c, d in needs.items()}, upgrades, levels)
 
 
 @lru_cache(1)
@@ -60,12 +73,12 @@ def tree() -> Tree:
     # the tavern's heroes need what a race's hero does (an altar, then each tier: NeutralUnitFunc's Requires); the
     # neutral buildings that sell them are no makers (a player can't build a tavern)
     heroes = {c: v for c, v in neutral.needs.items() if is_hero(c) and c not in t.needs}
-    return Tree(t.makers, {**t.needs, **heroes}, t.upgrades)
+    return Tree(t.makers, {**t.needs, **heroes}, t.upgrades, t.amounts)
 
 
 @lru_cache(4)
-def ability_research(race: str) -> dict[str, str]:
-    """Order string -> the research the race's abilities that use it need (its AbilityFunc's Requires: defend, burrow,
+def ability_research(race: str) -> dict[str, tuple[str, int]]:
+    """Order string -> the research (and its level) the race's abilities that use it need (its AbilityFunc's Requires: defend, burrow,
     cannibalize, sentinel, ensnare, ...), where every ability of the race with that order needs the same one. (A hand
     list had missed most: 23,575 cannibalizes refused in fgself-146 before ghoul frenzy... before Ruac; audit 10.)"""
     from ..data.mpq import GameArchives
@@ -83,7 +96,10 @@ def ability_research(race: str) -> dict[str, str]:
         if sec not in used:
             continue
         kv = dict((a.strip(), b.strip()) for a, b in (line.split("=", 1) for line in block.splitlines() if "=" in line))
-        req = next((c.strip() for c in kv.get("Requires", "").split(",") if c.strip().startswith("R")), None)
+        codes = [c.strip() for c in kv.get("Requires", "").split(",")]
+        amounts = [a.strip() for a in kv.get("Requiresamount", "").split(",")]
+        req = next(((c, int(amounts[i]) if i < len(amounts) and amounts[i].isdigit() else 1)
+                    for i, c in enumerate(codes) if c.startswith("R")), None)  # (its level: Requiresamount, audit 11)
         for k in ("Order", "Orderon", "Orderoff", "Unorder"):
             if kv.get(k):
                 per.setdefault(kv[k], set()).add(req)
@@ -138,6 +154,17 @@ def missing(item: str, race: str, have: set[str], level: int = 0, t: Tree | None
     if not per:
         return []
     return [r for r in (resolve(c, race) for c in per[min(level, len(per) - 1)]) if r not in have]
+
+
+def short_levels(item: str, level: int, levels: dict[str, int], t: Tree | None = None) -> bool:
+    """Whether `item` (at `level`) needs a research at a higher level than the player has (`levels`: research ->
+    level; Requiresamount)."""
+    t = t or tree()
+    per = t.amounts.get(item)
+    if not per:
+        return False
+    need = per.get(min(level, max(per)), per.get(0, {}))
+    return any(levels.get(r, 0) < a for r, a in need.items())
 
 
 def closure(items, race: str, t: Tree | None = None) -> set[str]:

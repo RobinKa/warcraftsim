@@ -1071,8 +1071,8 @@ def test_repair_only_what_needs_it(v2):
 
 
 def test_power_build_needs_lumber(v2):
-    """A helper's repair at a frame goes out only while the player has lumber (gold for a building that costs no
-    lumber): the game refused it without (tested 2026-10-24), ~275 a game as human."""
+    """A helper's repair at a frame goes out only while the player has some of each resource the building costs: the
+    game refused it without lumber (tested 2026-10-24), and without gold for one that costs gold (audit 11's probe)."""
     from warcraftsim.fullgame.play import REPAIR, BCAgent
     hbar, hlum = (int.from_bytes(c.encode(), "big") for c in ("hbar", "hlum"))
     v = {**AUDIT_VOCAB, "orders": AUDIT_VOCAB["orders"] + [[REPAIR, fx.UNIT], [hbar, fx.POINT], [hlum, fx.POINT]]}
@@ -1085,7 +1085,7 @@ def test_power_build_needs_lumber(v2):
     frame, mill = _unit(2, 0, -500, 0, 1, fx.STRUCTURE | fx.CONSTRUCTING, "hbar"), \
         _unit(3, 0, -800, 0, 1, fx.STRUCTURE | fx.CONSTRUCTING, "hlum")
     me = lambda g, l: np.asarray([0, 0, g, l, 5, 12, 0, 0, 0, 2, 0])  # noqa: E731
-    for (g, l), ok_frame, ok_mill in (((5, 0), False, True), ((0, 5), True, False), ((1, 1), True, True), ((0, 0), False, False)):
+    for (g, l), ok_frame, ok_mill in (((5, 0), False, True), ((0, 5), False, False), ((1, 1), True, True), ((0, 0), False, False)):
         bot.me = me(g, l)
         assert bot._repairable(frame) == ok_frame and bot._repairable(mill) == ok_mill, (g, l)
 
@@ -1223,3 +1223,39 @@ def test_budget_only_for_what_an_order_costs(v2):
     assert bot.commands(st, [3, 2], [0, 0], [0, 0], [0, 0]) == [ImmediateOrder(1, code("hpea")), ImmediateOrder(5, code("hfoo"))]
     bot.view.making[1] = (4, code("htow"))  # (the hall upgrading to a keep: no worker there)
     assert bot.commands(st, [3, 0], [0, 0], [0, 0], [0, 0]) == [] and bot.upgrading_refused == 1
+
+
+def test_queued_research_and_research_levels(v2):
+    """A research queued behind units is under way until it starts or is cancelled (the mask offered it again, the game
+    refused it); an item or ability needing a research's second level waits for it (Requiresamount; audit 11)."""
+    from warcraftsim.fullgame.techtree import tree
+    tree()
+    vocab = {**VOCAB, "orders": [[code("Reec"), fx.IMMEDIATE], [code("Rhde"), fx.IMMEDIATE]]}
+    m = fx.TechMask(vocab, "nightelf")
+    base = frozenset({"etol", "eaom", "eate", "edob", "eaoe", "etoa"})
+    assert not m.allowed(base, {"Redt": 1}, frozenset(), frozenset())[1]  # (Mark of the Talon: training at level 2)
+    assert m.allowed(base, {"Redt": 2}, frozenset(), frozenset())[1]
+    view = fx.Encoder({**VOCAB, "orders": [[code("Rhde"), fx.IMMEDIATE]]}).view(0, 1.0, [0, 1])
+    view.own_buildings, view.t_now = {5}, 10
+    view.record_orders([(5, code("Rhde"), 0)])
+    assert code("Rhde") in view.pending_research
+
+
+def test_no_cancel_without_a_queue_nor_orders_at_frames(v2):
+    """A cancel goes out only to a building with something queued (one at an upgrading hall undid its tier); a train or
+    hero order at a frame not at all (refused by the game; audit 11)."""
+    from warcraftsim.fullgame.play import BCAgent, CANCEL
+    from warcraftsim.protocol import ImmediateOrder
+    v = {**VOCAB, "orders": [[CANCEL, fx.IMMEDIATE], [code("Hpal"), fx.IMMEDIATE]]}
+    bot = BCAgent(None, v, 0, None)
+    bot.view = bot.enc.view(0, 1.0, [0, 1])
+    bot.trees, bot.building_since, bot.t = {}, {}, 0
+    hall, frame = _unit(1, 0, -5184, 2944, 1, fx.STRUCTURE, "htow"), _unit(3, 0, -4500, 2900, 1, fx.STRUCTURE | fx.CONSTRUCTING, "halt")
+    bot.rows = np.stack([hall, frame])
+    bot.view.own_buildings = {1, 3}
+    st = {"sel": bot.rows, "n_own": 2}
+    bot.view.making = {1: (4, code("htow"))}  # (upgrading: no cancel)
+    assert bot.commands(st, [1, 2], [0, 0], [0, 0], [0, 0]) == []
+    bot.view.making, bot.view.queued = {1: (0, code("hpea"))}, {1: 2}  # (training: its cancel goes out)
+    assert bot.commands(st, [1, 0], [0, 0], [0, 0], [0, 0]) == [ImmediateOrder(1, CANCEL)]
+    assert bot.frame_orders == 1

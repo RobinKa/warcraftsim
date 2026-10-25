@@ -937,7 +937,7 @@ class TechMask:
         self.wares = {c for c, (o, k) in enumerate(vocab["orders"], start=1) if o >= TYPE_CODE and k == UNIT}
         names = vocab.get("order_names") or {}  # (the game's ability tables, tt.ability_research; the hand list besides)
         table = tt.ability_research(race)
-        self.abilities = [(c, table[names[str(o)]] if names.get(str(o)) in table else ABILITY_RESEARCH[o])
+        self.abilities = [(c, table[names[str(o)]] if names.get(str(o)) in table else (ABILITY_RESEARCH[o], 1))
                           for c, (o, k) in enumerate(vocab["orders"], start=1)
                           if o < TYPE_CODE and (names.get(str(o)) in table or o in ABILITY_RESEARCH)]
         if self.wares:  # (in stock from this game second on: neutral.stock_times)
@@ -970,7 +970,8 @@ class TechMask:
             elif code[0] == "R":  # research: its next level
                 lvl = levels.get(code, 0)
                 ok[c] = (lvl < self.max_level.get(code, 1) and code not in researching
-                         and not tt.missing(code, self.race, have, lvl, self.tree))
+                         and not tt.missing(code, self.race, have, lvl, self.tree)
+                         and not tt.short_levels(code, lvl, levels, self.tree))
             elif tt.is_hero(code) and code in dead:  # revived at an altar, with the order that trained it (`dead`: its
                 ok[c] = not tt.missing(code, self.race, have, 0, self.tree)  # dead heroes' types; a tavern's hero too, with
                 # an altar: its hire's order is the altar's revival, play.BCAgent. A dead tavern hero was lost for good)
@@ -979,8 +980,8 @@ class TechMask:
             else:
                 ok[c] = (not tt.missing(code, self.race, have, 0, self.tree) and code not in researching
                          and (code not in UNIT_RESEARCH or levels.get(UNIT_RESEARCH[code], 0) > 0))
-        for c, r in self.abilities:
-            ok[c] = levels.get(r, 0) > 0
+        for c, (r, a) in self.abilities:  # (at its level: inner fire, polymorph, bloodlust need level 2; audit 11)
+            ok[c] = levels.get(r, 0) >= a
         self._key, self._ok = key, ok
         return ok
 
@@ -1073,6 +1074,9 @@ class View:
         for unit, order, kind in orders:
             if kind == 0 and order >= TYPE_CODE and unit in self.own_buildings:
                 self.queued[unit] = self.queued.get(unit, 0) + 1
+                if order >> 24 == 0x52:  # (a research queued behind units: under way until it starts or is cancelled, the
+                    self.__dict__.setdefault("pending_research", {})[order] = (unit, getattr(self, "t_now", 0))
+                    # mask had offered it again, the game refusing it; audit 11)
 
     def priv(self, rows: np.ndarray, opp: np.ndarray | None) -> np.ndarray:
         """The privileged block (PRIV): the opponent's player row (PLAYER_COLS) and every living unit."""
@@ -1170,7 +1174,10 @@ class View:
                          if self.t_now - since.get(i, self.t_now) >= REVIVE_AFTER_STEPS
                          and self.t_now - reviving.get(i, -REVIVE_STEPS) >= REVIVE_STEPS) - making if len(dead_rows) \
             else frozenset()  # had allowed it at once: ~30 refused a game; audit 5. None dead: most steps)
-        researching = frozenset(m[1] for m in self.making.values() if m[0] == 3)
+        pending = getattr(self, "pending_research", {})
+        for code in [c for c, (b, t0) in pending.items() if b not in self.own_buildings or self.t_now - t0 > 240]:
+            del pending[code]  # (its building gone, or two minutes on: given up)
+        researching = frozenset(m[1] for m in self.making.values() if m[0] == 3) | frozenset(pending)
         if any(m[0] == 4 for m in self.making.values()):  # (a tier under way: its next type not again, as research;
             from . import techtree as tt  # refused ~400-580 a tier type in fgself-146; audit 10)
             up = tt.tree().upgrades
@@ -1227,6 +1234,8 @@ class View:
                     del self.making[a]
             if kind == RESEARCH_FINISH and a in self.own_buildings:
                 self.levels[int(r[3])] = int(r[4])
+            if kind in (8, 10):  # (research started or cancelled: no longer queued)
+                getattr(self, "pending_research", {}).pop(int(r[3]), None)
         lumber = {u for u, r in self.assign.items() if r == "lumber"}
         own_hero = own & (fl & HERO > 0)  # (and the dead ones' rows: for the masks below too)
         dead = rows[own_hero & (fl & DEAD > 0)]
@@ -1298,8 +1307,9 @@ class View:
             # (an expand order on its way keeps no money: the game takes a building's cost at its order, and the hall's
             # cost kept again during the walk had masked every paid order for 25-60 s, a penalty on expanding; the
             # pending expand only blocks a second one, below; audit 8)
-            k = getattr(self, "hire_class", None)  # (a tavern hero's hire on its way: paid at the sale, play.BCAgent)
-            avail = affordable(c, gold, lumber, fu, fc, self.reserve, None if k is None else (k, int(c[k][0]), int(c[k][1])))
+            k = getattr(self, "hire_class", None)  # (a tavern hero's hire on its way: paid at the sale, play.BCAgent; the
+            hire = None if k is None or getattr(self, "hire_free", False) else (k, int(c[k][0]), int(c[k][1]))  # first free)
+            avail = affordable(c, gold, lumber, fu, fc, self.reserve, hire)
             if enc.tech:  # (--tech-mask)
                 self.t_now = t
                 avail &= self.tech_allowed(rows, built, own_hero, dead)

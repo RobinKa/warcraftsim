@@ -207,12 +207,29 @@ class Ratings:
             gamma = new
             if delta < 1e-7:
                 break
+        # each rating's standard error from the whole information matrix, the anchor held (each player's own games
+        # alone had read them too small: fgself-130 4.5 against 8.5; audit 11)
+        import numpy as np
+        H = np.zeros((n, n))
+        for (i, j), g in games.items():
+            w = g * gamma[i] * gamma[j] / (gamma[i] + gamma[j]) ** 2
+            H[i, i] += w
+            H[j, j] += w
+            H[i, j] -= w
+            H[j, i] -= w
+        keep = [i for i in range(n) if i != anchor]
+        try:
+            cov = np.linalg.pinv(H[np.ix_(keep, keep)] + 1e-9 * np.eye(len(keep)))
+            var = dict(zip(keep, np.diag(cov).tolist()))
+        except np.linalg.LinAlgError:
+            var = {}
         out = []
         for i, name in enumerate(names):
             info = sum(g * gamma[i] * gamma[j] / (gamma[i] + gamma[j]) ** 2 for j, g in nbr[i])
+            v = var.get(i, 1.0 / max(info, 1e-12))
             m = self.state["meta"].get(name, {"run": "", "kind": "anchor", "first": 0, "last": 0})
             out.append({"name": name, "rating": round(ANCHOR_RATING + SCALE * math.log(max(gamma[i], 1e-12)), 1),
-                        "se": None if i == anchor else round(SCALE / math.sqrt(max(info, 1e-12)), 1),
+                        "se": None if i == anchor else round(SCALE * math.sqrt(max(v, 1e-12)), 1),
                         "games": count[i], "score": round((wins[i] - (0.5 * PRIOR_GAMES if i != anchor else 0.0))
                                                           / max(count[i], 1), 3), **m})
         out.sort(key=lambda r: -r["rating"])
