@@ -1425,6 +1425,7 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         from . import techtree
         from ..protocol import UnitFlags
         self.observe(obs)
+        self.held = None
         self.agent_now = {fx.rawcode(o) for x in ordered
                           if (o := getattr(x, "building", None) or getattr(x, "item", None) or getattr(x, "order", 0)) >= fx.TYPE_CODE}
         p = obs.players.get(self.side)
@@ -1437,8 +1438,10 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         now = obs.game_time
         due = sorted((t0, c) for c, t0 in self.st["t"].items() if t0 <= now and c not in made and c not in self.started)
         food = SUPPLY_TYPES.get(self.race)  # out of supply: a unit ordered waits in its building's queue and
-        if p.food_cap < 100 and p.food_used + 2 > p.food_cap and food not in self.started:  # blocks it
-            due.insert(0, (0.0, food))  # (a next tier is refused behind it): supply first
+        need = next((int(self.costs[k][2]) for _, c in due if (k := self._class(c))), 0) if self.costs is not None else 0
+        supply_first = p.food_cap < 100 and p.food_used + max(2, need) > p.food_cap and food not in self.started
+        if supply_first:  # blocks it (a next tier is refused behind it): supply first (by the next item's food:
+            due.insert(0, (0.0, food))  # 3-7 food items had waited as "food" with no farm taught; audit 9)
         if not due:
             self.reserve = None
             return []
@@ -1454,10 +1457,11 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             types, hero = {u.type for u in done}, any(getattr(u, "is_hero", False) for u in mine)
         have = techtree.counts_as(types | {c for c in made if c[0] == "R"}, self.race)
         heroes = len({c for c in (*made, *self.started) if techtree.is_hero(c) or fx.is_hero_code(c)})
-        expansion = self._expansion_reserve(obs, due, p, t, own)  # (--macros: money kept for a due expansion)
-        self.first_free = heroes == 0 and not hero  # (a free first hero)
+        expansion = None if supply_first else self._expansion_reserve(obs, due, p, t, own)  # (--macros: money kept for
+        self.first_free = heroes == 0 and not hero  # (a free first hero)  # a due expansion; supply comes first)
         save = expansion
-        for _, c in due:
+        self.held = save  # (an item after a reserved one: labelled only when affordable net of it, the mask's view; a
+        for _, c in due:  # label the mask forbade dropped out of the loss: a reserve in 14-65% of steps; audit 9)
             item = self.next_step(c, have, types, heroes, t)
             if item is None:
                 continue
@@ -1469,7 +1473,7 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
                 self.blocked.setdefault(item, Counter())[self.why_not] += 1
                 if self.why_not in ("gold", "lumber") and save is None:  # (the first one short of money)
                     k = self._class(item)
-                    save = (k, int(self.costs[k][0]), int(self.costs[k][1]))
+                    save = self.held = (k, int(self.costs[k][0]), int(self.costs[k][1]))
             if cmds:  # (`item`, or a worker to build it; the order last)
                 got = self._name(cmds[-1])
                 self.tried[got], self.last = t, got
@@ -1517,7 +1521,9 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
                   if own is not None else {u.id: (u.hp, u.x, u.y) for u in self._mine(obs) if int(u.flags) & fx.CONSTRUCTING})
         self.frames = {i: (hp, t if hp > self.frames.get(i, (-1, t))[0] else self.frames[i][1])
                        for i, (hp, _, _) in frames.items()}
-        stalled = [i for i, (_, since) in self.frames.items() if t - since >= 20]
+        tries = self.__dict__.setdefault("resumes", {})  # (each frame at most RESUME_TRIES: a frame the game had removed
+        stalled = [i for i, (_, since) in self.frames.items()  # stayed in the table, 202 lessons a game for it; audit 9)
+                   if t - since >= 20 and tries.get(i, 0) < RESUME_TRIES]
         if not stalled:
             return None
         away = int(UnitFlags.HIDDEN | UnitFlags.LOADED)
@@ -1528,6 +1534,7 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         f, (hp, x, y) = stalled[0], frames[stalled[0]]
         w = min(workers, key=lambda u: (u.x - x) ** 2 + (u.y - y) ** 2)
         self.frames[f] = (hp, t)  # (another try in 20 steps if it still gains nothing)
+        tries[f] = tries.get(f, 0) + 1
         return TargetOrder(w.id, REPAIR, f)
 
     def next_step(self, c: str, have: set, types: set, heroes: int, t: int, depth: int = 0) -> str | None:
@@ -1633,6 +1640,9 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         g, l, f = (int(v) for v in self.costs[k])
         if getattr(self, "first_free", False) and fx.is_hero_code(fx.rawcode(self._order_id(k))):
             g = l = 0  # (the first hero: its food only)
+        held = getattr(self, "held", None)  # (another item's money kept: the agent's mask leaves this one the rest)
+        if held is not None and held[0] != k and g + l > 0:
+            g, l = g + held[1], l + held[2]
         self.why_not = "gold" if p.gold < g else "lumber" if p.lumber < l else "food" if f and p.food_used + f > min(p.food_cap, fx.FOOD_MAX) else ""
         return not self.why_not
 
@@ -2021,6 +2031,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
            if side in bots and fx.MACROS >= 2 else {}),  # (--macros 2: items off the ground)
         **({"auto_skills": getattr(bots[side], "auto_skills", 0)} if side in bots and fx.MACROS >= 3 else {}),
         **({"noop_repairs": bots[side].noop_repairs} if side in bots and getattr(bots[side], "noop_repairs", 0) else {}),
+        **({"frame_cancels": bots[side].frame_cancels} if side in bots and getattr(bots[side], "frame_cancels", 0) else {}),
+        **({"over_budget": bots[side].over_budget} if side in bots and getattr(bots[side], "over_budget", 0) else {}),
         **({"refused_ctx": bots[side].refused_ctx} if side in bots and getattr(bots[side], "refused_ctx", None) else {}),
         # the orders the game refused (the learner's side): their share, and the kinds refused most (audit 4: never measured)
         **({"refused_share": round(sum(r for _, r in bots[side].order_results.values())
@@ -3016,6 +3028,7 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
     return {k: float(torch.stack(v).float().mean()) for k, v in stats.items()}
 
 
+RESUME_TRIES = 3  # the target builder's resume of a stalled frame, at most this often a frame
 EVAL_PER_LAUNCH = 2  # an evaluation launch's games at most (--games-per-process is the training games')
 WIDTHS = (32, 48, 64, 96, 128, fx.MAX_ENT)  # the padded entity counts the update's CUDA graphs are captured for
 

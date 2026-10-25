@@ -14,7 +14,7 @@ per slot whether the strategy makes the item and when (time / HORIZON; 1 if neve
 and away from items it does not make.
 
 The built-in AI's times are the items' (an event when an item is done); people's replays give the
-order's (a click), so their times get CLICK_LAG, about an item's build time.
+order's (a click), so their times get the item's build time (build_seconds; CLICK_LAG before 2026-10-25).
 
 Narrow strategies (--narrow; the user's idea, 2026-10-20: the whole games' targets were big and alike): a
 game's own heroes and main army (the unit types with FOOD_SHARE of its army's food, at most 3) and what they
@@ -100,9 +100,43 @@ def from_demos(path: Path) -> list[dict]:
             for p in (0, 1)]
 
 
-def from_replays(stats: Path) -> list[dict]:
-    """Every 1v1 player's strategy in replay_stats.py's rows (people's replays)."""
+BUILD_WALK = 5.0  # (a building's click: the worker walks to the place first)
+
+
+@lru_cache(maxsize=1)
+def build_seconds() -> dict[str, float]:
+    """Each unit's and building's build time and each research's first level's, in the real game's tables
+    (UnitBalance bldtm, UpgradeData timebase): a click's item is done that much later. (CLICK_LAG, 45 s for every
+    item, had put a hall's tier ~95 s before the player had it, and units ~25 s after; audit 9.)"""
+    from ..data.mpq import GameArchives
+    from ..data.objects import parse_slk
+    with GameArchives() as g:
+        units = parse_slk(g.read("Units\\UnitBalance.slk").decode("latin-1"))
+        upgrades = parse_slk(g.read("Units\\UpgradeData.slk").decode("latin-1"))
+    out = {}
+    for r in units:
+        try:
+            out[r.get("unitBalanceID")] = float(r.get("bldtm"))
+        except (TypeError, ValueError):
+            pass
+    for r in upgrades:
+        try:
+            out[r.get("upgradeid")] = float(r.get("timebase"))
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
+def from_replays(stats: Path, lag: str = "build") -> list[dict]:
+    """Every 1v1 player's strategy in replay_stats.py's rows (people's replays). `lag`: an item's time is its click's
+    plus its build time ("build"), or plus CLICK_LAG ("fixed": the pools before 2026-10-25)."""
     out = []
+    bt = build_seconds() if lag == "build" else {}
+
+    def done(t_ms: int, kind: str, code: str) -> float:
+        if lag != "build" or code not in bt:
+            return t_ms / 1000.0 + CLICK_LAG
+        return t_ms / 1000.0 + bt[code] + (BUILD_WALK if kind == "build" else 0.0)
     for line in stats.open():
         r = json.loads(line)
         if r.get("type") != "1v1":
@@ -112,7 +146,7 @@ def from_replays(stats: Path) -> list[dict]:
         if len(bos) != 2 or any(x not in RACES for x in races):
             continue
         for i, b in enumerate(bos):
-            pairs = [(code, t_ms / 1000.0 + CLICK_LAG) for t_ms, kind, code, *_ in b["build"]
+            pairs = [(code, done(t_ms, kind, code)) for t_ms, kind, code, *_ in b["build"]
                      if kind in ("train", "build", "hero", "research", "upgrade")]
             n = Counter(code for t_ms, kind, code, *_ in b["build"] if kind == "train")
             out.append({"race": races[i], "opp": races[1 - i], "src": "human", "won": bool(b.get("won")),
@@ -388,6 +422,8 @@ def main(argv: list[str] | None = None) -> int:
                     "tavern heroes its people pick most (an extended vocabulary: --neutral, neutral.extend_vocab)")
     ap.add_argument("--narrow", action="store_true", help="each strategy narrowed to its heroes, its main army and "
                     "what they need (narrow): buildings and research outside them free; drawn evenly per signature")
+    ap.add_argument("--click-lag", choices=("build", "fixed"), default="build", help="people's items done their click's "
+                    "time plus their build time (build), or plus CLICK_LAG (fixed: the pools before 2026-10-25)")
     ap.add_argument("--rescale-people", type=float, default=0.0, help="people's times onto the demonstrations' rules, "
                     "no item earlier than this quantile of the AI's (strategy.rescale_people; 0: as recorded)")
     a = ap.parse_args(argv)
@@ -399,7 +435,7 @@ def main(argv: list[str] | None = None) -> int:
     if a.difficulty:
         strategies = [s for s in strategies if s.get("difficulty") == a.difficulty]
     for f in a.replays:
-        strategies += from_replays(f)
+        strategies += from_replays(f, a.click_lag)
     if a.rescale_people > 0:
         print("people's times, factor per race:", rescale_people(strategies, a.rescale_people))
     keep = orderable(json.loads(a.vocab.read_text())) if a.vocab else None

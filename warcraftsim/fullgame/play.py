@@ -217,6 +217,28 @@ class BCAgent:
         self._release_buyers(st["sel"][:st["n_own"]])
         expanded = False  # (--macros: one expand order a step)
         built: set[int] = set()  # (one building of a kind a step)
+        me, costs = getattr(self, "me", None), self.enc.costs  # the step's money, spent order by order (each order's
+        budget = [int(me[2]), int(me[3])] if me is not None and costs is not None else None  # mask checks it alone:
+        # a tier taken, then two builds refused at 212 gold; 32-140 paid orders refused a training game; audit 9)
+        hire = getattr(self.view, "hire_class", None)
+        kept = {r[0]: (r[1], r[2]) for r in (getattr(self.view, "reserve", None),) if r is not None}  # (as the mask:
+        if hire is not None and costs is not None:  # the target's next item and a hire on its way keep theirs)
+            kept[hire] = (int(costs[hire][0]), int(costs[hire][1]))
+        if budget is not None:
+            budget = [budget[0] - sum(v[0] for v in kept.values()), budget[1] - sum(v[1] for v in kept.values())]
+
+        def pay(c: int) -> bool:
+            if budget is None:
+                return True
+            back = kept.pop(c, (0, 0))  # (a kept item itself: its own money back)
+            budget[0], budget[1] = budget[0] + back[0], budget[1] + back[1]
+            g, l = int(costs[c][0]), int(costs[c][1])
+            if g > budget[0] or l > budget[1]:
+                self.over_budget = getattr(self, "over_budget", 0) + 1
+                return False
+            budget[0] -= g
+            budget[1] -= l
+            return True
         self.last_sent: list[tuple[int, int]] = []  # (order id, kind) of what it sent: the video's panel
         self.sent_resources: list[str | None] = []  # per command: what it sends the worker to harvest (accepted())
         sel = st["sel"]
@@ -276,17 +298,23 @@ class BCAgent:
                 # behind them, so the order was refused while a hall trained workers back to back: human targets
                 # missed their keep and won 4 of 26 in the real game; the target builder did this already)
                 out += [ImmediateOrder(unit, CANCEL)] * 6 + [ImmediateOrder(unit, oid)]
+            elif kind == fx.IMMEDIATE and oid == CANCEL and int(sel[i, fx.C_FLAGS]) & fx.CONSTRUCTING:
+                # (a frame cancelled: a quarter of its cost lost, and the game removes it outright; the policy cancelled
+                # its own frames 2-10 times a game, the cancel learned from the demonstrations' training queues; audit 9)
+                self.frame_cancels = getattr(self, "frame_cancels", 0) + 1
             elif kind == fx.IMMEDIATE:
-                out.append(ImmediateOrder(unit, oid))
+                if oid < TYPE_CODE or fx.is_hero_code(fx.rawcode(oid)) or pay(c):  # (a hero: its first is free)
+                    out.append(ImmediateOrder(unit, oid))
             elif kind == fx.SKILL:
                 out.append(LearnSkill(unit, oid))
             elif kind == fx.POINT:
                 x, y = fx.bins_world(int(bx[i]), int(by[i]), self.view.sign)
                 if oid < TYPE_CODE:
                     out.append(PointOrder(unit, oid, x, y))
-                elif oid not in built and not (oid in ONE_OF and self._has_building(oid)):  # (each unit samples its own
-                    built.add(oid)  # order: 2-3 workers had built one building in a step, and a second altar, war mill
-                    out.append(Build(unit, oid, x, y))  # or graveyard came in 24-52% of short won games; audit 8)
+                elif oid not in built and not (oid in ONE_OF and self._has_building(oid)) and pay(c):  # (each unit
+                    built.add(oid)  # samples its own order: 2-3 workers had built one building in a step, and a second
+                    out.append(Build(unit, oid, x, y))  # altar, war mill or graveyard came in 24-52% of short won games;
+                    # audit 8)
             elif kind == fx.UNIT and oid in self.view.dead_heroes:  # (a dead tavern hero's hire: its revival at an altar of
                 altar = self._altar(sel[:st["n_own"]])            # the player's; tested 2026-10-23: 0.4 of its gold, as
                 if altar is not None:                             # an altar hero's)

@@ -467,3 +467,20 @@ def test_army_mix_input_and_gap():
     assert st.mix_gap({"hfoo": 6, "hrif": 2, "hpea": 9}, s) == pytest.approx(0.0)
     assert st.mix_gap({"hfoo": 8}, s) == pytest.approx(0.25)
     assert st.mix_gap({"hkni": 8}, s) == pytest.approx(1.0)
+
+
+def test_people_items_done_after_their_build_time(tmp_path):
+    """People's replays give an order's click: its item is done its build time later (a keep 140 s, a footman 20 s; a
+    building's worker walks first), not CLICK_LAG for every item ("fixed": the pools before 2026-10-25; audit 9)."""
+    import json
+
+    from warcraftsim.fullgame.strategy import BUILD_WALK, CLICK_LAG, from_replays
+    row = {"type": "1v1", "file": "x.w3g", "length_ms": 600000, "build_orders": [
+        {"race_played": "human", "won": True, "slot": 0, "build": [[10000, "build", "halt"], [100000, "upgrade", "hkee"],
+                                                                     [120000, "train", "hfoo"]]},
+        {"race_played": "orc", "won": False, "slot": 1, "build": [[20000, "build", "oalt"]]}]}
+    stats = tmp_path / "stats.jsonl"
+    stats.write_text(json.dumps(row) + "\n")
+    human = from_replays(stats)[0]["t"]
+    assert human == {"halt": 10.0 + 60.0 + BUILD_WALK, "hkee": 100.0 + 140.0, "hfoo": 120.0 + 20.0}
+    assert from_replays(stats, "fixed")[0]["t"] == {"halt": 10.0 + CLICK_LAG, "hkee": 100.0 + CLICK_LAG, "hfoo": 120.0 + CLICK_LAG}

@@ -227,7 +227,8 @@ DEAD, STRUCTURE, CONSTRUCTING = 1024, 2, 8
 FOOD_MAX = 100  # (the game's food ceiling: a player's food cap counts farms past it)
 SUMMONED = 256  # (UnitFlags.SUMMONED)
 REVIVE_AFTER_STEPS = 16  # (a dead hero's revival is taken ~7 s after its death)
-REVIVE_STEPS = 120  # (a revival the altar took: not offered again for 60 s, or until the hero stands)
+REVIVE_STEPS = 240  # (a revival the altar took: not offered again for 120 s, or until the hero stands; 60 s had reopened
+# it while a real game's revival still ran, up to 110 s: ~17 refused a human real game; audit 9)
 NATURAL_EVERY = 4  # (steps between two looks at the natural expansion: free, taken, its camp standing)
 FLAG_BITS = (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 2048)  # UnitFlags but DEAD
 F0 = 3 + 2 + 4 + len(FLAG_BITS) + 3 + 2 + 1 + 2 + 1  # 29: ... production (queued, busy), and a worker on lumber

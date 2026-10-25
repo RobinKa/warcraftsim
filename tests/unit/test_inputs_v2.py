@@ -1150,3 +1150,30 @@ def test_affordable_keeps_a_pending_hire(v2):
     assert ok.tolist() == [True, True, True, False, True]  # (the hire itself and footmen; not an altar on top)
     ok = fx.affordable(costs, 600, 200, 10, 30, (3, 180, 50), (1, 425, 100))
     assert ok.tolist() == [True, True, False, True, True]  # (both kept: each itself, nothing else paid)
+
+
+def test_step_budget_and_no_frame_cancel(v2):
+    """The step's money is spent order by order (each order's mask checks it alone: several in a step overspent), the
+    target's next item keeping its own; a cancel on one of the player's frames is not sent (a quarter of its cost lost,
+    and the game removes it outright: a ghost in the table before the cancel event dropped it; audit 9)."""
+    from warcraftsim.fullgame.play import BCAgent, CANCEL
+    from warcraftsim.protocol import ImmediateOrder
+    v = {**VOCAB, "orders": [[code("hbar"), fx.POINT], [code("hfoo"), fx.IMMEDIATE], [CANCEL, fx.IMMEDIATE]]}
+    costs = np.array([[0, 0, 0], [160, 60, 0], [135, 0, 2], [0, 0, 0]])
+    bot = BCAgent(None, v, 0, None, costs=costs)
+    bot.view = bot.enc.view(0, 1.0, [0, 1])
+    bot.trees, bot.building_since, bot.t = {}, {}, 0
+    rax = _unit(5, 0, -4800, 2900, 1, fx.STRUCTURE, "hbar")
+    frame = _unit(6, 0, -4600, 2900, 1, fx.STRUCTURE | fx.CONSTRUCTING, "hbar")
+    w1, w2 = _unit(2, 0, -5000, 2900, 1, fx.WORKER, "hpea"), _unit(3, 0, -5100, 2900, 1, fx.WORKER, "hpea")
+    bot.rows = np.stack([w1, w2, rax, frame])
+    bot.me = np.array([0, 0, 300, 100, 10, 30, 0])
+    st = {"sel": bot.rows, "n_own": 4}
+    cmds = bot.commands(st, [1, 0, 2, 3], [0] * 4, [10] * 4, [10] * 4)  # (a barracks 160, a footman 135: 295 of 300)
+    assert [type(c).__name__ for c in cmds] == ["Build", "ImmediateOrder"] and cmds[1] == ImmediateOrder(5, code("hfoo"))
+    assert bot.frame_cancels == 1
+    bot.me = np.array([0, 0, 200, 100, 10, 30, 0])
+    assert [type(c).__name__ for c in bot.commands(st, [1, 0, 2, 0], [0] * 4, [10] * 4, [10] * 4)] == ["Build"]
+    bot.view.reserve = (1, 160, 60)  # (the barracks kept: the footman may not take its money; the barracks may)
+    assert bot.commands(st, [0, 0, 2, 0], [0] * 4, [10] * 4, [10] * 4) == []
+    assert [type(c).__name__ for c in bot.commands(st, [1, 0, 0, 0], [0] * 4, [10] * 4, [10] * 4)] == ["Build"]
