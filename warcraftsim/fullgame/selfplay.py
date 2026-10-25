@@ -1354,6 +1354,14 @@ _REPAIR = 852024  # (play.REPAIR)
 # table (features' columns) or the native one (native.py's)
 _ROW_COLS = (fx.C_ID, fx.C_TYPE, fx.C_OWNER, fx.C_X, fx.C_Y, fx.C_HP, fx.C_ORDER, fx.C_FLAGS, _unit)
 _UA_COLS = (0, 1, 2, 3, 4, 6, 10, 11, unit_from_row)
+_UNIT_COLS = list(_ROW_COLS[:8])
+
+
+def _units(rows: np.ndarray, c: tuple) -> list:
+    """The builder's units of these rows (`c`: _ROW_COLS, light _Units of their 8 columns; or _UA_COLS, Units)."""
+    if c is _ROW_COLS:
+        return [_Unit(r) for r in rows[:, _UNIT_COLS].tolist()] if len(rows) else []
+    return [unit_from_row(r) for r in rows.tolist()]
 
 
 class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below with the other commands)
@@ -1448,7 +1456,7 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         own = self._own_rows(obs)
         if own is not None:
             c = self._cols
-            mine = [c[8](r) for r in own[(own[:, c[7]] & fx.WORKER) > 0].tolist()]
+            mine = _units(own[(own[:, c[7]] & fx.WORKER) > 0], c)
         else:
             mine = [u for u in obs.units if u.owner == self.side and u.alive]
         self._mine_of, self._mine_list = obs, mine
@@ -1463,7 +1471,7 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         if own is not None:
             c = self._cols
             fl = own[:, c[7]]
-            done = [c[8](r) for r in own[(fl & fx.STRUCTURE > 0) & (fl & fx.CONSTRUCTING == 0)].tolist()]
+            done = _units(own[(fl & fx.STRUCTURE > 0) & (fl & fx.CONSTRUCTING == 0)], c)
         else:
             done = [u for u in self._mine(obs) if u.is_structure and not int(u.flags) & fx.CONSTRUCTING]
         self._done_of, self._done_list = obs, done
@@ -1833,6 +1841,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     viol = {s: 0.0 for s in trackers}
     rows_next = None  # (the step's unit rows, made for the trackers: the next step's)
     made = {s: {} for s in zs}  # each item's first game second, of the sides with a strategy
+    made_ver: dict = {}  # (each side's production's key counts when its items were last timed)
     builders = {s: TargetBuilder(cfg, vocab, s, zs[s], random.Random()) for s in zs} if cfg.get("z_build") else {}
     # --scenarios: a share of the training games start in a situation the harness sets up (scenarios.py)
     scenario = (random.choice(cfg["scenarios"]) if train and replay is None and cfg.get("scenarios")
@@ -2013,10 +2022,13 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         prod.step(obs)
         for s in zs:  # (what each side with a strategy has made: its items' first times)
             ms = made[s]
-            for code in (*prod.trained[s], *prod.built[s], *prod.research[s]):
-                if code in ms or (code in EXPANSION_ITEMS and not prod.expansions[s]):
-                    continue  # (a hall or a haunted mine: made only as an expansion, not a second one at home)
-                ms[code] = obs.game_time
+            ver = (len(prod.trained[s]), len(prod.built[s]), len(prod.research[s]), bool(prod.expansions[s]))
+            if made_ver.get(s) != ver:  # (their keys are only ever added: the same counts, no new item to time)
+                made_ver[s] = ver
+                for code in (*prod.trained[s], *prod.built[s], *prod.research[s]):
+                    if code in ms or (code in EXPANSION_ITEMS and not prod.expansions[s]):
+                        continue  # (a hall or a haunted mine: made only as an expansion, not a second one at home)
+                    ms[code] = obs.game_time
             if prod.expansions[s]:  # (an expansion made the target's hall whatever it took: undead's targets name a
                 for code in EXPANSION_ITEMS & set(zs[s].get("t") or {}):  # necropolis, the expand order haunts the
                     made[s].setdefault(code, obs.game_time)              # mine; 40 of 123 such games read missed)

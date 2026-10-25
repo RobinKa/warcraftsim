@@ -155,6 +155,10 @@ class BCAgent:
     def accepted(self, cmds: list[Command], results: list[bool]) -> None:
         """The game's answer to the last step's orders: accepted train / research orders queue, and
         accepted orders set what the workers harvest (View.assign)."""
+        if not cmds:  # (no order sent: nothing below changes; ~half the steps)
+            self.__dict__.setdefault("order_results", {})
+            self.__dict__.setdefault("refused_ctx", [])
+            return
         self.view.record_orders((c.unit, c.order, 0) for c, ok in zip(cmds, results)
                                 if ok and isinstance(c, ImmediateOrder))
         # each unit's last order and its target (features.A_LAST), as the recorded orders give them
