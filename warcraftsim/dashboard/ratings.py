@@ -73,7 +73,8 @@ def players_of(row: dict, run: str, start: float, untrained=lambda run: False,
         return None
     if key.startswith("current") or key.startswith("vs "):
         hour = max(0, int((float(row.get("time", start)) - start) // 3600))
-        suffix = {"current+z": " +z", "current+zg": " +zg"}.get(key, "")
+        suffix = {"current+z": " +z", "current+zg": " +zg", "current+human": " +human"}.get(key, "")  # (+human: from a slot at a
+        # person's income against the insane AI's double)
         a = f"{run} h{hour}{suffix}"
     else:
         a = named(key)

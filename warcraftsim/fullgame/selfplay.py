@@ -1352,7 +1352,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
             # apart, the policies' matchups differed (the AI's mean record in them 0.45 against 0.50),
             # and the AI-record share depends on the mix.
             if not paired:
-                keys = ["current"] + (["current+z"] if cfg.get("eval_z") else []) + list(cfg.get("eval_checkpoints") or [])
+                keys = (["current"] + (["current+z"] if cfg.get("eval_z") else []) + (["current+human"] if cfg.get("eval_human")
+                        else []) + list(cfg.get("eval_checkpoints") or []))
                 if cfg.get("eval_z") and cfg.get("eval_guide", 0.0) > 0 and cfg.get("guide_capable"):
                     keys.insert(2, "current+zg")  # (--eval-guide: its target followed with guidance; the worker's only)
                 rng.shuffle(keys)
@@ -1368,6 +1369,9 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
         if curr:
             ai = {**ai, **ai["by_race"].get(key, {})}
         late = curr and ai.get("delay", 0.0) > 0  # the AI starts late: an agent slot till then
+        if evaluating and not versus and not heur and eval_key == "current+human":  # (--eval-human: the policy's slot at
+            slots[side] = Agent(races[side], handicap=cfg["handicap"], difficulty="normal")  # a human's income: an agent
+            # slot takes its difficulty's income, and insane doubles it; the game's insane AI keeps its double income)
         if ai["kind"] == "ai":
             slots[1 - side] = (Agent(races[1 - side], handicap=cfg["handicap"], difficulty=ai["difficulty"]) if late
                                else BuiltinAI(races[1 - side], ai["difficulty"], handicap=cfg["handicap"]))
@@ -1990,7 +1994,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         keys[s] = ("current" if s == side or opp["kind"] == "self" else exploiter_key(cfg) if opp["kind"] == "exploiter"
                    else opp["path"])
         if s == side and opp.get("eval_key"):  # (an evaluation game of a listed checkpoint: --eval-checkpoints)
-            keys[s] = "current" if opp["eval_key"] in ("current+z", "current+zg") else opp["eval_key"]
+            keys[s] = "current" if opp["eval_key"] in ("current+z", "current+zg", "current+human") else opp["eval_key"]
             bot.view.active_f = fx.F  # (all features: a checkpoint's weights past its own are zeros)
         if keys[s] == "current" and train:  # (an evaluation game: no steps to train on)
             trajs[s] = Trajectory(cfg, out_q, {"worker": wid, "opponent": opp["name"]}, hold=replay is not None)
@@ -3803,6 +3807,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--scenarios", default="", help="scenarios (scenarios.py: clash, raid, rich; comma-separated) "
                     "a share of the training games start in")
     ap.add_argument("--scenario-share", type=float, default=0.0, help="--scenarios: the share of the training games")
+    ap.add_argument("--eval-human", type=int, default=0, help="1: evaluation games of the current policy from a slot at a "
+                    "human's income too (current+human: an agent slot takes the advisor's difficulty, and insane's doubles the "
+                    "income; against the game's insane AI, which keeps its double income, as a person would play it)")
     ap.add_argument("--macros-off", default="", help="macro orders masked, comma-separated (mix, creep, expand): the "
                     "policy learns their low-level orders itself, from the lessons and rewards")
     ap.add_argument("--label-norm", choices=("lessons", "units"), default="lessons", help="the teacher's lessons in "
@@ -4410,7 +4417,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "macros_off": args.macros_off, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "macros_off": args.macros_off, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "eval_ai": [d for d in args.eval_ai.split(",") if d],
