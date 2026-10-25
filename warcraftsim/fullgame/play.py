@@ -60,6 +60,7 @@ def unit_rows(obs: Observation, t: int) -> np.ndarray:
 
 REPAIR = 852024  # the order a worker resumes a building with
 QUEUE_MAX = 7  # a building's queue: at most this many units and research
+LOADED = 32  # (UnitFlags.LOADED: in a burrow or a transport)
 RESTORE, RENEW = 852202, 852161  # (undead acolytes' and night elf wisps' repairs: finished buildings only)
 # buildings a player needs one of (altars, the upgrade buildings, the shops): a second never sent (each unit samples
 # its own order: 2-3 workers had built one in a step; a second altar, war mill or graveyard in 24-52% of short won
@@ -172,6 +173,7 @@ class BCAgent:
         for c, ok in zip(cmds, results):  # (a buy or a pick-up the game refused: the unit is free again)
             if not ok and isinstance(c, Buy):
                 buying.pop(c.unit, None)
+                getattr(self, "hiring", {}).pop(c.unit, None)  # (its money no longer kept; audit 10)
             elif not ok and isinstance(c, PickUp):
                 picking.pop(c.unit, None)
 
@@ -201,8 +203,9 @@ class BCAgent:
         opp = (np.asarray([t, 1 - self.player, q.gold, q.lumber, q.food_used, q.food_cap, q.upkeep]) if q is not None
                else None)
         self.view.ground = getattr(obs, "ground", ())  # (--macros 2: the items lying on the ground, macros.pickable)
-        hiring = getattr(self, "hiring", {})  # (a tavern hero's hire on its way: its money kept, View.hire_class)
+        hiring = getattr(self, "hiring", {})  # (a tavern hero's hire on its way: its money kept, View.hire_class; it
         self.view.hire_class = next((self.enc.order_index.get((oid, fx.UNIT)) for oid in hiring.values()), None)
+        self.view.hiring_heroes = frozenset(hiring.values())  # counts as a hero: the masks' hero count, audit 10)
         st = self.view.step(rows, me, events, t, opp)
         sel = st["sel"][:st["n_own"]]  # the workers busy with a building order (features.building), and since when
         cur = sel[:, fx.C_ORDER]  # (by masks: a unit at a time, numpy's scalars, had been ~1% of an actor's time)
@@ -222,6 +225,8 @@ class BCAgent:
         me, costs = getattr(self, "me", None), self.enc.costs  # the step's money, spent order by order (each order's
         budget = [int(me[2]), int(me[3])] if me is not None and costs is not None else None  # mask checks it alone:
         # a tier taken, then two builds refused at 212 gold; 32-140 paid orders refused a training game; audit 9)
+        if costs is not None and getattr(self.view, "free_hero", False) and self.enc.costs_first is not None:
+            costs = self.enc.costs_first  # (the first hero free: the mask's costs, View.step)
         hire = getattr(self.view, "hire_class", None)
         kept = {r[0]: (r[1], r[2]) for r in (getattr(self.view, "reserve", None),) if r is not None}  # (as the mask:
         if hire is not None and costs is not None:  # the target's next item and a hire on its way keep theirs)
@@ -230,16 +235,34 @@ class BCAgent:
             budget = [budget[0] - sum(v[0] for v in kept.values()), budget[1] - sum(v[1] for v in kept.values())]
 
         def pay(c: int) -> bool:
-            if budget is None:
+            if budget is None or c is None:
                 return True
             back = kept.pop(c, (0, 0))  # (a kept item itself: its own money back)
             budget[0], budget[1] = budget[0] + back[0], budget[1] + back[1]
             g, l = int(costs[c][0]), int(costs[c][1])
-            if g > budget[0] or l > budget[1]:
+            # (only for what it costs, as the mask's max(0, ...): a lumber-short reserve put the lumber below 0, and every
+            # order was refused, a footman or a worker too: 230 a target game, armies never trained; audit 10)
+            if (g > 0 and g > max(0, budget[0])) or (l > 0 and l > max(0, budget[1])):
                 self.over_budget = getattr(self, "over_budget", 0) + 1
                 return False
             budget[0] -= g
             budget[1] -= l
+            return True
+
+        def produce(unit: int, oid: int, c) -> bool:
+            """A train, research or tier order at a building: not at a hall upgrading (the game refuses all of it),
+            not to a full queue, paid from the step's budget; counted in the step's queue."""
+            if unit in self.view.own_buildings:
+                m = self.view.making.get(unit)
+                if m is not None and m[0] == 4:  # (a tier under way: refused, ~1,500 workers a game at a keep; audit 10)
+                    self.upgrading_refused = getattr(self, "upgrading_refused", 0) + 1
+                    return False
+                if self.view.queued.get(unit, 0) + queue.get(unit, 0) >= QUEUE_MAX:  # (a full queue refuses it)
+                    self.full_queue = getattr(self, "full_queue", 0) + 1
+                    return False
+            if not pay(c):
+                return False
+            queue[unit] = queue.get(unit, 0) + 1
             return True
         self.last_sent: list[tuple[int, int]] = []  # (order id, kind) of what it sent: the video's panel
         self.sent_resources: list[str | None] = []  # per command: what it sends the worker to harvest (accepted())
@@ -268,13 +291,18 @@ class BCAgent:
                 continue  # it harvests that already
             if self.committed(unit):
                 continue  # on its way to build, or building: another order would cancel it
+            if int(sel[i, fx.C_FLAGS]) & LOADED:  # (a peon in a burrow, a unit in a transport: the game refuses its orders,
+                self.loaded_orders = getattr(self, "loaded_orders", 0) + 1  # moves orc's most refused kind; audit 10)
+                continue
             self.last_sent.append((oid, kind))
             if kind == fx.IMMEDIATE and oid == MIX:  # (--macros: the building trains its target's army mix)
                 from .macros import mix_choice
                 unit_code = mix_choice(getattr(self.view, "mix_target", None) or {}, getattr(self.view, "mix_have", {}),
                                        fx.rawcode(int(sel[i, fx.C_TYPE])), getattr(self.view, "mix_can", lambda u: False))
-                if unit_code is not None:
-                    out.append(ImmediateOrder(unit, int.from_bytes(unit_code.encode(), "big")))
+                if unit_code is not None:  # (as any train order: it had skipped the queue and the budget, ~160-216
+                    uid = int.from_bytes(unit_code.encode(), "big")  # refused a target game; audit 10)
+                    if produce(unit, uid, self.enc.order_index.get((uid, fx.IMMEDIATE))):
+                        out.append(ImmediateOrder(unit, uid))
             elif kind == fx.IMMEDIATE and oid == CREEP:  # (--macros: to the natural's camp, attack-moving; not again to a
                 at = getattr(self.view, "creep_at", None)  # unit attack-moving already)
                 if at is not None and int(sel[i, fx.C_ORDER]) != ATTACK:
@@ -282,7 +310,7 @@ class BCAgent:
             elif kind == fx.IMMEDIATE and oid == EXPAND:  # (--macros: the natural taken, macros.py; one worker a step)
                 where = getattr(self.view, "expand_site", None)
                 race = fx.RACES[self.view.races[self.player]]
-                if where is not None and not expanded:
+                if where is not None and not expanded and pay(self.view.enc.expand_via.get(race)):  # (its hall's cost)
                     expanded = True
                     self.view.expanding = (self.t + fx.EXPAND_PENDING_STEPS, unit)
                     mine, _, _, hx, hy = where
@@ -299,20 +327,15 @@ class BCAgent:
                 # (a hall's next tier while it trains workers: its queue cancelled first; the game takes no upgrade
                 # behind them, so the order was refused while a hall trained workers back to back: human targets
                 # missed their keep and won 4 of 26 in the real game; the target builder did this already)
-                out += [ImmediateOrder(unit, CANCEL)] * 6 + [ImmediateOrder(unit, oid)]
+                if pay(c):  # (the tier's cost: it had bypassed the step's budget; audit 10)
+                    out += [ImmediateOrder(unit, CANCEL)] * 6 + [ImmediateOrder(unit, oid)]
             elif kind == fx.IMMEDIATE and oid == CANCEL and int(sel[i, fx.C_FLAGS]) & fx.CONSTRUCTING:
                 # (a frame cancelled: a quarter of its cost lost, and the game removes it outright; the policy cancelled
                 # its own frames 2-10 times a game, the cancel learned from the demonstrations' training queues; audit 9)
                 self.frame_cancels = getattr(self, "frame_cancels", 0) + 1
-            elif kind == fx.IMMEDIATE and oid >= TYPE_CODE and unit in self.view.own_buildings \
-                    and self.view.queued.get(unit, 0) + queue.get(unit, 0) >= QUEUE_MAX:
-                self.full_queue = getattr(self, "full_queue", 0) + 1  # (a full queue refuses it: ~67 footmen a human
-                # real game, the army-mix macro's among them; audit 9)
             elif kind == fx.IMMEDIATE:
-                if oid < TYPE_CODE or fx.is_hero_code(fx.rawcode(oid)) or pay(c):  # (a hero: its first is free)
+                if oid < TYPE_CODE or produce(unit, oid, c):  # (a hero too: the first one's cost 0, the mask's costs)
                     out.append(ImmediateOrder(unit, oid))
-                    if oid >= TYPE_CODE:
-                        queue[unit] = queue.get(unit, 0) + 1
             elif kind == fx.SKILL:
                 out.append(LearnSkill(unit, oid))
             elif kind == fx.POINT:
@@ -333,8 +356,8 @@ class BCAgent:
                     shop = nearest_shop(sel, oid, sel[i])  # tavern: no hire in thousands of games)
                 hero = fx.is_hero_code(fx.rawcode(oid))
                 hiring = self.__dict__.setdefault("hiring", {})
-                if hero and (oid in hiring.values() or oid in built):  # (a hero hired by one worker at a time)
-                    shop = None
+                if hero and (hiring or oid in built or not pay(c)):  # (one tavern hire at a time: 60% of the games with
+                    shop = None  # hires had ordered two or three heroes; audit 10)
                 if shop is not None:
                     if hero:  # (paid at the sale, ~33 s later: its money kept meanwhile; 10,475 hire orders had made
                         hiring[unit] = oid  # 308 hires, the money spent during the walk; audit 8)
@@ -347,7 +370,7 @@ class BCAgent:
                     buys[key] = buys.get(key, 0) + 1
             elif kind == fx.UNIT and oid >= TYPE_CODE:  # a building made on a unit: undead's haunted gold mine, on a
                 mine = self._mine(sel, int(tgt[i]), i, plain=True)  # gold mine (it went down the buy path to the goblin
-                if mine is not None:                                # merchant before: undead never expanded)
+                if mine is not None and pay(c):                     # merchant before: undead never expanded)
                     out.append(TargetOrder(unit, oid, mine))
             elif kind == fx.UNIT and int(tgt[i]) >= st.get("ghost0", len(sel)):  # an enemy it remembers (inputs 3):
                 if oid in (ATTACK, fx.SMART):  # where it saw it (attack: attack-move); nothing else reaches it
@@ -527,7 +550,9 @@ class BCAgent:
         human = fx.rawcode(int(row[fx.C_TYPE]))[:1] == "h"  # (only a human frame takes helpers: an orc one refused, tested
         return (int(row[fx.C_OWNER]) == self.player and (fl & fx.STRUCTURE or int(row[fx.C_TYPE]) in MACHINES)  # 2026-10-23;
                 and ((int(row[fx.C_HP]) < int(row[fx.C_MAXHP]) and not fl & fx.CONSTRUCTING)  # undead and night elf ones
-                     or (fl & fx.CONSTRUCTING and human and self._can_power_build(row))))  # build themselves)
+                     or (fl & fx.CONSTRUCTING and human)) and self._can_power_build(row))  # build themselves; a repair
+        # costs a share of the building's price as a power build does: refused without its lumber, 80% of the repairs
+        # refused; audit 10)
 
     def _has_building(self, oid: int) -> bool:
         """The player has a building of type `oid` (finished or a frame) or a worker on its way to build one."""

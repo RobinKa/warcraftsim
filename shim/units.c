@@ -582,6 +582,8 @@ static void pass_unit(int u) {
     g_cur.u = 0;
     if (g_nremoved == before)  /* (still in the group: met again next pass, or gone) */
         push_int(&g_met, &g_nmet, &g_met_cap, u);
+    else  /* (dropped: its last record written, no entries kept, the handle may be another unit's later; audit 10) */
+        n2(FlushChildHashtable, g_ht, u);
 }
 
 /* the pass is over: the units the last pass met and this one did not left the game without dying ("R" records; their

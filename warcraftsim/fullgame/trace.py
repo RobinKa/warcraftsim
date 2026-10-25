@@ -193,8 +193,8 @@ class Production:
         if self.mines is None:
             self.mines = [(u.x, u.y) for u in obs.units if rawcode(u.type_id) in MINES]
         events = [e for e in obs.events if int(e.kind) in (1, 3, 6, 9, 12)]
-        if not events and self.steps % 4 != 1:  # (the owners every 4 steps and on the steps with events)
-            return
+        if not obs.events and self.steps % 4 != 1:  # (the owners every 4 steps and on any step with events: a summon's
+            return                                   # is event 17; audit 10)
         ua = getattr(obs, "unit_array", None)
         owner = self.owners
         owner.update(zip(ua[:, 0].tolist(), ua[:, 2].tolist()) if ua is not None and len(ua)

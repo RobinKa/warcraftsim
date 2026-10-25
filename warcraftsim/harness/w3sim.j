@@ -319,6 +319,7 @@ function W3S_EnumAdd takes nothing returns nothing
         // its registry entries hold the handle: flushed, or every dead unit of every episode stays
         // referenced (a game that ran for an hour had grown by 150 MB and stepped 25% slower)
         call FlushChildHashtable(w3s_ht, GetHandleId(u))
+        call SaveInteger(w3s_ht, GetHandleId(u), 5, w3s_passno)  // (met: no second R record from the pass's end)
         if w3s_prune and w3s_nremoved < 8000 then
             set w3s_removed[w3s_nremoved] = GetHandleId(u)
             set w3s_nremoved = w3s_nremoved + 1
@@ -330,6 +331,7 @@ function W3S_EnumAdd takes nothing returns nothing
             // reported as dead already: drop it (heroes stay, they can be revived)
             call GroupRemoveUnit(w3s_all, u)
             call FlushChildHashtable(w3s_ht, GetHandleId(u))
+            call SaveInteger(w3s_ht, GetHandleId(u), 5, w3s_passno)  // (met: no second R record from the pass's end)
             if w3s_nremoved < 8000 then
                 set w3s_removed[w3s_nremoved] = GetHandleId(u)
                 set w3s_nremoved = w3s_nremoved + 1
@@ -463,9 +465,11 @@ function W3S_SerUnit takes unit u returns nothing
     if not w3s_full and HaveSavedInteger(w3s_ht, hid, 3) and LoadInteger(w3s_ht, hid, 3) == h then
         return
     endif
-    call SaveInteger(w3s_ht, hid, 3, h)
-    if IsUnitType(u, UNIT_TYPE_DEAD) then
-        call SaveBoolean(w3s_ht, hid, 4, true)
+    if IsUnitInGroup(u, w3s_all) then  // (one the pass dropped writes this last record and keeps no entries: its handle
+        call SaveInteger(w3s_ht, hid, 3, h)  // may be another unit's later, never shown dead then; audit 10)
+        if IsUnitType(u, UNIT_TYPE_DEAD) then
+            call SaveBoolean(w3s_ht, hid, 4, true)
+        endif
     endif
     call W3S_Rec("U")
     call W3S_Tok(hid)

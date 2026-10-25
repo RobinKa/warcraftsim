@@ -935,7 +935,11 @@ class TechMask:
         self.items = [(c, rawcode(o)) for c, (o, k) in enumerate(vocab["orders"], start=1)
                       if o >= TYPE_CODE and k in (IMMEDIATE, POINT, UNIT)]  # (UNIT: a neutral building's ware)
         self.wares = {c for c, (o, k) in enumerate(vocab["orders"], start=1) if o >= TYPE_CODE and k == UNIT}
-        self.abilities = [(c, ABILITY_RESEARCH[o]) for c, (o, k) in enumerate(vocab["orders"], start=1) if o in ABILITY_RESEARCH]
+        names = vocab.get("order_names") or {}  # (the game's ability tables, tt.ability_research; the hand list besides)
+        table = tt.ability_research(race)
+        self.abilities = [(c, table[names[str(o)]] if names.get(str(o)) in table else ABILITY_RESEARCH[o])
+                          for c, (o, k) in enumerate(vocab["orders"], start=1)
+                          if o < TYPE_CODE and (names.get(str(o)) in table or o in ABILITY_RESEARCH)]
         if self.wares:  # (in stock from this game second on: neutral.stock_times)
             from .neutral import stock_times
             self.stock = stock_times()
@@ -973,7 +977,7 @@ class TechMask:
             elif tt.is_hero(code):
                 ok[c] = len(heroes) < 3 and code not in heroes and not tt.missing(code, self.race, have, len(heroes), self.tree)
             else:
-                ok[c] = (not tt.missing(code, self.race, have, 0, self.tree)
+                ok[c] = (not tt.missing(code, self.race, have, 0, self.tree) and code not in researching
                          and (code not in UNIT_RESEARCH or levels.get(UNIT_RESEARCH[code], 0) > 0))
         for c, r in self.abilities:
             ok[c] = levels.get(r, 0) > 0
@@ -1140,7 +1144,8 @@ class View:
         `own_hero`: the rows' mask of the player's heroes, when the caller has it."""
         if own_hero is None:
             own_hero = (rows[:, C_OWNER] == self.player) & (rows[:, C_FLAGS] & HERO > 0)
-        return bool(own_hero.any()) or any(m[0] == 2 for m in self.making.values())
+        return (bool(own_hero.any()) or any(m[0] == 2 for m in self.making.values())
+                or bool(getattr(self, "hiring_heroes", ())))  # (a tavern hire on its way: the first hero; audit 10)
 
     def tech_allowed(self, rows: np.ndarray, built: np.ndarray | None = None, own_hero: np.ndarray | None = None,
                      dead_rows: np.ndarray | None = None) -> np.ndarray:
@@ -1156,7 +1161,9 @@ class View:
             dead_rows = rows[own_hero & (fl & DEAD > 0)]
         done = frozenset(rows[built & (rows[:, C_FLAGS] & CONSTRUCTING == 0), C_TYPE].tolist())
         heroes = frozenset(rows[own_hero, C_TYPE].tolist())
-        making = frozenset(m[1] for m in self.making.values() if m[0] == 2)
+        making = frozenset(m[1] for m in self.making.values() if m[0] == 2) | frozenset(getattr(self, "hiring_heroes", ()))
+        # (a tavern hire on its way counts as a hero: the altar's free hero had been trained during the walk, the tavern
+        # hero then a second without tier 2; 0 of 1,630 targets with a tavern first hero got one first; audit 10)
         since = getattr(self, "dead_since", {})  # (a hero's revival: the game takes it ~7 s after its death; the mask
         reviving = getattr(self, "reviving", {})  # (a revival under way: an altar took its order; audit 6)
         dead = frozenset(c for i, c in dead_rows[:, [C_ID, C_TYPE]].tolist()
@@ -1164,6 +1171,11 @@ class View:
                          and self.t_now - reviving.get(i, -REVIVE_STEPS) >= REVIVE_STEPS) - making if len(dead_rows) \
             else frozenset()  # had allowed it at once: ~30 refused a game; audit 5. None dead: most steps)
         researching = frozenset(m[1] for m in self.making.values() if m[0] == 3)
+        if any(m[0] == 4 for m in self.making.values()):  # (a tier under way: its next type not again, as research;
+            from . import techtree as tt  # refused ~400-580 a tier type in fgself-146; audit 10)
+            up = tt.tree().upgrades
+            researching |= frozenset(int.from_bytes(to.encode(), "big") for m in self.making.values() if m[0] == 4
+                                     for to in up.get(rawcode(m[1]), ()))
         now = self.t_now * self.step_seconds
         key = (done, heroes | making, dead, researching, tuple(sorted(self.levels.items())), self.techmask.stocked(now))
         if key == getattr(self, "_tech_key", None):  # (the type codes as they are: their names only when it changed)
@@ -1279,6 +1291,7 @@ class View:
         g[enc.G0 + enc.ZD + enc.GX:] = self.priv(rows, opp)
         avail = None
         free = enc.costs is not None and not self.has_hero(rows, own_hero)
+        self.free_hero = free  # (the agent's step budget: the same costs, play.BCAgent.commands)
         if enc.costs is not None:  # what the player can pay for now (orders beyond it are masked)
             c = enc.costs_first if free else revive_costs(enc, rows, self.player, dead)
             gold, lumber, fu, fc = (int(me[2]), int(me[3]), int(me[4]), int(me[5])) if me is not None else (0, 0, 0, 0)

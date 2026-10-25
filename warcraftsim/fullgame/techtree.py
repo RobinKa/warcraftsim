@@ -63,6 +63,33 @@ def tree() -> Tree:
     return Tree(t.makers, {**t.needs, **heroes}, t.upgrades)
 
 
+@lru_cache(4)
+def ability_research(race: str) -> dict[str, str]:
+    """Order string -> the research the race's abilities that use it need (its AbilityFunc's Requires: defend, burrow,
+    cannibalize, sentinel, ensnare, ...), where every ability of the race with that order needs the same one. (A hand
+    list had missed most: 23,575 cannibalizes refused in fgself-146 before ghoul frenzy... before Ruac; audit 10.)"""
+    from ..data.mpq import GameArchives
+    from ..data.objects import parse_slk
+    with GameArchives() as g:
+        text = g.read(f"Units\\{RACE_FILES[race]}AbilityFunc.txt").decode("latin-1")
+        unit_abils = parse_slk(g.read("Units\\UnitAbilities.slk").decode("latin-1"))
+    letter = {"human": "h", "orc": "o", "undead": "u", "nightelf": "e"}[race]
+    mine = {c for c in tree().makers if c[0].lower() == letter and c[0] != "R"}  # (the units the race makes: their
+    used = {a.strip() for r in unit_abils if r.get("unitAbilID") in mine  # abilities, not a summon's or a creep's
+            for a in (r.get("abilList") or "").split(",") if a.strip()}   # variant with the same order)
+    names = re.split(r"(?m)^\[(\w{4})\]", text)
+    per: dict[str, set] = {}
+    for sec, block in zip(names[1::2], names[2::2]):
+        if sec not in used:
+            continue
+        kv = dict((a.strip(), b.strip()) for a, b in (line.split("=", 1) for line in block.splitlines() if "=" in line))
+        req = next((c.strip() for c in kv.get("Requires", "").split(",") if c.strip().startswith("R")), None)
+        for k in ("Order", "Orderon", "Orderoff", "Unorder"):
+            if kv.get(k):
+                per.setdefault(kv[k], set()).add(req)
+    return {o: next(iter(r)) for o, r in per.items() if len(r) == 1 and None not in r}
+
+
 @lru_cache(1)
 def research_levels() -> dict[str, int]:
     """Research -> its number of levels (UpgradeData.slk "maxlevel")."""
