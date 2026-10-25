@@ -46,16 +46,17 @@ def _rows(rng, ids: np.ndarray, t: int) -> np.ndarray:
 
 
 @pytest.fixture(params=[1, 2])
-def inputs(request):
+def inputs(request, monkeypatch):
     if request.param == 2:
         try:
             from warcraftsim.fullgame.herodata import hero_table, item_table
             hero_table(), item_table()
         except Exception as e:  # noqa: BLE001 (the game's tables: not on every machine)
             pytest.skip(f"no game data: {e}")
-    fx.set_inputs(request.param)
+    monkeypatch.setattr(fx, "A_HID", -1)  # (another test's privileged channel: set_inputs keeps it)
+    fx.set_inputs(request.param, False)
     yield request.param
-    fx.set_inputs(1)
+    fx.set_inputs(1, False)
 
 
 @pytest.mark.parametrize("active", ["all", 29])
@@ -87,6 +88,7 @@ def test_view_step_matches_the_old_path(inputs, active, monkeypatch):
                     v.assign.setdefault(u, "lumber" if u % 2 else "gold")
                 v.reserve = (2, 135, 0) if t % 3 == 0 else None
             fast = views[0].step(rows, me, events, t, opp)
+            assert views[0]._marks is not None  # (the C path taken)
             monkeypatch.setattr(fx, "PRIVILEGED", True)  # (View.step's numpy masks and hit points; the entities' C)
             old = views[1].step(rows, me, events, t, opp)
             monkeypatch.setattr(fx, "PRIVILEGED", False)
