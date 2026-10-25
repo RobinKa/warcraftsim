@@ -33,6 +33,11 @@ CACHE = ".ratings-cache-v4.json"  # (v2: the "+shops" players; v3: Echo Isles ru
 # worker started with the harness that reaches a shop in the fog; before, every buy order was refused)
 SHOPS_SINCE = 1792589220.0
 _CKPT = re.compile(r"(fgself-[\w.-]+)/(?:checkpoints/)?0*(\d+)\.pt")
+# a checkpoint the evaluation worker's gauntlet plays for a run's policy by the hour ("fgself-102/11882922" for
+# "fgself-102 h2": the run's last checkpoint saved in that hour), written by scripts/remote_eval.py: its games count
+# for that policy, so the top rated ones move as they are played anew (the user, 2026-10-25: the gauntlet's games had
+# made a player of their own, and the stale hourly one stayed first)
+ALIASES = ".gauntlet-aliases.json"
 
 
 def checkpoint_name(path: str) -> str | None:
@@ -41,9 +46,11 @@ def checkpoint_name(path: str) -> str | None:
     return f"{m.group(1)}/{m.group(2)}" if m else None
 
 
-def players_of(row: dict, run: str, start: float, untrained=lambda run: False) -> tuple[str, str] | None:
+def players_of(row: dict, run: str, start: float, untrained=lambda run: False,
+               aliases: dict | None = None) -> tuple[str, str] | None:
     """An evaluation row's (player, opponent), or None when it is no rated game. `untrained(run)`: whether that
-    checkpoint's run lacked the neutral wares the game is played with (its checkpoints then "+shops")."""
+    checkpoint's run lacked the neutral wares the game is played with (its checkpoints then "+shops"). `aliases`:
+    checkpoint -> the run's policy by the hour it stands for (the gauntlet's; ALIASES)."""
     if not row.get("eval"):
         return None
     key, opp = str(row.get("eval_key") or "current"), str(row.get("opponent") or "")
@@ -51,6 +58,8 @@ def players_of(row: dict, run: str, start: float, untrained=lambda run: False) -
 
     def named(path: str) -> str | None:
         c = checkpoint_name(path)
+        if c is not None and aliases and c in aliases:
+            return aliases[c]
         return c + " +shops" if c is not None and late and untrained(c.split("/")[0]) else c
     if key.startswith("vs "):
         b = named(key)
@@ -98,8 +107,16 @@ class Ratings:
         return "EchoIsles" in str(c.get("eval_map") or c.get("map") or "")
 
     def scan(self) -> bool:
-        """Read the runs' new evaluation rows -> whether anything changed."""
+        """Read the runs' new evaluation rows -> whether anything changed. New gauntlet aliases: every row read again
+        (its earlier games had counted for the checkpoint's own name)."""
         changed = False
+        try:
+            aliases = json.loads((self.runs_dir / ALIASES).read_text())
+        except (OSError, ValueError):
+            aliases = {}
+        if aliases != self.state.get("aliases", {}):
+            self.state = {"files": {}, "pairs": {}, "meta": {}, "aliases": aliases}
+            changed = True
         for d in sorted(self.runs_dir.iterdir()):
             info = d / "run.json"
             if not d.is_dir() or not info.exists():
@@ -135,7 +152,7 @@ class Ratings:
                         row = json.loads(line)
                     except ValueError:
                         continue
-                    pair = players_of(row, d.name, start, untrained)
+                    pair = players_of(row, d.name, start, untrained, aliases)
                     if pair is not None:
                         self._add(pair, float(row.get("outcome", 0.0)), float(row.get("time", 0.0)), d.name)
                         changed = True

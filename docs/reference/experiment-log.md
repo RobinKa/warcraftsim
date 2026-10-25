@@ -1749,11 +1749,39 @@ Fixed since, for the next run:
 
 **`fgself-148`** (from `fgself-147`'s 11480163, 13:52): audit 11's fixes. Head to head with its start and `fgself-130`.
 
+**`fgself-148`, judged at 15:25: level with its start under the same code; the new agent code cost this lineage's human.**
+* 48.8% of 257 head to head with its start, 31% of 221 with `fgself-130` (`fgself-147`: 44%).
+* Against insane 91%, with a target 56%.
+* The ratings place it level with its start under the same code. `fgself-147`'s last checkpoint, evaluated with audit 11's agent code, rated 1888, against 1992-2018 as `fgself-147`'s policy under its own. `fgself-148` rated 1883-1901.
+* The drop is the human's: 52 of 72 won against insane, from 62 of 64. It came with half the peasants (4 against 8), half the lumber, a keep in 17% of games (48%) and an altar in 81% (97%).
+* `fgself-130`'s human did not drop under the same code (66 of 70).
+* **Corrected at 17:40:** not the code. `fgself-148`'s last checkpoint won 73 of 76 human games in `fgself-149`'s evaluation, whose agent code is the same (the commits between them touch the evaluation worker's gauntlet only), and the laptop's step times were alike in both windows (38-45 ms a step). The human dip in `fgself-148`'s window has no cause found; it did not reproduce.
+* Kept as the base: it is level with its start under equal conditions.
+
+**`fgself-149`** (from `fgself-148`'s 11692643, 15:28): **`--label-norm units`**, the teacher's lessons weighed as the builder's labels. Right away, the gradient norm is 0.23 (`fgself-147`'s median 1.27, 61% clipped at 1.0), `loss/opd` 0.06 (~0.94) and `loss/teach` 0.003. Head to head with its start and `fgself-130`.
+
+**The gauntlet's games count for the hourly players they stand for** (17:40, the user saw `fgself-102 h2` still first and greyed): a run's policy by the hour has no file, so the gauntlet plays that run's checkpoint from the hour. Its games had made a player of their own ("`fgself-102/11882922 +shops`"). Now the manager writes the link (runs/.gauntlet-aliases.json) and the ratings count those games for the hourly player: `fgself-102 h2` went from 2148 to 2101 with 185 games, played today; `fgself-149` h0-h2 and `fgself-148`'s last checkpoint lead at ~2105.
+
+**The gauntlet (from `fgself-149`; the user's idea).** 4 of the laptop's 20 games play the current policy against the top 5 of the ratings (every game alike, no decay; a run's policy by the hour as that run's checkpoint from the hour): `fgself-102`'s 11882922, `fgself-100`'s 15294056, `fgself-109`'s 4991346, `fgself-108`'s 2302196, `fgself-106`'s 3453342. Ratings from old games, under older rules and against weaker opponents, had topped the table; these games rate them again under today's rules.
+
+**`fgself-149`, judged at 17:45: level head to head, better against `fgself-130` and with targets.**
+* 50.6% of 320 head to head with its start, **49.2% of 295 with `fgself-130`** (`fgself-148` 31%, `fgself-147` 44%).
+* Against insane 98.5% (its start 99.1%), **with a target 68.4% of 326** (`fgself-148` 56%).
+* Rated ~2105 (level with its start); with a target 1618-1656 (`fgself-148`: 1562-1574).
+* Tavern heroes hired in 18% of the target games with one, targets' items made 60%.
+* The gauntlet's first verdicts, the current policy's score against the old top rated:
+  * `fgself-109`'s 4991346: 86% of 56;
+  * `fgself-100`'s 15294056: 69% of 77;
+  * `fgself-108`'s 2302196: 64% of 76;
+  * `fgself-102`'s 11882922: 63% of 32;
+  * `fgself-106`'s 3453342: 53% of 51.
+* `--label-norm units` kept.
+
+**`fgself-150`** (from `fgself-149`'s 19159029, 17:47): **`--teach 3`, the lumber lesson.** Otherwise `fgself-149`. Head to head with its start and `fgself-130`. Its evaluation worker follows the gauntlet's list as it is made again.
+
 The queue:
-1. `fgself-149`: `--label-norm units` (lessons no longer drown out PPO).
-2. `fgself-150`: `--teach 3`.
-3. `fgself-151`: the new pools (`--z-pool .../strategies-echofast-narrow-tavern-bt.json --eval-z-pool .../strategies-echo-real-narrow-tavern-bt.json`).
-4. Snapshots by wall time (every 15-30 minutes).
+1. `fgself-151`: the new pools (`--z-pool .../strategies-echofast-narrow-tavern-bt.json --eval-z-pool .../strategies-echo-real-narrow-tavern-bt.json`).
+2. Snapshots by wall time (every 15-30 minutes).
 
 A heuristic opponent stronger than the learner is being built (the user's idea).
 
