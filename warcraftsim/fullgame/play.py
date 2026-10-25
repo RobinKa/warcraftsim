@@ -215,7 +215,8 @@ class BCAgent:
         self.rows = rows
         for e in obs.events:
             if int(e.kind) == int(EventKind.TREE_DEATH):
-                self.trees.pop(e.a, None)
+                if self.trees.pop(e.a, None) is not None:
+                    self.__dict__.setdefault("_fallen", []).append(e.a)  # (_nearest_tree: its table marks them)
             elif int(e.kind) == int(EventKind.ITEM_PICKUP):
                 picking.pop(e.a, None)  # (a hero sent to pick up an item: free again once it holds one)
                 if e.c and (rows[:, fx.C_ID] == e.a).any() and int(rows[rows[:, fx.C_ID] == e.a][0, fx.C_OWNER]) == self.player:
@@ -457,16 +458,28 @@ class BCAgent:
         """min(self.trees, key=its squared distance to (x, y)), the same tree: the distances in numpy first (the dict of
         ~2,000 trees walked in Python had taken 1.4 ms an order), then the few nearest by the Python key itself (numpy's
         square and Python's ** 2 differ in the last bit now and then: a near tie)."""
-        if getattr(self, "_tree_of", None) is not self.trees or self._tree_len != len(self.trees):
-            ids = list(self.trees)  # (trees are only taken away: a length is a version; the ones left in their order)
-            keep = (np.fromiter((k in self.trees for k in self._tree_ids), bool, len(self._tree_ids))
-                    if getattr(self, "_tree_of", None) is self.trees else None)
-            if keep is not None and int(keep.sum()) == len(ids):
-                self._tree_xy = self._tree_xy[keep]  # (made again from the dict: ~0.3 ms each time a tree fell)
-            else:
-                self._tree_xy = np.array([self.trees[k] for k in ids], float).reshape(-1, 2)
-            self._tree_ids, self._tree_of, self._tree_len = ids, self.trees, len(self.trees)
+        # (trees are only taken away: the table of all, made once, with the fallen ones marked (observe's list of
+        # them): the same distances, the fallen ones +inf, the candidates in the same order as a table of the ones left)
+        fallen = self.__dict__.get("_fallen")
+        if getattr(self, "_tree_of", None) is self.trees and fallen:
+            pos = self._tree_pos
+            for k in fallen:
+                j = pos.get(k)
+                if j is not None and self._tree_alive[j]:
+                    self._tree_alive[j] = False
+                    self._tree_left -= 1
+            fallen.clear()
+        if getattr(self, "_tree_of", None) is not self.trees or self._tree_left != len(self.trees):
+            ids = list(self.trees)
+            self._tree_xy = np.array([self.trees[k] for k in ids], float).reshape(-1, 2)
+            self._tree_ids, self._tree_of, self._tree_left = ids, self.trees, len(ids)
+            self._tree_pos = {k: j for j, k in enumerate(ids)}
+            self._tree_alive = np.ones(len(ids), bool)
+            if fallen:
+                fallen.clear()
         d = (self._tree_xy[:, 0] - x) ** 2 + (self._tree_xy[:, 1] - y) ** 2
+        if self._tree_left != len(self._tree_ids):
+            d = np.where(self._tree_alive, d, np.inf)
         near = np.flatnonzero(d <= d.min() * (1 + 1e-9) + 1e-6).tolist()
         return min((self._tree_ids[j] for j in near), key=lambda k: (self.trees[k][0] - x) ** 2 + (self.trees[k][1] - y) ** 2)
 
@@ -553,20 +566,45 @@ class BCAgent:
         a haunted gold mine's site."""
         race = fx.RACES[self.view.races[self.player]] if self.view is not None else "human"
         want = fx.GOLD_MINES[0] if plain else MINED_BY.get(race, fx.GOLD_MINES[0])
-        ok = sel[:, fx.C_TYPE] == want
-        if not plain and race in MINED_BY:  # (its own, finished, with room: a haunted or entangled mine takes 5 workers,
-            ok &= (sel[:, fx.C_OWNER] == self.player) & (sel[:, fx.C_FLAGS] & fx.CONSTRUCTING == 0)  # the 6th's and an
-            for j in np.flatnonzero(ok).tolist():  # unfinished one's harvest refused: 550-741 a game with an expansion
-                if self._miners(sel, j, i) >= MINE_WORKERS:  # and 15+ workers; audit 6)
-                    ok[j] = False
-        if 0 <= k < len(sel) and ok[k]:
-            return int(sel[k, fx.C_ID])
-        mines = sel[ok]
-        if not len(mines):
+        mined = not plain and race in MINED_BY  # (its own, finished, with room: a haunted or entangled mine takes 5
+        # workers, the 6th's and an unfinished one's harvest refused: 550-741 a game with an expansion and 15+ workers;
+        # audit 6. The step's candidates once, then Python's numbers: the same mines, the same integer distances)
+        cands = self._mine_cands(sel, want, mined)
+        if mined:
+            uid = int(sel[i, fx.C_ID])
+            cands = [c for c in cands if len(c[4]) - c[4].count(uid) < MINE_WORKERS]
+        n = len(sel)
+        if 0 <= k < n:
+            for c in cands:
+                if c[0] == k:
+                    return c[1]
+        if not cands:
             return None
-        ref = sel[k] if 0 <= k < len(sel) and int(sel[k, fx.C_TYPE]) in fx.GOLD_MINES else sel[i]
-        d = (mines[:, fx.C_X] - ref[fx.C_X]) ** 2 + (mines[:, fx.C_Y] - ref[fx.C_Y]) ** 2
-        return int(mines[int(np.argmin(d)), fx.C_ID])
+        r = k if 0 <= k < n and int(sel[k, fx.C_TYPE]) in fx.GOLD_MINES else i
+        rx, ry = int(sel[r, fx.C_X]), int(sel[r, fx.C_Y])
+        best = None
+        for c in cands:  # (the first of the nearest, as argmin)
+            d = (c[2] - rx) ** 2 + (c[3] - ry) ** 2
+            if best is None or d < best[0]:
+                best = (d, c[1])
+        return best[1]
+
+    def _mine_cands(self, sel: np.ndarray, want: int, mined: bool) -> list:
+        """_mine's candidates of this step's rows: [(row, id, x, y, its miners' ids or None)] of the rows of type
+        `want` (`mined`: the player's own, finished), in their order; once per rows and kind."""
+        memo = self.__dict__.get("_cands")
+        if memo is None or memo[0] is not sel:
+            memo = self._cands = (sel, {})
+        got = memo[1].get((want, mined))
+        if got is None:
+            ok = sel[:, fx.C_TYPE] == want
+            if mined:
+                ok &= (sel[:, fx.C_OWNER] == self.player) & (sel[:, fx.C_FLAGS] & fx.CONSTRUCTING == 0)
+            js = np.flatnonzero(ok).tolist()
+            vals = sel[js][:, [fx.C_ID, fx.C_X, fx.C_Y]].tolist() if js else []
+            got = memo[1][(want, mined)] = [(j, v[0], v[1], v[2], self._miner_ids(sel, j) if mined else None)
+                                            for j, v in zip(js, vals)]
+        return got
 
     def _refusal(self, c, key: str, rows: np.ndarray) -> list:
         """A refused order's context: [its kind, the unit's type, flags and current order, the target's type, whose
@@ -587,6 +625,11 @@ class BCAgent:
     def _miners(self, sel: np.ndarray, j: int, i: int) -> int:
         """Workers of the player's at mine row j (within MINE_NEAR, harvesting, or in it), not counting unit row i.
         (Each mine's, once a step: every gold harvest ordered had counted them again for every mine.)"""
+        ids = self._miner_ids(sel, j)
+        return len(ids) - ids.count(int(sel[i, fx.C_ID]))
+
+    def _miner_ids(self, sel: np.ndarray, j: int) -> list:
+        """The ids of the player's workers at mine row j (_miners'), once per step's rows and mine."""
         n = getattr(self, "view_n_own", None)
         memo = self.__dict__.get("_miners_at")
         if memo is None or memo[0] is not sel or memo[1] != n:
@@ -598,7 +641,7 @@ class BCAgent:
             near = np.hypot(w[:, fx.C_X] - sel[j, fx.C_X], w[:, fx.C_Y] - sel[j, fx.C_Y]) < MINE_NEAR
             mining = fx.isin(w[:, fx.C_ORDER], HARVESTING_CODES) | (w[:, fx.C_FLAGS] & HIDDEN > 0)
             ids = memo[2][j] = w[near & mining, fx.C_ID].tolist()
-        return len(ids) - ids.count(int(sel[i, fx.C_ID]))
+        return ids
 
     def _at_own_mine(self, sel: np.ndarray, i: int) -> bool:
         """A unit row within MINE_NEAR of one of the player's entangled or haunted gold mines."""

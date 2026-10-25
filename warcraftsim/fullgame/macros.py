@@ -146,10 +146,19 @@ def army(c: str) -> bool:
     return c[:1].islower() and c not in WORKERS
 
 
+_MAKERS: tuple = (None, None)  # (the tech tree and _makers' table of it: made once, per mix order it had cost ~400k
+# instructions; read only)
+
+
 def _makers() -> dict[str, tuple[str, ...]]:
+    global _MAKERS
     from .techtree import tree
-    return {u: ms for u, ms in tree().makers.items() if army(u) and all(m[:1].islower() for m in ms)
-            and not any(u in ups for ups in tree().upgrades.values())}
+    t = tree()
+    got = _MAKERS
+    if got[0] is not t:
+        got = _MAKERS = (t, {u: ms for u, ms in t.makers.items() if army(u) and all(m[:1].islower() for m in ms)
+                             and not any(u in ups for ups in t.upgrades.values())})
+    return got[1]
 
 
 def mix_choice(target: dict[str, float], have: dict[str, float], building: str, can) -> str | None:
