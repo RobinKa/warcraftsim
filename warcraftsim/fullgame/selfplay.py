@@ -450,9 +450,12 @@ class SharedRows:
         """Row r's answer (an actor's game): info (version, O, memory) from the server."""
         version, O, memory = info
         p, o = self.out[r], min(n_own, fx.MAX_OWN, O)
-        # (plain arrays: astype keeps the memmap subclass, and unpickling memmaps cost the learner ~5% of its time)
-        res = {k: np.array(p[i * O:i * O + o], dtype=np.int64) for i, k in enumerate(("order", "tgt", "bx", "by"))}
-        res.update(logp=np.array(p[4 * O:4 * O + o]), value=float(p[5 * O]), entropy=float(p[5 * O + 1]), version=version)
+        # (plain arrays: astype keeps the memmap subclass, and unpickling memmaps cost the learner ~5% of its time. The
+        # four choices converted to int64 in one call, each a slice of it; the value and entropy by one tolist: the
+        # same numbers, ~half the instructions of a conversion each)
+        ints, tail = p[:4 * O].astype(np.int64), p[5 * O:5 * O + 2].tolist()
+        res = {"order": ints[:o], "tgt": ints[O:O + o], "bx": ints[2 * O:2 * O + o], "by": ints[3 * O:3 * O + o],
+               "logp": p[4 * O:4 * O + o].copy(), "value": tail[0], "entropy": tail[1], "version": version}
         if memory:
             res["h"] = np.array(p[5 * O + 2:5 * O + 2 + memory])
         return res

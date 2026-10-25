@@ -158,3 +158,32 @@ def test_entangle_in_c_matches_numpy(monkeypatch):
         want = bot._entangle(rows)
         monkeypatch.setattr(featnative, "_lib", None)
         assert got == want and got_sent == bot.entangle_sent, trial
+
+
+def test_shared_rows_answer_as_before(tmp_path):
+    """SharedRows.answer (the live actors' read of the inference server's answers) as it was: the same keys, dtypes,
+    shapes and numbers, the value and entropy Python floats."""
+    from warcraftsim.fullgame import selfplay
+
+    def before(sh, r, n_own, info):
+        version, O, memory = info
+        p, o = sh.out[r], min(n_own, fx.MAX_OWN, O)
+        res = {k: np.array(p[i * O:i * O + o], dtype=np.int64) for i, k in enumerate(("order", "tgt", "bx", "by"))}
+        res.update(logp=np.array(p[4 * O:4 * O + o]), value=float(p[5 * O]), entropy=float(p[5 * O + 1]),
+                   version=version)
+        if memory:
+            res["h"] = np.array(p[5 * O + 2:5 * O + 2 + memory])
+        return res
+    rng = np.random.default_rng(4)
+    sh = selfplay.SharedRows(str(tmp_path / "rows"), 2, 8, 8, 16, create=True)
+    for trial in range(50):
+        sh.out[:] = rng.integers(-5, 400, sh.out.shape).astype(np.float32) * rng.choice([1.0, 0.37], sh.out.shape)
+        info = (int(rng.integers(0, 9)), fx.MAX_OWN, int(rng.choice([0, 16])))
+        n_own = int(rng.integers(0, 120))
+        want, got = before(sh, 1, n_own, info), sh.answer(1, n_own, info)
+        assert list(want) == list(got)
+        for k, v in want.items():
+            if isinstance(v, np.ndarray):
+                assert got[k].dtype == v.dtype and got[k].shape == v.shape and np.array_equal(got[k], v)
+            else:
+                assert type(got[k]) is type(v) and got[k] == v
