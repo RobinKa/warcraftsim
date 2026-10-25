@@ -435,3 +435,211 @@ int w3obs_parse_export(void *p, const char *data, int len, int32_t *out, int cap
     if (w3obs_parse(p, data, len) == -2) return -2;
     return w3obs_export(p, out, cap);
 }
+
+/* ---- fullgame.trace and play.unit_rows on the unit table (rows [n][UCOLS], as w3obs_table gives them) ---- */
+
+#define DEAD_FLAG 1024
+
+/* numpy's sum of a contiguous float64 array (np.add.reduce: 0.0 plus the pairwise sum of numpy/_core/src/umath/
+ * loops_utils.h.src, blocks of up to 128 summed with 8 accumulators): the same additions in the same order */
+static double pairwise_sum(const double *a, long n) {
+    if (n < 8) {
+        double res = -0.0;
+        for (long i = 0; i < n; i++) res += a[i];
+        return res;
+    }
+    if (n <= 128) {
+        double r[8];
+        for (int k = 0; k < 8; k++) r[k] = a[k];
+        long i;
+        for (i = 8; i < n - (n % 8); i += 8)
+            for (int k = 0; k < 8; k++) r[k] += a[i + k];
+        double res = ((r[0] + r[1]) + (r[2] + r[3])) + ((r[4] + r[5]) + (r[6] + r[7]));
+        for (; i < n; i++) res += a[i];
+        return res;
+    }
+    long n2 = n / 2;
+    n2 -= n2 % 8;
+    return pairwise_sum(a, n2) + pairwise_sum(a + n2, n - n2);
+}
+
+double w3obs_sum(const double *a, int n) { return 0.0 + pairwise_sum(a, n); }
+
+/* trace.material on the unit table: io[p] = player p's (0, 1) living units' value times their hit points left, as its
+ * numpy code computes it (each unit's operations in its order, the sum numpy's in the table's order). desc: the
+ * addresses of keys (sorted type ids, int64) and vals (their values, double), nk, the addresses of the worker types
+ * (int64) and their count; io in: hero_level (per level above the first; 0: none), worker_cap (0: none). (A few
+ * arguments: each one of a ctypes call costs ~1k instructions.) Returns 0, 1 when a type is not in keys (the caller
+ * makes its table again), -1 when out of memory. */
+int w3obs_material(const int32_t *rows, int n, const int64_t *desc, double *io) {
+    const int64_t *keys = (const int64_t *)(intptr_t)desc[0], *workers = (const int64_t *)(intptr_t)desc[3];
+    const double *vals = (const double *)(intptr_t)desc[1];
+    int nk = (int)desc[2], nw = (int)desc[4];
+    double hero_level = io[0], worker_cap = io[1], *out = io;
+    double *v = malloc((size_t)(n > 0 ? n : 1) * 3 * sizeof(double));
+    uint8_t *who = malloc((size_t)(n > 0 ? n : 1) * 2);
+    if (!v || !who) { free(v); free(who); return -1; }
+    double *hp = v + n, *vh = v + 2 * n;
+    uint8_t *work = who + n;
+    int m = 0, nwork[2] = {0, 0};
+    for (int i = 0; i < n; i++) {
+        const int32_t *r = rows + (size_t)i * UCOLS;
+        int32_t o = r[2];
+        if ((r[11] & DEAD_FLAG) || (o != 0 && o != 1)) continue;
+        int64_t t = r[1];
+        int lo = 0, hi = nk;  /* (np.searchsorted: the first key not below t) */
+        while (lo < hi) {
+            int mid = (lo + hi) >> 1;
+            if (keys[mid] < t) lo = mid + 1; else hi = mid;
+        }
+        if (lo == nk || keys[lo] != t) { free(v); free(who); return 1; }
+        double x = vals[lo];
+        if (hero_level != 0.0) {  /* (column 14: the hero's level; int32 arithmetic, as numpy's) */
+            int32_t lv = (int32_t)((uint32_t)r[14] - 1u);
+            x = x + hero_level * (double)(lv > 0 ? lv : 0);
+        }
+        v[m] = x;
+        hp[m] = r[7] > 0 ? (double)r[6] / (double)r[7] : 1.0;
+        who[m] = (uint8_t)o;
+        work[m] = 0;
+        for (int k = 0; k < nw; k++)
+            if (workers[k] == t) { work[m] = 1; nwork[o]++; break; }
+        m++;
+    }
+    if (worker_cap != 0.0)
+        for (int p = 0; p < 2; p++)
+            if ((double)nwork[p] > worker_cap)
+                for (int k = 0; k < m; k++)
+                    if (work[k] && who[k] == p) v[k] = v[k] * worker_cap / (double)nwork[p];
+    /* (numpy evaluates v * worker_cap / n for all units and keeps it for the player's workers: the same numbers) */
+    for (int p = 0; p < 2; p++) {  /* (each player's products, in order) */
+        int c = 0;
+        for (int k = 0; k < m; k++)
+            if (who[k] == p) vh[c++] = v[k] * hp[k];
+        out[p] = 0.0 + pairwise_sum(vh, c);
+    }
+    free(v);
+    free(who);
+    return 0;
+}
+
+/* trace.Production's owners as last seen (unit id -> owner), mirrored here: a scan hands Python only what changed; and
+ * the hired types (a set of their own) */
+#define HIRED_SLOTS 128
+typedef struct {
+    int32_t *keys, *vals;
+    uint8_t *used;
+    int cap, n;
+    int64_t hired[HIRED_SLOTS];
+    uint8_t hired_used[HIRED_SLOTS];
+} Owners;
+
+void w3obs_owners_free(void *p) {
+    Owners *o = p;
+    if (!o) return;
+    free(o->keys);
+    free(o->vals);
+    free(o->used);
+    free(o);
+}
+
+static int owners_alloc(Owners *o, int cap) {
+    o->keys = malloc((size_t)cap * sizeof(int32_t));
+    o->vals = malloc((size_t)cap * sizeof(int32_t));
+    o->used = calloc(cap, 1);
+    o->cap = cap;
+    o->n = 0;
+    return o->keys && o->vals && o->used ? 0 : -1;
+}
+
+static int hired_slot(const Owners *o, int64_t t) {
+    uint32_t i = hash32((uint32_t)t ^ (uint32_t)((uint64_t)t >> 32)) & (HIRED_SLOTS - 1);
+    while (o->hired_used[i] && o->hired[i] != t) i = (i + 1) & (HIRED_SLOTS - 1);
+    return (int)i;
+}
+
+/* the state for one game's Production: hired[nh] (at most HIRED_SLOTS / 2) the hired units' types */
+void *w3obs_owners_new(const int64_t *hired, int nh) {
+    if (nh > HIRED_SLOTS / 2) return NULL;
+    Owners *o = calloc(1, sizeof(Owners));
+    if (!o) return NULL;
+    if (owners_alloc(o, 1024)) { w3obs_owners_free(o); return NULL; }
+    for (int k = 0; k < nh; k++) {
+        int s = hired_slot(o, hired[k]);
+        o->hired_used[s] = 1;
+        o->hired[s] = hired[k];
+    }
+    return o;
+}
+
+void w3obs_owners_clear(void *p) {
+    Owners *o = p;
+    memset(o->used, 0, o->cap);
+    o->n = 0;
+}
+
+/* the slot of id: its own, or the empty one where it would go */
+static int owners_slot(const Owners *o, int32_t id) {
+    uint32_t m = o->cap - 1, i = hash32((uint32_t)id) & m;
+    while (o->used[i] && o->keys[i] != id) i = (i + 1) & m;
+    return (int)i;
+}
+
+static int owners_grow(Owners *o) {
+    Owners old = *o;
+    if (owners_alloc(o, 2 * old.cap)) { free(o->keys); free(o->vals); free(o->used); *o = old; return -1; }
+    for (int i = 0; i < old.cap; i++)
+        if (old.used[i]) {
+            int s = owners_slot(o, old.keys[i]);
+            o->used[s] = 1;
+            o->keys[s] = old.keys[i];
+            o->vals[s] = old.vals[i];
+            o->n++;
+        }
+    free(old.keys);
+    free(old.vals);
+    free(old.used);
+    return 0;
+}
+
+/* Production.step's look at the table: the (id, type, owner) of each unit of a hired type, in the table's order, then
+ * (with `owners`) each (id, owner) new or changed since the last such scan (the mirror set to it). out: [the triples'
+ * count, the pairs' count, the triples, the pairs] (at most 2 + 5 n ints). Returns 0, -1 out of memory. */
+int w3obs_prod_scan(void *p, const int32_t *rows, int n, int owners, int32_t *out) {
+    Owners *o = p;
+    int h = 0, q = 0;
+    int32_t *at = out + 2;
+    for (int i = 0; i < n; i++) {
+        const int32_t *r = rows + (size_t)i * UCOLS;
+        if (o->hired_used[hired_slot(o, r[1])]) {
+            at[0] = r[0]; at[1] = r[1]; at[2] = r[2];
+            at += 3;
+            h++;
+        }
+    }
+    if (owners)
+        for (int i = 0; i < n; i++) {
+            const int32_t *r = rows + (size_t)i * UCOLS;
+            if (2 * (o->n + 1) > o->cap && owners_grow(o)) return -1;
+            int s = owners_slot(o, r[0]);
+            if (o->used[s] && o->vals[s] == r[2]) continue;
+            if (!o->used[s]) { o->used[s] = 1; o->keys[s] = r[0]; o->n++; }
+            o->vals[s] = r[2];
+            at[0] = r[0]; at[1] = r[2];
+            at += 2;
+            q++;
+        }
+    out[0] = h;
+    out[1] = q;
+    return 0;
+}
+
+/* play.unit_rows on the unit table: out [n][cols] (int64), the step t, then the table's first cols - 1 columns */
+void w3obs_unit_rows(const int32_t *rows, int n, int64_t t, int64_t *out, int cols) {
+    for (int i = 0; i < n; i++) {
+        const int32_t *r = rows + (size_t)i * UCOLS;
+        int64_t *d = out + (size_t)i * cols;
+        d[0] = t;
+        for (int k = 1; k < cols; k++) d[k] = r[k - 1];
+    }
+}

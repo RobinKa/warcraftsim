@@ -47,9 +47,15 @@ def unit_rows(obs: Observation, t: int) -> np.ndarray:
     its 6 items' types, per ability slot its level and cooldown left in 0.1 s; zeros for others)."""
     ua = getattr(obs, "unit_array", None)
     if ua is not None:  # (native observations: the table's first 31 columns are these, after the step)
-        out = np.empty((len(ua), fx.ROW_COLS), np.int64)
-        out[:, 0] = t
-        out[:, 1:] = ua[:, :fx.ROW_COLS - 1]
+        cols = fx.ROW_COLS
+        out = np.empty((len(ua), cols), np.int64)
+        fill = unit_rows.__dict__.get("fill")  # (in C, fullgame.trace.fill_rows: imported once; numpy's casting copy
+        if fill is None:                       # had been ~30k instructions a step)
+            from .trace import fill_rows as fill
+            unit_rows.fill = fill
+        if not fill(ua, t, out, cols):
+            out[:, 0] = t
+            out[:, 1:] = ua[:, :cols - 1]
         return out
     return np.asarray([(t, u.id, u.type_id, u.owner, u.x, u.y, u.facing, u.hp, u.max_hp, u.mana, u.max_mana,
                         u.order, int(u.flags), u.visible_to, u.resource, u.hero_level, u.hero_xp, u.skill_points,

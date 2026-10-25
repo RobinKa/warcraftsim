@@ -81,6 +81,17 @@ def lib():
         L.w3obs_width.argtypes = [ctypes.c_void_p, ctypes.c_int]
         L.w3obs_export.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
         L.w3obs_parse_export.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+        P, I, D = ctypes.c_void_p, ctypes.c_int, ctypes.c_double  # (fullgame.trace's and play.unit_rows')
+        L.w3obs_sum.restype = D
+        L.w3obs_sum.argtypes = [P, I]
+        L.w3obs_material.argtypes = [P, I, P, P]
+        L.w3obs_owners_new.restype = P
+        L.w3obs_owners_new.argtypes = [P, I]
+        L.w3obs_owners_free.argtypes = [P]
+        L.w3obs_owners_clear.argtypes = [P]
+        L.w3obs_prod_scan.argtypes = [P, P, I, I, P]
+        L.w3obs_unit_rows.restype = None
+        L.w3obs_unit_rows.argtypes = [P, I, ctypes.c_int64, P, I]
         if L.w3obs_ucols() != UCOLS:
             raise RuntimeError(f"{LIB}: {L.w3obs_ucols()} unit columns, expected {UCOLS}")
         s = L.w3obs_new()
@@ -162,6 +173,8 @@ class NativeObs:
         self._cap = max(n, 2 * getattr(self, "_cap", 0))
         self._buf = (ctypes.c_int32 * self._cap)()
         self._addr = ctypes.addressof(self._buf)
+        self._ints = memoryview(self._buf).cast("B").cast("i")  # (its ints as a list: ~2.5x faster than the ctypes
+        # array's own slices)
 
     def _rows(self, which: int) -> np.ndarray:
         """Table `which` of the last observation parsed (w3obs_rows' order), as an array."""
@@ -181,7 +194,7 @@ class NativeObs:
         if n > self._cap:
             self._grow(n)
             n = self._lib.w3obs_export(self._s, self._addr, self._cap)
-        v = self._buf[:n]
+        v = self._ints[:n].tolist()
         if not v[_H_ENDED]:
             raise ProtocolError("observation has no end marker (partial write?)")
         if v[_H_VERSION] != PROTOCOL_VERSION:
