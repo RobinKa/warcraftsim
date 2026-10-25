@@ -150,8 +150,9 @@ class Teacher:
         mc = self.__dict__.get("_mix_codes")
         if mc is None or mc[0] is not self.mix:  # (the target mix's units with their type ids: the army's counts)
             mc = self._mix_codes = _mix_codes(self.mix)
-        s = (rulesnative.teach(self, rows, self.side, TAVERN, MERCHANT, _CLS[0] if _CLS else _classes(), mc[2])
-             if rulesnative.lib() is not None else _facts(rows, self.side, mc[3]))
+        s = rulesnative.teach(self, rows, self.side, TAVERN, MERCHANT, _CLS[0] if _CLS else _classes(), mc[2])
+        if s is None:
+            s = _facts(rows, self.side, mc[3])
         n_heroes, n_live, tav, mer, n_done, n_army, done_or, n_altars, altar, near_w, _, n_mix = s[:TH]
         a = TH + n_heroes
         hero_types, live = s[TH:a], s[a:a + HF * n_live]
@@ -271,6 +272,20 @@ class Teacher:
                 return [ImmediateOrder(at, fourcc(unit))] if self._due("army mix", t) else []
         return []
 
+    def _natural(self, rows: np.ndarray, mines: list, sx, sy) -> int:
+        """The natural's row when two gold mines are as near its start (an entangled mine stands on its mine):
+        numpy's argsort's choice as _expansion_facts makes it, among `mines` (the living gold mines' row, x and y, in
+        the rows' order), kept per start and their positions (argsort's order is a function of the distances)."""
+        key = (sx, sy, tuple(mines[1::3]), tuple(mines[2::3]))
+        got = self.__dict__.setdefault("_naturals", {})
+        pos = got.get(key)
+        if pos is None:
+            m = rows[mines[0::3]]
+            d = np.hypot(m[:, fx.C_X] - sx, m[:, fx.C_Y] - sy)
+            o = np.argsort(d)
+            pos = got[key] = int(o[d[o] > NATURAL_FROM_START][0])
+        return mines[3 * pos]
+
     def _expansion(self, rows: np.ndarray, player, t: int) -> list:
         """The next step of taking the natural expansion: clearing its camp, the hall (undead: the haunted mine), the
         workers that mine there."""
@@ -279,8 +294,11 @@ class Teacher:
             return []
         # (the natural and around it: in C, rulesnative.expansion; _expansion_facts the numpy's, also when two mines or
         # picked workers are as near: argsort's order of equals)
-        e = (rulesnative.expansion(self, rows, self.side, sx, sy, _classes(), NATURAL_FROM_START, 1000.0, 900.0, CAMP_NEAR)
-             if rulesnative.lib() is not None else None)
+        cls = _CLS[0] if _CLS else _classes()
+        e = rulesnative.expansion(self, rows, self.side, sx, sy, cls, NATURAL_FROM_START, 1000.0, 900.0, CAMP_NEAR)
+        if e is not None and e[0] == -2 and e[1] >= 0:  # (two mines as near its start: numpy's argsort chooses)
+            e = rulesnative.expansion(self, rows, self.side, sx, sy, cls, NATURAL_FROM_START, 1000.0, 900.0, CAMP_NEAR,
+                                      self._natural(rows, e[EH:EH + 3 * e[1]], sx, sy))
         if e is None or e[0] == -2:
             e = _expansion_facts(rows, fx.own_alive(rows, self.side), sx, sy)
         if e[0] < 0:

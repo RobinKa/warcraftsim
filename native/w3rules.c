@@ -60,6 +60,22 @@ static int in_sorted(const int64_t *keys, int n, int64_t v) {
     return lo < n && keys[lo] == v;
 }
 
+/* The head's type classes (A_KEYS, A_VALS, A_NKEYS) with a 256-bit filter of their codes: most rows' types are in
+ * none, and the filter turns them away before the binary search. */
+typedef struct { const int64_t *k, *v; int n; uint64_t f[4]; } classes_t;
+#define HASH8(t) ((unsigned)(((uint64_t)(t) * 0x9E3779B97F4A7C15ULL) >> 56))
+
+static void classes_init(classes_t *c, const int64_t *a) {
+    c->k = (const int64_t *)a[A_KEYS]; c->v = (const int64_t *)a[A_VALS]; c->n = (int)a[A_NKEYS];
+    memset(c->f, 0, sizeof c->f);
+    for (int i = 0; i < c->n; i++) { unsigned h = HASH8(c->k[i]); c->f[h >> 6] |= 1ULL << (h & 63); }
+}
+
+static inline int64_t cls_of(const classes_t *c, int64_t t) {
+    unsigned h = HASH8(t);
+    return (c->f[h >> 6] >> (h & 63)) & 1 ? cls(c->k, c->v, c->n, t) : 0;
+}
+
 /* Teacher.commands' facts of the side (A_X0: the tavern's type, A_X1: the merchant's, A_X2/A_X3: the army mix's
  * unit types (address, how many); the type classes). out[0..TH): its heroes (dead ones too), its living heroes, the
  * tavern's row and the merchant's (the first living of each, -1), its finished buildings' types, its army (no
@@ -67,18 +83,21 @@ static int in_sorted(const int64_t *keys, int n, int64_t v) {
  * finished altar (-1), the row of its worker nearest the tavern (np.argmin: the first of equals; -1), its living
  * units, how many mix types; then the heroes' types, each living hero's row, id, hit points, maximum and 6 items
  * (HF), each finished building type's first (type, id) in the rows' order, the army's count of each mix type. The
- * output holds TH + (HF + 3) * nrows + the mix types. Returns its length. */
+ * output holds TH + (HF + 4) * nrows + the mix types (its segments written apart, then packed; the workers' rows
+ * past them). Returns its length. */
 #define TH 12
 #define HF 10
 #define C_ITEM0 18
 int w3r_teach(int64_t *a) {
-    const int64_t *rows = (const int64_t *)RD(a)[0], *ck = (const int64_t *)a[A_KEYS], *cv = (const int64_t *)a[A_VALS];
+    const int64_t *rows = (const int64_t *)RD(a)[0];
+    classes_t C;
+    classes_init(&C, a);
     const int64_t *mix = (const int64_t *)a[A_X2];
-    int nrows = (int)RD(a)[1], ncols = (int)RD(a)[2], nc = (int)a[A_NKEYS], nmix = (int)a[A_X3];
+    int nrows = (int)RD(a)[1], ncols = (int)RD(a)[2], nmix = (int)a[A_X3];
     int64_t side = a[A_SIDE], tavern = a[A_X0], merchant = a[A_X1], *out = a + HEAD;
     int64_t *seg = out + TH, *heroes = seg, *live = seg + nrows, *done = seg + (1 + HF) * (size_t)nrows,
-            *counts = seg + (3 + HF) * (size_t)nrows;
-    int nh = 0, nl = 0, nd = 0, na = 0, n_altars = 0, n_alive = 0;
+            *counts = seg + (3 + HF) * (size_t)nrows, *wrows = counts + nmix;
+    int nh = 0, nl = 0, nd = 0, na = 0, n_altars = 0, n_alive = 0, nw = 0;
     int64_t tav = -1, mer = -1, done_or = 0, altar = -1, near_w = -1;
     for (int j = 0; j < nmix; j++) counts[j] = 0;
     for (int i = 0; i < nrows; i++) {
@@ -91,7 +110,7 @@ int w3r_teach(int64_t *a) {
         if (fl & HERO) heroes[nh++] = t;
         if (dead) continue;
         n_alive++;
-        int64_t k = cls(ck, cv, nc, t);
+        int64_t k = cls_of(&C, t);
         if (fl & HERO) {
             int64_t *h = live + (size_t)HF * nl++;
             h[0] = i; h[1] = r[C_ID]; h[2] = r[C_HP]; h[3] = r[C_MAXHP];
@@ -108,15 +127,15 @@ int w3r_teach(int64_t *a) {
             for (int j = 0; j < nmix; j++) if (mix[j] == t) counts[j]++;
         }
         if (k & K_ALTAR) { n_altars++; if (altar < 0 && !(fl & CONSTRUCTING)) altar = i; }
+        if (k & K_WORKER) wrows[nw++] = i;
     }
     if (tav >= 0) {
         const int64_t *tv = rows + (size_t)tav * ncols;
         double bd = 0.0;
-        for (int i = 0; i < nrows; i++) {
-            const int64_t *r = rows + (size_t)i * ncols;
-            if (r[C_OWNER] != side || (r[C_FLAGS] & DEAD) || !(cls(ck, cv, nc, r[C_TYPE]) & K_WORKER)) continue;
+        for (int q = 0; q < nw; q++) {
+            const int64_t *r = rows + (size_t)wrows[q] * ncols;
             double d = hypot((double)(r[C_X] - tv[C_X]), (double)(r[C_Y] - tv[C_Y]));
-            if (near_w < 0 || d < bd) { near_w = i; bd = d; }
+            if (near_w < 0 || d < bd) { near_w = wrows[q]; bd = d; }
         }
     }
     out[0] = nh; out[1] = nl; out[2] = tav; out[3] = mer; out[4] = nd; out[5] = na; out[6] = done_or;
@@ -128,35 +147,51 @@ int w3r_teach(int64_t *a) {
     return TH + at;
 }
 /* Teacher._expansion's facts of the side (the type classes; doubles: its start sx, sy, from_start, taken_near,
- * worker_near, camp_near): the natural (the living gold mine nearest the start but farther than from_start), and
- * around it (mx, my): out[0] 1, or -1 no natural, -2 two as near (the numpy code decides); out[1..4) its id, x and y;
- * out[4] the side's workers outside mines; out[5] its holds (halls, haunted or entangled mines) within taken_near
- * and out[6] whether those are all under construction; out[7] its workers (in mines too) within worker_near; out[8]
- * whether an own mine stands within taken_near, out[9] the first's id; out[10] whether creeps stand within
- * camp_near; out[11] its army (no building or worker), out[12] the heroes among them; out[13] whether it has a
- * worker outside mines, out[14] the id of the one nearest the natural (np.argmin: the first of equals); with holds
- * near, out[15] how many of the workers outside mines and outside worker_near go there (3 at most, the nearest
- * first: argsort's) and out[16..19) their ids (out[0] -2 when equal distances make argsort's order matter); then
- * the heroes' ids. Ids missing are 0. The output holds EH + nrows. Returns its length. */
+ * worker_near, camp_near; A_X0: the natural's row when the caller has chosen it, else -1): the natural (the living
+ * gold mine nearest the start but farther than from_start), and around it (mx, my): out[0] 1, or -1 no natural, or
+ * -2 two as near (numpy's argsort chooses: out[1] the living gold mines, then each one's row, x and y; the caller asks
+ * again with its choice); out[1..4) its id, x and y; out[4] the side's workers outside mines; out[5] its holds
+ * (halls, haunted or entangled mines) within taken_near and out[6] whether those are all under construction; out[7]
+ * its workers (in mines too) within worker_near; out[8] whether an own mine stands within taken_near, out[9] the
+ * first's id; out[10] whether creeps stand within camp_near; out[11] its army (no building or worker), out[12] the
+ * heroes among them; out[13] whether it has a worker outside mines, out[14] the id of the one nearest the natural
+ * (np.argmin: the first of equals); with holds near, out[15] how many of the workers outside mines and outside
+ * worker_near go there (3 at most, the nearest first: argsort's) and out[16..19) their ids (out[0] -2 and out[1] -1
+ * when equal distances make argsort's order matter: the caller's numpy decides it all); then the heroes' ids. Ids
+ * missing are 0. The output holds EH + 3 * nrows. Returns its length. */
 #define EH 19
 int w3r_expansion(int64_t *a) {
-    const int64_t *rows = (const int64_t *)RD(a)[0], *ck = (const int64_t *)a[A_KEYS], *cv = (const int64_t *)a[A_VALS];
+    const int64_t *rows = (const int64_t *)RD(a)[0];
+    classes_t C;
+    classes_init(&C, a);
     const double *dd = (const double *)a[A_DOUBLES];
-    int nrows = (int)RD(a)[1], ncols = (int)RD(a)[2], nc = (int)a[A_NKEYS];
+    int nrows = (int)RD(a)[1], ncols = (int)RD(a)[2];
     int64_t side = a[A_SIDE], *out = a + HEAD;
     double sx = dd[0], sy = dd[1], from_start = dd[2], taken_near = dd[3], worker_near = dd[4], camp_near = dd[5];
-    int best = -1, tie = 0;
+    int best = (int)a[A_X0], tie = 0, given = best >= 0;
     double bd = 0.0;
     for (int q = 0; q < EH; q++) out[q] = 0;
-    for (int i = 0; i < nrows; i++) {
+    if (best >= nrows) return -1;
+    for (int i = 0; i < nrows && !given; i++) {
         const int64_t *r = rows + (size_t)i * ncols;
-        if ((r[C_FLAGS] & DEAD) || !(cls(ck, cv, nc, r[C_TYPE]) & K_MINE)) continue;
+        if ((r[C_FLAGS] & DEAD) || !(cls_of(&C, r[C_TYPE]) & K_MINE)) continue;
         double d = hypot((double)r[C_X] - sx, (double)r[C_Y] - sy);
         if (!(d > from_start)) continue;
         if (best < 0 || d < bd) { best = i; bd = d; tie = 0; }
         else if (d == bd) tie = 1;
     }
-    if (best < 0 || tie) { out[0] = best < 0 ? -1 : -2; return EH; }
+    if (best < 0 && !tie) { out[0] = -1; return EH; }
+    if (tie) {  /* the living gold mines, for numpy's argsort */
+        int n = 0;
+        out[0] = -2;
+        for (int i = 0; i < nrows; i++) {
+            const int64_t *r = rows + (size_t)i * ncols;
+            if ((r[C_FLAGS] & DEAD) || !(cls_of(&C, r[C_TYPE]) & K_MINE)) continue;
+            out[EH + 3 * n] = i; out[EH + 3 * n + 1] = r[C_X]; out[EH + 3 * n + 2] = r[C_Y]; n++;
+        }
+        out[1] = n;
+        return EH + 3 * n;
+    }
     const int64_t *m = rows + (size_t)best * ncols;
     double mx = (double)m[C_X], my = (double)m[C_Y];
     int n_workers = 0, n_taken = 0, all_cons = 1, n_mining = 0, n_army = 0, nh = 0, np_ = 0;
@@ -167,7 +202,7 @@ int w3r_expansion(int64_t *a) {
         const int64_t *r = rows + (size_t)i * ncols;
         int64_t fl = r[C_FLAGS];
         if (r[C_OWNER] != side || (fl & DEAD)) continue;
-        int64_t k = cls(ck, cv, nc, r[C_TYPE]);
+        int64_t k = cls_of(&C, r[C_TYPE]);
         if (!(fl & (STRUCTURE | WORKER))) { n_army++; if (fl & HERO) heroes[nh++] = r[C_ID]; }
         if (!(k & (K_WORKER | K_HOLD | K_OWN_MINE))) continue;
         double d = hypot((double)r[C_X] - mx, (double)r[C_Y] - my);
@@ -190,11 +225,11 @@ int w3r_expansion(int64_t *a) {
     for (int i = 0; i < nrows && np_; i++) {  /* a picked distance twice: argsort's order of equals decides */
         const int64_t *r = rows + (size_t)i * ncols;
         int64_t fl = r[C_FLAGS];
-        if (r[C_OWNER] != side || (fl & (DEAD | HIDDEN)) || !(cls(ck, cv, nc, r[C_TYPE]) & K_WORKER)) continue;
+        if (r[C_OWNER] != side || (fl & (DEAD | HIDDEN)) || !(cls_of(&C, r[C_TYPE]) & K_WORKER)) continue;
         double d = hypot((double)r[C_X] - mx, (double)r[C_Y] - my);
         if (d < worker_near) continue;
         for (int j = 0; j < np_; j++)
-            if (d == pd[j] && i != pick[j]) { out[0] = -2; return EH; }
+            if (d == pd[j] && i != pick[j]) { out[0] = -2; out[1] = -1; return EH; }
     }
     int creeps = 0;
     for (int i = 0; i < nrows && !creeps; i++) {

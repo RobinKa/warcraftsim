@@ -100,16 +100,17 @@ def teach(holder, rows: np.ndarray, side: int, tavern: int, merchant: int, cls: 
     row, worker nearest the tavern row, n_alive, n_mix], then the heroes' types, the living heroes' HF fields, each
     finished building type's first (type, id), the army's count of each of the mix's types (`mix`: (an int64 array of
     them, its address, how many)); None without the library."""
-    L = lib()
+    L = _lib or lib()
     if L is None:
         return None
     r = _rows(rows)
-    need = TH + (HF + 3) * r[2] + mix[2]
+    need = TH + (HF + 4) * r[2] + mix[2]
     c = holder.__dict__.get("_rules_teach")
-    if c is None or c[2] < need or c[3] != (side, tavern, merchant, cls[2], cls[3], cls[4], mix[1], mix[2]):
+    if (c is None or c[2] < need or c[3][0] is not cls or c[3][1] is not mix
+            or c[3][2:] != (side, tavern, merchant)):  # (cls and mix: the tables, kept, and their addresses)
         c = holder._rules_teach = _arg(need, {A_SIDE: side, A_X[0]: tavern, A_X[1]: merchant, A_X[2]: mix[1],
                                               A_X[3]: mix[2], A_KEYS: cls[2], A_VALS: cls[3], A_NKEYS: cls[4]},
-                                       keep=(side, tavern, merchant, cls[2], cls[3], cls[4], mix[1], mix[2]))
+                                       keep=(cls, mix, side, tavern, merchant))
     a = c[0]
     a[A_ROWS] = r[1]
     k = L.w3r_teach(c[1])
@@ -117,21 +118,24 @@ def teach(holder, rows: np.ndarray, side: int, tavern: int, merchant: int, cls: 
 
 
 def expansion(holder, rows: np.ndarray, side: int, sx: float, sy: float, cls: tuple, from_start: float,
-              taken_near: float, worker_near: float, camp_near: float) -> list | None:
-    """w3r_expansion's facts (its comment), None without the library."""
-    L = lib()
+              taken_near: float, worker_near: float, camp_near: float, nat: int = -1) -> list | None:
+    """w3r_expansion's facts (its comment; `nat`: the natural's row, the caller's choice, or -1), None without the
+    library."""
+    L = _lib or lib()
     if L is None:
         return None
     r = _rows(rows)
     key = (side, cls[2], cls[3], cls[4], from_start, taken_near, worker_near, camp_near)
     c = holder.__dict__.get("_rules_expansion")
-    if c is None or c[2] < EH + r[2] or c[3] != key:
-        c = holder._rules_expansion = _arg(EH + r[2], {A_SIDE: side, A_KEYS: cls[2], A_VALS: cls[3], A_NKEYS: cls[4]},
+    if c is None or c[2] < EH + 3 * r[2] or c[3] != key:
+        c = holder._rules_expansion = _arg(EH + 3 * r[2], {A_SIDE: side, A_KEYS: cls[2], A_VALS: cls[3], A_NKEYS: cls[4]},
                                            (0.0, 0.0, from_start, taken_near, worker_near, camp_near), key)
     a, d = c[0], c[4]
-    a[A_ROWS] = r[1]
+    a[A_ROWS], a[A_X[0]] = r[1], nat
     d[0], d[1] = sx, sy
     k = L.w3r_expansion(c[1])
+    if k < 0:
+        raise IndexError(f"w3r_expansion: row {nat}")
     return a[HEAD:HEAD + k].tolist()
 
 
@@ -139,7 +143,7 @@ def modes(holder, rows: np.ndarray, need: int, setup) -> list | None:
     """w3r_modes' measures (its comment), None without the library. `setup()`: the tracker's constants, (side, the
     enemy's start, near2, scout2, its own start or None, far2, at2, the tables of the halls, gold mines, workers and
     food), asked once (they are fixed)."""
-    L = lib()
+    L = _lib or lib()
     if L is None:
         return None
     r = _rows(rows)

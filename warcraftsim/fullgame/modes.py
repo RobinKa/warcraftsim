@@ -38,6 +38,7 @@ PARAMS = {"no_rush": ((240.0, 600.0), HORIZON), "rush": ((180.0, 360.0), HORIZON
           "harass": ((3.0, 8.0), 10.0), "scout": ((0.0, 0.0), 1.0), "army": ((20.0, 60.0), 100.0),
           "low_upkeep": ((0.0, 0.0), 1.0)}
 RUSH_UNITS = 4  # rush: this many army units at once
+DECIDED_AT = {"workers": 480.0, "creep": 420.0, "harass": 600.0, "army": 600.0}  # (the second each is decided at)
 INTEGER = {"workers", "creep", "harass", "army"}
 # unit flags (protocol.UnitFlags) and row columns (features)
 HERO, STRUCTURE, WORKER, DEAD = 1, 2, 4, 1024
@@ -105,9 +106,8 @@ class Tracker:
         # workers, 32 the heroes' level, each while a mode not yet decided asks for it)
         need = ((1 if ("expand" in m and "expand" not in done) or ("no_expand" in m and "no_expand" not in done) else 0)
                 | (2 if "harass" in m else 0) | (4 if "army" in m and "army" not in done else 0))
-        if rulesnative.lib() is not None:
-            got = rulesnative.modes(self, rows, need, self._constants)
-        else:
+        got = rulesnative.modes(self, rows, need, self._constants)
+        if got is None:
             got = self._measure_np(rows, need | (8 if "scout" in m and "scout" not in done else 0)
                                    | (16 if "workers" in m and "workers" not in done else 0)
                                    | (32 if "creep" in m and "creep" not in done else 0))
@@ -141,7 +141,7 @@ class Tracker:
             elif k == "low_upkeep" and now <= HORIZON and food_used > 50:
                 self.v[k] = min(1.0, self.v[k] + dt / HORIZON)
             elif k in ("workers", "creep", "harass", "army"):
-                at = {"workers": 480.0, "creep": 420.0, "harass": 600.0, "army": 600.0}[k]
+                at = DECIDED_AT[k]
                 have = workers if k == "workers" else level if k == "creep" else self.kills if k == "harass" else food
                 if have >= x:
                     done.add(k)
