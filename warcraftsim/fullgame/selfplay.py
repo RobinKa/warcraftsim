@@ -1426,6 +1426,7 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         from ..protocol import UnitFlags
         self.observe(obs)
         self.held = None
+        self.lumber_short = False  # (a due item short of lumber this step: the teacher's lumber lesson, Teacher.economy)
         self.agent_now = {fx.rawcode(o) for x in ordered
                           if (o := getattr(x, "building", None) or getattr(x, "item", None) or getattr(x, "order", 0)) >= fx.TYPE_CODE}
         p = obs.players.get(self.side)
@@ -1471,6 +1472,7 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             cmds = self.order(item, obs, mine, done, p, t)
             if not cmds and self.why_not:
                 self.blocked.setdefault(item, Counter())[self.why_not] += 1
+                self.lumber_short = self.lumber_short or self.why_not == "lumber"
                 if self.why_not in ("gold", "lumber") and save is None:  # (the first one short of money)
                     k = self._class(item)
                     save = self.held = (k, int(self.costs[k][0]), int(self.costs[k][1]))
@@ -1886,6 +1888,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                 can = (None if av is None else  # (the units the policy could train now: the army mix teaches only those)
                        lambda u, k=fx.IMMEDIATE, av=av, oix=oix: (c := oix.get((int.from_bytes(u.encode(), "big"), k))) is not None
                        and bool(av[c]))
+                b = builders.get(s)  # (the target's next items short of lumber, the side's choppers: the lumber lesson)
+                tc.economy = (bool(b is not None and getattr(b, "lumber_short", False)),
+                              {u for u, r in bots[s].view.assign.items() if r == "lumber"}, bots[s].trees)
                 c = tc.commands(rows, obs.players.get(s), obs.game_time, t, can, getattr(bots[s].view, "pickers", ()))
                 q = obs.players.get(s)
                 if c and q is not None:

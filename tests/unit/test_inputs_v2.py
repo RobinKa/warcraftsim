@@ -1179,3 +1179,24 @@ def test_step_budget_and_no_frame_cancel(v2):
     bot.view.reserve = (1, 160, 60)  # (the barracks kept: the footman may not take its money; the barracks may)
     assert bot.commands(st, [0, 0, 2, 0], [0] * 4, [10] * 4, [10] * 4) == []
     assert [type(c).__name__ for c in bot.commands(st, [1, 0, 0, 0], [0] * 4, [10] * 4, [10] * 4)] == ["Build"]
+
+
+def test_teacher_lumber_lesson(v2):
+    """A target's next item short of lumber (the builder's) and fewer than CHOPPERS on lumber: the race's chopper nearest
+    the tree nearest its hall harvests it (the policy had all but stopped chopping; audit 9's follow-up)."""
+    import random
+    from types import SimpleNamespace
+
+    from warcraftsim.fullgame.teacher import HARVEST, Teacher
+    from warcraftsim.protocol import TargetOrder
+    player = SimpleNamespace(gold=500, lumber=0, food_used=10, food_cap=22)
+    hall = _unit(1, 0, -5184, 2944, 1, fx.STRUCTURE, "htow")
+    near, far = _unit(2, 0, -5000, 3200, 1, fx.WORKER, "hpea"), _unit(3, 0, -4000, 2000, 1, fx.WORKER, "hpea")
+    trees = {900: (-4800.0, 3500.0), 901: (2000.0, 0.0)}
+    tc = Teacher(0, "human", random.Random(0), {"t": {"hkee": 200.0}})
+    tc.economy = (True, set(), trees)
+    assert tc.commands(np.stack([hall, near, far]), player, 100.0, 0) == [TargetOrder(2, HARVEST, 900)]
+    tc.economy = (True, {11, 12, 13, 14, 15}, trees)  # (five chop already)
+    assert tc.commands(np.stack([hall, near, far]), player, 120.0, 40) == []
+    tc.economy = (False, set(), trees)  # (nothing short of lumber)
+    assert tc.commands(np.stack([hall, near, far]), player, 140.0, 80) == []

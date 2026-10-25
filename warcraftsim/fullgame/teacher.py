@@ -26,6 +26,10 @@ selfplay --teach 1 (needs --neutral 1: the orders it teaches are the neutral bui
                    (No policy had ever expanded: 0% of its games, people 81% of Echo Isles'. Night elves: the agent
                    has a tree of life entangle the mine, play.BCAgent._entangle, and the workers then mine that.)
 
+    lumber:        a target's next item short of lumber (the builder's) and fewer than CHOPPERS on lumber: the race's
+                   chopper (undead: a ghoul) nearest the tree nearest its hall harvests it (the policy had all but stopped
+                   chopping: human 38 lumber a minute to 872 gold)
+
 Each kind at most every GAP steps a side, so a long wait for the money is not a label a step."""
 
 from __future__ import annotations
@@ -67,6 +71,10 @@ CAMP_NEAR = 900.0  # creeps this near the natural mine guard it
 HARVEST = 852018
 HIDDEN = 16  # (UnitFlags.HIDDEN: a worker inside a gold mine)
 MIX_FROM, MIX_SLACK, MIX_LEAST = 120.0, 0.15, 5
+# the lumber lesson's choppers (undead's: ghouls) and how many at most: people put ~5 workers on lumber (2-3 ghouls),
+# the policy almost none (human 38 lumber a minute to 872 gold in fgself-145; fgself-120: 105), and a target's items
+# waited for lumber more than for anything else (a keep 516k blocked steps, halls of the dead 1.1M; audit 9)
+CHOPPERS = {"human": ("hpea", 5), "orc": ("opeo", 5), "undead": ("ugho", 3), "nightelf": ("ewsp", 5)}
 NEAR_MERCHANT = 2500.0
 ENEMY_NEAR = 800.0  # (an item lesson waits while an enemy unit is this near the hero: a fight)
 USESLOT = 852008
@@ -187,7 +195,29 @@ class Teacher:
             out += self._expansion(rows, alive, player, t)
         if self.mix and now >= MIX_FROM:
             out += self._mix(alive, t)
+        eco = getattr(self, "economy", None)  # (short, the choppers' ids, the trees: play_one's, from the builder)
+        if eco is not None and eco[0] and eco[2] and t - self.last.get("lumber", -GAP) >= GAP:
+            out += self._lumber(alive, eco[1], eco[2], t)
         return out
+
+    def _lumber(self, alive: np.ndarray, choppers: set, trees: dict, t: int) -> list:
+        """A target's next item short of lumber and fewer than CHOPPERS on it: the race's chopper nearest the tree
+        nearest its hall (one not chopping, not hidden, not building) harvests that tree."""
+        code, most = CHOPPERS.get(self.race, (None, 0))
+        if code is None or len(choppers) >= most:
+            return []
+        fl = alive[:, fx.C_FLAGS]
+        cand = alive[(alive[:, fx.C_TYPE] == fourcc(code)) & (fl & (HIDDEN | fx.STRUCTURE) == 0)
+                     & (alive[:, fx.C_ORDER] < fx.TYPE_CODE) & ~np.isin(alive[:, fx.C_ID], list(choppers))]
+        halls = alive[fx.isin(alive[:, fx.C_TYPE], HALL_CODES)]
+        if not len(cand) or not len(halls):
+            return []
+        ids = np.fromiter(trees.keys(), np.int64, len(trees))
+        xy = np.asarray(list(trees.values()), np.float64).reshape(-1, 2)
+        h = halls[0]
+        k = int(np.argmin((xy[:, 0] - h[fx.C_X]) ** 2 + (xy[:, 1] - h[fx.C_Y]) ** 2))
+        w = cand[int(np.argmin((cand[:, fx.C_X] - xy[k, 0]) ** 2 + (cand[:, fx.C_Y] - xy[k, 1]) ** 2))]
+        return [TargetOrder(int(w[fx.C_ID]), HARVEST, int(ids[k]))] if self._due("lumber", t) else []
 
     def _first_hero(self, alive: np.ndarray, player, t: int, build: bool = True) -> list:
         """A side without a hero: its altar trains its first hero, and with no altar (nor one being built) a worker
