@@ -87,6 +87,9 @@ class Plan:
     creep_until: float = 480.0
     creep_units: int = 3
     expand_at: float = 420.0  # the natural expansion from then (its camp cleared first), or its main mine low
+    # against the races whose first waves come at ~4:30 (the learner's undead and orc): another build order and towers
+    rush_builds: tuple[tuple[float, int, str, int], ...] | None = None
+    rush_towers: tuple[tuple[float, str, int], ...] | None = None
 
 
 PLANS: dict[str, Plan] = {
@@ -97,6 +100,11 @@ PLANS: dict[str, Plan] = {
                 (240.0, 26, "ofor", 1)),
         # watch towers in front of the base (the learner's waves fight it there; the lumber had piled up unspent)
         towers=((300.0, "owtw", 2), (420.0, "owtw", 4)),
+        # against undead and orc an earlier war mill and more towers sooner: every loss to the learner's undead came
+        # at 6.5-9.6 minutes, its ghouls twice the grunts, and the games that held to ~13 minutes were won (its mine dry)
+        rush_builds=((0.0, 0, "oalt", 1), (0.0, 0, "obar", 1), (55.0, 9, "obar", 2), (110.0, 14, "obar", 3),
+                     (150.0, 16, "ofor", 1)),
+        rush_towers=((200.0, "owtw", 2), (300.0, "owtw", 4), (420.0, "owtw", 6)),
         army=(("ogru", 1.0), ("ohun", 1.0)),
         research=((360.0, "Rome"), (480.0, "Rora"), (600.0, "Roar")),
         lumber_workers=((0.0, 3),),  # (5 had floated 600-1,300 lumber: peons the army lacked)
@@ -872,7 +880,8 @@ class HeuristicAgent:
 
     def _build_order(self) -> list[Command]:
         out: list[Command] = []
-        for at, food, code, n in self.plan.builds:
+        rush = self.opt["rush_caution"] and self.enemy_race in ("undead", "orc")
+        for at, food, code, n in (self.plan.rush_builds if rush and self.plan.rush_builds else self.plan.builds):
             if self.now < at or self.food < food:
                 continue
             if self.have[code] >= n:
@@ -884,7 +893,8 @@ class HeuristicAgent:
             if not c:  # (not affordable yet: its money kept from the army)
                 self._keep(*self._cost(code))
             break
-        for at, code, n in self.plan.towers if self.opt["towers_built"] else ():
+        towers = self.plan.rush_towers if rush and self.plan.rush_towers else self.plan.towers
+        for at, code, n in towers if self.opt["towers_built"] else ():
             if self.now >= at and self.have[code] < n and self._tech_ok(code):
                 hx, hy = self.home  # (between the hall and the rally point: where the waves come in)
                 out += self._build(code, near=((hx + self.rally[0]) / 2, (hy + self.rally[1]) / 2))
