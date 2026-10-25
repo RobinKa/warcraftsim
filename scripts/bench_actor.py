@@ -5,7 +5,7 @@ implementation's with (every step's commands, every chunk put to the learner, th
 
     python scripts/bench_actor.py record --run fgself-140 --races human undead --out runs/bench/actor-hu.pkl
     python scripts/bench_actor.py replay runs/bench/actor-hu.pkl [--reps 3] [--profile] [--save ref.pkl | --compare ref.pkl]
-        [--instructions] [--root another-tree]
+        [--instructions] [--functions view,teacher,... | all] [--root another-tree]
 
 record plays one real game between the run's current policy and itself on the run's training map (the policy on the
 CPU; its answers and every observation the game sent are kept); replay feeds play_one those observations (through the
@@ -263,10 +263,78 @@ def same(a, b, path="") -> list[str]:
     return [] if a == b or (a != a and b != b) else [path]
 
 
+# --functions: what each counts, as "module:attribute" under warcraftsim.fullgame (or warcraftsim for native)
+FUNCTIONS = {
+    "play_one": "selfplay:play_one", "observe": "play:BCAgent.observe", "view": "features:View.step",
+    "view_step": "featnative:view_step", "side": "featnative:side", "afford": "featnative:afford",
+    "tech": "features:View.tech_allowed", "commands": "play:BCAgent.commands", "accepted": "play:BCAgent.accepted",
+    "skills": "play:BCAgent._auto_skills", "teacher": "teacher:Teacher.commands", "modes": "modes:Tracker.step",
+    "builder": "selfplay:TargetBuilder.commands", "order": "selfplay:TargetBuilder.order",
+    "material": "selfplay:material", "production": "trace:Production.step", "mismatch": "strategy:mismatch",
+    "mix_gap": "strategy:mix_gap", "add": "selfplay:Trajectory.add", "flush": "selfplay:Trajectory.flush",
+    "put": "bench:Queue.put", "parse": "native:NativeObs.parse", "merge": "native:NativeObs.merge",
+    "unit_rows": "selfplay:unit_rows", "site": "macros:site", "camp": "macros:camp",
+}
+
+
+def counter():
+    """A function reading this thread's user-space instructions (perf_event_open; kernel.perf_event_paranoid <= 2)."""
+    import ctypes
+    import struct
+    attr = bytearray(128)
+    struct.pack_into("IIQ", attr, 0, 0, 128, 1)  # PERF_TYPE_HARDWARE, its size, PERF_COUNT_HW_INSTRUCTIONS
+    struct.pack_into("Q", attr, 40, (1 << 5) | (1 << 6))  # exclude_kernel, exclude_hv
+    libc = ctypes.CDLL(None, use_errno=True)
+    fd = libc.syscall(298, ctypes.c_char_p(bytes(attr)), 0, -1, -1, 0)
+    if fd < 0:
+        raise SystemExit(f"perf_event_open: errno {ctypes.get_errno()}")
+    rd = os.read
+    return lambda: int.from_bytes(rd(fd, 8), "little")
+
+
+def functions(rec: dict, cfg: dict, vocab: dict, names: list[str]) -> None:
+    """--functions: the inclusive instructions of these functions a side-step over a warm replay (each call between two
+    reads of the counter; the reads' own cost taken off)."""
+    import importlib
+    now = counter()
+    tot: dict[str, list] = {}
+    for name in names:
+        mod, attr = FUNCTIONS[name].split(":")
+        owner = sys.modules[__name__] if mod == "bench" else importlib.import_module(
+            "warcraftsim.native" if mod == "native" else f"warcraftsim.fullgame.{mod}")
+        *path, last = attr.split(".")
+        for x in path:
+            owner = getattr(owner, x)
+        f, t = getattr(owner, last), tot.setdefault(name, [0, 0])
+        static = isinstance(getattr(owner, "__dict__", {}).get(last), staticmethod)
+
+        def wrapped(*args, _f=f, _t=t, **kw):
+            x0 = now()
+            try:
+                return _f(*args, **kw)
+            finally:
+                _t[0] += now() - x0
+                _t[1] += 1
+        setattr(owner, last, staticmethod(wrapped) if static else wrapped)
+    x0 = now()
+    for _ in range(1000):
+        y = now()
+    over = (now() - x0) / 1000.0 * 2 + 2000  # (two reads and the wrapper's frame, about)
+    replay_once(rec, cfg, vocab)
+    sides = sum(len(x) for x in rec["answers"])
+    print(f"inclusive instructions a side-step ({sides} side-steps; ~{over:.0f} a call taken off):")
+    for name, (n, calls) in sorted(tot.items(), key=lambda kv: -kv[1][0]):
+        print(f"  {name:12s} {(n - over * calls) / sides / 1e3:9.1f} k  ({calls / sides:.2f} calls a side-step)")
+
+
 def replay(a) -> int:
     rec = pickle.loads(a.record.read_bytes())
     cfg, vocab = settings(rec["run"])
     cfg.pop("_wine")
+    if a.functions:  # (a warm replay first, then the counted one)
+        replay_once(rec, cfg, vocab)
+        functions(rec, cfg, vocab, list(FUNCTIONS) if a.functions == "all" else a.functions.split(","))
+        return 0
     prof = cProfile.Profile() if a.profile else None
     global PERF
     PERF = PerfControl()
@@ -351,6 +419,8 @@ def main() -> int:
     p.add_argument("--compare", type=Path)
     p.add_argument("--root", type=Path, help="another tree's warcraftsim to time (e.g. the code before a change)")
     p.add_argument("--instructions", action="store_true", help="count instructions instead (perf stat)")
+    p.add_argument("--functions", default="", help="inclusive instructions a side-step of these functions (comma-"
+                   "separated names of FUNCTIONS, or all), counted around each call on a warm replay")
     a = ap.parse_args()
     if getattr(a, "instructions", False):
         return counted(sys.argv[1:])
