@@ -113,12 +113,15 @@ def build_seconds() -> dict[str, float]:
     with GameArchives() as g:
         units = parse_slk(g.read("Units\\UnitBalance.slk").decode("latin-1"))
         upgrades = parse_slk(g.read("Units\\UpgradeData.slk").decode("latin-1"))
+    from .neutral import MERCENARIES, TAVERN_HEROES
     out = {}
     for r in units:
         try:
             out[r.get("unitBalanceID")] = float(r.get("bldtm"))
         except (TypeError, ValueError):
             pass
+    for c in (*TAVERN_HEROES, *MERCENARIES):  # (a neutral building's ware is bought at once, no build time; audit 10)
+        out[c] = 0.0
     for r in upgrades:
         try:
             out[r.get("upgradeid")] = float(r.get("timebase"))

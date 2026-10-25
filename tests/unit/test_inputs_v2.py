@@ -800,7 +800,7 @@ def test_own_units_past_the_cap_keep_heroes_army_and_producers(v2):
 
 def test_tier_order_cancels_a_busy_halls_queue(v2):
     """A hall's next tier while it trains workers: its queue cancelled first (the game takes no upgrade behind them);
-    a hall already upgrading, or idle, gets the order alone."""
+    an idle hall gets the order alone, a hall already upgrading none (the game refuses it: audit 10's probe)."""
     from warcraftsim.fullgame.play import CANCEL, BCAgent
     from warcraftsim.protocol import ImmediateOrder
     v = {**AUDIT_VOCAB, "types": AUDIT_VOCAB["types"] + [code("hkee")], "orders": AUDIT_VOCAB["orders"] + [[code("hkee"), fx.IMMEDIATE]]}
@@ -813,8 +813,8 @@ def test_tier_order_cancels_a_busy_halls_queue(v2):
     assert bot.commands(st, [k], [0], [0], [0]) == [ImmediateOrder(1, code("hkee"))]  # (idle)
     bot.view.busy, bot.view.making = {1}, {1: (0, code("hpea"))}
     assert bot.commands(st, [k], [0], [0], [0]) == [ImmediateOrder(1, CANCEL)] * 6 + [ImmediateOrder(1, code("hkee"))]
-    bot.view.making = {1: (4, code("hkee"))}  # (upgrading already: not cancelled)
-    assert bot.commands(st, [k], [0], [0], [0]) == [ImmediateOrder(1, code("hkee"))]
+    bot.view.making = {1: (4, code("htow"))}  # (upgrading already: refused, not sent)
+    assert bot.commands(st, [k], [0], [0], [0]) == []
 
 
 def test_teacher_teaches_the_target_army_mix(v2):
@@ -1200,3 +1200,26 @@ def test_teacher_lumber_lesson(v2):
     assert tc.commands(np.stack([hall, near, far]), player, 120.0, 40) == []
     tc.economy = (False, set(), trees)  # (nothing short of lumber)
     assert tc.commands(np.stack([hall, near, far]), player, 140.0, 80) == []
+
+
+def test_budget_only_for_what_an_order_costs(v2):
+    """A lumber-short reserve leaves gold-only orders their gold (the budget's lumber below 0 had refused a footman and
+    a worker too: 230 a target game, armies never trained; audit 10); a hall upgrading takes no train order."""
+    from warcraftsim.fullgame.play import BCAgent
+    from warcraftsim.protocol import ImmediateOrder
+    v = {**VOCAB, "orders": [[code("hkee"), fx.IMMEDIATE], [code("hfoo"), fx.IMMEDIATE], [code("hpea"), fx.IMMEDIATE]]}
+    costs = np.array([[0, 0, 0], [320, 210, 0], [135, 0, 2], [75, 0, 1]])
+    bot = BCAgent(None, v, 0, None, costs=costs)
+    bot.view = bot.enc.view(0, 1.0, [0, 1])
+    bot.trees, bot.building_since, bot.t = {}, {}, 0
+    hall, rax = _unit(1, 0, -5184, 2944, 1, fx.STRUCTURE, "htow"), _unit(5, 0, -4800, 2900, 1, fx.STRUCTURE, "hbar")
+    bot.rows = np.stack([hall, rax])
+    bot.view.own_buildings = {1, 5}
+    bot.me = np.array([0, 0, 500, 20, 10, 30, 0])
+    bot.view.reserve = (1, 320, 210)  # (the keep kept: short of lumber, 20 of 210)
+    st = {"sel": bot.rows, "n_own": 2}
+    assert bot.commands(st, [3, 2], [0, 0], [0, 0], [0, 0]) == [ImmediateOrder(1, code("hpea"))]  # (500 - 320 kept:
+    bot.me = np.array([0, 0, 600, 20, 10, 30, 0])  # 180, a worker; with 600, 280: a worker 75 and a footman 135)
+    assert bot.commands(st, [3, 2], [0, 0], [0, 0], [0, 0]) == [ImmediateOrder(1, code("hpea")), ImmediateOrder(5, code("hfoo"))]
+    bot.view.making[1] = (4, code("htow"))  # (the hall upgrading to a keep: no worker there)
+    assert bot.commands(st, [3, 0], [0, 0], [0, 0], [0, 0]) == [] and bot.upgrading_refused == 1
