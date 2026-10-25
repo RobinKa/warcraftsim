@@ -22,18 +22,24 @@ enum { F_T = 4, F_P = 14, F_O = 1, F_D = 5, F_E = 4, F_C = 1, F_U = UF, F_R = 1,
 
 typedef struct { int32_t *v; int n, cap, width; } Rows;
 
-static int rows_push(Rows *r, const int32_t *vals, int k) {
+/* a new row at the end (its fields left to the caller), NULL when out of memory */
+static int32_t *rows_add(Rows *r) {
     if (r->n == r->cap) {
         int cap = r->cap ? 2 * r->cap : 64;
         int32_t *v = realloc(r->v, (size_t)cap * r->width * sizeof(int32_t));
-        if (!v) return -1;
+        if (!v) return NULL;
         r->v = v;
         r->cap = cap;
     }
-    int32_t *dst = r->v + (size_t)r->n * r->width;
-    memset(dst, 0, r->width * sizeof(int32_t));
-    memcpy(dst, vals, (size_t)(k < r->width ? k : r->width) * sizeof(int32_t));
-    r->n++;
+    return r->v + (size_t)(r->n++) * r->width;
+}
+
+static int rows_push(Rows *r, const int32_t *vals, int k) {
+    int32_t *dst = rows_add(r);
+    if (!dst) return -1;
+    if (k > r->width) k = r->width;
+    memcpy(dst, vals, (size_t)k * sizeof(int32_t));
+    if (k < r->width) memset(dst + k, 0, (size_t)(r->width - k) * sizeof(int32_t));
     return 0;
 }
 
@@ -206,12 +212,9 @@ static int32_t i32(int64_t v) { return (int32_t)(uint32_t)(uint64_t)v; }
 static int take_record(State *s, char tag, int i, int ntok, int32_t *out, int *next) {
     int base = base_fields(tag);
     int limit = base + (tag == 'U' ? HERO_EXTRA : 0) + 2;
-    int64_t vals[64] = {0};
-    int nv = 0;
-    for (int k = i; k < ntok && k < i + limit; k++) {
-        if (s->is_tag[k]) break;
-        vals[nv++] = s->toks[k];
-    }
+    const int64_t *vals = s->toks + i;  /* (the record's tokens: up to the next tag or the limit) */
+    int nv = 0, most = ntok - i < limit ? ntok - i : limit;
+    while (nv < most && !s->is_tag[i + nv]) nv++;
     if (nv > base) {
         int n = record_len(tag, vals, nv);
         if (nv > n) {
@@ -245,38 +248,50 @@ static int take_record(State *s, char tag, int i, int ntok, int32_t *out, int *n
     return -1;
 }
 
-/* Tokenize: keep lines matching -?\d+ or [A-Z]. */
+/* Tokenize: keep lines matching -?\d+ (at most 18 digits) or [A-Z]. One pass, each line read once (a scan for its
+ * end and then the line again had been ~70k instructions an observation of ~2 KB). */
 static int tokenize(State *s, const char *d, int len) {
+    int most = len / 2 + 2;  /* (a kept line is at least one character and its newline) */
+    if (most > s->tcap) {
+        int cap = s->tcap ? s->tcap : 4096;
+        while (cap < most) cap *= 2;
+        int64_t *t = realloc(s->toks, (size_t)cap * sizeof(int64_t));
+        if (!t) return -1;
+        s->toks = t;
+        uint8_t *g = realloc(s->is_tag, cap);
+        if (!g) return -1;
+        s->is_tag = g;
+        s->tcap = cap;
+    }
+    int64_t *toks = s->toks;
+    uint8_t *is_tag = s->is_tag;
+    const char *p = d, *end = d + len;
     int n = 0;
-    int start = 0;
-    for (int pos = 0; pos <= len; pos++) {
-        if (pos < len && d[pos] != '\n') continue;
-        int a = start, b = pos;  /* the line [a, b) */
-        start = pos + 1;
-        if (b <= a) continue;
-        if (n >= s->tcap) {
-            int cap = s->tcap ? 2 * s->tcap : 4096;
-            int64_t *t = realloc(s->toks, cap * sizeof(int64_t));
-            uint8_t *g = realloc(s->is_tag, cap);
-            if (!t || !g) return -1;
-            s->toks = t; s->is_tag = g; s->tcap = cap;
+    while (p < end) {
+        char c = *p;
+        if (c == '\n') { p++; continue; }  /* (an empty line) */
+        if (c >= 'A' && c <= 'Z') {
+            if (p + 1 == end || p[1] == '\n') {
+                toks[n] = c;
+                is_tag[n++] = 1;
+                p += 2;
+                continue;
+            }
+        } else {
+            const char *q = p + (c == '-');
+            const char *digits = q;
+            uint64_t v = 0;
+            while (q < end && (unsigned char)(*q - '0') <= 9) v = v * 10 + (uint64_t)(*q++ - '0');
+            if (q > digits && q - digits <= 18 && (q == end || *q == '\n')) {
+                toks[n] = c == '-' ? -(int64_t)v : (int64_t)v;
+                is_tag[n++] = 0;
+                p = q + 1;
+                continue;
+            }
+            p = q;
         }
-        if (b - a == 1 && d[a] >= 'A' && d[a] <= 'Z') {
-            s->toks[n] = d[a];
-            s->is_tag[n++] = 1;
-            continue;
-        }
-        int k = a, neg = 0;
-        if (d[k] == '-') { neg = 1; k++; }
-        if (k == b || b - k > 18) continue;
-        int64_t v = 0, ok = 1;
-        for (; k < b; k++) {
-            if (d[k] < '0' || d[k] > '9') { ok = 0; break; }
-            v = v * 10 + (d[k] - '0');
-        }
-        if (!ok) continue;
-        s->toks[n] = neg ? -v : v;
-        s->is_tag[n++] = 0;
+        while (p < end && *p != '\n') p++;  /* (a line dropped) */
+        p++;
     }
     return n;
 }
@@ -315,10 +330,11 @@ int w3obs_parse(void *p, const char *data, int len) {
         int err = 0;
         switch (tag) {
         case 'U': {
-            int32_t row[UCOLS] = {0};
+            int32_t *row = rows_add(&s->units);
+            if (!row) { err = 1; break; }
             memcpy(row, f, n * sizeof(int32_t));
+            memset(row + n, 0, (UCOLS - 1 - n) * sizeof(int32_t));
             row[UCOLS - 1] = n > F_U;
-            err = rows_push(&s->units, row, UCOLS);
             break;
         }
         case 'D': err = rows_push(&s->dests, f, n); break;
@@ -383,3 +399,39 @@ const int32_t *w3obs_rows(void *p, int which, int *n, int *width) {
 }
 
 int w3obs_ucols(void) { return UCOLS; }
+
+/* table `which`'s row width (w3obs_rows' order) */
+int w3obs_width(void *p, int which) {
+    int n, w;
+    w3obs_rows(p, which, &n, &w);
+    return w;
+}
+
+/* The parsed observation for Python in one copy (eight calls with an array each had been ~100k instructions a step):
+ * out = [the header (16)][each table's rows (9, w3obs_rows' order)][the tables but the unit deltas (7) in that order,
+ * their rows of their widths]. Returns the ints that takes; out holds them all only when cap is enough (the header and
+ * the row counts when cap is at least 25). */
+int w3obs_export(void *p, int32_t *out, int cap) {
+    State *s = p;
+    Rows *rs[] = {&s->players, &s->events, &s->results, &s->issued, &s->orders, &s->dests, &s->removed, &s->units, &s->ground};
+    int total = 16 + 9;
+    for (int i = 0; i < 9; i++)
+        if (i != 7) total += rs[i]->n * rs[i]->width;
+    if (cap < 25) return total;
+    memcpy(out, s->header, 16 * sizeof(int32_t));
+    for (int i = 0; i < 9; i++) out[16 + i] = rs[i]->n;
+    if (total > cap) return total;
+    int at = 25;
+    for (int i = 0; i < 9; i++)
+        if (i != 7 && rs[i]->n) {
+            memcpy(out + at, rs[i]->v, (size_t)rs[i]->n * rs[i]->width * sizeof(int32_t));
+            at += rs[i]->n * rs[i]->width;
+        }
+    return total;
+}
+
+/* w3obs_parse, then w3obs_export: its size, or -2 (out of memory). (No end marker: the header's H_ENDED is 0.) */
+int w3obs_parse_export(void *p, const char *data, int len, int32_t *out, int cap) {
+    if (w3obs_parse(p, data, len) == -2) return -2;
+    return w3obs_export(p, out, cap);
+}
