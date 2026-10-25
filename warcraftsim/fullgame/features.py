@@ -328,6 +328,17 @@ def set_macros(level: int) -> None:
     os.environ["WARCRAFTSIM_MACROS"] = str(MACROS)
 
 
+# --macros-off: macro orders the policy may not give (masked), so it learns their low-level orders itself from the lessons
+# and rewards (the user, 2026-10-25: diverse play without the army-mix, creep and expand orders' help)
+MACROS_OFF = frozenset(x for x in os.environ.get("WARCRAFTSIM_MACROS_OFF", "").split(",") if x)
+
+
+def set_macros_off(names) -> None:
+    global MACROS_OFF
+    MACROS_OFF = frozenset(n for n in names if n)
+    os.environ["WARCRAFTSIM_MACROS_OFF"] = ",".join(sorted(MACROS_OFF))
+
+
 def set_neutral(v: int) -> None:
     global NEUTRAL
     NEUTRAL = int(v)
@@ -1322,7 +1333,8 @@ class View:
                 # time when every step)
             via = enc.expand_via.get(race)
             busy = getattr(self, "expanding", None) is not None and t < self.expanding[0]
-            avail[enc.expand_class] = bool(self.expand_site is not None and via is not None and avail[via] and not busy)
+            avail[enc.expand_class] = bool(self.expand_site is not None and via is not None and avail[via] and not busy
+                                           and "expand" not in MACROS_OFF)
         if avail is not None and enc.creep_class is not None:  # (--macros: creep the natural, while its camp stands)
             from .macros import camp
             army = int((own_alive & (fl & (STRUCTURE | WORKER) == 0)).sum())
@@ -1330,7 +1342,7 @@ class View:
             if not strong or t - getattr(self, "_camp_at", -NATURAL_EVERY) >= NATURAL_EVERY or t < getattr(self, "_camp_at", 0):
                 self.creep_at = camp(rows, getattr(self, "start", None)) if MACROS and strong else None  # any unit sent it:
                 self._camp_at = t
-            avail[enc.creep_class] = self.creep_at is not None  # 436 attack-moves a game; audit 3)
+            avail[enc.creep_class] = self.creep_at is not None and "creep" not in MACROS_OFF  # 436 attack-moves a game; audit 3)
         if avail is not None and enc.mix_class is not None:  # (--macros: train the target's mix, while it lacks a unit
             target = getattr(self, "mix_target", None) or {}  # the side can train now)
             mine = rows[own & (fl & (DEAD | STRUCTURE | WORKER | HERO | SUMMONED) == 0)]
@@ -1344,7 +1356,8 @@ class View:
             self.mix_can = lambda u: (k := idx.get((int.from_bytes(u.encode(), "big"), IMMEDIATE))) is not None and bool(avail[k])
             # (a unit no train order makes, a mercenary, a zeppelin: not one it can train; class 0, no order, had
             # read as one: the mix order available with only those lacking, and doing nothing; audit 3)
-            avail[enc.mix_class] = bool(MACROS and any(s > have.get(u, 0.0) and self.mix_can(u) for u, s in target.items()))
+            avail[enc.mix_class] = bool(MACROS and "mix" not in MACROS_OFF
+                                        and any(s > have.get(u, 0.0) and self.mix_can(u) for u, s in target.items()))
         if avail is not None and enc.pickup_class is not None:  # (--macros 2: pick up, while a hero has an item lying
             from .macros import pickable                          # near; the ground items: play.BCAgent.observe)
             self.pickers = pickable(rows, player, getattr(self, "ground", ())) if MACROS >= 2 else []

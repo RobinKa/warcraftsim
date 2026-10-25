@@ -677,6 +677,7 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
     fx.set_masks(cfg.get("tech_mask", 0), cfg.get("valid_mask", 0))
     fx.set_neutral(cfg.get("neutral", 0))
     fx.set_macros(int(cfg.get("macros", 0) or 0))
+    fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     nets = Nets(cfg, device)
     while nets.current is None and not stop.is_set() and alive():
         time.sleep(1)
@@ -2187,6 +2188,7 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
     fx.set_masks(cfg.get("tech_mask", 0), cfg.get("valid_mask", 0))
     fx.set_neutral(cfg.get("neutral", 0))
     fx.set_macros(int(cfg.get("macros", 0) or 0))
+    fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     if cfg.get("remote"):  # (fullgame/remoteactor.py: the calls and the steps over TCP to the learner's gateway)
         from .remoteactor import NetInference
         out_q = NetInference(cfg["remote"])  # (its request() and the learner's queue's put() both)
@@ -3480,6 +3482,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--scenarios", default="", help="scenarios (scenarios.py: clash, raid, rich; comma-separated) "
                     "a share of the training games start in")
     ap.add_argument("--scenario-share", type=float, default=0.0, help="--scenarios: the share of the training games")
+    ap.add_argument("--macros-off", default="", help="macro orders masked, comma-separated (mix, creep, expand): the "
+                    "policy learns their low-level orders itself, from the lessons and rewards")
     ap.add_argument("--label-norm", choices=("lessons", "units"), default="lessons", help="the teacher's lessons in "
                     "the cloning loss averaged over themselves (lessons: a minibatch with one carries the whole --teach-coef) "
                     "or over the labelled steps' own units, as the builder's labels (units)")
@@ -3817,6 +3821,7 @@ def main(argv: list[str] | None = None) -> int:
     fx.set_masks(args.tech_mask, args.valid_mask)
     fx.set_neutral(args.neutral)
     fx.set_macros(args.macros)
+    fx.set_macros_off(args.macros_off.split(","))
     if args.z_modes > 0:  # (the strategy block with the modes' part: model.load grows older networks')
         fx.set_z(strat.ZDIM + zmodes.MDIM)
     if args.z_mix:  # (and the target army's mix after it)
@@ -4068,7 +4073,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "macros_off": args.macros_off, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "eval_ai": [d for d in args.eval_ai.split(",") if d],
