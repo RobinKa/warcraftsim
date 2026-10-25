@@ -1419,9 +1419,9 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         self._done_of, self._done_list = obs, done
         return done
 
-    def commands(self, obs, made: dict, t: int, step_s: float, ordered=()) -> list:
+    def commands(self, obs, made: dict, t: int, step_s: float, ordered=(), rows=None) -> list:
         """`ordered`: the agent's commands this step (the game refuses the same hero or next tier twice: the
-        builder's order is then no refusal of its own)."""
+        builder's order is then no refusal of its own). `rows`: unit_rows(obs, t), when the caller has them."""
         from . import techtree
         from ..protocol import UnitFlags
         self.observe(obs)
@@ -1458,7 +1458,7 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             types, hero = {u.type for u in done}, any(getattr(u, "is_hero", False) for u in mine)
         have = techtree.counts_as(types | {c for c in made if c[0] == "R"}, self.race)
         heroes = len({c for c in (*made, *self.started) if techtree.is_hero(c) or fx.is_hero_code(c)})
-        expansion = None if supply_first else self._expansion_reserve(obs, due, p, t, own)  # (--macros: money kept for
+        expansion = None if supply_first else self._expansion_reserve(obs, due, p, t, own, rows)  # (--macros: money kept for
         self.first_free = heroes == 0 and not hero  # (a free first hero)  # a due expansion; supply comes first)
         save = expansion
         self.held = save  # (an item after a reserved one: labelled only when affordable net of it, the mask's view; a
@@ -1485,7 +1485,7 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         self.reserve = save
         return []
 
-    def _expansion_reserve(self, obs, due: list, p, t: int, own=None):
+    def _expansion_reserve(self, obs, due: list, p, t: int, own=None, rows=None):
         """--macros: a due expansion (the race's hall or a haunted mine among the due items) with the natural free:
         its cost kept from the agent's other orders (the expand order takes its hall's mask), else None. None while a
         worker is on its way to build it (`own`: the side's rows, native columns; the game took the cost at the
@@ -1501,8 +1501,9 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         if q is None:
             return None
         if t - getattr(self, "_site_t", -fx.NATURAL_EVERY) >= fx.NATURAL_EVERY or t < getattr(self, "_site_t", 0):
-            self._site, self._site_t = site(unit_rows(obs, t), (q.start_x, q.start_y)), t  # (every few steps: the
-        if self._site is None:                                                         # rows made again each step)
+            # (every few steps; on the step's rows when the caller has them: macros.site's answer is then shared)
+            self._site, self._site_t = site(unit_rows(obs, t) if rows is None else rows, (q.start_x, q.start_y)), t
+        if self._site is None:
             return None
         k = self.cls.get((int.from_bytes(hall.encode(), "big"), fx.UNIT if hall == "ugol" else fx.POINT))
         if k is None:
@@ -1905,7 +1906,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                                                                                    else True)).sum())
         built, given = {}, {}
         for s, b in builders.items():  # (--z-build: after the agents' orders, so a worker it takes is taken)
-            c = b.commands(obs, made[s], t, cfg["step_seconds"], cmds[spans[s][0]:spans[s][1]] if s in spans else ())
+            c = b.commands(obs, made[s], t, cfg["step_seconds"], cmds[spans[s][0]:spans[s][1]] if s in spans else (), rows)
             if c and cfg.get("z_build", 0) != 2:
                 given[s] = len(cmds) + len(c) - 1  # (its order: last, after a queue's cancels)
             if c and cfg.get("z_build_labels") and s in trajs and s in spans and obs.players.get(s) is not None:

@@ -396,3 +396,36 @@ void w3f_afford(const int64_t *c, int n, int64_t gold, int64_t lumber, int64_t f
     if (nkept >= 2) avail[k2] = v2;
     if (n) avail[0] = 1;
 }
+
+/* macros.natural, site and camp in one pass: of the living rows whose type is in `mines` (sorted codes), the one
+ * nearest (sx, sy) farther than from_start (numpy's hypot is libm's): out[0] its row (-1 none; -2 another one as near,
+ * which numpy's argsort orders: the caller's numpy then), out[1..3] its id, x, y; out[4] whether a living unit of
+ * player 0 or 1 whose type is in `holds` stands within taken_near of it, out[5] whether a living unit of player 12
+ * stands within camp_near. */
+void w3f_natural(const int64_t *rows, int nrows, int ncols, double sx, double sy, const int64_t *mines, int nmines,
+                 const int64_t *holds, int nholds, double from_start, double taken_near, double camp_near, int64_t *out) {
+    int best = -1, tie = 0;
+    double bd = 0.0;
+    for (int i = 0; i < nrows; i++) {
+        const int64_t *r = rows + (size_t)i * ncols;
+        if ((r[C_FLAGS] & DEAD) || !in_sorted(mines, nmines, r[C_TYPE], NULL, NULL)) continue;
+        double d = hypot((double)r[C_X] - sx, (double)r[C_Y] - sy);
+        if (!(d > from_start)) continue;
+        if (best < 0 || d < bd) { best = i; bd = d; tie = 0; }
+        else if (d == bd) tie = 1;
+    }
+    for (int q = 0; q < 6; q++) out[q] = 0;
+    out[0] = best < 0 ? -1 : tie ? -2 : best;
+    if (best < 0 || tie) return;
+    const int64_t *m = rows + (size_t)best * ncols;
+    out[1] = m[C_ID]; out[2] = m[C_X]; out[3] = m[C_Y];
+    double mx = (double)m[C_X], my = (double)m[C_Y];
+    for (int i = 0; i < nrows; i++) {
+        const int64_t *r = rows + (size_t)i * ncols;
+        if (r[C_FLAGS] & DEAD) continue;
+        if (r[C_OWNER] != 12 && !(r[C_OWNER] <= 1 && in_sorted(holds, nholds, r[C_TYPE], NULL, NULL))) continue;
+        double d = hypot((double)r[C_X] - mx, (double)r[C_Y] - my);
+        if (r[C_OWNER] == 12 && d < camp_near) out[5] = 1;
+        else if (r[C_OWNER] <= 1 && d < taken_near) out[4] = 1;
+    }
+}

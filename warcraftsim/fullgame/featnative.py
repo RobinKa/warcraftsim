@@ -44,6 +44,8 @@ def lib():
         L.w3f_view.argtypes = [P, I, I, I, D, P, P, I, I, I, I, P, P, I, I, P, P, P, P]
         L.w3f_side.restype = I
         L.w3f_side.argtypes = [P, I, I, I, P]
+        L.w3f_natural.restype = None
+        L.w3f_natural.argtypes = [P, I, I, D, D, P, I, P, I, D, D, D, P]
         L.w3f_afford.restype = None
         Q = ctypes.c_int64
         L.w3f_afford.argtypes = [P, I, Q, Q, Q, Q, I, Q, Q, Q, Q, P]
@@ -176,6 +178,37 @@ def side(rows: np.ndarray, player: int) -> list:
     out = np.empty(8 + 8 * len(rows), np.int64)
     k = lib().w3f_side(_rows_addr(rows), len(rows), rows.shape[1], int(player), addr(out))
     return out[:k].tolist()
+
+
+_NAT: tuple = (None, None, None)  # (the last rows and start asked, and natural's answer: View.step's site and camp and
+# the target builder's ask on a step's rows; one tuple, replaced whole: an actor's game threads share it)
+_CODES: dict = {}
+
+
+def natural(rows: np.ndarray, start: tuple, mines: np.ndarray, holds: np.ndarray, from_start: float, taken_near: float,
+            camp_near: float) -> list | None:
+    """w3f_natural: [the natural's row (-1 none, -2 a tie: None is returned, the numpy code decides), its id, x, y,
+    whether a hall stands at it, whether creeps do], once per rows and start. None without the library."""
+    global _NAT
+    got = _NAT
+    if got[0] is rows and got[1] == start:
+        return got[2]
+    L = lib()
+    if L is None:
+        return None
+    rows = np.ascontiguousarray(rows, np.int64)
+    c = _CODES.get(id(mines))
+    if c is None or c[0] is not mines or c[2] is not holds:
+        m, h = np.ascontiguousarray(mines, np.int64), np.ascontiguousarray(holds, np.int64)
+        c = _CODES[id(mines)] = (mines, (m, h, m.ctypes.data, h.ctypes.data), holds)
+    m, h, ma, ha = c[1]
+    out = np.empty(6, np.int64)
+    L.w3f_natural(_rows_addr(rows), len(rows), rows.shape[1], float(start[0]), float(start[1]), ma, len(m), ha, len(h),
+                  float(from_start), float(taken_near), float(camp_near), addr(out))
+    res = out.tolist()
+    res = None if res[0] == -2 else res
+    _NAT = (rows, start, res)
+    return res
 
 
 def afford(costs: np.ndarray, gold: int, lumber: int, fu: int, fc: int, kept: list) -> np.ndarray | None:

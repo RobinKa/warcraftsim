@@ -178,10 +178,29 @@ def pickable(rows: np.ndarray, player: int, ground) -> list[int]:
     return out
 
 
+def _native(rows: np.ndarray, start: tuple[float, float]) -> list | None:
+    """featnative.natural for these rows and start (the natural's row, id, x, y, taken, its camp), or None: the numpy
+    code (no library, or two mines as near)."""
+    return _fn().natural(rows, start, MINE_CODES, HOLD_CODES, NATURAL_FROM_START, TAKEN_NEAR, CAMP_NEAR)
+
+
+_FN: list = []
+
+
+def _fn():
+    if not _FN:
+        from . import featnative
+        _FN.append(featnative)
+    return _FN[0]
+
+
 def natural(rows: np.ndarray, start: tuple[float, float] | None):
     """The player's natural expansion's mine row (the gold mine nearest its start but its main), or None."""
     if start is None:
         return None
+    got = _native(rows, start)
+    if got is not None:
+        return rows[got[0]] if got[0] >= 0 else None
     sx, sy = start
     mines = rows[fx.isin(rows[:, fx.C_TYPE], MINE_CODES) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0)]
     if not len(mines):
@@ -194,6 +213,9 @@ def natural(rows: np.ndarray, start: tuple[float, float] | None):
 
 def camp(rows: np.ndarray, start: tuple[float, float] | None) -> tuple[float, float] | None:
     """The natural's mine (x, y) while its camp stands and nobody holds the natural (creep: where to go), or None."""
+    got = _native(rows, start) if start is not None else None
+    if got is not None:
+        return (float(got[2]), float(got[3])) if got[0] >= 0 and not got[4] and got[5] else None
     nat = natural(rows, start)
     if nat is None:
         return None
@@ -212,23 +234,30 @@ def site(rows: np.ndarray, start: tuple[float, float] | None) -> tuple[int, floa
     if start is None:
         return None
     sx, sy = start
-    mines = rows[fx.isin(rows[:, fx.C_TYPE], MINE_CODES) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0)]
-    if not len(mines):
-        return None
-    d = np.hypot(mines[:, fx.C_X] - sx, mines[:, fx.C_Y] - sy)
-    order = np.argsort(d)
-    far = order[d[order] > NATURAL_FROM_START]
-    if not len(far):
-        return None
-    nat = mines[far[0]]
-    mx, my = float(nat[fx.C_X]), float(nat[fx.C_Y])
-    alive = rows[rows[:, fx.C_FLAGS] & fx.DEAD == 0]
-    dist = np.hypot(alive[:, fx.C_X] - mx, alive[:, fx.C_Y] - my)
-    halls = fx.isin(alive[:, fx.C_TYPE], HOLD_CODES) & (alive[:, fx.C_OWNER] <= 1)
-    if (halls & (dist < TAKEN_NEAR)).any() or ((alive[:, fx.C_OWNER] == 12) & (dist < CAMP_NEAR)).any():
-        return None
+    got = _native(rows, start)
+    if got is not None:  # (in C: the same mine, the same tests)
+        if got[0] < 0 or got[4] or got[5]:
+            return None
+        nat_id, mx, my = got[1], float(got[2]), float(got[3])
+    else:
+        mines = rows[fx.isin(rows[:, fx.C_TYPE], MINE_CODES) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0)]
+        if not len(mines):
+            return None
+        d = np.hypot(mines[:, fx.C_X] - sx, mines[:, fx.C_Y] - sy)
+        order = np.argsort(d)
+        far = order[d[order] > NATURAL_FROM_START]
+        if not len(far):
+            return None
+        nat = mines[far[0]]
+        mx, my = float(nat[fx.C_X]), float(nat[fx.C_Y])
+        alive = rows[rows[:, fx.C_FLAGS] & fx.DEAD == 0]
+        dist = np.hypot(alive[:, fx.C_X] - mx, alive[:, fx.C_Y] - my)
+        halls = fx.isin(alive[:, fx.C_TYPE], HOLD_CODES) & (alive[:, fx.C_OWNER] <= 1)
+        if (halls & (dist < TAKEN_NEAR)).any() or ((alive[:, fx.C_OWNER] == 12) & (dist < CAMP_NEAR)).any():
+            return None
+        nat_id = int(nat[fx.C_ID])
     ox, oy = EXPAND_SPOTS.get((int(round(mx)), int(round(my))), (None, None))
     if ox is None:  # (another map's: 750 toward its start)
         n = max(float(np.hypot(sx - mx, sy - my)), 1.0)
         ox, oy = 750.0 * (sx - mx) / n, 750.0 * (sy - my) / n
-    return int(nat[fx.C_ID]), mx, my, mx + ox, my + oy
+    return nat_id, mx, my, mx + ox, my + oy
