@@ -1038,6 +1038,7 @@ static __attribute__((noinline)) void pf_ahead(BYTE *st, BYTE *unit) {
         }
         if (g_eh_on)
             __builtin_prefetch(&g_eh[eh_slot(x)], 0, 3);
+        cuts_sleep_prefetch(x);
     }
     if (i + 2 < n && (x = arr[i + 2])) { /* the agents, the handle's entry */
         int h = g_eh_on ? eh_peek(st, x) : 0;

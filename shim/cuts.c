@@ -80,6 +80,19 @@
  * 8589934592 (units.c, with 1073741824 and the handshake) the items on the ground: EnumItemsInRect's per-item callback
  *      runs the shim's W3S_SerItem (the same natives in its order) instead of a JASS thread per item
  *
+ * Round 5 (units.c, the units pass; each with 16, none needs a harness change):
+ * 17179869184 the enum unit's handle remembered: ForGroup's callback skips its push and pop of a unit whose handle is
+ *      live (the handle table's entry still holds the object), pushing only before a unit the pass drops
+ * 34359738368 the unit's record from its object: the natives' reads and engine calls made directly on the callback's
+ *      object (no handle conversions, no wrappers; x and y from one position call)
+ * 68719476736 a hero's experience, skill points and items read once a record (they were read for the hash and again for
+ *      the tokens)
+ * 137438953472 the pass prefetches the units ahead of it in ForGroup's snapshot (0x4f5b20): their objects, agent table
+ *      entries, agents, handle entries, sleep cache slots (hints only)
+ * 274877906944 (with 34359738368) the owner's handle remembered per player object (GetOwningPlayer's handle map lookup)
+ * 549755813888 (with 34359738368) the visibility bits of all seers at once: the game's option and the unit's cell asked
+ *      once a unit, not once a seer
+ *
  * Offsets are for the 1.29.2.9231 executable (RVAs; see ~/tools/w3analysis/report.md).
  */
 #include "w3shim.h"
@@ -736,6 +749,10 @@ static BYTE *__fastcall FindAbil_hook(BYTE *u, void *edx, int id, int isa, int b
     } else if (g_sl[k].u == u)
         g_sl[k].u = NULL;
     return r;
+}
+
+void cuts_sleep_prefetch(const BYTE *u) { /* (units.c, 137438953472: a unit ahead in the pass) its slot here */
+    __builtin_prefetch(&g_sl[((unsigned)(size_t)u >> 4) & (SLEEP_SLOTS - 1)], 0, 3);
 }
 
 void cuts_sleep_reset(void) { /* (a game's first step) */
