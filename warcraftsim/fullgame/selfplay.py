@@ -1704,7 +1704,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     heur = None  # (--heuristic-share, heuristic_match.py: the opponent's side played by the hand-written player)
     if opp.get("kind") == "heuristic":
         from .heuristic import HeuristicAgent, PLANS
-        heur = HeuristicAgent(1 - side, races[1 - side], plan=opp.get("plan") or PLANS.get(races[1 - side]),
+        cls = opp.get("cls") or HeuristicAgent  # (heuristic_match.py --variant: another version's, side by side)
+        heur = cls(1 - side, races[1 - side], plan=opp.get("plan") or None,
                               map_name=cfg["map"], step_seconds=cfg["step_seconds"], log=bool(opp.get("log")))
         heur.begin(obs)
     for s in (0, 1):

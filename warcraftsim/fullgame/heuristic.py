@@ -50,7 +50,7 @@ from ..protocol import (Build, Command, EventKind, ImmediateOrder, LearnSkill, O
 # orders (the harness resolves the strings; these are the game's ids, checked in a game: obs.orders)
 ATTACK, MOVE, SMART, STOP, HOLD = 851983, 851986, 851971, 851972, 851993
 HARVEST, RETURN, RESUME, REPAIR, REVIVE, CANCEL, SETRALLY = 852018, 852020, 852017, 852024, 852039, 851976, 851980
-BATTLESTATIONS, STANDDOWN = 852099, 852113
+BATTLESTATIONS, STANDDOWN, BOARD = 852099, 852113, 852043
 HARVESTING = {HARVEST, RETURN, RESUME}
 # unit flags (protocol.UnitFlags)
 HERO, STRUCTURE, WORKER, CONSTRUCTING, HIDDEN, LOADED, SLEEPING = 1, 2, 4, 8, 16, 32, 64
@@ -93,10 +93,11 @@ PLANS: dict[str, Plan] = {
     "orc": Plan(
         race="orc", worker="opeo", hall="ogre", supply="otrb", supply_food=10, altar="oalt",
         heroes=("Ofar",),
-        builds=((0.0, 0, "oalt", 1), (0.0, 0, "obar", 1), (100.0, 12, "obar", 2), (200.0, 22, "obar", 3),
-                (280.0, 30, "ofor", 1)),
-        army=(("ogru", 2.0), ("ohun", 1.0)),
-        research=((360.0, "Rome"), (480.0, "Roar"), (600.0, "Rora")),
+        builds=((0.0, 0, "oalt", 1), (0.0, 0, "obar", 1), (55.0, 9, "obar", 2), (110.0, 14, "obar", 3),
+                (300.0, 34, "ofor", 1)),
+        army=(("ogru", 1.0), ("ohun", 1.0)),
+        research=((360.0, "Rome"), (480.0, "Rora"), (600.0, "Roar")),
+        lumber_workers=((0.0, 3),),  # (5 had floated 600-1,300 lumber: peons the army lacked)
         attack_food=45, attack_at=660.0),
     "human": Plan(
         race="human", worker="hpea", hall="htow", supply="hhou", supply_food=6, altar="halt",
@@ -163,14 +164,24 @@ RETREAT_RATIO = 0.6  # the army's strength below this share of the enemies' near
 RETREAT_STEPS = 16  # at least this long (8 s) once retreating
 RALLY_OUT = 650.0  # the rally point: this far from the hall toward the enemy's base
 HERO_LOW, HERO_OK = 0.38, 0.75  # a hero this hurt goes home until it has this share of its hit points again
-PULL_LOW, PULL_STEPS = 0.3, 4  # a hurt melee unit steps back this long (2 s)
+PULL_LOW, PULL_STEPS = 0.0, 4  # a hurt melee unit steps back this long (off: chasers as fast caught them)
 CAMP_JOIN = 550.0  # creeps this near each other: one camp
 CREEP_REACH = 3600.0  # camps this near home are crept
 MINE_LOW = 3000  # a mine with less gold left than this: the next one's hall built
+QUEUE_EXPIRE = {"R": 200.0}  # (seconds a queued entry is kept per place in the queue, by its code's first letter)
 REVIVE_WAIT = 240  # a revival the altar took: not ordered again for 120 s (it takes up to ~110 s)
 FOOD_CAP = 80  # no army past this food (81 and more: 60% of the income lost to upkeep)
 REGROUP_STEPS = 90  # after a retreat no attack for 45 s
 TOWER_COST = 2500.0  # a known enemy tower near a target counts as this much more distance
+
+
+# switches (heuristic_match.py --variant heuristic:HeuristicAgent:sticky=0,...): what each changed, for side-by-side runs
+OPTIONS = {
+    "rush_caution": 1,  # against undead and orc: no early creeping far from home, the natural later
+    "hero_behind": 1,  # the hero follows behind the army's centre instead of walking in first
+    "sticky": 1,  # a unit keeps its target while it is in reach and not dying already
+    "pull": 0,  # hurt melee units step back while hit
+}
 
 
 @lru_cache(1)
@@ -343,8 +354,9 @@ class HeuristicAgent:
     """The scripted player of one side (see the module's docstring)."""
 
     def __init__(self, side: int, race: str, plan: Plan | None = None, rng: random.Random | None = None,
-                 map_name: str = "(2)EchoIsles", log: bool = True, step_seconds: float = 0.5):
+                 map_name: str = "(2)EchoIsles", log: bool = True, step_seconds: float = 0.5, **options):
         self.side, self.enemy, self.race = side, 1 - side, race
+        self.opt = {**OPTIONS, **options}  # (switches for side-by-side variants: heuristic_match.py --variant)
         self.plan = plan or PLANS[race]
         self.rng = rng or random.Random()
         self.map_name = map_name
@@ -361,6 +373,8 @@ class HeuristicAgent:
         self.start = (float(me.start_x), float(me.start_y))
         self.enemy_start = (float(it.start_x), float(it.start_y)) if it is not None else (-self.start[0], self.start[1])
         self.order_id = dict(obs.orders or {})
+        races = {1: "human", 2: "orc", 3: "undead", 4: "nightelf"}
+        self.enemy_race = races.get(int(it.race), "") if it is not None else ""
         counts = Counter(d.type for d in (obs.destructables or []))
         self.trees = {d.id: (d.x, d.y) for d in (obs.destructables or [])
                       if d.life > 0 and d.type[1:2] == "T" and counts[d.type] >= 20}
@@ -399,7 +413,7 @@ class HeuristicAgent:
         self.tree_of: dict[int, int] = {}  # lumber worker -> its tree
         self.building: dict[int, tuple[str, float]] = {}  # worker -> (building it was sent to build, since)
         self.pending: list[list] = []  # [code, worker, x, y, since, gold, lumber]: build orders not yet started
-        self.queue: dict[int, list[list]] = {}  # production building -> [[type, started], ...] (accepted orders)
+        self.queue: dict[int, list[list]] = {}  # production building -> [[type, started, since], ...] (accepted orders)
         self.research_done: Counter = Counter()  # research -> levels done or under way
         self.memory: dict[int, Memory] = {}  # enemy buildings seen
         self.mode, self.mode_since = "gather", 0
@@ -494,6 +508,12 @@ class HeuristicAgent:
         self.pending = [x for x in self.pending if self.now - x[4] < 45.0 and x[1] in self.my_ids]
         for b in [b for b in self.queue if b not in self.my_ids]:
             del self.queue[b]
+        for b, qs in self.queue.items():  # (an entry no event ended: gone after three times its build time; a missed
+            # finish had blocked a barracks for good, 26 grunts in 11 minutes from three of them)
+            keep = [q for k, q in enumerate(qs) if self.now - q[2] < QUEUE_EXPIRE.get(q[0][:1], 100.0) * (1 + k)]
+            if len(keep) < len(qs):
+                self.counts["queue expired"] += len(qs) - len(keep)
+                qs[:] = keep
 
     def heroes_ids(self) -> set[int]:
         return {u.id for u in getattr(self, "heroes", ())}
@@ -508,7 +528,7 @@ class HeuristicAgent:
             if isinstance(c, ImmediateOrder) and c.order >= TYPE_CODE:
                 code = rawcode(c.order)
                 if ok:
-                    self.queue.setdefault(c.unit, []).append([code, False])
+                    self.queue.setdefault(c.unit, []).append([code, False, self.now])
                 elif code[:1] == "R":
                     self.research_done[code] -= 1
                 elif code[:1].isupper():  # (a hero refused: again soon)
@@ -654,9 +674,10 @@ class HeuristicAgent:
                     on_mine[m] += 1
                     n_gold += 1
                 continue
-            if u.order != 0 and u.id in self.assign:
+            boarding = u.order == BOARD and not self.in_burrows
+            if u.order != 0 and u.id in self.assign and not boarding:
                 continue
-            if u.order != 0 and u.order not in (MOVE, ATTACK, STOP, HOLD, SMART):
+            if u.order != 0 and u.order not in (MOVE, ATTACK, STOP, HOLD, SMART) and not boarding:
                 continue
             if u.flags & HIDDEN:
                 continue
@@ -796,7 +817,7 @@ class HeuristicAgent:
         return [ImmediateOrder(b.id, fourcc(code))]
 
     def _waiting_food(self) -> int:
-        return sum(self._food(c) for q in self.queue.values() for c, started in q if not started and c != "revive")
+        return sum(self._food(q[0]) for qs in self.queue.values() for q in qs if not q[1])
 
     def _supply(self) -> list[Command]:
         plan = self.plan
@@ -806,13 +827,14 @@ class HeuristicAgent:
         building += sum(1 for p in self.pending if p[0] == plan.supply)
         building += sum(1 for u in self.structures if u.type in HALL_TYPES and u.flags & CONSTRUCTING)
         prod = sum(1 for u in self.done if self._makes_army(u.type)) + len(self.halls)
-        margin = 2 + 2 * prod + (3 if self.now > 240 else 0)
+        # (what the production buildings use while a supply building goes up: ~3 food each per 50 s)
+        margin = 3 + 3 * prod + (3 if self.now > 240 else 0)
         if not self.heroes and not self.dead_heroes and self.have.get(self.plan.altar):  # (the first hero's 5 food)
             margin += 5
         if self.cap + building * plan.supply_food - self.food > margin or self.cap + building * plan.supply_food >= 100 \
                 or self.cap + building * plan.supply_food >= FOOD_CAP + 6:
             return []
-        if self.now < 15 or building >= 2:
+        if self.now < 10 or building >= 1 + prod // 3:
             return []
         c = self._build(plan.supply)
         if not c:
@@ -855,7 +877,7 @@ class HeuristicAgent:
         if any(p[0] == hall for p in self.pending):
             return []
         low = self.mine_gold.get(self.main_mine, 0) < MINE_LOW or self.main_mine not in self.mines
-        if self.now < self.plan.expand_at and not low:
+        if self.now < self._expand_at() and not low:
             return []
         camp = self._camp_at(*self.mines[self.natural])
         if camp is not None and camp["ids"]:
@@ -868,6 +890,11 @@ class HeuristicAgent:
         else:
             self._keep(*self._cost(hall))
         return c
+
+    def _expand_at(self) -> float:
+        """The natural from Plan.expand_at; against the races whose first waves come at ~4:30 (the learner's undead
+        and orc), from 9 minutes: the natural is ~6,000 from home, and the army at its camp had met their waves."""
+        return self.plan.expand_at + (120.0 if self.opt["rush_caution"] and self.enemy_race in ("undead", "orc") else 0.0)
 
     def _camp_at(self, x: float, y: float) -> dict | None:
         near = [c for c in self.camps if math.hypot(c["x"] - x, c["y"] - y) < 900]
@@ -899,14 +926,17 @@ class HeuristicAgent:
         return [Build(w.id, fourcc(code), spot[0], spot[1])]
 
     def _builder(self, near=None):
-        """The worker to build: a lumber worker not carrying, else a gold one outside the mine, nearest the site."""
+        """The worker to build: an idle one, else a gold worker outside the mine (a new one replaces it: workers count
+        their builders), else a lumber one, nearest the site. (Lumber workers first had left nobody chopping while the
+        barracks went up: 10-30 lumber for two minutes, gold piling up.)"""
         hx, hy = near or self.home
         cands = [u for u in self.workers if u.id not in self.building and not u.flags & (HIDDEN | LOADED)
                  and u.id not in self.cmd_units]
         if not cands:
             return None
-        lumber = [u for u in cands if self.assign.get(u.id) == "lumber"]
-        pool = lumber or cands
+        idle = [u for u in cands if u.order == 0]
+        gold = [u for u in cands if self.assign.get(u.id) == "gold"]
+        pool = idle or gold or cands
         return min(pool, key=lambda u: (u.x - hx) ** 2 + (u.y - hy) ** 2)
 
     def _spot(self, code: str, near=None, rmax: float = 1400.0, avoid_lane: bool = True):
@@ -996,11 +1026,12 @@ class HeuristicAgent:
         out += self._research()
         out += self._produce()
         units = [u for u in self.army if self.assign.get(u.id) != "lumber"]
-        if not units:
-            return out
         threats = self._threats()
         if threats:
             self.threat_at = self.t
+        out += self._battlestations(threats)
+        if not units:
+            return out
         center = self._center(units)
         near_enemies = [e for e in self.enemy_units if math.hypot(e.x - center[0], e.y - center[1]) < FIGHT_RADIUS]
         near_towers = [b for b in self.enemy_buildings if b.type_id in TOWERS_ATTACK
@@ -1031,7 +1062,7 @@ class HeuristicAgent:
         elif self.mode in ("gather", "creep") and ready:
             self.mode = "attack"
             self.creep_target = None
-        elif self.mode == "gather" and self._creep_camp(units, mine_power) is not None:
+        elif self.mode == "gather" and self.t >= self.no_attack_until and self._creep_camp(units, mine_power) is not None:
             self.mode = "creep"
         if self.mode == "attack" and army_food < max(10, self.attack_food / 4) and not near_enemies:
             self.mode = "gather"
@@ -1047,7 +1078,6 @@ class HeuristicAgent:
         if self.mode != prev:
             self.mode_since = self.t
             self._note(f"mode {prev} -> {self.mode} (army food {army_food}, power {mine_power:.0f} vs {their_power:.0f})")
-        out += self._battlestations(threats)
         retreating = self.t < self.retreat_until
         goal = self._goal(center, threats)
         out += self._move_army(units, center, goal, retreating)
@@ -1077,8 +1107,11 @@ class HeuristicAgent:
             return natural
         if not self.plan.creep_from <= self.now <= self.plan.creep_until or self.t - self.threat_at < 60:
             return None
+        reach = CREEP_REACH
+        if self.opt["rush_caution"] and self.enemy_race in ("undead", "orc") and self.now < 420:  # (first waves ~4:30)
+            reach = 2600.0 if self.now < 200 else 0.0
         cands = [(math.hypot(c["x"] - hx, c["y"] - hy), i) for i, c in enumerate(self.camps)
-                 if c["ids"] and math.hypot(c["x"] - hx, c["y"] - hy) < CREEP_REACH and mine_power > 2.5 * c["power"]
+                 if c["ids"] and math.hypot(c["x"] - hx, c["y"] - hy) < reach and mine_power > 2.5 * c["power"]
                  and math.hypot(c["x"] - self.enemy_start[0], c["y"] - self.enemy_start[1]) > 3500]
         if not cands:
             return None
@@ -1090,7 +1123,10 @@ class HeuristicAgent:
         if self.race not in ("human", "orc") or self.natural not in self.mines:
             return None
         natural = self._camp_at(*self.mines[self.natural])
-        due = self.now >= self.plan.expand_at - 120 or self.mine_gold.get(self.main_mine, 0) < MINE_LOW + 3000
+        if self.opt["rush_caution"] and self.t - self.threat_at < 120:
+            return None
+        early = 120.0 if self.enemy_race not in ("undead", "orc") or not self.opt["rush_caution"] else 0.0
+        due = self.now >= self._expand_at() - early or self.mine_gold.get(self.main_mine, 0) < MINE_LOW + 3000
         if natural is not None and natural["ids"] and due and mine_power > 2.0 * natural["power"]:
             return natural
         return None
@@ -1169,6 +1205,12 @@ class HeuristicAgent:
             if retreating:
                 out += self._order_point(u, MOVE, *self.rally, every=8)
                 continue
+            if self.opt["hero_behind"] and u.is_hero and self.mode in ("attack", "defend", "creep") and len(units) > 3 and d > 300:
+                # (the hero, faster than the army, had walked in first and died: it follows the centre, behind it)
+                bx, by = center[0] - 250 * dx / d, center[1] - 250 * dy / d
+                if math.hypot(u.x - bx, u.y - by) > 300:
+                    out += self._order_point(u, MOVE, bx, by, every=4)
+                continue
             if self.mode in ("attack", "defend", "creep"):
                 # the leaders wait for the rest: a unit well ahead of the group's centre toward the goal goes back to it
                 ahead = d > 800 and ((u.x - center[0]) * dx + (u.y - center[1]) * dy) / d > 450 \
@@ -1245,7 +1287,7 @@ class HeuristicAgent:
             rng = max(data[4], 100.0)
             melee = rng <= 150
             # a hurt melee unit steps back while it is hit (the attackers chase or switch: both waste their blows)
-            if melee and not u.is_hero and not u.flags & SUMMONED and u.hp < PULL_LOW * u.max_hp \
+            if self.opt["pull"] and melee and not u.is_hero and not u.flags & SUMMONED and u.hp < 0.3 * u.max_hp \
                     and self.hp_last.get(u.id, u.hp) > u.hp and self.t - self.pulled_at.get(u.id, -99) > 40:
                 k = int(np.argmin(d))
                 vx, vy = u.x - foes[k].x, u.y - foes[k].y
@@ -1265,6 +1307,16 @@ class HeuristicAgent:
                 continue
             best, score = None, None
             hit = dps(u.type, u.hero_level) * 1.5
+            last = self.last_order.get(u.id)
+            keep = None
+            if self.opt["sticky"] and last is not None and last[0] == ATTACK and last[1] < 0 and u.order == ATTACK:
+                keep = next((k for k in cand.tolist() if foes[k].id == -last[1]), None)
+            if keep is not None and foes[keep].hp - assigned[foes[keep].id] > 0:
+                # (its target still in reach and not dying already: kept, a melee unit walking to each new weakest
+                # enemy had struck less)
+                assigned[foes[keep].id] += hit
+                out[u.id] = []
+                continue
             for k in cand.tolist():
                 e = foes[k]
                 left = e.hp - assigned[e.id]
@@ -1294,7 +1346,11 @@ class HeuristicAgent:
     def _cast(self, h, foes, d, units, escape_only: bool = False) -> list[Command]:
         from .herodata import hero_table
         slots = hero_table().get(h.type_id, ())
-        for k, a in enumerate(slots):
+        prio = {"escape": 0, "stomp": 1, "nuke": 2, "line": 2, "disable": 3, "heal": 3, "deathcoil": 3, "manaburn": 4,
+                "summon": 5}  # (what is cast first when several are ready)
+        order = sorted(range(len(slots)), key=lambda k: prio.get(SPELLS.get(getattr(slots[k], "order", None) or ""), 9))
+        for k in order:
+            a = slots[k]
             if a is None or a.order is None or k >= len(h.abilities):
                 continue
             level, cd = h.abilities[k]
@@ -1320,8 +1376,9 @@ class HeuristicAgent:
         live = [i for i in range(len(foes)) if foes[i].owner != CREEPS or d[i] < 600]
         if kind == "escape":
             return ImmediateOrder(h.id, oid) if hurt and d.min() < 450 else None
-        if kind == "summon":
-            return ImmediateOrder(h.id, oid) if d.min() < 750 else None
+        if kind == "summon":  # (only while none is out: wolves every cooldown had left no mana for chain lightning)
+            out_now = sum(1 for u in units if u.flags & SUMMONED and math.hypot(u.x - h.x, u.y - h.y) < 1500)
+            return ImmediateOrder(h.id, oid) if d.min() < 750 and out_now == 0 else None
         if kind == "stomp":
             n = int((d < STOMP_RADIUS).sum())
             return ImmediateOrder(h.id, oid) if n >= 3 or (n >= 1 and hurt) else None
@@ -1381,7 +1438,7 @@ class HeuristicAgent:
         out: list[Command] = []
         makers = tree().makers
         mix = self.plan.army
-        have = Counter(u.type for u in self.army) + Counter(c for q in self.queue.values() for c, _ in q)
+        have = Counter(u.type for u in self.army) + Counter(q[0] for qs in self.queue.values() for q in qs)
         total_w = sum(w for _, w in mix)
         for b in self.done:
             if not self._makes_army(b.type) or self._queued(b) >= self.plan.queue:
@@ -1445,6 +1502,13 @@ class HeuristicAgent:
         if self.in_burrows and (not close or danger < 0.6 * mine) and self.t - getattr(self, "burrow_since", 0) > 10:
             self.in_burrows = False
             return [ImmediateOrder(b.id, STANDDOWN) for b in burrows]
+        if not self.in_burrows and self.t - getattr(self, "stood_down", -99) >= 6 and any(
+                u.order == BOARD or (u.order == 0 and u.flags & HIDDEN) for u in self.workers):
+            # (the game itself sends a computer slot's peons into its burrows when enemies come near the base: the
+            # learner's raids had kept them there for minutes, gathering nothing; tested 2026-10-25, no order of ours)
+            self.stood_down = self.t
+            self.counts["peons out"] += 1
+            return [ImmediateOrder(b.id, STANDDOWN) for b in burrows]
         return []
 
     # ---- the log -----------------------------------------------------------------------------------------------
@@ -1458,6 +1522,10 @@ class HeuristicAgent:
                          "workers": len(self.workers), "army": dict(army), "mode": self.mode,
                          "heroes": [(u.type, u.hero_level, round(u.hp / max(u.max_hp, 1), 2)) for u in self.heroes],
                          "enemy_food": getattr(self.obs.players.get(self.enemy), "food_used", None),
+                         "gathered": getattr(self.obs.players.get(self.side), "gold_gathered", None),
+                         "roles": dict(Counter(self.assign.get(u.id, "none") for u in self.workers)),
+                         "in_mine": sum(1 for u in self.workers if u.flags & HIDDEN),
+                         "worker_orders": dict(Counter(str(u.order) for u in self.workers).most_common(4)),
                          "enemy_seen": len(self.enemy_units), "mines": {m: self.mine_gold.get(m) for m in self._working_mines()},
                          "buildings": dict(Counter(u.type for u in self.structures))})
 

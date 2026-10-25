@@ -32,6 +32,20 @@ GAME_CUTS = 17179866617
 WINE = "/home/tora/wc3/ge/GE-Proton10-34/files/bin"
 
 
+def variant_class(spec: str | None):
+    """--variant module:Class (a module of warcraftsim.fullgame, e.g. heuristic_old:HeuristicAgent) -> the class, or
+    None for fullgame.heuristic's."""
+    if not spec:
+        return None
+    import functools
+    import importlib
+    mod, _, rest = spec.partition(":")
+    name, _, opts = rest.partition(":")
+    cls = getattr(importlib.import_module(f"warcraftsim.fullgame.{mod}"), name or "HeuristicAgent")
+    kw = {k: float(v) if "." in v else int(v) for k, v in (o.split("=") for o in opts.split(",") if o)}
+    return functools.partial(cls, **kw) if kw else cls
+
+
 def play_vs_ai(name: str, race: str, ai_race: str, difficulty: str, side: int, args, plan=None) -> dict:
     """One game of the heuristic against the built-in AI -> its row."""
     from warcraftsim.fullgame.heuristic import HeuristicAgent
@@ -47,7 +61,8 @@ def play_vs_ai(name: str, race: str, ai_race: str, difficulty: str, side: int, a
     t0 = time.time()
     with GameInstance(setup, name=name, timeout=180) as g:
         obs = g.start()
-        agent = HeuristicAgent(side, race, plan=plan, map_name=args.map, step_seconds=args.step_seconds)
+        agent = (variant_class(args.variant) or HeuristicAgent)(side, race, plan=plan, map_name=args.map,
+                                                                step_seconds=args.step_seconds)
         agent.begin(obs)
         prod = Production()
         prod.step(obs)
@@ -142,7 +157,8 @@ class PolicyMatch:
         t0 = time.time()
         with GameInstance(setup, name=name, timeout=180) as g:
             obs = g.start()
-            opp = {"name": f"heuristic:{race}", "kind": "heuristic", "race": race, "log": True, "plan": plan}
+            opp = {"name": f"heuristic:{race}", "kind": "heuristic", "race": race, "log": True, "plan": plan,
+                   "cls": variant_class(args.variant)}
             ep = play_one(g, obs, cfg, self.vocab, races, 1 - side, opp, self.infer, Rows(), 0, record=False, train=False)
         # the row from the heuristic's side (play_one's is the policy's)
         return {"time": time.time(), "vs": "policy", "version": self.version, "race": race, "opponent_race": opp_race,
@@ -171,6 +187,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", type=Path, help="rows (.jsonl); default runs/heuristic/matches.jsonl")
     ap.add_argument("--label", default="", help="a name for this batch in the rows")
+    ap.add_argument("--variant", default="", help="another HeuristicAgent class and its options (module:Class[:key=value,...] in warcraftsim.fullgame)")
     ap.add_argument("--wine", default=WINE)
     a = ap.parse_args(argv)
     if a.parallel > 4:
