@@ -2,7 +2,7 @@
 
 Where the project's ideas came from and what became of them. Many are the user's; others come from AlphaStar and OpenAI Five ([what those papers found](ideas-from-alphastar-and-openai-five.md)), from LLM reinforcement learning, from image generation, or from our own runs. Each experiment's numbers are in the [experiment log](experiment-log.md).
 
-## The queue (2026-10-20, updated 2026-10-24)
+## The queue (2026-10-20, updated 2026-10-25)
 
 In the order they run. The code for each is in place unless it says otherwise.
 
@@ -19,6 +19,8 @@ In the order they run. The code for each is in place unless it says otherwise.
 | Skill ratings | the user (the insane AI's win rate is spent) | a Bradley–Terry rating over every evaluation game, the insane AI at 1500: the dashboard's Ratings view | done |
 | The target's first hero taught at the altar | ours (`fgself-139`'s first heroes matched the target's by chance) | the teacher's first-hero lesson names the target's, as soon as the altar stands (`--teach 2`) | running (`fgself-140`) |
 | Training games on a second machine | the user (a games box ordered, 2026-10-24) | games and actors there, their inference on the 3090 over the network, trajectories to the learner | being built |
+| A heuristic opponent stronger than the learner | the user (2026-10-25) | a scripted player (tight build orders, continuous production, focus fire, pulling back hurt units, the hero's spells, attack timings) built to beat our learner: its weaknesses shown, then a league opponent and a yardstick | being built (a worktree agent) |
+| A lumber lesson | ours (audit 9: human lumber a minute 105 → 38 since `fgself-120`) | a target's next item short of lumber: a worker taught to chop (`--teach 3`) | built, queued (`fgself-147`) |
 | Same-page merging of the games' memory | ours | the games' identical pages shared by the kernel (`PR_SET_MEMORY_MERGE`): ~225 of a game's ~345 MB in a test | to try in a run |
 | Human data | AlphaStar (Fig. 3E, its largest gain) | a cloning loss on people's 95 Echo Isles games, played back in our client | later |
 | Fewer decisions, spatial point heads | AlphaStar (action rate), SC2LE | a "keep this order k steps" head; points on a map, not x then y | later |
