@@ -1764,10 +1764,24 @@ Fixed since, for the next run:
 
 **The gauntlet (from `fgself-149`; the user's idea).** 4 of the laptop's 20 games play the current policy against the top 5 of the ratings (every game alike, no decay; a run's policy by the hour as that run's checkpoint from the hour): `fgself-102`'s 11882922, `fgself-100`'s 15294056, `fgself-109`'s 4991346, `fgself-108`'s 2302196, `fgself-106`'s 3453342. Ratings from old games, under older rules and against weaker opponents, had topped the table; these games rate them again under today's rules.
 
+**`fgself-149`, judged at 17:45: level head to head, better against `fgself-130` and with targets.**
+* 50.6% of 320 head to head with its start, **49.2% of 295 with `fgself-130`** (`fgself-148` 31%, `fgself-147` 44%).
+* Against insane 98.5% (its start 99.1%), **with a target 68.4% of 326** (`fgself-148` 56%).
+* Rated ~2105 (level with its start); with a target 1618-1656 (`fgself-148`: 1562-1574).
+* Tavern heroes hired in 18% of the target games with one, targets' items made 60%.
+* The gauntlet's first verdicts, the current policy's score against the old top rated:
+  * `fgself-109`'s 4991346: 86% of 56;
+  * `fgself-100`'s 15294056: 69% of 77;
+  * `fgself-108`'s 2302196: 64% of 76;
+  * `fgself-102`'s 11882922: 63% of 32;
+  * `fgself-106`'s 3453342: 53% of 51.
+* `--label-norm units` kept.
+
+**`fgself-150`** (from `fgself-149`'s 19159029, 17:47): **`--teach 3`, the lumber lesson.** Otherwise `fgself-149`. Head to head with its start and `fgself-130`. Its evaluation worker follows the gauntlet's list as it is made again.
+
 The queue:
-2. `fgself-150`: `--teach 3`.
-2. `fgself-151`: the new pools (`--z-pool .../strategies-echofast-narrow-tavern-bt.json --eval-z-pool .../strategies-echo-real-narrow-tavern-bt.json`).
-3. Snapshots by wall time (every 15-30 minutes).
+1. `fgself-151`: the new pools (`--z-pool .../strategies-echofast-narrow-tavern-bt.json --eval-z-pool .../strategies-echo-real-narrow-tavern-bt.json`).
+2. Snapshots by wall time (every 15-30 minutes).
 
 A heuristic opponent stronger than the learner is being built (the user's idea).
 
