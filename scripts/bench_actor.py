@@ -142,13 +142,14 @@ def record(a) -> int:
         order_names = list(g.order_names)
         q = Queue()
         t0 = time.time()
-        ep = selfplay.play_one(g, obs, cfg, vocab, races, side, {"name": "self", "kind": "self"}, infer, q, 0, train=True)
+        opp = {"name": "self", "kind": "self", **({"tax": a.tax, "tax_side": a.tax_side} if a.tax else {})}
+        ep = selfplay.play_one(g, obs, cfg, vocab, races, side, dict(opp), infer, q, 0, train=True)
         print(f"recorded {ep['length']} steps of {races} in {time.time() - t0:.0f} s: outcome {ep['outcome']}, "
               f"{len(answers)} answers, {sum(len(x) for x in groups)} payloads", flush=True)
     a.out.parent.mkdir(parents=True, exist_ok=True)
     with open(a.out, "wb") as f:
         pickle.dump({"run": a.run, "races": races, "side": side, "seed": a.seed, "groups": groups, "answers": answers,
-                     "order_names": order_names, "setup": setup}, f)
+                     "order_names": order_names, "setup": setup, "opp": opp}, f)
     print("saved", a.out)
     return 0
 
@@ -220,7 +221,8 @@ def replay_once(rec: dict, cfg: dict, vocab: dict, prof=None, count: bool = Fals
     t0 = time.process_time()  # (this process's CPU: the machine is busy with a run, wall time is noisy)
     if prof:
         prof.enable()
-    ep = selfplay.play_one(g, obs, cfg, vocab, rec["races"], rec["side"], {"name": "self", "kind": "self"}, answers, q, 0,
+    opp = dict(rec.get("opp") or {"name": "self", "kind": "self"})
+    ep = selfplay.play_one(g, obs, cfg, vocab, rec["races"], rec["side"], opp, answers, q, 0,
                            train=True)
     if prof:
         prof.disable()
@@ -330,6 +332,9 @@ def main() -> int:
     r.add_argument("--seed", type=int, default=0)
     r.add_argument("--out", type=Path, required=True)
     r.add_argument("--name", default="bench_actor", help="the game instance's name (two recordings at once: two names)")
+    r.add_argument("--tax", type=float, default=0.0, help="the share of what one side gathers taken (a game between "
+                   "agents' balance tax: longer games)")
+    r.add_argument("--tax-side", type=int, default=0)
     p = sub.add_parser("replay")
     p.add_argument("record", type=Path)
     p.add_argument("--reps", type=int, default=3)
