@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import copy
+import ctypes
 import json
 import math
 import os
@@ -43,6 +44,8 @@ import traceback
 import types
 import weakref
 from collections import Counter, deque
+from itertools import accumulate, repeat
+from operator import attrgetter, eq, itemgetter
 from pathlib import Path
 from typing import Callable
 
@@ -59,7 +62,7 @@ from . import scenarios
 from . import strategy as strat
 from .collect import claim_slot
 from .costs import order_costs
-from .featnative import to_f16
+from .featnative import addr as _faddr, lib as _featlib, to_f16
 from .trace import DEAD_FLAG, Production, material, trace_step, unit_values  # noqa: F401
 from .play import unit_rows
 from .model import FullGameNet, act, adapt_config, anchor_kl, arch_key, evaluate, load, trained
@@ -821,43 +824,191 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
         complete(pending)
 
 
-def pack_steps(steps: list[dict]) -> tuple:
-    """A chunk's steps as a few arrays: each key's arrays (one dtype, the same shape past the first axis)
-    concatenated with their lengths, any other key's values as a list; each step's keys in their order. (Each
-    step's ~20 small arrays pickled one by one had cost an actor ~40 us a step and the learner ~50 to unpickle.)"""
+_ARRAY_SIG = attrgetter("__class__", "dtype", "ndim")  # (pack_steps' test of a key's arrays)
+_SHAPE = attrgetter("shape")
+_TRAILING = itemgetter(slice(1, None))
+_DTYPE_STR: dict = {}  # builtin dtype -> (itself, its string): pickled as the string (~20k instructions less each)
+_F32 = np.dtype(np.float32)
+# the step arrays Trajectory.add keeps as it was given them (the view's and the network's), each made the learner's
+# dtype when its chunk is pickled, all of a key's steps at once (one at a time, at each step, had been ~110k
+# instructions a step: ~20k for the entities' float16, ~3.5k each astype). (As "glob", "avail" and "h", always kept
+# as given: the view's and the network's arrays are new each step, nothing writes them afterwards.)
+RAW_STEP_KEYS = {"ent": np.float16, "type": np.int16, "cur": np.int16, "order": np.int16, "tgt": np.int16,
+                 "bx": np.int16, "by": np.int16, "logp": np.float32}
+
+
+def _f16(a: np.ndarray) -> np.ndarray:
+    """to_f16 (featnative's F16C conversion, numpy's values), its addresses without .ctypes (~3x the instructions)."""
+    L = _featlib()
+    if L is not None and type(a) is np.ndarray and a.dtype is _F32 and a.size:
+        try:
+            src = ctypes.addressof(ctypes.c_char.from_buffer(a))  # (C order and writable, else an error)
+        except (TypeError, ValueError, BufferError):
+            return to_f16(a)
+        out = np.empty(a.shape, np.float16)
+        if L.w3f_to_f16(src, _faddr(out), a.size):
+            return out
+    return to_f16(a)
+
+
+def raw_step_value(key: str, v):
+    """A RAW_STEP_KEYS value as the learner gets it (the conversion Trajectory.add made at each step)."""
+    return _f16(v) if key == "ent" else v.astype(RAW_STEP_KEYS[key])
+
+
+def _pack_raw(key: str, vals) -> tuple | None:
+    """pack_steps' column of a RAW_STEP_KEYS key's raw arrays (blob, lengths, dtype, shape past the first axis): all
+    of them converted at once (their concatenation's conversion is their conversions' concatenation: numpy's cast
+    each from its own dtype, the entities' F16C after their float32 concatenation, as to_f16 makes each), or None
+    when they are not alike (exactly numpy arrays of one shape past the first axis: each converted apart then)."""
+    v0 = vals[0]
+    if type(v0) is not np.ndarray or not v0.ndim:
+        return None
+    try:
+        if set(map(type, vals)) != {np.ndarray}:
+            return None
+        if key != "ent":
+            conv = np.concatenate(vals, dtype=RAW_STEP_KEYS[key], casting="unsafe")
+            return bytearray(conv), list(map(len, vals)), _dtype_name(conv.dtype), v0.shape[1:]
+        big = np.concatenate(vals, dtype=np.float32, casting="unsafe")  # (to_f16's: np.ascontiguousarray(a, float32))
+    except (AttributeError, ValueError, TypeError):
+        return None
+    big = np.ascontiguousarray(big)  # (C order: numpy's concatenation of arrays in Fortran order can be in theirs)
+    blob = bytearray(2 * big.size)  # (the float16 written in place: no copy of the converted array)
+    out = np.frombuffer(blob, np.float16).reshape(big.shape)
+    L = _featlib()
+    if L is None or not big.size or not L.w3f_to_f16(_faddr(big), _faddr(out), big.size):
+        out[...] = to_f16(big)
+    return blob, list(map(len, vals)), _dtype_name(out.dtype), v0.shape[1:]
+
+
+def _dtype_name(dt):
+    """A dtype for pack_steps' columns: a builtin's string (numpy's one object for it), any other itself."""
+    got = _DTYPE_STR.get(dt)
+    if got is not None and got[0] is dt:
+        return got[1]
+    name = dt.str if np.dtype(dt.str) is dt else dt
+    if name is not dt:
+        _DTYPE_STR[dt] = (dt, name)
+    return name
+
+
+def pack_steps(steps: list[dict], raw: bool = False) -> tuple:
+    """A chunk's steps as a few buffers: each key's arrays (exactly numpy arrays of one dtype, the same shape past the
+    first axis) as their bytes one after another (a bytearray) with their lengths (_lengths), its dtype and that
+    shape; any other key's values as a list; each step's keys in their order (its layout). A key's values follow the
+    layouts' order, then the steps' (unpack_steps takes them so). `raw` (PackedSteps of Trajectory's): the
+    RAW_STEP_KEYS arrays as add was given them, converted here. (Each step's ~20 small arrays pickled one by one had
+    cost an actor ~40 us a step and the learner ~50 to unpickle; a key's arrays concatenated and pickled as an array
+    (~40k instructions each), a key's values gathered by a test per step: ~4M instructions a chunk of 64 steps.)"""
     layouts: dict[tuple, int] = {}
     which = [layouts.setdefault(tuple(s), len(layouts)) for s in steps]
-    cols = {}
+    if len(layouts) == 1:
+        groups = [(next(iter(layouts)), steps)]
+    else:
+        buckets: list[list] = [[] for _ in layouts]
+        for s, w in zip(steps, which):
+            buckets[w].append(s)
+        groups = list(zip(layouts, buckets))
+    found: dict = {}  # key -> its values' tuples, a layout's each
+    for lay, group in groups:
+        if len(lay) > 1:
+            for k, col in zip(lay, zip(*map(itemgetter(*lay), group))):
+                found.setdefault(k, []).append(col)
+        elif lay:
+            found.setdefault(lay[0], []).append(tuple(map(itemgetter(lay[0]), group)))
+    cols, shared = {}, {}
     for key in dict.fromkeys(k for lay in layouts for k in lay):
-        vals = [s[key] for s in steps if key in s] if len(layouts) > 1 else [s[key] for s in steps]
+        parts = found[key]
+        vals = parts[0] if len(parts) == 1 else [v for p in parts for v in p]
+        if raw and key in RAW_STEP_KEYS:
+            col = _pack_raw(key, vals)
+            if col is not None:
+                blob, lens, name, trailing = col
+                cols[key] = (blob, _lengths(lens, shared), name, trailing)
+                continue
+            vals = [raw_step_value(key, v) for v in vals]
         v0, same = vals[0], False
-        if type(v0) is np.ndarray and v0.ndim and not v0.dtype.hasobject:
+        if type(v0) is np.ndarray and v0.ndim and not v0.dtype.hasobject and v0.dtype.itemsize:
             try:
-                same = len({(type(v), v.dtype, v.ndim, v.shape[1:]) for v in vals}) == 1
+                same = all(map(eq, map(_ARRAY_SIG, vals), repeat((np.ndarray, v0.dtype, v0.ndim))))
             except AttributeError:  # (a None, a number)
                 pass
-        cols[key] = (np.concatenate(vals), [len(v) for v in vals]) if same else (None, vals)
-    return list(layouts), which, cols
+            if same and v0.ndim > 1:
+                same = all(map(eq, map(_TRAILING, map(_SHAPE, vals)), repeat(v0.shape[1:])))
+        if not same:
+            cols[key] = (None, vals)
+            continue
+        try:
+            blob = bytearray().join(vals)
+        except TypeError:  # (one not in C order: its copy's bytes, as np.concatenate's)
+            blob = bytearray().join([np.ascontiguousarray(v) for v in vals])
+        cols[key] = (blob, _lengths(list(map(len, vals)), shared), _dtype_name(v0.dtype), v0.shape[1:])
+    return list(layouts), bytes(which) if len(layouts) <= 256 else which, cols
+
+
+def _lengths(lens: list, shared: dict):
+    """A column's arrays' lengths as pickled: (the length, the count) when all are one, else the list (one object for
+    the chunk's columns of the same lengths: pickled once)."""
+    if lens.count(lens[0]) == len(lens):
+        return lens[0], len(lens)
+    return shared.setdefault(tuple(lens), lens)
 
 
 def unpack_steps(packed: tuple) -> list[dict]:
     """pack_steps' steps back: the same keys in the same order, the same values (each array a view of its key's)."""
     layouts, which, cols = packed
     nxt = {}
-    for key, (arr, vals) in cols.items():
-        if arr is not None:
-            ends = np.cumsum(vals).tolist()
+    for key, col in cols.items():
+        if col[0] is None:
+            vals = col[1]
+        else:
+            blob, lens, dt, trailing = col
+            if type(lens) is tuple:  # (all of one length)
+                k, m = lens
+                ends = list(range(k, k * m + 1, k)) if k else [0] * m
+            else:
+                ends = list(accumulate(lens))
+            arr = np.frombuffer(blob, np.dtype(dt) if type(dt) is str else dt)
+            if trailing:
+                arr = arr.reshape((ends[-1] if ends else 0, *trailing))
             vals = [arr[a:b] for a, b in zip([0, *ends[:-1]], ends)]
         nxt[key] = iter(vals).__next__
-    return [{k: nxt[k]() for k in layouts[w]} for w in which]
+    if len(layouts) == 1:
+        lay = layouts[0]
+        return [{k: nxt[k]() for k in lay} for _ in which]
+    made = [[{k: nxt[k]() for k in lay} for _ in range(which.count(w))] for w, lay in enumerate(layouts)]
+    its = [iter(m).__next__ for m in made]
+    return [its[w]() for w in which]
 
 
 class PackedSteps(list):
     """A chunk's steps for the learner's queue: pickled as pack_steps' arrays, out of the queue a plain list
-    (unpack_steps). The remote games' wire encodes it as the list it is."""
+    (unpack_steps). The remote games' wire encodes it as the list it is. `raw` (Trajectory's chunks): its steps hold
+    the arrays of RAW_STEP_KEYS as Trajectory.add was given them, converted when pickled (a key's at once) or when its
+    items are first read (each step's, as add had converted them)."""
+
+    def __init__(self, steps=(), raw: bool = False):
+        super().__init__(steps)
+        self.raw = raw
+
+    def _converted(self) -> None:
+        if self.raw:
+            for s in list.__iter__(self):
+                for k in RAW_STEP_KEYS.keys() & s.keys():
+                    s[k] = raw_step_value(k, s[k])
+            self.raw = False
+
+    def __iter__(self):
+        self._converted()
+        return list.__iter__(self)
+
+    def __getitem__(self, i):
+        self._converted()
+        return list.__getitem__(self, i)
 
     def __reduce__(self):
-        return unpack_steps, (pack_steps(self),)
+        return unpack_steps, (pack_steps(list.copy(self), self.raw),)
 
 
 class Trajectory:
@@ -871,12 +1022,11 @@ class Trajectory:
 
     def add(self, st: dict, res: dict) -> None:
         n = st["n"]
-        self.steps.append({"ent": to_f16(st["ent"]), "type": st["type"].astype(np.int16),
-                           "cur": st["cur"].astype(np.int16), "glob": st["glob"], "n": n,
+        # (the RAW_STEP_KEYS arrays as given: made float16 / int16 / float32 when their chunk goes, PackedSteps)
+        self.steps.append({"ent": st["ent"], "type": st["type"], "cur": st["cur"], "glob": st["glob"], "n": n,
                            "n_own": min(st["n_own"], fx.MAX_OWN),
-                           "order": res["order"].astype(np.int16), "tgt": res["tgt"].astype(np.int16),
-                           "bx": res["bx"].astype(np.int16), "by": res["by"].astype(np.int16),
-                           "logp": res["logp"].astype(np.float32), "value": res["value"], "reward": 0.0,
+                           "order": res["order"], "tgt": res["tgt"], "bx": res["bx"], "by": res["by"],
+                           "logp": res["logp"], "value": res["value"], "reward": 0.0,
                            "avail": st.get("avail"),
                            "h": st.get("h"),  # the memory's state going in (None: the game's start, or none)
                            "done": False, "version": res["version"]})
@@ -941,7 +1091,7 @@ class Trajectory:
                 q1 = s["reward"] + (0.0 if s["done"] else gamma * v1)
                 g, v1 = G, s["value"]
         for i in range(0, len(steps), self.cfg["chunk"]):  # (a held game's: in pieces)
-            self.out_q.put({"steps": PackedSteps(steps[i:i + self.cfg["chunk"]]), "info": self.info})
+            self.out_q.put({"steps": PackedSteps(steps[i:i + self.cfg["chunk"]], raw=True), "info": self.info})
         self.steps = self.steps[-1:] if bootstrap else []
 
 
