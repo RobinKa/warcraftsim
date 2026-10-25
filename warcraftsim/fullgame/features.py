@@ -1235,7 +1235,7 @@ class View:
         if fast:
             pk = featnative.side(rows, player, fresh=True)
             n_built, n_alive, n_dead, n_heroes, n_done, army_n = pk[:6]
-            o = 8
+            o = 9
             built_ids, o = pk[o:o + n_built], o + n_built
             alive_ids, o = pk[o:o + n_alive], o + n_alive
             dead3, o = pk[o:o + 3 * n_dead], o + 3 * n_dead

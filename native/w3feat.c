@@ -346,18 +346,20 @@ int w3f_view(const int64_t *rows, int nrows, int ncols, int player, double sign,
     return 8 + at;
 }
 
-/* View.step's masks of one player's rows (featnative.side), into `out` (int64, at least 8 + 8 * nrows): 8 counts,
+/* View.step's masks of one player's rows (featnative.side), into `out` (int64, at least 9 + 10 * nrows): 9 counts,
  * then the segments they count: its living buildings' ids, its living units' ids, its dead heroes (type, id, level:
  * 3 each), its heroes' types (the dead too), its finished buildings' types, (the 6th count: its army's size, no
  * segment), the types of its living units that are no building, worker, hero or summon, the rows of its living
- * heroes with a skill point (play.BCAgent._auto_skills). Returns the list's length. */
+ * heroes with a skill point (play.BCAgent._auto_skills), the rows of its living units under construction (the target
+ * builder's frames). Returns the list's length. */
 int w3f_side(const int64_t *rows, int nrows, int ncols, int player, int64_t *out) {
     /* one pass, each segment written at its own place (k * nrows after the counts; the dead heroes' 3 * nrows),
-     * then moved together. `out`: at least 8 + 9 * nrows. */
-    int64_t *cnt = out, *seg = out + 8;
+     * then moved together. */
+    int64_t *cnt = out, *seg = out + 9;
     int64_t *built = seg, *alive_ids = seg + nrows, *dead = seg + 2 * (size_t)nrows, *heroes = seg + 5 * (size_t)nrows,
-            *done = seg + 6 * (size_t)nrows, *mix = seg + 7 * (size_t)nrows, *skill = seg + 8 * (size_t)nrows;
-    int64_t nb = 0, na = 0, nd = 0, nh = 0, nf = 0, nm = 0, ns = 0, army = 0;
+            *done = seg + 6 * (size_t)nrows, *mix = seg + 7 * (size_t)nrows, *skill = seg + 8 * (size_t)nrows,
+            *frames = seg + 9 * (size_t)nrows;
+    int64_t nb = 0, na = 0, nd = 0, nh = 0, nf = 0, nm = 0, ns = 0, nc = 0, army = 0;
     for (int i = 0; i < nrows; i++) {
         const int64_t *r = rows + (size_t)i * ncols;
         if (r[C_OWNER] != player) continue;
@@ -369,6 +371,7 @@ int w3f_side(const int64_t *rows, int nrows, int ncols, int player, int64_t *out
                 if (!(fl & CONSTRUCTING)) done[nf++] = r[C_TYPE];
             } else if (!(fl & WORKER)) army++;
             if ((fl & HERO) && r[C_SKILLPTS] > 0) skill[ns++] = i;
+            if (fl & CONSTRUCTING) frames[nc++] = i;
             if (!(fl & (STRUCTURE | WORKER | HERO | SUMMONED))) mix[nm++] = r[C_TYPE];
         } else if (fl & HERO) {
             dead[3 * nd] = r[C_TYPE]; dead[3 * nd + 1] = r[C_ID]; dead[3 * nd + 2] = r[C_HLEVEL];
@@ -376,7 +379,7 @@ int w3f_side(const int64_t *rows, int nrows, int ncols, int player, int64_t *out
         }
         if (fl & HERO) heroes[nh++] = r[C_TYPE];
     }
-    cnt[0] = nb; cnt[1] = na; cnt[2] = nd; cnt[3] = nh; cnt[4] = nf; cnt[5] = army; cnt[6] = nm; cnt[7] = ns;
+    cnt[0] = nb; cnt[1] = na; cnt[2] = nd; cnt[3] = nh; cnt[4] = nf; cnt[5] = army; cnt[6] = nm; cnt[7] = ns; cnt[8] = nc;
     int64_t at = nb;
     memmove(seg + at, alive_ids, sizeof(int64_t) * na); at += na;
     memmove(seg + at, dead, sizeof(int64_t) * 3 * nd); at += 3 * nd;
@@ -384,7 +387,8 @@ int w3f_side(const int64_t *rows, int nrows, int ncols, int player, int64_t *out
     memmove(seg + at, done, sizeof(int64_t) * nf); at += nf;
     memmove(seg + at, mix, sizeof(int64_t) * nm); at += nm;
     memmove(seg + at, skill, sizeof(int64_t) * ns); at += ns;
-    return 8 + (int)at;
+    memmove(seg + at, frames, sizeof(int64_t) * nc); at += nc;
+    return 9 + (int)at;
 }
 
 /* play.BCAgent._entangle's distances: of the player's living finished buildings whose type is in `trees` (sorted), in

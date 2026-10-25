@@ -1354,7 +1354,7 @@ _REPAIR = 852024  # (play.REPAIR)
 # table (features' columns) or the native one (native.py's)
 _ROW_COLS = (fx.C_ID, fx.C_TYPE, fx.C_OWNER, fx.C_X, fx.C_Y, fx.C_HP, fx.C_ORDER, fx.C_FLAGS, _unit)
 _UA_COLS = (0, 1, 2, 3, 4, 6, 10, 11, unit_from_row)
-_UNIT_COLS = list(_ROW_COLS[:8])
+_UNIT_COLS = np.array(_ROW_COLS[:8], np.intp)
 
 
 def _units(rows: np.ndarray, c: tuple) -> list:
@@ -1508,7 +1508,7 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         if own is not None and self._cols is _ROW_COLS and featnative.lib() is not None:  # (featnative.side's, made
             pk = featnative.side(rows, self.side)  # by View.step for this side's rows: its finished buildings' types,
             n_built, n_alive, n_dead, n_heroes, n_done = pk[:5]  # its heroes less the dead ones)
-            o = 8 + n_built + n_alive + 3 * n_dead + n_heroes
+            o = 9 + n_built + n_alive + 3 * n_dead + n_heroes
             types = {fx.rawcode(c) for c in set(pk[o:o + n_done])}
             hero = n_heroes > n_dead
         elif own is not None:  # (the finished buildings' types and a hero from the rows)
@@ -1582,10 +1582,17 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         if self.race != "human":  # (an orc frame takes no repair, not even from its builder: tested 2026-10-24; its
             # resume had been taught 140 times a game as orc, an order the game refuses; audit 6)
             return None
-        own = self._own_rows(obs)  # (each frame's id -> its hit points and place; from the rows: native.py's columns)
+        own = self._own_rows(obs)  # (each frame's id -> its hit points and place; from the rows)
         c = getattr(self, "_cols", _UA_COLS)
-        frames = ({i: (hp, x, y) for i, x, y, hp in own[(own[:, c[7]] & fx.CONSTRUCTING) > 0][:, [c[0], c[3], c[4], c[5]]].tolist()}
-                  if own is not None else {u.id: (u.hp, u.x, u.y) for u in self._mine(obs) if int(u.flags) & fx.CONSTRUCTING})
+        if own is not None and c is _ROW_COLS and featnative.lib() is not None:  # (featnative.side's rows of its units
+            r = self._step_rows[0]                                              # under construction: View.step's)
+            pk = featnative.side(r, self.side)
+            at = 9 + pk[0] + pk[1] + 3 * pk[2] + pk[3] + pk[4] + pk[6] + pk[7]
+            frames = ({i: (hp, x, y) for i, x, y, hp in r[pk[at:at + pk[8]]][:, [c[0], c[3], c[4], c[5]]].tolist()}
+                      if pk[8] else {})
+        else:
+            frames = ({i: (hp, x, y) for i, x, y, hp in own[(own[:, c[7]] & fx.CONSTRUCTING) > 0][:, [c[0], c[3], c[4], c[5]]].tolist()}
+                      if own is not None else {u.id: (u.hp, u.x, u.y) for u in self._mine(obs) if int(u.flags) & fx.CONSTRUCTING})
         self.frames = {i: (hp, t if hp > self.frames.get(i, (-1, t))[0] else self.frames[i][1])
                        for i, (hp, _, _) in frames.items()}
         tries = self.__dict__.setdefault("resumes", {})  # (each frame at most RESUME_TRIES: a frame the game had removed
@@ -1675,7 +1682,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             return [Build(w.id, code, at.x + r * math.cos(a), at.y + r * math.sin(a))]
         if (k := self.cls.get((code, fx.IMMEDIATE))) is not None:  # trained, researched or upgraded to
             makers = set(self.tree.makers.get(c, ()))
-            at = [u for u in done if u.type in makers]  # an idle one, else queued (a barracks training units);
+            ids = {int.from_bytes(m.encode(), "big") for m in makers}  # (by type id: Unit.type made a string a unit)
+            at = [u for u in done if u.type_id in ids]  # an idle one, else queued (a barracks training units);
             queue = self.teach or (not techtree.is_hero(c) and c not in self.upgraded)  # (the game takes
             b = next((u for u in at if u.id not in self.busy), at[0] if at and queue else None)  # neither behind)
             cancel = []
@@ -1707,7 +1715,10 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
     def _affords(self, k: int, p) -> bool:
         if self.costs is None:
             return True
-        g, l, f = (int(v) for v in self.costs[k])
+        rows = self.__dict__.get("_cost_rows")  # (the costs' rows as Python's numbers, once a game)
+        if rows is None:
+            rows = self._cost_rows = self.costs.tolist()
+        g, l, f = rows[k]
         if getattr(self, "first_free", False) and fx.is_hero_code(fx.rawcode(self._order_id(k))):
             g = l = 0  # (the first hero: its food only)
         held = getattr(self, "held", None)  # (another item's money kept: the agent's mask leaves this one the rest)

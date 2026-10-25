@@ -482,7 +482,7 @@ class BCAgent:
         wait = self.__dict__.setdefault("skill_since", {})
         if _featnative().lib() is not None:  # (its living heroes with a point, in their rows' order: featnative.side's,
             pk = _featnative().side(rows, self.player)  # made by View.step for these rows)
-            at = 8 + pk[0] + pk[1] + 3 * pk[2] + pk[3] + pk[4] + pk[6]
+            at = 9 + pk[0] + pk[1] + 3 * pk[2] + pk[3] + pk[4] + pk[6]
             heroes = rows[pk[at:at + pk[7]]] if pk[7] else rows[:0]
         else:
             heroes = rows[rows[:, fx.C_SKILLPTS] > 0]  # (the few with a point first: the other masks over those)

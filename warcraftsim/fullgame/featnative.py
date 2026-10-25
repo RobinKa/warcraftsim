@@ -185,10 +185,10 @@ def view_step(enc, fx, view, rows: np.ndarray, player: int, sign: float, product
 
 
 def side(rows: np.ndarray, player: int, fresh: bool = False) -> list:
-    """w3f_side: one player's masks of a step's rows, as a list: 8 counts, then the segments they count (its living
+    """w3f_side: one player's masks of a step's rows, as a list: 9 counts, then the segments they count (its living
     buildings' ids, its living units' ids, its dead heroes' (type, id, level), its heroes' types, its finished
     buildings' types, (its army's size), its plain living units' types, the rows of its living heroes with a skill
-    point). Read only. Kept per player with the rows
+    point, the rows of its living units under construction). Read only. Kept per player with the rows
     asked: the next ask of the same rows gets it, unless `fresh` (View.step's: a step's rows are new, but a caller
     may change rows in place between steps; the target builder asks after it, on the step's rows)."""
     got = _SIDE.get(player)
@@ -196,7 +196,7 @@ def side(rows: np.ndarray, player: int, fresh: bool = False) -> list:
         return got[1]
     given = rows
     rows = np.ascontiguousarray(rows, np.int64)
-    out = np.empty(9 + 9 * len(rows), np.int64)
+    out = np.empty(10 + 10 * len(rows), np.int64)
     k = lib().w3f_side(_rows_addr(rows), len(rows), rows.shape[1], int(player), addr(out))
     res = out[:k].tolist()
     _SIDE[player] = (given, res)  # (a tuple replaced whole: an actor's game threads share it)
