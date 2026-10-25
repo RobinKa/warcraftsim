@@ -994,6 +994,20 @@ class TechMask:
             return self._ok
         tt = self.tt
         have = tt.counts_as(done, self.race) | {c for c, v in levels.items() if v > 0}
+        needs = self.__dict__.get("_needs")  # (each item's needs per level, resolved for the race once: tt.missing's,
+        if needs is None or needs[0] is not self.tree:  # which resolved them at every call; ~300 items a mask)
+            needs = self._needs = (self.tree, {c: [tuple(tt.resolve(r, self.race) for r in per) for per in self.tree.needs[c]]
+                                               for _, c in self.items if self.tree.needs.get(c)})
+        needs = needs[1]
+
+        def lacking(code: str, lvl: int) -> bool:  # (bool(tt.missing(code, self.race, have, lvl, self.tree)))
+            per = needs.get(code)
+            if not per:
+                return False
+            for r in per[min(lvl, len(per) - 1)]:
+                if r not in have:
+                    return True
+            return False
         ok = np.ones(self.n, bool)
         for c, code in self.items:
             if c in self.wares and self.stock.get(code, 0.0) > now:  # (not in stock yet)
@@ -1001,15 +1015,15 @@ class TechMask:
             elif code[0] == "R":  # research: its next level
                 lvl = levels.get(code, 0)
                 ok[c] = (lvl < self.max_level.get(code, 1) and code not in researching
-                         and not tt.missing(code, self.race, have, lvl, self.tree)
+                         and not lacking(code, lvl)
                          and not tt.short_levels(code, lvl, levels, self.tree))
             elif tt.is_hero(code) and code in dead:  # revived at an altar, with the order that trained it (`dead`: its
-                ok[c] = not tt.missing(code, self.race, have, 0, self.tree)  # dead heroes' types; a tavern's hero too, with
+                ok[c] = not lacking(code, 0)  # dead heroes' types; a tavern's hero too, with
                 # an altar: its hire's order is the altar's revival, play.BCAgent. A dead tavern hero was lost for good)
             elif tt.is_hero(code):
-                ok[c] = len(heroes) < 3 and code not in heroes and not tt.missing(code, self.race, have, len(heroes), self.tree)
+                ok[c] = len(heroes) < 3 and code not in heroes and not lacking(code, len(heroes))
             else:
-                ok[c] = (not tt.missing(code, self.race, have, 0, self.tree) and code not in researching
+                ok[c] = (not lacking(code, 0) and code not in researching
                          and (code not in UNIT_RESEARCH or levels.get(UNIT_RESEARCH[code], 0) > 0))
         for c, (r, a) in self.abilities:  # (at its level: inner fire, polymorph, bloodlust need level 2; audit 11)
             ok[c] = levels.get(r, 0) >= a
@@ -1459,8 +1473,14 @@ class View:
             self.mix_can = lambda u: (k := idx.get((int.from_bytes(u.encode(), "big"), IMMEDIATE))) is not None and bool(avail[k])
             # (a unit no train order makes, a mercenary, a zeppelin: not one it can train; class 0, no order, had
             # read as one: the mix order available with only those lacking, and doing nothing; audit 3)
+            cls = self.__dict__.get("_mix_cls")  # (each target unit's train order class, once per target: mix_can's)
+            if cls is None or cls[0] is not target or cls[1] is not idx:
+                cls = self._mix_cls = (target, idx, {u: idx.get((int.from_bytes(u.encode(), "big"), IMMEDIATE))
+                                                     for u in target})
+            cls = cls[2]
             avail[enc.mix_class] = bool(MACROS and "mix" not in MACROS_OFF
-                                        and any(s > have.get(u, 0.0) and self.mix_can(u) for u, s in target.items()))
+                                        and any(s > have.get(u, 0.0) and (k := cls[u]) is not None and bool(avail[k])
+                                                for u, s in target.items()))
         if avail is not None and enc.pickup_class is not None:  # (--macros 2: pick up, while a hero has an item lying
             pickable = _mod("macros").pickable                    # near; the ground items: play.BCAgent.observe)
             self.pickers = pickable(rows, player, getattr(self, "ground", ())) if MACROS >= 2 else []
