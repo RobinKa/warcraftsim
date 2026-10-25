@@ -1721,9 +1721,39 @@ Fixed since, for the next run:
 
 **`fgself-147`** (from `fgself-145`'s 13576303 and its league, 12:17, build/shim rebuilt): audit 9's follow-ups and audit 10's fixes. Head to head with `fgself-145`'s 13576303 and `fgself-130`.
 
+**`fgself-147`, judged at 14:05: level head to head, better with targets:**
+* 52.2% of 247 head to head with its start (by thirds 54%, 59%, 47%), 44.4% of 270 with `fgself-130`.
+* Against insane 98% (its start 95%), **with a target 67% of 294** (`fgself-145`: 58%).
+* Rated 2016 ± 35 and 1989 ± 48 (h0, h1) to its start's 1982 ± 29; with a target 1639 and 1623 to `fgself-145`'s 1575 and 1543.
+* Targets' items made: 62% (from 56-59%). Human with a target is the weak race: 12 of 46 won.
+* Kept.
+
+**Audit 11 (2026-10-25, the learner and the yardsticks, today's code and fgself-147's games).** It found:
+* **The teacher's lessons carry the whole `--teach-coef` in any minibatch with one.** The loss averages them over themselves (`tm.sum()`), PPO over every own unit (~6,000). One lesson weighs ~2,500 times a PPO unit's decision. The label terms' |G|² is 0.71 to PPO's 0.0006, and updates clipped at 1.0 rose from 8% (`fgself-130`) to 61% (`fgself-147`). Now `--label-norm units`: lessons averaged over the labelled steps' own units, as the builder's labels; and `loss/teach` logged apart. An experiment of its own.
+* **The past snapshots are minutes old.** One every 20 updates (~1.3 minutes) and 6 kept: the pool spans ~6.6 minutes, close to self-play. An unplayed snapshot weighed 1.0, 4 times an even one (fixed: the smoothing's prior, a half). Snapshots by wall time: an experiment.
+* **Fixed in `fgself-148`:**
+  * a research queued behind units counts as under way (probe: refused when ordered again);
+  * the research levels a need asks for (Requiresamount: the night elf Marks need level 2, so do inner fire, polymorph, bloodlust, healing ward);
+  * repairs need some of each resource the building costs (probes), and upgraded types are priced from their upgrade's row;
+  * a free first tavern hire keeps no money;
+  * cancels only at a building with something queued (a cancel undid a fortress tier in a replay);
+  * no train or hero orders at frames;
+  * the skip counters in the rows;
+  * `real_games.py` splits on evaluation games only;
+  * the dashboard's head to head counts ties as half;
+  * the ratings' errors come from the whole information matrix (each player's own games alone had read them about half as wide).
+* Smaller, not fixed:
+  * the anchor's memory runs from the policy's stored state;
+  * a builder label over a lesson keeps the lesson's weight;
+  * the AI record's ties.
+
+**`fgself-148`** (from `fgself-147`'s 11480163, 14:07): audit 11's fixes. Head to head with its start and `fgself-130`.
+
 The queue:
-1. `fgself-148`: `--teach 3`.
-2. `fgself-149`: the new pools (`--z-pool .../strategies-echofast-narrow-tavern-bt.json --eval-z-pool .../strategies-echo-real-narrow-tavern-bt.json`, rebuilt with no build time for wares).
+1. `fgself-149`: `--label-norm units` (lessons no longer drown out PPO).
+2. `fgself-150`: `--teach 3`.
+3. `fgself-151`: the new pools (`--z-pool .../strategies-echofast-narrow-tavern-bt.json --eval-z-pool .../strategies-echo-real-narrow-tavern-bt.json`).
+4. Snapshots by wall time (every 15-30 minutes).
 
 A heuristic opponent stronger than the learner is being built (the user's idea).
 
