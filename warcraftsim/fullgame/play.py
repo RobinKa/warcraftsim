@@ -175,6 +175,7 @@ class BCAgent:
                     self.view.assign.pop(unit, None)
                 else:
                     self.view.assign[unit] = res
+                    self.view.added(unit)  # (the view's forgetting of gone units: View.added)
                     if res == "gold" and hasattr(c, "target"):  # (its mine: another one is a transfer, not redundant)
                         self.view.mine_of[unit] = c.target
         pending = getattr(self.view, "expanding", None)

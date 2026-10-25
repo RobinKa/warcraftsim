@@ -1087,6 +1087,14 @@ class View:
                 self.assign.pop(unit, None)
             else:
                 self.assign[unit] = res
+                self.added(unit)
+
+    def added(self, unit: int) -> None:
+        """A unit's entry put in assign, mine_of or last_order: unless it is among the living units of the view's last
+        step, the next step forgets those dicts' gone units by a full pass (step: by the units gone since otherwise)."""
+        prev = self.__dict__.get("_units_prev")
+        if prev is None or unit not in prev:
+            self._keys_safe = False
 
     def note_orders(self, orders, t: int, trees: dict | None = None) -> None:
         """The player's accepted orders of step t, (unit, order id, recorded kind 0 immediate / 1 point /
@@ -1098,6 +1106,7 @@ class View:
                 kind, (x, y) = 1, trees[int(target)]
             self.last_order[int(unit)] = ((1, float(x), float(y), 0, t) if kind == 1 else
                                           (2, 0.0, 0.0, int(target), t) if kind == 2 else (0, 0.0, 0.0, 0, t))
+            self.added(int(unit))
 
     def record_orders(self, orders) -> None:
         """The player's orders of the last step (unit, order id, kind): train / research orders
@@ -1267,9 +1276,21 @@ class View:
                 del d[k]
         self.busy &= self.own_buildings
         units = set(alive_ids) if fast else set(rows[own_alive, C_ID].tolist())
-        for d in (self.assign, self.mine_of, self.last_order):  # (a unit gone: what it harvested, its mine and its last
-            for k in d.keys() - units:                            # order forgotten, not given to the next unit with its
-                del d[k]                                          # id: ~72 reuses a game; audit 4)
+        # (a unit gone: what it harvested, its mine and its last order forgotten, not given to the next unit with its id:
+        # ~72 reuses a game; audit 4. Their keys are all among the last step's living units unless added() said
+        # otherwise: then the units gone since are the keys to forget, the same as a pass over each dict)
+        prev = self.__dict__.get("_units_prev")
+        if prev is not None and self.__dict__.get("_keys_safe"):
+            gone = prev - units
+            if gone:
+                for d in (self.assign, self.mine_of, self.last_order):
+                    for k in gone:
+                        d.pop(k, None)
+        else:
+            for d in (self.assign, self.mine_of, self.last_order):
+                for k in d.keys() - units:
+                    del d[k]
+        self._units_prev, self._keys_safe = units, True
         events = events.tolist() if isinstance(events, np.ndarray) else events  # (Python's numbers for the loops below:
         # the same values)
         for r in events:  # production started / ended at a building of the player's (an enemy's: unseen)

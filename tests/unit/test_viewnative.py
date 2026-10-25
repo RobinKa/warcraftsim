@@ -86,6 +86,7 @@ def test_view_step_matches_the_old_path(inputs, active, monkeypatch):
                     v.queued.setdefault(b, 1)
                 for u in rows[(rows[:, fx.C_OWNER] == player), fx.C_ID][:5].tolist():
                     v.assign.setdefault(u, "lumber" if u % 2 else "gold")
+                    v.added(u)  # (as play.BCAgent.accepted tells it)
                 v.reserve = (2, 135, 0) if t % 3 == 0 else None
             fast = views[0].step(rows, me, events, t, opp)
             assert views[0]._marks is not None  # (the C path taken)
@@ -101,6 +102,8 @@ def test_view_step_matches_the_old_path(inputs, active, monkeypatch):
             assert (a.own_buildings, a.queued, a.busy, a.making, a.dead_heroes, a.assign, a.levels, a.free_hero) == \
                 (b.own_buildings, b.queued, b.busy, b.making, b.dead_heroes, b.assign, b.levels, b.free_hero)
             assert all(np.array_equal(x, y) for x, y in zip(a.hp_last, b.hp_last))
+            living = set(rows[(rows[:, fx.C_OWNER] == player) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0), fx.C_ID].tolist())
+            assert set(a.assign) <= living and set(a.last_order) <= living  # (the gone units' entries forgotten)
             # play.BCAgent's marks: the own entities' workers on a building order or repairing, their frames
             own = old["sel"][:old["n_own"]]
             w = own[own[:, fx.C_FLAGS] & fx.WORKER > 0]
