@@ -1689,6 +1689,18 @@ Fixed since, for the next run:
   * The policy had all but stopped chopping: human 105 lumber a minute in `fgself-120`, 59 in `fgself-129`, 50 in `fgself-139`, 38 in `fgself-145`, to ~870-930 gold; orc 138 to 54.
   * People gather 30-50% as much lumber as gold. On `echofast` gold-only tier-1 armies win, and a target's lumber items wait.
 
+**`fgself-145`, judged at 11:08: slightly better, better with targets:**
+* 55.3% of 255 head to head with its start (by thirds 54%, 53%, 58%), 44.8% of 261 with `fgself-130`.
+* Against insane 93.5% (its start 96.6%), **with a target 57.9% of 305** (`fgself-144`: 49-54%).
+* Rated 1989 ± 37 and 2000 ± 45 (h0, h1) to its start's 1977 ± 38.
+* The fixes show:
+  * refused human repairs fell from ~900 a game to 22 (the ghost frames);
+  * tavern heroes are hired in 17% of the target games with one (`fgself-144`: ~8%);
+  * expansions are still ~16% of the target games that ask for one.
+* Kept.
+
+**`fgself-146`** (from `fgself-145`'s 13576303, 11:10, build/shim rebuilt): the fixes above (audit 9's follow-ups and units gone without dying reported). Head to head with its start and `fgself-130`.
+
 The queue:
 1. `fgself-146`: the fixes above (needs the shim rebuilt).
 2. `fgself-147`: `--teach 3`.
