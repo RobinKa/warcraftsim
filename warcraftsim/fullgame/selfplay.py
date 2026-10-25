@@ -1328,7 +1328,15 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                 races[1 - side] = races[side]
         ai = _choose(rng, spec["launch"])  # {"kind": "agents"} or {"kind": "ai", "difficulty"[, "delay"]}
         versus = None  # (--eval-vs: an evaluation launch of the current policy against a listed checkpoint)
-        if mirrored or (evaluating and cfg.get("eval_vs", 0.0) > 0 and cfg.get("eval_checkpoints")
+        # --heuristic-share / --eval-heuristic: the learner against the hand-written player (fullgame/heuristic.py),
+        # its side in --heuristic-race; a training launch between agents, or an evaluation launch (eval_key "vs heuristic")
+        heur = (not evaluating and ai["kind"] == "agents" and cfg.get("heuristic_share", 0.0) > 0
+                and rng.random() < cfg["heuristic_share"]) or (  # (no draw at 0: the runs' other draws as before)
+            evaluating and not mirrored and cfg.get("eval_heuristic", 0.0) > 0 and rng.random() < cfg["eval_heuristic"])
+        if heur:
+            ai = {"kind": "agents"}
+            races[1 - side] = cfg.get("heuristic_race") or "orc"
+        elif mirrored or (evaluating and cfg.get("eval_vs", 0.0) > 0 and cfg.get("eval_checkpoints")
                         and rng.random() < cfg["eval_vs"]):
             # each matchup both ways round (the current policy with either race; drawn alone, the races decided:
             # 0 of 19 as human against the checkpoint's orc read as a weaker policy)
@@ -1367,7 +1375,7 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                 slots[side] = Agent(races[side], handicap=int(ai.get("handicap", cfg["handicap"])), difficulty=adv)
         agents_only = ai["kind"] != "ai"
         # GRPO's sources: games between agents with a seed (the built-in AI's games do not replay)
-        seeded = agents_only and not evaluating and cfg.get("grpo_share", 0.0) > 0
+        seeded = agents_only and not evaluating and cfg.get("grpo_share", 0.0) > 0 and not heur
         # a restart goes on to the next pair of players (--pairs), or reloads the map (1 s).
         # (--scripted-reset: games without the built-in AI reset by script for the same players instead,
         # 0.1 s, but not to a new game: see GameSetup.melee_reset)
@@ -1394,11 +1402,15 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                     except (FileNotFoundError, json.JSONDecodeError):
                         pass
                     opp = ({"name": f"script:ai-{ai['difficulty']}" + (" (real)" if real else ""), "kind": "ai"}
-                           if ai["kind"] == "ai" else {"name": "exploiter", "kind": "exploiter"} if ai["kind"] == "exploit"
+                           if ai["kind"] == "ai" else
+                           {"name": f"heuristic:{races[1 - side]}", "kind": "heuristic",
+                            **({"eval_tag": f"vs heuristic:{races[1 - side]}"} if evaluating else
+                               {"strategy": heuristic_strategy(cfg, races[1 - side], rng)})} if heur
+                           else {"name": "exploiter", "kind": "exploiter"} if ai["kind"] == "exploit"
                            else {"name": f"eval-vs:{versus}", "kind": "past", "path": versus,
                                  "eval_tag": "vs " + "/".join(Path(versus).parts[-3::2])} if versus
                            else dict(_choose(rng, spec["agents"])))
-                    if agents_only and not versus:  # races apart: the stronger one's income taxed (League.balance)
+                    if agents_only and not versus and not heur:  # races apart: the stronger one's income taxed (League.balance)
                         taxed, share = balance_tax(spec, races)
                         if cfg.get("win_balance"):  # (the model's cap: the races' balance until it is fitted)
                             share = min(share, cfg.get("win_balance", 0.0))
@@ -1408,7 +1420,7 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                             opp["win_balance"] = spec["win_balance"]  # is expected to win, play_one)
                     # on-policy distillation: the built-in AI advises the learner (never in the real game)
                     opp["advise"] = not real and rng.random() < cfg.get("opd_share", 0.0)
-                    if evaluating and not versus and eval_key != "current":
+                    if evaluating and not versus and not heur and eval_key != "current":
                         opp["eval_key"] = eval_key
                     if "shaping" in spec:  # (--shaping-anneal: the weight now, the game's for its whole length)
                         opp["shaping"] = spec["shaping"]
@@ -1443,6 +1455,17 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
         except Exception as e:  # noqa: BLE001 (a new launch)
             print(f"actor {wid}/{k}: {type(e).__name__}: {e}", flush=True)
             time.sleep(2)
+
+
+def heuristic_strategy(cfg: dict, race: str, rng: random.Random) -> str:
+    """--heuristic-strategy: the hand-written player's strategy in a training game ("" its race's default)."""
+    spec = cfg.get("heuristic_strategy") or "default"
+    if spec == "default":
+        return ""
+    from .heuristic import STRATEGIES, strategies
+    if spec == "random":
+        return rng.choice(strategies(race) or [""])
+    return spec if spec in STRATEGIES and STRATEGIES[spec].race == race else ""
 
 
 _POOLS: dict[str, dict] = {}
@@ -1950,8 +1973,16 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     gathered = None
     prod = Production()  # what both sides make (the episode row: the dashboard's Production tab)
     prod.step(obs)
+    heur = None  # (--heuristic-share, heuristic_match.py: the opponent's side played by the hand-written player)
+    if opp.get("kind") == "heuristic":
+        from .heuristic import HeuristicAgent, PLANS
+        cls = opp.get("cls") or HeuristicAgent  # (heuristic_match.py --variant: another version's, side by side)
+        heur = cls(1 - side, races[1 - side], plan=opp.get("plan") or None,
+                   **({"strategy": opp["strategy"]} if opp.get("strategy") else {}),
+                              map_name=cfg["map"], step_seconds=cfg["step_seconds"], log=bool(opp.get("log")))
+        heur.begin(obs)
     for s in (0, 1):
-        if g.setup.slots[s].kind != "agent" or s == late:
+        if g.setup.slots[s].kind != "agent" or s == late or (heur is not None and s == heur.side):
             continue
         bot = BCAgent(None, vocab, s, None, costs=cfg.get("costs_array"))
         bot.begin(obs, race_ix)
@@ -2041,6 +2072,18 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                             lumber=cfg.get("teach", 0) >= 3)
                  for s in trajs if keys[s] == "current"}
                 if cfg.get("teach") and replay is None else {})
+    # --teach-heuristic: a target drawn from the hand-written player's games (strategy.from_demos names the strategy) is
+    # taught by that strategy itself: a HeuristicAgent of it shadows the side, never carried out, and its macro orders
+    # (builds, training, research, tiers) label the side's steps as the teacher's lessons do
+    hteach = {}
+    if cfg.get("teach_heuristic") and replay is None:
+        from .heuristic import STRATEGIES, HeuristicAgent as _HA
+        for s in trajs:
+            if keys[s] == "current" and (zs.get(s) or {}).get("strategy") in STRATEGIES \
+                    and STRATEGIES[zs[s]["strategy"]].race == races[s]:
+                hteach[s] = _HA(s, races[s], log=False, map_name=cfg["map"], step_seconds=cfg["step_seconds"],
+                                strategy=zs[s]["strategy"])
+                hteach[s].begin(obs)
     zphi = {s: 0.0 for s in zs}  # their strategy potentials at the last recorded step
     # the built-in AI advises the learner's sides (opp["advise"]): its orders label their steps
     advised = [s for s in trajs if keys[s] == "current"] if opp.get("advise") else []
@@ -2153,6 +2196,18 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                     av = sts[s].get("avail")  # (the lessons that teach: labelled, and an order the policy could give)
                     tc.kept = getattr(tc, "kept", 0) + int(((y["y_order"] > 0) & (np.asarray(av)[y["y_order"]] if av is not None
                                                                                    else True)).sum())
+        for s, ha in hteach.items():  # (--teach-heuristic: the strategy's own macro orders as lessons)
+            if s in spans and trajs[s].steps and obs.players.get(s) is not None:
+                ha.observe(obs, t)
+                c = [x for x in ha.commands() if type(x).__name__ == "Build"
+                     or (type(x).__name__ == "ImmediateOrder" and x.order >= fx.TYPE_CODE)]
+                if c:
+                    q = obs.players[s]
+                    me = np.asarray([t, s, q.gold, q.lumber, q.food_used, q.food_cap, q.upkeep])
+                    y, _ = bots[s].enc.step_labels(bots[s].view, sts[s], label_rows(t, c), me, np.zeros((0, 5), np.int64),
+                                                   bots[s].trees, taught=True)
+                    merge_labels(trajs[s].steps[-1], y, teach=True)
+                    ha.counts["lessons"] += len(c)
         built, given = {}, {}
         for s, b in builders.items():  # (--z-build: after the agents' orders, so a worker it takes is taken)
             c = b.commands(obs, made[s], t, cfg["step_seconds"], cmds[spans[s][0]:spans[s][1]] if s in spans else (), rows)
@@ -2164,6 +2219,12 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                             np.asarray([t, s, q.gold, q.lumber, q.food_used, q.food_cap, q.upkeep]))
             if cfg.get("z_build", 0) != 2:  # (--z-build 2: a teacher only, its orders labels and never carried out)
                 cmds += c
+        hspan = None
+        if heur is not None:  # (the hand-written player's orders: after the policy's, no trajectory)
+            heur.observe(obs, t)
+            hc = heur.commands()
+            hspan = (len(cmds), len(cmds) + len(hc))
+            cmds += hc
         if late is not None and t == opp["start"]:  # the built-in AI takes over its side (after the bots' orders)
             cmds.append(StartAI(late))
         if replaying:  # (the source's commands, which its spans index; what they send workers to harvest)
@@ -2199,6 +2260,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             label_step(obs, t, advised, spans, sts, held, bots, trajs)
         for s, (a, b) in spans.items():
             bots[s].accepted(cmds[a:b], obs.command_results[a:b])
+        if hspan is not None:
+            heur.accepted(cmds[hspan[0]:hspan[1]], obs.command_results[hspan[0]:hspan[1]])
         t += 1
         prod.step(obs)
         for s in zs:  # (what each side with a strategy has made: its items' first times)
@@ -2278,6 +2341,12 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"balance_tax": opp["tax"] if opp["tax_side"] == side else -opp["tax"]} if "tax_side" in opp else {}),
         **({"tb_x": opp["tb_x"]} if "tb_x" in opp else {}),  # (--win-balance: the game's features, balance.py)
         "prod": prod.row(side, obs), "opp_prod": prod.row(1 - side, obs), **({"advised": True} if advised else {}),
+        **({"heuristic_lessons": hteach[side].counts["lessons"], "heuristic_teacher": zs[side]["strategy"]}
+           if side in hteach else {}),
+        **({"heuristic_strategy": heur.plan.name} if heur is not None and heur.plan.name else {}),
+        **({"heuristic": heur.summary() if opp.get("log") else {k: v for k, v in heur.summary().items()
+                                                                  if k in ("issued", "refused", "counts")}}
+           if heur is not None else {}),
         **({"max_own": bots[side].view.max_own, "max_ent": bots[side].view.max_ent} if side in bots else {}),
         **({"shared_noise": shared_noise} if cfg.get("shared_noise", 0.0) > 0 else {}),
         **({"z_build": builders[side].log, "z_refusals": builders[side].why,
@@ -3852,8 +3921,24 @@ def main(argv: list[str] | None = None) -> int:
                     "on echofast, half costs and a third of the build times)")
     ap.add_argument("--eval-z", type=int, default=0, help="with --z-pool: the current policy also plays evaluation "
                     "games with a target strategy (eval_key current+z: the same weights, paired on the same matchups)")
-    ap.add_argument("--z-src", default="", choices=["", "human", "ai"], help="draw only the strategies of people's "
+    ap.add_argument("--z-src", default="", choices=["", "human", "ai", "heuristic"], help="draw only the strategies of people's "
                     "replays (human) or of the built-in AI's games (ai); default: both")
+    ap.add_argument("--heuristic-share", type=float, default=0.0,
+                    help="this share of the training launches between agents play the learner against the hand-written "
+                         "player (fullgame/heuristic.py, the user's idea: a scripted opponent stronger than the learner); "
+                         "its side plays --heuristic-race and makes no trajectory")
+    ap.add_argument("--eval-heuristic", type=float, default=0.0,
+                    help="this share of the evaluation launches play the current policy against the hand-written player "
+                         "(eval_key 'vs heuristic:<race>': a yardstick that does not move)")
+    ap.add_argument("--heuristic-race", default="orc", choices=["human", "orc", "undead", "nightelf"],
+                    help="the hand-written player's race (orc is the one tuned: 2026-10-25)")
+    ap.add_argument("--heuristic-strategy", default="default",
+                    help="its strategy in training games (heuristic.STRATEGIES): 'default' (the race's tuned one), "
+                         "'random' (one of the race's drawn per game) or a name; evaluation games always the default")
+    ap.add_argument("--teach-heuristic", type=int, default=0,
+                    help="1: a target drawn from the hand-written player's games (a pool built from its "
+                         "demonstrations: strategy.py --demos) is taught by that strategy: a scripted player of it "
+                         "shadows the side and its builds, training, research and tiers label the steps (--teach-coef)")
     ap.add_argument("--exploiter-share", type=float, default=0.0,
                     help="AlphaStar's main exploiter: this share of launches are games between the learner and a "
                          "second network that trains only against it (League; 0: none)")
@@ -4344,6 +4429,8 @@ def main(argv: list[str] | None = None) -> int:
            "grpo_share": args.grpo_share, "grpo_group": args.grpo_group, "grpo_coef": args.grpo_coef,
            "grpo_seeds": args.grpo_seeds, "grpo_branch": [float(x) for x in args.grpo_branch.split("-")],
            "eval_map": args.eval_map, "eval_z_pool": str(args.eval_z_pool) if args.eval_z_pool else "", "eval_vs": args.eval_vs,
+           "heuristic_share": args.heuristic_share, "eval_heuristic": args.eval_heuristic, "heuristic_race": args.heuristic_race,
+           "heuristic_strategy": args.heuristic_strategy, "teach_heuristic": args.teach_heuristic,
            "eval_guide": args.eval_guide,
            "eval_costs": order_costs(vocab, args.eval_map).tolist() if args.eval_map and args.avail_mask else None,
            "order_names": vocab.get("order_names") or {str(k): v for k, v in fx.demo_order_names(args.runs).items()}}

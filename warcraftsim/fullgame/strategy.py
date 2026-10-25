@@ -95,7 +95,9 @@ def from_demos(path: Path) -> list[dict]:
     result = meta.get("result") or {}
     races = meta["races"]
     diff = meta.get("difficulties") or [None, None]
-    return [{"race": races[p], "opp": races[1 - p], "src": "ai", "won": result.get(str(p)) == "VICTORY",
+    scripted = meta.get("strategies") or [None, None]  # (the hand-written player's games: its strategies' names)
+    return [{"race": races[p], "opp": races[1 - p], "src": "heuristic" if scripted[p] else "ai",
+             **({"strategy": scripted[p]} if scripted[p] else {}), "won": result.get(str(p)) == "VICTORY",
              "t": _first_times(made[p]), "n": dict(count[p]), "game": f"{path.parent.name}/{path.name}", "player": p,
              "difficulty": diff[p], "map": meta.get("map"), "end": round(float(units[:, 0].max()) * dt, 1)}
             for p in (0, 1)]
