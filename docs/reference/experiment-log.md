@@ -1779,8 +1779,18 @@ Fixed since, for the next run:
 
 **`fgself-150`** (from `fgself-149`'s 19159029, 17:47): **`--teach 3`, the lumber lesson.** Otherwise `fgself-149`. Head to head with its start and `fgself-130`. Its evaluation worker follows the gauntlet's list as it is made again.
 
+**`fgself-150`, judged at 19:52: level head to head, better with targets.**
+* 48.9% of 269 head to head with its start, 49.0% of 196 with `fgself-130`.
+* Against insane 96.2%, **with a target 75.5% of 269** (by thirds 64%, 81%, 82%; `fgself-149` 68%).
+* **Targets' items made 72%** (`fgself-149` 60%).
+* Rated ~2070 (`fgself-149` ~2090, within the intervals); with a target up to 1771 (`fgself-149` ~1640).
+* Lumber a minute in target games: human 32 → 204, orc 77 → 257, undead 29 → 225, night elf 360 → 709, from ~0.6 lessons a game.
+* `--teach 3` kept.
+
+**`fgself-151`** (from `fgself-150`'s 16198012, 19:55): **no macro help** (`--macros-off mix,creep,expand`, the user's ask): the army-mix, creep and expand orders masked in training and evaluation. With them off, the teacher's lessons teach the low-level orders: a unit of the target's mix at a building, the hall built where people put theirs (undead: the mine haunted), workers sent to it, the heroes attack-moving to the natural's camp. Otherwise `fgself-150`.
+
 The queue:
-1. `fgself-151`: the new pools (`--z-pool .../strategies-echofast-narrow-tavern-bt.json --eval-z-pool .../strategies-echo-real-narrow-tavern-bt.json`).
+1. `fgself-152`: the new pools (`--z-pool .../strategies-echofast-narrow-tavern-bt.json --eval-z-pool .../strategies-echo-real-narrow-tavern-bt.json`).
 2. Snapshots by wall time (every 15-30 minutes).
 
 A heuristic opponent stronger than the learner is being built (the user's idea).
