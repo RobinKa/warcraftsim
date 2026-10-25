@@ -108,7 +108,8 @@ PLANS: dict[str, Plan] = {
         army=(("ogru", 1.0), ("ohun", 1.0)),
         research=((360.0, "Rome"), (480.0, "Rora"), (600.0, "Roar")),
         lumber_workers=((0.0, 3),),  # (5 had floated 600-1,300 lumber: peons the army lacked)
-        attack_food=45, attack_at=660.0),
+        # (patient: against the learner, games past 14 minutes were won 61 of 78, its one mine dry by then)
+        attack_food=60, attack_at=840.0),
     "human": Plan(
         race="human", worker="hpea", hall="htow", supply="hhou", supply_food=6, altar="halt",
         heroes=("Hmkg",),
@@ -197,6 +198,9 @@ OPTIONS = {
     "towers": 1,  # enemy towers that shoot are fight targets
     "hero_home": 1,  # a hurt hero walks home until healed
     "towers_built": 1,  # the plan's towers in front of the base
+    "hold_home": 1,  # a wave as strong as the army is met near the hall (its towers, burrows with their peons)
+    "strict_budget": 0,  # 1: money kept for a due building short of lumber holds every other order back (the check
+    # before 2026-10-25's fix: in effect buildings and supply first)
 }
 
 
@@ -452,6 +456,7 @@ class HeuristicAgent:
         self.revive_tried: dict[int, int] = {}
         self.reviving: dict[int, int] = {}  # dead hero -> the step its revival was taken
         self.no_attack_until = 0  # (after a retreat: the army gathers again first)
+        self._home_power = 0.0
         self.threat_at = -999  # (the last step enemies were at the base)
         self.in_burrows = False
         self.enemy_army_seen = 0.0
@@ -604,7 +609,10 @@ class HeuristicAgent:
     def _pay(self, gold: int, lumber: int) -> bool:
         """Pays from the step's budget if it can (only the resources the order needs are checked: money kept for a
         building short of lumber had made the lumber budget negative and refused every grunt, which costs none)."""
-        if (gold > 0 and gold > self.budget[0]) or (lumber > 0 and lumber > self.budget[1]):
+        if self.opt["strict_budget"]:  # (the old check: a negative budget refuses everything)
+            if gold > self.budget[0] or lumber > self.budget[1]:
+                return False
+        elif (gold > 0 and gold > self.budget[0]) or (lumber > 0 and lumber > self.budget[1]):
             return False
         self.budget[0] -= gold
         self.budget[1] -= lumber
@@ -1073,6 +1081,7 @@ class HeuristicAgent:
         near_towers = [b for b in self.enemy_buildings if b.type_id in TOWERS_ATTACK
                        and math.hypot(b.x - center[0], b.y - center[1]) < FIGHT_RADIUS]
         mine_power = power(units, center, workers=False)
+        self._home_power = power([u for u in units if math.hypot(u.x - self.home[0], u.y - self.home[1]) < DEFEND_RADIUS + 800])
         their_power = power(near_enemies + near_towers)
         army_food = sum(self._food(u.type) for u in units if not u.is_hero and not u.flags & SUMMONED)
         at_home = math.hypot(center[0] - self.home[0], center[1] - self.home[1]) < DEFEND_RADIUS
@@ -1194,7 +1203,13 @@ class HeuristicAgent:
 
     def _goal(self, center, threats) -> tuple[float, float]:
         if self.mode == "defend" and threats:
-            return float(np.median([e.x for e in threats])), float(np.median([e.y for e in threats]))
+            tx, ty = float(np.median([e.x for e in threats])), float(np.median([e.y for e in threats]))
+            if self.opt["hold_home"] and power(threats) > 0.7 * max(self._home_power, 1.0):
+                # (a wave as strong as the army: met near the hall, its towers and burrows, not where it stands; 21 of
+                # 29 losses before 14 minutes came at home without an attack of ours)
+                hx, hy = self.home
+                return hx + 0.4 * (tx - hx), hy + 0.4 * (ty - hy)
+            return tx, ty
         if self.mode == "creep":
             c = self._creep_camp()
             if c is not None:
@@ -1544,6 +1559,12 @@ class HeuristicAgent:
         if self.in_burrows and (not close or danger < 0.6 * mine) and self.t - getattr(self, "burrow_since", 0) > 10:
             self.in_burrows = False
             return [ImmediateOrder(b.id, STANDDOWN) for b in burrows]
+        if not self.in_burrows and self.opt["hold_home"] and close and danger > 0.8 * max(mine, 1.0) and any(
+                u.order == BOARD or (u.order == 0 and u.flags & HIDDEN) for u in self.workers):
+            self.in_burrows = True  # (the game's own boarding, kept against a wave the army can't hold alone)
+            self.burrow_since = self.t
+            self.counts["boarding kept"] += 1
+            return []
         if not self.in_burrows and self.t - getattr(self, "stood_down", -99) >= 6 and any(
                 u.order == BOARD or (u.order == 0 and u.flags & HIDDEN) for u in self.workers):
             # (the game itself sends a computer slot's peons into its burrows when enemies come near the base: the

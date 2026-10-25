@@ -302,6 +302,9 @@ python scripts/play_stats.py fgself-140                  # tiers, expansions, cr
 python scripts/real_games.py fgself-140 --since 13:45    # the real game by policy and race
 python scripts/throughput.py fgself-140 --since 13:45    # steps/s, the learner's update and wait, inference rounds
 scripts/remote_eval.py --host robin@laptop-wsl           # a second machine plays evaluation games
+python scripts/heuristic_match.py --vs insane --games 16 --race orc        # the hand-written player against the AI
+python scripts/heuristic_match.py --vs runs/fgself-145/checkpoints/<steps>.pt --games 16   # ... against a policy (CPU)
+scripts/selfplay_fork.py fgself-146 fgself-147 --set heuristic-share=0.1 --set eval-heuristic=0.15   # in the league
 ```
 
 `fullgame/versus.py` opens the game in a window on your desktop (WSLg) with you as one player (a `Human` slot: the local player) and the policy as the other, the clock at real time (`--speed`). The policy plays as it trained: on `duelrush` everything but walking runs 7 times faster and a game lasts about 2 minutes.

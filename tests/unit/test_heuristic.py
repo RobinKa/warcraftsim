@@ -180,3 +180,19 @@ def test_variants_switch_options():
     a = cls(0, "orc", map_name="no-such-map", log=False)
     assert a.opt["sticky"] == 0 and a.opt["pull"] == 1 and a.opt["hero_behind"] == 1
     assert hm.variant_class("") is None
+
+
+def test_a_strong_wave_is_met_near_the_hall():
+    """Defending against a wave as strong as the army, the army goes 40% of the way from the hall toward it (its towers
+    and burrows), not to where the wave stands; a small raid is met where it is."""
+    mine = [_unit(110 + k, "ogru", 0, HOME[0] + 300, HOME[1] + 30 * k) for k in range(3)]
+    raid = [_unit(120 + k, "ogru", 1, HOME[0] + 1400, HOME[1] + 30 * k) for k in range(8)]
+    a, base = _agent(mine)
+    _step(a, base, mine + raid, t=300.0, food=20, cap=60)
+    assert a.mode == "defend"
+    gx, gy = a._goal(a._center(mine), raid)
+    assert abs(gx - (HOME[0] + 0.4 * 1400)) < 60 and abs(gy - HOME[1]) < 200
+    small = raid[:1]
+    _step(a, base, mine + small, t=301.0, food=20, cap=60)
+    gx, _ = a._goal(a._center(mine), small)
+    assert abs(gx - (HOME[0] + 1400)) < 1
