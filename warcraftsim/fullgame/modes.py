@@ -24,6 +24,7 @@ import random
 
 import numpy as np
 
+from . import rulesnative
 from .features import codes, isin, own_alive
 
 KINDS = ("no_rush", "rush", "expand", "no_expand", "workers", "creep", "harass", "scout", "army", "low_upkeep")
@@ -47,6 +48,9 @@ EXPANSION_FROM_START, EXPANSION_AT_MINE = 1500.0, 1000.0  # (as trace.Production
 HALLS = {int.from_bytes(c.encode(), "big") for c in
          ("htow", "hkee", "hcas", "ogre", "ostr", "ofrt", "unpl", "unp1", "unp2", "etol", "etoa", "etoe")}
 DEATH = 1
+MH = rulesnative.MH  # (rulesnative.modes' head)
+_MINES_TABLE = rulesnative.table(dict.fromkeys(GOLD_MINE_CODES.tolist(), 1))
+_FOOD_TABLE: tuple = (None,) * 5 + (None, -1)  # (the trackers' food table: the C's arrays, the dict, its length)
 
 
 def draw(rng: random.Random, chance: float) -> dict[str, float]:
@@ -95,64 +99,104 @@ class Tracker:
         """The game at second `now` (rows: features' unit columns; events: protocol.Event; the side's food used)
         -> the sum of the violations so far."""
         dt, self.t = max(0.0, now - self.t), now
-        s, m = self.side, self.modes
-        mine = own_alive(rows, s)
-        fl = mine[:, C_FLAGS]
-        army = mine[(fl & (STRUCTURE | WORKER) == 0)]
-        d2 = (army[:, C_X] - self.enemy[0]) ** 2 + (army[:, C_Y] - self.enemy[1]) ** 2
-        near = int((d2 < NEAR * NEAR).sum())
+        s, m, done = self.side, self.modes, self.done
+        # (the side's measures: in C, rulesnative.modes, numpy's calls had cost ~250k instructions a step; _measure_np
+        # the numpy's. need: 1 the halls, 2 the units seen, 4 the army's food, (numpy's only) 8 scouted, 16 the
+        # workers, 32 the heroes' level, each while a mode not yet decided asks for it)
+        need = ((1 if ("expand" in m and "expand" not in done) or ("no_expand" in m and "no_expand" not in done) else 0)
+                | (2 if "harass" in m else 0) | (4 if "army" in m and "army" not in done else 0))
+        if rulesnative.lib() is not None:
+            got = rulesnative.modes(self, rows, s, self.enemy, NEAR * NEAR, SCOUT_NEAR * SCOUT_NEAR, self.own,
+                                    EXPANSION_FROM_START ** 2, int(EXPANSION_AT_MINE ** 2), *self._tables(), need)
+        else:
+            got = self._measure_np(rows, need | (8 if "scout" in m and "scout" not in done else 0)
+                                   | (16 if "workers" in m and "workers" not in done else 0)
+                                   | (32 if "creep" in m and "creep" not in done else 0))
+        near, scouted, workers, level, food, halls, ne, no = got[:MH]
         if "harass" in m:  # (the enemy's workers and its own units as seen so far: a dead unit is mostly gone from the
-            self.enemy_seen.update(rows[(rows[:, C_OWNER] == 1 - s) & (rows[:, C_FLAGS] & WORKER > 0), 1].tolist())
-            self.mine_seen.update(mine[:, 1].tolist())  # step that reports its death: ~half the kills missed; audit 8)
+            self.enemy_seen.update(got[MH:MH + ne])  # step that reports its death: ~half the kills missed; audit 8)
+            self.mine_seen.update(got[MH + ne:MH + ne + no])
             self.kills += sum(1 for e in events if int(e.kind) == DEATH and e.a in self.enemy_seen and e.b in self.mine_seen)
         for k, x in m.items():
-            if k in self.done:
+            if k in done:
                 continue
             if k == "no_rush" and now <= x and near > 0:
                 self.v[k] = min(1.0, self.v[k] + dt / x)
             elif k == "rush":
                 if near >= RUSH_UNITS:
-                    self.done.add(k)
+                    done.add(k)
                 elif now >= x:
                     self.v[k] = 1.0
-            elif k in ("expand", "no_expand"):
-                # (undead: a haunted mine far from home; audit 4)
-                hall = mine[isin(mine[:, C_TYPE], self.hall_codes) & (fl & STRUCTURE > 0)]
-                if self.own is None:
-                    halls = len(hall)
-                else:  # (the main hall and those at another gold mine)
-                    gm = rows[isin(rows[:, C_TYPE], GOLD_MINE_CODES)]
-                    far = (hall[:, C_X] - self.own[0]) ** 2 + (hall[:, C_Y] - self.own[1]) ** 2 > EXPANSION_FROM_START ** 2
-                    at = (((hall[:, None, C_X] - gm[None, :, C_X]) ** 2 + (hall[:, None, C_Y] - gm[None, :, C_Y]) ** 2)
-                          .min(1, initial=1e18) < EXPANSION_AT_MINE ** 2) if len(gm) else np.zeros(len(hall), bool)
-                    halls = 1 + int((far & at).sum())
+            elif k in ("expand", "no_expand"):  # (halls: the main hall and those at another gold mine; audit 4)
                 if k == "expand" and halls >= 2:
-                    self.done.add(k)
+                    done.add(k)
                 elif k == "expand" and now >= x:
                     self.v[k] = 1.0
                 elif k == "no_expand" and halls >= 2 and now <= HORIZON:
                     self.v[k] = 1.0
             elif k == "scout":
-                all_d2 = (mine[:, C_X] - self.enemy[0]) ** 2 + (mine[:, C_Y] - self.enemy[1]) ** 2
-                if (all_d2 < SCOUT_NEAR * SCOUT_NEAR).any():
-                    self.done.add(k)
+                if scouted:
+                    done.add(k)
                 elif now >= 120.0:
                     self.v[k] = 1.0
             elif k == "low_upkeep" and now <= HORIZON and food_used > 50:
                 self.v[k] = min(1.0, self.v[k] + dt / HORIZON)
             elif k in ("workers", "creep", "harass", "army"):
                 at = {"workers": 480.0, "creep": 420.0, "harass": 600.0, "army": 600.0}[k]
-                have = (int(isin(mine[:, C_TYPE], self.worker_codes).sum()) if k == "workers"
-                        else int(mine[fl & HERO > 0, C_HLEVEL].max(initial=0)) if k == "creep"
-                        else self.kills if k == "harass"
-                        else sum(self.food.get(int(c), 0) for c in army[army[:, C_FLAGS] & HERO == 0, C_TYPE]))
+                have = workers if k == "workers" else level if k == "creep" else self.kills if k == "harass" else food
                 if have >= x:
-                    self.done.add(k)
+                    done.add(k)
                     self.v[k] = 0.0
                 elif now >= at:
                     self.v[k] = (x - have) / x
-                    self.done.add(k)  # (decided at its time)
+                    done.add(k)  # (decided at its time)
         return sum(self.v.values())
+
+    def _tables(self) -> tuple:
+        """rulesnative.modes' code tables: the halls, the gold mines, the workers, the food (kept)."""
+        got = self.__dict__.get("_rules_tables")
+        if got is None or got[3][5] is not self.food or got[3][6] != len(self.food):
+            global _FOOD_TABLE
+            ft = _FOOD_TABLE
+            if ft[5] is not self.food or ft[6] != len(self.food):  # (play_one's trackers share one food table)
+                ft = _FOOD_TABLE = (*rulesnative.table(list(self.food), list(self.food.values())), self.food, len(self.food))
+            got = self._rules_tables = (rulesnative.table(dict.fromkeys(self.hall_codes.tolist(), 1)), _MINES_TABLE,
+                                        rulesnative.table(dict.fromkeys(self.worker_codes.tolist(), 1)), ft)
+        return got
+
+    def _measure_np(self, rows: np.ndarray, need: int) -> list:
+        """rulesnative.modes' measures by numpy (the path without the library): [near, scouted, workers, the heroes'
+        highest level, the army's food, halls, the enemy's workers seen, its own units] and those ids; each of
+        scouted, workers, level, food and halls only when `need` asks for it (0 else)."""
+        s = self.side
+        mine = own_alive(rows, s)
+        fl = mine[:, C_FLAGS]
+        army = mine[(fl & (STRUCTURE | WORKER) == 0)]
+        d2 = (army[:, C_X] - self.enemy[0]) ** 2 + (army[:, C_Y] - self.enemy[1]) ** 2
+        near = int((d2 < NEAR * NEAR).sum())
+        scouted = workers = level = food = halls = 0
+        if need & 8:
+            all_d2 = (mine[:, C_X] - self.enemy[0]) ** 2 + (mine[:, C_Y] - self.enemy[1]) ** 2
+            scouted = int(bool((all_d2 < SCOUT_NEAR * SCOUT_NEAR).any()))
+        if need & 16:
+            workers = int(isin(mine[:, C_TYPE], self.worker_codes).sum())
+        if need & 32:
+            level = int(mine[fl & HERO > 0, C_HLEVEL].max(initial=0))
+        if need & 4:
+            food = sum(self.food.get(int(c), 0) for c in army[army[:, C_FLAGS] & HERO == 0, C_TYPE])
+        if need & 1:  # (undead: a haunted mine far from home; audit 4)
+            hall = mine[isin(mine[:, C_TYPE], self.hall_codes) & (fl & STRUCTURE > 0)]
+            if self.own is None:
+                halls = len(hall)
+            else:  # (the main hall and those at another gold mine)
+                gm = rows[isin(rows[:, C_TYPE], GOLD_MINE_CODES)]
+                far = (hall[:, C_X] - self.own[0]) ** 2 + (hall[:, C_Y] - self.own[1]) ** 2 > EXPANSION_FROM_START ** 2
+                at = (((hall[:, None, C_X] - gm[None, :, C_X]) ** 2 + (hall[:, None, C_Y] - gm[None, :, C_Y]) ** 2)
+                      .min(1, initial=1e18) < EXPANSION_AT_MINE ** 2) if len(gm) else np.zeros(len(hall), bool)
+                halls = 1 + int((far & at).sum())
+        ids_e = rows[(rows[:, C_OWNER] == 1 - s) & (rows[:, C_FLAGS] & WORKER > 0), 1].tolist() if need & 2 else []
+        ids_o = mine[:, 1].tolist() if need & 2 else []
+        return [near, scouted, workers, level, food, halls, len(ids_e), len(ids_o), *ids_e, *ids_o]
 
     def report(self) -> dict[str, list[float]]:
         """Per mode: [its parameter, its violation]."""
