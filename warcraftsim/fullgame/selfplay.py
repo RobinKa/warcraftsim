@@ -1701,8 +1701,14 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     gathered = None
     prod = Production()  # what both sides make (the episode row: the dashboard's Production tab)
     prod.step(obs)
+    heur = None  # (--heuristic-share, heuristic_match.py: the opponent's side played by the hand-written player)
+    if opp.get("kind") == "heuristic":
+        from .heuristic import HeuristicAgent, PLANS
+        heur = HeuristicAgent(1 - side, races[1 - side], plan=opp.get("plan") or PLANS.get(races[1 - side]),
+                              map_name=cfg["map"], step_seconds=cfg["step_seconds"], log=bool(opp.get("log")))
+        heur.begin(obs)
     for s in (0, 1):
-        if g.setup.slots[s].kind != "agent" or s == late:
+        if g.setup.slots[s].kind != "agent" or s == late or (heur is not None and s == heur.side):
             continue
         bot = BCAgent(None, vocab, s, None, costs=cfg.get("costs_array"))
         bot.begin(obs, race_ix)
@@ -1914,6 +1920,12 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                             np.asarray([t, s, q.gold, q.lumber, q.food_used, q.food_cap, q.upkeep]))
             if cfg.get("z_build", 0) != 2:  # (--z-build 2: a teacher only, its orders labels and never carried out)
                 cmds += c
+        hspan = None
+        if heur is not None:  # (the hand-written player's orders: after the policy's, no trajectory)
+            heur.observe(obs, t)
+            hc = heur.commands()
+            hspan = (len(cmds), len(cmds) + len(hc))
+            cmds += hc
         if late is not None and t == opp["start"]:  # the built-in AI takes over its side (after the bots' orders)
             cmds.append(StartAI(late))
         if replaying:  # (the source's commands, which its spans index; what they send workers to harvest)
@@ -1949,6 +1961,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             label_step(obs, t, advised, spans, sts, held, bots, trajs)
         for s, (a, b) in spans.items():
             bots[s].accepted(cmds[a:b], obs.command_results[a:b])
+        if hspan is not None:
+            heur.accepted(cmds[hspan[0]:hspan[1]], obs.command_results[hspan[0]:hspan[1]])
         t += 1
         prod.step(obs)
         for s in zs:  # (what each side with a strategy has made: its items' first times)
@@ -2025,6 +2039,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"balance_tax": opp["tax"] if opp["tax_side"] == side else -opp["tax"]} if "tax_side" in opp else {}),
         **({"tb_x": opp["tb_x"]} if "tb_x" in opp else {}),  # (--win-balance: the game's features, balance.py)
         "prod": prod.row(side, obs), "opp_prod": prod.row(1 - side, obs), **({"advised": True} if advised else {}),
+        **({"heuristic": heur.summary() if opp.get("log") else {k: v for k, v in heur.summary().items()
+                                                                  if k in ("issued", "refused", "counts")}}
+           if heur is not None else {}),
         **({"max_own": bots[side].view.max_own, "max_ent": bots[side].view.max_ent} if side in bots else {}),
         **({"shared_noise": shared_noise} if cfg.get("shared_noise", 0.0) > 0 else {}),
         **({"z_build": builders[side].log, "z_refusals": builders[side].why,
