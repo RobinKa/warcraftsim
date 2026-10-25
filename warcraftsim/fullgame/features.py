@@ -1233,7 +1233,7 @@ class View:
         featnative = _mod("featnative")
         fast = A_HID < 0 and not PRIVILEGED and INPUTS < 3 and featnative.lib() is not None
         if fast:
-            pk = featnative.side(rows, player, fresh=True)
+            pk = featnative.side(rows, player, fresh=True, owner=self)
             n_built, n_alive, n_dead, n_heroes, n_done, army_n = pk[:6]
             o = 9
             built_ids, o = pk[o:o + n_built], o + n_built

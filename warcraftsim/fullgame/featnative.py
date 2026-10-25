@@ -45,6 +45,8 @@ def lib():
         L.w3f_view.argtypes = [P, I, I, I, D, P, P, I, I, I, I, P, P, I, I, P, P, P, P]
         L.w3f_side.restype = I
         L.w3f_side.argtypes = [P, I, I, I, P]
+        L.w3f_side_a.restype = I
+        L.w3f_side_a.argtypes = [P]
         L.w3f_entangle.restype = I
         L.w3f_entangle.argtypes = [P, I, I, I, P, I, Q, Q, D, D, P]
         L.w3f_natural.restype = None
@@ -184,20 +186,30 @@ def view_step(enc, fx, view, rows: np.ndarray, player: int, sign: float, product
     return sel[:n], pk[1], f[:n], out[E:E + n], out[2 * E:2 * E + n], pk, f[cap, :fx.PRIV] if priv else None
 
 
-def side(rows: np.ndarray, player: int, fresh: bool = False) -> list:
+def side(rows: np.ndarray, player: int, fresh: bool = False, owner=None) -> list:
     """w3f_side: one player's masks of a step's rows, as a list: 9 counts, then the segments they count (its living
     buildings' ids, its living units' ids, its dead heroes' (type, id, level), its heroes' types, its finished
     buildings' types, (its army's size), its plain living units' types, the rows of its living heroes with a skill
     point, the rows of its living units under construction). Read only. Kept per player with the rows
     asked: the next ask of the same rows gets it, unless `fresh` (View.step's: a step's rows are new, but a caller
-    may change rows in place between steps; the target builder asks after it, on the step's rows)."""
+    may change rows in place between steps; the target builder asks after it, on the step's rows). `owner`: an object
+    to keep the call's buffers on (a view: its output and arguments' arrays, made once)."""
     got = _SIDE.get(player)
     if not fresh and got is not None and got[0] is rows:
         return got[1]
     given = rows
     rows = np.ascontiguousarray(rows, np.int64)
-    out = np.empty(10 + 10 * len(rows), np.int64)
-    k = lib().w3f_side(_rows_addr(rows), len(rows), rows.shape[1], int(player), addr(out))
+    need = 10 + 10 * len(rows)
+    buf = owner.__dict__.get("_side_buf") if owner is not None else None
+    if buf is None or len(buf[0]) < need:
+        out = np.empty(max(need, 2048), np.int64)
+        a = _array("q", bytes(8 * 5))
+        buf = (out, addr(out), a, a.buffer_info()[0])
+        if owner is not None:
+            owner._side_buf = buf
+    out, a = buf[0], buf[2]
+    a[0], a[1], a[2], a[3], a[4] = _rows_addr(rows), len(rows), rows.shape[1], int(player), buf[1]
+    k = lib().w3f_side_a(buf[3])
     res = out[:k].tolist()
     _SIDE[player] = (given, res)  # (a tuple replaced whole: an actor's game threads share it)
     return res

@@ -391,6 +391,11 @@ int w3f_side(const int64_t *rows, int nrows, int ncols, int player, int64_t *out
     return 9 + (int)at;
 }
 
+/* w3f_side with its arguments in one int64 array: rows, nrows, ncols, player, out. */
+int w3f_side_a(const int64_t *a) {
+    return w3f_side((const int64_t *)a[0], (int)a[1], (int)a[2], (int)a[3], (int64_t *)a[4]);
+}
+
 /* play.BCAgent._entangle's distances: of the player's living finished buildings whose type is in `trees` (sorted), in
  * their order, the living gold mine of type `ngol` nearest each (the first of the nearest), unless it is farther than
  * `near` or a living mine of type `egol` stands within `held_near` of it: (tree id, mine id) pairs into out. Returns the
