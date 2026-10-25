@@ -1701,10 +1701,89 @@ Fixed since, for the next run:
 
 **`fgself-146`** (from `fgself-145`'s 13576303, 11:10, build/shim rebuilt): the fixes above (audit 9's follow-ups and units gone without dying reported). Head to head with its start and `fgself-130`.
 
+**`fgself-146`, stopped at 12:15: invalid.** Its step budget dropped every paid order whenever the target's next item was short of lumber: the kept lumber put the budget below zero, and a footman or a worker needing none was refused too. I first read the large skip counts as the builder's reserve holding (a mistake).
+* Target games' win score against the AI fell (human 0.74 → 0.57, undead 0.74 → 0.51); real-game human peak food 64 → 38.
+* With a target 47% against insane; head to head 45% and 35%.
+
+**Audit 10 (2026-10-25, today's code and fgself-146's games).** Confirmed and fixed:
+* **The budget:** it now refuses an order only for a resource the order needs.
+* **The army-mix macro** skipped the queue and budget checks. It ordered the same unit until the queue was full, then the game refused it: 160-216 a target game.
+* **Orders at a hall during its tier upgrade** are refused by the game (probe): workers ~1,500 a game at a keep, the tier again ~400-580. They are no longer sent, and the tier is not offered again while under way.
+* **Research-gated abilities** now come from the game's own AbilityFunc tables (the race's units' abilities). They had included cannibalize (23,575 refused), sentinel, ensnare, stone form, autodispel and inner fire.
+* **A tavern hire on its way did not count as a hero.** The altar's free hero was trained during the walk, so in 0 of 1,630 targets with a tavern first hero was the first hero the tavern's. It now counts, and there is one hire at a time.
+* **Smaller:**
+  * repairs of damaged buildings need the lumber;
+  * no orders to loaded units (peons in burrows);
+  * the budget covers the tier at a busy hall, the expand macro and haunted mines;
+  * owners are updated on every step with events (summons);
+  * neutral wares get no build time in the pools' timing;
+  * the units passes keep no entries for a dropped unit (its handle may be reused), and the JASS pass writes no second R record (both paths identical over 900 steps, raw bytes too).
+
+**`fgself-147`** (from `fgself-145`'s 13576303 and its league, 12:17, build/shim rebuilt): audit 9's follow-ups and audit 10's fixes. Head to head with `fgself-145`'s 13576303 and `fgself-130`.
+
+**`fgself-147`, judged at 13:50: level head to head, better with targets:**
+* 52.2% of 247 head to head with its start (by thirds 54%, 59%, 47%), 44.4% of 270 with `fgself-130`.
+* Against insane 98% (its start 95%), **with a target 67% of 294** (`fgself-145`: 58%).
+* Rated 2016 ± 35 and 1989 ± 48 (h0, h1) to its start's 1982 ± 29; with a target 1639 and 1623 to `fgself-145`'s 1575 and 1543.
+* Targets' items made: 62% (from 56-59%). Human with a target is the weak race: 12 of 46 won.
+* Kept.
+
+**Audit 11 (2026-10-25, the learner and the yardsticks, today's code and fgself-147's games).** It found:
+* **The teacher's lessons carry the whole `--teach-coef` in any minibatch with one.** The loss averages them over themselves (`tm.sum()`), PPO over every own unit (~6,000). One lesson weighs ~2,500 times a PPO unit's decision. The label terms' |G|² is 0.71 to PPO's 0.0006, and updates clipped at 1.0 rose from 8% (`fgself-130`) to 61% (`fgself-147`). Now `--label-norm units`: lessons averaged over the labelled steps' own units, as the builder's labels; and `loss/teach` logged apart. An experiment of its own.
+* **The past snapshots are minutes old.** One every 20 updates (~1.3 minutes) and 6 kept: the pool spans ~6.6 minutes, close to self-play. An unplayed snapshot weighed 1.0, 4 times an even one (fixed: the smoothing's prior, a half). Snapshots by wall time: an experiment.
+* **Fixed in `fgself-148`:**
+  * a research queued behind units counts as under way (probe: refused when ordered again);
+  * the research levels a need asks for (Requiresamount: the night elf Marks need level 2, so do inner fire, polymorph, bloodlust, healing ward);
+  * repairs need some of each resource the building costs (probes), and upgraded types are priced from their upgrade's row;
+  * a free first tavern hire keeps no money;
+  * cancels only at a building with something queued (a cancel undid a fortress tier in a replay);
+  * no train or hero orders at frames;
+  * the skip counters in the rows;
+  * `real_games.py` splits on evaluation games only;
+  * the dashboard's head to head counts ties as half;
+  * the ratings' errors come from the whole information matrix (each player's own games alone had read them about half as wide).
+* Smaller, not fixed:
+  * the anchor's memory runs from the policy's stored state;
+  * a builder label over a lesson keeps the lesson's weight;
+  * the AI record's ties.
+
+**`fgself-148`** (from `fgself-147`'s 11480163, 13:52): audit 11's fixes. Head to head with its start and `fgself-130`.
+
+**`fgself-148`, judged at 15:25: level with its start under the same code; the new agent code cost this lineage's human.**
+* 48.8% of 257 head to head with its start, 31% of 221 with `fgself-130` (`fgself-147`: 44%).
+* Against insane 91%, with a target 56%.
+* The ratings place it level with its start under the same code. `fgself-147`'s last checkpoint, evaluated with audit 11's agent code, rated 1888, against 1992-2018 as `fgself-147`'s policy under its own. `fgself-148` rated 1883-1901.
+* The drop is the human's: 52 of 72 won against insane, from 62 of 64. It came with half the peasants (4 against 8), half the lumber, a keep in 17% of games (48%) and an altar in 81% (97%).
+* `fgself-130`'s human did not drop under the same code (66 of 70).
+* **Corrected at 17:40:** not the code. `fgself-148`'s last checkpoint won 73 of 76 human games in `fgself-149`'s evaluation, whose agent code is the same (the commits between them touch the evaluation worker's gauntlet only), and the laptop's step times were alike in both windows (38-45 ms a step). The human dip in `fgself-148`'s window has no cause found; it did not reproduce.
+* Kept as the base: it is level with its start under equal conditions.
+
+**`fgself-149`** (from `fgself-148`'s 11692643, 15:28): **`--label-norm units`**, the teacher's lessons weighed as the builder's labels. Right away, the gradient norm is 0.23 (`fgself-147`'s median 1.27, 61% clipped at 1.0), `loss/opd` 0.06 (~0.94) and `loss/teach` 0.003. Head to head with its start and `fgself-130`.
+
+**The gauntlet's games count for the hourly players they stand for** (17:40, the user saw `fgself-102 h2` still first and greyed): a run's policy by the hour has no file, so the gauntlet plays that run's checkpoint from the hour. Its games had made a player of their own ("`fgself-102/11882922 +shops`"). Now the manager writes the link (runs/.gauntlet-aliases.json) and the ratings count those games for the hourly player: `fgself-102 h2` went from 2148 to 2101 with 185 games, played today; `fgself-149` h0-h2 and `fgself-148`'s last checkpoint lead at ~2105.
+
+**The gauntlet (from `fgself-149`; the user's idea).** 4 of the laptop's 20 games play the current policy against the top 5 of the ratings (every game alike, no decay; a run's policy by the hour as that run's checkpoint from the hour): `fgself-102`'s 11882922, `fgself-100`'s 15294056, `fgself-109`'s 4991346, `fgself-108`'s 2302196, `fgself-106`'s 3453342. Ratings from old games, under older rules and against weaker opponents, had topped the table; these games rate them again under today's rules.
+
+**`fgself-149`, judged at 17:45: level head to head, better against `fgself-130` and with targets.**
+* 50.6% of 320 head to head with its start, **49.2% of 295 with `fgself-130`** (`fgself-148` 31%, `fgself-147` 44%).
+* Against insane 98.5% (its start 99.1%), **with a target 68.4% of 326** (`fgself-148` 56%).
+* Rated ~2105 (level with its start); with a target 1618-1656 (`fgself-148`: 1562-1574).
+* Tavern heroes hired in 18% of the target games with one, targets' items made 60%.
+* The gauntlet's first verdicts, the current policy's score against the old top rated:
+  * `fgself-109`'s 4991346: 86% of 56;
+  * `fgself-100`'s 15294056: 69% of 77;
+  * `fgself-108`'s 2302196: 64% of 76;
+  * `fgself-102`'s 11882922: 63% of 32;
+  * `fgself-106`'s 3453342: 53% of 51.
+* `--label-norm units` kept.
+
+**`fgself-150`** (from `fgself-149`'s 19159029, 17:47): **`--teach 3`, the lumber lesson.** Otherwise `fgself-149`. Head to head with its start and `fgself-130`. Its evaluation worker follows the gauntlet's list as it is made again.
+
 The queue:
-1. `fgself-146`: the fixes above (needs the shim rebuilt).
-2. `fgself-147`: `--teach 3`.
-3. `fgself-148`: the new pools (`--z-pool .../strategies-echofast-narrow-tavern-bt.json --eval-z-pool .../strategies-echo-real-narrow-tavern-bt.json`).
+1. `fgself-151`: the new pools (`--z-pool .../strategies-echofast-narrow-tavern-bt.json --eval-z-pool .../strategies-echo-real-narrow-tavern-bt.json`).
+2. Snapshots by wall time (every 15-30 minutes).
+
+A heuristic opponent stronger than the learner is being built (the user's idea).
 
 Still open: War Stomp, Hex, Banish, Far Sight and Scout in the vocabulary; later research levels' costs.
 

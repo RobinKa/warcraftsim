@@ -159,8 +159,9 @@ def _real_game(episodes: list[dict], n: int = 100) -> dict | None:
     vs = {}
     for e in episodes:
         k = _eval_name(e)
-        if k and k != "current":
-            vs.setdefault(k, []).append(e.get("outcome", 0) > 0)
+        if k and k != "current":  # (head to head: a tie half, as head_to_head.py; against the AI: wins; audit 11)
+            x = e.get("outcome", 0)
+            vs.setdefault(k, []).append(1.0 if x > 0 else 0.5 if x == 0 and k.startswith("vs ") else 0.0)
     return {"games": len(real), "wins": sum(e.get("outcome", 0) > 0 for e in real) / len(real),
             "ties": sum(e.get("outcome", 0) == 0 for e in real) / len(real), "evaluation": bool(ev),
             "vs": {k: sum(v[-n:]) / len(v[-n:]) for k, v in vs.items()}}
@@ -271,7 +272,7 @@ class _EpisodeSeries:
                 if ev:
                     rows, vals = self.extra.setdefault(f"ehead/{ev}", ([], []))
                     rows.append(n0 + i)
-                    vals.append(1.0 if x > 0 else 0.0)
+                    vals.append(1.0 if x > 0 else 0.5 if x == 0 and ev.startswith("vs ") else 0.0)
                 if key:
                     rows, vals = self.extra.setdefault(key, ([], []))
                     rows.append(n0 + i)

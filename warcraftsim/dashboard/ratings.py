@@ -26,11 +26,18 @@ ANCHOR = "insane AI"
 ANCHOR_RATING = 1500.0
 SCALE = 400.0 / math.log(10.0)  # Elo points per unit of log-strength
 PRIOR_GAMES = 1.0  # each player's virtual tie against the anchor: finite ratings for a few games
-CACHE = ".ratings-cache-v3.json"  # (v2: the "+shops" players; v3: Echo Isles runs only, hours from the creation)
+CACHE = ".ratings-cache-v4.json"  # (v2: the "+shops" players; v3: Echo Isles runs only, hours from the creation; v4: the
+# pairs' games by the hour they were played). Every game counts alike, however old (the user, 2026-10-25: a decay could
+# lose a good past policy); the top rated ones are played anew under today's rules by the evaluation worker's gauntlet
 # the evaluation games could buy from the neutral buildings from here on (2026-10-21 14:27: the laptop's evaluation
 # worker started with the harness that reaches a shop in the fog; before, every buy order was refused)
 SHOPS_SINCE = 1792589220.0
 _CKPT = re.compile(r"(fgself-[\w.-]+)/(?:checkpoints/)?0*(\d+)\.pt")
+# a checkpoint the evaluation worker's gauntlet plays for a run's policy by the hour ("fgself-102/11882922" for
+# "fgself-102 h2": the run's last checkpoint saved in that hour), written by scripts/remote_eval.py: its games count
+# for that policy, so the top rated ones move as they are played anew (the user, 2026-10-25: the gauntlet's games had
+# made a player of their own, and the stale hourly one stayed first)
+ALIASES = ".gauntlet-aliases.json"
 
 
 def checkpoint_name(path: str) -> str | None:
@@ -39,9 +46,11 @@ def checkpoint_name(path: str) -> str | None:
     return f"{m.group(1)}/{m.group(2)}" if m else None
 
 
-def players_of(row: dict, run: str, start: float, untrained=lambda run: False) -> tuple[str, str] | None:
+def players_of(row: dict, run: str, start: float, untrained=lambda run: False,
+               aliases: dict | None = None) -> tuple[str, str] | None:
     """An evaluation row's (player, opponent), or None when it is no rated game. `untrained(run)`: whether that
-    checkpoint's run lacked the neutral wares the game is played with (its checkpoints then "+shops")."""
+    checkpoint's run lacked the neutral wares the game is played with (its checkpoints then "+shops"). `aliases`:
+    checkpoint -> the run's policy by the hour it stands for (the gauntlet's; ALIASES)."""
     if not row.get("eval"):
         return None
     key, opp = str(row.get("eval_key") or "current"), str(row.get("opponent") or "")
@@ -49,6 +58,8 @@ def players_of(row: dict, run: str, start: float, untrained=lambda run: False) -
 
     def named(path: str) -> str | None:
         c = checkpoint_name(path)
+        if c is not None and aliases and c in aliases:
+            return aliases[c]
         return c + " +shops" if c is not None and late and untrained(c.split("/")[0]) else c
     if key.startswith("vs heuristic:"):  # (--eval-heuristic: the hand-written player, a player of its own that does not
         b = key[3:]                       # change: fullgame/heuristic.py)
@@ -83,7 +94,7 @@ class Ratings:
         except (OSError, ValueError):
             self.state = {}
         self.state.setdefault("files", {})  # file -> offset read to
-        self.state.setdefault("pairs", {})  # "a\tb" (a < b) -> [a's wins, b's wins, ties]
+        self.state.setdefault("pairs", {})  # "a\tb\thour" (a < b, the hour since the epoch) -> [a's wins, b's wins, ties]
         self.state.setdefault("meta", {})  # player -> {"run", "kind", "first", "last"}
         self._table: dict | None = None
 
@@ -98,8 +109,16 @@ class Ratings:
         return "EchoIsles" in str(c.get("eval_map") or c.get("map") or "")
 
     def scan(self) -> bool:
-        """Read the runs' new evaluation rows -> whether anything changed."""
+        """Read the runs' new evaluation rows -> whether anything changed. New gauntlet aliases: every row read again
+        (its earlier games had counted for the checkpoint's own name)."""
         changed = False
+        try:
+            aliases = json.loads((self.runs_dir / ALIASES).read_text())
+        except (OSError, ValueError):
+            aliases = {}
+        if aliases != self.state.get("aliases", {}):
+            self.state = {"files": {}, "pairs": {}, "meta": {}, "aliases": aliases}
+            changed = True
         for d in sorted(self.runs_dir.iterdir()):
             info = d / "run.json"
             if not d.is_dir() or not info.exists():
@@ -135,7 +154,7 @@ class Ratings:
                         row = json.loads(line)
                     except ValueError:
                         continue
-                    pair = players_of(row, d.name, start, untrained)
+                    pair = players_of(row, d.name, start, untrained, aliases)
                     if pair is not None:
                         self._add(pair, float(row.get("outcome", 0.0)), float(row.get("time", 0.0)), d.name)
                         changed = True
@@ -160,7 +179,7 @@ class Ratings:
     def _add(self, pair: tuple[str, str], outcome: float, t: float, run: str) -> None:
         a, b = pair
         flip = b < a
-        k = f"{b}\t{a}" if flip else f"{a}\t{b}"
+        k = (f"{b}\t{a}" if flip else f"{a}\t{b}") + f"\t{int(t // 3600)}"
         w = self.state["pairs"].setdefault(k, [0, 0, 0])
         won = outcome > 0 if not flip else outcome < 0
         lost = outcome < 0 if not flip else outcome > 0
@@ -177,7 +196,12 @@ class Ratings:
         """The fit: {"players": [{name, rating, se, games, score, run, kind, first, last}], "games", "pairs"}."""
         if self._table is not None:
             return self._table
-        pairs = [(k.split("\t"), v) for k, v in self.state["pairs"].items()]
+        merged: dict[tuple[str, str], list[float]] = {}
+        for k, (wa, wb, ties) in self.state["pairs"].items():
+            a, b, _ = k.split("\t")
+            m = merged.setdefault((a, b), [0, 0, 0])
+            m[0], m[1], m[2] = m[0] + wa, m[1] + wb, m[2] + ties
+        pairs = [((a, b), v) for (a, b), v in merged.items()]
         names = sorted({p for (a, b), _ in pairs for p in (a, b)} | {ANCHOR})
         ix = {n: i for i, n in enumerate(names)}
         n = len(names)
@@ -210,12 +234,29 @@ class Ratings:
             gamma = new
             if delta < 1e-7:
                 break
+        # each rating's standard error from the whole information matrix, the anchor held (each player's own games
+        # alone had read them too small: fgself-130 4.5 against 8.5; audit 11)
+        import numpy as np
+        H = np.zeros((n, n))
+        for (i, j), g in games.items():
+            w = g * gamma[i] * gamma[j] / (gamma[i] + gamma[j]) ** 2
+            H[i, i] += w
+            H[j, j] += w
+            H[i, j] -= w
+            H[j, i] -= w
+        keep = [i for i in range(n) if i != anchor]
+        try:
+            cov = np.linalg.pinv(H[np.ix_(keep, keep)] + 1e-9 * np.eye(len(keep)))
+            var = dict(zip(keep, np.diag(cov).tolist()))
+        except np.linalg.LinAlgError:
+            var = {}
         out = []
         for i, name in enumerate(names):
             info = sum(g * gamma[i] * gamma[j] / (gamma[i] + gamma[j]) ** 2 for j, g in nbr[i])
+            v = var.get(i, 1.0 / max(info, 1e-12))
             m = self.state["meta"].get(name, {"run": "", "kind": "anchor", "first": 0, "last": 0})
             out.append({"name": name, "rating": round(ANCHOR_RATING + SCALE * math.log(max(gamma[i], 1e-12)), 1),
-                        "se": None if i == anchor else round(SCALE / math.sqrt(max(info, 1e-12)), 1),
+                        "se": None if i == anchor else round(SCALE * math.sqrt(max(v, 1e-12)), 1),
                         "games": count[i], "score": round((wins[i] - (0.5 * PRIOR_GAMES if i != anchor else 0.0))
                                                           / max(count[i], 1), 3), **m})
         out.sort(key=lambda r: -r["rating"])

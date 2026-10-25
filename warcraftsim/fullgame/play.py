@@ -205,6 +205,8 @@ class BCAgent:
         self.view.ground = getattr(obs, "ground", ())  # (--macros 2: the items lying on the ground, macros.pickable)
         hiring = getattr(self, "hiring", {})  # (a tavern hero's hire on its way: its money kept, View.hire_class; it
         self.view.hire_class = next((self.enc.order_index.get((oid, fx.UNIT)) for oid in hiring.values()), None)
+        self.view.hire_free = bool(set(hiring) & getattr(self, "free_hires", set()))  # (the first hero's: free, its
+        # money not kept; its full price had been, audit 11)
         self.view.hiring_heroes = frozenset(hiring.values())  # counts as a hero: the masks' hero count, audit 10)
         st = self.view.step(rows, me, events, t, opp)
         sel = st["sel"][:st["n_own"]]  # the workers busy with a building order (features.building), and since when
@@ -229,8 +231,8 @@ class BCAgent:
             costs = self.enc.costs_first  # (the first hero free: the mask's costs, View.step)
         hire = getattr(self.view, "hire_class", None)
         kept = {r[0]: (r[1], r[2]) for r in (getattr(self.view, "reserve", None),) if r is not None}  # (as the mask:
-        if hire is not None and costs is not None:  # the target's next item and a hire on its way keep theirs)
-            kept[hire] = (int(costs[hire][0]), int(costs[hire][1]))
+        if hire is not None and costs is not None and not getattr(self.view, "hire_free", False):  # (the target's next
+            kept[hire] = (int(costs[hire][0]), int(costs[hire][1]))  # item and a hire on its way keep theirs)
         if budget is not None:
             budget = [budget[0] - sum(v[0] for v in kept.values()), budget[1] - sum(v[1] for v in kept.values())]
 
@@ -252,6 +254,9 @@ class BCAgent:
         def produce(unit: int, oid: int, c) -> bool:
             """A train, research or tier order at a building: not at a hall upgrading (the game refuses all of it),
             not to a full queue, paid from the step's budget; counted in the step's queue."""
+            if unit in frames:  # (a frame trains nothing: hero orders at altar frames refused; audit 11)
+                self.frame_orders = getattr(self, "frame_orders", 0) + 1
+                return False
             if unit in self.view.own_buildings:
                 m = self.view.making.get(unit)
                 if m is not None and m[0] == 4:  # (a tier under way: refused, ~1,500 workers a game at a keep; audit 10)
@@ -268,6 +273,8 @@ class BCAgent:
         self.sent_resources: list[str | None] = []  # per command: what it sends the worker to harvest (accepted())
         sel = st["sel"]
         self.view_n_own = st["n_own"]
+        own_sel = sel[:st["n_own"]]
+        frames = set(own_sel[(own_sel[:, fx.C_FLAGS] & fx.CONSTRUCTING) > 0, fx.C_ID].tolist())
         n = min(st["n_own"], fx.MAX_OWN, len(order))
         for i in np.flatnonzero(np.asarray(order[:n])).tolist():  # (the units given an order: most are given none)
             c = int(order[i])
@@ -329,7 +336,9 @@ class BCAgent:
                 # missed their keep and won 4 of 26 in the real game; the target builder did this already)
                 if pay(c):  # (the tier's cost: it had bypassed the step's budget; audit 10)
                     out += [ImmediateOrder(unit, CANCEL)] * 6 + [ImmediateOrder(unit, oid)]
-            elif kind == fx.IMMEDIATE and oid == CANCEL and int(sel[i, fx.C_FLAGS]) & fx.CONSTRUCTING:
+            elif kind == fx.IMMEDIATE and oid == CANCEL and (int(sel[i, fx.C_FLAGS]) & fx.CONSTRUCTING or not (
+                    self.view.queued.get(unit, 0) > 0 or self.view.making.get(unit, (4,))[0] < 4)):
+                # (and nothing queued: a cancel there undoes a tier under way, a fortress aborted in a replay; audit 11)
                 # (a frame cancelled: a quarter of its cost lost, and the game removes it outright; the policy cancelled
                 # its own frames 2-10 times a game, the cancel learned from the demonstrations' training queues; audit 9)
                 self.frame_cancels = getattr(self, "frame_cancels", 0) + 1
@@ -361,6 +370,11 @@ class BCAgent:
                 if shop is not None:
                     if hero:  # (paid at the sale, ~33 s later: its money kept meanwhile; 10,475 hire orders had made
                         hiring[unit] = oid  # 308 hires, the money spent during the walk; audit 8)
+                        free = self.__dict__.setdefault("free_hires", set())
+                        if getattr(self.view, "free_hero", False):
+                            free.add(unit)
+                        else:
+                            free.discard(unit)
                         built.add(oid)
                     out.append(Buy(unit, int(shop[fx.C_ID]), oid))
                     self.__dict__.setdefault("buying_since", {})[unit] = (self.t, float(shop[fx.C_X]), float(shop[fx.C_Y]))
@@ -567,11 +581,12 @@ class BCAgent:
         refuses the order with none of the lumber (tested 2026-10-24: 5 gold and no lumber refused, no gold and 5
         lumber or 1 and 1 taken): ~275 refused a game as human, a frame's helpers sent on after the lumber ran out."""
         me, enc = getattr(self, "me", None), self.view.enc
-        k = enc.order_index.get((int(row[fx.C_TYPE]), fx.POINT))
-        if me is None or k is None or enc.costs is None:
+        k = enc.order_index.get((int(row[fx.C_TYPE]), fx.POINT)) or enc.order_index.get((int(row[fx.C_TYPE]), fx.IMMEDIATE))
+        if me is None or k is None or enc.costs is None:  # (an upgraded type, a keep: its upgrade order's row; audit 11)
             return True
-        gold, lumber = int(enc.costs[k][0]), int(enc.costs[k][1])
-        return int(me[3]) >= 1 if lumber > 0 else int(me[2]) >= 1 or gold == 0
+        gold, lumber = int(enc.costs[k][0]), int(enc.costs[k][1])  # (each it costs, at least 1: a damaged farm refused
+        return (gold == 0 or int(me[2]) >= 1) and (lumber == 0 or int(me[3]) >= 1)  # with 1000 gold and no lumber, and
+        # with 5 lumber and no gold; audit 11)
 
     def committed(self, unit: int) -> bool:
         """A worker busy with a building order (features.building) for less than BUILD_COMMIT_STEPS, or a unit

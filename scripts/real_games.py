@@ -83,7 +83,7 @@ def standardised(eps: list[dict], field: str, rates: dict) -> tuple[dict, int]:
     cell = lambda e: (e["race"], e["opponent_race"], difficulty(e))  # noqa: E731
     t: dict = {}
     for e in eps:
-        if "(real)" in e["opponent"] and rates.get(cell(e)) is not None and value(e, field) is not None:
+        if e.get("eval") and "(real)" in e["opponent"] and rates.get(cell(e)) is not None and value(e, field) is not None:
             a = t.setdefault((value(e, field), cell(e)), [0, 0])
             a[0] += e["outcome"] > 0
             a[1] += 1

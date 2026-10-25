@@ -677,6 +677,7 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
     fx.set_masks(cfg.get("tech_mask", 0), cfg.get("valid_mask", 0))
     fx.set_neutral(cfg.get("neutral", 0))
     fx.set_macros(int(cfg.get("macros", 0) or 0))
+    fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     nets = Nets(cfg, device)
     while nets.current is None and not stop.is_set() and alive():
         time.sleep(1)
@@ -2068,7 +2069,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"noop_repairs": bots[side].noop_repairs} if side in bots and getattr(bots[side], "noop_repairs", 0) else {}),
         **({"frame_cancels": bots[side].frame_cancels} if side in bots and getattr(bots[side], "frame_cancels", 0) else {}),
         **({"over_budget": bots[side].over_budget} if side in bots and getattr(bots[side], "over_budget", 0) else {}),
-        **({"full_queue": bots[side].full_queue} if side in bots and getattr(bots[side], "full_queue", 0) else {}),
+        **{k: getattr(bots[side], k) for k in ("full_queue", "upgrading_refused", "loaded_orders", "frame_orders")
+           if side in bots and getattr(bots[side], k, 0)},  # (the agent's orders not sent, by why; audit 11)
         **({"refused_ctx": bots[side].refused_ctx} if side in bots and getattr(bots[side], "refused_ctx", None) else {}),
         # the orders the game refused (the learner's side): their share, and the kinds refused most (audit 4: never measured)
         **({"refused_share": round(sum(r for _, r in bots[side].order_results.values())
@@ -2215,6 +2217,7 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
     fx.set_masks(cfg.get("tech_mask", 0), cfg.get("valid_mask", 0))
     fx.set_neutral(cfg.get("neutral", 0))
     fx.set_macros(int(cfg.get("macros", 0) or 0))
+    fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     if cfg.get("remote"):  # (fullgame/remoteactor.py: the calls and the steps over TCP to the learner's gateway)
         from .remoteactor import NetInference
         out_q = NetInference(cfg["remote"])  # (its request() and the learner's queue's put() both)
@@ -2454,8 +2457,9 @@ class League:
             f_share = getattr(self, "fixed_share", 0.25) if fixed and rest else 1.0 if fixed else 0.0  # fixed one won
             agents += [{"name": m.name, "kind": "past", "path": m.path,  # 2 of 2 had 1.5% of the games: it beat us 58%)
                         "p": self.shares["past"] * f_share / len(fixed)} for m in fixed]
-            w = [max(pfsp_weight(smoothed_rate(m), self.pfsp), 0.05) for m in rest]  # (2 of 2 won had weighed
-            # a snapshot 0 for good; audit 5)
+            w = [max(pfsp_weight(0.5 if (p := smoothed_rate(m)) is None else p, self.pfsp), 0.05) for m in rest]
+            # (2 of 2 won had weighed a snapshot 0 for good; audit 5. Unplayed: the smoothing's prior, a half: 1.0 had
+            # weighed it 4 times an even one, and one game moved it ninefold; audit 11)
             total = sum(w) or 1.0
             agents += [{"name": m.name, "kind": "past", "path": m.path, "p": self.shares["past"] * (1 - f_share) * x / total}
                        for m, x in zip(rest, w)]
@@ -2672,11 +2676,14 @@ def collate_seq(seqs: list[list[dict]], device, width: int | None = None, B: int
     return mb
 
 
-def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast, teach_scale: float = 0.0) -> tuple[torch.Tensor, torch.Tensor]:
+def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast, teach_scale: float = 0.0,
+                 norm: str = "lessons") -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """On-policy distillation: the cloning loss (bc.losses: the order, then its target given the
     teacher's order) on the learner's own steps that the built-in AI advised (mb["y_has"]), from
-    the PPO pass's network outputs; and the share of the teacher's orders (not "none") the policy
-    likes most."""
+    the PPO pass's network outputs; the share of the teacher's orders (not "none") the policy likes most; and the
+    heuristic teacher's part of the loss. `norm` (--label-norm): the teacher's lessons averaged over themselves
+    ("lessons": a minibatch with one carried the whole --teach-coef, ~2,500 times a PPO unit's decision, 61% of
+    updates clipped; audit 11) or over the labelled steps' own units as the builder's labels ("units")."""
     own = mb["own"] & mb["y_has"][:, None]
     y = mb["y_order"]
     lp = torch.log_softmax(ev["logits"].float(), -1)
@@ -2697,11 +2704,15 @@ def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast, teach_scale: fl
         issued = ok * (y > 0)
         acc = ((lp[..., 1:].argmax(-1) + 1 == y) * issued).sum() / issued.sum().clamp(min=1)
     out = l_order + l_ptr + 0.5 * l_pt
+    teach = torch.zeros((), device=out.device)
     if teach_scale and "y_teach" in mb:  # (the heuristic teacher's lessons: rare, their own weight, --teach-coef)
         tm = (mb["y_teach"] & mb["own"] & (lp_y > -1e4)).float()
-        out = out + teach_scale * (-(lp_y * tm).sum() / tm.sum().clamp(min=1)
-                                   + _masked_ce(ptr, mb["y_ptr"], tm))
-    return out, acc
+        if norm == "units":
+            teach = (-(lp_y * tm).sum() + _masked_ce(ptr, mb["y_ptr"], tm) * tm.sum()) / denom
+        else:
+            teach = -(lp_y * tm).sum() / tm.sum().clamp(min=1) + _masked_ce(ptr, mb["y_ptr"], tm)
+        out = out + teach_scale * teach
+    return out, acc, teach.detach()
 
 
 def opsd_loss(net: FullGameNet, ev: dict, mb: dict, seq) -> torch.Tensor:
@@ -3019,9 +3030,11 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
                 loss = loss + args.opsd_coef * l_opsd
                 stats.setdefault("loss/opsd", []).append(l_opsd.detach())
             if getattr(args, "opd_coef", 0.0) > 0 and mb.get("y_any"):
-                l_opd, opd_acc = distill_loss(net, ev, mb, autocast, getattr(args, "teach_coef", 0.0) / args.opd_coef)
+                l_opd, opd_acc, l_teach = distill_loss(net, ev, mb, autocast, getattr(args, "teach_coef", 0.0) / args.opd_coef,
+                                                       getattr(args, "label_norm", "lessons"))
                 loss = loss + args.opd_coef * l_opd
                 stats.setdefault("loss/opd", []).append(l_opd.detach())
+                stats.setdefault("loss/teach", []).append(l_teach)
                 stats.setdefault("opd/acc", []).append(opd_acc)
                 stats.setdefault("opd/steps", []).append(mb["y_has"].float().mean())
             if bc_iter is not None and args.bc_coef > 0:  # DAgger's labels as an auxiliary loss (not a fine-tune:
@@ -3147,9 +3160,10 @@ class GraphedUpdate:
                 loss = loss + args.opsd_coef * l_opsd
                 out["loss/opsd"] = l_opsd
             if getattr(args, "opd_coef", 0.0) > 0:
-                l_opd, opd_acc = distill_loss(net, ev, s, None, getattr(args, "teach_coef", 0.0) / args.opd_coef)
+                l_opd, opd_acc, l_teach = distill_loss(net, ev, s, None, getattr(args, "teach_coef", 0.0) / args.opd_coef,
+                                                       getattr(args, "label_norm", "lessons"))
                 loss = loss + args.opd_coef * l_opd
-                out.update({"loss/opd": l_opd, "opd/acc": opd_acc, "opd/steps": s["y_has"].float().sum() / valid.sum().clamp(min=1)})
+                out.update({"loss/opd": l_opd, "loss/teach": l_teach, "opd/acc": opd_acc, "opd/steps": s["y_has"].float().sum() / valid.sum().clamp(min=1)})
             if b is not None:
                 from .bc import losses as bc_losses
                 l_bc, _ = bc_losses(net, {k: v for k, v in b.items() if k != "width"}, self.device, None, value_coef=0.0,
@@ -3497,6 +3511,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--scenarios", default="", help="scenarios (scenarios.py: clash, raid, rich; comma-separated) "
                     "a share of the training games start in")
     ap.add_argument("--scenario-share", type=float, default=0.0, help="--scenarios: the share of the training games")
+    ap.add_argument("--macros-off", default="", help="macro orders masked, comma-separated (mix, creep, expand): the "
+                    "policy learns their low-level orders itself, from the lessons and rewards")
+    ap.add_argument("--label-norm", choices=("lessons", "units"), default="lessons", help="the teacher's lessons in "
+                    "the cloning loss averaged over themselves (lessons: a minibatch with one carries the whole --teach-coef) "
+                    "or over the labelled steps' own units, as the builder's labels (units)")
     ap.add_argument("--teach", type=int, default=0, help="a heuristic teacher (teacher.py: a tavern hero with a worker, "
                     "a town portal, a potion when a hero is low) labels the learner's steps, never carried out; "
                     "--opd-coef the labels' weight; needs --neutral 1. 2: with a target, its first hero from the altar "
@@ -3840,6 +3859,7 @@ def main(argv: list[str] | None = None) -> int:
     fx.set_masks(args.tech_mask, args.valid_mask)
     fx.set_neutral(args.neutral)
     fx.set_macros(args.macros)
+    fx.set_macros_off(args.macros_off.split(","))
     if args.z_modes > 0:  # (the strategy block with the modes' part: model.load grows older networks')
         fx.set_z(strat.ZDIM + zmodes.MDIM)
     if args.z_mix:  # (and the target army's mix after it)
@@ -4091,7 +4111,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "macros_off": args.macros_off, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "eval_ai": [d for d in args.eval_ai.split(",") if d],

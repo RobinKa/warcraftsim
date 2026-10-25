@@ -21,6 +21,9 @@ Every --every seconds, when the host answers:
   those (58 relaunches on 2026-10-24, on any edit saved here, had read a true 84% as ~89.5%: audit 7).
 * the run's newest checkpoint, at most every --push-every seconds: the worker's "current"; the host keeps the
   newest --keep it was sent.
+* --gauntlet-games of its games the current policy against the top rated policies (the dashboard's ratings), head to
+  head: their ratings kept current under today's rules; the list made again every --gauntlet-every seconds and sent
+  as runs/<run>/gauntlet.json, which the worker follows without a relaunch.
 * the worker's new rows (complete lines, by count), their times moved by the host's clock offset when it is off
   by more than 2 s (a WSL clock drifts after the laptop slept).
 """
@@ -115,7 +118,8 @@ SETTINGS = ("map", "handicap", "step_seconds", "max_minutes", "wait_floor_ms", "
             "races", "mirror", "opd_difficulty", "shared_noise", "float_penalty", "hero_level_value", "shaping",
             "shaping_scale", "gamma", "tie_break", "tie_value", "avail_mask", "infer_entities", "seed", "wine", "fsync", "ntsync",
             "eval_z", "z_pool", "z_src", "z_enforce", "z_time_scale", "z_build", "eval_map", "eval_z_pool", "eval_vs", "eval_guide",
-            "inputs", "tech_mask", "valid_mask", "z_modes", "neutral", "opsd_share", "opsd_coef", "macros", "z_mix")
+            "inputs", "tech_mask", "valid_mask", "z_modes", "neutral", "opsd_share", "opsd_coef", "macros", "z_mix",
+            "macros_off")
 
 
 def launch_key(info: dict) -> str:
@@ -159,6 +163,71 @@ def eval_checkpoints(info: dict) -> list[str]:
     return out
 
 
+DASHBOARD = "http://100.120.68.79:8765/api/ratings"
+
+
+def gauntlet(info: dict, run: str, size: int) -> list[str]:
+    """The top rated policies the current one plays anew (evalworker --gauntlet), by the dashboard's ratings (every game
+    alike): checkpoints by name, and a run's policy by the hour ("fgself-102 h2") as that run's last checkpoint saved in
+    that hour; not the run's own nor its --eval-checkpoints, nor one played with a target ("+z"). (A policy rated on
+    old games, older rules and weaker opponents, had topped the table; the user, 2026-10-25: no decay, but the top ones
+    played again.)"""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(DASHBOARD, timeout=60) as r:
+            players = json.loads(r.read())["players"]
+    except (OSError, ValueError, KeyError):
+        return []
+    out: list[str] = []
+    skip = set(eval_checkpoints(info))
+    try:
+        aliases = json.loads((RUNS / ".gauntlet-aliases.json").read_text())
+    except (OSError, ValueError):
+        aliases = {}
+    known = dict(aliases)
+    for p in players:  # (by rating, highest first)
+        name, kind = p.get("name", ""), p.get("kind")
+        path = None
+        if kind == "checkpoint" and "/" in name:
+            r_, steps = name.split(" ")[0].split("/", 1)
+            path = f"runs/{r_}/checkpoints/{int(steps):016d}.pt"
+        elif kind == "current" and (m := re.fullmatch(r"([\w.-]+) h(\d+)", name)):
+            r_ = m.group(1)
+            path = hour_checkpoint(r_, int(m.group(2)))
+            if path is not None:  # (its games count for the hourly player in the ratings: dashboard/ratings.ALIASES)
+                aliases[f"{r_}/{int(Path(path).stem)}"] = name
+        else:
+            continue
+        if path is None or r_ == run or path in skip or path in out or not (ROOT / path).exists():
+            continue
+        out.append(path)
+        if len(out) >= size:
+            break
+    if aliases != known:  # (kept for good: the ratings read every game again when they change)
+        (RUNS / ".gauntlet-aliases.json").write_text(json.dumps(aliases, indent=1))
+    return out
+
+
+def hour_checkpoint(run: str, hour: int) -> str | None:
+    """A run's last checkpoint saved within its `hour` (from run.json's creation, as the ratings count hours)."""
+    meta = run_info(run) or {}
+    start = float(meta.get("created") or meta.get("started") or 0.0)
+    if not start:
+        return None
+    end = start + 3600.0 * (hour + 1)
+    cks = [(c.stat().st_mtime, c) for c in (RUNS / run / "checkpoints").glob("[0-9]*.pt") if re.fullmatch(r"\d+\.pt", c.name)]
+    within = [(t, c) for t, c in cks if start + 3600.0 * hour <= t <= end]
+    return str(max(within)[1].relative_to(ROOT)) if within else None
+
+
+def supports_gauntlet(info: dict, follows: bool = False) -> bool:
+    """Whether the run's commit's worker has --gauntlet (an older run's worker refuses the flag); `follows`: and
+    follows its list file (a list made again reaches it without a relaunch)."""
+    r = subprocess.run(["git", "show", f"{code_rev(info)}:warcraftsim/fullgame/evalworker.py"], cwd=ROOT,
+                       capture_output=True, text=True)
+    return "--gauntlet-games" in r.stdout and (not follows or "_follow_gauntlet" in r.stdout)
+
+
 def newest_checkpoint(run: str) -> str | None:
     cks = sorted(p.name for p in (RUNS / run / "checkpoints").glob("[0-9]*.pt") if re.fullmatch(r"\d+\.pt", p.name))
     return cks[-1] if cks else None
@@ -183,6 +252,8 @@ class Manager:
         self.misses = 0  # the host's unanswered looks in a row
         self.notified = False  # the user was told it is down (then also that it is back)
         self.draining: float | None = None  # the worker told to finish its games and exit, since
+        self.pit: list[str] = []  # the gauntlet the worker plays (evalworker --gauntlet), made again every --gauntlet-every
+        self.t_pit = 0.0
 
     def remote(self, rel: str = "") -> str:
         return f"{self.a.remote_dir}/runs/{self.run}/{rel}"
@@ -251,8 +322,13 @@ class Manager:
         c = info.get("config") or {}  # (--eval-z: the strategies, as the run's; --eval-z-pool: the evaluation map's)
         pool = [q for q in {c.get("z_pool") or "", c.get("eval_z_pool") or ""}
                 if q and q != "None" and not Path(q).is_absolute() and (ROOT / q).exists()]
-        if not self.h.rsync([f"runs/{self.run}/run.json", f"runs/{self.run}/vocab.json"] + evals + pool):
+        pit = gauntlet(info, self.run, self.a.gauntlet_size) if self.a.gauntlet_games and supports_gauntlet(info) else []
+        if pit:  # (its list as a file too: the worker follows it as it is made again, without a relaunch)
+            (RUNS / self.run / "gauntlet.json").write_text(json.dumps(pit))
+        if not self.h.rsync([f"runs/{self.run}/run.json", f"runs/{self.run}/vocab.json"] + evals + pool + pit
+                            + ([f"runs/{self.run}/gauntlet.json"] if pit else [])):
             return False
+        self.pit, self.t_pit = pit, time.time()
         self.pushed = []
         self.push_checkpoint(force=True)
         if not self.pushed:
@@ -262,6 +338,9 @@ class Manager:
         args = ["--run", self.run, "--games", str(self.a.games), "--host", self.a.name]
         if self.a.processes:
             args += ["--processes", str(self.a.processes)]
+        if pit:  # (some of its games the current policy against the top rated checkpoints, anew)
+            args += ["--gauntlet", *pit, "--gauntlet-games", str(self.a.gauntlet_games)]
+            log(f"gauntlet ({self.a.gauntlet_games} games): {', '.join(pit)}")
         cmd = (f"systemd-run --user --unit={UNIT} --collect --nice={self.a.nice} --working-directory={home} "
                f"--description={shlex.quote(self.description(key))} "
                f"-p KillMode=control-group -p TimeoutStopSec=60 "
@@ -424,7 +503,26 @@ class Manager:
         if not self.pushed:  # (a worker found running: what it has is unknown, the newest is sent)
             self.push_checkpoint(force=True)
         self.push_checkpoint()
+        self.refresh_gauntlet(info)
         return True
+
+    def refresh_gauntlet(self, info: dict) -> None:
+        """Every --gauntlet-every seconds the gauntlet made again from the ratings (they change quickly as its games come
+        in): new checkpoints sent first, then the list (runs/<run>/gauntlet.json), which the worker's gauntlet
+        processes follow within a minute, from their next launch on. A worker found running (this manager restarted)
+        gets the list too, when its commit's worker follows one."""
+        if not self.a.gauntlet_games or time.time() - self.t_pit < self.a.gauntlet_every:
+            return
+        self.t_pit = time.time()
+        if not supports_gauntlet(info, follows=True):
+            return
+        pit = gauntlet(info, self.run, self.a.gauntlet_size)
+        if not pit or pit == self.pit:
+            return
+        (RUNS / self.run / "gauntlet.json").write_text(json.dumps(pit))
+        if self.h.rsync([p for p in pit if p not in self.pit]) and self.h.rsync([f"runs/{self.run}/gauntlet.json"]):
+            log(f"gauntlet now: {', '.join(pit)}")
+            self.pit = pit
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -439,6 +537,11 @@ def main() -> int:
     ap.add_argument("--keep", type=int, default=3, help="checkpoints kept there")
     ap.add_argument("--grace", type=float, default=10.0, help="minutes without the run's learner before the worker stops")
     ap.add_argument("--nice", type=int, default=10)
+    ap.add_argument("--gauntlet-games", type=int, default=4, help="of --games, this many the current policy's against the "
+                    "top rated checkpoints (evalworker --gauntlet; 0: none)")
+    ap.add_argument("--gauntlet-size", type=int, default=5, help="checkpoints in the gauntlet")
+    ap.add_argument("--gauntlet-every", type=float, default=1800.0, help="seconds between the gauntlet's lists made "
+                    "again from the ratings (followed by the worker without a relaunch)")
     ap.add_argument("--status", action="store_true", help="the worker's state, then exit (nothing pulled)")
     ap.add_argument("--stop", action="store_true", help="stop the worker (after taking its last games), then exit")
     a = ap.parse_args()
