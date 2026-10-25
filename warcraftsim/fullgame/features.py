@@ -1251,14 +1251,16 @@ class View:
         # mid-research had kept that research masked for the game, and its id, given to an enemy unit later, that
         # unit's production; audit 3)
         self.own_buildings = set(built_ids) if fast else set(rows[built, C_ID].tolist())
-        for d in (self.making, self.queued):
-            for k in [k for k in d if k not in self.own_buildings]:
+        for d in (self.making, self.queued):  # (the keys gone by a set difference: the dicts as a loop leaves them)
+            for k in d.keys() - self.own_buildings:
                 del d[k]
         self.busy &= self.own_buildings
         units = set(alive_ids) if fast else set(rows[own_alive, C_ID].tolist())
         for d in (self.assign, self.mine_of, self.last_order):  # (a unit gone: what it harvested, its mine and its last
-            for k in [k for k in d if k not in units]:            # order forgotten, not given to the next unit with its
+            for k in d.keys() - units:                            # order forgotten, not given to the next unit with its
                 del d[k]                                          # id: ~72 reuses a game; audit 4)
+        events = events.tolist() if isinstance(events, np.ndarray) else events  # (Python's numbers for the loops below:
+        # the same values)
         for r in events:  # production started / ended at a building of the player's (an enemy's: unseen)
             kind, a = int(r[1]), int(r[2])
             if a not in self.own_buildings:
@@ -1378,7 +1380,7 @@ class View:
             k = getattr(self, "hire_class", None)  # (a tavern hero's hire on its way: paid at the sale, play.BCAgent; the
             hire = None if k is None or getattr(self, "hire_free", False) else (k, int(c[k][0]), int(c[k][1]))  # first free)
             kept = [r for r in (self.reserve, hire) if r is not None]
-            avail = featnative.afford(c, gold, lumber, fu, fc, kept) if fast else None
+            avail = featnative.afford(c, gold, lumber, fu, fc, kept, self) if fast else None
             if avail is None:
                 avail = affordable(c, gold, lumber, fu, fc, self.reserve, hire)
             if enc.tech:  # (--tech-mask)
@@ -1434,7 +1436,7 @@ class View:
         if self.active_f < F_BASE and (not fast or self.active_f > A_LAST):  # (view_step's: zeroed there, unless the
             f[:, self.active_f:F_BASE] = 0.0                                   # last orders' loop above wrote some)
         out = {"n": len(sel), "sel": sel, "n_own": n_own, "ent": f, "type": types, "cur": cur, "glob": g,
-               "first_free": free, "index": {u: k for k, u in enumerate(ids)}, "avail": avail,
+               "first_free": free, "index": dict(zip(ids, range(len(ids)))), "avail": avail,
                "ghost0": getattr(enc, "ghost0", len(sel)) if not self.privileged_act else len(sel)}
         if priv is not None:  # (the privileged view's global flag; its entities beside the player's: "p…")
             flag = enc.G0 + enc.ZD + enc.GX - 1

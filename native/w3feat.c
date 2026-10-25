@@ -135,7 +135,7 @@ int w3f_entities(const int64_t *rows, int nrows, int ncols, int player, double s
         o[a + 3] = sinf(rad);
         o[a + 4] = (float)sign * cosf(rad);
         o[a + 5] = r[C_ORDER] != 0;
-        for (int p = 0; p < N_POS; p++) {
+        for (int p = 0; p < N_POS && a_pos >= 0; p++) {  /* (a_pos < 0: none, a caller that zeroes them) */
             float px = (float)(M_PI * POS_FREQS[p]) * o[3], py = (float)(M_PI * POS_FREQS[p]) * o[4];
             o[a_pos + 4 * p] = sinf(px); o[a_pos + 4 * p + 1] = cosf(px);
             o[a_pos + 4 * p + 2] = sinf(py); o[a_pos + 4 * p + 3] = cosf(py);
@@ -247,10 +247,12 @@ int w3f_view(const int64_t *rows, int nrows, int ncols, int player, double sign,
              int active_f, int64_t *out, float *f, int64_t *sel, float *priv) {
     const double *geo = (const double *)tabs[T_GEO];
     int E = (int)tabs[T_MAXENT], F = (int)tabs[T_F], fb = (int)tabs[T_FBASE];
+    /* (the positions' sines and cosines not made when the zeroing below takes them all) */
+    int a_pos_on = (active_f <= (int)tabs[T_APOS] && (int)tabs[T_APOS] + 4 * N_POS <= fb) ? -1 : (int)tabs[T_APOS];
     int64_t counts[5];
     int n = w3f_entities(rows, nrows, ncols, player, sign, geo, (const int64_t *)tabs[T_PASSIVE], (int)tabs[T_NPASSIVE],
                          (const int64_t *)tabs[T_SHOPS], (int)tabs[T_NSHOPS], (int)tabs[T_NEUTRAL], (int)tabs[T_MAXOWN],
-                         E, F, (int)tabs[T_APOS], keys, keys + nq, nq, keys + 2 * nq, nb, keys + 2 * nq + nb, nl,
+                         E, F, a_pos_on, keys, keys + nq, nq, keys + 2 * nq, nb, keys + 2 * nq + nb, nl,
                          (const int64_t *)tabs[T_TYPEK], (const int64_t *)tabs[T_TYPEV], (int)tabs[T_NTYPE],
                          (const int64_t *)tabs[T_CURK], (const int64_t *)tabs[T_CURV], (int)tabs[T_NCUR],
                          out, counts, f, out + E, out + 2 * E);
@@ -350,33 +352,39 @@ int w3f_view(const int64_t *rows, int nrows, int ncols, int player, double sign,
  * segment), the types of its living units that are no building, worker, hero or summon, the rows of its living
  * heroes with a skill point (play.BCAgent._auto_skills). Returns the list's length. */
 int w3f_side(const int64_t *rows, int nrows, int ncols, int player, int64_t *out) {
+    /* one pass, each segment written at its own place (k * nrows after the counts; the dead heroes' 3 * nrows),
+     * then moved together. `out`: at least 8 + 9 * nrows. */
     int64_t *cnt = out, *seg = out + 8;
-    int at = 0;
-    for (int q = 0; q < 8; q++) cnt[q] = 0;
-    for (int pass = 0; pass <= 7; pass++) {
-        if (pass == 5) continue;
-        for (int i = 0; i < nrows; i++) {
-            const int64_t *r = rows + (size_t)i * ncols;
-            if (r[C_OWNER] != player) continue;
-            int64_t fl = r[C_FLAGS];
-            int alive = (fl & DEAD) == 0;
-            switch (pass) {
-            case 0:
-                if (alive && (fl & STRUCTURE)) { seg[at++] = r[C_ID]; cnt[0]++; }
-                if (alive && !(fl & (STRUCTURE | WORKER))) cnt[5]++;
-                break;
-            case 1: if (alive) { seg[at++] = r[C_ID]; cnt[1]++; } break;
-            case 2:
-                if ((fl & HERO) && !alive) { seg[at++] = r[C_TYPE]; seg[at++] = r[C_ID]; seg[at++] = r[C_HLEVEL]; cnt[2]++; }
-                break;
-            case 3: if (fl & HERO) { seg[at++] = r[C_TYPE]; cnt[3]++; } break;
-            case 4: if (alive && (fl & STRUCTURE) && !(fl & CONSTRUCTING)) { seg[at++] = r[C_TYPE]; cnt[4]++; } break;
-            case 6: if (!(fl & (DEAD | STRUCTURE | WORKER | HERO | SUMMONED))) { seg[at++] = r[C_TYPE]; cnt[6]++; } break;
-            case 7: if (alive && (fl & HERO) && r[C_SKILLPTS] > 0) { seg[at++] = i; cnt[7]++; } break;
-            }
+    int64_t *built = seg, *alive_ids = seg + nrows, *dead = seg + 2 * (size_t)nrows, *heroes = seg + 5 * (size_t)nrows,
+            *done = seg + 6 * (size_t)nrows, *mix = seg + 7 * (size_t)nrows, *skill = seg + 8 * (size_t)nrows;
+    int64_t nb = 0, na = 0, nd = 0, nh = 0, nf = 0, nm = 0, ns = 0, army = 0;
+    for (int i = 0; i < nrows; i++) {
+        const int64_t *r = rows + (size_t)i * ncols;
+        if (r[C_OWNER] != player) continue;
+        int64_t fl = r[C_FLAGS];
+        if (!(fl & DEAD)) {
+            alive_ids[na++] = r[C_ID];
+            if (fl & STRUCTURE) {
+                built[nb++] = r[C_ID];
+                if (!(fl & CONSTRUCTING)) done[nf++] = r[C_TYPE];
+            } else if (!(fl & WORKER)) army++;
+            if ((fl & HERO) && r[C_SKILLPTS] > 0) skill[ns++] = i;
+            if (!(fl & (STRUCTURE | WORKER | HERO | SUMMONED))) mix[nm++] = r[C_TYPE];
+        } else if (fl & HERO) {
+            dead[3 * nd] = r[C_TYPE]; dead[3 * nd + 1] = r[C_ID]; dead[3 * nd + 2] = r[C_HLEVEL];
+            nd++;
         }
+        if (fl & HERO) heroes[nh++] = r[C_TYPE];
     }
-    return 8 + at;
+    cnt[0] = nb; cnt[1] = na; cnt[2] = nd; cnt[3] = nh; cnt[4] = nf; cnt[5] = army; cnt[6] = nm; cnt[7] = ns;
+    int64_t at = nb;
+    memmove(seg + at, alive_ids, sizeof(int64_t) * na); at += na;
+    memmove(seg + at, dead, sizeof(int64_t) * 3 * nd); at += 3 * nd;
+    memmove(seg + at, heroes, sizeof(int64_t) * nh); at += nh;
+    memmove(seg + at, done, sizeof(int64_t) * nf); at += nf;
+    memmove(seg + at, mix, sizeof(int64_t) * nm); at += nm;
+    memmove(seg + at, skill, sizeof(int64_t) * ns); at += ns;
+    return 8 + (int)at;
 }
 
 /* play.BCAgent._entangle's distances: of the player's living finished buildings whose type is in `trees` (sorted), in
@@ -415,24 +423,42 @@ int w3f_entangle(const int64_t *rows, int nrows, int ncols, int player, const in
     return n;
 }
 
+/* w3f_view with its arguments but `sign` in one int64 array (featnative.view_step: ctypes converts each argument it
+ * passes, ~1,200 instructions each): rows, nrows, ncols, player, tabs, keys, nq, nb, nl, nm, prev, prev_hp, nprev,
+ * active_f, out, f, sel, priv. */
+int w3f_view_a(const int64_t *a, double sign) {
+    return w3f_view((const int64_t *)a[0], (int)a[1], (int)a[2], (int)a[3], sign, (const int64_t *)a[4],
+                    (const int64_t *)a[5], (int)a[6], (int)a[7], (int)a[8], (int)a[9], (const int64_t *)a[10],
+                    (const int64_t *)a[11], (int)a[12], (int)a[13], (int64_t *)a[14], (float *)a[15], (int64_t *)a[16],
+                    (float *)a[17]);
+}
+
 /* features.affordable: [n] 0/1 the order classes the player can pay for (costs [n][3]: gold, lumber, food); `nkept`
  * classes k1, k2 (their gold and lumber summed: rg, rl) kept from the others, each as it was before. */
-void w3f_afford(const int64_t *c, int n, int64_t gold, int64_t lumber, int64_t fu, int64_t fc, int nkept, int64_t k1,
-                int64_t k2, int64_t rg, int64_t rl, uint8_t *avail) {
+void w3f_afford(const int64_t *restrict c, int n, int64_t gold, int64_t lumber, int64_t fu, int64_t fc, int nkept,
+                int64_t k1, int64_t k2, int64_t rg, int64_t rl, uint8_t *restrict avail) {
     if (fc > 100) fc = 100;
     int64_t g2 = gold - rg > 0 ? gold - rg : 0, l2 = lumber - rl > 0 ? lumber - rl : 0;
-    uint8_t v1 = 0, v2 = 0;
-    for (int i = 0; i < n; i++) {
-        const int64_t *r = c + 3 * i;
-        uint8_t a = r[0] <= gold && r[1] <= lumber && (r[2] == 0 || fu + r[2] <= fc);
-        if (nkept >= 1 && i == k1) v1 = a;
-        if (nkept >= 2 && i == k2) v2 = a;
-        if (nkept && a) a = (r[0] <= g2 && r[1] <= l2) || r[0] + r[1] == 0;
-        avail[i] = a;
+    for (int i = 0; i < n; i++) {  /* (without branches: ~5x fewer instructions) */
+        int64_t g = c[3 * i], l = c[3 * i + 1], f = c[3 * i + 2];
+        avail[i] = (uint8_t)((g <= gold) & (l <= lumber) & ((f == 0) | (fu + f <= fc)));
     }
-    if (nkept >= 1) avail[k1] = v1;
-    if (nkept >= 2) avail[k2] = v2;
+    if (nkept) {
+        uint8_t v1 = avail[k1], v2 = nkept >= 2 ? avail[k2] : 0;
+        for (int i = 0; i < n; i++) {
+            int64_t g = c[3 * i], l = c[3 * i + 1];
+            avail[i] &= (uint8_t)(((g <= g2) & (l <= l2)) | (g + l == 0));
+        }
+        avail[k1] = v1;
+        if (nkept >= 2) avail[k2] = v2;
+    }
     if (n) avail[0] = 1;
+}
+
+/* w3f_afford with its arguments in one int64 array: c, n, gold, lumber, fu, fc, nkept, k1, k2, rg, rl, avail. */
+void w3f_afford_a(const int64_t *a) {
+    w3f_afford((const int64_t *)a[0], (int)a[1], a[2], a[3], a[4], a[5], (int)a[6], a[7], a[8], a[9], a[10],
+               (uint8_t *)a[11]);
 }
 
 /* macros.natural, site and camp in one pass: of the living rows whose type is in `mines` (sorted codes), the one

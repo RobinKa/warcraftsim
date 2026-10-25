@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+from array import array as _array
 import subprocess
 
 import numpy as np
@@ -50,6 +51,10 @@ def lib():
         L.w3f_natural.argtypes = [P, I, I, D, D, P, I, P, I, D, D, D, P]
         L.w3f_afford.restype = None
         L.w3f_afford.argtypes = [P, I, Q, Q, Q, Q, I, Q, Q, Q, Q, P]
+        L.w3f_view_a.restype = I
+        L.w3f_view_a.argtypes = [P, D]
+        L.w3f_afford_a.restype = None
+        L.w3f_afford_a.argtypes = [P]
         _lib = L
     return _lib or None
 
@@ -142,9 +147,9 @@ def view_step(enc, fx, view, rows: np.ndarray, player: int, sign: float, product
     q = sorted(queued.items())
     b, lm = sorted(busy), sorted(lumber)
     m = sorted((k, v[0] + 1) for k, v in making.items()) if making and fx.F > fx.F_BASE else ()
-    keys = np.array([*(k for k, _ in q), *(v for _, v in q), *b, *lm, *(k for k, _ in m), *(v for _, v in m), 0],
-                    np.int64)
-    ka = addr(keys)
+    # (an array.array of the Python ints and its address: numpy's array of a list took ~3x the instructions)
+    keys = _array("q", [*(k for k, _ in q), *(v for _, v in q), *b, *lm, *(k for k, _ in m), *(v for _, v in m), 0])
+    ka = keys.buffer_info()[0]
     last = view.hp_last
     got = getattr(view, "_hp_addr", None)
     if got is not None and got[0] is last:
@@ -160,8 +165,16 @@ def view_step(enc, fx, view, rows: np.ndarray, player: int, sign: float, product
     sel = np.empty((max(cap, 1), ncols), np.int64)
     fa, oa = addr(f), addr(out)
     nq, nb, nl, nm = len(q), len(b), len(lm), len(m)
-    k = L.w3f_view(_rows_addr(rows), nrows, ncols, int(player), float(sign), tabs[2], ka, nq, nb, nl, nm, pa, ha,
-                   len(last[0]), int(view.active_f), oa, fa, addr(sel), fa + 4 * cap * fx.F if priv else 0)
+    va = view.__dict__.get("_view_args")  # (the arguments in one array of the view's, its address kept: w3f_view_a)
+    if va is None:
+        a = _array("q", bytes(8 * 18))
+        va = view._view_args = (a, a.buffer_info()[0])
+    a = va[0]
+    a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9] = (_rows_addr(rows), nrows, ncols, int(player), tabs[2],
+                                                                  ka, nq, nb, nl, nm)
+    a[10], a[11], a[12], a[13], a[14], a[15], a[16], a[17] = (pa, ha, len(last[0]), int(view.active_f), oa, fa, addr(sel),
+                                                              fa + 4 * cap * fx.F if priv else 0)
+    k = L.w3f_view_a(va[1], float(sign))
     if k < 0:
         raise MemoryError("w3f_view")
     pk = out[5 * E:5 * E + k].tolist()
@@ -183,7 +196,7 @@ def side(rows: np.ndarray, player: int, fresh: bool = False) -> list:
         return got[1]
     given = rows
     rows = np.ascontiguousarray(rows, np.int64)
-    out = np.empty(9 + 8 * len(rows), np.int64)
+    out = np.empty(9 + 9 * len(rows), np.int64)
     k = lib().w3f_side(_rows_addr(rows), len(rows), rows.shape[1], int(player), addr(out))
     res = out[:k].tolist()
     _SIDE[player] = (given, res)  # (a tuple replaced whole: an actor's game threads share it)
@@ -244,19 +257,38 @@ def entangle(rows: np.ndarray, player: int, trees: np.ndarray, ngol: int, egol: 
     return list(zip(v[0::2], v[1::2]))
 
 
-def afford(costs: np.ndarray, gold: int, lumber: int, fu: int, fc: int, kept: list) -> np.ndarray | None:
+_COSTS: dict = {}  # id(a costs table) -> (it, its address): the encoder's tables are made once (a dead hero's revival
+# a copy a step)
+
+
+def afford(costs: np.ndarray, gold: int, lumber: int, fu: int, fc: int, kept: list, owner=None) -> np.ndarray | None:
     """features.affordable in C (costs: int64 [n, 3], C-contiguous; kept: its (class, gold, lumber)s), None when it
-    can't (other costs, a kept class out of range)."""
+    can't (other costs, a kept class out of range). `owner`: an object to keep the call's argument array on (a view)."""
     L = lib()
     n = len(costs)
-    if (L is None or costs.dtype != np.int64 or costs.ndim != 2 or costs.shape[1] != 3 or not costs.flags.c_contiguous
-            or not n or any(not 0 <= r[0] < n for r in kept) or len(kept) > 2):
+    got = _COSTS.get(id(costs))
+    if got is None or got[0] is not costs:
+        if (L is None or costs.dtype != np.int64 or costs.ndim != 2 or costs.shape[1] != 3
+                or not costs.flags.c_contiguous or not n):
+            return None
+        if len(_COSTS) > 16:
+            _COSTS.clear()
+        got = _COSTS[id(costs)] = (costs, addr(costs))
+    if len(kept) > 2 or any(not 0 <= r[0] < n for r in kept):
         return None
     out = np.empty(n, np.bool_)
-    k1 = kept[0][0] if kept else 0
-    k2 = kept[1][0] if len(kept) > 1 else 0
-    rg, rl = (sum(r[1] for r in kept), sum(r[2] for r in kept)) if kept else (0, 0)
-    L.w3f_afford(addr(costs), n, gold, lumber, fu, fc, len(kept), k1, k2, rg, rl, addr(out))
+    aa = owner.__dict__.get("_afford_args") if owner is not None else None
+    if aa is None:
+        a = _array("q", bytes(8 * 12))
+        aa = (a, a.buffer_info()[0])
+        if owner is not None:
+            owner._afford_args = aa
+    a = aa[0]
+    a[0], a[1], a[2], a[3], a[4], a[5], a[6] = got[1], n, gold, lumber, fu, fc, len(kept)
+    a[7], a[8] = (kept[0][0] if kept else 0), (kept[1][0] if len(kept) > 1 else 0)
+    a[9], a[10] = (sum(r[1] for r in kept), sum(r[2] for r in kept)) if kept else (0, 0)
+    a[11] = addr(out)
+    L.w3f_afford_a(aa[1])
     return out
 
 
