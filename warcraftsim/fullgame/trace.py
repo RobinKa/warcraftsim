@@ -123,11 +123,21 @@ def _type_values(values: dict, types):
         keys = np.union1d(keys, types).astype(np.int64)
         vals = np.array([values.get(str(t), 0) for t in keys.tolist()], float)
         nat = _NATIVE if _NATIVE is not None else _native()
-        desc = (np.array([nat.addr(keys), nat.addr(vals), len(keys), nat.workers_at, len(nat.workers)], np.int64)
+        desc = (np.array([nat.addr(keys), nat.addr(vals), len(keys), nat.workers_at, len(nat.workers), 0], np.int64)
                 if nat and len(keys) else None)
-        _VALUES[id(values)] = (values, len(values), keys, vals, desc, nat.addr(desc) if desc is not None else 0)
+        _VALUES[id(values)] = (values, len(values), keys, vals, desc, {})
         j = np.searchsorted(keys, types)
     return vals[j]
+
+
+def _material_desc(tab: tuple, settings: tuple) -> tuple:
+    """w3obs_material's description of a values' table (tab[4]) with the settings (hero level, worker cap): (its
+    array, the settings' array, its address)."""
+    nat = _NATIVE
+    setting = nat.np.array(settings, nat.np.float64)
+    desc = tab[4].copy()
+    desc[5] = nat.addr(setting)
+    return desc, setting, nat.addr(desc)
 
 
 def _material_c(ua, values: dict, hero_level, worker_cap):
@@ -138,12 +148,16 @@ def _material_c(ua, values: dict, hero_level, worker_cap):
         return None
     at = _table_at(ua)
     tab = _VALUES.get(id(values))
-    if not at or tab is None or tab[0] is not values or tab[1] != len(values) or not tab[5]:
+    if not at or tab is None or tab[0] is not values or tab[1] != len(values) or tab[4] is None:
         return None
-    io = _NATIVE.doubles(hero_level or 0.0, worker_cap or 0.0)  # (in: the two settings; out: the two sums)
-    if _NATIVE.lib.w3obs_material(at, len(ua), tab[5], io):
+    settings = (hero_level or 0.0, worker_cap or 0.0)  # (kept with the table: a ctypes array made with them each
+    d = tab[5].get(settings)                           # step had cost ~3k instructions)
+    if d is None:
+        d = tab[5].setdefault(settings, _material_desc(tab, settings))
+    out = _NATIVE.doubles()
+    if _NATIVE.lib.w3obs_material(at, len(ua), d[2], out):
         return None
-    return {0: io[0], 1: io[1]}
+    return {0: out[0], 1: out[1]}
 
 
 def material(obs, values: dict, hero_level: float = 0.0, worker_cap: int = 0) -> dict[int, float]:
@@ -258,9 +272,9 @@ class _Scan:
             nat = self.nat
             self.cap = max(2 + 5 * n, 2 * self.cap, 1024)
             self.buf = (nat.int32s * self.cap)()
-            self.at = nat.addressof(self.buf)
+            nat.lib.w3obs_owners_out(self.p, nat.addressof(self.buf))
             self.ints = memoryview(self.buf).cast("B").cast("i")
-        if self.nat.lib.w3obs_prod_scan(self.p, at, n, owners, self.at):
+        if self.nat.lib.w3obs_prod_scan(self.p, at, n, owners):
             raise MemoryError("w3obs_prod_scan")
         ints = self.ints
         h, q = 3 * ints[0], 2 * ints[1]

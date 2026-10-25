@@ -80,8 +80,10 @@ def lib():
         L.w3obs_rows.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)]
         L.w3obs_width.argtypes = [ctypes.c_void_p, ctypes.c_int]
         L.w3obs_export.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
-        L.w3obs_merge_into.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
-        L.w3obs_parse_export.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+        L.w3obs_merge_into.argtypes = [ctypes.c_void_p]
+        L.w3obs_parse_export.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
+        L.w3obs_buffers.restype = None
+        L.w3obs_buffers.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
         P, I, D = ctypes.c_void_p, ctypes.c_int, ctypes.c_double  # (fullgame.trace's and play.unit_rows')
         L.w3obs_sum.restype = D
         L.w3obs_sum.argtypes = [P, I]
@@ -90,7 +92,9 @@ def lib():
         L.w3obs_owners_new.argtypes = [P, I]
         L.w3obs_owners_free.argtypes = [P]
         L.w3obs_owners_clear.argtypes = [P]
-        L.w3obs_prod_scan.argtypes = [P, P, I, I, P]
+        L.w3obs_prod_scan.argtypes = [P, P, I, I]
+        L.w3obs_owners_out.restype = None
+        L.w3obs_owners_out.argtypes = [P, P]
         L.w3obs_unit_rows.restype = None
         L.w3obs_unit_rows.argtypes = [P, I, ctypes.c_int64, P, I]
         if L.w3obs_ucols() != UCOLS:
@@ -162,22 +166,27 @@ class NativeObs:
         self._s = self._lib.w3obs_new()
         if not self._s:
             raise MemoryError("w3obs_new")
-        self._grow(4096)
+        self._cap = 0
         self._table = np.empty((1024, UCOLS), np.int32)  # (merge's: the table copied out of it)
-        self._table_at = addr(self._table)
+        self._grow(4096)
 
     def __del__(self):
         s, self._s = getattr(self, "_s", None), None
         if s:
             self._lib.w3obs_free(s)
 
-    def _grow(self, n: int) -> None:
-        """The buffer w3obs_export fills (this game's own: a game's thread parses its observations), at least n ints."""
-        self._cap = max(n, 2 * getattr(self, "_cap", 0))
-        self._buf = (ctypes.c_int32 * self._cap)()
-        self._addr = ctypes.addressof(self._buf)
-        self._ints = memoryview(self._buf).cast("B").cast("i")  # (its ints as a list: ~2.5x faster than the ctypes
-        # array's own slices)
+    def _grow(self, n: int = 0, rows: int = 0) -> None:
+        """This game's buffers (a game's thread parses its observations), kept by the C state too (w3obs_buffers):
+        w3obs_export's, at least n ints; merge's table, at least `rows` rows."""
+        if n > self._cap:
+            self._cap = max(n, 2 * self._cap)
+            self._buf = (ctypes.c_int32 * self._cap)()
+            self._addr = ctypes.addressof(self._buf)
+            self._ints = memoryview(self._buf).cast("B").cast("i")  # (its ints as a list: ~2.5x faster than the
+            # ctypes array's own slices)
+        if rows > len(self._table):
+            self._table = np.empty((max(rows, 2 * len(self._table)), UCOLS), np.int32)
+        self._lib.w3obs_buffers(self._s, self._addr, self._cap, addr(self._table), len(self._table))
 
     def _rows(self, which: int) -> np.ndarray:
         """Table `which` of the last observation parsed (w3obs_rows' order), as an array."""
@@ -191,7 +200,7 @@ class NativeObs:
     def parse(self, payload: bytes, order_names: Sequence[str]) -> Observation:
         """The observation without its units (merge() adds them): as protocol.parse_token_lines. (Its tables come in
         one copy, w3obs_export, as one list of ints: each table as an array of its own had cost ~100k instructions.)"""
-        n = self._lib.w3obs_parse_export(self._s, payload, len(payload), self._addr, self._cap)
+        n = self._lib.w3obs_parse_export(self._s, payload, len(payload))
         if n == -2:
             raise MemoryError("w3obs_parse")
         if n > self._cap:
@@ -247,13 +256,12 @@ class NativeObs:
         """Apply the last parsed observation to the unit table: obs.units / unit_array hold all units. (The table comes
         into this game's own buffer with the merge, one call, and is copied from it: a new array's address and a
         second call had cost ~8k instructions more.)"""
-        n = self._lib.w3obs_merge_into(self._s, self._table_at, len(self._table))
+        n = self._lib.w3obs_merge_into(self._s)
         if n < 0:
             raise MemoryError("w3obs_merge")
         if n > len(self._table):
-            self._table = np.empty((2 * n, UCOLS), np.int32)
-            self._table_at = addr(self._table)
-            self._lib.w3obs_table(self._s, self._table_at, n)
+            self._grow(rows=n)
+            self._lib.w3obs_table(self._s, addr(self._table), n)
         rows = self._table[:n].copy()
         obs.unit_array = rows
         obs.units = LazyUnits(rows)

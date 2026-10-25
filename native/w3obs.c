@@ -61,6 +61,8 @@ typedef struct {
     int64_t *toks;
     uint8_t *is_tag;
     int tcap;
+    int32_t *out, *table;  /* the caller's buffers (w3obs_buffers): w3obs_parse_export's and w3obs_merge_into's */
+    int out_cap, table_cap;
 } State;
 
 enum { H_SEQ, H_MS, H_OVER, H_FULL, H_VERSION, H_DAMAGED, H_ENDED, H_CAMERA, H_CAM_X, H_CAM_Y, H_NUNITS };
@@ -388,9 +390,10 @@ int w3obs_table(void *p, int32_t *out, int cap) {
 
 /* w3obs_merge, then w3obs_table into out when its cap rows hold the table: the live units' count (the table copied
  * only when cap is enough), or -2 (out of memory). */
-int w3obs_merge_into(void *p, int32_t *out, int cap) {
+int w3obs_merge_into(void *p) {
+    State *s = p;
     int n = w3obs_merge(p);
-    if (n >= 0 && n <= cap) w3obs_table(p, out, n);
+    if (n >= 0 && n <= s->table_cap) w3obs_table(p, s->table, n);
     return n;
 }
 
@@ -439,9 +442,20 @@ int w3obs_export(void *p, int32_t *out, int cap) {
 }
 
 /* w3obs_parse, then w3obs_export: its size, or -2 (out of memory). (No end marker: the header's H_ENDED is 0.) */
-int w3obs_parse_export(void *p, const char *data, int len, int32_t *out, int cap) {
+int w3obs_parse_export(void *p, const char *data, int len) {
+    State *s = p;
     if (w3obs_parse(p, data, len) == -2) return -2;
-    return w3obs_export(p, out, cap);
+    return w3obs_export(p, s->out, s->out_cap);
+}
+
+/* The caller's buffers (kept here: a ctypes call's every argument costs ~1k instructions): w3obs_parse_export's
+ * (out, out_cap ints) and w3obs_merge_into's (table, table_cap rows). */
+void w3obs_buffers(void *p, int32_t *out, int out_cap, int32_t *table, int table_cap) {
+    State *s = p;
+    s->out = out;
+    s->out_cap = out_cap;
+    s->table = table;
+    s->table_cap = table_cap;
 }
 
 /* ---- fullgame.trace and play.unit_rows on the unit table (rows [n][UCOLS], as w3obs_table gives them) ---- */
@@ -473,17 +487,17 @@ static double pairwise_sum(const double *a, long n) {
 
 double w3obs_sum(const double *a, int n) { return 0.0 + pairwise_sum(a, n); }
 
-/* trace.material on the unit table: io[p] = player p's (0, 1) living units' value times their hit points left, as its
+/* trace.material on the unit table: out[p] = player p's (0, 1) living units' value times their hit points left, as its
  * numpy code computes it (each unit's operations in its order, the sum numpy's in the table's order). desc: the
  * addresses of keys (sorted type ids, int64) and vals (their values, double), nk, the addresses of the worker types
- * (int64) and their count; io in: hero_level (per level above the first; 0: none), worker_cap (0: none). (A few
- * arguments: each one of a ctypes call costs ~1k instructions.) Returns 0, 1 when a type is not in keys (the caller
- * makes its table again), -1 when out of memory. */
-int w3obs_material(const int32_t *rows, int n, const int64_t *desc, double *io) {
+ * (int64) and their count, the address of the settings (double): hero_level (per level above the first; 0: none),
+ * worker_cap (0: none). (A few arguments: each one of a ctypes call costs ~1k instructions.) Returns 0, 1 when a type
+ * is not in keys (the caller makes its table again), -1 when out of memory. */
+int w3obs_material(const int32_t *rows, int n, const int64_t *desc, double *out) {
     const int64_t *keys = (const int64_t *)(intptr_t)desc[0], *workers = (const int64_t *)(intptr_t)desc[3];
-    const double *vals = (const double *)(intptr_t)desc[1];
+    const double *vals = (const double *)(intptr_t)desc[1], *settings = (const double *)(intptr_t)desc[5];
     int nk = (int)desc[2], nw = (int)desc[4];
-    double hero_level = io[0], worker_cap = io[1], *out = io;
+    double hero_level = settings[0], worker_cap = settings[1];
     double *v = malloc((size_t)(n > 0 ? n : 1) * 3 * sizeof(double));
     uint8_t *who = malloc((size_t)(n > 0 ? n : 1) * 2);
     if (!v || !who) { free(v); free(who); return -1; }
@@ -540,6 +554,8 @@ typedef struct {
     int cap, n;
     int64_t hired[HIRED_SLOTS];
     uint8_t hired_used[HIRED_SLOTS];
+    uint8_t hired_top[256];  /* (the hired types' top bytes, of their low 32 bits: most rows passed over by it) */
+    int32_t *out;  /* the caller's buffer (w3obs_owners_out) */
 } Owners;
 
 void w3obs_owners_free(void *p) {
@@ -576,9 +592,13 @@ void *w3obs_owners_new(const int64_t *hired, int nh) {
         int s = hired_slot(o, hired[k]);
         o->hired_used[s] = 1;
         o->hired[s] = hired[k];
+        o->hired_top[(uint32_t)hired[k] >> 24] = 1;
     }
     return o;
 }
+
+/* the buffer w3obs_prod_scan writes (kept here: a ctypes call's every argument costs ~1k instructions) */
+void w3obs_owners_out(void *p, int32_t *out) { ((Owners *)p)->out = out; }
 
 void w3obs_owners_clear(void *p) {
     Owners *o = p;
@@ -612,14 +632,15 @@ static int owners_grow(Owners *o) {
 
 /* Production.step's look at the table: the (id, type, owner) of each unit of a hired type, in the table's order, then
  * (with `owners`) each (id, owner) new or changed since the last such scan (the mirror set to it). out: [the triples'
- * count, the pairs' count, the triples, the pairs] (at most 2 + 5 n ints). Returns 0, -1 out of memory. */
-int w3obs_prod_scan(void *p, const int32_t *rows, int n, int owners, int32_t *out) {
+ * count, the pairs' count, the triples, the pairs] (at most 2 + 5 n ints; w3obs_owners_out's buffer). Returns 0, -1
+ * out of memory. */
+int w3obs_prod_scan(void *p, const int32_t *rows, int n, int owners) {
     Owners *o = p;
     int h = 0, q = 0;
-    int32_t *at = out + 2;
+    int32_t *out = o->out, *at = out + 2;
     for (int i = 0; i < n; i++) {
         const int32_t *r = rows + (size_t)i * UCOLS;
-        if (o->hired_used[hired_slot(o, r[1])]) {
+        if (o->hired_top[(uint32_t)r[1] >> 24] && o->hired_used[hired_slot(o, r[1])]) {
             at[0] = r[0]; at[1] = r[1]; at[2] = r[2];
             at += 3;
             h++;
