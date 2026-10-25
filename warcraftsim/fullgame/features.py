@@ -340,6 +340,17 @@ def set_macros(level: int) -> None:
     os.environ["WARCRAFTSIM_MACROS"] = str(MACROS)
 
 
+# --macros-off: macro orders the policy may not give (masked), so it learns their low-level orders itself from the lessons
+# and rewards (the user, 2026-10-25: diverse play without the army-mix, creep and expand orders' help)
+MACROS_OFF = frozenset(x for x in os.environ.get("WARCRAFTSIM_MACROS_OFF", "").split(",") if x)
+
+
+def set_macros_off(names) -> None:
+    global MACROS_OFF
+    MACROS_OFF = frozenset(n for n in names if n)
+    os.environ["WARCRAFTSIM_MACROS_OFF"] = ",".join(sorted(MACROS_OFF))
+
+
 def set_neutral(v: int) -> None:
     global NEUTRAL
     NEUTRAL = int(v)
@@ -617,10 +628,15 @@ def world_bins(x, y, sign: float) -> tuple[np.ndarray, np.ndarray]:
 
 
 def bins_world(bx: int, by: int, sign: float) -> tuple[float, float]:
-    """x and y bins in a player's view -> the point in the world."""
+    """x and y bins in a player's view -> the point in the world (bin_center and _unsqueeze in Python's floats: the same
+    float64 arithmetic, without numpy's calls on numbers, ~80k instructions an order)."""
     ox, oy = own_start(sign)
-    return (float(ox + sign * _unsqueeze((bin_center(int(bx)) - ANCHOR_X) * SCALE)),
-            float(oy + bin_center(int(by)) * SCALE))
+    e = (((int(bx) + 0.5) / BINS_PER_UNIT - BIN_RANGE) - ANCHOR_X) * SCALE
+    D = STARTS[1][0] - STARTS[0][0]
+    if not abs(D - DUEL_D) < 1e-6:
+        k = (DUEL_D - 2 * NEAR) / (D - 2 * NEAR)
+        e = e if e <= NEAR else e + (D - DUEL_D) if e >= DUEL_D - NEAR else NEAR + (e - NEAR) / k
+    return float(ox + sign * e), float(oy + ((int(by) + 0.5) / BINS_PER_UNIT - BIN_RANGE) * SCALE)
 
 
 class Encoder:
@@ -1228,9 +1244,9 @@ class View:
         featnative = _mod("featnative")
         fast = A_HID < 0 and not PRIVILEGED and INPUTS < 3 and featnative.lib() is not None
         if fast:
-            pk = featnative.side(rows, player)
+            pk = featnative.side(rows, player, fresh=True, owner=self)
             n_built, n_alive, n_dead, n_heroes, n_done, army_n = pk[:6]
-            o = 7
+            o = 9
             built_ids, o = pk[o:o + n_built], o + n_built
             alive_ids, o = pk[o:o + n_alive], o + n_alive
             dead3, o = pk[o:o + 3 * n_dead], o + 3 * n_dead
@@ -1246,14 +1262,16 @@ class View:
         # mid-research had kept that research masked for the game, and its id, given to an enemy unit later, that
         # unit's production; audit 3)
         self.own_buildings = set(built_ids) if fast else set(rows[built, C_ID].tolist())
-        for d in (self.making, self.queued):
-            for k in [k for k in d if k not in self.own_buildings]:
+        for d in (self.making, self.queued):  # (the keys gone by a set difference: the dicts as a loop leaves them)
+            for k in d.keys() - self.own_buildings:
                 del d[k]
         self.busy &= self.own_buildings
         units = set(alive_ids) if fast else set(rows[own_alive, C_ID].tolist())
         for d in (self.assign, self.mine_of, self.last_order):  # (a unit gone: what it harvested, its mine and its last
-            for k in [k for k in d if k not in units]:            # order forgotten, not given to the next unit with its
+            for k in d.keys() - units:                            # order forgotten, not given to the next unit with its
                 del d[k]                                          # id: ~72 reuses a game; audit 4)
+        events = events.tolist() if isinstance(events, np.ndarray) else events  # (Python's numbers for the loops below:
+        # the same values)
         for r in events:  # production started / ended at a building of the player's (an enemy's: unseen)
             kind, a = int(r[1]), int(r[2])
             if a not in self.own_buildings:
@@ -1275,8 +1293,8 @@ class View:
                 self.levels[int(r[3])] = int(r[4])
             if kind in (8, 10):  # (research started or cancelled: no longer queued)
                 getattr(self, "pending_research", {}).pop(int(r[3]), None)
-        lumber = {u for u, r in self.assign.items() if r == "lumber"}
-        if fast:  # (its dead heroes: type, id, level)
+        lumber = self.lumber_now = {u for u, r in self.assign.items() if r == "lumber"}  # (the step's choppers: the
+        if fast:  # (its dead heroes: type, id, level)                              # teacher's too, play_one)
             dead_types, dead_ids = dead3[0::3], dead3[1::3]
             self.dead_heroes = dict(zip(dead_types, dead_ids))
             ids = set(dead_ids)
@@ -1373,7 +1391,7 @@ class View:
             k = getattr(self, "hire_class", None)  # (a tavern hero's hire on its way: paid at the sale, play.BCAgent; the
             hire = None if k is None or getattr(self, "hire_free", False) else (k, int(c[k][0]), int(c[k][1]))  # first free)
             kept = [r for r in (self.reserve, hire) if r is not None]
-            avail = featnative.afford(c, gold, lumber, fu, fc, kept) if fast else None
+            avail = featnative.afford(c, gold, lumber, fu, fc, kept, self) if fast else None
             if avail is None:
                 avail = affordable(c, gold, lumber, fu, fc, self.reserve, hire)
             if enc.tech:  # (--tech-mask)
@@ -1385,20 +1403,21 @@ class View:
             site = _mod("macros").site                            # its hall affordable; night elves' tree of life
             race = RACES[self.races[player]]                      # entangles its mine, play.BCAgent._entangle)
             if t - getattr(self, "_site_at", -NATURAL_EVERY) >= NATURAL_EVERY or t < getattr(self, "_site_at", 0):
-                self.expand_site = site(rows, getattr(self, "start", None)) if MACROS else None  # (every
+                self.expand_site = site(rows, getattr(self, "start", None), True) if MACROS else None  # (every
                 self._site_at = t  # NATURAL_EVERY steps: a natural is taken or freed over seconds; 4% of an actor's
                 # time when every step)
             via = enc.expand_via.get(race)
             busy = getattr(self, "expanding", None) is not None and t < self.expanding[0]
-            avail[enc.expand_class] = bool(self.expand_site is not None and via is not None and avail[via] and not busy)
+            avail[enc.expand_class] = bool(self.expand_site is not None and via is not None and avail[via] and not busy
+                                           and "expand" not in MACROS_OFF)
         if avail is not None and enc.creep_class is not None:  # (--macros: creep the natural, while its camp stands)
             camp = _mod("macros").camp
             army = army_n if fast else int((own_alive & (fl & (STRUCTURE | WORKER) == 0)).sum())
             strong = army >= CREEP_ARMY and t * self.step_seconds >= CREEP_FROM  # (the teacher's conditions: from minute 1,
             if not strong or t - getattr(self, "_camp_at", -NATURAL_EVERY) >= NATURAL_EVERY or t < getattr(self, "_camp_at", 0):
-                self.creep_at = camp(rows, getattr(self, "start", None)) if MACROS and strong else None  # any unit sent it:
-                self._camp_at = t
-            avail[enc.creep_class] = self.creep_at is not None  # 436 attack-moves a game; audit 3)
+                self.creep_at = camp(rows, getattr(self, "start", None), True) if MACROS and strong else None  # any
+                self._camp_at = t  # unit sent it:
+            avail[enc.creep_class] = self.creep_at is not None and "creep" not in MACROS_OFF  # 436 attack-moves a game; audit 3)
         if avail is not None and enc.mix_class is not None:  # (--macros: train the target's mix, while it lacks a unit
             target = getattr(self, "mix_target", None) or {}  # the side can train now)
             if not fast:
@@ -1419,7 +1438,8 @@ class View:
             self.mix_can = lambda u: (k := idx.get((int.from_bytes(u.encode(), "big"), IMMEDIATE))) is not None and bool(avail[k])
             # (a unit no train order makes, a mercenary, a zeppelin: not one it can train; class 0, no order, had
             # read as one: the mix order available with only those lacking, and doing nothing; audit 3)
-            avail[enc.mix_class] = bool(MACROS and any(s > have.get(u, 0.0) and self.mix_can(u) for u, s in target.items()))
+            avail[enc.mix_class] = bool(MACROS and "mix" not in MACROS_OFF
+                                        and any(s > have.get(u, 0.0) and self.mix_can(u) for u, s in target.items()))
         if avail is not None and enc.pickup_class is not None:  # (--macros 2: pick up, while a hero has an item lying
             pickable = _mod("macros").pickable                    # near; the ground items: play.BCAgent.observe)
             self.pickers = pickable(rows, player, getattr(self, "ground", ())) if MACROS >= 2 else []
@@ -1429,7 +1449,7 @@ class View:
         if self.active_f < F_BASE and (not fast or self.active_f > A_LAST):  # (view_step's: zeroed there, unless the
             f[:, self.active_f:F_BASE] = 0.0                                   # last orders' loop above wrote some)
         out = {"n": len(sel), "sel": sel, "n_own": n_own, "ent": f, "type": types, "cur": cur, "glob": g,
-               "first_free": free, "index": {u: k for k, u in enumerate(ids)}, "avail": avail,
+               "first_free": free, "index": dict(zip(ids, range(len(ids)))), "avail": avail,
                "ghost0": getattr(enc, "ghost0", len(sel)) if not self.privileged_act else len(sel)}
         if priv is not None:  # (the privileged view's global flag; its entities beside the player's: "p…")
             flag = enc.G0 + enc.ZD + enc.GX - 1

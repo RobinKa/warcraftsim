@@ -27,7 +27,8 @@ Rows: the learner's evaluation rows ("eval": true, "eval_key"), plus "host", "ve
 in runs/<run>/episodes-remote.jsonl; runs/<run>/remote-worker.json is its status.
 
 --gauntlet: some of its games are the current policy's against the top rated checkpoints, head to head (the
-ratings' "vs" games), played anew under today's rules.
+ratings' "vs" games), played anew under today's rules; the list follows runs/<run>/gauntlet.json as the manager
+changes it (every half hour), without a relaunch.
 
 SIGUSR1 drains it: the games in flight finish (their rows written), no new ones start, then it exits (at most
 DRAIN_MINUTES). A row is written only when its game ends, and losses and ties last 3-5x as long as wins: games
@@ -130,6 +131,7 @@ def run_config(run_dir: Path, host: str, games: int, start_update) -> tuple[dict
            "game_nice": num("game_nice", 10, int), "game_cuts": num("game_cuts", 0, int) or None,
            "features": num("features", fx.F, int), "inputs": num("inputs", 1, int),  # (--inputs, the masks)
            "tech_mask": num("tech_mask", 0, int), "valid_mask": num("valid_mask", 0, int), "neutral": num("neutral", 0, int), "macros": num("macros", 0, int),
+           "macros_off": "" if c.get("macros_off") in (None, "None") else str(c.get("macros_off")),
            "privileged": num("opsd_share", 0.0) > 0 or num("opsd_coef", 0.0) > 0,  # (the networks' channels only)
            "scenarios": [], "scenario_share": 0.0,  # (training games only)
            "eval_ai": [d for d in c.get("eval_ai", "normal,insane").split(",") if d],
@@ -186,6 +188,8 @@ def worker_main(wid: int, cfg: dict, games: int, keys: dict, host: str, q, stop)
     from . import features as fx
     from .selfplay import Inference, Nets, _exit, game_loop
     signal.signal(signal.SIGTERM, _exit)
+    if cfg.get("gauntlet_file"):  # (the gauntlet's processes: its list followed as the manager changes it)
+        threading.Thread(target=_follow_gauntlet, args=(cfg, stop), daemon=True).start()
     fx.ACTIVE_F = cfg["features"]
     fx.set_geometry(*cfg["map_geometry"])
     fx.set_z(cfg.get("z_dim", 0))
@@ -193,6 +197,7 @@ def worker_main(wid: int, cfg: dict, games: int, keys: dict, host: str, q, stop)
     fx.set_masks(cfg.get("tech_mask", 0), cfg.get("valid_mask", 0))
     fx.set_neutral(cfg.get("neutral", 0))
     fx.set_macros(int(cfg.get("macros", 0) or 0))
+    fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     torch.set_num_threads(1)
     sys.setswitchinterval(0.001)  # (a game thread woken by its answer waits for the GIL: 5 ms by default)
     try:
@@ -219,6 +224,21 @@ def worker_main(wid: int, cfg: dict, games: int, keys: dict, host: str, q, stop)
                 th.join(timeout=1)
     finally:
         reaper.reap()
+
+
+def _follow_gauntlet(cfg: dict, stop, every: float = 60.0) -> None:
+    """The gauntlet's checkpoints as the manager's file lists them (runs/<run>/gauntlet.json: the top rated ones, made
+    again every half hour without a relaunch), changed in place: game_loop's threads (and their copies of `cfg`, shallow)
+    read the list at each launch. Only checkpoints already here count (the manager sends them first)."""
+    path = Path(cfg["gauntlet_file"])
+    while not stop.wait(every):
+        try:
+            new = [g for g in json.loads(path.read_text()) if (paths.REPO_ROOT / g).exists()]
+        except (OSError, ValueError, TypeError):
+            continue
+        if new and new != cfg["eval_checkpoints"]:
+            cfg["eval_checkpoints"][:] = new
+            print(f"gauntlet now: {new}", flush=True)
 
 
 def _status(run_dir: Path, **fields) -> None:
@@ -272,6 +292,7 @@ def main(argv: list[str] | None = None) -> int:
     fx.set_masks(cfg["tech_mask"], cfg["valid_mask"])
     fx.set_neutral(cfg["neutral"])
     fx.set_macros(int(cfg.get("macros", 0) or 0))
+    fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     from ..data.duelmap import parse_duel_name
     if parse_duel_name(cfg["map"]) is None:  # (as selfplay.main: another map's frame; set_geometry exports it)
         from ..data.mapbuild import stock_map_path
@@ -299,7 +320,8 @@ def main(argv: list[str] | None = None) -> int:
     split = [games // n_proc + (i < games % n_proc) for i in range(n_proc)]
     specs = [(cfg, n) for n in split]  # each process's settings and games: the run's evaluation, then the gauntlet's
     if g_games:  # (every launch the current policy against one of them, both ways round: game_loop's --eval-vs)
-        cfg_g = {**cfg, "eval_checkpoints": gauntlet, "eval_vs": 1.0, "eval_z": 0, "eval_guide": 0.0}
+        cfg_g = {**cfg, "eval_checkpoints": list(gauntlet), "eval_vs": 1.0, "eval_z": 0, "eval_guide": 0.0,
+                 "gauntlet_file": str(run_dir / "gauntlet.json")}
         n_g = max(1, -(-g_games // 2))
         specs += [(cfg_g, g_games // n_g + (i < g_games % n_g)) for i in range(n_g)]
     n_proc = len(specs)

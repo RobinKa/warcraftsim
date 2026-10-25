@@ -62,11 +62,18 @@ from . import scenarios
 from . import strategy as strat
 from .collect import claim_slot
 from .costs import order_costs
+from . import featnative
+from . import macros
+from . import techtree
 from .featnative import addr as _faddr, lib as _featlib, to_f16
 from .trace import DEAD_FLAG, Production, material, trace_step, unit_values  # noqa: F401
 from .play import unit_rows
 from .model import FullGameNet, act, adapt_config, anchor_kl, arch_key, evaluate, load, trained
 from .teacher import Teacher
+from ..native import unit_from_row
+from .neutral import MERCENARIES as _MERCENARIES
+from ..protocol import Build as _Build, Buy as _Buy, ImmediateOrder as _ImmediateOrder, TargetOrder as _TargetOrder, \
+    rawcode as _rawcode
 from ..rl.league import Member, pfsp_weight
 
 RUNS = Path(__file__).resolve().parents[2] / "runs"
@@ -680,6 +687,7 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
     fx.set_masks(cfg.get("tech_mask", 0), cfg.get("valid_mask", 0))
     fx.set_neutral(cfg.get("neutral", 0))
     fx.set_macros(int(cfg.get("macros", 0) or 0))
+    fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     nets = Nets(cfg, device)
     while nets.current is None and not stop.is_set() and alive():
         time.sleep(1)
@@ -1482,6 +1490,47 @@ SUPPLY_TYPES = {"human": "hhou", "orc": "otrb", "undead": "uzig", "nightelf": "e
 CANCEL = 851976  # a building's queue: its last unit
 
 
+class _Unit(tuple):
+    """A unit as the target builder reads it (protocol.Unit's names and values: id, type_id, owner, x, y, hp, order,
+    flags, type, alive, is_hero, is_structure, is_worker), from a row of the step's table (unit_from_row made a Unit
+    with its flags an enum: ~5x the instructions)."""
+    __slots__ = ()
+    id = property(lambda u: u[0])
+    type_id = property(lambda u: u[1])
+    owner = property(lambda u: u[2])
+    x = property(lambda u: u[3])
+    y = property(lambda u: u[4])
+    hp = property(lambda u: u[5])
+    order = property(lambda u: u[6])
+    flags = property(lambda u: u[7])
+    type = property(lambda u: _rawcode(u[1]))
+    alive = property(lambda u: not u[7] & 1024)
+    is_hero = property(lambda u: bool(u[7] & 1))
+    is_structure = property(lambda u: bool(u[7] & 2))
+    is_worker = property(lambda u: bool(u[7] & 4))
+
+
+def _unit(r: list) -> _Unit:
+    """A row of the step's table (features' columns, as a list) as a _Unit."""
+    return _Unit((r[1], r[2], r[3], r[4], r[5], r[7], r[11], r[12]))
+
+
+_AWAY = 16 | 32  # (UnitFlags.HIDDEN | UnitFlags.LOADED: in a mine, or loaded)
+_REPAIR = 852024  # (play.REPAIR)
+# the builder's columns of its own rows (id, type, owner, x, y, hp, order, flags) and how a row becomes a unit: the step's
+# table (features' columns) or the native one (native.py's)
+_ROW_COLS = (fx.C_ID, fx.C_TYPE, fx.C_OWNER, fx.C_X, fx.C_Y, fx.C_HP, fx.C_ORDER, fx.C_FLAGS, _unit)
+_UA_COLS = (0, 1, 2, 3, 4, 6, 10, 11, unit_from_row)
+_UNIT_COLS = np.array(_ROW_COLS[:8], np.intp)
+
+
+def _units(rows: np.ndarray, c: tuple) -> list:
+    """The builder's units of these rows (`c`: _ROW_COLS, light _Units of their 8 columns; or _UA_COLS, Units)."""
+    if c is _ROW_COLS:
+        return [_Unit(r) for r in rows[:, _UNIT_COLS].tolist()] if len(rows) else []
+    return [unit_from_row(r) for r in rows.tolist()]
+
+
 class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below with the other commands)
     """--z-build: for a side playing toward a target strategy, the harness starts what the agent leaves
     undone: the earliest target item due by now (its time in the strategy) that is neither made nor under
@@ -1521,14 +1570,17 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
 
     def observe(self, obs) -> None:
         """The items the side started, finished or cancelled in the step just taken (its events)."""
-        from .features import rawcode
+        rawcode = fx.rawcode
         now = obs.game_time
         for c in [c for c, t0 in self.started.items() if now - t0 > 240]:  # (lost track: one destroyed unfinished)
             del self.started[c]
         if not obs.events:
             return
-        ua = getattr(obs, "unit_array", None)  # (the native table's columns, not a Unit object per unit: see _mine)
-        owner = dict(zip(ua[:, 0].tolist(), ua[:, 2].tolist())) if ua is not None else {u.id: u.owner for u in obs.units}
+        owner = getattr(obs, "_owners", None)  # (made once per observation: both sides' builders read it)
+        if owner is None:
+            ua = getattr(obs, "unit_array", None)  # (the native table's columns, not a Unit object per unit: see _mine)
+            owner = dict(zip(ua[:, 0].tolist(), ua[:, 2].tolist())) if ua is not None else {u.id: u.owner for u in obs.units}
+            obs._owners = owner
         for e in obs.events:
             k = int(e.kind)
             if owner.get(e.a) != self.side and not (k == 1 and (e.a in self.site or e.a in self.busy)):  # (a dead
@@ -1547,11 +1599,18 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
                     self.started.pop(c, None)
 
     def _own_rows(self, obs):
-        """The side's living units' rows of the native table (native.py's columns), once a step; None without one."""
+        """The side's living units' rows, once a step: of the step's table when commands() was given it (features'
+        columns: features.own_alive's copy, made once a step for the teacher and the modes too), else of the native
+        table (native.py's columns); None without either. self._cols: their columns (_ROW_COLS or _UA_COLS)."""
         if getattr(self, "_rows_of", None) is not obs:
-            ua = getattr(obs, "unit_array", None)
+            rows = getattr(self, "_step_rows", None)
             self._rows_of = obs
-            self._own = ua[(ua[:, 2] == self.side) & ((ua[:, 11] & fx.DEAD) == 0)] if ua is not None else None
+            if rows is not None and rows[1] is obs:
+                self._own, self._cols = fx.own_alive(rows[0], self.side), _ROW_COLS
+            else:
+                ua = getattr(obs, "unit_array", None)
+                self._own = ua[(ua[:, 2] == self.side) & ((ua[:, 11] & fx.DEAD) == 0)] if ua is not None else None
+                self._cols = _UA_COLS
         return self._own
 
     def _mine(self, obs) -> list:
@@ -1563,8 +1622,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             return self._mine_list
         own = self._own_rows(obs)
         if own is not None:
-            from ..native import unit_from_row
-            mine = [unit_from_row(r) for r in own[(own[:, 11] & fx.WORKER) > 0].tolist()]
+            c = self._cols
+            mine = _units(own[(own[:, c[7]] & fx.WORKER) > 0], c)
         else:
             mine = [u for u in obs.units if u.owner == self.side and u.alive]
         self._mine_of, self._mine_list = obs, mine
@@ -1577,9 +1636,9 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             return self._done_list
         own = self._own_rows(obs)
         if own is not None:
-            from ..native import unit_from_row
-            fl = own[:, 11]
-            done = [unit_from_row(r) for r in own[(fl & fx.STRUCTURE > 0) & (fl & fx.CONSTRUCTING == 0)].tolist()]
+            c = self._cols
+            fl = own[:, c[7]]
+            done = _units(own[(fl & fx.STRUCTURE > 0) & (fl & fx.CONSTRUCTING == 0)], c)
         else:
             done = [u for u in self._mine(obs) if u.is_structure and not int(u.flags) & fx.CONSTRUCTING]
         self._done_of, self._done_list = obs, done
@@ -1588,8 +1647,7 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
     def commands(self, obs, made: dict, t: int, step_s: float, ordered=(), rows=None) -> list:
         """`ordered`: the agent's commands this step (the game refuses the same hero or next tier twice: the
         builder's order is then no refusal of its own). `rows`: unit_rows(obs, t), when the caller has them."""
-        from . import techtree
-        from ..protocol import UnitFlags
+        self._step_rows = (rows, obs) if rows is not None else None
         self.observe(obs)
         self.held = None
         self.lumber_short = False  # (a due item short of lumber this step: the teacher's lumber lesson, Teacher.economy)
@@ -1614,9 +1672,16 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             return []
         own = self._own_rows(obs)
         mine = done = None  # (Unit objects: made when an order needs them)
-        if own is not None:  # (the finished buildings' types and a hero from the rows: native.py's columns)
-            fl = own[:, 11]
-            types = {fx.rawcode(c) for c in set(own[(fl & fx.STRUCTURE > 0) & (fl & fx.CONSTRUCTING == 0), 1].tolist())}
+        if own is not None and self._cols is _ROW_COLS and featnative.lib() is not None:  # (featnative.side's, made
+            pk = featnative.side(rows, self.side)  # by View.step for this side's rows: its finished buildings' types,
+            n_built, n_alive, n_dead, n_heroes, n_done = pk[:5]  # its heroes less the dead ones)
+            o = 9 + n_built + n_alive + 3 * n_dead + n_heroes
+            types = {fx.rawcode(c) for c in set(pk[o:o + n_done])}
+            hero = n_heroes > n_dead
+        elif own is not None:  # (the finished buildings' types and a hero from the rows)
+            c = self._cols
+            fl = own[:, c[7]]
+            types = {fx.rawcode(c) for c in set(own[(fl & fx.STRUCTURE > 0) & (fl & fx.CONSTRUCTING == 0), c[1]].tolist())}
             hero = bool((fl & 1).any())
         else:
             mine = self._mine(obs)
@@ -1656,13 +1721,13 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         its cost kept from the agent's other orders (the expand order takes its hall's mask), else None. None while a
         worker is on its way to build it (`own`: the side's rows, native columns; the game took the cost at the
         order, and keeping it again had masked every paid order during the walk; audit 8)."""
-        from .macros import site
+        site = macros.site
         hall = {"human": "htow", "orc": "ogre", "undead": "ugol", "nightelf": "etol"}.get(self.race)
         if not fx.MACROS or hall is None or self.costs is None or not any(c in (hall, "unpl", "etol") for _, c in due):
             return None
-        if own is not None and np.isin(own[:, 10], [int.from_bytes(c.encode(), "big") for c in (hall, "unpl", "etol")]).any():
+        if own is not None and not {int.from_bytes(c.encode(), "big") for c in (hall, "unpl", "etol")}.isdisjoint(
+                own[:, self._cols[6]].tolist()):  # (a worker of its on its way to build one)
             return None
-        from .play import unit_rows
         q = obs.players.get(self.side)
         if q is None:
             return None
@@ -1680,14 +1745,21 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
     def resume(self, obs, t: int):
         """A human's or orc's building left unfinished (its worker taken away: no hit points gained for 20
         steps; the game keeps the frame, so the item stays under way): the nearest free worker resumes it."""
-        from ..protocol import TargetOrder, UnitFlags
-        from .play import REPAIR
+        TargetOrder, REPAIR = _TargetOrder, _REPAIR
         if self.race != "human":  # (an orc frame takes no repair, not even from its builder: tested 2026-10-24; its
             # resume had been taught 140 times a game as orc, an order the game refuses; audit 6)
             return None
-        own = self._own_rows(obs)  # (each frame's id -> its hit points and place; from the rows: native.py's columns)
-        frames = ({i: (hp, x, y) for i, x, y, hp in own[(own[:, 11] & fx.CONSTRUCTING) > 0][:, [0, 3, 4, 6]].tolist()}
-                  if own is not None else {u.id: (u.hp, u.x, u.y) for u in self._mine(obs) if int(u.flags) & fx.CONSTRUCTING})
+        own = self._own_rows(obs)  # (each frame's id -> its hit points and place; from the rows)
+        c = getattr(self, "_cols", _UA_COLS)
+        if own is not None and c is _ROW_COLS and featnative.lib() is not None:  # (featnative.side's rows of its units
+            r = self._step_rows[0]                                              # under construction: View.step's)
+            pk = featnative.side(r, self.side)
+            at = 9 + pk[0] + pk[1] + 3 * pk[2] + pk[3] + pk[4] + pk[6] + pk[7]
+            frames = ({i: (hp, x, y) for i, x, y, hp in r[pk[at:at + pk[8]]][:, [c[0], c[3], c[4], c[5]]].tolist()}
+                      if pk[8] else {})
+        else:
+            frames = ({i: (hp, x, y) for i, x, y, hp in own[(own[:, c[7]] & fx.CONSTRUCTING) > 0][:, [c[0], c[3], c[4], c[5]]].tolist()}
+                      if own is not None else {u.id: (u.hp, u.x, u.y) for u in self._mine(obs) if int(u.flags) & fx.CONSTRUCTING})
         self.frames = {i: (hp, t if hp > self.frames.get(i, (-1, t))[0] else self.frames[i][1])
                        for i, (hp, _, _) in frames.items()}
         tries = self.__dict__.setdefault("resumes", {})  # (each frame at most RESUME_TRIES: a frame the game had removed
@@ -1695,7 +1767,7 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
                    if t - since >= 20 and tries.get(i, 0) < RESUME_TRIES]
         if not stalled:
             return None
-        away = int(UnitFlags.HIDDEN | UnitFlags.LOADED)
+        away = _AWAY
         workers = [u for u in self._mine(obs) if u.is_worker and not u.is_structure
                    and not fx.building(int(u.flags), u.order) and u.order != REPAIR and not int(u.flags) & away]
         if not workers:
@@ -1710,7 +1782,6 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         """The item to start toward `c` now: `c` when the player has what it needs (`have`: techtree.counts_as;
         `types`: its finished buildings, one of which must make `c`), else a missing need's own next step;
         None while every missing need is under way or was tried in the last 20 steps, or none can be made."""
-        from . import techtree
         if c in self.started or t - self.tried.get(c, -99) < 20 or self.refused[c] >= 3:
             return None  # (under way, just tried, or refused three times: tech or a spot the game won't take)
         if c in AT_MINES and types & {h for tiers in techtree.TIERS.values() for h in tiers}:
@@ -1734,16 +1805,21 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         A next tier at a hall training workers: carried out, the workers' queue cancelled first (the game
         takes no upgrade behind them, and a hall trains them back to back); taught, the upgrade alone (the
         hall's decision to learn)."""
-        from . import techtree
-        from ..protocol import Build, Buy, ImmediateOrder
+        Build, Buy, ImmediateOrder = _Build, _Buy, _ImmediateOrder
         code = int.from_bytes(c.encode(), "big")
         if (k := self.cls.get((code, fx.UNIT))) is not None:  # (--neutral: a tavern hero, a mercenary: bought by the
-            from .neutral import MERCENARIES  # worker nearest its building, the tavern or a camp)
+            MERCENARIES = _MERCENARIES  # worker nearest its building, the tavern or a camp)
             if c in MERCENARIES and fx.NEUTRAL == 2:  # (--neutral 2: none to buy)
                 self.why_not = "off"
                 return None
             kind = "nmer" if c in MERCENARIES else "ntav"
-            shops = [u for u in obs.units if u.type == kind and u.alive]
+            rows = getattr(self, "_step_rows", None)
+            if rows is not None and rows[1] is obs:  # (its rows of that type, alive: as obs.units' in the same order)
+                r = rows[0]
+                shops = [_unit(u) for u in r[(r[:, fx.C_TYPE] == int.from_bytes(kind.encode(), "big"))
+                                             & (r[:, fx.C_FLAGS] & fx.DEAD == 0)].tolist()]
+            else:
+                shops = [u for u in obs.units if u.type == kind and u.alive]
             mine = self._mine(obs) if mine is None else mine
             workers = [u for u in mine if u.is_worker and not u.is_structure and not fx.building(int(u.flags), u.order)]
             if not shops or not workers:
@@ -1756,9 +1832,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             w = min(workers, key=lambda u: (u.x - shop.x) ** 2 + (u.y - shop.y) ** 2)
             return [Buy(w.id, shop.id, code)]
         if (k := self.cls.get((code, fx.POINT))) is not None:  # a building: the worker nearest the hall
-            from ..protocol import UnitFlags
             hall = next((u for u in done if u.type_id in HALLS), None)
-            away = int(UnitFlags.HIDDEN | UnitFlags.LOADED)  # (in a mine, or loaded: refused)
+            away = _AWAY  # (in a mine, or loaded: refused)
             mine = self._mine(obs) if mine is None else mine
             workers = [u for u in mine if u.is_worker and not u.is_structure and not fx.building(int(u.flags), u.order)
                        and not int(u.flags) & away]
@@ -1774,7 +1849,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             return [Build(w.id, code, at.x + r * math.cos(a), at.y + r * math.sin(a))]
         if (k := self.cls.get((code, fx.IMMEDIATE))) is not None:  # trained, researched or upgraded to
             makers = set(self.tree.makers.get(c, ()))
-            at = [u for u in done if u.type in makers]  # an idle one, else queued (a barracks training units);
+            ids = {int.from_bytes(m.encode(), "big") for m in makers}  # (by type id: Unit.type made a string a unit)
+            at = [u for u in done if u.type_id in ids]  # an idle one, else queued (a barracks training units);
             queue = self.teach or (not techtree.is_hero(c) and c not in self.upgraded)  # (the game takes
             b = next((u for u in at if u.id not in self.busy), at[0] if at and queue else None)  # neither behind)
             cancel = []
@@ -1806,7 +1882,10 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
     def _affords(self, k: int, p) -> bool:
         if self.costs is None:
             return True
-        g, l, f = (int(v) for v in self.costs[k])
+        rows = self.__dict__.get("_cost_rows")  # (the costs' rows as Python's numbers, once a game)
+        if rows is None:
+            rows = self._cost_rows = self.costs.tolist()
+        g, l, f = rows[k]
         if getattr(self, "first_free", False) and fx.is_hero_code(fx.rawcode(self._order_id(k))):
             g = l = 0  # (the first hero: its food only)
         held = getattr(self, "held", None)  # (another item's money kept: the agent's mask leaves this one the rest)
@@ -1940,6 +2019,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     viol = {s: 0.0 for s in trackers}
     rows_next = None  # (the step's unit rows, made for the trackers: the next step's)
     made = {s: {} for s in zs}  # each item's first game second, of the sides with a strategy
+    made_ver: dict = {}  # (each side's production's key counts when its items were last timed)
     builders = {s: TargetBuilder(cfg, vocab, s, zs[s], random.Random()) for s in zs} if cfg.get("z_build") else {}
     # --scenarios: a share of the training games start in a situation the harness sets up (scenarios.py)
     scenario = (random.choice(cfg["scenarios"]) if train and replay is None and cfg.get("scenarios")
@@ -2057,8 +2137,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                        lambda u, k=fx.IMMEDIATE, av=av, oix=oix: (c := oix.get((int.from_bytes(u.encode(), "big"), k))) is not None
                        and bool(av[c]))
                 b = builders.get(s)  # (the target's next items short of lumber, the side's choppers: the lumber lesson)
-                tc.economy = (bool(b is not None and getattr(b, "lumber_short", False)),
-                              {u for u, r in bots[s].view.assign.items() if r == "lumber"}, bots[s].trees)
+                tc.economy = (bool(b is not None and getattr(b, "lumber_short", False)),  # (the choppers: the view's of
+                              bots[s].view.lumber_now, bots[s].trees)  # this step, View.step's set of them; read only)
                 c = tc.commands(rows, obs.players.get(s), obs.game_time, t, can, getattr(bots[s].view, "pickers", ()))
                 q = obs.players.get(s)
                 if c and q is not None:
@@ -2120,10 +2200,13 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         prod.step(obs)
         for s in zs:  # (what each side with a strategy has made: its items' first times)
             ms = made[s]
-            for code in (*prod.trained[s], *prod.built[s], *prod.research[s]):
-                if code in ms or (code in EXPANSION_ITEMS and not prod.expansions[s]):
-                    continue  # (a hall or a haunted mine: made only as an expansion, not a second one at home)
-                ms[code] = obs.game_time
+            ver = (len(prod.trained[s]), len(prod.built[s]), len(prod.research[s]), bool(prod.expansions[s]))
+            if made_ver.get(s) != ver:  # (their keys are only ever added: the same counts, no new item to time)
+                made_ver[s] = ver
+                for code in (*prod.trained[s], *prod.built[s], *prod.research[s]):
+                    if code in ms or (code in EXPANSION_ITEMS and not prod.expansions[s]):
+                        continue  # (a hall or a haunted mine: made only as an expansion, not a second one at home)
+                    ms[code] = obs.game_time
             if prod.expansions[s]:  # (an expansion made the target's hall whatever it took: undead's targets name a
                 for code in EXPANSION_ITEMS & set(zs[s].get("t") or {}):  # necropolis, the expand order haunts the
                     made[s].setdefault(code, obs.game_time)              # mine; 40 of 123 such games read missed)
@@ -2354,6 +2437,7 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
     fx.set_masks(cfg.get("tech_mask", 0), cfg.get("valid_mask", 0))
     fx.set_neutral(cfg.get("neutral", 0))
     fx.set_macros(int(cfg.get("macros", 0) or 0))
+    fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     if cfg.get("remote"):  # (fullgame/remoteactor.py: the calls and the steps over TCP to the learner's gateway)
         from .remoteactor import NetInference
         out_q = NetInference(cfg["remote"])  # (its request() and the learner's queue's put() both)
@@ -3647,6 +3731,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--scenarios", default="", help="scenarios (scenarios.py: clash, raid, rich; comma-separated) "
                     "a share of the training games start in")
     ap.add_argument("--scenario-share", type=float, default=0.0, help="--scenarios: the share of the training games")
+    ap.add_argument("--macros-off", default="", help="macro orders masked, comma-separated (mix, creep, expand): the "
+                    "policy learns their low-level orders itself, from the lessons and rewards")
     ap.add_argument("--label-norm", choices=("lessons", "units"), default="lessons", help="the teacher's lessons in "
                     "the cloning loss averaged over themselves (lessons: a minibatch with one carries the whole --teach-coef) "
                     "or over the labelled steps' own units, as the builder's labels (units)")
@@ -3984,6 +4070,7 @@ def main(argv: list[str] | None = None) -> int:
     fx.set_masks(args.tech_mask, args.valid_mask)
     fx.set_neutral(args.neutral)
     fx.set_macros(args.macros)
+    fx.set_macros_off(args.macros_off.split(","))
     if args.z_modes > 0:  # (the strategy block with the modes' part: model.load grows older networks')
         fx.set_z(strat.ZDIM + zmodes.MDIM)
     if args.z_mix:  # (and the target army's mix after it)
@@ -4235,7 +4322,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "macros_off": args.macros_off, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "eval_ai": [d for d in args.eval_ai.split(",") if d],

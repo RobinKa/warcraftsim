@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import random
 from collections import Counter
 from functools import lru_cache
@@ -366,12 +367,22 @@ def mix_gap(trained: dict[str, int], strategy: dict, least: int = 5) -> float:
     """--z-mix: how far the army a side trained is from its strategy's (the total variation of the two mixes, 0 to
     1); 0 while it trained fewer than `least` army units or the strategy has no army."""
     n = strategy.get("n") or {}
+    hit = _GAPS.get(id(trained))  # (the last answer for this side's counts while they are as they were: per step it
+    if hit is not None and hit[1] is n and hit[2] == least and hit[0] == trained:  # had been ~1% of an actor's time)
+        return hit[3]
     want = _once("want", n, None, lambda: {c: v for c, v in n.items() if is_army(c) and v > 0}) if n else {}
     have = {c: v for c, v in trained.items() if is_army(c) and v > 0}
     tw, th = sum(want.values()), sum(have.values())
-    if not tw or th < least:
-        return 0.0
-    return 0.5 * sum(abs(have.get(c, 0) / th - want.get(c, 0) / tw) for c in set(want) | set(have))
+    gap = 0.0 if not tw or th < least else \
+        0.5 * sum(abs(have.get(c, 0) / th - want.get(c, 0) / tw) for c in set(want) | set(have))
+    if len(_GAPS) > 64:
+        _GAPS.clear()
+    _GAPS[id(trained)] = (dict(trained), n, least, gap)  # (a copy of the counts: the answer stands while they are equal)
+    return gap
+
+
+_GAPS: dict = {}  # id(a side's trained counts) -> (their copy, the strategy's counts, least, mix_gap's answer)
+_MISSES: dict = {}  # id(a side's made times) -> (their copy, the strategy's times, the items counted, from, to, mismatch)
 
 
 def horizon(strategy: dict) -> float:
@@ -392,8 +403,26 @@ def mismatch(made: dict[str, float], strategy: dict, items: list[str], now: floa
     t = strategy["t"]
     if strategy.get("narrow"):  # (its own items as any strategy's; outside them, heroes and army units only)
         counted = _once("narrow", t, items, lambda: [c for c in items if c in t or restricted(c)])
-        return sum((made.get(c, 1e9) <= now) != (t.get(c, 1e9) <= now) for c in counted)
-    return sum((made.get(c, 1e9) <= now) != (t.get(c, 1e9) <= now) for c in items)
+    else:
+        counted = items
+    # (the answer stands while `made` is as it was and `now` lies between the same two of the times compared: every
+    # step it had been ~2% of an actor's time)
+    hit = _MISSES.get(id(made))
+    if hit is not None and hit[1] is t and hit[2] is counted and hit[3] <= now < hit[4] and hit[0] == made:
+        return hit[5]
+    lo, hi, n = -math.inf, math.inf, 0
+    for c in counted:
+        a, b = made.get(c, 1e9), t.get(c, 1e9)
+        n += (a <= now) != (b <= now)
+        for x in (a, b):
+            if x <= now:
+                lo = x if x > lo else lo
+            elif x < hi:
+                hi = x
+    if len(_MISSES) > 64:
+        _MISSES.clear()
+    _MISSES[id(made)] = (dict(made), t, counted, lo, hi, n)
+    return n
 
 
 def sample(pool: dict, race: str, opp: str, rng: random.Random, winners: bool = True, src: str = "") -> dict | None:

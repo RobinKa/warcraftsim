@@ -126,7 +126,8 @@ def test_remote_eval_manager_follows_the_run(tmp_path, monkeypatch):
         def rsync(self, files, timeout=900):
             return True
     a = type("A", (), dict(host="h", name="h", run=None, games=4, processes=0, remote_dir="warcraftsim", every=60.0,
-                           push_every=240.0, keep=3, grace=10.0, nice=10, gauntlet_games=0, gauntlet_size=5))()
+                           push_every=240.0, keep=3, grace=10.0, nice=10, gauntlet_games=0, gauntlet_size=5,
+                           gauntlet_every=1800.0))()
     m = rm.Manager(a)
     m.h = Host()
     monkeypatch.setattr(m, "state", lambda: None if there["away"] else
@@ -183,3 +184,21 @@ def test_run_config_has_what_the_games_read(tmp_path):
     data["config"]["z_build"] = "2"  # (the builder a teacher only: a number, not a flag)
     (run / "run.json").write_text(json.dumps(data))
     assert evalworker.run_config(run, "laptop", 2, 0)[0]["z_build"] == 2
+
+
+def test_gauntlet_list_followed_in_place(tmp_path):
+    """The gauntlet's processes follow the manager's list file: the list changed in place (game_loop's threads and
+    their shallow copies of cfg read it at each launch), only paths that exist here, without a relaunch."""
+    import threading
+    import time
+    f = tmp_path / "gauntlet.json"
+    cfg = {"eval_checkpoints": ["README.md"], "gauntlet_file": str(f)}
+    copy = {**cfg}  # (game_loop's per-thread copy for the evaluation map)
+    f.write_text(json.dumps(["pyproject.toml", "no/such.pt"]))
+    stop = threading.Event()
+    t = threading.Thread(target=evalworker._follow_gauntlet, args=(cfg, stop, 0.01), daemon=True)
+    t.start()
+    time.sleep(0.2)
+    stop.set()
+    t.join(1)
+    assert cfg["eval_checkpoints"] == ["pyproject.toml"] and copy["eval_checkpoints"] is cfg["eval_checkpoints"]

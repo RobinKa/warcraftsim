@@ -146,10 +146,19 @@ def army(c: str) -> bool:
     return c[:1].islower() and c not in WORKERS
 
 
+_MAKERS: tuple = (None, None)  # (the tech tree and _makers' table of it: made once, per mix order it had cost ~400k
+# instructions; read only)
+
+
 def _makers() -> dict[str, tuple[str, ...]]:
+    global _MAKERS
     from .techtree import tree
-    return {u: ms for u, ms in tree().makers.items() if army(u) and all(m[:1].islower() for m in ms)
-            and not any(u in ups for ups in tree().upgrades.values())}
+    t = tree()
+    got = _MAKERS
+    if got[0] is not t:
+        got = _MAKERS = (t, {u: ms for u, ms in t.makers.items() if army(u) and all(m[:1].islower() for m in ms)
+                             and not any(u in ups for ups in t.upgrades.values())})
+    return got[1]
 
 
 def mix_choice(target: dict[str, float], have: dict[str, float], building: str, can) -> str | None:
@@ -178,10 +187,10 @@ def pickable(rows: np.ndarray, player: int, ground) -> list[int]:
     return out
 
 
-def _native(rows: np.ndarray, start: tuple[float, float]) -> list | None:
+def _native(rows: np.ndarray, start: tuple[float, float], fresh: bool = False) -> list | None:
     """featnative.natural for these rows and start (the natural's row, id, x, y, taken, its camp), or None: the numpy
-    code (no library, or two mines as near)."""
-    return _fn().natural(rows, start, MINE_CODES, HOLD_CODES, NATURAL_FROM_START, TAKEN_NEAR, CAMP_NEAR)
+    code (no library, or two mines as near). `fresh`: not the answer kept for the same rows (featnative.natural)."""
+    return _fn().natural(rows, start, MINE_CODES, HOLD_CODES, NATURAL_FROM_START, TAKEN_NEAR, CAMP_NEAR, fresh)
 
 
 _FN: list = []
@@ -211,9 +220,9 @@ def natural(rows: np.ndarray, start: tuple[float, float] | None):
     return mines[far[0]] if len(far) else None
 
 
-def camp(rows: np.ndarray, start: tuple[float, float] | None) -> tuple[float, float] | None:
+def camp(rows: np.ndarray, start: tuple[float, float] | None, fresh: bool = False) -> tuple[float, float] | None:
     """The natural's mine (x, y) while its camp stands and nobody holds the natural (creep: where to go), or None."""
-    got = _native(rows, start) if start is not None else None
+    got = _native(rows, start, fresh) if start is not None else None
     if got is not None:
         return (float(got[2]), float(got[3])) if got[0] >= 0 and not got[4] and got[5] else None
     nat = natural(rows, start)
@@ -228,13 +237,13 @@ def camp(rows: np.ndarray, start: tuple[float, float] | None) -> tuple[float, fl
     return mx, my
 
 
-def site(rows: np.ndarray, start: tuple[float, float] | None) -> tuple[int, float, float, float, float] | None:
+def site(rows: np.ndarray, start: tuple[float, float] | None, fresh: bool = False) -> tuple[int, float, float, float, float] | None:
     """The player's natural expansion if it is free (rows: the step's units, start: its start location): (its mine's
     id, the mine's x and y, the hall's x and y), or None (no natural, taken, or its camp stands)."""
     if start is None:
         return None
     sx, sy = start
-    got = _native(rows, start)
+    got = _native(rows, start, fresh)
     if got is not None:  # (in C: the same mine, the same tests)
         if got[0] < 0 or got[4] or got[5]:
             return None
