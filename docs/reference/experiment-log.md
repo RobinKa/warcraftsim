@@ -1653,6 +1653,36 @@ Real game behaviour, not bugs:
 * The night elf lumber hoard grew from 960 to ~3,200 held on average since `fgself-139`.
 * Heroes cast ~0.5 spells a hero-minute (0.9-2.0 in `fgself-120`-`125`).
 
+**`fgself-145`** (from `fgself-144`'s last, 16264963, 2026-10-25 09:28, after a reboot): **audits 8 and 9's fixes**:
+* no money held for an expand on its way;
+* one building of a kind a step, one-of buildings once;
+* deaths counted after the unit is gone;
+* tavern hires keep their money;
+* research-gated orders masked;
+* cancelled frames gone from the unit table.
+
+Otherwise `fgself-144`. Head to head with its start and `fgself-130`.
+
+Fixed since, for the next run:
+* the policy's cancels of its own frames are not sent;
+* the builder:
+  * its resume is capped at 3 tries a frame;
+  * an item after a reserved one is labelled only when affordable net of the reserve;
+  * supply first by the next item's food;
+* a step's money is spent order by order (a running budget net of the kept reserves);
+* revivals are not offered again for 120 s;
+* orders to full queues (7) are not sent;
+* the tavern lesson also fires once an altar hero came first.
+
+**People's targets timed by their items' build times** (a separate experiment). People's replays give an order's click, and the pools put every item 45 s after it (CLICK_LAG). A keep takes 140 s, so in the real-game evaluation pool tier items came due ~95 s before the player had them, and units ~25 s late. `strategy.py` now adds each item's own build time (UnitBalance bldtm, UpgradeData timebase; a building's walk 5 s). Both recipes were reproduced exactly with `--click-lag fixed` before rebuilding. The new pools are `strategies-echofast-narrow-tavern-bt.json` and `strategies-echo-real-narrow-tavern-bt.json`. Median due times of people's targets:
+
+| item | real-game pool, old | real-game pool, new | `echofast` pool, old | `echofast` pool, new |
+|---|---|---|---|---|
+| keep | 279 s | 374 s | 298 s | 339 s |
+| footman | 125 s | 100 s | 89 s | 69 s |
+
+Still open: the units passes reporting units gone without dying (wisps an ancient takes), War Stomp, Hex, Banish, Far Sight and Scout in the vocabulary, later research levels' costs.
+
 **Skill ratings** (the user's idea, the dashboard's Ratings view): a Bradley-Terry fit on the Elo scale over every evaluation game in the real game, the insane AI at 1500. At 22:45: `fgself-106`'s last checkpoint 2128 ± 24, `fgself-102`'s 11841833 1977 ± 8, `fgself-100`'s best 1956 ± 9.
 
 **Queued (2026-10-19, the user's idea): GRPO.** The game is deterministic (lockstep multiplayer needs it), so a group of games can start from one state and differ only by the policy's sampled actions; each game's advantage is its return against the group's mean (and spread), with no value function (DeepSeek's GRPO). Plan: (1) check determinism: the harness has no seed control yet; the map script would call `SetRandomSeed` at start, and two games with one seed and the same orders (none, or a replayed order log) must give identical unit rows step for step, the built-in AI included. (2) The main design (agreed with the user): branch mid-game. A game from one start gives little credit for any decision (a whole game's result over hundreds of them), so: play a game, pick a state at step t (e.g. 2-8 game minutes, near a decision that matters: a tier, an attack), replay the same seed and orders to t in G (~8) games side by side, then let each continue with its own sampled actions; each continuation's advantage is its return against the group's mean and spread, the policy loss on the steps after t, the KL to the anchor kept, beside the usual GAE games. Replaying to t is cheap on `echofast` (a game runs ~13x real time). If replays drift (the built-in AI's threads), the fallback is the game's own save and load (`SaveGame` / `LoadGame` in single player; whether the AI scripts survive a load must be checked). (3) Only if branching fails: groups from one start (races, seed, target, opponent). Compare to the current recipe at equal steps. **The determinism check (2026-10-19, engine notes):** with a seed (`GameSetup.seed`, new), games between agents with the same orders are identical step for step; games with the built-in AI are not (they differ after 13-18 s). So GRPO branches come from self-play games (against past snapshots and itself); with a seed each player now also starts at its own start location (4 of 4 seeded games identical for 300 steps). Left to build: the branch scheduler (replay a game's orders to step t in G games, then sample) and the group-relative policy loss.
