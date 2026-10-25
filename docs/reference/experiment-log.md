@@ -1721,7 +1721,7 @@ Fixed since, for the next run:
 
 **`fgself-147`** (from `fgself-145`'s 13576303 and its league, 12:17, build/shim rebuilt): audit 9's follow-ups and audit 10's fixes. Head to head with `fgself-145`'s 13576303 and `fgself-130`.
 
-**`fgself-147`, judged at 14:05: level head to head, better with targets:**
+**`fgself-147`, judged at 13:50: level head to head, better with targets:**
 * 52.2% of 247 head to head with its start (by thirds 54%, 59%, 47%), 44.4% of 270 with `fgself-130`.
 * Against insane 98% (its start 95%), **with a target 67% of 294** (`fgself-145`: 58%).
 * Rated 2016 ± 35 and 1989 ± 48 (h0, h1) to its start's 1982 ± 29; with a target 1639 and 1623 to `fgself-145`'s 1575 and 1543.
@@ -1747,7 +1747,7 @@ Fixed since, for the next run:
   * a builder label over a lesson keeps the lesson's weight;
   * the AI record's ties.
 
-**`fgself-148`** (from `fgself-147`'s 11480163, 14:07): audit 11's fixes. Head to head with its start and `fgself-130`.
+**`fgself-148`** (from `fgself-147`'s 11480163, 13:52): audit 11's fixes. Head to head with its start and `fgself-130`.
 
 The queue:
 1. `fgself-149`: `--label-norm units` (lessons no longer drown out PPO).
