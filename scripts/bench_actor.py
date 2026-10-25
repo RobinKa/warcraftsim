@@ -304,7 +304,9 @@ def functions(rec: dict, cfg: dict, vocab: dict, names: list[str]) -> None:
             "warcraftsim.native" if mod == "native" else f"warcraftsim.fullgame.{mod}")
         *path, last = attr.split(".")
         for x in path:
-            owner = getattr(owner, x)
+            owner = getattr(owner, x, None)
+        if owner is None or not hasattr(owner, last):  # (not in this tree: --root's older code)
+            continue
         f, t = getattr(owner, last), tot.setdefault(name, [0, 0])
         static = isinstance(getattr(owner, "__dict__", {}).get(last), staticmethod)
 
