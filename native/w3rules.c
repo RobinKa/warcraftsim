@@ -4,8 +4,8 @@
  * step's ~100-400 rows: the two had cost ~700k instructions a side-step of an actor's ~2.5M).
  *
  * Each function takes one int64 array (a ctypes argument had cost ~1,600 instructions): its head (rulesnative.py's
- * A_* slots) the rows' address and shape, the caller's constants and the addresses of its tables and doubles; the
- * output after the head (HEAD on).
+ * A_* slots) the address of the rows' descriptor (their address, rows and columns), the caller's constants and the
+ * addresses of its tables and doubles; the output after the head (HEAD on).
  *
  * Rows: int64 [n][ncols], the unit columns of features.py. Distances in double as the numpy code computes them:
  * hypot of the differences (numpy's np.hypot is libm's), squared distances as dx * dx + dy * dy (gcc -O2 for
@@ -146,6 +146,7 @@ int w3r_teach(int64_t *a) {
     memmove(seg + at, counts, sizeof(int64_t) * nmix); at += nmix;
     return TH + at;
 }
+
 /* Teacher._expansion's facts of the side (the type classes; doubles: its start sx, sy, from_start, taken_near,
  * worker_near, camp_near; A_X0: the natural's row when the caller has chosen it, else -1): the natural (the living
  * gold mine nearest the start but farther than from_start), and around it (mx, my): out[0] 1, or -1 no natural, or

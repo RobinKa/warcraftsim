@@ -292,8 +292,8 @@ class Teacher:
         sx, sy = getattr(player, "start_x", None), getattr(player, "start_y", None)
         if sx is None:
             return []
-        # (the natural and around it: in C, rulesnative.expansion; _expansion_facts the numpy's, also when two mines or
-        # picked workers are as near: argsort's order of equals)
+        # (the natural and around it: in C, rulesnative.expansion; _expansion_facts the numpy's, also when picked
+        # workers are as near: argsort's order of equals)
         cls = _CLS[0] if _CLS else _classes()
         e = rulesnative.expansion(self, rows, self.side, sx, sy, cls, NATURAL_FROM_START, 1000.0, 900.0, CAMP_NEAR)
         if e is not None and e[0] == -2 and e[1] >= 0:  # (two mines as near its start: numpy's argsort chooses)
@@ -408,8 +408,8 @@ def _mix_codes(mix: dict) -> tuple:
 
 
 def _expansion_facts(rows: np.ndarray, alive: np.ndarray, sx, sy) -> list:
-    """rulesnative.expansion's facts by numpy (without the library, or when two mines or picked workers are as near:
-    argsort's order): the natural, around it the side's workers, holds, own mines and creeps, its army and heroes."""
+    """rulesnative.expansion's facts by numpy (without the library, or when picked workers are as near: argsort's
+    order): the natural, around it the side's workers, holds, own mines and creeps, its army and heroes."""
     mines = rows[fx.isin(rows[:, fx.C_TYPE], MINE_CODES) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0)]
     if not len(mines):
         return [-1]

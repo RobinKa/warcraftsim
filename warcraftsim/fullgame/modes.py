@@ -39,6 +39,10 @@ PARAMS = {"no_rush": ((240.0, 600.0), HORIZON), "rush": ((180.0, 360.0), HORIZON
           "low_upkeep": ((0.0, 0.0), 1.0)}
 RUSH_UNITS = 4  # rush: this many army units at once
 DECIDED_AT = {"workers": 480.0, "creep": 420.0, "harass": 600.0, "army": 600.0}  # (the second each is decided at)
+# (the measures each kind reads while undecided: Tracker.step's need bits; no_rush's until its second, no_expand's
+# until HORIZON)
+NEEDS = {"no_rush": 64, "rush": 64, "expand": 1, "no_expand": 1, "workers": 16, "creep": 32, "harass": 2, "scout": 8,
+         "army": 4, "low_upkeep": 0}
 INTEGER = {"workers", "creep", "harass", "army"}
 # unit flags (protocol.UnitFlags) and row columns (features)
 HERO, STRUCTURE, WORKER, DEAD = 1, 2, 4, 1024
@@ -50,6 +54,7 @@ HALLS = {int.from_bytes(c.encode(), "big") for c in
          ("htow", "hkee", "hcas", "ogre", "ostr", "ofrt", "unpl", "unp1", "unp2", "etol", "etoa", "etoe")}
 DEATH = 1
 MH = rulesnative.MH  # (rulesnative.modes' head)
+_NOTHING = [0] * MH  # (no measure asked)
 _MINES_TABLE = rulesnative.table(dict.fromkeys(GOLD_MINE_CODES.tolist(), 1))
 _FOOD_TABLE: tuple = (None,) * 5 + (None, -1)  # (the trackers' food table: the C's arrays, the dict, its length)
 
@@ -101,16 +106,26 @@ class Tracker:
         -> the sum of the violations so far."""
         dt, self.t = max(0.0, now - self.t), now
         s, m, done = self.side, self.modes, self.done
-        # (the side's measures: in C, rulesnative.modes, numpy's calls had cost ~250k instructions a step; _measure_np
-        # the numpy's. need: 1 the halls, 2 the units seen, 4 the army's food, (numpy's only) 8 scouted, 16 the
-        # workers, 32 the heroes' level, each while a mode not yet decided asks for it)
-        need = ((1 if ("expand" in m and "expand" not in done) or ("no_expand" in m and "no_expand" not in done) else 0)
-                | (2 if "harass" in m else 0) | (4 if "army" in m and "army" not in done else 0))
-        got = rulesnative.modes(self, rows, need, self._constants)
-        if got is None:
-            got = self._measure_np(rows, need | (8 if "scout" in m and "scout" not in done else 0)
-                                   | (16 if "workers" in m and "workers" not in done else 0)
-                                   | (32 if "creep" in m and "creep" not in done else 0))
+        # (the side's measures the modes below read: in C, rulesnative.modes, numpy's calls had cost ~250k instructions
+        # a step; _measure_np the numpy's; none once every mode is decided or past its time (no harass)). need: 1 the
+        # halls, 2 the units seen, 4 the army's food, 8 scouted, 16 the workers, 32 the heroes' level, 64 near (the C
+        # measures all but 1, 2 and 4 anyway)
+        c = self.__dict__.get("_needs")
+        if c is None or c[0] != len(done):  # (made again when a mode is decided: `done` only grows)
+            base, until = 2 if "harass" in m else 0, []
+            for k, x in m.items():
+                if k not in done:
+                    if k == "no_rush" or k == "no_expand":
+                        until.append((x if k == "no_rush" else HORIZON, NEEDS[k]))
+                    else:
+                        base |= NEEDS.get(k, 0)
+            c = self._needs = (len(done), base, until)
+        need = c[1]
+        for t, bits in c[2]:
+            if now <= t:
+                need |= bits
+        got = (rulesnative.modes(self, rows, need, self._constants) or self._measure_np(rows, need) if need
+               else _NOTHING)
         near, scouted, workers, level, food, halls, ne, no = got[:MH]
         if "harass" in m:  # (the enemy's workers and its own units as seen so far: a dead unit is mostly gone from the
             self.enemy_seen.update(got[MH:MH + ne])  # step that reports its death: ~half the kills missed; audit 8)
@@ -164,15 +179,16 @@ class Tracker:
 
     def _measure_np(self, rows: np.ndarray, need: int) -> list:
         """rulesnative.modes' measures by numpy (the path without the library): [near, scouted, workers, the heroes'
-        highest level, the army's food, halls, the enemy's workers seen, its own units] and those ids; each of
-        scouted, workers, level, food and halls only when `need` asks for it (0 else)."""
+        highest level, the army's food, halls, the enemy's workers seen, its own units] and those ids; each only when
+        `need` asks for it (0 else)."""
         s = self.side
         mine = own_alive(rows, s)
         fl = mine[:, C_FLAGS]
         army = mine[(fl & (STRUCTURE | WORKER) == 0)]
-        d2 = (army[:, C_X] - self.enemy[0]) ** 2 + (army[:, C_Y] - self.enemy[1]) ** 2
-        near = int((d2 < NEAR * NEAR).sum())
-        scouted = workers = level = food = halls = 0
+        near = scouted = workers = level = food = halls = 0
+        if need & 64:
+            d2 = (army[:, C_X] - self.enemy[0]) ** 2 + (army[:, C_Y] - self.enemy[1]) ** 2
+            near = int((d2 < NEAR * NEAR).sum())
         if need & 8:
             all_d2 = (mine[:, C_X] - self.enemy[0]) ** 2 + (mine[:, C_Y] - self.enemy[1]) ** 2
             scouted = int(bool((all_d2 < SCOUT_NEAR * SCOUT_NEAR).any()))
