@@ -1754,11 +1754,13 @@ Fixed since, for the next run:
 * Against insane 91%, with a target 56%.
 * The ratings place it level with its start under the same code. `fgself-147`'s last checkpoint, evaluated with audit 11's agent code, rated 1888, against 1992-2018 as `fgself-147`'s policy under its own. `fgself-148` rated 1883-1901.
 * The drop is the human's: 52 of 72 won against insane, from 62 of 64. It came with half the peasants (4 against 8), half the lumber, a keep in 17% of games (48%) and an altar in 81% (97%).
-* `fgself-130`'s human did not drop under the same code (66 of 70): the changes cost this lineage's human style, not human play in general.
-* The harness and the shim were the same in both runs; the cause is among audit 11's agent changes (cancels only with a queue, no orders at frames, the repair gate, queued research, research levels). Not pinned down.
+* `fgself-130`'s human did not drop under the same code (66 of 70).
+* **Corrected at 17:40:** not the code. `fgself-148`'s last checkpoint won 73 of 76 human games in `fgself-149`'s evaluation, whose agent code is the same (the commits between them touch the evaluation worker's gauntlet only), and the laptop's step times were alike in both windows (38-45 ms a step). The human dip in `fgself-148`'s window has no cause found; it did not reproduce.
 * Kept as the base: it is level with its start under equal conditions.
 
 **`fgself-149`** (from `fgself-148`'s 11692643, 15:28): **`--label-norm units`**, the teacher's lessons weighed as the builder's labels. Right away, the gradient norm is 0.23 (`fgself-147`'s median 1.27, 61% clipped at 1.0), `loss/opd` 0.06 (~0.94) and `loss/teach` 0.003. Head to head with its start and `fgself-130`.
+
+**The gauntlet's games count for the hourly players they stand for** (17:40, the user saw `fgself-102 h2` still first and greyed): a run's policy by the hour has no file, so the gauntlet plays that run's checkpoint from the hour. Its games had made a player of their own ("`fgself-102/11882922 +shops`"). Now the manager writes the link (runs/.gauntlet-aliases.json) and the ratings count those games for the hourly player: `fgself-102 h2` went from 2148 to 2101 with 185 games, played today; `fgself-149` h0-h2 and `fgself-148`'s last checkpoint lead at ~2105.
 
 **The gauntlet (from `fgself-149`; the user's idea).** 4 of the laptop's 20 games play the current policy against the top 5 of the ratings (every game alike, no decay; a run's policy by the hour as that run's checkpoint from the hour): `fgself-102`'s 11882922, `fgself-100`'s 15294056, `fgself-109`'s 4991346, `fgself-108`'s 2302196, `fgself-106`'s 3453342. Ratings from old games, under older rules and against weaker opponents, had topped the table; these games rate them again under today's rules.
 

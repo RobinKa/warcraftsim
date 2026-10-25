@@ -179,6 +179,11 @@ def gauntlet(info: dict, run: str, size: int) -> list[str]:
         return []
     out: list[str] = []
     skip = set(eval_checkpoints(info))
+    try:
+        aliases = json.loads((RUNS / ".gauntlet-aliases.json").read_text())
+    except (OSError, ValueError):
+        aliases = {}
+    known = dict(aliases)
     for p in players:  # (by rating, highest first)
         name, kind = p.get("name", ""), p.get("kind")
         path = None
@@ -188,6 +193,8 @@ def gauntlet(info: dict, run: str, size: int) -> list[str]:
         elif kind == "current" and (m := re.fullmatch(r"([\w.-]+) h(\d+)", name)):
             r_ = m.group(1)
             path = hour_checkpoint(r_, int(m.group(2)))
+            if path is not None:  # (its games count for the hourly player in the ratings: dashboard/ratings.ALIASES)
+                aliases[f"{r_}/{int(Path(path).stem)}"] = name
         else:
             continue
         if path is None or r_ == run or path in skip or path in out or not (ROOT / path).exists():
@@ -195,6 +202,8 @@ def gauntlet(info: dict, run: str, size: int) -> list[str]:
         out.append(path)
         if len(out) >= size:
             break
+    if aliases != known:  # (kept for good: the ratings read every game again when they change)
+        (RUNS / ".gauntlet-aliases.json").write_text(json.dumps(aliases, indent=1))
     return out
 
 
