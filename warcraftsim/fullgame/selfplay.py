@@ -1151,7 +1151,15 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                 races[1 - side] = races[side]
         ai = _choose(rng, spec["launch"])  # {"kind": "agents"} or {"kind": "ai", "difficulty"[, "delay"]}
         versus = None  # (--eval-vs: an evaluation launch of the current policy against a listed checkpoint)
-        if mirrored or (evaluating and cfg.get("eval_vs", 0.0) > 0 and cfg.get("eval_checkpoints")
+        # --heuristic-share / --eval-heuristic: the learner against the hand-written player (fullgame/heuristic.py),
+        # its side in --heuristic-race; a training launch between agents, or an evaluation launch (eval_key "vs heuristic")
+        heur = (not evaluating and ai["kind"] == "agents" and cfg.get("heuristic_share", 0.0) > 0
+                and rng.random() < cfg["heuristic_share"]) or (  # (no draw at 0: the runs' other draws as before)
+            evaluating and not mirrored and cfg.get("eval_heuristic", 0.0) > 0 and rng.random() < cfg["eval_heuristic"])
+        if heur:
+            ai = {"kind": "agents"}
+            races[1 - side] = cfg.get("heuristic_race") or "orc"
+        elif mirrored or (evaluating and cfg.get("eval_vs", 0.0) > 0 and cfg.get("eval_checkpoints")
                         and rng.random() < cfg["eval_vs"]):
             # each matchup both ways round (the current policy with either race; drawn alone, the races decided:
             # 0 of 19 as human against the checkpoint's orc read as a weaker policy)
@@ -1190,7 +1198,7 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                 slots[side] = Agent(races[side], handicap=int(ai.get("handicap", cfg["handicap"])), difficulty=adv)
         agents_only = ai["kind"] != "ai"
         # GRPO's sources: games between agents with a seed (the built-in AI's games do not replay)
-        seeded = agents_only and not evaluating and cfg.get("grpo_share", 0.0) > 0
+        seeded = agents_only and not evaluating and cfg.get("grpo_share", 0.0) > 0 and not heur
         # a restart goes on to the next pair of players (--pairs), or reloads the map (1 s).
         # (--scripted-reset: games without the built-in AI reset by script for the same players instead,
         # 0.1 s, but not to a new game: see GameSetup.melee_reset)
@@ -1217,11 +1225,14 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                     except (FileNotFoundError, json.JSONDecodeError):
                         pass
                     opp = ({"name": f"script:ai-{ai['difficulty']}" + (" (real)" if real else ""), "kind": "ai"}
-                           if ai["kind"] == "ai" else {"name": "exploiter", "kind": "exploiter"} if ai["kind"] == "exploit"
+                           if ai["kind"] == "ai" else
+                           {"name": f"heuristic:{races[1 - side]}", "kind": "heuristic",
+                            **({"eval_tag": f"vs heuristic:{races[1 - side]}"} if evaluating else {})} if heur
+                           else {"name": "exploiter", "kind": "exploiter"} if ai["kind"] == "exploit"
                            else {"name": f"eval-vs:{versus}", "kind": "past", "path": versus,
                                  "eval_tag": "vs " + "/".join(Path(versus).parts[-3::2])} if versus
                            else dict(_choose(rng, spec["agents"])))
-                    if agents_only and not versus:  # races apart: the stronger one's income taxed (League.balance)
+                    if agents_only and not versus and not heur:  # races apart: the stronger one's income taxed (League.balance)
                         taxed, share = balance_tax(spec, races)
                         if cfg.get("win_balance"):  # (the model's cap: the races' balance until it is fitted)
                             share = min(share, cfg.get("win_balance", 0.0))
@@ -1231,7 +1242,7 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                             opp["win_balance"] = spec["win_balance"]  # is expected to win, play_one)
                     # on-policy distillation: the built-in AI advises the learner (never in the real game)
                     opp["advise"] = not real and rng.random() < cfg.get("opd_share", 0.0)
-                    if evaluating and not versus and eval_key != "current":
+                    if evaluating and not versus and not heur and eval_key != "current":
                         opp["eval_key"] = eval_key
                     if "shaping" in spec:  # (--shaping-anneal: the weight now, the game's for its whole length)
                         opp["shaping"] = spec["shaping"]
@@ -3601,6 +3612,15 @@ def main(argv: list[str] | None = None) -> int:
                     "games with a target strategy (eval_key current+z: the same weights, paired on the same matchups)")
     ap.add_argument("--z-src", default="", choices=["", "human", "ai"], help="draw only the strategies of people's "
                     "replays (human) or of the built-in AI's games (ai); default: both")
+    ap.add_argument("--heuristic-share", type=float, default=0.0,
+                    help="this share of the training launches between agents play the learner against the hand-written "
+                         "player (fullgame/heuristic.py, the user's idea: a scripted opponent stronger than the learner); "
+                         "its side plays --heuristic-race and makes no trajectory")
+    ap.add_argument("--eval-heuristic", type=float, default=0.0,
+                    help="this share of the evaluation launches play the current policy against the hand-written player "
+                         "(eval_key 'vs heuristic:<race>': a yardstick that does not move)")
+    ap.add_argument("--heuristic-race", default="orc", choices=["human", "orc", "undead", "nightelf"],
+                    help="the hand-written player's race (orc is the one tuned: 2026-10-25)")
     ap.add_argument("--exploiter-share", type=float, default=0.0,
                     help="AlphaStar's main exploiter: this share of launches are games between the learner and a "
                          "second network that trains only against it (League; 0: none)")
@@ -4090,6 +4110,7 @@ def main(argv: list[str] | None = None) -> int:
            "grpo_share": args.grpo_share, "grpo_group": args.grpo_group, "grpo_coef": args.grpo_coef,
            "grpo_seeds": args.grpo_seeds, "grpo_branch": [float(x) for x in args.grpo_branch.split("-")],
            "eval_map": args.eval_map, "eval_z_pool": str(args.eval_z_pool) if args.eval_z_pool else "", "eval_vs": args.eval_vs,
+           "heuristic_share": args.heuristic_share, "eval_heuristic": args.eval_heuristic, "heuristic_race": args.heuristic_race,
            "eval_guide": args.eval_guide,
            "eval_costs": order_costs(vocab, args.eval_map).tolist() if args.eval_map and args.avail_mask else None,
            "order_names": vocab.get("order_names") or {str(k): v for k, v in fx.demo_order_names(args.runs).items()}}

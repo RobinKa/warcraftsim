@@ -181,6 +181,8 @@ OPTIONS = {
     "hero_behind": 1,  # the hero follows behind the army's centre instead of walking in first
     "sticky": 1,  # a unit keeps its target while it is in reach and not dying already
     "pull": 0,  # hurt melee units step back while hit
+    "focus": 1,  # each unit in a fight attacks the weakest enemy in reach (0: they attack-move, the game picks)
+    "spells": 1,  # heroes cast their spells
 }
 
 
@@ -360,6 +362,11 @@ class HeuristicAgent:
         self.plan = plan or PLANS[race]
         self.rng = rng or random.Random()
         self.map_name = map_name
+        try:  # (the map's rules: echofast's costs are halved, the training games' map)
+            from ..data.duelmap import map_rules
+            self.cost_scale = float(map_rules(map_name).cost)
+        except Exception:  # noqa: BLE001
+            self.cost_scale = 1.0
         self.step_s = step_seconds
         self.logging = log
         self.log: list[dict] = []
@@ -578,7 +585,9 @@ class HeuristicAgent:
 
     # ---- money ------------------------------------------------------------------------------------------------
     def _pay(self, gold: int, lumber: int) -> bool:
-        if gold > self.budget[0] or lumber > self.budget[1]:
+        """Pays from the step's budget if it can (only the resources the order needs are checked: money kept for a
+        building short of lumber had made the lumber budget negative and refused every grunt, which costs none)."""
+        if (gold > 0 and gold > self.budget[0]) or (lumber > 0 and lumber > self.budget[1]):
             return False
         self.budget[0] -= gold
         self.budget[1] -= lumber
@@ -590,16 +599,23 @@ class HeuristicAgent:
         self.budget[1] -= lumber
 
     def _cost(self, code: str, level: int = 0) -> tuple[int, int]:
+        """What `code` costs (gold, lumber) under the map's rules (costs.order_costs' scaling)."""
         if code[:1] == "R":
             g, l, gm, lm = research_costs().get(code, (100, 50, 0, 0))
-            return g + gm * level, l + lm * level
-        d = unit_data().get(code)
-        if d is None:
-            return 0, 0
-        base = upgraded_from().get(code)
-        if base and base in unit_data():
-            return d[1] - unit_data()[base][1], d[2] - unit_data()[base][2]
-        return d[1], d[2]
+            g, l = g + gm * level, l + lm * level
+        else:
+            d = unit_data().get(code)
+            if d is None:
+                return 0, 0
+            base = upgraded_from().get(code)
+            if base and base in unit_data():
+                b = unit_data()[base]
+                return self._scaled(d[1]) - self._scaled(b[1]), self._scaled(d[2]) - self._scaled(b[2])
+            g, l = d[1], d[2]
+        return self._scaled(g), self._scaled(l)
+
+    def _scaled(self, v: int) -> int:
+        return v if self.cost_scale == 1.0 or v <= 0 else max(1, round(v * self.cost_scale))
 
     def _food(self, code: str) -> int:
         d = unit_data().get(code)
@@ -908,7 +924,7 @@ class HeuristicAgent:
     def _build(self, code: str, near: tuple[float, float] | None = None, rmax: float = 1400.0,
                avoid_lane: bool = True) -> list[Command]:
         g, l = self._cost(code)
-        if g > self.budget[0] or l > self.budget[1]:
+        if (g > 0 and g > self.budget[0]) or (l > 0 and l > self.budget[1]):
             return []
         w = self._builder(near)
         if w is None:
@@ -1195,10 +1211,10 @@ class HeuristicAgent:
         dx, dy = gx - center[0], gy - center[1]
         d = math.hypot(dx, dy)
         for u in units:
-            if u.id in self.cmd_units:
+            if u.id in fighting:  # (first: its fight's order marked the unit as ordered already; checked after that
+                out += fighting[u.id]  # mark, every focus-fire order and spell had been dropped until 2026-10-25)
                 continue
-            if u.id in fighting:
-                out += fighting[u.id]
+            if u.id in self.cmd_units:
                 continue
             if u.id in self.hero_home:
                 continue
@@ -1276,12 +1292,12 @@ class HeuristicAgent:
                     continue
             if d.min() > ENGAGE:
                 continue
-            if u.is_hero:
+            if u.is_hero and self.opt["spells"]:
                 spell = self._cast(u, foes, d, units)
                 if spell:
                     out[u.id] = spell
                     continue
-            if retreating:
+            if retreating or not self.opt["focus"]:
                 continue
             data = unit_data().get(u.type, (0,) * 9)
             rng = max(data[4], 100.0)
