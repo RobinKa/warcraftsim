@@ -331,7 +331,7 @@ def functions(rec: dict, cfg: dict, vocab: dict, names: list[str]) -> None:
 
 def replay(a) -> int:
     rec = pickle.loads(a.record.read_bytes())
-    cfg, vocab = settings(rec["run"])
+    cfg, vocab = settings(a.settings or rec["run"])  # (--settings: another run's (the same vocabulary): its recipe)
     cfg.pop("_wine")
     if a.functions:  # (a warm replay first, then the counted one)
         replay_once(rec, cfg, vocab)
@@ -421,6 +421,8 @@ def main() -> int:
     p.add_argument("--compare", type=Path)
     p.add_argument("--root", type=Path, help="another tree's warcraftsim to time (e.g. the code before a change)")
     p.add_argument("--instructions", action="store_true", help="count instructions instead (perf stat)")
+    p.add_argument("--settings", default="", help="replay with this run's settings instead of the recording's (one of the "
+                   "same vocabulary: its recipe, e.g. --teach, --macros-off)")
     p.add_argument("--functions", default="", help="inclusive instructions a side-step of these functions (comma-"
                    "separated names of FUNCTIONS, or all), counted around each call on a warm replay")
     a = ap.parse_args()
