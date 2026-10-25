@@ -1500,7 +1500,7 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         if own is not None and self._cols is _ROW_COLS and featnative.lib() is not None:  # (featnative.side's, made
             pk = featnative.side(rows, self.side)  # by View.step for this side's rows: its finished buildings' types,
             n_built, n_alive, n_dead, n_heroes, n_done = pk[:5]  # its heroes less the dead ones)
-            o = 7 + n_built + n_alive + 3 * n_dead + n_heroes
+            o = 8 + n_built + n_alive + 3 * n_dead + n_heroes
             types = {fx.rawcode(c) for c in set(pk[o:o + n_done])}
             hero = n_heroes > n_dead
         elif own is not None:  # (the finished buildings' types and a hero from the rows)

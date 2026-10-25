@@ -58,6 +58,29 @@ def unit_rows(obs: Observation, t: int) -> np.ndarray:
                        for u in obs.units], np.int64).reshape(-1, fx.ROW_COLS)
 
 
+_LAZY: dict = {}  # (sibling modules imported on first use: an import statement in a function took ~5k instructions)
+
+
+def _lazy(name: str):
+    m = _LAZY.get(name)
+    if m is None:
+        import importlib
+        m = _LAZY[name] = importlib.import_module(f".{name}", __package__)
+    return m
+
+
+def _featnative():
+    return _LAZY.get("featnative") or _lazy("featnative")
+
+
+def _macros():
+    return _LAZY.get("macros") or _lazy("macros")
+
+
+def _herodata():
+    return _LAZY.get("herodata") or _lazy("herodata")
+
+
 REPAIR = 852024  # the order a worker resumes a building with
 QUEUE_MAX = 7  # a building's queue: at most this many units and research
 LOADED = 32  # (UnitFlags.LOADED: in a burrow or a transport)
@@ -313,8 +336,7 @@ class BCAgent:
                 continue
             self.last_sent.append((oid, kind))
             if kind == fx.IMMEDIATE and oid == MIX:  # (--macros: the building trains its target's army mix)
-                from .macros import mix_choice
-                unit_code = mix_choice(getattr(self.view, "mix_target", None) or {}, getattr(self.view, "mix_have", {}),
+                unit_code = _macros().mix_choice(getattr(self.view, "mix_target", None) or {}, getattr(self.view, "mix_have", {}),
                                        fx.rawcode(int(sel[i, fx.C_TYPE])), getattr(self.view, "mix_can", lambda u: False))
                 if unit_code is not None:  # (as any train order: it had skipped the queue and the budget, ~160-216
                     uid = int.from_bytes(unit_code.encode(), "big")  # refused a target game; audit 10)
@@ -334,8 +356,7 @@ class BCAgent:
                     out.append(TargetOrder(unit, HAUNT, mine) if race == "undead" else Build(unit, EXPAND_HALLS[race], hx, hy))
             elif kind == fx.IMMEDIATE and oid == PICKUP:  # (--macros 2: the nearest item lying near the hero)
                 if unit in getattr(self.view, "pickers", ()):
-                    from .macros import PICKUP_NEAR
-                    out.append(PickUp(unit, int(PICKUP_NEAR)))
+                    out.append(PickUp(unit, int(_macros().PICKUP_NEAR)))
                     self.pickup_orders = getattr(self, "pickup_orders", 0) + 1
                     self.__dict__.setdefault("picking_since", {})[unit] = self.t
             elif kind == fx.IMMEDIATE and oid in self.view.dead_heroes:  # (a dead hero's order at an altar: its revival)
@@ -450,14 +471,19 @@ class BCAgent:
         ability the built-in AI's order for it names (herodata.next_skill). The policy spent its points on 2.8% of
         the steps it had one: 51 of 128 heroes ended their games with points unspent, and 4 of 42 that reached level
         6 learned their ultimate (the AI's 68 of 68; audit 3)."""
-        from .herodata import next_skill
+        next_skill = _herodata().next_skill
         if rows.shape[1] < fx.ROW_COLS:
             return []
         learning = {c.hero for c in given if isinstance(c, LearnSkill)}
         wait = self.__dict__.setdefault("skill_since", {})
-        heroes = rows[rows[:, fx.C_SKILLPTS] > 0]  # (the few with a point first: the other masks over those)
-        heroes = heroes[(heroes[:, fx.C_OWNER] == self.player) & (heroes[:, fx.C_FLAGS] & fx.HERO != 0)
-                        & (heroes[:, fx.C_FLAGS] & fx.DEAD == 0)]
+        if _featnative().lib() is not None:  # (its living heroes with a point, in their rows' order: featnative.side's,
+            pk = _featnative().side(rows, self.player)  # made by View.step for these rows)
+            at = 8 + pk[0] + pk[1] + 3 * pk[2] + pk[3] + pk[4] + pk[6]
+            heroes = rows[pk[at:at + pk[7]]] if pk[7] else rows[:0]
+        else:
+            heroes = rows[rows[:, fx.C_SKILLPTS] > 0]  # (the few with a point first: the other masks over those)
+            heroes = heroes[(heroes[:, fx.C_OWNER] == self.player) & (heroes[:, fx.C_FLAGS] & fx.HERO != 0)
+                            & (heroes[:, fx.C_FLAGS] & fx.DEAD == 0)]
         out: list[Command] = []
         for r in heroes:
             hid = int(r[fx.C_ID])
@@ -481,6 +507,14 @@ class BCAgent:
         """Night elves: a finished tree of life of the player's within ENTANGLE_NEAR of a gold mine no one has
         entangled entangles it (the expand order builds a tree of life at the natural; its mine is mined once
         entangled, and the policy has no order for that)."""
+        if _featnative().lib() is not None:  # (in C: the same trees, mines and distances)
+            out: list[Command] = []
+            sent = self.__dict__.setdefault("entangle_sent", {})
+            for tid, mid in _featnative().entangle(rows, self.player, TREE_CODES, NGOL, EGOL, ENTANGLE_NEAR, 300.0):
+                if self.t - sent.get(tid, -ENTANGLE_EVERY) >= ENTANGLE_EVERY:
+                    sent[tid] = self.t
+                    out.append(TargetOrder(tid, ENTANGLE, mid))
+            return out
         fl = rows[:, fx.C_FLAGS]
         trees = rows[(rows[:, fx.C_OWNER] == self.player) & fx.isin(rows[:, fx.C_TYPE], TREE_CODES)
                      & (fl & (fx.CONSTRUCTING | fx.DEAD) == 0)]
@@ -583,7 +617,7 @@ class BCAgent:
         rows = getattr(self, "rows", None)
         if rows is None:
             return False
-        own = rows[(rows[:, fx.C_OWNER] == self.player) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0)]
+        own = fx.own_alive(rows, self.player)  # (the side's living rows: features' copy, made once per rows)
         return bool(((own[:, fx.C_TYPE] == oid) | (own[:, fx.C_ORDER] == oid)).any())
 
     def _can_power_build(self, row: np.ndarray) -> bool:

@@ -344,15 +344,16 @@ int w3f_view(const int64_t *rows, int nrows, int ncols, int player, double sign,
     return 8 + at;
 }
 
-/* View.step's masks of one player's rows (featnative.side), into `out` (int64, at least 7 + 8 * nrows): 7 counts,
+/* View.step's masks of one player's rows (featnative.side), into `out` (int64, at least 8 + 8 * nrows): 8 counts,
  * then the segments they count: its living buildings' ids, its living units' ids, its dead heroes (type, id, level:
  * 3 each), its heroes' types (the dead too), its finished buildings' types, (the 6th count: its army's size, no
- * segment), the types of its living units that are no building, worker, hero or summon. Returns the list's length. */
+ * segment), the types of its living units that are no building, worker, hero or summon, the rows of its living
+ * heroes with a skill point (play.BCAgent._auto_skills). Returns the list's length. */
 int w3f_side(const int64_t *rows, int nrows, int ncols, int player, int64_t *out) {
-    int64_t *cnt = out, *seg = out + 7;
+    int64_t *cnt = out, *seg = out + 8;
     int at = 0;
-    for (int q = 0; q < 7; q++) cnt[q] = 0;
-    for (int pass = 0; pass <= 6; pass++) {
+    for (int q = 0; q < 8; q++) cnt[q] = 0;
+    for (int pass = 0; pass <= 7; pass++) {
         if (pass == 5) continue;
         for (int i = 0; i < nrows; i++) {
             const int64_t *r = rows + (size_t)i * ncols;
@@ -371,10 +372,47 @@ int w3f_side(const int64_t *rows, int nrows, int ncols, int player, int64_t *out
             case 3: if (fl & HERO) { seg[at++] = r[C_TYPE]; cnt[3]++; } break;
             case 4: if (alive && (fl & STRUCTURE) && !(fl & CONSTRUCTING)) { seg[at++] = r[C_TYPE]; cnt[4]++; } break;
             case 6: if (!(fl & (DEAD | STRUCTURE | WORKER | HERO | SUMMONED))) { seg[at++] = r[C_TYPE]; cnt[6]++; } break;
+            case 7: if (alive && (fl & HERO) && r[C_SKILLPTS] > 0) { seg[at++] = i; cnt[7]++; } break;
             }
         }
     }
-    return 7 + at;
+    return 8 + at;
+}
+
+/* play.BCAgent._entangle's distances: of the player's living finished buildings whose type is in `trees` (sorted), in
+ * their order, the living gold mine of type `ngol` nearest each (the first of the nearest), unless it is farther than
+ * `near` or a living mine of type `egol` stands within `held_near` of it: (tree id, mine id) pairs into out. Returns the
+ * number of pairs. */
+int w3f_entangle(const int64_t *rows, int nrows, int ncols, int player, const int64_t *trees, int ntrees, int64_t ngol,
+                 int64_t egol, double near, double held_near, int64_t *out) {
+    int n = 0;
+    for (int i = 0; i < nrows; i++) {
+        const int64_t *t = rows + (size_t)i * ncols;
+        if (t[C_OWNER] != player || (t[C_FLAGS] & (CONSTRUCTING | DEAD)) || !in_sorted(trees, ntrees, t[C_TYPE], NULL, NULL))
+            continue;
+        int best = -1;
+        double bd = 0.0;
+        for (int j = 0; j < nrows; j++) {
+            const int64_t *m = rows + (size_t)j * ncols;
+            if (m[C_TYPE] != ngol || (m[C_FLAGS] & DEAD)) continue;
+            double d = hypot((double)(m[C_X] - t[C_X]), (double)(m[C_Y] - t[C_Y]));
+            if (best < 0 || d < bd) { best = j; bd = d; }
+        }
+        if (best < 0) return -1;  /* (no mine: the caller's) */
+        if (bd > near) continue;
+        const int64_t *m = rows + (size_t)best * ncols;
+        int held = 0;
+        for (int j = 0; j < nrows && !held; j++) {
+            const int64_t *h = rows + (size_t)j * ncols;
+            if (h[C_TYPE] != egol || (h[C_FLAGS] & DEAD)) continue;
+            if (hypot((double)(h[C_X] - m[C_X]), (double)(h[C_Y] - m[C_Y])) < held_near) held = 1;
+        }
+        if (held) continue;
+        out[2 * n] = t[C_ID];
+        out[2 * n + 1] = m[C_ID];
+        n++;
+    }
+    return n;
 }
 
 /* features.affordable: [n] 0/1 the order classes the player can pay for (costs [n][3]: gold, lumber, food); `nkept`

@@ -33,8 +33,8 @@ def lib():
             _lib = False
             return None
         L.w3f_entities.restype = ctypes.c_int
-        P, I, D = ctypes.c_void_p, ctypes.c_int, ctypes.c_double  # (raw pointers: ndpointer's checks per argument had
-        L.w3f_entities.argtypes = [P, I, I, I, D, P, P, I, P, I, I, I, I, I, I,  # cost more than the C itself)
+        P, I, D, Q = ctypes.c_void_p, ctypes.c_int, ctypes.c_double, ctypes.c_int64  # (raw pointers: ndpointer's
+        L.w3f_entities.argtypes = [P, I, I, I, D, P, P, I, P, I, I, I, I, I, I,  # checks per argument had cost more than the C)
                                    P, P, I, P, I, P, I, P, P, I, P, P, I, P, P, P, P, P]
         L.w3f_priv.restype = None
         L.w3f_priv.argtypes = [P, I, I, I, D, P, P]
@@ -44,10 +44,11 @@ def lib():
         L.w3f_view.argtypes = [P, I, I, I, D, P, P, I, I, I, I, P, P, I, I, P, P, P, P]
         L.w3f_side.restype = I
         L.w3f_side.argtypes = [P, I, I, I, P]
+        L.w3f_entangle.restype = I
+        L.w3f_entangle.argtypes = [P, I, I, I, P, I, Q, Q, D, D, P]
         L.w3f_natural.restype = None
         L.w3f_natural.argtypes = [P, I, I, D, D, P, I, P, I, D, D, D, P]
         L.w3f_afford.restype = None
-        Q = ctypes.c_int64
         L.w3f_afford.argtypes = [P, I, Q, Q, Q, Q, I, Q, Q, Q, Q, P]
         _lib = L
     return _lib or None
@@ -171,9 +172,10 @@ def view_step(enc, fx, view, rows: np.ndarray, player: int, sign: float, product
 
 
 def side(rows: np.ndarray, player: int, fresh: bool = False) -> list:
-    """w3f_side: one player's masks of a step's rows, as a list: 7 counts, then the segments they count (its living
+    """w3f_side: one player's masks of a step's rows, as a list: 8 counts, then the segments they count (its living
     buildings' ids, its living units' ids, its dead heroes' (type, id, level), its heroes' types, its finished
-    buildings' types, (its army's size), its plain living units' types). Read only. Kept per player with the rows
+    buildings' types, (its army's size), its plain living units' types, the rows of its living heroes with a skill
+    point). Read only. Kept per player with the rows
     asked: the next ask of the same rows gets it, unless `fresh` (View.step's: a step's rows are new, but a caller
     may change rows in place between steps; the target builder asks after it, on the step's rows)."""
     got = _SIDE.get(player)
@@ -181,7 +183,7 @@ def side(rows: np.ndarray, player: int, fresh: bool = False) -> list:
         return got[1]
     given = rows
     rows = np.ascontiguousarray(rows, np.int64)
-    out = np.empty(8 + 8 * len(rows), np.int64)
+    out = np.empty(9 + 8 * len(rows), np.int64)
     k = lib().w3f_side(_rows_addr(rows), len(rows), rows.shape[1], int(player), addr(out))
     res = out[:k].tolist()
     _SIDE[player] = (given, res)  # (a tuple replaced whole: an actor's game threads share it)
@@ -221,6 +223,25 @@ def natural(rows: np.ndarray, start: tuple, mines: np.ndarray, holds: np.ndarray
     res = None if res[0] == -2 else res
     _NAT = (rows, start, res)
     return res
+
+
+def entangle(rows: np.ndarray, player: int, trees: np.ndarray, ngol: int, egol: int, near: float,
+             held_near: float) -> list | None:
+    """w3f_entangle: [(tree id, mine id)] (play.BCAgent._entangle's distances, its trees in order; none without a
+    mine)."""
+    rows = np.ascontiguousarray(rows, np.int64)
+    out = np.empty(2 * len(rows) + 2, np.int64)
+    c = _CODES.get(id(trees))
+    if c is None or c[0] is not trees:
+        t = np.ascontiguousarray(trees, np.int64)
+        c = _CODES[id(trees)] = (trees, (t, t.ctypes.data), None)
+    t, ta = c[1]
+    n = lib().w3f_entangle(_rows_addr(rows), len(rows), rows.shape[1], int(player), ta, len(t), int(ngol), int(egol),
+                           float(near), float(held_near), addr(out))
+    if n < 0:  # (no mine)
+        return []
+    v = out[:2 * n].tolist()
+    return list(zip(v[0::2], v[1::2]))
 
 
 def afford(costs: np.ndarray, gold: int, lumber: int, fu: int, fc: int, kept: list) -> np.ndarray | None:

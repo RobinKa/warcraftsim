@@ -617,10 +617,15 @@ def world_bins(x, y, sign: float) -> tuple[np.ndarray, np.ndarray]:
 
 
 def bins_world(bx: int, by: int, sign: float) -> tuple[float, float]:
-    """x and y bins in a player's view -> the point in the world."""
+    """x and y bins in a player's view -> the point in the world (bin_center and _unsqueeze in Python's floats: the same
+    float64 arithmetic, without numpy's calls on numbers, ~80k instructions an order)."""
     ox, oy = own_start(sign)
-    return (float(ox + sign * _unsqueeze((bin_center(int(bx)) - ANCHOR_X) * SCALE)),
-            float(oy + bin_center(int(by)) * SCALE))
+    e = (((int(bx) + 0.5) / BINS_PER_UNIT - BIN_RANGE) - ANCHOR_X) * SCALE
+    D = STARTS[1][0] - STARTS[0][0]
+    if not abs(D - DUEL_D) < 1e-6:
+        k = (DUEL_D - 2 * NEAR) / (D - 2 * NEAR)
+        e = e if e <= NEAR else e + (D - DUEL_D) if e >= DUEL_D - NEAR else NEAR + (e - NEAR) / k
+    return float(ox + sign * e), float(oy + ((int(by) + 0.5) / BINS_PER_UNIT - BIN_RANGE) * SCALE)
 
 
 class Encoder:
@@ -1230,7 +1235,7 @@ class View:
         if fast:
             pk = featnative.side(rows, player, fresh=True)
             n_built, n_alive, n_dead, n_heroes, n_done, army_n = pk[:6]
-            o = 7
+            o = 8
             built_ids, o = pk[o:o + n_built], o + n_built
             alive_ids, o = pk[o:o + n_alive], o + n_alive
             dead3, o = pk[o:o + 3 * n_dead], o + 3 * n_dead
