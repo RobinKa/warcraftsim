@@ -22,18 +22,24 @@ enum { F_T = 4, F_P = 14, F_O = 1, F_D = 5, F_E = 4, F_C = 1, F_U = UF, F_R = 1,
 
 typedef struct { int32_t *v; int n, cap, width; } Rows;
 
-static int rows_push(Rows *r, const int32_t *vals, int k) {
+/* a new row at the end (its fields left to the caller), NULL when out of memory */
+static int32_t *rows_add(Rows *r) {
     if (r->n == r->cap) {
         int cap = r->cap ? 2 * r->cap : 64;
         int32_t *v = realloc(r->v, (size_t)cap * r->width * sizeof(int32_t));
-        if (!v) return -1;
+        if (!v) return NULL;
         r->v = v;
         r->cap = cap;
     }
-    int32_t *dst = r->v + (size_t)r->n * r->width;
-    memset(dst, 0, r->width * sizeof(int32_t));
-    memcpy(dst, vals, (size_t)(k < r->width ? k : r->width) * sizeof(int32_t));
-    r->n++;
+    return r->v + (size_t)(r->n++) * r->width;
+}
+
+static int rows_push(Rows *r, const int32_t *vals, int k) {
+    int32_t *dst = rows_add(r);
+    if (!dst) return -1;
+    if (k > r->width) k = r->width;
+    memcpy(dst, vals, (size_t)k * sizeof(int32_t));
+    if (k < r->width) memset(dst + k, 0, (size_t)(r->width - k) * sizeof(int32_t));
     return 0;
 }
 
@@ -55,6 +61,8 @@ typedef struct {
     int64_t *toks;
     uint8_t *is_tag;
     int tcap;
+    int32_t *out, *table;  /* the caller's buffers (w3obs_buffers): w3obs_parse_export's and w3obs_merge_into's */
+    int out_cap, table_cap;
 } State;
 
 enum { H_SEQ, H_MS, H_OVER, H_FULL, H_VERSION, H_DAMAGED, H_ENDED, H_CAMERA, H_CAM_X, H_CAM_Y, H_NUNITS };
@@ -206,12 +214,9 @@ static int32_t i32(int64_t v) { return (int32_t)(uint32_t)(uint64_t)v; }
 static int take_record(State *s, char tag, int i, int ntok, int32_t *out, int *next) {
     int base = base_fields(tag);
     int limit = base + (tag == 'U' ? HERO_EXTRA : 0) + 2;
-    int64_t vals[64] = {0};
-    int nv = 0;
-    for (int k = i; k < ntok && k < i + limit; k++) {
-        if (s->is_tag[k]) break;
-        vals[nv++] = s->toks[k];
-    }
+    const int64_t *vals = s->toks + i;  /* (the record's tokens: up to the next tag or the limit) */
+    int nv = 0, most = ntok - i < limit ? ntok - i : limit;
+    while (nv < most && !s->is_tag[i + nv]) nv++;
     if (nv > base) {
         int n = record_len(tag, vals, nv);
         if (nv > n) {
@@ -245,38 +250,50 @@ static int take_record(State *s, char tag, int i, int ntok, int32_t *out, int *n
     return -1;
 }
 
-/* Tokenize: keep lines matching -?\d+ or [A-Z]. */
+/* Tokenize: keep lines matching -?\d+ (at most 18 digits) or [A-Z]. One pass, each line read once (a scan for its
+ * end and then the line again had been ~70k instructions an observation of ~2 KB). */
 static int tokenize(State *s, const char *d, int len) {
+    int most = len / 2 + 2;  /* (a kept line is at least one character and its newline) */
+    if (most > s->tcap) {
+        int cap = s->tcap ? s->tcap : 4096;
+        while (cap < most) cap *= 2;
+        int64_t *t = realloc(s->toks, (size_t)cap * sizeof(int64_t));
+        if (!t) return -1;
+        s->toks = t;
+        uint8_t *g = realloc(s->is_tag, cap);
+        if (!g) return -1;
+        s->is_tag = g;
+        s->tcap = cap;
+    }
+    int64_t *toks = s->toks;
+    uint8_t *is_tag = s->is_tag;
+    const char *p = d, *end = d + len;
     int n = 0;
-    int start = 0;
-    for (int pos = 0; pos <= len; pos++) {
-        if (pos < len && d[pos] != '\n') continue;
-        int a = start, b = pos;  /* the line [a, b) */
-        start = pos + 1;
-        if (b <= a) continue;
-        if (n >= s->tcap) {
-            int cap = s->tcap ? 2 * s->tcap : 4096;
-            int64_t *t = realloc(s->toks, cap * sizeof(int64_t));
-            uint8_t *g = realloc(s->is_tag, cap);
-            if (!t || !g) return -1;
-            s->toks = t; s->is_tag = g; s->tcap = cap;
+    while (p < end) {
+        char c = *p;
+        if (c == '\n') { p++; continue; }  /* (an empty line) */
+        if (c >= 'A' && c <= 'Z') {
+            if (p + 1 == end || p[1] == '\n') {
+                toks[n] = c;
+                is_tag[n++] = 1;
+                p += 2;
+                continue;
+            }
+        } else {
+            const char *q = p + (c == '-');
+            const char *digits = q;
+            uint64_t v = 0;
+            while (q < end && (unsigned char)(*q - '0') <= 9) v = v * 10 + (uint64_t)(*q++ - '0');
+            if (q > digits && q - digits <= 18 && (q == end || *q == '\n')) {
+                toks[n] = c == '-' ? -(int64_t)v : (int64_t)v;
+                is_tag[n++] = 0;
+                p = q + 1;
+                continue;
+            }
+            p = q;
         }
-        if (b - a == 1 && d[a] >= 'A' && d[a] <= 'Z') {
-            s->toks[n] = d[a];
-            s->is_tag[n++] = 1;
-            continue;
-        }
-        int k = a, neg = 0;
-        if (d[k] == '-') { neg = 1; k++; }
-        if (k == b || b - k > 18) continue;
-        int64_t v = 0, ok = 1;
-        for (; k < b; k++) {
-            if (d[k] < '0' || d[k] > '9') { ok = 0; break; }
-            v = v * 10 + (d[k] - '0');
-        }
-        if (!ok) continue;
-        s->toks[n] = neg ? -v : v;
-        s->is_tag[n++] = 0;
+        while (p < end && *p != '\n') p++;  /* (a line dropped) */
+        p++;
     }
     return n;
 }
@@ -315,10 +332,11 @@ int w3obs_parse(void *p, const char *data, int len) {
         int err = 0;
         switch (tag) {
         case 'U': {
-            int32_t row[UCOLS] = {0};
+            int32_t *row = rows_add(&s->units);
+            if (!row) { err = 1; break; }
             memcpy(row, f, n * sizeof(int32_t));
+            memset(row + n, 0, (UCOLS - 1 - n) * sizeof(int32_t));
             row[UCOLS - 1] = n > F_U;
-            err = rows_push(&s->units, row, UCOLS);
             break;
         }
         case 'D': err = rows_push(&s->dests, f, n); break;
@@ -370,6 +388,15 @@ int w3obs_table(void *p, int32_t *out, int cap) {
     return k;
 }
 
+/* w3obs_merge, then w3obs_table into out when its cap rows hold the table: the live units' count (the table copied
+ * only when cap is enough), or -2 (out of memory). */
+int w3obs_merge_into(void *p) {
+    State *s = p;
+    int n = w3obs_merge(p);
+    if (n >= 0 && n <= s->table_cap) w3obs_table(p, s->table, n);
+    return n;
+}
+
 const int32_t *w3obs_header(void *p) { return ((State *)p)->header; }
 
 /* which: 0 players, 1 events, 2 results, 3 issued, 4 orders, 5 dests, 6 removed, 7 unit deltas, 8 ground items */
@@ -383,3 +410,294 @@ const int32_t *w3obs_rows(void *p, int which, int *n, int *width) {
 }
 
 int w3obs_ucols(void) { return UCOLS; }
+
+/* table `which`'s row width (w3obs_rows' order) */
+int w3obs_width(void *p, int which) {
+    int n, w;
+    w3obs_rows(p, which, &n, &w);
+    return w;
+}
+
+/* The parsed observation for Python in one copy (eight calls with an array each had been ~100k instructions a step):
+ * out = [the header (16)][each table's rows (9, w3obs_rows' order)][the tables but the unit deltas (7) in that order,
+ * their rows of their widths]. Returns the ints that takes; out holds them all only when cap is enough (the header and
+ * the row counts when cap is at least 25). */
+int w3obs_export(void *p, int32_t *out, int cap) {
+    State *s = p;
+    Rows *rs[] = {&s->players, &s->events, &s->results, &s->issued, &s->orders, &s->dests, &s->removed, &s->units, &s->ground};
+    int total = 16 + 9;
+    for (int i = 0; i < 9; i++)
+        if (i != 7) total += rs[i]->n * rs[i]->width;
+    if (cap < 25) return total;
+    memcpy(out, s->header, 16 * sizeof(int32_t));
+    for (int i = 0; i < 9; i++) out[16 + i] = rs[i]->n;
+    if (total > cap) return total;
+    int at = 25;
+    for (int i = 0; i < 9; i++)
+        if (i != 7 && rs[i]->n) {
+            memcpy(out + at, rs[i]->v, (size_t)rs[i]->n * rs[i]->width * sizeof(int32_t));
+            at += rs[i]->n * rs[i]->width;
+        }
+    return total;
+}
+
+/* w3obs_parse, then w3obs_export: its size, or -2 (out of memory). (No end marker: the header's H_ENDED is 0.) */
+int w3obs_parse_export(void *p, const char *data, int len) {
+    State *s = p;
+    if (w3obs_parse(p, data, len) == -2) return -2;
+    return w3obs_export(p, s->out, s->out_cap);
+}
+
+/* The caller's buffers (kept here: a ctypes call's every argument costs ~1k instructions): w3obs_parse_export's
+ * (out, out_cap ints) and w3obs_merge_into's (table, table_cap rows). */
+void w3obs_buffers(void *p, int32_t *out, int out_cap, int32_t *table, int table_cap) {
+    State *s = p;
+    s->out = out;
+    s->out_cap = out_cap;
+    s->table = table;
+    s->table_cap = table_cap;
+}
+
+/* ---- fullgame.trace and play.unit_rows on the unit table (rows [n][UCOLS], as w3obs_table gives them) ---- */
+
+#define DEAD_FLAG 1024
+
+/* numpy's sum of a contiguous float64 array (np.add.reduce: 0.0 plus the pairwise sum of numpy/_core/src/umath/
+ * loops_utils.h.src, blocks of up to 128 summed with 8 accumulators): the same additions in the same order */
+static double pairwise_sum(const double *a, long n) {
+    if (n < 8) {
+        double res = -0.0;
+        for (long i = 0; i < n; i++) res += a[i];
+        return res;
+    }
+    if (n <= 128) {
+        double r[8];
+        for (int k = 0; k < 8; k++) r[k] = a[k];
+        long i;
+        for (i = 8; i < n - (n % 8); i += 8)
+            for (int k = 0; k < 8; k++) r[k] += a[i + k];
+        double res = ((r[0] + r[1]) + (r[2] + r[3])) + ((r[4] + r[5]) + (r[6] + r[7]));
+        for (; i < n; i++) res += a[i];
+        return res;
+    }
+    long n2 = n / 2;
+    n2 -= n2 % 8;
+    return pairwise_sum(a, n2) + pairwise_sum(a + n2, n - n2);
+}
+
+double w3obs_sum(const double *a, int n) { return 0.0 + pairwise_sum(a, n); }
+
+/* trace.material on the unit table: out[p] = player p's (0, 1) living units' value times their hit points left, as its
+ * numpy code computes it (each unit's operations in its order, the sum numpy's in the table's order). desc: the
+ * addresses of keys (sorted type ids, int64) and vals (their values, double), nk, the addresses of the worker types
+ * (int64) and their count, the address of the settings (double): hero_level (per level above the first; 0: none),
+ * worker_cap (0: none). (A few arguments: each one of a ctypes call costs ~1k instructions.) Returns 0, 1 when a type
+ * is not in keys (the caller makes its table again), -1 when out of memory. */
+int w3obs_material(const int32_t *rows, int n, const int64_t *desc, double *out) {
+    const int64_t *keys = (const int64_t *)(intptr_t)desc[0], *workers = (const int64_t *)(intptr_t)desc[3];
+    const double *vals = (const double *)(intptr_t)desc[1], *settings = (const double *)(intptr_t)desc[5];
+    int nk = (int)desc[2], nw = (int)desc[4];
+    double hero_level = settings[0], worker_cap = settings[1];
+    double *v = malloc((size_t)(n > 0 ? n : 1) * 3 * sizeof(double));
+    uint8_t *who = malloc((size_t)(n > 0 ? n : 1) * 2);
+    if (!v || !who) { free(v); free(who); return -1; }
+    double *hp = v + n, *vh = v + 2 * n;
+    uint8_t *work = who + n;
+    int m = 0, nwork[2] = {0, 0};
+    for (int i = 0; i < n; i++) {
+        const int32_t *r = rows + (size_t)i * UCOLS;
+        int32_t o = r[2];
+        if ((r[11] & DEAD_FLAG) || (o != 0 && o != 1)) continue;
+        int64_t t = r[1];
+        int lo = 0, hi = nk;  /* (np.searchsorted: the first key not below t) */
+        while (lo < hi) {
+            int mid = (lo + hi) >> 1;
+            if (keys[mid] < t) lo = mid + 1; else hi = mid;
+        }
+        if (lo == nk || keys[lo] != t) { free(v); free(who); return 1; }
+        double x = vals[lo];
+        if (hero_level != 0.0) {  /* (column 14: the hero's level; int32 arithmetic, as numpy's) */
+            int32_t lv = (int32_t)((uint32_t)r[14] - 1u);
+            x = x + hero_level * (double)(lv > 0 ? lv : 0);
+        }
+        v[m] = x;
+        hp[m] = r[7] > 0 ? (double)r[6] / (double)r[7] : 1.0;
+        who[m] = (uint8_t)o;
+        work[m] = 0;
+        for (int k = 0; k < nw; k++)
+            if (workers[k] == t) { work[m] = 1; nwork[o]++; break; }
+        m++;
+    }
+    if (worker_cap != 0.0)
+        for (int p = 0; p < 2; p++)
+            if ((double)nwork[p] > worker_cap)
+                for (int k = 0; k < m; k++)
+                    if (work[k] && who[k] == p) v[k] = v[k] * worker_cap / (double)nwork[p];
+    /* (numpy evaluates v * worker_cap / n for all units and keeps it for the player's workers: the same numbers) */
+    for (int p = 0; p < 2; p++) {  /* (each player's products, in order) */
+        int c = 0;
+        for (int k = 0; k < m; k++)
+            if (who[k] == p) vh[c++] = v[k] * hp[k];
+        out[p] = 0.0 + pairwise_sum(vh, c);
+    }
+    free(v);
+    free(who);
+    return 0;
+}
+
+/* trace.Production's owners as last seen (unit id -> owner), mirrored here: a scan hands Python only what changed; and
+ * the hired types (a set of their own) */
+#define HIRED_SLOTS 128
+typedef struct {
+    int32_t *keys, *vals;
+    uint8_t *used;
+    int cap, n;
+    int64_t hired[HIRED_SLOTS];
+    uint8_t hired_used[HIRED_SLOTS];
+    uint8_t hired_top[256];  /* (the hired types' top bytes, of their low 32 bits: most rows passed over by it) */
+    int32_t *out;  /* the caller's buffer (w3obs_owners_out) */
+} Owners;
+
+void w3obs_owners_free(void *p) {
+    Owners *o = p;
+    if (!o) return;
+    free(o->keys);
+    free(o->vals);
+    free(o->used);
+    free(o);
+}
+
+static int owners_alloc(Owners *o, int cap) {
+    o->keys = malloc((size_t)cap * sizeof(int32_t));
+    o->vals = malloc((size_t)cap * sizeof(int32_t));
+    o->used = calloc(cap, 1);
+    o->cap = cap;
+    o->n = 0;
+    return o->keys && o->vals && o->used ? 0 : -1;
+}
+
+static int hired_slot(const Owners *o, int64_t t) {
+    uint32_t i = hash32((uint32_t)t ^ (uint32_t)((uint64_t)t >> 32)) & (HIRED_SLOTS - 1);
+    while (o->hired_used[i] && o->hired[i] != t) i = (i + 1) & (HIRED_SLOTS - 1);
+    return (int)i;
+}
+
+/* the state for one game's Production: hired[nh] (at most HIRED_SLOTS / 2) the hired units' types */
+void *w3obs_owners_new(const int64_t *hired, int nh) {
+    if (nh > HIRED_SLOTS / 2) return NULL;
+    Owners *o = calloc(1, sizeof(Owners));
+    if (!o) return NULL;
+    if (owners_alloc(o, 1024)) { w3obs_owners_free(o); return NULL; }
+    for (int k = 0; k < nh; k++) {
+        int s = hired_slot(o, hired[k]);
+        o->hired_used[s] = 1;
+        o->hired[s] = hired[k];
+        o->hired_top[(uint32_t)hired[k] >> 24] = 1;
+    }
+    return o;
+}
+
+/* the buffer w3obs_prod_scan writes (kept here: a ctypes call's every argument costs ~1k instructions) */
+void w3obs_owners_out(void *p, int32_t *out) { ((Owners *)p)->out = out; }
+
+void w3obs_owners_clear(void *p) {
+    Owners *o = p;
+    memset(o->used, 0, o->cap);
+    o->n = 0;
+}
+
+/* the slot of id: its own, or the empty one where it would go */
+static int owners_slot(const Owners *o, int32_t id) {
+    uint32_t m = o->cap - 1, i = hash32((uint32_t)id) & m;
+    while (o->used[i] && o->keys[i] != id) i = (i + 1) & m;
+    return (int)i;
+}
+
+static int owners_grow(Owners *o) {
+    Owners old = *o;
+    if (owners_alloc(o, 2 * old.cap)) { free(o->keys); free(o->vals); free(o->used); *o = old; return -1; }
+    for (int i = 0; i < old.cap; i++)
+        if (old.used[i]) {
+            int s = owners_slot(o, old.keys[i]);
+            o->used[s] = 1;
+            o->keys[s] = old.keys[i];
+            o->vals[s] = old.vals[i];
+            o->n++;
+        }
+    free(old.keys);
+    free(old.vals);
+    free(old.used);
+    return 0;
+}
+
+/* Production.step's look at the table: the (id, type, owner) of each unit of a hired type, in the table's order, then
+ * (with `owners`) each (id, owner) new or changed since the last such scan (the mirror set to it). out: [the triples'
+ * count, the pairs' count, the triples, the pairs] (at most 2 + 5 n ints; w3obs_owners_out's buffer). Returns 0, -1
+ * out of memory. */
+int w3obs_prod_scan(void *p, const int32_t *rows, int n, int owners) {
+    Owners *o = p;
+    int h = 0, q = 0;
+    int32_t *out = o->out, *at = out + 2;
+    for (int i = 0; i < n; i++) {
+        const int32_t *r = rows + (size_t)i * UCOLS;
+        if (o->hired_top[(uint32_t)r[1] >> 24] && o->hired_used[hired_slot(o, r[1])]) {
+            at[0] = r[0]; at[1] = r[1]; at[2] = r[2];
+            at += 3;
+            h++;
+        }
+    }
+    if (owners)
+        for (int i = 0; i < n; i++) {
+            const int32_t *r = rows + (size_t)i * UCOLS;
+            if (2 * (o->n + 1) > o->cap && owners_grow(o)) return -1;
+            int s = owners_slot(o, r[0]);
+            if (o->used[s] && o->vals[s] == r[2]) continue;
+            if (!o->used[s]) { o->used[s] = 1; o->keys[s] = r[0]; o->n++; }
+            o->vals[s] = r[2];
+            at[0] = r[0]; at[1] = r[2];
+            at += 2;
+            q++;
+        }
+    out[0] = h;
+    out[1] = q;
+    return 0;
+}
+
+/* play.unit_rows on the unit table: out [n][cols] (int64), the step t, then the table's first cols - 1 columns */
+static void unit_rows_plain(const int32_t *rows, int n, int64_t t, int64_t *out, int cols) {
+    for (int i = 0; i < n; i++) {
+        const int32_t *r = rows + (size_t)i * UCOLS;
+        int64_t *d = out + (size_t)i * cols;
+        d[0] = t;
+        for (int k = 1; k < cols; k++) d[k] = r[k - 1];
+    }
+}
+
+#if defined(__x86_64__) && defined(__GNUC__)
+#include <immintrin.h>
+/* (AVX2's sign extension, 4 columns an instruction: the plain loop's ~3.6 instructions a number had been ~17k a step) */
+__attribute__((target("avx2"))) static void unit_rows_avx2(const int32_t *rows, int n, int64_t t, int64_t *out,
+                                                           int cols) {
+    for (int i = 0; i < n; i++) {
+        const int32_t *r = rows + (size_t)i * UCOLS;
+        int64_t *d = out + (size_t)i * cols;
+        d[0] = t;
+        int k = 0;
+        for (; k + 4 <= cols - 1; k += 4)
+            _mm256_storeu_si256((__m256i *)(d + 1 + k), _mm256_cvtepi32_epi64(_mm_loadu_si128((const __m128i *)(r + k))));
+        for (; k < cols - 1; k++) d[1 + k] = r[k];
+    }
+}
+#endif
+
+void w3obs_unit_rows(const int32_t *rows, int n, int64_t t, int64_t *out, int cols) {
+#if defined(__x86_64__) && defined(__GNUC__)
+    static int avx2 = -1;
+    if (avx2 < 0) avx2 = __builtin_cpu_supports("avx2");
+    if (avx2) {
+        unit_rows_avx2(rows, n, t, out, cols);
+        return;
+    }
+#endif
+    unit_rows_plain(rows, n, t, out, cols);
+}

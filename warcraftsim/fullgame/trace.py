@@ -7,6 +7,16 @@ from ..protocol import Observation
 
 DEAD_FLAG = 1024  # the unit flags' dead bit (an int test, not an enum operation: per unit per step)
 HERO_FLAG = 1  # (protocol.UnitFlags.HERO)
+_FX = None  # (fullgame.features, once imported: _features())
+
+
+def _features():
+    """fullgame.features, imported on first use (an import statement in a function had cost ~5k instructions a call)."""
+    global _FX
+    if _FX is None:
+        from . import features
+        _FX = features
+    return _FX
 
 
 def heroes(obs: Observation) -> dict[str, list]:
@@ -37,7 +47,65 @@ def trace_step(t: int, obs: Observation, material: dict, orders: dict, **policy)
 
 
 WORKER_IDS = {int.from_bytes(c.encode(), "big") for c in ("hpea", "opeo", "uaco", "ewsp")}  # (type ids)
-_VALUES: dict[int, tuple] = {}  # id(values) -> (values, its size, the type ids seen (sorted), their values)
+_VALUES: dict[int, tuple] = {}  # id(values) -> (values, its size, the type ids seen (sorted), their values, and
+# w3obs_material's description of them: an int64 array and its address)
+_NATIVE = None  # (_native()'s, made on first use)
+_UA: tuple = (None, 0)  # (the last unit table given to the C helpers and its address: a step's material, Production and
+# unit_rows share it. One tuple, replaced whole: an actor's game threads share it)
+
+
+def _native():
+    """The C helpers for native observations (warcraftsim.native's library: material, Production's scan, play's
+    unit_rows) as a namespace, or False without them (no compiler: the numpy code). Imported on first use: the
+    players import this module without them."""
+    global _NATIVE
+    if _NATIVE is None:
+        import ctypes
+        import subprocess
+        from types import SimpleNamespace
+
+        import numpy as np
+        try:
+            from .. import native
+            L = native.lib()
+        except (ImportError, OSError, RuntimeError, subprocess.CalledProcessError):
+            _NATIVE = False
+            return _NATIVE
+        workers = np.array(sorted(WORKER_IDS), np.int64)
+        hired = np.array(sorted(HIRED), np.int64)
+        _NATIVE = SimpleNamespace(lib=L, addr=native.addr, ucols=native.UCOLS, i32=np.dtype(np.int32), np=np,
+                                  workers=workers, workers_at=native.addr(workers), hired=hired,
+                                  hired_at=native.addr(hired), doubles=ctypes.c_double * 2, int32s=ctypes.c_int32,
+                                  addressof=ctypes.addressof, from_buffer=ctypes.c_char.from_buffer)
+    return _NATIVE
+
+
+def _table_at(ua) -> int:
+    """A unit table's address for the C helpers, or 0: not native.py's kind (int32, its columns, C order, writable),
+    empty, or no library."""
+    global _UA
+    got = _UA
+    if got[0] is ua:
+        return got[1]
+    nat = _NATIVE if _NATIVE is not None else _native()
+    at = 0
+    if nat and ua.dtype is nat.i32 and ua.ndim == 2 and ua.shape[1] == nat.ucols:
+        try:  # (a ctypes char over its buffer: C order and writable, else an error)
+            at = nat.addressof(nat.from_buffer(ua))
+        except (TypeError, ValueError, BufferError):
+            at = 0
+    _UA = (ua, at)
+    return at
+
+
+def fill_rows(ua, t: int, out, cols: int) -> bool:
+    """play.unit_rows' rows of a native unit table in C (w3obs_unit_rows): `out` [len(ua), cols] int64 (contiguous)
+    gets the step t, then the table's first cols - 1 columns; False when the C helpers cannot (the numpy code then)."""
+    at = _table_at(ua) if type(t) is int and len(ua) else 0
+    if not at or cols > _NATIVE.ucols + 1:
+        return False
+    _NATIVE.lib.w3obs_unit_rows(at, len(ua), t, _NATIVE.addr(out), cols)
+    return True
 
 
 def _type_values(values: dict, types):
@@ -54,9 +122,42 @@ def _type_values(values: dict, types):
     if not len(keys) or not (keys[np.minimum(j, len(keys) - 1)] == types).all():
         keys = np.union1d(keys, types).astype(np.int64)
         vals = np.array([values.get(str(t), 0) for t in keys.tolist()], float)
-        _VALUES[id(values)] = (values, len(values), keys, vals)
+        nat = _NATIVE if _NATIVE is not None else _native()
+        desc = (np.array([nat.addr(keys), nat.addr(vals), len(keys), nat.workers_at, len(nat.workers), 0], np.int64)
+                if nat and len(keys) else None)
+        _VALUES[id(values)] = (values, len(values), keys, vals, desc, {})
         j = np.searchsorted(keys, types)
     return vals[j]
+
+
+def _material_desc(tab: tuple, settings: tuple) -> tuple:
+    """w3obs_material's description of a values' table (tab[4]) with the settings (hero level, worker cap): (its
+    array, the settings' array, its address)."""
+    nat = _NATIVE
+    setting = nat.np.array(settings, nat.np.float64)
+    desc = tab[4].copy()
+    desc[5] = nat.addr(setting)
+    return desc, setting, nat.addr(desc)
+
+
+def _material_c(ua, values: dict, hero_level, worker_cap):
+    """material() of a native unit table in C (w3obs_material: the same numbers; numpy's ~10 calls had been ~190k
+    instructions a step), or None: no library, another table, a type new to the values' table (the numpy code adds
+    it), a hero level not a float (an int's products are int32 in numpy)."""
+    if hero_level and type(hero_level) is not float:
+        return None
+    at = _table_at(ua)
+    tab = _VALUES.get(id(values))
+    if not at or tab is None or tab[0] is not values or tab[1] != len(values) or tab[4] is None:
+        return None
+    settings = (hero_level or 0.0, worker_cap or 0.0)  # (kept with the table: a ctypes array made with them each
+    d = tab[5].get(settings)                           # step had cost ~3k instructions)
+    if d is None:
+        d = tab[5].setdefault(settings, _material_desc(tab, settings))
+    out = _NATIVE.doubles()
+    if _NATIVE.lib.w3obs_material(at, len(ua), d[2], out):
+        return None
+    return {0: out[0], 1: out[1]}
 
 
 def material(obs, values: dict, hero_level: float = 0.0, worker_cap: int = 0) -> dict[int, float]:
@@ -67,7 +168,10 @@ def material(obs, values: dict, hero_level: float = 0.0, worker_cap: int = 0) ->
     losses the learner made ~33 workers to the AI's ~19, and every one raised the shaping's potential."""
     out = {0: 0.0, 1: 0.0}
     ua = getattr(obs, "unit_array", None)
-    if ua is not None and len(ua):  # native observations: vectorized
+    if ua is not None and len(ua):  # native observations: in C, else vectorized
+        fast = _material_c(ua, values, hero_level, worker_cap)
+        if fast is not None:
+            return fast
         import numpy as np
         live = ((ua[:, 11] & DEAD_FLAG) == 0) & ((ua[:, 2] == 0) | (ua[:, 2] == 1))
         a = ua[live]
@@ -138,6 +242,52 @@ HIRED = {int.from_bytes(c.encode(), "big") for c in
          ("Nalc", "Ntin", "Nfir", "Nngs", "Nbrn", "Npbm", "Nplh", "Nbst", "nftb", "nfsp", "nogm", "ngrk")}
 
 
+class _Scan:
+    """Production's look at a native unit table in C (w3obs_prod_scan): the hired units' rows, and the (id, owner) pairs
+    new or changed since its last look with the owners (it mirrors what it handed Python: Production.owners took each
+    pair; the whole table's ids and owners as lists, zipped into the dict, had been ~100k instructions a step). A copy
+    starts empty (it then hands every pair again: the same dict)."""
+
+    def __init__(self, nat):
+        self.nat, self.cap = nat, 0
+        self.p = nat.lib.w3obs_owners_new(nat.hired_at, len(nat.hired))
+        if not self.p:
+            raise MemoryError("w3obs_owners_new")
+
+    def __del__(self):
+        p, self.p = getattr(self, "p", None), None
+        if p:
+            self.nat.lib.w3obs_owners_free(p)
+
+    def __reduce__(self):
+        return _new_scan, ()
+
+    def clear(self) -> None:
+        self.nat.lib.w3obs_owners_clear(self.p)
+
+    def scan(self, ua, at: int, owners: bool) -> tuple[list, list]:
+        """(the hired units' ids, types and owners, flat; the pairs' ids and owners, flat). `at`: ua's address."""
+        n = len(ua)
+        if 2 + 5 * n > self.cap:  # (this game's own buffer: a game's thread steps its Production)
+            nat = self.nat
+            self.cap = max(2 + 5 * n, 2 * self.cap, 1024)
+            self.buf = (nat.int32s * self.cap)()
+            nat.lib.w3obs_owners_out(self.p, nat.addressof(self.buf))
+            self.ints = memoryview(self.buf).cast("B").cast("i")
+        if self.nat.lib.w3obs_prod_scan(self.p, at, n, owners):
+            raise MemoryError("w3obs_prod_scan")
+        ints = self.ints
+        h, q = 3 * ints[0], 2 * ints[1]
+        if not h and not q:
+            return [], []
+        v = ints[2:2 + h + q].tolist()
+        return v[:h], v[h:]
+
+
+def _new_scan() -> _Scan:
+    return _Scan(_native())
+
+
 class Production:
     """What each player makes, loses and holds over a game, from the observations' events: units
     trained and buildings finished by type, research, kills and losses, food at one minute,
@@ -164,21 +314,34 @@ class Production:
         self.owners: dict[int, int] = {}
         from .features import codes
         self._hired_codes = codes(HIRED)  # (features.isin's)
+        self._scan: _Scan | None = None  # (a native table's look in C: made on the first)
 
-    def _hires(self, obs) -> None:
-        """A tavern hero or a mercenary of a player's seen for the first time: trained (bought, protocol.Buy)."""
-        from .features import isin, rawcode
-        ua = getattr(obs, "unit_array", None)  # (their rows by a mask: each row in Python had been ~2% of a step)
-        rows = ([(int(i), int(t), int(o)) for i, t, o in ua[isin(ua[:, 1], self._hired_codes), :3].tolist()]
-                if ua is not None else [(u.id, u.type_id, u.owner) for u in obs.units if u.type_id in HIRED])
+    def _hires(self, obs, rows=None) -> None:
+        """A tavern hero or a mercenary of a player's seen for the first time: trained (bought, protocol.Buy).
+        `rows`: their (id, type, owner), when the caller has them (_Scan's)."""
+        rawcode = (_FX or _features()).rawcode
+        if rows is None:
+            isin = _FX.isin
+            ua = getattr(obs, "unit_array", None)  # (their rows by a mask: each row in Python had been ~2% of a step)
+            rows = ([(int(i), int(t), int(o)) for i, t, o in ua[isin(ua[:, 1], self._hired_codes), :3].tolist()]
+                    if ua is not None else [(u.id, u.type_id, u.owner) for u in obs.units if u.type_id in HIRED])
         for i, t, o in rows:
             if i not in self.hired and o in (0, 1):
                 self.hired.add(i)
                 if self.steps > 1:  # (not one the map had at its start)
                     self.trained[o][rawcode(t)] += 1
 
+    def _scanned(self, ua, owners: bool):
+        """_Scan.scan of a native unit table, or None (no library, another table: the numpy code)."""
+        at = _table_at(ua)
+        if not at:
+            return None
+        if self._scan is None:
+            self._scan = _Scan(_NATIVE)
+        return self._scan.scan(ua, at, owners)
+
     def step(self, obs) -> None:
-        from .features import rawcode
+        rawcode = (_FX or _features()).rawcode
         self.steps += 1
         for p in (0, 1):
             s = obs.players.get(p)
@@ -189,16 +352,29 @@ class Production:
             self.max_food[p] = max(self.max_food[p], s.food_used)
             if obs.game_time >= 60 and p not in self.food_1min:
                 self.food_1min[p] = s.food_used
-        self._hires(obs)
+        # (the owners every 4 steps and on any step with events: a summon's is event 17; audit 10)
+        owners = bool(obs.events) or self.steps % 4 == 1
+        ua = getattr(obs, "unit_array", None)
+        scan = self._scanned(ua, owners) if ua is not None else None  # (in C: the hires' rows, the owners changed)
+        if scan is None:
+            self._hires(obs)
+        else:
+            it = iter(scan[0])
+            self._hires(obs, zip(it, it, it))
         if self.mines is None:
             self.mines = [(u.x, u.y) for u in obs.units if rawcode(u.type_id) in MINES]
         events = [e for e in obs.events if int(e.kind) in (1, 3, 6, 9, 12)]
-        if not obs.events and self.steps % 4 != 1:  # (the owners every 4 steps and on any step with events: a summon's
-            return                                   # is event 17; audit 10)
-        ua = getattr(obs, "unit_array", None)
+        if not owners:
+            return
         owner = self.owners
-        owner.update(zip(ua[:, 0].tolist(), ua[:, 2].tolist()) if ua is not None and len(ua)
-                     else ((u.id, u.owner) for u in obs.units))
+        if scan is not None:  # (only the pairs new or changed: the same dict)
+            it = iter(scan[1])
+            owner.update(zip(it, it))
+        else:
+            owner.update(zip(ua[:, 0].tolist(), ua[:, 2].tolist()) if ua is not None and len(ua)
+                         else ((u.id, u.owner) for u in obs.units))
+            if self._scan is not None:  # (its mirror is no longer the dict's: it hands every pair again)
+                self._scan.clear()
         for e in events:
             k = int(e.kind)
             if k == 6:  # a unit trained: a=building, b=the unit, c=its type

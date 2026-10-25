@@ -56,6 +56,10 @@ LIB = lib_path(SRC, "w3obs")
 C_ITEMS, C_ABILITIES, C_HERO = 17, 23, 31
 UCOLS = 32
 _H_SEQ, _H_MS, _H_OVER, _H_FULL, _H_VERSION, _H_DAMAGED, _H_ENDED, _H_CAMERA, _H_CAM_X, _H_CAM_Y, _H_NUNITS = range(11)
+# w3obs_rows' tables' row widths: players, events, command results, issued orders, order ids, destructables, removed
+# units, unit deltas, ground items (checked against the library's)
+_WIDTHS = (14, 4, 1, 6, 1, 5, 1, UCOLS, 5)
+_TABLES = 25  # (w3obs_export: the header's 16 ints and the 9 tables' row counts, then their rows)
 _lib = None
 
 
@@ -74,10 +78,43 @@ def lib():
         L.w3obs_header.argtypes = [ctypes.c_void_p]
         L.w3obs_rows.restype = ctypes.c_void_p
         L.w3obs_rows.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)]
+        L.w3obs_width.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        L.w3obs_export.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+        L.w3obs_merge_into.argtypes = [ctypes.c_void_p]
+        L.w3obs_parse_export.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
+        L.w3obs_buffers.restype = None
+        L.w3obs_buffers.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+        P, I, D = ctypes.c_void_p, ctypes.c_int, ctypes.c_double  # (fullgame.trace's and play.unit_rows')
+        L.w3obs_sum.restype = D
+        L.w3obs_sum.argtypes = [P, I]
+        L.w3obs_material.argtypes = [P, I, P, P]
+        L.w3obs_owners_new.restype = P
+        L.w3obs_owners_new.argtypes = [P, I]
+        L.w3obs_owners_free.argtypes = [P]
+        L.w3obs_owners_clear.argtypes = [P]
+        L.w3obs_prod_scan.argtypes = [P, P, I, I]
+        L.w3obs_owners_out.restype = None
+        L.w3obs_owners_out.argtypes = [P, P]
+        L.w3obs_unit_rows.restype = None
+        L.w3obs_unit_rows.argtypes = [P, I, ctypes.c_int64, P, I]
         if L.w3obs_ucols() != UCOLS:
             raise RuntimeError(f"{LIB}: {L.w3obs_ucols()} unit columns, expected {UCOLS}")
+        s = L.w3obs_new()
+        widths = tuple(L.w3obs_width(s, k) for k in range(9))
+        L.w3obs_free(s)
+        if widths != _WIDTHS:
+            raise RuntimeError(f"{LIB}: table widths {widths}, expected {_WIDTHS}")
         _lib = L
     return _lib
+
+
+def addr(a: np.ndarray) -> int:
+    """A C-contiguous array's address: of a ctypes char over its buffer when it is writable and not empty (numpy's
+    .ctypes.data made a Python object of its own each time, ~3x the instructions), else .ctypes.data."""
+    try:
+        return ctypes.addressof(ctypes.c_char.from_buffer(a))
+    except (TypeError, ValueError, BufferError):
+        return a.ctypes.data
 
 
 _FLAGS: dict[int, UnitFlags] = {}  # (each flags' value as UnitFlags, made once: the enum's call per unit was slow)
@@ -129,62 +166,103 @@ class NativeObs:
         self._s = self._lib.w3obs_new()
         if not self._s:
             raise MemoryError("w3obs_new")
-        self._n, self._w = ctypes.c_int(), ctypes.c_int()  # (_rows' sizes, and references to them: made once)
-        self._nw = (ctypes.byref(self._n), ctypes.byref(self._w))
+        self._cap = 0
+        self._table = np.empty((1024, UCOLS), np.int32)  # (merge's: the table copied out of it)
+        self._grow(4096)
 
     def __del__(self):
         s, self._s = getattr(self, "_s", None), None
         if s:
             self._lib.w3obs_free(s)
 
+    def _grow(self, n: int = 0, rows: int = 0) -> None:
+        """This game's buffers (a game's thread parses its observations), kept by the C state too (w3obs_buffers):
+        w3obs_export's, at least n ints; merge's table, at least `rows` rows."""
+        if n > self._cap:
+            self._cap = max(n, 2 * self._cap)
+            self._buf = (ctypes.c_int32 * self._cap)()
+            self._addr = ctypes.addressof(self._buf)
+            self._ints = memoryview(self._buf).cast("B").cast("i")  # (its ints as a list: ~2.5x faster than the
+            # ctypes array's own slices)
+        if rows > len(self._table):
+            self._table = np.empty((max(rows, 2 * len(self._table)), UCOLS), np.int32)
+        self._lib.w3obs_buffers(self._s, self._addr, self._cap, addr(self._table), len(self._table))
+
     def _rows(self, which: int) -> np.ndarray:
-        ptr = self._lib.w3obs_rows(self._s, which, *self._nw)  # (copied by memmove: as_array's ctypes array type
-        out = np.empty((self._n.value, self._w.value), np.int32)  # and copy had been ~10 us a call, 8 a step)
+        """Table `which` of the last observation parsed (w3obs_rows' order), as an array."""
+        n, w = ctypes.c_int(), ctypes.c_int()
+        ptr = self._lib.w3obs_rows(self._s, which, ctypes.byref(n), ctypes.byref(w))
+        out = np.empty((n.value, w.value), np.int32)
         if len(out):
             ctypes.memmove(out.ctypes.data, ptr, out.nbytes)
         return out
 
     def parse(self, payload: bytes, order_names: Sequence[str]) -> Observation:
-        """The observation without its units (merge() adds them): as protocol.parse_token_lines."""
-        rc = self._lib.w3obs_parse(self._s, payload, len(payload))
-        if rc == -2:
+        """The observation without its units (merge() adds them): as protocol.parse_token_lines. (Its tables come in
+        one copy, w3obs_export, as one list of ints: each table as an array of its own had cost ~100k instructions.)"""
+        n = self._lib.w3obs_parse_export(self._s, payload, len(payload))
+        if n == -2:
             raise MemoryError("w3obs_parse")
-        h = self._lib.w3obs_header(self._s)
-        if rc == -1:
+        if n > self._cap:
+            self._grow(n)
+            n = self._lib.w3obs_export(self._s, self._addr, self._cap)
+        v = self._ints[:n].tolist()
+        if not v[_H_ENDED]:
             raise ProtocolError("observation has no end marker (partial write?)")
-        if h[_H_VERSION] != PROTOCOL_VERSION:
-            raise ProtocolError(f"harness protocol {h[_H_VERSION]}, expected {PROTOCOL_VERSION}")
-        players = {}
-        for v in self._rows(0).tolist():
-            players[v[0]] = PlayerState(v[0], Race(v[1]) if v[1] in Race._value2member_map_ else Race.UNKNOWN,
-                                        bool(v[2]), v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], Result(v[11]),
-                                        v[12], v[13])
-        kinds = EventKind._value2member_map_  # (EventKind(k), or k unknown: without the call and its exception)
-        events = [Event(kinds.get(k, k), a, b, c) for k, a, b, c in self._rows(1).tolist()]
-        results = [bool(v[0]) for v in self._rows(2).tolist()]
-        issued = [IssuedOrder(*v[:6]) for v in self._rows(3).tolist()]
-        orders = self._rows(4)
-        dests = self._rows(5)
-        order_map = ({name: oid for name, oid in zip(order_names, orders[:, 0].tolist()) if oid}
-                     if len(orders) else None)
-        obs = Observation(h[_H_SEQ], h[_H_MS], bool(h[_H_OVER]), players, [], events, results,
-                          [Destructable(*v) for v in dests.tolist()] if len(dests) else None, order_map, h[_H_VERSION])
-        obs.damaged_records = h[_H_DAMAGED]
-        obs.full = bool(h[_H_FULL])
-        obs.removed = self._rows(6)[:, 0].tolist()
-        obs.issued = issued
-        obs.ground = [tuple(v) for v in self._rows(8).tolist()]
-        obs.camera = (float(h[_H_CAM_X]), float(h[_H_CAM_Y])) if h[_H_CAMERA] else None
-        return obs
+        if v[_H_VERSION] != PROTOCOL_VERSION:
+            raise ProtocolError(f"harness protocol {v[_H_VERSION]}, expected {PROTOCOL_VERSION}")
+        n_p, n_e, n_c, n_i, n_o, n_d, n_r, _, n_g = v[16:_TABLES]
+        a, players = _TABLES, {}
+        if n_p:
+            races, results_ = Race._value2member_map_, Result._value2member_map_
+            for k in range(a, a + 14 * n_p, 14):
+                pid, race, agent, gold, lumber, fu, fc, upkeep, gg, lg, structures, res, sx, sy = v[k:k + 14]
+                r = results_.get(res)
+                players[pid] = PlayerState(pid, races.get(race, Race.UNKNOWN), bool(agent), gold, lumber, fu, fc, upkeep,
+                                           gg, lg, structures, Result(res) if r is None else r, sx, sy)
+            a += 14 * n_p
+        if n_e:
+            kinds = EventKind._value2member_map_  # (EventKind(k), or k unknown: without the call and its exception)
+            it = iter(v[a:a + 4 * n_e])
+            events = [Event(kinds.get(k, k), x, y, z) for k, x, y, z in zip(it, it, it, it)]
+            a += 4 * n_e
+        else:
+            events = []
+        results = list(map(bool, v[a:a + n_c]))
+        a += n_c
+        if n_i:
+            it = iter(v[a:a + 6 * n_i])
+            issued = list(map(IssuedOrder, it, it, it, it, it, it))
+            a += 6 * n_i
+        else:
+            issued = []
+        order_map = {name: oid for name, oid in zip(order_names, v[a:a + n_o]) if oid} if n_o else None
+        a += n_o
+        if n_d:
+            it = iter(v[a:a + 5 * n_d])
+            dests = list(map(Destructable, it, it, it, it, it))
+            a += 5 * n_d
+        else:
+            dests = None
+        removed = v[a:a + n_r]
+        a += n_r
+        it = iter(v[a:a + 5 * n_g])
+        return Observation(v[_H_SEQ], v[_H_MS], bool(v[_H_OVER]), players, [], events, results, dests, order_map,
+                           v[_H_VERSION], v[_H_DAMAGED], bool(v[_H_FULL]), removed,
+                           (float(v[_H_CAM_X]), float(v[_H_CAM_Y])) if v[_H_CAMERA] else None, issued,
+                           list(zip(it, it, it, it, it)))
 
     def merge(self, obs: Observation) -> Observation:
-        """Apply the last parsed observation to the unit table: obs.units / unit_array hold all units."""
-        n = self._lib.w3obs_merge(self._s)
+        """Apply the last parsed observation to the unit table: obs.units / unit_array hold all units. (The table comes
+        into this game's own buffer with the merge, one call, and is copied from it: a new array's address and a
+        second call had cost ~8k instructions more.)"""
+        n = self._lib.w3obs_merge_into(self._s)
         if n < 0:
             raise MemoryError("w3obs_merge")
-        rows = np.empty((n, UCOLS), np.int32)
-        if n:
-            self._lib.w3obs_table(self._s, rows.ctypes.data, n)
+        if n > len(self._table):
+            self._grow(rows=n)
+            self._lib.w3obs_table(self._s, addr(self._table), n)
+        rows = self._table[:n].copy()
         obs.unit_array = rows
         obs.units = LazyUnits(rows)
         obs.full = True
