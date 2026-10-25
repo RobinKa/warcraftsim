@@ -1701,10 +1701,31 @@ Fixed since, for the next run:
 
 **`fgself-146`** (from `fgself-145`'s 13576303, 11:10, build/shim rebuilt): the fixes above (audit 9's follow-ups and units gone without dying reported). Head to head with its start and `fgself-130`.
 
+**`fgself-146`, stopped at 12:15: invalid.** Its step budget dropped every paid order whenever the target's next item was short of lumber: the kept lumber put the budget below zero, and a footman or a worker needing none was refused too. I first read the large skip counts as the builder's reserve holding (a mistake).
+* Target games' win score against the AI fell (human 0.74 → 0.57, undead 0.74 → 0.51); real-game human peak food 64 → 38.
+* With a target 47% against insane; head to head 45% and 35%.
+
+**Audit 10 (2026-10-25, today's code and fgself-146's games).** Confirmed and fixed:
+* **The budget:** it now refuses an order only for a resource the order needs.
+* **The army-mix macro** skipped the queue and budget checks. It ordered the same unit until the queue was full, then the game refused it: 160-216 a target game.
+* **Orders at a hall during its tier upgrade** are refused by the game (probe): workers ~1,500 a game at a keep, the tier again ~400-580. They are no longer sent, and the tier is not offered again while under way.
+* **Research-gated abilities** now come from the game's own AbilityFunc tables (the race's units' abilities). They had included cannibalize (23,575 refused), sentinel, ensnare, stone form, autodispel and inner fire.
+* **A tavern hire on its way did not count as a hero.** The altar's free hero was trained during the walk, so in 0 of 1,630 targets with a tavern first hero was the first hero the tavern's. It now counts, and there is one hire at a time.
+* **Smaller:**
+  * repairs of damaged buildings need the lumber;
+  * no orders to loaded units (peons in burrows);
+  * the budget covers the tier at a busy hall, the expand macro and haunted mines;
+  * owners are updated on every step with events (summons);
+  * neutral wares get no build time in the pools' timing;
+  * the units passes keep no entries for a dropped unit (its handle may be reused), and the JASS pass writes no second R record (both paths identical over 900 steps, raw bytes too).
+
+**`fgself-147`** (from `fgself-145`'s 13576303 and its league, 12:17, build/shim rebuilt): audit 9's follow-ups and audit 10's fixes. Head to head with `fgself-145`'s 13576303 and `fgself-130`.
+
 The queue:
-1. `fgself-146`: the fixes above (needs the shim rebuilt).
-2. `fgself-147`: `--teach 3`.
-3. `fgself-148`: the new pools (`--z-pool .../strategies-echofast-narrow-tavern-bt.json --eval-z-pool .../strategies-echo-real-narrow-tavern-bt.json`).
+1. `fgself-148`: `--teach 3`.
+2. `fgself-149`: the new pools (`--z-pool .../strategies-echofast-narrow-tavern-bt.json --eval-z-pool .../strategies-echo-real-narrow-tavern-bt.json`, rebuilt with no build time for wares).
+
+A heuristic opponent stronger than the learner is being built (the user's idea).
 
 Still open: War Stomp, Hex, Banish, Far Sight and Scout in the vocabulary; later research levels' costs.
 
