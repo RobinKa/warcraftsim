@@ -1193,7 +1193,7 @@ def test_teacher_lumber_lesson(v2):
     hall = _unit(1, 0, -5184, 2944, 1, fx.STRUCTURE, "htow")
     near, far = _unit(2, 0, -5000, 3200, 1, fx.WORKER, "hpea"), _unit(3, 0, -4000, 2000, 1, fx.WORKER, "hpea")
     trees = {900: (-4800.0, 3500.0), 901: (2000.0, 0.0)}
-    tc = Teacher(0, "human", random.Random(0), {"t": {"hkee": 200.0}})
+    tc = Teacher(0, "human", random.Random(0), {"t": {"hkee": 200.0}}, lumber=True)
     tc.economy = (True, set(), trees)
     assert tc.commands(np.stack([hall, near, far]), player, 100.0, 0) == [TargetOrder(2, HARVEST, 900)]
     tc.economy = (True, {11, 12, 13, 14, 15}, trees)  # (five chop already)

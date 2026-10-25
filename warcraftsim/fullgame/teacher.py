@@ -26,7 +26,7 @@ selfplay --teach 1 (needs --neutral 1: the orders it teaches are the neutral bui
                    (No policy had ever expanded: 0% of its games, people 81% of Echo Isles'. Night elves: the agent
                    has a tree of life entangle the mine, play.BCAgent._entangle, and the workers then mine that.)
 
-    lumber:        a target's next item short of lumber (the builder's) and fewer than CHOPPERS on lumber: the race's
+    lumber:        (--teach 3) a target's next item short of lumber (the builder's) and fewer than CHOPPERS on lumber: the race's
                    chopper (undead: a ghoul) nearest the tree nearest its hall harvests it (the policy had all but stopped
                    chopping: human 38 lumber a minute to 872 gold)
 
@@ -83,13 +83,15 @@ USESLOT = 852008
 class Teacher:
     """One side's lessons in one game (commands: what it would order now)."""
 
-    def __init__(self, side: int, race: str, rng: random.Random, target: dict | None = None, target_hero: bool = False):
+    def __init__(self, side: int, race: str, rng: random.Random, target: dict | None = None, target_hero: bool = False,
+                 lumber: bool = False):
         """`target` (the side's target strategy, if it has one): its tavern hero is the one taught, and none when it
         has none (another hero would break a narrow target). `target_hero` (--teach 2): its first hero from the altar
         taught too, when that is its first hero (the builder taught it only once due: the policy had made another one
         ~10-20 s before, and the second needs a tier; 25-37% of the first heroes were the target's, chance among 3-4)."""
         from .neutral import TAVERN_HEROES
         self.side = side
+        self.lumber = lumber  # (--teach 3: the lumber lesson)
         # the tavern hero taught, and the heroes the side has when it is hired: a target's, at its place among the
         # target's heroes (its next hero), as soon as the altar, the tier and the money permit. (As the first or
         # second hero only, from 135 s: the lesson had fired 68 times in 3,000 target games, ~1,300 of them with a
@@ -196,7 +198,7 @@ class Teacher:
         if self.mix and now >= MIX_FROM:
             out += self._mix(alive, t)
         eco = getattr(self, "economy", None)  # (short, the choppers' ids, the trees: play_one's, from the builder)
-        if eco is not None and eco[0] and eco[2] and t - self.last.get("lumber", -GAP) >= GAP:
+        if self.lumber and eco is not None and eco[0] and eco[2] and t - self.last.get("lumber", -GAP) >= GAP:
             out += self._lumber(alive, eco[1], eco[2], t)
         return out
 
