@@ -126,7 +126,7 @@ def test_remote_eval_manager_follows_the_run(tmp_path, monkeypatch):
         def rsync(self, files, timeout=900):
             return True
     a = type("A", (), dict(host="h", name="h", run=None, games=4, processes=0, remote_dir="warcraftsim", every=60.0,
-                           push_every=240.0, keep=3, grace=10.0, nice=10))()
+                           push_every=240.0, keep=3, grace=10.0, nice=10, gauntlet_games=0, gauntlet_size=5))()
     m = rm.Manager(a)
     m.h = Host()
     monkeypatch.setattr(m, "state", lambda: None if there["away"] else

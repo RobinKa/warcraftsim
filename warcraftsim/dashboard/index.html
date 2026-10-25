@@ -807,7 +807,7 @@ async function refreshOnce() {
   }
   if (state.view === "ratings") {  // re-drawn when the ratings changed (the server scans every 5 minutes)
     try {
-      const R = await getJSON("/api/ratings");
+      const R = await getJSON(ratingsUrl());
       if (R.updated !== (ui.ratings.data || {}).updated) { ui.ratings.data = R; renderRatings(); }
     } catch (e) { console.error(e); }
     setClock();
@@ -2393,6 +2393,7 @@ function renderVideos() {
 
 // ---- the Ratings view: skill ratings from every run's evaluation games (GET /api/ratings, dashboard/ratings.py) ----
 ui.ratings = { data: null, kinds: { checkpoint: true, current: true, "+z": false, anchor: true }, min: 30, all: false, sort: "rating" };
+const ratingsUrl = () => "/api/ratings";
 // the table's order: the rating, either end of its 95% interval (a cautious or a hopeful ranking), games, last played
 const RATING_SORTS = { rating: ["rating", p => p.rating], low: ["95% low end", p => p.rating - 1.96 * (p.se || 0)],
                        high: ["95% high end", p => p.rating + 1.96 * (p.se || 0)], games: ["games", p => p.games],
@@ -2427,7 +2428,7 @@ function ratingsForRun() {
   const R = ui.ratings;
   if ((!R.data || Date.now() - (R.fetched || 0) > 600e3) && !R.loading) {
     R.loading = true;
-    getJSON("/api/ratings").then(d => { R.data = d; R.fetched = Date.now(); }).catch(() => {}).finally(() => { R.loading = false; });
+    getJSON(ratingsUrl()).then(d => { R.data = d; R.fetched = Date.now(); }).catch(() => {}).finally(() => { R.loading = false; });
   }
   return R.data;
 }
@@ -2435,7 +2436,7 @@ async function openRatings() {
   state.view = "ratings"; setNav(); saveUrl(true);
   const m = document.getElementById("main"); m.dataset.run = "";
   if (!ui.ratings.data) m.innerHTML = `<div class="empty">rating the policies… (the first time: a scan of every run's games)</div>`;
-  try { ui.ratings.data = await getJSON("/api/ratings"); ui.ratings.fetched = Date.now(); } catch (e) { m.innerHTML = `<div class="empty">no ratings: ${esc(e)}</div>`; return; }
+  try { ui.ratings.data = await getJSON(ratingsUrl()); ui.ratings.fetched = Date.now(); } catch (e) { m.innerHTML = `<div class="empty">no ratings: ${esc(e)}</div>`; return; }
   renderRatings();
 }
 function renderRatings() {
@@ -2450,13 +2451,13 @@ function renderRatings() {
   const toggles = Object.entries(RATING_KINDS).map(([k, [label, c]]) =>
     `<label class="rk"><input type="checkbox" data-kind="${k}" ${R.kinds[k] ? "checked" : ""}><i style="background:${c}"></i>${label}</label>`).join("");
   m.innerHTML = `<div class="ratings"><h2>Skill ratings</h2>
-    <p class="sub">A Bradley–Terry fit on the Elo scale over ${D.games.toLocaleString()} evaluation games in the real game (Echo Isles, the game's rules): each policy's games against the insane AI, which is 1500, and its head-to-head games against frozen checkpoints. A run's policy is rated by the hour since the run started (h0, h1, …). Bars: 95% intervals. Ties count half.</p>
+    <p class="sub">A Bradley–Terry fit on the Elo scale over ${D.games.toLocaleString()} evaluation games in the real game (Echo Isles, the game's rules): each policy's games against the insane AI, which is 1500, and its head-to-head games against frozen checkpoints. A run's policy is rated by the hour since the run started (h0, h1, …). Bars: 95% intervals. Ties count half. The evaluation worker's gauntlet plays the top rated policies against the current one again, under today's rules: "last played" says how fresh a rating is.</p>
     <div class="bar">${toggles}<label>at least <input id="rmin" type="number" min="1" value="${R.min}" style="width:4.5em"> games</label>
       <label><input type="checkbox" id="rall" ${R.all ? "checked" : ""}> all ${shown.length}</label>
       <label>sort by <select id="rsort">${Object.entries(RATING_SORTS).map(([k, [label]]) => `<option value="${k}" ${R.sort === k ? "selected" : ""}>${label}</option>`).join("")}</select></label></div>
     <div class="rplot" id="rplot"></div><div class="tip" id="rtip"></div>
     <table class="rtable"><tr><th title="the rank by rating, and its 95% interval (ratings drawn from their uncertainty)">rank (95%)</th><th>policy</th><th data-sort="rating">rating</th><th>95% <span data-sort="low">low</span> – <span data-sort="high">high</span></th><th data-sort="games">games</th><th>score</th><th data-sort="last">last played</th></tr>
-    ${rows.map((p, i) => `<tr data-run="${esc(p.run || "")}"><td>${rankText(ranks.get(p.name))}</td><td><i style="background:${RATING_KINDS[p.kind][1]}"></i>${esc(p.name)}</td>
+    ${rows.map((p, i) => `<tr data-run="${esc(p.run || "")}"${p.last && Date.now() / 1000 - p.last > 86400 && p.kind !== "anchor" ? ` style="opacity:.55" title="not played for a day or more: rated under older rules (the gauntlet replays the top ones)"` : ""}><td>${rankText(ranks.get(p.name))}</td><td><i style="background:${RATING_KINDS[p.kind][1]}"></i>${esc(p.name)}</td>
       <td><b>${Math.round(p.rating)}</b></td><td>${ci(p)}</td><td>${p.games}</td><td>${(100 * p.score).toFixed(0)}%</td><td>${date(p.last)}</td></tr>`).join("")}</table></div>`;
   // the plot: one row per policy, its rating a dot, its 95% interval a line; the anchor's rating a dashed line
   const W = Math.max(320, m.querySelector(".ratings").clientWidth), rowH = 18, padL = Math.min(190, W * 0.38), padR = 16, top = 22;

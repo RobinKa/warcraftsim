@@ -26,6 +26,9 @@ Rows: the learner's evaluation rows ("eval": true, "eval_key"), plus "host", "ve
 "current": the update of the weights it had at the game's end) and "episode" (this file's own count),
 in runs/<run>/episodes-remote.jsonl; runs/<run>/remote-worker.json is its status.
 
+--gauntlet: some of its games are the current policy's against the top rated checkpoints, head to head (the
+ratings' "vs" games), played anew under today's rules.
+
 SIGUSR1 drains it: the games in flight finish (their rows written), no new ones start, then it exits (at most
 DRAIN_MINUTES). A row is written only when its game ends, and losses and ties last 3-5x as long as wins: games
 cut by a relaunch were mostly long ones, and 58 relaunches on 2026-10-24 had read a true 84% as ~89.5% (audit 7).
@@ -233,6 +236,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--host", default=socket.gethostname(), help="this worker's name: the rows' host and part of the draws' seed")
     ap.add_argument("--device", help="the inference's device (default: cuda if available)")
     ap.add_argument("--hours", type=float, default=0.0, help="stop after this long (0: when stopped)")
+    ap.add_argument("--gauntlet", type=Path, nargs="*", default=[], help="checkpoints (paths relative to the repository) "
+                    "the current policy plays head to head in --gauntlet-games of the games: the top rated ones, played "
+                    "anew under today's rules (the user, 2026-10-25: a rating from old games, older rules and weaker "
+                    "opponents, had topped the table)")
+    ap.add_argument("--gauntlet-games", type=int, default=0, help="of --games, this many the gauntlet's")
     a = ap.parse_args(argv)
     import multiprocessing as mp
 
@@ -284,14 +292,26 @@ def main(argv: list[str] | None = None) -> int:
     spec = run_dir / "league_spec.json"
     if not spec.exists():  # (game_loop reads the league's launches; evaluation games replace what it draws)
         spec.write_text(json.dumps({"launch": [{"kind": "ai", "difficulty": cfg["eval_ai"][0], "p": 1.0}], "agents": []}))
-    n_proc = a.processes or max(1, -(-a.games // 2))
-    split = [a.games // n_proc + (i < a.games % n_proc) for i in range(n_proc)]
+    gauntlet = [str(g) for g in a.gauntlet if (paths.REPO_ROOT / g).exists()]
+    g_games = min(a.gauntlet_games, a.games - 1) if gauntlet else 0
+    games = a.games - g_games
+    n_proc = a.processes or max(1, -(-games // 2))
+    split = [games // n_proc + (i < games % n_proc) for i in range(n_proc)]
+    specs = [(cfg, n) for n in split]  # each process's settings and games: the run's evaluation, then the gauntlet's
+    if g_games:  # (every launch the current policy against one of them, both ways round: game_loop's --eval-vs)
+        cfg_g = {**cfg, "eval_checkpoints": gauntlet, "eval_vs": 1.0, "eval_z": 0, "eval_guide": 0.0}
+        n_g = max(1, -(-g_games // 2))
+        specs += [(cfg_g, g_games // n_g + (i < g_games % n_g)) for i in range(n_g)]
+    n_proc = len(specs)
     cfg["actors"] = n_proc
+    if g_games:
+        cfg_g["actors"] = n_proc
     ctx = mp.get_context("spawn")
     q, stop = ctx.Queue(), ctx.Event()
 
     def start(i: int):
-        p = ctx.Process(target=worker_main, args=(i, cfg, split[i], keys, a.host, q, stop), daemon=True)
+        c, n = specs[i]
+        p = ctx.Process(target=worker_main, args=(i, c, n, keys, a.host, q, stop), daemon=True)
         p.start()
         return p
     stopping, draining = [], []
@@ -300,8 +320,9 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGUSR1, lambda *_: draining.append(time.time()))
     started, done, last_ep = time.time(), 0, None
     procs = [start(i) for i in range(n_proc)]
-    print(f"evaluation worker {a.host} for {a.run}: {a.games} games in {n_proc} processes ({split}) on {cfg['device']}, "
-          f"policies current + {list(keys.values())}, against {cfg['eval_ai']} on {cfg['map']}", flush=True)
+    print(f"evaluation worker {a.host} for {a.run}: {a.games} games in {n_proc} processes ({[n for _, n in specs]}) on "
+          f"{cfg['device']}, policies current + {list(keys.values())}, against {cfg['eval_ai']} on {cfg['map']}"
+          + (f"; gauntlet ({g_games} games): the current policy against {gauntlet}" if g_games else ""), flush=True)
     t_status = t_ck = 0.0
     try:
         while not stopping and not (a.hours and time.time() - started > 3600 * a.hours):

@@ -26,7 +26,9 @@ ANCHOR = "insane AI"
 ANCHOR_RATING = 1500.0
 SCALE = 400.0 / math.log(10.0)  # Elo points per unit of log-strength
 PRIOR_GAMES = 1.0  # each player's virtual tie against the anchor: finite ratings for a few games
-CACHE = ".ratings-cache-v3.json"  # (v2: the "+shops" players; v3: Echo Isles runs only, hours from the creation)
+CACHE = ".ratings-cache-v4.json"  # (v2: the "+shops" players; v3: Echo Isles runs only, hours from the creation; v4: the
+# pairs' games by the hour they were played). Every game counts alike, however old (the user, 2026-10-25: a decay could
+# lose a good past policy); the top rated ones are played anew under today's rules by the evaluation worker's gauntlet
 # the evaluation games could buy from the neutral buildings from here on (2026-10-21 14:27: the laptop's evaluation
 # worker started with the harness that reaches a shop in the fog; before, every buy order was refused)
 SHOPS_SINCE = 1792589220.0
@@ -81,7 +83,7 @@ class Ratings:
         except (OSError, ValueError):
             self.state = {}
         self.state.setdefault("files", {})  # file -> offset read to
-        self.state.setdefault("pairs", {})  # "a\tb" (a < b) -> [a's wins, b's wins, ties]
+        self.state.setdefault("pairs", {})  # "a\tb\thour" (a < b, the hour since the epoch) -> [a's wins, b's wins, ties]
         self.state.setdefault("meta", {})  # player -> {"run", "kind", "first", "last"}
         self._table: dict | None = None
 
@@ -158,7 +160,7 @@ class Ratings:
     def _add(self, pair: tuple[str, str], outcome: float, t: float, run: str) -> None:
         a, b = pair
         flip = b < a
-        k = f"{b}\t{a}" if flip else f"{a}\t{b}"
+        k = (f"{b}\t{a}" if flip else f"{a}\t{b}") + f"\t{int(t // 3600)}"
         w = self.state["pairs"].setdefault(k, [0, 0, 0])
         won = outcome > 0 if not flip else outcome < 0
         lost = outcome < 0 if not flip else outcome > 0
@@ -174,7 +176,12 @@ class Ratings:
         """The fit: {"players": [{name, rating, se, games, score, run, kind, first, last}], "games", "pairs"}."""
         if self._table is not None:
             return self._table
-        pairs = [(k.split("\t"), v) for k, v in self.state["pairs"].items()]
+        merged: dict[tuple[str, str], list[float]] = {}
+        for k, (wa, wb, ties) in self.state["pairs"].items():
+            a, b, _ = k.split("\t")
+            m = merged.setdefault((a, b), [0, 0, 0])
+            m[0], m[1], m[2] = m[0] + wa, m[1] + wb, m[2] + ties
+        pairs = [((a, b), v) for (a, b), v in merged.items()]
         names = sorted({p for (a, b), _ in pairs for p in (a, b)} | {ANCHOR})
         ix = {n: i for i, n in enumerate(names)}
         n = len(names)
