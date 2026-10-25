@@ -46,6 +46,13 @@ globals
     boolean w3s_full = true
     integer array w3s_removed
     integer w3s_nremoved = 0
+    // the units each pass met and the pass each was last met in (w3s_ht key 5): one the last pass met and this one did
+    // not left the game without dying (a cancelled frame, a wisp an ancient took), an "R" record (shim/units.c's too)
+    integer w3s_passno = 0
+    integer array w3s_met
+    integer w3s_nmet = 0
+    integer array w3s_last
+    integer w3s_nlast = 0
     integer w3s_sum = 0
     constant integer W3S_MBOX = 1048576
     constant integer W3S_CHUNK = 40
@@ -305,6 +312,8 @@ endfunction
 // enumeration: enumerations skip hidden units such as workers inside a gold mine.
 function W3S_EnumAdd takes nothing returns nothing
     local unit u = GetEnumUnit()
+    local integer before = w3s_nremoved
+    call SaveInteger(w3s_ht, GetHandleId(u), 5, w3s_passno)
     if GetUnitTypeId(u) == 0 then
         call GroupRemoveUnit(w3s_all, u) // removed from the game
         // its registry entries hold the handle: flushed, or every dead unit of every episode stays
@@ -325,6 +334,10 @@ function W3S_EnumAdd takes nothing returns nothing
                 set w3s_removed[w3s_nremoved] = GetHandleId(u)
                 set w3s_nremoved = w3s_nremoved + 1
             endif
+        endif
+        if w3s_nremoved == before and w3s_nmet < 8000 then  // (still in the group)
+            set w3s_met[w3s_nmet] = GetHandleId(u)
+            set w3s_nmet = w3s_nmet + 1
         endif
     endif
     set u = null
@@ -824,8 +837,29 @@ function W3S_WriteObs takes nothing returns nothing
         set w3s_nunits = 0
         set w3s_cursor = 0
         set w3s_prune = true
+        set w3s_passno = w3s_passno + 1
+        set w3s_nmet = 0
         call ForGroup(w3s_all, function W3S_EnumAdd)
         set w3s_prune = false
+        set i = 0
+        loop  // (left the game without dying: met by the last pass, not by this one; the handle may be another's now)
+            exitwhen i >= w3s_nlast
+            if LoadInteger(w3s_ht, w3s_last[i], 5) != w3s_passno then
+                call FlushChildHashtable(w3s_ht, w3s_last[i])
+                if w3s_nremoved < 8000 then
+                    set w3s_removed[w3s_nremoved] = w3s_last[i]
+                    set w3s_nremoved = w3s_nremoved + 1
+                endif
+            endif
+            set i = i + 1
+        endloop
+        set i = 0
+        loop
+            exitwhen i >= w3s_nmet
+            set w3s_last[i] = w3s_met[i]
+            set i = i + 1
+        endloop
+        set w3s_nlast = w3s_nmet
         loop
             exitwhen w3s_cursor >= w3s_nunits
             set i = w3s_cursor

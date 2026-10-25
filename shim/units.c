@@ -93,6 +93,11 @@ static int g_nseer, g_seer_player[MAX_PLAYERS], g_seer_bit[MAX_PLAYERS];
 static int g_pass;                                                            /* in a pass */
 static int g_halls[MAX_PLAYERS], g_mobile[MAX_PLAYERS], g_alive[MAX_PLAYERS]; /* the pass's counts */
 static int *g_removed, g_nremoved, g_removed_cap;                             /* and the units it dropped */
+/* the units each pass met (their handles, in the pass's order) and the pass each handle was last met in: one met in
+ * the last pass and not in this one left the game without dying (a cancelled frame, a wisp an ancient took: removed
+ * outright, the group's enumeration never yields it again), an "R" record for it (it stayed in the agents' tables
+ * for good, its orders refused: ~900 repairs a human game; audit 9) */
+static int *g_met, g_nmet, g_met_cap, *g_last, g_nlast, g_last_cap, *g_met_at, g_met_at_cap, g_passno;
 static char *g_rec; /* the pass's unit records (tokens, a line each) */
 static int g_rec_len, g_rec_cap;
 
@@ -485,6 +490,37 @@ static void unit_record(int u) {
     tok((int)sum);
 }
 
+static int *met_slot(int u) { /* g_met_at's entry for handle u (handles count up from 0x100000), NULL past 2^22 */
+    unsigned k = (unsigned)u - 0x100000u;
+    if (k >= (1u << 22))
+        return NULL;
+    if ((int)k >= g_met_at_cap) {
+        int cap = g_met_at_cap ? g_met_at_cap : 4096;
+        while (cap <= (int)k)
+            cap *= 2;
+        int *b = realloc(g_met_at, cap * sizeof *b);
+        if (!b)
+            return NULL;
+        memset(b + g_met_at_cap, 0, (cap - g_met_at_cap) * sizeof *b);
+        g_met_at = b;
+        g_met_at_cap = cap;
+    }
+    return g_met_at + k;
+}
+
+static int push_int(int **v, int *n, int *cap, int x) {
+    if (*n == *cap) {
+        int c = *cap ? *cap * 2 : 1024;
+        int *b = realloc(*v, c * sizeof *b);
+        if (!b)
+            return -1;
+        *v = b;
+        *cap = c;
+    }
+    (*v)[(*n)++] = x;
+    return 0;
+}
+
 static void drop(int u) { /* out of the group of all units, its table entries with it; an "R" record */
     cuts_unit_begin(0);
     n2(GroupRemoveUnit, g_all, u);
@@ -504,11 +540,15 @@ static void drop(int u) { /* out of the group of all units, its table entries wi
 static void pass_unit(int u) {
     g_cur.u = 0;
     cuts_unit_begin(1);
+    int *at = met_slot(u);
+    if (at)
+        *at = g_passno;
     int typ = n1(GetUnitTypeId, u);
     if (typ == 0) { /* removed from the game */
         drop(u);
         return;
     }
+    int before = g_nremoved;
     int dead = n2(IsUnitType, u, TYPE_DEAD) != 0;
     int p = owner_id(u);
     if (g_dedupe) {
@@ -540,6 +580,24 @@ static void pass_unit(int u) {
     unit_record(u);
     cuts_unit_begin(0);
     g_cur.u = 0;
+    if (g_nremoved == before)  /* (still in the group: met again next pass, or gone) */
+        push_int(&g_met, &g_nmet, &g_met_cap, u);
+}
+
+/* the pass is over: the units the last pass met and this one did not left the game without dying ("R" records; their
+ * table entries flushed: the handle may be another object's now, so no group call on it) */
+static void pass_vanished(void) {
+    for (int i = 0; i < g_nlast; i++) {
+        int u = g_last[i], *at = met_slot(u);
+        if (at && *at != g_passno) {
+            n2(FlushChildHashtable, g_ht, u);
+            push_int(&g_removed, &g_nremoved, &g_removed_cap, u);
+            *at = 0;
+        }
+    }
+    int *t = g_last, c = g_last_cap;  /* (this pass's units: the next one's last) */
+    g_last = g_met, g_last_cap = g_met_cap, g_nlast = g_nmet;
+    g_met = t, g_met_cap = c, g_nmet = 0;
 }
 
 /* W3SIM_CUTS & 16: the pass's ForGroup(w3s_all, W3S_CPassEnum) without a JASS thread per unit. The native
@@ -1075,6 +1133,9 @@ int units_call(int key, int mbox, int *result) {
     if (key == mbox - 2) { /* a game's first step (after a reload the last game's tables are gone) */
         g_v_unit = 0;
         g_ht = g_abil = g_all = g_nseer = g_pending = g_pass = g_nremoved = g_rec_len = g_pair_first = g_paired = 0;
+        g_nmet = g_nlast = 0;  /* (the last game's units: not this one's) */
+        if (g_met_at)
+            memset(g_met_at, 0, g_met_at_cap * sizeof *g_met_at);
         g_npid = 0;
         g_cur.u = 0;
         g_cobs = g_cobs_over = g_jres_n = 0;
@@ -1158,6 +1219,8 @@ int units_call(int key, int mbox, int *result) {
         units_mark(1);
         g_full = key == mbox - 10;
         g_pass = 1;
+        g_passno = g_passno % 0x7ffffffe + 1;
+        g_nmet = 0;
         g_rec_len = 0;
         memset(g_halls, 0, sizeof g_halls);
         memset(g_mobile, 0, sizeof g_mobile);
@@ -1166,6 +1229,7 @@ int units_call(int key, int mbox, int *result) {
     }
     if (key == mbox - 15) { /* the pass is over (its counts are asked for next) */
         g_pass = 0;
+        pass_vanished();
         units_mark(2);
         return 1;
     }
