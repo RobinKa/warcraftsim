@@ -144,10 +144,11 @@ class Teacher:
         n_heroes = len(heroes)
         if self.first is not None and n_heroes == 0 and now >= self.first_from:  # (the altar itself from 45 s: a target's
             out += self._first_hero(alive, player, t, build=now >= FIRST_HERO_FROM)  # builder teaches it when due)
-        # a tavern hero: when the side has as many heroes as come before it (the target's, or one), with an altar, the
+        # a tavern hero: when the side has as many heroes as come before it (the target's, or one) or more (an altar's
+        # made first: 269 of 289 human games with a tavern first hero; audit 9), with an altar, the
         # tier the hero count needs (the second hero tier 2, the third tier 3) and the money (the mask's, else 425/135;
         # the first hero is free: food only)
-        if (self.pick is not None and len(tavern) and now >= self.pick_from and n_heroes == self.pick_at < 3
+        if (self.pick is not None and len(tavern) and now >= self.pick_from and self.pick_at <= n_heroes < 3
                 and (n_heroes == 0 or (can(fx.rawcode(self.pick), fx.UNIT) if can is not None
                                        else player.gold >= 425 and player.lumber >= 135))
                 and player.food_used + 5 <= min(player.food_cap, fx.FOOD_MAX) and fourcc_in(done, ALTARS)

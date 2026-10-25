@@ -59,6 +59,7 @@ def unit_rows(obs: Observation, t: int) -> np.ndarray:
 
 
 REPAIR = 852024  # the order a worker resumes a building with
+QUEUE_MAX = 7  # a building's queue: at most this many units and research
 RESTORE, RENEW = 852202, 852161  # (undead acolytes' and night elf wisps' repairs: finished buildings only)
 # buildings a player needs one of (altars, the upgrade buildings, the shops): a second never sent (each unit samples
 # its own order: 2-3 workers had built one in a step; a second altar, war mill or graveyard in 24-52% of short won
@@ -217,6 +218,7 @@ class BCAgent:
         self._release_buyers(st["sel"][:st["n_own"]])
         expanded = False  # (--macros: one expand order a step)
         built: set[int] = set()  # (one building of a kind a step)
+        queue: dict[int, int] = {}  # (this step's train and research orders a building)
         me, costs = getattr(self, "me", None), self.enc.costs  # the step's money, spent order by order (each order's
         budget = [int(me[2]), int(me[3])] if me is not None and costs is not None else None  # mask checks it alone:
         # a tier taken, then two builds refused at 212 gold; 32-140 paid orders refused a training game; audit 9)
@@ -302,9 +304,15 @@ class BCAgent:
                 # (a frame cancelled: a quarter of its cost lost, and the game removes it outright; the policy cancelled
                 # its own frames 2-10 times a game, the cancel learned from the demonstrations' training queues; audit 9)
                 self.frame_cancels = getattr(self, "frame_cancels", 0) + 1
+            elif kind == fx.IMMEDIATE and oid >= TYPE_CODE and unit in self.view.own_buildings \
+                    and self.view.queued.get(unit, 0) + queue.get(unit, 0) >= QUEUE_MAX:
+                self.full_queue = getattr(self, "full_queue", 0) + 1  # (a full queue refuses it: ~67 footmen a human
+                # real game, the army-mix macro's among them; audit 9)
             elif kind == fx.IMMEDIATE:
                 if oid < TYPE_CODE or fx.is_hero_code(fx.rawcode(oid)) or pay(c):  # (a hero: its first is free)
                     out.append(ImmediateOrder(unit, oid))
+                    if oid >= TYPE_CODE:
+                        queue[unit] = queue.get(unit, 0) + 1
             elif kind == fx.SKILL:
                 out.append(LearnSkill(unit, oid))
             elif kind == fx.POINT:

@@ -2033,6 +2033,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"noop_repairs": bots[side].noop_repairs} if side in bots and getattr(bots[side], "noop_repairs", 0) else {}),
         **({"frame_cancels": bots[side].frame_cancels} if side in bots and getattr(bots[side], "frame_cancels", 0) else {}),
         **({"over_budget": bots[side].over_budget} if side in bots and getattr(bots[side], "over_budget", 0) else {}),
+        **({"full_queue": bots[side].full_queue} if side in bots and getattr(bots[side], "full_queue", 0) else {}),
         **({"refused_ctx": bots[side].refused_ctx} if side in bots and getattr(bots[side], "refused_ctx", None) else {}),
         # the orders the game refused (the learner's side): their share, and the kinds refused most (audit 4: never measured)
         **({"refused_share": round(sum(r for _, r in bots[side].order_results.values())

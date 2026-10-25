@@ -1115,6 +1115,8 @@ def test_teacher_tavern_hero_at_its_place(v2):
     assert tc.commands(np.stack([*base, castle, h1, h2]), player, 400.0, 120, poor) == []
     second = Teacher(0, "human", random.Random(0), {"t": {"Hamg": 60.0, "Nalc": 250.0}})
     assert second.commands(np.stack([*base, keep, h1]), player, 150.0, 0) == [Buy(1, 9, code("Nalc"))]
+    late = Teacher(0, "human", random.Random(0), {"t": {"Npbm": 60.0, "Hamg": 300.0}})  # (its first hero the tavern's,
+    assert late.commands(np.stack([*base, keep, h1]), player, 150.0, 0) == [Buy(1, 9, code("Npbm"))]  # an altar's made)
     free = Teacher(0, "human", random.Random(0))  # (no target: the second hero, from 135 s)
     assert free.commands(np.stack([*base, keep, h1]), player, 100.0, 0) == []
     assert free.commands(np.stack([*base, keep, h1]), player, 140.0, 40) == [Buy(1, 9, free.pick)]
