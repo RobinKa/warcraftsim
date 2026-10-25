@@ -1228,7 +1228,7 @@ class View:
         featnative = _mod("featnative")
         fast = A_HID < 0 and not PRIVILEGED and INPUTS < 3 and featnative.lib() is not None
         if fast:
-            pk = featnative.side(rows, player)
+            pk = featnative.side(rows, player, fresh=True)
             n_built, n_alive, n_dead, n_heroes, n_done, army_n = pk[:6]
             o = 7
             built_ids, o = pk[o:o + n_built], o + n_built
@@ -1385,7 +1385,7 @@ class View:
             site = _mod("macros").site                            # its hall affordable; night elves' tree of life
             race = RACES[self.races[player]]                      # entangles its mine, play.BCAgent._entangle)
             if t - getattr(self, "_site_at", -NATURAL_EVERY) >= NATURAL_EVERY or t < getattr(self, "_site_at", 0):
-                self.expand_site = site(rows, getattr(self, "start", None)) if MACROS else None  # (every
+                self.expand_site = site(rows, getattr(self, "start", None), True) if MACROS else None  # (every
                 self._site_at = t  # NATURAL_EVERY steps: a natural is taken or freed over seconds; 4% of an actor's
                 # time when every step)
             via = enc.expand_via.get(race)
@@ -1396,8 +1396,8 @@ class View:
             army = army_n if fast else int((own_alive & (fl & (STRUCTURE | WORKER) == 0)).sum())
             strong = army >= CREEP_ARMY and t * self.step_seconds >= CREEP_FROM  # (the teacher's conditions: from minute 1,
             if not strong or t - getattr(self, "_camp_at", -NATURAL_EVERY) >= NATURAL_EVERY or t < getattr(self, "_camp_at", 0):
-                self.creep_at = camp(rows, getattr(self, "start", None)) if MACROS and strong else None  # any unit sent it:
-                self._camp_at = t
+                self.creep_at = camp(rows, getattr(self, "start", None), True) if MACROS and strong else None  # any
+                self._camp_at = t  # unit sent it:
             avail[enc.creep_class] = self.creep_at is not None  # 436 attack-moves a game; audit 3)
         if avail is not None and enc.mix_class is not None:  # (--macros: train the target's mix, while it lacks a unit
             target = getattr(self, "mix_target", None) or {}  # the side can train now)

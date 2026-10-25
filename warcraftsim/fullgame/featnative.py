@@ -170,14 +170,25 @@ def view_step(enc, fx, view, rows: np.ndarray, player: int, sign: float, product
     return sel[:n], pk[1], f[:n], out[E:E + n], out[2 * E:2 * E + n], pk, f[cap, :fx.PRIV] if priv else None
 
 
-def side(rows: np.ndarray, player: int) -> list:
+def side(rows: np.ndarray, player: int, fresh: bool = False) -> list:
     """w3f_side: one player's masks of a step's rows, as a list: 7 counts, then the segments they count (its living
     buildings' ids, its living units' ids, its dead heroes' (type, id, level), its heroes' types, its finished
-    buildings' types, (its army's size), its plain living units' types)."""
+    buildings' types, (its army's size), its plain living units' types). Read only. Kept per player with the rows
+    asked: the next ask of the same rows gets it, unless `fresh` (View.step's: a step's rows are new, but a caller
+    may change rows in place between steps; the target builder asks after it, on the step's rows)."""
+    got = _SIDE.get(player)
+    if not fresh and got is not None and got[0] is rows:
+        return got[1]
+    given = rows
     rows = np.ascontiguousarray(rows, np.int64)
     out = np.empty(8 + 8 * len(rows), np.int64)
     k = lib().w3f_side(_rows_addr(rows), len(rows), rows.shape[1], int(player), addr(out))
-    return out[:k].tolist()
+    res = out[:k].tolist()
+    _SIDE[player] = (given, res)  # (a tuple replaced whole: an actor's game threads share it)
+    return res
+
+
+_SIDE: dict = {}  # player -> (the last rows asked, side's list)
 
 
 _NAT: tuple = (None, None, None)  # (the last rows and start asked, and natural's answer: View.step's site and camp and
@@ -186,12 +197,13 @@ _CODES: dict = {}
 
 
 def natural(rows: np.ndarray, start: tuple, mines: np.ndarray, holds: np.ndarray, from_start: float, taken_near: float,
-            camp_near: float) -> list | None:
+            camp_near: float, fresh: bool = False) -> list | None:
     """w3f_natural: [the natural's row (-1 none, -2 a tie: None is returned, the numpy code decides), its id, x, y,
-    whether a hall stands at it, whether creeps do], once per rows and start. None without the library."""
+    whether a hall stands at it, whether creeps do], kept with the rows and start asked for the next ask of the same
+    (unless `fresh`: View.step's, as side's). None without the library."""
     global _NAT
     got = _NAT
-    if got[0] is rows and got[1] == start:
+    if not fresh and got[0] is rows and got[1] == start:
         return got[2]
     L = lib()
     if L is None:
