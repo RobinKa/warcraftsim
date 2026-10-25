@@ -175,6 +175,61 @@ def play_game(g: GameInstance, obs, max_steps: int = 4000, values: dict | None =
                                       for p, r in result.items() if p in (0, 1)}}} if values is not None else {})}
 
 
+class Recorder:
+    """A game recorded as play_game records the built-in AI's (the same arrays, one .npz): every step's units, heroes,
+    players and events, and as `orders` the orders each side gave in the state they were given in: the built-in AI's
+    (Observation.issued, record_ai_orders) and a script's accepted commands (command_row: the hand-written player,
+    fullgame/heuristic.py; scripts/heuristic_match.py --record). bc.py reads it as any collection; strategy.from_demos
+    makes each side's realized build its target strategy."""
+
+    def __init__(self, obs: Observation):
+        self.units, self.heroes, self.players, self.events, self.orders = [], [], [], [], []
+        self.trees = [(d.id, d.type_id, d.x, d.y, d.life) for d in (obs.destructables or [])]
+        self.order_names = dict(obs.orders or {})
+        self.t = 0
+
+    def state(self, obs: Observation, t: int) -> None:
+        """Observation t (before step t's orders)."""
+        self.t = t
+        for u in obs.units:
+            self.units.append((t, u.id, u.type_id, u.owner, u.x, u.y, u.facing, u.hp, u.max_hp, u.mana, u.max_mana,
+                               u.order, int(u.flags), u.visible_to, u.resource, u.hero_level, u.hero_xp, u.skill_points))
+            if u.is_hero:
+                items = (tuple(u.items) + (0,) * 6)[:6]
+                ab = (tuple(u.abilities) + ((0, 0.0),) * 4)[:4]
+                self.heroes.append((t, u.id, *items, *(a[0] for a in ab), *(int(round(a[1] * 10)) for a in ab)))
+        for pid, ps in obs.players.items():
+            self.players.append((t, pid, ps.gold, ps.lumber, ps.food_used, ps.food_cap, ps.upkeep, ps.gold_gathered,
+                                 ps.lumber_gathered, ps.structures, int(ps.result)))
+        for e in obs.events:
+            self.events.append((t, int(e.kind), e.a, e.b, e.c))
+
+    def commands(self, cmds, results) -> None:
+        """A script's commands of step t and the game's answers: the accepted ones as orders."""
+        for c, ok in zip(cmds, results):
+            row = command_row(self.t, c) if ok else None
+            if row is not None:
+                self.orders.append(row)
+
+    def issued(self, obs: Observation) -> None:
+        """The built-in AI's orders of step t (reported with observation t + 1)."""
+        for o in obs.issued:
+            self.orders.append((self.t, o.unit, o.order, o.kind, o.x, o.y, o.target))
+
+    def save(self, path: Path, meta: dict, obs: Observation) -> None:
+        """The game's .npz (`meta`: races, difficulties, map, step seconds...; the result and length added)."""
+        result = {p: ps.result.name for p, ps in obs.players.items()}
+        as_array = lambda rows, n: np.asarray(rows, np.int32).reshape(-1, n)  # noqa: E731
+        meta = {**meta, "order_names": self.order_names, "result": result, "steps": self.t,
+                "game_seconds": obs.game_time}
+        tmp = path.with_suffix(".tmp.npz")
+        np.savez_compressed(tmp, meta=json.dumps(meta), units=as_array(self.units, len(UNIT_COLS)),
+                            heroes=as_array(self.heroes, len(HERO_COLS)), players=as_array(self.players, len(PLAYER_COLS)),
+                            events=as_array(self.events, 5), orders=as_array(sorted(self.orders), 7),
+                            trees=as_array(self.trees, 5))
+        tmp.replace(path)
+
+
 def series(setup: GameSetup, name: str, n: int, play: Callable[[GameInstance, Observation, int, bool], None],
            timeout: float = 180) -> None:
     """play(game instance, first observation, k, fresh) for k < n: games of one setup in one

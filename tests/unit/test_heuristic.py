@@ -183,11 +183,11 @@ def test_variants_switch_options():
 
 
 def test_a_strong_wave_is_met_near_the_hall():
-    """Defending against a wave as strong as the army, the army goes 40% of the way from the hall toward it (its towers
+    """hold_home: defending against a wave as strong as the army, the army goes 40% of the way from the hall toward it (its towers
     and burrows), not to where the wave stands; a small raid is met where it is."""
     mine = [_unit(110 + k, "ogru", 0, HOME[0] + 300, HOME[1] + 30 * k) for k in range(3)]
     raid = [_unit(120 + k, "ogru", 1, HOME[0] + 1400, HOME[1] + 30 * k) for k in range(8)]
-    a, base = _agent(mine)
+    a, base = _agent(mine, hold_home=1)  # (a switch, off by default: measured worse with patient attacks)
     _step(a, base, mine + raid, t=300.0, food=20, cap=60)
     assert a.mode == "defend"
     gx, gy = a._goal(a._center(mine), raid)
@@ -196,3 +196,22 @@ def test_a_strong_wave_is_met_near_the_hall():
     _step(a, base, mine + small, t=301.0, food=20, cap=60)
     gx, _ = a._goal(a._center(mine), small)
     assert abs(gx - (HOME[0] + 1400)) < 1
+
+
+def test_strategies_are_coherent_plans():
+    """Every strategy of the family is its race's, names only things the race makes, reaches its army's units through
+    its build order, tiers and the tech tree, and the agent plays it by name."""
+    from warcraftsim.fullgame import techtree
+    races = {"orc", "human", "undead", "nightelf"}
+    assert {hz.STRATEGIES[n].race for n in hz.STRATEGIES} == races and all(len(hz.strategies(r)) >= 3 for r in races)
+    for name, pl in hz.STRATEGIES.items():
+        made = {pl.hall, pl.altar, pl.supply} | {c for _, _, c, _ in pl.builds} | {c for _, _, c in pl.tiers}
+        have = techtree.counts_as(made, pl.race)
+        for unit, _ in pl.army:
+            assert not techtree.missing(unit, pl.race, have, 0), (name, unit)
+            assert set(techtree.tree().makers.get(unit, ())) & have, (name, unit)
+        assert all(not techtree.missing(h, pl.race, have, k) for k, h in enumerate(pl.heroes)), name
+        a = hz.HeuristicAgent(0, pl.race, map_name="no-such-map", log=False, strategy=name)
+        assert a.plan is pl
+    with pytest.raises(ValueError):
+        hz.HeuristicAgent(0, "orc", map_name="no-such-map", log=False, strategy="human-knights")

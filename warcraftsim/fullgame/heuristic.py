@@ -90,6 +90,8 @@ class Plan:
     # against the races whose first waves come at ~4:30 (the learner's undead and orc): another build order and towers
     rush_builds: tuple[tuple[float, int, str, int], ...] | None = None
     rush_towers: tuple[tuple[float, str, int], ...] | None = None
+    tiers: tuple[tuple[float, int, str], ...] = ()  # (due from, food used from, the hall's next tier): its upgrades
+    name: str = ""  # (the strategy's name: STRATEGIES)
 
 
 PLANS: dict[str, Plan] = {
@@ -108,8 +110,7 @@ PLANS: dict[str, Plan] = {
         army=(("ogru", 1.0), ("ohun", 1.0)),
         research=((360.0, "Rome"), (480.0, "Rora"), (600.0, "Roar")),
         lumber_workers=((0.0, 3),),  # (5 had floated 600-1,300 lumber: peons the army lacked)
-        # (patient: against the learner, games past 14 minutes were won 61 of 78, its one mine dry by then)
-        attack_food=60, attack_at=840.0),
+        attack_food=45, attack_at=660.0),  # (60 and 840 s, patient: worse, 2 of 9 with hold_home)
     "human": Plan(
         race="human", worker="hpea", hall="htow", supply="hhou", supply_food=6, altar="halt",
         heroes=("Hmkg",),
@@ -133,6 +134,85 @@ PLANS: dict[str, Plan] = {
         army=(("earc", 1.0),),
         attack_food=45, attack_at=660.0),
 }
+def _variant(base: Plan, name: str, **changes) -> Plan:
+    import dataclasses
+    return dataclasses.replace(base, name=name, **changes)
+
+
+# The family of strategies (the user's direction, 2026-10-25: diverse, coherent plans to clone and to play against):
+# per race a rush of tier-1 units (PLANS: the tuned one, orc's the strongest), a tier-2 army with a second hero, casters,
+# and for orc and human a fast expansion. Each is a Plan: build order, army mix, tiers, heroes, expansion and attack
+# timings. strategies(race) lists a race's; HeuristicAgent(..., strategy=name) plays one.
+STRATEGIES: dict[str, Plan] = {}
+
+
+def _register(*plans: Plan) -> None:
+    for pl in plans:
+        STRATEGIES[pl.name] = pl
+
+
+_O, _H, _U, _E = PLANS["orc"], PLANS["human"], PLANS["undead"], PLANS["nightelf"]
+_register(
+    _variant(_O, "orc-grunts"),  # (the tuned one: grunts and headhunters, a Far Seer, towers against rushers)
+    _variant(_O, "orc-raiders", heroes=("Obla", "Otch"), tiers=((240.0, 26, "ostr"),),
+             builds=((0.0, 0, "oalt", 1), (0.0, 0, "obar", 1), (90.0, 12, "obar", 2), (200.0, 22, "ofor", 1),
+                     (330.0, 30, "obea", 1)),
+             army=(("ogru", 1.0), ("orai", 2.0)), research=((420.0, "Roen"), (480.0, "Rome"), (600.0, "Roar")),
+             rush_builds=None, rush_towers=None, towers=(), attack_food=50, attack_at=720.0),
+    _variant(_O, "orc-casters", heroes=("Ofar", "Oshd"), tiers=((220.0, 24, "ostr"),),
+             builds=((0.0, 0, "oalt", 1), (0.0, 0, "obar", 1), (90.0, 12, "obar", 2), (180.0, 20, "ofor", 1),
+                     (300.0, 28, "osld", 1), (420.0, 40, "osld", 2)),
+             army=(("ogru", 2.0), ("ohun", 1.0), ("oshm", 1.0), ("odoc", 1.0)),
+             research=((360.0, "Rome"), (480.0, "Rora")), rush_builds=None, rush_towers=None, towers=(),
+             attack_food=50, attack_at=720.0),
+    _variant(_O, "orc-expand", expand_at=200.0, creep_from=120.0,
+             builds=((0.0, 0, "oalt", 1), (0.0, 0, "obar", 1), (240.0, 20, "obar", 2), (300.0, 26, "ofor", 1),
+                     (360.0, 32, "obar", 3)),
+             rush_builds=None, rush_towers=None, attack_food=55, attack_at=780.0),
+    _variant(_H, "human-footmen"),  # (footmen and riflemen, a Mountain King)
+    _variant(_H, "human-knights", heroes=("Hpal", "Hmkg"), tiers=((240.0, 26, "hkee"), (480.0, 50, "hcas")),
+             builds=((0.0, 0, "halt", 1), (0.0, 0, "hbar", 1), (120.0, 14, "hbla", 1), (200.0, 22, "hlum", 1),
+                     (300.0, 30, "hbar", 2), (330.0, 32, "hars", 1)),
+             army=(("hfoo", 2.0), ("hkni", 3.0), ("hmpr", 1.0)), research=((300.0, "Rhde"), (420.0, "Rhme"), (540.0, "Rhar")),
+             attack_food=55, attack_at=840.0),
+    _variant(_H, "human-casters", heroes=("Hamg", "Hpal"), tiers=((200.0, 22, "hkee"),),
+             builds=((0.0, 0, "halt", 1), (0.0, 0, "hbar", 1), (120.0, 14, "hbla", 1), (300.0, 28, "hars", 1),
+                     (360.0, 34, "hars", 2), (420.0, 40, "hbar", 2)),
+             army=(("hfoo", 2.0), ("hrif", 1.0), ("hmpr", 1.0), ("hsor", 1.0)), research=((360.0, "Rhde"), (480.0, "Rhme")),
+             attack_food=50, attack_at=780.0),
+    _variant(_H, "human-expand", expand_at=200.0, creep_from=120.0,
+             builds=((0.0, 0, "halt", 1), (0.0, 0, "hbar", 1), (240.0, 20, "hbar", 2), (300.0, 26, "hbla", 1),
+                     (360.0, 32, "hbar", 3)),
+             attack_food=55, attack_at=780.0),
+    _variant(_U, "undead-ghouls"),  # (ghouls, a Death Knight)
+    _variant(_U, "undead-fiends", heroes=("Udea", "Ulic"), tiers=((300.0, 30, "unp1"),),
+             builds=((0.0, 0, "uaod", 1), (0.0, 0, "usep", 1), (90.0, 10, "ugrv", 1), (160.0, 18, "usep", 2),
+                     (300.0, 30, "usep", 3)),
+             army=(("ugho", 1.0), ("ucry", 2.0)), research=((420.0, "Rume"), (540.0, "Rura")),
+             attack_food=50, attack_at=720.0),
+    _variant(_U, "undead-gargoyles", heroes=("Udea", "Udre"), tiers=((240.0, 26, "unp1"),),
+             builds=((0.0, 0, "uaod", 1), (0.0, 0, "usep", 1), (90.0, 10, "ugrv", 1), (200.0, 22, "usep", 2),
+                     (360.0, 34, "usep", 3)),
+             army=(("ugho", 2.0), ("ugar", 2.0)), research=((420.0, "Rume"),), attack_food=50, attack_at=720.0),
+    _variant(_E, "nightelf-archers"),  # (archers, a Demon Hunter)
+    _variant(_E, "nightelf-huntresses", heroes=("Edem", "Ekee"), tiers=((360.0, 36, "etoa"),),
+             builds=((0.0, 0, "eate", 1), (0.0, 0, "eaom", 1), (90.0, 10, "edob", 1), (150.0, 16, "eaom", 2),
+                     (300.0, 30, "eaom", 3)),
+             army=(("esen", 2.0), ("earc", 1.0)), research=((420.0, "Resm"), (540.0, "Rema")),
+             attack_food=50, attack_at=720.0),
+    _variant(_E, "nightelf-dryads", heroes=("Ekee", "Edem"), tiers=((240.0, 26, "etoa"),),
+             builds=((0.0, 0, "eate", 1), (0.0, 0, "eaom", 1), (90.0, 10, "edob", 1), (330.0, 30, "eaoe", 1),
+                     (420.0, 40, "eaom", 2)),
+             army=(("earc", 2.0), ("edry", 2.0)), research=((480.0, "Resm"),), attack_food=50, attack_at=780.0),
+)
+DEFAULT_STRATEGY = {"orc": "orc-grunts", "human": "human-footmen", "undead": "undead-ghouls", "nightelf": "nightelf-archers"}
+
+
+def strategies(race: str) -> list[str]:
+    """A race's strategies' names (STRATEGIES)."""
+    return [n for n, pl in STRATEGIES.items() if pl.race == race]
+
+
 # skills in the order learned (then the built-in AI's order: herodata.next_skill)
 SKILLS = {
     "Ofar": ("AOsf", "AOcl", "AOsf", "AOcl", "AOsf", "AOeq", "AOcl", "AOfs", "AOfs", "AOfs"),
@@ -179,7 +259,9 @@ PULL_LOW, PULL_STEPS = 0.0, 4  # a hurt melee unit steps back this long (off: ch
 CAMP_JOIN = 550.0  # creeps this near each other: one camp
 CREEP_REACH = 3600.0  # camps this near home are crept
 MINE_LOW = 3000  # a mine with less gold left than this: the next one's hall built
-QUEUE_EXPIRE = {"R": 200.0}  # (seconds a queued entry is kept per place in the queue, by its code's first letter)
+# (seconds a queued entry is kept per place in the queue: by its code, else its first letter; a tier takes 120-190 s)
+QUEUE_EXPIRE = {"R": 200.0, "hkee": 220.0, "ostr": 200.0, "unp1": 180.0, "etoa": 180.0, "hcas": 260.0, "ofrt": 240.0,
+                "unp2": 220.0, "etoe": 220.0}
 REVIVE_WAIT = 240  # a revival the altar took: not ordered again for 120 s (it takes up to ~110 s)
 FOOD_CAP = 80  # no army past this food (81 and more: 60% of the income lost to upkeep)
 REGROUP_STEPS = 90  # after a retreat no attack for 45 s
@@ -198,7 +280,9 @@ OPTIONS = {
     "towers": 1,  # enemy towers that shoot are fight targets
     "hero_home": 1,  # a hurt hero walks home until healed
     "towers_built": 1,  # the plan's towers in front of the base
-    "hold_home": 1,  # a wave as strong as the army is met near the hall (its towers, burrows with their peons)
+    "hold_home": 0,  # a wave as strong as the army is met near the hall (its towers, burrows with their peons; 1: with
+    # patient attacks 2 of 9 won, against 15 of 32: off)
+    "strategy": "",  # a STRATEGIES name (else the race's PLANS one)
     "strict_budget": 0,  # 1: money kept for a due building short of lumber holds every other order back (the check
     # before 2026-10-25's fix: in effect buildings and supply first)
 }
@@ -377,7 +461,9 @@ class HeuristicAgent:
                  map_name: str = "(2)EchoIsles", log: bool = True, step_seconds: float = 0.5, **options):
         self.side, self.enemy, self.race = side, 1 - side, race
         self.opt = {**OPTIONS, **options}  # (switches for side-by-side variants: heuristic_match.py --variant)
-        self.plan = plan or PLANS[race]
+        self.plan = plan or (STRATEGIES[self.opt["strategy"]] if self.opt.get("strategy") else PLANS[race])
+        if self.plan.race != race:
+            raise ValueError(f"strategy {self.plan.name or self.plan.race} is not {race}'s")
         if self.opt.get("hero"):  # (another first hero: a variant)
             import dataclasses
             self.plan = dataclasses.replace(self.plan, heroes=(str(self.opt["hero"]),))
@@ -539,7 +625,8 @@ class HeuristicAgent:
             del self.queue[b]
         for b, qs in self.queue.items():  # (an entry no event ended: gone after three times its build time; a missed
             # finish had blocked a barracks for good, 26 grunts in 11 minutes from three of them)
-            keep = [q for k, q in enumerate(qs) if self.now - q[2] < QUEUE_EXPIRE.get(q[0][:1], 100.0) * (1 + k)]
+            keep = [q for k, q in enumerate(qs)
+                    if self.now - q[2] < QUEUE_EXPIRE.get(q[0], QUEUE_EXPIRE.get(q[0][:1], 100.0)) * (1 + k)]
             if len(keep) < len(qs):
                 self.counts["queue expired"] += len(qs) - len(keep)
                 qs[:] = keep
@@ -651,6 +738,7 @@ class HeuristicAgent:
         out: list[Command] = []
         out += self._supply()
         out += self._expand()
+        out += self._tier()
         out += self._build_order()
         out += self._workers()
         return out
@@ -774,7 +862,7 @@ class HeuristicAgent:
             want = gold_cap + 1
         if len(self.workers) < want:
             for h in self.halls:
-                if self._queued(h) < 1 and len(self.workers) < want:
+                if self._queued(h) < 1 and len(self.workers) < want and h.id != getattr(self, "tier_hall", None):
                     out += self._train(h, plan.worker)
         if self.race == "undead":
             out += self._ghoul_lumber()
@@ -1047,7 +1135,36 @@ class HeuristicAgent:
         return out
 
     def _extra_heroes(self) -> int:
-        return 0
+        """The plan's heroes past the first the player may have now (the tech tree: a second needs tier 2)."""
+        from . import techtree
+        have = techtree.counts_as(set(self.have_done), self.race)
+        return sum(1 for k, code in enumerate(self.plan.heroes[1:], start=1)
+                   if not techtree.missing(code, self.race, have, k))
+
+    def _tier(self) -> list[Command]:
+        """The plan's next tier when due: the hall upgrades (its workers' queue first runs out: the game refuses an
+        upgrade behind them), its money kept meanwhile."""
+        self.tier_hall = None
+        for at, food, code in self.plan.tiers:
+            if self.now < at or self.food < food or self.have_done.get(code):
+                continue
+            base = upgraded_from().get(code)
+            hall = next((h for h in self.halls if h.type == base), None)
+            if hall is None:
+                if any(h.type == code for h in self.structures):  # (under way: an upgrading hall keeps its type)
+                    return []
+                continue
+            if any(q[0] == code for q in self.queue.get(hall.id, ())):
+                return []  # (upgrading)
+            self.tier_hall = hall.id  # (no more workers at it until it upgrades)
+            g, l = self._cost(code)
+            if self._queued(hall) or not self._pay(g, l):
+                self._keep(g, l)
+                return []
+            self.cmd_units.add(hall.id)
+            self._note(f"tier {code}")
+            return [ImmediateOrder(hall.id, fourcc(code))]
+        return []
 
     def _next_skill(self, h, levels) -> str | None:
         from .herodata import hero_table

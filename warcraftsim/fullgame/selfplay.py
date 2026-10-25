@@ -1228,7 +1228,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                     opp = ({"name": f"script:ai-{ai['difficulty']}" + (" (real)" if real else ""), "kind": "ai"}
                            if ai["kind"] == "ai" else
                            {"name": f"heuristic:{races[1 - side]}", "kind": "heuristic",
-                            **({"eval_tag": f"vs heuristic:{races[1 - side]}"} if evaluating else {})} if heur
+                            **({"eval_tag": f"vs heuristic:{races[1 - side]}"} if evaluating else
+                               {"strategy": heuristic_strategy(cfg, races[1 - side], rng)})} if heur
                            else {"name": "exploiter", "kind": "exploiter"} if ai["kind"] == "exploit"
                            else {"name": f"eval-vs:{versus}", "kind": "past", "path": versus,
                                  "eval_tag": "vs " + "/".join(Path(versus).parts[-3::2])} if versus
@@ -1278,6 +1279,17 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
         except Exception as e:  # noqa: BLE001 (a new launch)
             print(f"actor {wid}/{k}: {type(e).__name__}: {e}", flush=True)
             time.sleep(2)
+
+
+def heuristic_strategy(cfg: dict, race: str, rng: random.Random) -> str:
+    """--heuristic-strategy: the hand-written player's strategy in a training game ("" its race's default)."""
+    spec = cfg.get("heuristic_strategy") or "default"
+    if spec == "default":
+        return ""
+    from .heuristic import STRATEGIES, strategies
+    if spec == "random":
+        return rng.choice(strategies(race) or [""])
+    return spec if spec in STRATEGIES and STRATEGIES[spec].race == race else ""
 
 
 _POOLS: dict[str, dict] = {}
@@ -1718,6 +1730,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         from .heuristic import HeuristicAgent, PLANS
         cls = opp.get("cls") or HeuristicAgent  # (heuristic_match.py --variant: another version's, side by side)
         heur = cls(1 - side, races[1 - side], plan=opp.get("plan") or None,
+                   **({"strategy": opp["strategy"]} if opp.get("strategy") else {}),
                               map_name=cfg["map"], step_seconds=cfg["step_seconds"], log=bool(opp.get("log")))
         heur.begin(obs)
     for s in (0, 1):
@@ -1810,6 +1823,18 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                             lumber=cfg.get("teach", 0) >= 3)
                  for s in trajs if keys[s] == "current"}
                 if cfg.get("teach") and replay is None else {})
+    # --teach-heuristic: a target drawn from the hand-written player's games (strategy.from_demos names the strategy) is
+    # taught by that strategy itself: a HeuristicAgent of it shadows the side, never carried out, and its macro orders
+    # (builds, training, research, tiers) label the side's steps as the teacher's lessons do
+    hteach = {}
+    if cfg.get("teach_heuristic") and replay is None:
+        from .heuristic import STRATEGIES, HeuristicAgent as _HA
+        for s in trajs:
+            if keys[s] == "current" and (zs.get(s) or {}).get("strategy") in STRATEGIES \
+                    and STRATEGIES[zs[s]["strategy"]].race == races[s]:
+                hteach[s] = _HA(s, races[s], log=False, map_name=cfg["map"], step_seconds=cfg["step_seconds"],
+                                strategy=zs[s]["strategy"])
+                hteach[s].begin(obs)
     zphi = {s: 0.0 for s in zs}  # their strategy potentials at the last recorded step
     # the built-in AI advises the learner's sides (opp["advise"]): its orders label their steps
     advised = [s for s in trajs if keys[s] == "current"] if opp.get("advise") else []
@@ -1922,6 +1947,18 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                     av = sts[s].get("avail")  # (the lessons that teach: labelled, and an order the policy could give)
                     tc.kept = getattr(tc, "kept", 0) + int(((y["y_order"] > 0) & (np.asarray(av)[y["y_order"]] if av is not None
                                                                                    else True)).sum())
+        for s, ha in hteach.items():  # (--teach-heuristic: the strategy's own macro orders as lessons)
+            if s in spans and trajs[s].steps and obs.players.get(s) is not None:
+                ha.observe(obs, t)
+                c = [x for x in ha.commands() if type(x).__name__ == "Build"
+                     or (type(x).__name__ == "ImmediateOrder" and x.order >= fx.TYPE_CODE)]
+                if c:
+                    q = obs.players[s]
+                    me = np.asarray([t, s, q.gold, q.lumber, q.food_used, q.food_cap, q.upkeep])
+                    y, _ = bots[s].enc.step_labels(bots[s].view, sts[s], label_rows(t, c), me, np.zeros((0, 5), np.int64),
+                                                   bots[s].trees, taught=True)
+                    merge_labels(trajs[s].steps[-1], y, teach=True)
+                    ha.counts["lessons"] += len(c)
         built, given = {}, {}
         for s, b in builders.items():  # (--z-build: after the agents' orders, so a worker it takes is taken)
             c = b.commands(obs, made[s], t, cfg["step_seconds"], cmds[spans[s][0]:spans[s][1]] if s in spans else ())
@@ -2052,6 +2089,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"balance_tax": opp["tax"] if opp["tax_side"] == side else -opp["tax"]} if "tax_side" in opp else {}),
         **({"tb_x": opp["tb_x"]} if "tb_x" in opp else {}),  # (--win-balance: the game's features, balance.py)
         "prod": prod.row(side, obs), "opp_prod": prod.row(1 - side, obs), **({"advised": True} if advised else {}),
+        **({"heuristic_lessons": hteach[side].counts["lessons"], "heuristic_teacher": zs[side]["strategy"]}
+           if side in hteach else {}),
+        **({"heuristic_strategy": heur.plan.name} if heur is not None and heur.plan.name else {}),
         **({"heuristic": heur.summary() if opp.get("log") else {k: v for k, v in heur.summary().items()
                                                                   if k in ("issued", "refused", "counts")}}
            if heur is not None else {}),
@@ -3640,6 +3680,13 @@ def main(argv: list[str] | None = None) -> int:
                          "(eval_key 'vs heuristic:<race>': a yardstick that does not move)")
     ap.add_argument("--heuristic-race", default="orc", choices=["human", "orc", "undead", "nightelf"],
                     help="the hand-written player's race (orc is the one tuned: 2026-10-25)")
+    ap.add_argument("--heuristic-strategy", default="default",
+                    help="its strategy in training games (heuristic.STRATEGIES): 'default' (the race's tuned one), "
+                         "'random' (one of the race's drawn per game) or a name; evaluation games always the default")
+    ap.add_argument("--teach-heuristic", type=int, default=0,
+                    help="1: a target drawn from the hand-written player's games (a pool built from its "
+                         "demonstrations: strategy.py --demos) is taught by that strategy: a scripted player of it "
+                         "shadows the side and its builds, training, research and tiers label the steps (--teach-coef)")
     ap.add_argument("--exploiter-share", type=float, default=0.0,
                     help="AlphaStar's main exploiter: this share of launches are games between the learner and a "
                          "second network that trains only against it (League; 0: none)")
@@ -4131,6 +4178,7 @@ def main(argv: list[str] | None = None) -> int:
            "grpo_seeds": args.grpo_seeds, "grpo_branch": [float(x) for x in args.grpo_branch.split("-")],
            "eval_map": args.eval_map, "eval_z_pool": str(args.eval_z_pool) if args.eval_z_pool else "", "eval_vs": args.eval_vs,
            "heuristic_share": args.heuristic_share, "eval_heuristic": args.eval_heuristic, "heuristic_race": args.heuristic_race,
+           "heuristic_strategy": args.heuristic_strategy, "teach_heuristic": args.teach_heuristic,
            "eval_guide": args.eval_guide,
            "eval_costs": order_costs(vocab, args.eval_map).tolist() if args.eval_map and args.avail_mask else None,
            "order_names": vocab.get("order_names") or {str(k): v for k, v in fx.demo_order_names(args.runs).items()}}

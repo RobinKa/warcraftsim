@@ -53,39 +53,82 @@ def variant_class(spec: str | None):
     return functools.partial(cls, **kw) if kw else cls
 
 
-def play_vs_ai(name: str, race: str, ai_race: str, difficulty: str, side: int, args, plan=None) -> dict:
-    """One game of the heuristic against the built-in AI -> its row."""
+def play_scripted(name: str, race: str, opp_race: str, opp: str, side: int, args, strategy: str = "",
+                  opp_strategy: str = "", record: Path | None = None) -> dict:
+    """One game of the heuristic (`strategy`, "" its race's default) on `side` against the built-in AI (`opp` a
+    difficulty) or another heuristic (`opp` "heuristic", playing `opp_strategy`) -> its row; `record`: the game's
+    .npz there (collect.Recorder: both sides' orders as labels)."""
+    from warcraftsim.fullgame.collect import Recorder
     from warcraftsim.fullgame.heuristic import HeuristicAgent
     from warcraftsim.fullgame.trace import Production
     from warcraftsim.runtime.instance import Agent, BuiltinAI, GameInstance, GameSetup
-    slots = [Agent(race, handicap=args.handicap, difficulty=args.slot_difficulty),
-             BuiltinAI(ai_race, difficulty, handicap=args.handicap)]
-    if side == 1:
-        slots.reverse()
+    scripted = opp == "heuristic"
+    mine = Agent(race, handicap=args.handicap, difficulty=args.slot_difficulty)
+    theirs = (Agent(opp_race, handicap=args.handicap, difficulty=args.slot_difficulty) if scripted
+              else BuiltinAI(opp_race, opp, handicap=args.handicap))
+    slots = [mine, theirs] if side == 0 else [theirs, mine]
     setup = GameSetup(map=args.map, slots=slots, step_seconds=args.step_seconds, max_game_seconds=args.max_minutes * 60,
                       victory="decisive", window=(320, 240), draw=False, d3d_thread=False, render_threads=0,
-                      native_obs=True, nice=args.nice, cuts=args.cuts or None, wait_floor_ms=5)
+                      native_obs=True, nice=args.nice, cuts=args.cuts or None, wait_floor_ms=5,
+                      record_ai_orders=record is not None and not scripted)
+    cls = variant_class(args.variant) or HeuristicAgent
     t0 = time.time()
     with GameInstance(setup, name=name, timeout=180) as g:
         obs = g.start()
-        agent = (variant_class(args.variant) or HeuristicAgent)(side, race, plan=plan, map_name=args.map,
-                                                                step_seconds=args.step_seconds)
-        agent.begin(obs)
+        agents = {side: cls(side, race, map_name=args.map, step_seconds=args.step_seconds,
+                            **({"strategy": strategy} if strategy else {}))}
+        if scripted:
+            agents[1 - side] = HeuristicAgent(1 - side, opp_race, map_name=args.map, step_seconds=args.step_seconds,
+                                              **({"strategy": opp_strategy} if opp_strategy else {}))
+        for a in agents.values():
+            a.begin(obs)
+        rec = Recorder(obs) if record is not None else None
         prod = Production()
         prod.step(obs)
         t = 0
         while not obs.game_over:
-            agent.observe(obs, t)
-            cmds = agent.commands()
+            if rec is not None:
+                rec.state(obs, t)
+            cmds, spans = [], {}
+            for s_, a in agents.items():
+                a.observe(obs, t)
+                c = a.commands()
+                spans[s_] = (len(cmds), len(cmds) + len(c))
+                cmds += c
             obs = g.step(cmds)
-            agent.accepted(cmds, obs.command_results[:len(cmds)])
+            for s_, (a0, a1) in spans.items():
+                agents[s_].accepted(cmds[a0:a1], obs.command_results[a0:a1])
+            if rec is not None:
+                rec.commands(cmds, obs.command_results[:len(cmds)])
+                rec.issued(obs)
             prod.step(obs)
             t += 1
+        if rec is not None:
+            rec.state(obs, t)
     res = obs.players[side].result.name if side in obs.players else "TIE"
     outcome = 1.0 if res == "VICTORY" else -1.0 if res == "DEFEAT" else 0.0
-    return {"time": time.time(), "vs": f"ai-{difficulty}", "race": race, "opponent_race": ai_race, "side": side,
+    agent = agents[side]
+    names = [""] * 2
+    names[side] = agent.plan.name or strategy
+    if scripted:
+        names[1 - side] = agents[1 - side].plan.name or opp_strategy
+    if record is not None:
+        races = [""] * 2
+        races[side], races[1 - side] = race, opp_race
+        diffs = ["heuristic"] * 2
+        if not scripted:
+            diffs[1 - side] = opp
+        record.parent.mkdir(parents=True, exist_ok=True)
+        rec.save(record, {"races": races, "difficulties": diffs, "handicap": args.handicap, "map": args.map, "map_file": args.map,
+                          "victory": "decisive", "step_seconds": args.step_seconds,
+                          "strategies": [n or None for n in names] if scripted else
+                          [names[0] or None if side == 0 else None, names[1] or None if side == 1 else None],
+                          "slot_difficulty": args.slot_difficulty}, obs)
+    return {"time": time.time(), "vs": "heuristic" if scripted else f"ai-{opp}", "race": race, "opponent_race": opp_race,
+            "side": side, "strategy": names[side], **({"opp_strategy": names[1 - side]} if scripted else {}),
             "outcome": outcome, "game_time": round(obs.game_time, 1), "wall_seconds": round(time.time() - t0, 1),
-            "prod": prod.row(side, obs), "opp_prod": prod.row(1 - side, obs), "heuristic": agent.summary()}
+            "prod": prod.row(side, obs), "opp_prod": prod.row(1 - side, obs), "heuristic": agent.summary(),
+            **({"record": str(record)} if record is not None else {})}
 
 
 class PolicyMatch:
@@ -142,7 +185,7 @@ class PolicyMatch:
                                buckets=tuple(sorted({1, 2, 4, max(args.parallel, 1)})),
                                entities=tuple(cfg["infer_entities"]))
 
-    def play(self, name: str, race: str, opp_race: str, side: int, args, plan=None) -> dict:
+    def play(self, name: str, race: str, opp_race: str, side: int, args, plan=None, strategy: str = "") -> dict:
         """One game: the heuristic (`race`) on `side`, the policy (`opp_race`) on the other."""
         from warcraftsim.fullgame.selfplay import play_one
         from warcraftsim.runtime.instance import Agent, GameInstance, GameSetup
@@ -164,19 +207,25 @@ class PolicyMatch:
         t0 = time.time()
         with GameInstance(setup, name=name, timeout=180) as g:
             obs = g.start()
-            opp = {"name": f"heuristic:{race}", "kind": "heuristic", "race": race, "log": True, "plan": plan,
-                   "cls": variant_class(args.variant)}
+            from warcraftsim.fullgame.heuristic import STRATEGIES
+            opp = {"name": f"heuristic:{race}", "kind": "heuristic", "race": race, "log": True,
+                   "plan": plan or (STRATEGIES[strategy] if strategy else None), "cls": variant_class(args.variant)}
             ep = play_one(g, obs, cfg, self.vocab, races, 1 - side, opp, self.infer, Rows(), 0, record=False, train=False)
         # the row from the heuristic's side (play_one's is the policy's)
         return {"time": time.time(), "vs": "policy", "version": self.version, "race": race, "opponent_race": opp_race,
-                "side": side, "outcome": -ep["outcome"], "game_time": round(ep["game_time"], 1),
+                "side": side, "strategy": strategy or (plan.name if plan else ""), "outcome": -ep["outcome"], "game_time": round(ep["game_time"], 1),
                 "wall_seconds": round(time.time() - t0, 1), "prod": ep.get("opp_prod"), "opp_prod": ep.get("prod"),
                 "heuristic": ep.get("heuristic"), "policy_refused": ep.get("refused_share")}
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--vs", default="insane", help="a built-in AI's difficulty (easy, normal, insane) or a checkpoint")
+    ap.add_argument("--vs", default="insane", help="a built-in AI's difficulty (easy, normal, insane), 'heuristic' (two "
+                    "hand-written players, both sides' strategies drawn by --strategy) or a checkpoint")
+    ap.add_argument("--strategy", default="default", help="the heuristic's strategy (heuristic.STRATEGIES): a name or "
+                    "several (a,b), 'default' (its race's tuned one), 'all' (each of the race's in turn) or 'random'")
+    ap.add_argument("--record", type=Path, help="a folder: each game's demonstration (.npz, collect.py's format, both "
+                    "sides' orders as labels) and games.jsonl; bc.py --data and strategy.from_demos read it")
     ap.add_argument("--race", default="orc", help="the heuristic's race (or 'all': each in turn)")
     ap.add_argument("--opp-race", default="all", help="the opponent's race (or 'all': each in turn)")
     ap.add_argument("--games", type=int, default=8)
@@ -194,6 +243,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", type=Path, help="rows (.jsonl); default runs/heuristic/matches.jsonl")
     ap.add_argument("--label", default="", help="a name for this batch in the rows")
+    ap.add_argument("--first", type=int, default=0, help="--record: the first game's number (game<first>.npz)")
     ap.add_argument("--variant", default="", help="another HeuristicAgent class and its options (module:Class[:key=value,...] in warcraftsim.fullgame)")
     ap.add_argument("--wine", default=WINE)
     a = ap.parse_args(argv)
@@ -206,13 +256,24 @@ def main(argv: list[str] | None = None) -> int:
     rng = random.Random(a.seed)
     races = RACES if a.race == "all" else (a.race,)
     opps = RACES if a.opp_race == "all" else (a.opp_race,)
+    from warcraftsim.fullgame.heuristic import DEFAULT_STRATEGY, strategies
+
+    def pick(race: str, i: int) -> str:
+        if a.strategy == "default":
+            return ""
+        options = strategies(race) if a.strategy in ("all", "random") else [x for x in a.strategy.split(",")
+                                                                             if x in strategies(race)]
+        if not options:
+            return ""
+        return rng.choice(options) if a.strategy == "random" else options[(i // max(len(races), 1)) % len(options)]
     plans = []
     for i in range(a.games):
-        plans.append((i, races[i % len(races)], opps[(i // len(races)) % len(opps)], rng.randrange(2)))
+        race, opp_race = races[i % len(races)], opps[(i // len(races)) % len(opps)]
+        plans.append((i, race, opp_race, rng.randrange(2), pick(race, i), pick(opp_race, i + 1)))
     out = a.out or Path("runs/heuristic/matches.jsonl")
     out.parent.mkdir(parents=True, exist_ok=True)
     policy = None
-    if a.vs not in ("easy", "normal", "insane"):
+    if a.vs not in ("easy", "normal", "insane", "heuristic"):
         policy = PolicyMatch(Path(a.vs), out.parent / f"policy-{os.getpid()}", a)
     names = queue.Queue()
     for k in range(a.parallel):
@@ -221,13 +282,20 @@ def main(argv: list[str] | None = None) -> int:
     rows: list[dict] = []
 
     def run(p) -> None:
-        i, race, opp_race, side = p
+        i, race, opp_race, side, strategy, opp_strategy = p
         name = names.get()
         try:
             if policy is None:
-                r = play_vs_ai(name, race, opp_race, a.vs, side, a)
+                rec = a.record / f"game{i + a.first:05d}.npz" if a.record else None
+                r = play_scripted(name, race, opp_race, a.vs, side, a, strategy, opp_strategy, rec)
+                if a.record:
+                    with lock, open(a.record / "games.jsonl", "a") as f:
+                        f.write(json.dumps({"time": time.time(), "game": i + a.first, "races": [r["race"], r["opponent_race"]][::1 - 2 * side],
+                                            "strategies": [r["strategy"], r.get("opp_strategy", a.vs)][::1 - 2 * side],
+                                            "result": r["outcome"] if side == 0 else -r["outcome"],
+                                            "minutes": round(r["game_time"] / 60, 2)}) + "\n")
             else:
-                r = policy.play(name, race, opp_race, side, a)
+                r = policy.play(name, race, opp_race, side, a, strategy=strategy)
                 r["checkpoint"] = a.vs
             r.update(game=i, label=a.label)
         except Exception as e:  # noqa: BLE001 (a failed game: noted, not counted)
@@ -243,7 +311,8 @@ def main(argv: list[str] | None = None) -> int:
                 f.write(json.dumps(r) + "\n")
         res = {1.0: "WIN", -1.0: "LOSS"}.get(r["outcome"], "TIE")
         pr, op = r.get("prod") or {}, r.get("opp_prod") or {}
-        print(f"game {i}: heuristic {race} vs {opp_race} ({a.vs if policy is None else 'policy'}): {res} after "
+        print(f"game {i}: heuristic {race} {r.get('strategy') or ''} vs {opp_race} {r.get('opp_strategy') or ''} "
+              f"({a.vs if policy is None else 'policy'}): {res} after "
               f"{r['game_time'] / 60:.1f} min ({r['wall_seconds']:.0f} s) · army {pr.get('army')} kills {pr.get('kills')} "
               f"lost {pr.get('lost')} · theirs army {op.get('army')} kills {op.get('kills')}", flush=True)
 
@@ -253,8 +322,14 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         reaper.reap()
     by = defaultdict(Counter)
+    by_strategy = defaultdict(Counter)
     for r in rows:
         by[(r["race"], r["opponent_race"])][{1.0: "W", -1.0: "L"}.get(r["outcome"], "T")] += 1
+        by_strategy[r.get("strategy") or "default"][{1.0: "W", -1.0: "L"}.get(r["outcome"], "T")] += 1
+    if len(by_strategy) > 1:
+        for k in sorted(by_strategy):
+            c = by_strategy[k]
+            print(f"strategy {k:22}: {c['W']}W {c['L']}L {c['T']}T of {sum(c.values())}")
     tot = Counter()
     for k in sorted(by):
         c = by[k]
