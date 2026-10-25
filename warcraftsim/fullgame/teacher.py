@@ -256,7 +256,7 @@ class Teacher:
         if n < MIX_LEAST:
             return []
         # (the target's units' shares in its army: 1 / n added once a unit, as they were summed over the army)
-        have = {u: _share(c, n) for u, c in counts if c}
+        have = {u: _SHARES.get((c, n)) or _share(c, n) for u, c in counts if c}
         can = getattr(self, "can", None)
         # (the most lacking first, as sorted by minus the gap: the same order of equals, sorting being stable)
         for unit, gap in sorted([(u, s - have.get(u, 0.0)) for u, s in self.mix.items()], key=_SECOND, reverse=True):
