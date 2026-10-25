@@ -473,6 +473,46 @@ Echo Isles has more units in view than the duel maps (creeps, expansions, larger
 | 12 actors of 6, 16:37-16:52 | ~2,010 | 9.5 ms | 3.36 ms |
 | the actors' Python, 17:27-17:45 | **~2,170** | 9.4 ms | **2.67 ms** |
 
+## The actors' per-step Python, rounds 3 and 4 (2026-10-24/25)
+
+Round 3 (2026-10-24 evening, merged then) took the old recordings from 3.87 to 3.17 M instructions a side-step: material from a cached table of the types seen, the strategy's counts once per strategy, the view's masks shared, the policy side's builders and miners by masks, one copy of a side's living rows for the modes and the teacher, the parser's tables by memmove, Python's numbers before arithmetic.
+
+Round 4 (2026-10-25, branch `worktree-agent-ac6ba6c870d34f712`; two sub-agents' branches merged into it, then master). The old recordings no longer replay (a cancelled frame now leaves the unit table), so 12 new ones of `fgself-148` (`runs/bench/actor4-*.pkl`, references `ref4-*.pkl` made with the code before): all four races, sides with and without a target, a night elf mirror (`nn`), a 4,800-step game to the time limit (`uol`, made with `record --tax 0.05`: the bench's untaxed self-play games ended in 5-12 minutes), and two games against the built-in insane AI (`hai`, `uai`: `record --ai insane`; such games are ~46% of the run's training steps). Master's code gives 0 differences against the references (its `--macros-off` is off in these games).
+
+Where the time went: `bench_actor.py replay --functions` reads a perf_event_open counter around chosen functions (perf's call graphs lost numpy's share: numpy is built without frame pointers). On these ~100-400-row tables a numpy call costs ~3-15k instructions (a mask `fl & X == 0` ~16k, `rows[mask]` 20-50k), an import statement inside a function ~5k, `arr.ctypes.data` ~10k (a Python object each time; `ctypes.addressof(c_char.from_buffer(arr))` ~3k), and a ctypes call ~2.3k plus ~1.2k for each argument it converts.
+
+| recording | before (master): M instructions, µs CPU a side-step | after | |
+|---|---|---|---|
+| hu (human, undead: both with targets) | 3.044, 970 | 1.123, 399 | -63% |
+| on (orc, night elf: no targets) | 2.450, 821 | 0.884, 298 | -64% |
+| nh (night elf, human) | 3.485, 1,237 | 1.260, 446 | -64% |
+| uo (undead, orc) | 3.300, 1,090 | 1.155, 375 | -65% |
+| ho (human, orc) | 3.005, 989 | 1.103, 387 | -63% |
+| un (undead, night elf: no targets) | 2.471, 795 | 0.886, 320 | -64% |
+| no (night elf, orc) | 3.368, 1,048 | 1.117, 405 | -67% |
+| on2 (orc with a target, night elf without) | 2.743, 936 | 0.967, 337 | -65% |
+| nn (night elf mirror) | 3.001, 914 | 1.074, 371 | -64% |
+| hai (human against the insane AI) | 3.659, 1,122 | 1.414, 487 | -61% |
+| uai (undead against the insane AI) | 3.434, 1,079 | 1.334, 468 | -61% |
+| uol (undead, orc with a target: 4,800 steps) | 3.401, 1,134 | 1.274, 441 | -63% |
+| **all 12 (28,130 side-steps)** | **3.175, 1,038** | **1.161, 403** | **-63%, -61% CPU** |
+
+(CPU: the best of 3 replays, the two trees replayed side by side on the loaded machine.) By part on `uo`, k instructions a side-step: View.step 1,289 → 458, the teacher 412 → 51, the target builder 364 → 194, the modes 262 → 23, the policy's commands 234 → 108, the trajectory with its chunks 132 → 60, the parser 135 → 45 (a step's: per side-step half), the tech mask 107 → 50, material 93 → 10, Production 71 → 22, mismatch 42 → 7.
+
+What changed, all exact:
+
+* **View.step in two C calls** (`native/w3feat.c`, `featnative.side`, `view_step`): the side's masks of its rows (buildings, units, dead heroes, heroes, finished buildings, army, the mix's types, heroes with a skill point, frames), then the entities with the hero block, what each building makes, the hit points' change and its sorted ids, the zeroed columns (the positions' sines and cosines not made when `--features` zeroes them), the privileged block, the own workers on a building order and the frames for the policy's commands. Arguments in one array kept on the view. The affordable mask in C. macros' natural expansion (`natural`, `site`, `camp`) in C, a tie in distance left to numpy's argsort. The view forgets gone units' entries by the units gone since its last step (`View.added` keeps the invariant that makes it exact). The tech mask's needs resolved once per item.
+* **The teacher and the modes' tracker** (a sub-agent; `native/w3rules.c`, `rulesnative.py`): a step's facts in C, one argument array per teacher or tracker (the teacher's heroes, tavern and merchant, finished buildings, army, altars and the worker nearest the tavern in one pass; its expansion lesson's natural and what stands around it, two mines as near left to numpy's argsort; the tracker's counts, measured only for its undecided modes).
+* **The target builder**: on the step's rows and featnative.side's lists (no Unit objects: light tuples with Unit's names and values), the owners' map once per observation, its frames and makers by type ids, its imports at the top.
+* **The policy's commands**: bins_world in Python's floats (numpy's calls on numbers: ~80k an order), the gold harvests' mines from the step's candidates once, the nearest tree's table made once a game with the fallen trees marked, `macros._makers` once (a mix order had made it: ~400k), the auto skills' heroes and night elves' entangle from C, `accepted()` at once without orders.
+* **Bookkeeping** (a sub-agent): the parser's tables in one C export with a one-pass tokenizer, material, Production and unit_rows in C (material's sums as numpy's pairwise summation), the trajectory's arrays converted a chunk at a time when it is pickled, the merge and the table's copy in one call.
+* **strategy.mismatch and mix_gap** keep their last answer while `made` / `trained` are equal and the time lies between the same two thresholds.
+* **SharedRows.answer** (the live actors' read of the inference server's answers; outside the bench): 46.5k → 31.1k instructions an answer.
+
+Parity: 0 differences (every step's commands, every chunk the learner gets, the episode row) on all 12 recordings after each change and after the merges; the numpy fallback (`WARCRAFTSIM_PY_FEATURES=1`; trace's numpy path) too; `tests/unit/test_viewnative.py` compares the new C paths with the code they replaced on random steps, an evaluation game's view with every feature kept (the hit points' change is zeroed by the run's `--features 29`, so the recordings do not check it).
+
+Not done (not exact, or not measured): a view's dicts' cleanup without the `View.added` bookkeeping; reusing view_step's output buffers between steps (the trajectory now keeps the step's arrays until its chunk is pickled); SharedRows.write in C (~26k a side-step, live only); a CPython extension instead of ctypes (the arguments' conversions are now a large share of the C calls' cost); numpy's per-array cost in the chunks' concatenation.
+
 ## Dead ends
 
 * 8 actor processes of 4 games instead of 4 of 8 (627 against 644 steps/s).
@@ -497,6 +537,7 @@ Echo Isles has more units in view than the duel maps (creeps, expansions, larger
 * `py-spy record --threads --idle` on a process (it pauses the process while sampling: an update measured during a profile is slower).
 * `perf record -a` (`/usr/lib/linux-tools/5.15.0-194-generic/perf`; counters need `kernel.perf_event_paranoid` <= 2, Ubuntu's default 4 refuses them: `scripts/cut_ab.py` then reports CPU time from schedstat).
 * `scripts/bench_env.py` (env steps/s, CPU per process and thread kind), `scripts/bench_train.py`, `W3SIM_PROFILE=1..3` (the shim's per-second profile in each game's `shim.log`).
+* `scripts/bench_actor.py`: `record` (a game of a run's policy; `--ai`, `--tax`), `replay` with `--compare` (the actors' outputs against a reference), `--instructions` (perf stat over the warm replays) and `--functions` (inclusive instructions of chosen functions).
 * `runs/<run>/inference.jsonl` (the server's rounds, rows, waits); `scripts/selfplay_status.py <run>`.
 * `scripts/production_probe.py` and `scripts/order_probability.py`: what a policy does at its buildings, and how likely it is to give the built-in AI's orders.
 * Benchmarks with many games must share one measurement window (games launched at different times never overlap).
