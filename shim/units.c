@@ -799,7 +799,7 @@ static void uobj_check(int u, BYTE *o) {
     }
     if (g_owner_on)
         uobj_cmp("owner", u, owner_obj(u, o), owner_id(u));
-    if (g_uobj_units % 50000 == 0)
+    if (g_uobj_units % 10000 == 0)
         shim_log("unit object: %ld units checked, %ld mismatches", g_uobj_units, g_uobj_bad);
 }
 
@@ -1111,7 +1111,7 @@ static int __cdecl EnumCb_hook(BYTE *unit, DWORD *ctx) {
             int t = ctx[2] || g_eh_on ? ((EnumTopFn)VA(VA_ENUM_TOP))(st, NULL, 10) : 0; /* (a read) */
             if (h && t != h && g_eh_bad++ < 40)
                 shim_log("enum handles: MISMATCH unit %p: remembered %d, the push's %d", unit, h, t);
-            if (h && ++g_eh_checked % 50000 == 0)
+            if (h && ++g_eh_checked % 10000 == 0)
                 shim_log("enum handles: %ld checked, %ld mismatches", g_eh_checked, g_eh_bad);
             if (ctx[2] && t) {
                 g_fg_units++;
