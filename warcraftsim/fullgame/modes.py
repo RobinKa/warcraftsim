@@ -106,8 +106,7 @@ class Tracker:
         need = ((1 if ("expand" in m and "expand" not in done) or ("no_expand" in m and "no_expand" not in done) else 0)
                 | (2 if "harass" in m else 0) | (4 if "army" in m and "army" not in done else 0))
         if rulesnative.lib() is not None:
-            got = rulesnative.modes(self, rows, s, self.enemy, NEAR * NEAR, SCOUT_NEAR * SCOUT_NEAR, self.own,
-                                    EXPANSION_FROM_START ** 2, int(EXPANSION_AT_MINE ** 2), *self._tables(), need)
+            got = rulesnative.modes(self, rows, need, self._constants)
         else:
             got = self._measure_np(rows, need | (8 if "scout" in m and "scout" not in done else 0)
                                    | (16 if "workers" in m and "workers" not in done else 0)
@@ -152,17 +151,16 @@ class Tracker:
                     done.add(k)  # (decided at its time)
         return sum(self.v.values())
 
-    def _tables(self) -> tuple:
-        """rulesnative.modes' code tables: the halls, the gold mines, the workers, the food (kept)."""
-        got = self.__dict__.get("_rules_tables")
-        if got is None or got[3][5] is not self.food or got[3][6] != len(self.food):
-            global _FOOD_TABLE
-            ft = _FOOD_TABLE
-            if ft[5] is not self.food or ft[6] != len(self.food):  # (play_one's trackers share one food table)
-                ft = _FOOD_TABLE = (*rulesnative.table(list(self.food), list(self.food.values())), self.food, len(self.food))
-            got = self._rules_tables = (rulesnative.table(dict.fromkeys(self.hall_codes.tolist(), 1)), _MINES_TABLE,
-                                        rulesnative.table(dict.fromkeys(self.worker_codes.tolist(), 1)), ft)
-        return got
+    def _constants(self) -> tuple:
+        """rulesnative.modes' constants of this tracker (asked once): the side, the enemy's start, the squared
+        distances, its own start, the tables of the halls' types, the gold mines', the workers' and the food."""
+        global _FOOD_TABLE
+        ft = _FOOD_TABLE
+        if ft[5] is not self.food or ft[6] != len(self.food):  # (play_one's trackers share one food table)
+            ft = _FOOD_TABLE = (*rulesnative.table(list(self.food), list(self.food.values())), self.food, len(self.food))
+        return (self.side, self.enemy, NEAR * NEAR, SCOUT_NEAR * SCOUT_NEAR, self.own, EXPANSION_FROM_START ** 2,
+                int(EXPANSION_AT_MINE ** 2), rulesnative.table(dict.fromkeys(self.hall_codes.tolist(), 1)), _MINES_TABLE,
+                rulesnative.table(dict.fromkeys(self.worker_codes.tolist(), 1)), ft)
 
     def _measure_np(self, rows: np.ndarray, need: int) -> list:
         """rulesnative.modes' measures by numpy (the path without the library): [near, scouted, workers, the heroes'

@@ -35,6 +35,7 @@ Each kind at most every GAP steps a side, so a long wait for the money is not a 
 from __future__ import annotations
 
 import random
+from operator import itemgetter
 
 import numpy as np
 
@@ -145,14 +146,17 @@ class Teacher:
         out = []
         # the step's facts of the side (in C, rulesnative.teach: numpy's masks over all the rows had cost ~200k
         # instructions a side-step; _facts the numpy's): its heroes (dead ones count: revived), its living heroes'
-        # rows, the neutral buildings (on the game's minimap from the start), its finished buildings, its army
-        s = (rulesnative.teach(self, rows, self.side, TAVERN, MERCHANT, _classes()) if rulesnative.lib() is not None
-             else _facts(rows, self.side))
-        n_heroes, n_live, tav, mer, n_done, n_army, done_or, n_altars, altar, near_w = s[:10]
+        # fields, the neutral buildings (on the game's minimap from the start), its finished buildings, its army
+        mc = self.__dict__.get("_mix_codes")
+        if mc is None or mc[0] is not self.mix:  # (the target mix's units with their type ids: the army's counts)
+            mc = self._mix_codes = _mix_codes(self.mix)
+        s = (rulesnative.teach(self, rows, self.side, TAVERN, MERCHANT, _CLS[0] if _CLS else _classes(), mc[2])
+             if rulesnative.lib() is not None else _facts(rows, self.side, mc[3]))
+        n_heroes, n_live, tav, mer, n_done, n_army, done_or, n_altars, altar, near_w, _, n_mix = s[:TH]
         a = TH + n_heroes
-        hero_types, live = s[TH:a], s[a:a + n_live]
-        a += n_live
-        done, army = s[a:a + 2 * n_done], s[a + 2 * n_done:a + 2 * n_done + n_army]
+        hero_types, live = s[TH:a], s[a:a + HF * n_live]
+        a += HF * n_live
+        done, counts = s[a:a + 2 * n_done], s[a + 2 * n_done:a + 2 * n_done + n_mix]
         if self.first is not None and n_heroes == 0 and now >= self.first_from:  # (the altar itself from 45 s: a target's
             out += self._first_hero(rows, n_altars, altar, player, t, build=now >= FIRST_HERO_FROM)  # builder's when due)
         # a tavern hero: when the side has as many heroes as come before it (the target's, or one) or more (an altar's
@@ -167,33 +171,35 @@ class Teacher:
                 and self.pick not in hero_types):
             if near_w >= 0 and self._due("tavern hero", t):  # (the worker nearest the tavern: it walks there, Buy)
                 out.append(Buy(int(rows[near_w, fx.C_ID]), int(rows[tav, fx.C_ID]), self.pick))
-        pickers = set(pickers or ())
-        enemies = rows[(rows[:, fx.C_OWNER] == 1 - self.side) & (rows[:, fx.C_FLAGS] & (fx.DEAD | fx.STRUCTURE) == 0)] \
-            if pickers and fx.MACROS >= 2 else rows[:0]  # (only for a hero with an item near)
-        for i in live:
-            h = rows[i]
-            hl = h.tolist()
-            hid, items = hl[fx.C_ID], hl[fx.C_ITEM0:fx.C_ITEM0 + 6]
+        pickers = set(pickers) if pickers else ()
+        enemies = None  # (only for a hero with an item near)
+        for j in range(0, len(live), HF):
+            i, hid, hp, maxhp = live[j:j + 4]
+            items = live[j + 4:j + HF]
             # an item lying near, picked up when no enemy is near
-            if hid in pickers and fx.MACROS >= 2 and not (
-                    np.hypot(enemies[:, fx.C_X] - h[fx.C_X], enemies[:, fx.C_Y] - h[fx.C_Y]) < ENEMY_NEAR).any():
-                if self._due(f"item {hid}", t, "item"):
+            if hid in pickers and fx.MACROS >= 2:
+                h = rows[i]
+                if enemies is None:
+                    enemies = rows[(rows[:, fx.C_OWNER] == 1 - self.side)
+                                   & (rows[:, fx.C_FLAGS] & (fx.DEAD | fx.STRUCTURE) == 0)]
+                if not (np.hypot(enemies[:, fx.C_X] - h[fx.C_X], enemies[:, fx.C_Y] - h[fx.C_Y]) < ENEMY_NEAR).any() \
+                        and self._due(f"item {hid}", t, "item"):
                     out.append(ImmediateOrder(hid, fx._mod("macros").PICKUP))
             # a potion when it is low
-            if hl[fx.C_HP] < 0.4 * max(hl[fx.C_MAXHP], 1):
+            if hp < 0.4 * max(maxhp, 1):
                 table = fx._mod("herodata").item_table()
                 heal = [k for k, it in enumerate(items) if it and table.get(it, (0, 0, 0, 0))[1]]
                 if heal and self._due(f"potion {hid}", t, "potion"):
                     out.append(ImmediateOrder(hid, USESLOT + heal[0]))
             # a town portal from the goblin merchant
             if (mer >= 0 and now >= 440.0 and PORTAL not in items and 0 in items and player.gold >= 500):
-                m = rows[mer]
+                h, m = rows[i], rows[mer]
                 if np.hypot(h[fx.C_X] - m[fx.C_X], h[fx.C_Y] - m[fx.C_Y]) < NEAR_MERCHANT and self._due("town portal", t):
                     out.append(Buy(hid, int(m[fx.C_ID]), PORTAL))
         if self.expand_at is not None and now >= self.expand_at:
             out += self._expansion(rows, player, t)
         if self.mix and now >= MIX_FROM:
-            out += self._mix(army, done, t)
+            out += self._mix(n_army, zip(mc[1], counts), done, t)
         eco = getattr(self, "economy", None)  # (short, the choppers' ids, the trees: play_one's, from the builder)
         if self.lumber and eco is not None and eco[0] and eco[2] and t - self.last.get("lumber", -GAP) >= GAP:
             out += self._lumber(fx.own_alive(rows, self.side), eco[1], eco[2], t)
@@ -242,19 +248,17 @@ class Teacher:
         a, r = self.rng.uniform(0, 2 * np.pi), self.rng.uniform(450, 800)
         return [Build(int(w[fx.C_ID]), fourcc(code), float(at[fx.C_X] + r * np.cos(a)), float(at[fx.C_Y] + r * np.sin(a)))]
 
-    def _mix(self, army: list, done: list, t: int) -> list:
+    def _mix(self, n: int, counts, done: list, t: int) -> list:
         """The unit its target's army has the largest share of more than its own, trained at a building that makes it.
-        (The step's facts: army, the side's army units' types; done, its finished buildings' (type, id)s, flat)"""
-        n = len(army)
+        (The step's facts: n, the side's army units; counts, (unit, how many of its army) for the target's units;
+        done, each of its finished building types' first (type, id), flat)"""
         if n < MIX_LEAST:
             return []
-        have = {}  # (the target's units' shares: 1 / n added once a unit, as they were summed over the army)
-        for u in self.mix:
-            c = army.count(_code4(u))
-            if c:
-                have[u] = _share(c, n)
+        # (the target's units' shares in its army: 1 / n added once a unit, as they were summed over the army)
+        have = {u: _share(c, n) for u, c in counts if c}
         can = getattr(self, "can", None)
-        for unit, gap in sorted(((u, s - have.get(u, 0.0)) for u, s in self.mix.items()), key=lambda x: -x[1]):
+        # (the most lacking first, as sorted by minus the gap: the same order of equals, sorting being stable)
+        for unit, gap in sorted([(u, s - have.get(u, 0.0)) for u, s in self.mix.items()], key=_SECOND, reverse=True):
             if gap < MIX_SLACK:
                 return []
             if can is not None and not can(unit):
@@ -319,7 +323,8 @@ class Teacher:
         return [Build(int(w[fx.C_ID]), hall, x, y)]
 
 
-TH, EH = rulesnative.TH, rulesnative.EH  # (the C's facts: their heads)
+TH, EH, HF = rulesnative.TH, rulesnative.EH, rulesnative.HF  # (the C's facts: their heads, a hero's fields)
+_SECOND = itemgetter(1)
 K_ALTAR, K_TIER2, K_TIER3 = rulesnative.K_ALTAR, rulesnative.K_TIER2, rulesnative.K_TIER3
 _CLS: list = []  # ([the C's table of type classes]: made once)
 
@@ -336,16 +341,19 @@ def _classes() -> tuple:
     return _CLS[0]
 
 
-def _facts(rows: np.ndarray, side: int) -> list:
+def _facts(rows: np.ndarray, side: int, mix: list) -> list:
     """rulesnative.teach's facts by numpy (the path without the library): the side's heroes, the tavern and the
-    merchant (the first living of each), its finished buildings, its army, its altars, the worker nearest the tavern."""
+    merchant (the first living of each), its finished buildings, its army and how many of each of the `mix` types,
+    its altars, the worker nearest the tavern."""
     fl, typ = rows[:, fx.C_FLAGS], rows[:, fx.C_TYPE]
     own, living = rows[:, fx.C_OWNER] == side, fl & fx.DEAD == 0
     idx = np.flatnonzero(own & living)
     alive = fx.own_alive(rows, side, own & living)
     fa, ta = alive[:, fx.C_FLAGS], alive[:, fx.C_TYPE]
     heroes = typ[own & (fl & fx.HERO > 0)].tolist()
-    live = idx[fa & fx.HERO > 0].tolist()
+    live = []
+    for i, h in zip(idx[fa & fx.HERO > 0].tolist(), alive[fa & fx.HERO > 0].tolist()):
+        live += [i, h[fx.C_ID], h[fx.C_HP], h[fx.C_MAXHP], *h[fx.C_ITEM0:fx.C_ITEM0 + 6]]
     tav, mer = np.flatnonzero(living & (typ == TAVERN)), np.flatnonzero(living & (typ == MERCHANT))
     done = alive[(fa & fx.STRUCTURE > 0) & (fa & fx.CONSTRUCTING == 0)]
     dt = done[:, fx.C_TYPE]
@@ -362,10 +370,23 @@ def _facts(rows: np.ndarray, side: int) -> list:
         if len(workers):
             d = np.hypot(workers[:, fx.C_X] - tv[fx.C_X], workers[:, fx.C_Y] - tv[fx.C_Y])
             near_w = int(idx[wm][int(np.argmin(d))])
-    pairs = [v for p in zip(dt.tolist(), done[:, fx.C_ID].tolist()) for v in p]
-    return [len(heroes), len(live), int(tav[0]) if len(tav) else -1, int(mer[0]) if len(mer) else -1, len(done),
-            len(army), done_or, int(altars.sum()), int(fin[0]) if len(fin) else -1, near_w, len(idx), 0,
-            *heroes, *live, *pairs, *army]
+    pairs, seen = [], set()  # (each type's first)
+    for t, i in zip(dt.tolist(), done[:, fx.C_ID].tolist()):
+        if t not in seen:
+            seen.add(t)
+            pairs += [t, i]
+    return [len(heroes), len(live) // HF, int(tav[0]) if len(tav) else -1, int(mer[0]) if len(mer) else -1,
+            len(pairs) // 2, len(army), done_or, int(altars.sum()), int(fin[0]) if len(fin) else -1, near_w, len(idx),
+            len(mix), *heroes, *live, *pairs, *(army.count(c) for c in mix)]
+
+
+def _mix_codes(mix: dict) -> tuple:
+    """The target mix's units with a type id (a unit code of 4 latin-1 characters; the others are no unit's): (mix,
+    those units, (their ids as an int64 array, its address, how many), the ids)."""
+    units = [u for u in mix if _code4(u) is not None]
+    codes = [_code4(u) for u in units]
+    arr = np.ascontiguousarray(codes or [0], np.int64)
+    return mix, units, (arr, arr.ctypes.data, len(codes)), codes
 
 
 def _expansion_facts(rows: np.ndarray, alive: np.ndarray, sx, sy) -> list:

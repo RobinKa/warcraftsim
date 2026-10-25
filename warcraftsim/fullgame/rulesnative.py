@@ -2,10 +2,16 @@
 (teacher.Teacher.commands, its expansion lesson) and the strategy modes' tracker (modes.Tracker.step) read from a
 step's rows, in a pass or two over them (their numpy calls had cost ~700k instructions a side-step of an actor's
 ~2.5M). The numpy code in those modules stays the reference and the path without the library; as featnative's,
-WARCRAFTSIM_PY_FEATURES=1 makes it the only one."""
+WARCRAFTSIM_PY_FEATURES=1 makes it the only one.
+
+Each C function takes one argument, an int64 array of its caller's (a ctypes argument had cost ~1,600
+instructions): the head (A_* slots) the address of the rows' descriptor (their address and shape: made once per
+rows object), the caller's constants and its tables' addresses, then the output (array.array: an item or a short
+slice's list cheaper than numpy's)."""
 
 from __future__ import annotations
 
+import array
 import ctypes
 import os
 import subprocess
@@ -13,14 +19,19 @@ import subprocess
 import numpy as np
 
 from .. import native, paths
-from .featnative import _rows_addr, addr
+from .featnative import addr
 
 SRC = paths.REPO_ROOT / "native" / "w3rules.c"
 LIB = native.lib_path(SRC, "w3rules")
 _lib = None
-# type classes (w3rules.c's K_*): bits of a type code in a classes() table
+# type classes (w3rules.c's K_*): bits of a type code in a table()
 K_ALTAR, K_TIER2, K_TIER3, K_WORKER, K_MINE, K_HOLD, K_OWN_MINE = 1, 2, 4, 8, 16, 32, 64
 TH, EH, MH = 12, 19, 8  # (the outputs' heads: w3r_teach's, w3r_expansion's, w3r_modes')
+# the argument's head (w3rules.c's A_*): the rows' descriptor, the side, a table (keys, values, length), the doubles'
+# address, then the function's own slots
+A_ROWS, A_SIDE, A_KEYS, A_VALS, A_NKEYS, A_DOUBLES = 0, 3, 4, 5, 6, 7
+A_X = tuple(range(8, 18))
+HEAD = 24
 
 
 def lib():
@@ -37,52 +48,72 @@ def lib():
         except (OSError, subprocess.CalledProcessError):
             _lib = False
             return None
-        P, I, D, Q = ctypes.c_void_p, ctypes.c_int, ctypes.c_double, ctypes.c_int64
-        L.w3r_teach.restype = I
-        L.w3r_teach.argtypes = [P, I, I, I, Q, Q, P, P, I, P]
-        L.w3r_expansion.restype = I
-        L.w3r_expansion.argtypes = [P, I, I, I, D, D, P, P, I, D, D, D, D, P]
-        L.w3r_modes.restype = I
-        L.w3r_modes.argtypes = [P, I, I, I, D, D, D, D, I, D, D, D, Q, P, I, P, I, P, I, P, P, I, I, P]
+        for f in (L.w3r_teach, L.w3r_expansion, L.w3r_modes):
+            f.restype, f.argtypes = ctypes.c_int, [ctypes.c_void_p]
         _lib = L
     return _lib or None
 
 
 def table(keys, vals=None) -> tuple:
     """Sorted int64 keys (and their values) for the C's lookups, kept with their addresses: (keys, values, the keys'
-    address, the values', how many). `vals`: a dict's values for its keys (None: `keys` is a {code: bits} dict)."""
+    address, the values', how many). `vals`: the values of `keys` (None: `keys` is a {code: bits} dict)."""
     items = sorted(keys.items()) if vals is None else sorted(zip(keys, vals))
     k = np.ascontiguousarray([c for c, _ in items] or [0], np.int64)
     v = np.ascontiguousarray([b for _, b in items] or [0], np.int64)
     return k, v, k.ctypes.data, v.ctypes.data, len(items)
 
 
-def _buf(holder, n: int) -> tuple:
-    """`holder`'s output buffer of n int64 at least, with its address (one per teacher or tracker: a game's thread
-    alone uses it)."""
-    b = holder.__dict__.get("_rules_buf")
-    if b is None or len(b[0]) < n:
-        a = np.empty(max(n, 1024), np.int64)
-        b = holder._rules_buf = (a, addr(a))
-    return b
+_I64 = np.dtype(np.int64)
+_LAST: tuple = (None, 0, 0, None, None)  # (the last rows given, their descriptor's address, how many, the int64
+# C-contiguous rows and the descriptor kept: one tuple, replaced whole; an actor's game threads share it)
 
 
-def _rows(rows: np.ndarray) -> np.ndarray:
-    return rows if rows.dtype == np.int64 and rows.flags.c_contiguous else np.ascontiguousarray(rows, np.int64)
+def _rows(rows: np.ndarray) -> tuple:
+    global _LAST
+    got = _LAST
+    if got[0] is rows:
+        return got
+    r = rows if rows.dtype is _I64 and rows.flags.c_contiguous else np.ascontiguousarray(rows, np.int64)
+    n, nc = r.shape
+    desc = array.array("q", (addr(r), n, nc))
+    got = _LAST = (rows, desc.buffer_info()[0], n, r, desc)
+    return got
 
 
-def teach(holder, rows: np.ndarray, side: int, tavern: int, merchant: int, cls: tuple) -> list | None:
+def _arg(cap: int, slots: dict, doubles=(), keep=None) -> tuple:
+    """A caller's argument array: its head's constants (`slots`), the doubles, room for `cap` int64 of output:
+    (the array, its address, its room, `keep` (what the addresses point into), the doubles)."""
+    cap = max(cap, 1024)
+    a = array.array("q", bytes(8 * (HEAD + cap)))
+    d = array.array("d", [float(x) for x in doubles] + [0.0] * 8)
+    for k, v in slots.items():
+        a[k] = v
+    a[A_DOUBLES] = d.buffer_info()[0]
+    return a, a.buffer_info()[0], cap, keep, d
+
+
+HF = 10  # (w3r_teach's fields of a living hero: its row, id, hit points, maximum, 6 items)
+
+
+def teach(holder, rows: np.ndarray, side: int, tavern: int, merchant: int, cls: tuple, mix: tuple) -> list | None:
     """w3r_teach: [n_heroes, n_live, tavern row, merchant row, n_done, n_army, done classes, n_altars, finished altar
-    row, worker nearest the tavern row, n_alive, 0] then the heroes' types, the living heroes' rows, the finished
-    buildings' (type, id)s, the army's types; None without the library."""
+    row, worker nearest the tavern row, n_alive, n_mix], then the heroes' types, the living heroes' HF fields, each
+    finished building type's first (type, id), the army's count of each of the mix's types (`mix`: (an int64 array of
+    them, its address, how many)); None without the library."""
     L = lib()
     if L is None:
         return None
-    rows = _rows(rows)
-    n, nc = rows.shape
-    buf, ba = _buf(holder, TH + 5 * n)
-    k = L.w3r_teach(_rows_addr(rows), n, nc, side, tavern, merchant, cls[2], cls[3], cls[4], ba)
-    return buf[:k].tolist()
+    r = _rows(rows)
+    need = TH + (HF + 3) * r[2] + mix[2]
+    c = holder.__dict__.get("_rules_teach")
+    if c is None or c[2] < need or c[3] != (side, tavern, merchant, cls[2], cls[3], cls[4], mix[1], mix[2]):
+        c = holder._rules_teach = _arg(need, {A_SIDE: side, A_X[0]: tavern, A_X[1]: merchant, A_X[2]: mix[1],
+                                              A_X[3]: mix[2], A_KEYS: cls[2], A_VALS: cls[3], A_NKEYS: cls[4]},
+                                       keep=(side, tavern, merchant, cls[2], cls[3], cls[4], mix[1], mix[2]))
+    a = c[0]
+    a[A_ROWS] = r[1]
+    k = L.w3r_teach(c[1])
+    return a[HEAD:HEAD + k].tolist()
 
 
 def expansion(holder, rows: np.ndarray, side: int, sx: float, sy: float, cls: tuple, from_start: float,
@@ -91,27 +122,39 @@ def expansion(holder, rows: np.ndarray, side: int, sx: float, sy: float, cls: tu
     L = lib()
     if L is None:
         return None
-    rows = _rows(rows)
-    n, nc = rows.shape
-    buf, ba = _buf(holder, EH + n)
-    k = L.w3r_expansion(_rows_addr(rows), n, nc, side, sx, sy, cls[2], cls[3], cls[4], from_start, taken_near,
-                        worker_near, camp_near, ba)
-    return buf[:k].tolist()
+    r = _rows(rows)
+    key = (side, cls[2], cls[3], cls[4], from_start, taken_near, worker_near, camp_near)
+    c = holder.__dict__.get("_rules_expansion")
+    if c is None or c[2] < EH + r[2] or c[3] != key:
+        c = holder._rules_expansion = _arg(EH + r[2], {A_SIDE: side, A_KEYS: cls[2], A_VALS: cls[3], A_NKEYS: cls[4]},
+                                           (0.0, 0.0, from_start, taken_near, worker_near, camp_near), key)
+    a, d = c[0], c[4]
+    a[A_ROWS] = r[1]
+    d[0], d[1] = sx, sy
+    k = L.w3r_expansion(c[1])
+    return a[HEAD:HEAD + k].tolist()
 
 
-def modes(holder, rows: np.ndarray, side: int, enemy: tuple, near2: float, scout2: float, own: tuple | None,
-          far2: float, at2: int, halls: tuple, mines: tuple, workers: tuple, food: tuple, need: int) -> list | None:
-    """w3r_modes' measures (its comment), None without the library."""
+def modes(holder, rows: np.ndarray, need: int, setup) -> list | None:
+    """w3r_modes' measures (its comment), None without the library. `setup()`: the tracker's constants, (side, the
+    enemy's start, near2, scout2, its own start or None, far2, at2, the tables of the halls, gold mines, workers and
+    food), asked once (they are fixed)."""
     L = lib()
     if L is None:
         return None
-    rows = _rows(rows)
-    n, nc = rows.shape
-    buf, ba = _buf(holder, MH + 2 * n)
-    ox, oy = own if own is not None else (0.0, 0.0)
-    k = L.w3r_modes(_rows_addr(rows), n, nc, side, enemy[0], enemy[1], near2, scout2, own is not None, ox, oy, far2,
-                    at2, halls[2], halls[4], mines[2], mines[4], workers[2], workers[4], food[2], food[3], food[4],
-                    need, ba)
+    r = _rows(rows)
+    c = holder.__dict__.get("_rules_modes")
+    if c is None or c[2] < MH + 2 * r[2]:
+        side, enemy, near2, scout2, own, far2, at2, halls, mines, workers, food = setup()
+        ox, oy = own if own is not None else (0.0, 0.0)
+        c = holder._rules_modes = _arg(
+            MH + 2 * r[2], {A_SIDE: side, A_X[1]: int(own is not None), A_X[2]: at2, A_X[3]: halls[2], A_X[4]: halls[4],
+                            A_X[5]: mines[2], A_X[6]: mines[4], A_X[7]: workers[2], A_X[8]: workers[4],
+                            A_KEYS: food[2], A_VALS: food[3], A_NKEYS: food[4]},
+            (enemy[0], enemy[1], near2, scout2, ox, oy, far2), (halls, mines, workers, food))
+    a = c[0]
+    a[A_ROWS], a[A_X[0]] = r[1], need
+    k = L.w3r_modes(c[1])
     if k < 0:
         raise MemoryError("w3r_modes")
-    return buf[:k].tolist()
+    return a[HEAD:HEAD + k].tolist()
