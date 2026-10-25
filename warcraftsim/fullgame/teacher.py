@@ -38,7 +38,7 @@ import random
 
 import numpy as np
 
-from ..protocol import Build, Buy, ImmediateOrder, TargetOrder
+from ..protocol import Build, Buy, ImmediateOrder, PointOrder, TargetOrder
 from . import features as fx
 from .neutral import fourcc
 
@@ -78,6 +78,7 @@ CHOPPERS = {"human": ("hpea", 5), "orc": ("opeo", 5), "undead": ("ugho", 3), "ni
 NEAR_MERCHANT = 2500.0
 ENEMY_NEAR = 800.0  # (an item lesson waits while an enemy unit is this near the hero: a fight)
 USESLOT = 852008
+ATTACK = 851983  # (attack-move)
 
 
 class Teacher:
@@ -314,11 +315,15 @@ class Teacher:
             heroes = army[army[:, fx.C_FLAGS] & fx.HERO > 0]
             if not fx.MACROS or len(army) < 6 or not len(heroes) or not self._due("expansion: its camp", t):
                 return []
+            if "creep" in fx.MACROS_OFF:  # (--macros-off creep: the heroes attack-move to the camp themselves)
+                cx, cy = float(creeps[:, fx.C_X].mean()), float(creeps[:, fx.C_Y].mean())
+                return [PointOrder(int(h[fx.C_ID]), ATTACK, cx, cy) for h in heroes]
             from .macros import CREEP
             return [ImmediateOrder(int(h[fx.C_ID]), CREEP) for h in heroes]
         if not len(workers) or not self._due("expansion: the hall", t):
             return []
-        if fx.MACROS:  # (the agent's expand order: where to build is its own business, macros.py)
+        if fx.MACROS and "expand" not in fx.MACROS_OFF:  # (the agent's expand order: where to build is its own business,
+            # macros.py; --macros-off expand: the hall's own build order below, where people put theirs)
             from .macros import EXPAND
             w = workers[int(np.argmin(np.hypot(workers[:, fx.C_X] - mx, workers[:, fx.C_Y] - my)))]
             return [ImmediateOrder(int(w[fx.C_ID]), EXPAND)]
