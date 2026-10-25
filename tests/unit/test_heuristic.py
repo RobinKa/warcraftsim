@@ -98,11 +98,22 @@ def test_focus_fire_without_overkill():
     nearly dead one draws two, the third goes to the other."""
     mine = [_unit(50 + k, "ogru", 0, 0 + 40 * k, 0) for k in range(3)]
     weak, strong = _unit(60, "ogru", 1, 120, 0, hp=20), _unit(61, "ogru", 1, 140, 60)
-    a, base = _agent(mine)
+    a, base = _agent(mine, focus=1)
     a.mode = "attack"
     cmds = _step(a, base, mine + [weak, strong], t=300.0)
     targets = sorted((c.unit, c.target) for c in cmds if isinstance(c, TargetOrder) and c.order == hz.ATTACK)
     assert [t for _, t in targets].count(60) == 2 and [t for _, t in targets].count(61) == 1
+
+
+def test_ranged_units_only_focus_by_default():
+    """focus 2 (the default): the headhunter picks the weak enemy, the grunt is left to the game (attack-moving)."""
+    mine = [_unit(52, "ogru", 0, 0, 0), _unit(53, "ohun", 0, -200, 0)]
+    weak, strong = _unit(62, "ogru", 1, 120, 0, hp=20), _unit(63, "ogru", 1, 140, 60)
+    a, base = _agent(mine)
+    a.mode = "attack"
+    cmds = _step(a, base, mine + [weak, strong], t=300.0)
+    targets = {c.unit: c.target for c in cmds if isinstance(c, TargetOrder) and c.order == hz.ATTACK}
+    assert targets == {53: 62}
 
 
 def test_retreat_when_outnumbered_away_from_home():
