@@ -1681,7 +1681,20 @@ Fixed since, for the next run:
 | keep | 279 s | 374 s | 298 s | 339 s |
 | footman | 125 s | 100 s | 89 s | 69 s |
 
-Still open: the units passes reporting units gone without dying (wisps an ancient takes), War Stomp, Hex, Banish, Far Sight and Scout in the vocabulary, later research levels' costs.
+* **Units gone without dying are now reported.** The units passes (shim/units.c and the harness's JASS pass) keep the units each pass met. One the last pass met and this one did not gets an R record: a cancelled frame, or a wisp an ancient took (at the ancient's end).
+  * A probe game: the old shim left both as ghosts, the new one removes both, with and without the game cuts.
+  * A built-in AI game of 1,000 steps with 15 units removed without a death played back identical with cuts 0 and 17179866617 (raw bytes too).
+  * build/shim must be rebuilt at the next fork, with no games running.
+* **A lumber lesson (`--teach 3`).** When a target's next item is short of lumber (the builder's) and fewer than 5 work lumber (undead: 3 ghouls), the race's chopper nearest the tree nearest its hall harvests that tree.
+  * The policy had all but stopped chopping: human 105 lumber a minute in `fgself-120`, 59 in `fgself-129`, 50 in `fgself-139`, 38 in `fgself-145`, to ~870-930 gold; orc 138 to 54.
+  * People gather 30-50% as much lumber as gold. On `echofast` gold-only tier-1 armies win, and a target's lumber items wait.
+
+The queue:
+1. `fgself-146`: the fixes above (needs the shim rebuilt).
+2. `fgself-147`: `--teach 3`.
+3. `fgself-148`: the new pools (`--z-pool .../strategies-echofast-narrow-tavern-bt.json --eval-z-pool .../strategies-echo-real-narrow-tavern-bt.json`).
+
+Still open: War Stomp, Hex, Banish, Far Sight and Scout in the vocabulary; later research levels' costs.
 
 **Skill ratings** (the user's idea, the dashboard's Ratings view): a Bradley-Terry fit on the Elo scale over every evaluation game in the real game, the insane AI at 1500. At 22:45: `fgself-106`'s last checkpoint 2128 ± 24, `fgself-102`'s 11841833 1977 ± 8, `fgself-100`'s best 1956 ± 9.
 
