@@ -124,7 +124,7 @@ def record(a) -> int:
     groups: list[list[bytes]] = []  # the payloads each step parsed (a repeat or another episode's is parsed, then skipped)
     random.seed(a.seed)
     random.Random = _Seeded
-    with GameInstance(setup, name="bench_actor", timeout=120) as g:
+    with GameInstance(setup, name=a.name, timeout=120) as g:
         parse = g._native.parse
 
         def parsed(payload, names):
@@ -329,6 +329,7 @@ def main() -> int:
     r.add_argument("--races", nargs=2, default=["human", "undead"])
     r.add_argument("--seed", type=int, default=0)
     r.add_argument("--out", type=Path, required=True)
+    r.add_argument("--name", default="bench_actor", help="the game instance's name (two recordings at once: two names)")
     p = sub.add_parser("replay")
     p.add_argument("record", type=Path)
     p.add_argument("--reps", type=int, default=3)
