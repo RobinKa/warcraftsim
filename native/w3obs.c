@@ -386,6 +386,14 @@ int w3obs_table(void *p, int32_t *out, int cap) {
     return k;
 }
 
+/* w3obs_merge, then w3obs_table into out when its cap rows hold the table: the live units' count (the table copied
+ * only when cap is enough), or -2 (out of memory). */
+int w3obs_merge_into(void *p, int32_t *out, int cap) {
+    int n = w3obs_merge(p);
+    if (n >= 0 && n <= cap) w3obs_table(p, out, n);
+    return n;
+}
+
 const int32_t *w3obs_header(void *p) { return ((State *)p)->header; }
 
 /* which: 0 players, 1 events, 2 results, 3 issued, 4 orders, 5 dests, 6 removed, 7 unit deltas, 8 ground items */
@@ -635,11 +643,40 @@ int w3obs_prod_scan(void *p, const int32_t *rows, int n, int owners, int32_t *ou
 }
 
 /* play.unit_rows on the unit table: out [n][cols] (int64), the step t, then the table's first cols - 1 columns */
-void w3obs_unit_rows(const int32_t *rows, int n, int64_t t, int64_t *out, int cols) {
+static void unit_rows_plain(const int32_t *rows, int n, int64_t t, int64_t *out, int cols) {
     for (int i = 0; i < n; i++) {
         const int32_t *r = rows + (size_t)i * UCOLS;
         int64_t *d = out + (size_t)i * cols;
         d[0] = t;
         for (int k = 1; k < cols; k++) d[k] = r[k - 1];
     }
+}
+
+#if defined(__x86_64__) && defined(__GNUC__)
+#include <immintrin.h>
+/* (AVX2's sign extension, 4 columns an instruction: the plain loop's ~3.6 instructions a number had been ~17k a step) */
+__attribute__((target("avx2"))) static void unit_rows_avx2(const int32_t *rows, int n, int64_t t, int64_t *out,
+                                                           int cols) {
+    for (int i = 0; i < n; i++) {
+        const int32_t *r = rows + (size_t)i * UCOLS;
+        int64_t *d = out + (size_t)i * cols;
+        d[0] = t;
+        int k = 0;
+        for (; k + 4 <= cols - 1; k += 4)
+            _mm256_storeu_si256((__m256i *)(d + 1 + k), _mm256_cvtepi32_epi64(_mm_loadu_si128((const __m128i *)(r + k))));
+        for (; k < cols - 1; k++) d[1 + k] = r[k];
+    }
+}
+#endif
+
+void w3obs_unit_rows(const int32_t *rows, int n, int64_t t, int64_t *out, int cols) {
+#if defined(__x86_64__) && defined(__GNUC__)
+    static int avx2 = -1;
+    if (avx2 < 0) avx2 = __builtin_cpu_supports("avx2");
+    if (avx2) {
+        unit_rows_avx2(rows, n, t, out, cols);
+        return;
+    }
+#endif
+    unit_rows_plain(rows, n, t, out, cols);
 }

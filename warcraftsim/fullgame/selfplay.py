@@ -1061,13 +1061,29 @@ class Trajectory:
         steps = self.steps[:-1] if bootstrap else self.steps
         next_v = self.steps[-1]["value"] if bootstrap else 0.0
         adv = 0.0
-        for s in reversed(steps):
-            nonterminal = 0.0 if s["done"] else 1.0
-            delta = s["reward"] + gamma * next_v * nonterminal - s["value"]
-            adv = delta + gamma * lam * nonterminal * adv
-            s["adv"], s["ret"] = adv + self.bonus, adv + s["value"]
-            next_v = s["value"]
-        if self.cfg.get("unit_credit", 0.0) > 0:  # each own unit's short return of its own (unit_rewards), by id
+        credit, upgo = self.cfg.get("unit_credit", 0.0) > 0, self.cfg.get("upgo", 0.0) > 0
+        if upgo and not credit:  # (GAE and UPGO below in one pass: the same numbers, each step's keys in their order)
+            bonus, g, v1, q1 = self.bonus, next_v, next_v, -np.inf
+            for s in reversed(steps):
+                r, v, done = s["reward"], s["value"], s["done"]
+                nonterminal = 0.0 if done else 1.0
+                delta = r + gamma * next_v * nonterminal - v
+                adv = delta + gamma * lam * nonterminal * adv
+                s["adv"], s["ret"] = adv + bonus, adv + v
+                next_v = v
+                G = r if done else r + gamma * (g if q1 >= v1 else v1)
+                s["uadv"] = G - v
+                q1 = r + (0.0 if done else gamma * v1)
+                g, v1 = G, v
+            upgo = False
+        else:
+            for s in reversed(steps):
+                nonterminal = 0.0 if s["done"] else 1.0
+                delta = s["reward"] + gamma * next_v * nonterminal - s["value"]
+                adv = delta + gamma * lam * nonterminal * adv
+                s["adv"], s["ret"] = adv + self.bonus, adv + s["value"]
+                next_v = s["value"]
+        if credit:  # each own unit's short return of its own (unit_rewards), by id
             gl, ahead = self.cfg.get("unit_gamma", 0.8), {}
             for s in reversed(steps):
                 ids = s.get("ids")
@@ -1081,7 +1097,7 @@ class Trajectory:
                 ahead = dict(zip(ids.tolist(), g.tolist()))
                 s["ladv"] = g - g.mean() if len(g) else g  # (relative to the step's other units: the team's
                 # credit stays the step's advantage)
-        if self.cfg.get("upgo", 0.0) > 0:  # UPGO (AlphaStar): the return that follows the trajectory while the
+        if upgo:  # UPGO (AlphaStar): the return that follows the trajectory while the
             # actions after did at least as well as the value expected (Q >= V), else bootstraps from the value
             boot = self.steps[-1]["value"] if bootstrap else 0.0
             g, v1, q1 = boot, boot, -np.inf  # (the next step's UPGO return, value and action's value; the

@@ -80,6 +80,7 @@ def lib():
         L.w3obs_rows.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)]
         L.w3obs_width.argtypes = [ctypes.c_void_p, ctypes.c_int]
         L.w3obs_export.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+        L.w3obs_merge_into.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
         L.w3obs_parse_export.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
         P, I, D = ctypes.c_void_p, ctypes.c_int, ctypes.c_double  # (fullgame.trace's and play.unit_rows')
         L.w3obs_sum.restype = D
@@ -162,6 +163,8 @@ class NativeObs:
         if not self._s:
             raise MemoryError("w3obs_new")
         self._grow(4096)
+        self._table = np.empty((1024, UCOLS), np.int32)  # (merge's: the table copied out of it)
+        self._table_at = addr(self._table)
 
     def __del__(self):
         s, self._s = getattr(self, "_s", None), None
@@ -241,13 +244,17 @@ class NativeObs:
                            list(zip(it, it, it, it, it)))
 
     def merge(self, obs: Observation) -> Observation:
-        """Apply the last parsed observation to the unit table: obs.units / unit_array hold all units."""
-        n = self._lib.w3obs_merge(self._s)
+        """Apply the last parsed observation to the unit table: obs.units / unit_array hold all units. (The table comes
+        into this game's own buffer with the merge, one call, and is copied from it: a new array's address and a
+        second call had cost ~8k instructions more.)"""
+        n = self._lib.w3obs_merge_into(self._s, self._table_at, len(self._table))
         if n < 0:
             raise MemoryError("w3obs_merge")
-        rows = np.empty((n, UCOLS), np.int32)
-        if n:
-            self._lib.w3obs_table(self._s, addr(rows), n)
+        if n > len(self._table):
+            self._table = np.empty((2 * n, UCOLS), np.int32)
+            self._table_at = addr(self._table)
+            self._lib.w3obs_table(self._s, self._table_at, n)
+        rows = self._table[:n].copy()
         obs.unit_array = rows
         obs.units = LazyUnits(rows)
         obs.full = True
