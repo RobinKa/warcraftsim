@@ -124,6 +124,103 @@ static float r2(int k, int a, int b) {
     return f;
 }
 
+/* W3SIM_CUTS & 34359738368 (round 5): the record from the unit's object. With 16 the pass gets each unit's object from
+ * ForGroup's callback (0x5026a0: the group's snapshot, the agent's checks), and the natives the record calls are made
+ * here without their wrappers: each native turns the handle back into the object (0x483940 / 0x483ba0, which give
+ * this object: the handle is the object's own, and the callback has just made the same agent checks) and then reads a
+ * field or calls one of the engine's functions on it; those reads and calls are made directly, in the record's order.
+ *   GetUnitTypeId          +0x34
+ *   IsUnitType             HERO 0x499030 (the type id's first byte 'A'..'Z', not an illusion), DEAD the vtable's
+ *                          +0x13c (0x667050: +0x164 bit 8), STRUCTURE 0x696b50(0) (+0x164 bit 16), FLYING +0x408 & 2,
+ *                          SUMMONED / PEON / TOWNHALL 0x48a660(type) (a constant table) & +0x454
+ *   IsUnitHidden           +0x20 bit 0;  IsUnitLoaded, IsUnitPaused, IsUnitIllusion: +0x164 bits 4, 21, 30
+ *   UnitIsSleeping         the ability 'Asla' (0x6d6570(id, 1, 0, 1, 1), 8192's hook) +0x20 bit 7
+ *   GetWidgetLife          the vtable's +0x12c: 0x800d80 on +0x1a0 (life's regenerating value)
+ *   GetUnitState           MAX_LIFE the vtable's +0x130: 0x800e20 on +0x1a0; MANA / MAX_MANA 0x800d80 / 0x800e20 on +0x1c0
+ *   GetUnitX, GetUnitY     the vtable's +0xb8 (+0x26c, the position) and 0x7fcc50 on it: x and y from one call
+ *   GetUnitFacing          the position's own vtable +0x1c, times 0x10db11c with the soft float's multiply (0x99ffe0)
+ *   GetUnitCurrentOrder    the order's agent (+0x3a8, 0x7fc7e0) +0x24
+ *   IsUnitVisible          the vtable's +0xfc (0x66d280) with the seer's player number (its handle's player +0x30,
+ *                          converted once a pass by 0x482770 as the native does)
+ *   GetResourceAmount      +0x164 bit 17, then 0x6929c0 (the gold mine's ability +0x70)
+ * The checks the natives make on the unit's agent (0x4707f0: '+agl', alive) are the callback's, and nothing between
+ * the callback and the record changes them. Only for objects with CUnit's vtable (0xe9c504; anything else: the
+ * natives). The owner (GetOwningPlayer: a handle), the hero's fields and the table natives stay natives.
+ * W3SIM_UOBJ_CHECK=1: every unit's fields also read through the natives and compared (mismatches logged). */
+#define CUT_UOBJ 34359738368LL
+#define UVA(x) ((void *)(g_base + ((x) - 0x400000)))
+#define VA_CUNIT_VT 0xe9c504
+typedef void(__fastcall *ValFn)(BYTE *, void *, float *);         /* 0x800d80, 0x800e20: thiscall(value, out) */
+typedef float *(__fastcall *PosFn)(BYTE *, void *, float *);      /* 0x7fcc50: thiscall(position, out[3]) */
+typedef float *(__fastcall *AngFn)(BYTE *, void *, float *);      /* the position's vtable +0x1c */
+typedef BYTE *(__fastcall *LinkFn)(BYTE *);                       /* 0x7fc7e0: fastcall(agent id pair) */
+typedef int(__fastcall *VisFn)(BYTE *, void *, int, int, int);    /* 0x66d280: thiscall(unit, player, 0, 4) */
+typedef int(__fastcall *ResFn)(BYTE *);                           /* 0x6929c0 */
+typedef BYTE *(__fastcall *FindFn)(BYTE *, void *, int, int, int, int, int); /* 0x6d6570 */
+typedef float *(__cdecl *MulFn)(float *, const float *, const float *);     /* 0x99ffe0 */
+typedef BYTE *(__cdecl *H2PlayerFn)(int);                         /* 0x482770 */
+static BYTE *g_obj;          /* the unit's object, while pass_unit works on it from the callback (else NULL) */
+static int g_uobj, g_uobj_check;
+static DWORD g_mask_summoned, g_mask_peon, g_mask_townhall; /* 0x48a660 of SUMMONED, PEON, TOWNHALL */
+static int g_seer_pnum[MAX_PLAYERS];                        /* each seer's player number, or -1 (no player) */
+static long g_uobj_units, g_uobj_bad;
+
+static inline DWORD o_f164(BYTE *o) {
+    return *(DWORD *)(o + 0x164);
+}
+static inline int o_bit(BYTE *o, int b) { /* +0x164's bit b; -1: +0x20's bit 0 (hidden) */
+    return b < 0 ? (int)(*(DWORD *)(o + 0x20) & 1) : (int)((o_f164(o) >> b) & 1);
+}
+static inline int o_hero(BYTE *o) {
+    return o[0x37] > 0x40 && o[0x37] < 0x5b && !(o_f164(o) & 0x40000000);
+}
+static inline int o_dead(BYTE *o) {
+    return (o_f164(o) >> 8) & 1;
+}
+static inline int o_structure(BYTE *o) {
+    return (o_f164(o) & 0x10000) != 0;
+}
+static inline int o_class(BYTE *o, DWORD mask) {
+    return (mask & *(DWORD *)(o + 0x454)) != 0;
+}
+static inline int o_flying(BYTE *o) {
+    return (*(DWORD *)(o + 0x408) & 2) != 0;
+}
+static int o_sleeping(BYTE *o) {
+    BYTE *a = ((FindFn)UVA(0x6d6570))(o, NULL, 0x41736c61, 1, 0, 1, 1);
+    return a ? (*(DWORD *)(a + 0x20) >> 7) & 1 : 0;
+}
+static float o_value(BYTE *o, int at, int max) { /* life (0x1a0) or mana (0x1c0): the value, or its maximum */
+    float v;
+    ((ValFn)UVA(max ? 0x800e20 : 0x800d80))(o + at, NULL, &v);
+    return v;
+}
+static void o_xy(BYTE *o, float *x, float *y) {
+    float p[3];
+    float *r = ((PosFn)UVA(0x7fcc50))(o + 0x26c, NULL, p);
+    *x = r[0];
+    *y = r[1];
+}
+static float o_facing(BYTE *o) {
+    BYTE *pos = o + 0x26c;
+    float tmp, res;
+    float *a = ((AngFn)(*(void ***)pos)[0x1c / 4])(pos, NULL, &tmp);
+    ((MulFn)UVA(0x99ffe0))(&res, a, (const float *)UVA(0x10db11c));
+    return res;
+}
+static int o_order(BYTE *o) {
+    if ((*(DWORD *)(o + 0x3ac) & *(DWORD *)(o + 0x3a8)) == 0xffffffffu)
+        return 0;
+    BYTE *a = ((LinkFn)UVA(0x7fc7e0))(o + 0x3a8);
+    return a ? *(int *)(a + 0x24) : 0;
+}
+static int o_visible(BYTE *o, int k) {
+    return g_seer_pnum[k] >= 0 && ((VisFn)UVA(0x66d280))(o, NULL, g_seer_pnum[k], 0, 4);
+}
+static int o_resource(BYTE *o) {
+    return (o_f164(o) >> 17) & 1 ? ((ResFn)UVA(0x6929c0))(o) : 0;
+}
+
 /* W3SIM_CUTS & 32: the pure getters pass_unit and unit_record both call (GetUnitTypeId, IsUnitType(DEAD),
  * GetOwningPlayer + GetPlayerId, IsUnitType(HERO), GetWidgetLife) called once per unit; GetPlayerId by the
  * player's handle (a player's id and handle are fixed for a load of the map: forgotten at a game's first step).
@@ -363,53 +460,66 @@ static void unit_record(int u) {
     /* (the order of the calls is W3S_SerUnit's: some of them make handles) */
     int flags = 0;
     int same = g_dedupe && g_cur.u == u; /* (pass_unit's values for this unit) */
-    int hero = same && g_cur.have_hero ? g_cur.hero : n2(IsUnitType, u, TYPE_HERO) != 0;
+    BYTE *o = g_obj; /* (W3SIM_CUTS & 34359738368: the natives' work on the unit's object done here) */
+    int hero = same && g_cur.have_hero ? g_cur.hero : o ? o_hero(o) : n2(IsUnitType, u, TYPE_HERO) != 0;
     if (hero)
         flags += 1;
-    if (n2(IsUnitType, u, TYPE_STRUCTURE))
+    if (o ? o_structure(o) : n2(IsUnitType, u, TYPE_STRUCTURE) != 0)
         flags += 2;
-    if (n2(IsUnitType, u, TYPE_PEON))
+    if (o ? o_class(o, g_mask_peon) : n2(IsUnitType, u, TYPE_PEON) != 0)
         flags += 4;
     int ki = g_kt && !g_paired ? kt_slot(u) : -1;
     if (ki >= 0 ? g_k1[ki] : n3(LoadBoolean, g_ht, u, 1))
         flags += 8; /* under construction */
-    if (n1(IsUnitHidden, u))
+    if (o ? o_bit(o, -1) : n1(IsUnitHidden, u))
         flags += 16;
-    if (n1(IsUnitLoaded, u))
+    if (o ? o_bit(o, 4) : n1(IsUnitLoaded, u))
         flags += 32;
-    if (n1(UnitIsSleeping, u))
+    if (o ? o_sleeping(o) : n1(UnitIsSleeping, u))
         flags += 64;
-    if (n1(IsUnitPaused, u))
+    if (o ? o_bit(o, 21) : n1(IsUnitPaused, u))
         flags += 128;
-    if (n2(IsUnitType, u, TYPE_SUMMONED))
+    if (o ? o_class(o, g_mask_summoned) : n2(IsUnitType, u, TYPE_SUMMONED) != 0)
         flags += 256;
-    if (n1(IsUnitIllusion, u))
+    if (o ? o_bit(o, 30) : n1(IsUnitIllusion, u))
         flags += 512;
-    int dead = same ? g_cur.dead : n2(IsUnitType, u, TYPE_DEAD) != 0;
+    int dead = same ? g_cur.dead : o ? o_dead(o) : n2(IsUnitType, u, TYPE_DEAD) != 0;
     float life = 0;
     if (g_dedupe) {
-        life = r1(GetWidgetLife, u);
+        life = o ? o_value(o, 0x1a0, 0) : r1(GetWidgetLife, u);
         if (dead || life < 0.405f)
             flags += 1024;
-    } else if (dead || r1(GetWidgetLife, u) < 0.405f)
+    } else if (dead || (o ? o_value(o, 0x1a0, 0) : r1(GetWidgetLife, u)) < 0.405f)
         flags += 1024;
-    if (n2(IsUnitType, u, TYPE_FLYING))
+    if (o ? o_flying(o) : n2(IsUnitType, u, TYPE_FLYING) != 0)
         flags += 2048;
 #ifdef W3SIM_REPLAY
     flags |= replay_unit_flags(u, flags); /* (the replay build: buildings' state; the unit's object ids reported) */
 #endif
-    int typ = same ? g_cur.typ : n1(GetUnitTypeId, u);
+    int typ = same ? g_cur.typ : o ? *(int *)(o + 0x34) : n1(GetUnitTypeId, u);
     int owner = pid(same ? g_cur.owner : owner_id(u));
-    int x = (int)r1(GetUnitX, u), y = (int)r1(GetUnitY, u), facing = (int)r1(GetUnitFacing, u);
-    int hp = (int)((g_dedupe ? life : r1(GetWidgetLife, u)) + 0.5f);
-    int maxhp = (int)(r2(GetUnitState, u, STATE_MAX_LIFE) + 0.5f);
-    int mana = (int)r2(GetUnitState, u, STATE_MANA), maxmana = (int)r2(GetUnitState, u, STATE_MAX_MANA);
-    int order = n1(GetUnitCurrentOrder, u);
+    int x, y, facing;
+    if (o) {
+        float fx, fy;
+        o_xy(o, &fx, &fy);
+        x = (int)fx;
+        y = (int)fy;
+        facing = (int)o_facing(o);
+    } else {
+        x = (int)r1(GetUnitX, u);
+        y = (int)r1(GetUnitY, u);
+        facing = (int)r1(GetUnitFacing, u);
+    }
+    int hp = (int)((g_dedupe ? life : o ? o_value(o, 0x1a0, 0) : r1(GetWidgetLife, u)) + 0.5f);
+    int maxhp = (int)((o ? o_value(o, 0x1a0, 1) : r2(GetUnitState, u, STATE_MAX_LIFE)) + 0.5f);
+    int mana = (int)(o ? o_value(o, 0x1c0, 0) : r2(GetUnitState, u, STATE_MANA));
+    int maxmana = (int)(o ? o_value(o, 0x1c0, 1) : r2(GetUnitState, u, STATE_MAX_MANA));
+    int order = o ? o_order(o) : n1(GetUnitCurrentOrder, u);
     int vis = 0;
     for (int k = 0; k < g_nseer; k++)
-        if (n2(IsUnitVisible, u, g_seer_player[k]))
+        if (o ? o_visible(o, k) : n2(IsUnitVisible, u, g_seer_player[k]) != 0)
             vis += g_seer_bit[k];
-    int res = n1(GetResourceAmount, u);
+    int res = o ? o_resource(o) : n1(GetResourceAmount, u);
     uint32_t h = (uint32_t)typ;
     h = h * 31 + (uint32_t)owner;
     h = h * 31 + (uint32_t)x;
@@ -521,7 +631,108 @@ static int push_int(int **v, int *n, int *cap, int x) {
     return 0;
 }
 
+/* (W3SIM_UOBJ_CHECK=1) the object's fields against the natives' */
+static void uobj_cmp(const char *what, int u, int a, int b) {
+    if (a != b && g_uobj_bad++ < 60)
+        shim_log("unit object: MISMATCH unit %d %s: the object's %d (0x%x), the native's %d (0x%x)", u, what, a, a, b, b);
+}
+static int fbits(float f) {
+    int b;
+    memcpy(&b, &f, 4);
+    return b;
+}
+
+static void uobj_check(int u, BYTE *o) {
+    float fx, fy;
+    g_uobj_units++;
+    uobj_cmp("type", u, *(int *)(o + 0x34), n1(GetUnitTypeId, u));
+    uobj_cmp("hero", u, o_hero(o), n2(IsUnitType, u, TYPE_HERO) != 0);
+    uobj_cmp("dead", u, o_dead(o), n2(IsUnitType, u, TYPE_DEAD) != 0);
+    uobj_cmp("structure", u, o_structure(o), n2(IsUnitType, u, TYPE_STRUCTURE) != 0);
+    uobj_cmp("flying", u, o_flying(o), n2(IsUnitType, u, TYPE_FLYING) != 0);
+    uobj_cmp("summoned", u, o_class(o, g_mask_summoned), n2(IsUnitType, u, TYPE_SUMMONED) != 0);
+    uobj_cmp("peon", u, o_class(o, g_mask_peon), n2(IsUnitType, u, TYPE_PEON) != 0);
+    uobj_cmp("townhall", u, o_class(o, g_mask_townhall), n2(IsUnitType, u, TYPE_TOWNHALL) != 0);
+    uobj_cmp("hidden", u, o_bit(o, -1), n1(IsUnitHidden, u));
+    uobj_cmp("loaded", u, o_bit(o, 4), n1(IsUnitLoaded, u));
+    uobj_cmp("sleeping", u, o_sleeping(o), n1(UnitIsSleeping, u));
+    uobj_cmp("paused", u, o_bit(o, 21), n1(IsUnitPaused, u));
+    uobj_cmp("illusion", u, o_bit(o, 30), n1(IsUnitIllusion, u));
+    uobj_cmp("life", u, fbits(o_value(o, 0x1a0, 0)), n1(GetWidgetLife, u));
+    uobj_cmp("max life", u, fbits(o_value(o, 0x1a0, 1)), n2(GetUnitState, u, STATE_MAX_LIFE));
+    uobj_cmp("mana", u, fbits(o_value(o, 0x1c0, 0)), n2(GetUnitState, u, STATE_MANA));
+    uobj_cmp("max mana", u, fbits(o_value(o, 0x1c0, 1)), n2(GetUnitState, u, STATE_MAX_MANA));
+    o_xy(o, &fx, &fy);
+    uobj_cmp("x", u, fbits(fx), n1(GetUnitX, u));
+    uobj_cmp("y", u, fbits(fy), n1(GetUnitY, u));
+    uobj_cmp("facing", u, fbits(o_facing(o)), n1(GetUnitFacing, u));
+    uobj_cmp("order", u, o_order(o), n1(GetUnitCurrentOrder, u));
+    for (int k = 0; k < g_nseer; k++)
+        uobj_cmp("visible", u, o_visible(o, k), n2(IsUnitVisible, u, g_seer_player[k]) != 0);
+    uobj_cmp("resource", u, o_resource(o), n1(GetResourceAmount, u));
+    if (g_uobj_units % 50000 == 0)
+        shim_log("unit object: %ld units checked, %ld mismatches", g_uobj_units, g_uobj_bad);
+}
+
+/* W3SIM_CUTS & 17179869184 (round 5): the enum unit's handle remembered. ForGroup's callback (0x5026a0) pushes each
+ * unit's handle on the JASS state's enum stack (0x4ebf00: the handle found by the object's agent id in the handle map,
+ * 0x4e72c0 -> 0x4ebd40, or made; its reference count + 1) and pops it after the code (0x4ebce0: - 1, freed at 0). For a
+ * unit whose handle exists the pair leaves nothing behind: the count is >= 1 before (a handle whose count reaches 0 is
+ * freed at once, 0x4e8180 -> 0x4ecb50, which also clears its entry's object and drops its map record), the stack's top
+ * is back where it was, and the stack grows only when it is full. The map's lookup (a hash chain of cache misses) was
+ * ~1% of the main thread. So each unit's handle is remembered with its object's agent ids; while the handle table's
+ * entry for it still holds the object with a count >= 1, it is the handle the map gives (an entry's object and its map
+ * record are made together, 0x4e72c0, and dropped together, 0x4ecb50, the only callers of the map's insert and removal
+ * outside a saved game's load; an object has at most one handle: one is made only when the map has none), and with
+ * room on the stack the push and pop are skipped. A unit the pass drops (GroupRemoveUnit, FlushChildHashtable: its
+ * table's saved handle released) gets its push first (eh_pin), as the native order had it: no release reaches 0
+ * during the record. Else the push and pop are made as before, and the handle remembered.
+ * W3SIM_EH_CHECK=1: the push is made anyway and its handle compared (mismatches logged). */
+#define CUT_EH 17179869184LL
+#define EH_SLOTS 8192
+static struct {
+    BYTE *u, *st;
+    DWORD id0, id1;
+    int h;
+} g_eh[EH_SLOTS];
+static int g_eh_on, g_eh_check;
+static BYTE *g_eh_st, *g_eh_unit; /* a unit whose push was skipped (eh_pin makes it), and its JASS state */
+static int g_eh_pushed;           /* the unit's push was made by eh_pin: its pop is due */
+static long g_eh_hits, g_eh_miss, g_eh_pins, g_eh_bad, g_eh_checked;
+
+static inline unsigned eh_slot(BYTE *unit) {
+    return (*(DWORD *)(unit + 0x10) * 2654435761u) >> 19; /* (13 bits) */
+}
+
+static int eh_find(BYTE *st, BYTE *unit) {
+    unsigned k = eh_slot(unit);
+    if (g_eh[k].u != unit || g_eh[k].st != st || g_eh[k].id0 != *(DWORD *)(unit + 0xc) || g_eh[k].id1 != *(DWORD *)(unit + 0x10))
+        return 0;
+    unsigned i = (unsigned)g_eh[k].h - 0x100000u;
+    if (i >= *(DWORD *)(st + 0x194))
+        return 0;
+    DWORD *e = (DWORD *)(*(BYTE **)(st + 0x198) + i * 12);
+    if ((BYTE *)(size_t)e[1] != unit || (int)e[0] < 1)
+        return 0;
+    DWORD *stk = (DWORD *)(st + 0x94 + 10 * 0x10); /* (count, array, capacity, growth) */
+    if (stk[0] + 1 > stk[2] || stk[0] + 1 > 0x3ff)
+        return 0;
+    return g_eh[k].h;
+}
+
+static void eh_keep(BYTE *st, BYTE *unit, int h) {
+    unsigned k = eh_slot(unit);
+    g_eh[k].u = unit;
+    g_eh[k].st = st;
+    g_eh[k].id0 = *(DWORD *)(unit + 0xc);
+    g_eh[k].id1 = *(DWORD *)(unit + 0x10);
+    g_eh[k].h = h;
+}
+
+static void eh_pin(void);
+
 static void drop(int u) { /* out of the group of all units, its table entries with it; an "R" record */
+    eh_pin();
     cuts_unit_begin(0);
     n2(GroupRemoveUnit, g_all, u);
     n2(FlushChildHashtable, g_ht, u);
@@ -543,13 +754,16 @@ static void pass_unit(int u) {
     int *at = met_slot(u);
     if (at)
         *at = g_passno;
-    int typ = n1(GetUnitTypeId, u);
+    BYTE *o = g_obj;
+    if (o && g_uobj_check)
+        uobj_check(u, o);
+    int typ = o ? *(int *)(o + 0x34) : n1(GetUnitTypeId, u);
     if (typ == 0) { /* removed from the game */
         drop(u);
         return;
     }
     int before = g_nremoved;
-    int dead = n2(IsUnitType, u, TYPE_DEAD) != 0;
+    int dead = o ? o_dead(o) : n2(IsUnitType, u, TYPE_DEAD) != 0;
     int p = owner_id(u);
     if (g_dedupe) {
         g_cur.u = u;
@@ -560,15 +774,15 @@ static void pass_unit(int u) {
     }
     if (!dead && p >= 0 && p < g_max_players && p < MAX_PLAYERS) {
         g_alive[p]++;
-        if (n2(IsUnitType, u, TYPE_TOWNHALL))
+        if (o ? o_class(o, g_mask_townhall) : n2(IsUnitType, u, TYPE_TOWNHALL) != 0)
             g_halls[p]++;
-        else if (!n2(IsUnitType, u, TYPE_STRUCTURE))
+        else if (!(o ? o_structure(o) : n2(IsUnitType, u, TYPE_STRUCTURE) != 0))
             g_mobile[p]++;
     }
     /* reported as dead already: dropped (heroes stay, they can be revived). As in the harness, its
      * record is still written this once (its stored hash went with its table entries). */
     if (dead) {
-        int hero = n2(IsUnitType, u, TYPE_HERO) != 0;
+        int hero = o ? o_hero(o) : n2(IsUnitType, u, TYPE_HERO) != 0;
         if (g_dedupe) {
             g_cur.hero = hero;
             g_cur.have_hero = 1;
@@ -635,22 +849,59 @@ static void __cdecl ForGroup_hook(int group, int code) {
     ForGroup_orig(group, code);
 }
 
+static void eh_pin(void) { /* (W3SIM_CUTS & 17179869184) the skipped push, made now: the pass drops the unit */
+    if (!g_eh_unit)
+        return;
+    ((EnumPushFn)VA(VA_ENUM_PUSH))(g_eh_st, NULL, 10, g_eh_unit, 0);
+    g_eh_pushed = 1;
+    g_eh_unit = NULL;
+    g_eh_pins++;
+}
+
 static int __cdecl EnumCb_hook(BYTE *unit, DWORD *ctx) {
     if (!g_fg_pass)
         return EnumCb_orig(unit, ctx);
     if (unit) { /* (0x5026a0's checks) */
         BYTE *a = ((AgentFn)VA(VA_AGENT))(*(DWORD *)(unit + 0xc), *(DWORD *)(unit + 0x10));
         if (a && *(DWORD *)(a + 0xc) == 0x2b61676c && *(DWORD *)(a + 0x20) == 0) {
-            void *st = (void *)(size_t)ctx[0];
-            ((EnumPushFn)VA(VA_ENUM_PUSH))(st, NULL, 10, unit, 0);
-            if (ctx[2]) {
-                int h = ((EnumTopFn)VA(VA_ENUM_TOP))(st, NULL, 10);
-                if (h) {
+            BYTE *st = (BYTE *)(size_t)ctx[0];
+            BYTE *obj = g_uobj && *(void **)unit == UVA(VA_CUNIT_VT) ? unit : NULL;
+            int h = g_eh_on ? eh_find(st, unit) : 0;
+            if (h && !g_eh_check) { /* (its handle is live: no push, no pop) */
+                g_eh_hits++;
+                if (ctx[2]) {
                     g_fg_units++;
+                    g_eh_st = st;
+                    g_eh_unit = unit;
+                    g_eh_pushed = 0;
+                    g_obj = obj;
                     pass_unit(h);
+                    g_obj = NULL;
+                    g_eh_unit = NULL;
+                    if (g_eh_pushed) {
+                        ((EnumPopFn)VA(VA_ENUM_POP))(st, NULL, 10, 1);
+                        g_eh_pushed = 0;
+                    }
                 }
+                return 1;
+            }
+            ((EnumPushFn)VA(VA_ENUM_PUSH))(st, NULL, 10, unit, 0);
+            int t = ctx[2] || g_eh_on ? ((EnumTopFn)VA(VA_ENUM_TOP))(st, NULL, 10) : 0; /* (a read) */
+            if (h && t != h && g_eh_bad++ < 40)
+                shim_log("enum handles: MISMATCH unit %p: remembered %d, the push's %d", unit, h, t);
+            if (h && ++g_eh_checked % 50000 == 0)
+                shim_log("enum handles: %ld checked, %ld mismatches", g_eh_checked, g_eh_bad);
+            if (ctx[2] && t) {
+                g_fg_units++;
+                g_obj = obj;
+                pass_unit(t);
+                g_obj = NULL;
             }
             ((EnumPopFn)VA(VA_ENUM_POP))(st, NULL, 10, 1);
+            if (g_eh_on && t) {
+                g_eh_miss++;
+                eh_keep(st, unit, t);
+            }
         }
     }
     return 1;
@@ -1146,6 +1397,12 @@ int units_call(int key, int mbox, int *result) {
         memset(g_cobs_agent, 0, sizeof g_cobs_agent);
         memset(g_cobs_result, 0, sizeof g_cobs_result);
         cuts_game_start();
+        if (g_eh_on) {
+            if (g_eh_hits || g_eh_miss)
+                shim_log("enum handles: %ld remembered, %ld pushed (%ld pinned), %ld mismatches", g_eh_hits, g_eh_miss, g_eh_pins, g_eh_bad);
+            memset(g_eh, 0, sizeof g_eh);
+            g_eh_hits = g_eh_miss = g_eh_pins = 0;
+        }
         *result = obs_capture_on() ? g_ok : 0;
         return 1;
     }
@@ -1227,6 +1484,11 @@ int units_call(int key, int mbox, int *result) {
         memset(g_halls, 0, sizeof g_halls);
         memset(g_mobile, 0, sizeof g_mobile);
         memset(g_alive, 0, sizeof g_alive);
+        if (g_uobj) /* (each seer's player number, as IsUnitVisible's conversion of its handle gives it) */
+            for (int k = 0; k < g_nseer; k++) {
+                BYTE *pl = ((H2PlayerFn)UVA(0x482770))(g_seer_player[k]);
+                g_seer_pnum[k] = pl ? pl[0x30] : -1;
+            }
         return 1;
     }
     if (key == mbox - 15) { /* the pass is over (its counts are asked for next) */
@@ -1413,12 +1675,27 @@ void units_install(void) {
     g_ok = found == N_NATIVES ? mode : 0;
     g_cobs_check_env = GetEnvironmentVariableA("W3SIM_COBS_CHECK", buf, sizeof buf) && buf[0] == '1';
     if (g_ok == 1) {
-        int cuts = cuts_flags();
+        long long cuts = cuts_flags();
         g_dedupe = (cuts & 32) != 0;
         if (g_dedupe)
             shim_log("unit records: getters once per unit, player ids by handle (W3SIM_CUTS & 32)");
         if (cuts & 16)
             install_fg_pass();
+        if ((cuts & 16) && (cuts & CUT_UOBJ)) {
+            typedef DWORD(__cdecl * ClassFn)(int);
+            g_mask_summoned = ((ClassFn)UVA(0x48a660))(TYPE_SUMMONED);
+            g_mask_peon = ((ClassFn)UVA(0x48a660))(TYPE_PEON);
+            g_mask_townhall = ((ClassFn)UVA(0x48a660))(TYPE_TOWNHALL);
+            g_uobj = 1;
+            g_uobj_check = GetEnvironmentVariableA("W3SIM_UOBJ_CHECK", buf, sizeof buf) && buf[0] == '1';
+            shim_log("unit records: the natives' work on the unit's object done by the shim (W3SIM_CUTS & 34359738368)%s",
+                     g_uobj_check ? " (checked)" : "");
+        }
+        if ((cuts & 16) && (cuts & CUT_EH)) {
+            g_eh_on = 1;
+            g_eh_check = GetEnvironmentVariableA("W3SIM_EH_CHECK", buf, sizeof buf) && buf[0] == '1';
+            shim_log("unit records: the enum unit's handle remembered (W3SIM_CUTS & 17179869184)%s", g_eh_check ? " (checked)" : "");
+        }
         if (cuts & 8388608)
             install_kt();
         if ((cuts_flags() & 8589934592LL) && g_citems_ok && g_ctok_ok)
