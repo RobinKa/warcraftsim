@@ -99,7 +99,7 @@ def record(a) -> int:
 
     from warcraftsim.fullgame import selfplay
     from warcraftsim.runtime import wine
-    from warcraftsim.runtime.instance import Agent, GameInstance, GameSetup
+    from warcraftsim.runtime.instance import Agent, BuiltinAI, GameInstance, GameSetup
     cfg, vocab = settings(a.run)
     w = cfg.pop("_wine")
     if w.get("wine"):
@@ -117,7 +117,10 @@ def record(a) -> int:
         return out
     infer.request = kept
     races, side = list(a.races), 0
-    setup = GameSetup(map=cfg["map"], slots=[Agent(races[0], handicap=cfg["handicap"]), Agent(races[1], handicap=cfg["handicap"])],
+    slots = [Agent(races[0], handicap=cfg["handicap"]), Agent(races[1], handicap=cfg["handicap"])]
+    if a.ai:  # (a game against the built-in AI: the run's other half of its training games)
+        slots[1 - side] = BuiltinAI(races[1 - side], a.ai, handicap=cfg["handicap"])
+    setup = GameSetup(map=cfg["map"], slots=slots,
                       step_seconds=cfg["step_seconds"], max_game_seconds=cfg["max_minutes"] * 60, victory="decisive",
                       window=(320, 240), draw=False, wait_floor_ms=cfg["wait_floor_ms"], native_obs=True, d3d_thread=False,
                       render_threads=0, pairs=1, cuts=cfg.get("game_cuts") or None)
@@ -142,7 +145,9 @@ def record(a) -> int:
         order_names = list(g.order_names)
         q = Queue()
         t0 = time.time()
-        opp = {"name": "self", "kind": "self", **({"tax": a.tax, "tax_side": a.tax_side} if a.tax else {})}
+        opp = ({"name": f"script:ai-{a.ai}", "kind": "ai"} if a.ai else {"name": "self", "kind": "self"})
+        if a.tax:
+            opp.update(tax=a.tax, tax_side=a.tax_side)
         ep = selfplay.play_one(g, obs, cfg, vocab, races, side, dict(opp), infer, q, 0, train=True)
         print(f"recorded {ep['length']} steps of {races} in {time.time() - t0:.0f} s: outcome {ep['outcome']}, "
               f"{len(answers)} answers, {sum(len(x) for x in groups)} payloads", flush=True)
@@ -335,6 +340,7 @@ def main() -> int:
     r.add_argument("--tax", type=float, default=0.0, help="the share of what one side gathers taken (a game between "
                    "agents' balance tax: longer games)")
     r.add_argument("--tax-side", type=int, default=0)
+    r.add_argument("--ai", default="", help="the second race's player the built-in AI of this difficulty (insane, ...)")
     p = sub.add_parser("replay")
     p.add_argument("record", type=Path)
     p.add_argument("--reps", type=int, default=3)
