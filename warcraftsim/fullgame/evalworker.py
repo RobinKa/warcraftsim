@@ -132,6 +132,7 @@ def run_config(run_dir: Path, host: str, games: int, start_update) -> tuple[dict
            "features": num("features", fx.F, int), "inputs": num("inputs", 1, int),  # (--inputs, the masks)
            "tech_mask": num("tech_mask", 0, int), "valid_mask": num("valid_mask", 0, int), "neutral": num("neutral", 0, int), "macros": num("macros", 0, int), "spells": num("spells", 0, int),
            "macros_off": "" if c.get("macros_off") in (None, "None") else str(c.get("macros_off")),
+           "econ_masks": num("econ_masks", 0, int),
            "eval_human": num("eval_human", 0, int),
            "privileged": num("opsd_share", 0.0) > 0 or num("opsd_coef", 0.0) > 0,  # (the networks' channels only)
            "scenarios": [], "scenario_share": 0.0,  # (training games only)
@@ -140,7 +141,7 @@ def run_config(run_dir: Path, host: str, games: int, start_update) -> tuple[dict
            "z_pool": c.get("eval_z_pool") or c.get("z_pool") or "", "z_src": c.get("z_src") or "", "z_enforce": _flag(c.get("z_enforce", 0)),
            # (a number: 2 is the builder as a teacher only, never carrying out; as a flag it was True, == 1, and the
            # worker's current+z games had the builder carry out the target until 2026-10-19)
-           "z_build": num("z_build", 0, int), "z_modes": num("z_modes", 0.0), "z_mix": num("z_mix", 0, int),  # (--z-modes: drawn and measured)
+           "z_build": num("z_build", 0, int), "z_workers": num("z_workers", 0, int),"z_modes": num("z_modes", 0.0), "z_mix": num("z_mix", 0, int),  # (--z-modes: drawn and measured)
            "z_comp": num("z_comp", 0.0), "z_forbid_mask": num("z_forbid_mask", 0, int),
            "grpo_share": 0.0, "grpo_group": 4, "grpo_branch": [60.0, 480.0],  # (evaluation games never branch)
            "eval_map": "", "eval_costs": None,  # (its map is the evaluation games' already: --eval-map)
@@ -203,6 +204,7 @@ def worker_main(wid: int, cfg: dict, games: int, keys: dict, host: str, q, stop)
     fx.set_macros(int(cfg.get("macros", 0) or 0))
     fx.set_spells(int(cfg.get("spells", 0) or 0))
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
+    fx.set_econ_masks(cfg.get("econ_masks", 0))
     torch.set_num_threads(1)
     sys.setswitchinterval(0.001)  # (a game thread woken by its answer waits for the GIL: 5 ms by default)
     try:
@@ -299,6 +301,7 @@ def main(argv: list[str] | None = None) -> int:
     fx.set_macros(int(cfg.get("macros", 0) or 0))
     fx.set_spells(int(cfg.get("spells", 0) or 0))
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
+    fx.set_econ_masks(cfg.get("econ_masks", 0))
     from ..data.duelmap import parse_duel_name
     if parse_duel_name(cfg["map"]) is None:  # (as selfplay.main: another map's frame; set_geometry exports it)
         from ..data.mapbuild import stock_map_path

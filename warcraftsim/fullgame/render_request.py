@@ -308,6 +308,7 @@ def play_and_render(r: dict, runs: Path, update) -> dict:
     fx.set_macros(int(cfg.get("macros", 0) or 0))
     fx.set_spells(int(cfg.get("spells", 0) or 0))
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
+    fx.set_econ_masks(cfg.get("econ_masks", 0))
     from ..data.duelmap import parse_duel_name
     if parse_duel_name(cfg["map"]) is None:
         from ..data.mapbuild import stock_map_path
