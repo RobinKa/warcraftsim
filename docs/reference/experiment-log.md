@@ -1805,15 +1805,14 @@ Fixed since, for the next run:
 
 Game cuts round 5 is in it from 00:30 (the units pass from the unit objects, `--game-cuts 1099511625209`, build/shim rebuilt).
 
-The queue:
-1. Resume `fgself-152` (the -bt pools; judge it), or fork from it.
-2. Training at a person's income, or a curriculum toward it (the agent slots at normal difficulty), with `current+human` as the yardstick.
-3. Cloning the scripted strategy family as anchor and teacher (AlphaStar's recipe with scripted data). First tune its weak plans, and add night elf and undead expansion plans. Then record thousands of echofast games (`scripts/heuristic_match.py --record`), train a cloning policy, and use it as the KL anchor and a distillation teacher.
-4. `--teach-heuristic` (live lessons from the matching scripted strategy), the exploiters back on, and fine points around the acting unit (expansions without the expand order land off-site).
-5. (was) the new pools (`--z-pool .../strategies-echofast-narrow-tavern-bt.json --eval-z-pool .../strategies-echo-real-narrow-tavern-bt.json`).
-2. Snapshots by wall time (every 15-30 minutes).
+**From 2026-10-26 no agent slot plays at the doubled income** (the user: "make sure our agents dont play with the doubled income, in training and in evals etc."). Every agent slot is at normal difficulty, a person's income (`selfplay.agent_difficulty`): training, evaluation, the laptop's worker, the render requests and `heuristic_match.py` (`--slot-difficulty normal`). Only an advisor (`--opd-share`) takes `--opd-difficulty`, and never insane. The episode rows carry `slot_difficulty`. The ratings keep the doubled-income games against insane apart, against a player of their own ("insane AI, equal income", rated ~1,150 at first). The anchor (1500) is the insane AI against a person's income, so every rating before `fgself-153` floats on the head-to-head games until new games link it.
 
-A heuristic opponent stronger than the learner is being built (the user's idea).
+**`fgself-153`** (from `fgself-152`'s 2318909, 10:12): **a person's income in training and evaluation.** Otherwise `fgself-152` (the -bt pools). `--eval-human 0`: the current policy's games are at a person's income now. Head to head with its start and `fgself-130`/5534555. Judge it by the real game against insane at a person's income (`fgself-152`: 34% of 35), with a target, and the curriculum's tax on the AI.
+
+The queue:
+1. Cloning the scripted strategy family as anchor and teacher (AlphaStar's recipe with scripted data). First tune its weak plans, and add night elf and undead expansion plans. Then record thousands of echofast games (`scripts/heuristic_match.py --record`), train a cloning policy, and use it as the KL anchor and a distillation teacher.
+2. `--teach-heuristic` (live lessons from the matching scripted strategy), the exploiters back on, and fine points around the acting unit (expansions without the expand order land off-site).
+3. Snapshots by wall time (every 15-30 minutes).
 
 Still open: War Stomp, Hex, Banish, Far Sight and Scout in the vocabulary; later research levels' costs.
 
