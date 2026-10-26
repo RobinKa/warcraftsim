@@ -551,14 +551,21 @@ def duel_map_path(name: str, pairs: int = 1) -> Path:
 # plays it by FAST's (what the duelfast policy learned), "echoP" P% of the way from FAST to the game's own
 # (hit points, times and costs in between; "echo100" is the real game), to anneal a policy to the real rules.
 ECHO_ISLES = "(2)EchoIsles"
+# "echofast2": echofast with its economy on the real game's schedule relative to the costs: the mines' gold
+# (13,500 and 12,500) and the starting gold and lumber (500 / 150) scaled like the costs. On echofast a mine
+# held twice the real game's worth of units and a game never mined one out (wins 5-6 min, losses 11-16): the
+# policy never expanded (0 of 286 real games, audit 12) and its main mine ran dry ~22 min into the real game.
+ECON_FAST = replace(FAST, start=FAST.cost, mine_gold=FAST.cost)
 
 
 def parse_echo_name(name: str) -> tuple[str, Rules] | None:
-    """"echofast" -> (Echo Isles, FAST), "echoP" (P 0-100) -> (Echo Isles, P% of the way from FAST to the
-    game's rules); else None."""
-    m = re.fullmatch(r"echo(fast|\d{1,3})", name)
+    """"echofast" -> (Echo Isles, FAST), "echofast2" -> (Echo Isles, ECON_FAST), "echoP" (P 0-100) -> (Echo
+    Isles, P% of the way from FAST to the game's rules); else None."""
+    m = re.fullmatch(r"echo(fast2?|\d{1,3})", name)
     if not m:
         return None
+    if m.group(1) == "fast2":
+        return ECHO_ISLES, ECON_FAST
     t = 0.0 if m.group(1) == "fast" else int(m.group(1)) / 100
     if t > 1:
         raise ValueError("echoP: P is a percentage, 0-100")
@@ -598,19 +605,43 @@ def echo_map_path(name: str) -> Path:
     return out
 
 
+def economy_script(script: str, rules: Rules) -> str:
+    """A stock map's script with its economy scaled: the pre-placed gold mines' gold (each SetResourceAmount
+    of the map's units) by `rules.mine_gold`, and every player's starting gold and lumber by `rules.start`
+    (W3S_DuelRules, after melee initialization: the map's main, as on the duel maps). Line endings kept."""
+    crlf = "\r\n" in script
+    script = script.replace("\r\n", "\n")
+    if rules.mine_gold != 1.0:
+        script, n = re.subn(r"(call SetResourceAmount\(\s*u\s*,\s*)(\d+)(\s*\))",
+                            lambda m: f"{m.group(1)}{round(int(m.group(2)) * rules.mine_gold)}{m.group(3)}", script)
+        if n == 0:
+            raise ValueError("the map script sets no gold mine's gold (SetResourceAmount)")
+    if rules.start != 1.0:
+        script, n = re.subn(r"(\n\s*call RunInitializationTriggers\(\s*\))", r"\1\n    call W3S_DuelRules()", script,
+                            count=1)
+        if n != 1:
+            raise ValueError("the map script has no RunInitializationTriggers call")
+        main = script.index("function main takes nothing returns nothing")
+        script = script[:main] + _script_rules(rules) + script[main:]
+    return script.replace("\n", "\r\n") if crlf else script
+
+
 def make_rules_map(source: str | Path, dest: str | Path, rules: Rules) -> Path:
     """A copy of `source` (its terrain, units and script) playing by `rules`: the game's tables with the
-    rules' values and its gameplay constants in the map (rules_files). Rules that need the map script
-    (the day's speed, the starting resources) are not supported here."""
-    if (rules.day * rules.speed, rules.start) != (1.0, 1.0):
-        raise ValueError("make_rules_map: the day's speed and the starting resources need the duel maps' script")
+    rules' values and its gameplay constants in the map (rules_files); the mines' gold and the starting
+    resources through its script (economy_script). The day's speed is not supported here."""
+    if rules.day * rules.speed != 1.0:
+        raise ValueError("make_rules_map: the day's speed needs the duel maps' script")
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_name(f".{dest.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     shutil.copyfile(source, tmp)
     try:
         with MpqArchive(tmp, writable=True) as m:
-            for name, data in rules_files(rules, TABLES_IN_MAP).items():
+            files = rules_files(rules, TABLES_IN_MAP)
+            if (rules.start, rules.mine_gold) != (1.0, 1.0):
+                files["war3map.j"] = economy_script(m.read("war3map.j").decode("latin-1"), rules).encode("latin-1")
+            for name, data in files.items():
                 m.write(name, data)
         tmp.replace(dest)
     finally:

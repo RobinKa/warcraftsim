@@ -113,3 +113,35 @@ def test_setup_with_pairs_of_players(game_dir):
     assert [p.id for p in players] == list(range(6)) and [(p.start_x, p.start_y) for p in players] == [(-1500.0, 0.0), (1500.0, 0.0)] * 3
     assert "call SetPlayers( 6 )" in script and "MAP_PLACEMENT_USE_MAP_SETTINGS" in script
     assert re.findall(r"call DefineStartLocation\( (\d), (-?[\d.]+), ", script) == [(str(i), ("-1500.0", "1500.0")[i % 2]) for i in range(6)]
+
+
+def test_echofast2_scales_the_economy_like_the_costs():
+    from warcraftsim.data.duelmap import ECON_FAST, economy_script, map_rules, parse_echo_name
+
+    assert parse_echo_name("echofast")[1] == FAST  # (the live runs' map: unchanged, its file's name too)
+    assert FAST.tag == "_hp0.5_t0.33_c0.5"
+    name, rules = parse_echo_name("echofast2")
+    assert name == "(2)EchoIsles" and rules == ECON_FAST and map_rules("echofast2") == ECON_FAST
+    assert (rules.cost, rules.start, rules.mine_gold) == (0.5, 0.5, 0.5) and rules.tag != FAST.tag
+    assert parse_echo_name("echofast3") is None
+    script = ("function CreateNeutralPassiveBuildings takes nothing returns nothing\r\n"
+              "    set u = CreateUnit( p, 'ngol', -5632.0, 3584.0, 270.000 )\r\n"
+              "    call SetResourceAmount( u, 13500 )\r\n"
+              "    set u = CreateUnit( p, 'ngol', -4864.0, -3200.0, 270.000 )\r\n"
+              "    call SetResourceAmount( u, 12500 )\r\n"
+              "endfunction\r\n\r\n"
+              "function main takes nothing returns nothing\r\n"
+              "    call InitBlizzard(  )\r\n"
+              "    call RunInitializationTriggers(  )\r\n"
+              "endfunction\r\n")
+    out = economy_script(script, rules)
+    assert "SetResourceAmount( u, 6750 )" in out and "SetResourceAmount( u, 6250 )" in out
+    assert "13500" not in out and "12500" not in out
+    # the starting gold and lumber scaled after melee initialization (which sets them)
+    assert "call RunInitializationTriggers(  )\r\n    call W3S_DuelRules()" in out
+    assert out.index("function W3S_DuelRules") < out.index("function main")
+    assert "GetPlayerState(p, PLAYER_STATE_RESOURCE_LUMBER) * 0.500" in out
+    assert "\n" not in out.replace("\r\n", "")  # (line endings kept)
+    assert economy_script(script, FAST) == script
+    with pytest.raises(ValueError):
+        economy_script("function main takes nothing returns nothing\nendfunction\n", rules)

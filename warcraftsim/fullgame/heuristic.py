@@ -478,8 +478,9 @@ class HeuristicAgent:
         try:  # (the map's rules: echofast's costs are halved, the training games' map)
             from ..data.duelmap import map_rules
             self.cost_scale = float(map_rules(map_name).cost)
+            self.mine_scale = float(map_rules(map_name).mine_gold)  # (echofast2: the mines' gold halved too)
         except Exception:  # noqa: BLE001
-            self.cost_scale = 1.0
+            self.cost_scale = self.mine_scale = 1.0
         self.step_s = step_seconds
         self.logging = log
         self.log: list[dict] = []
@@ -1016,7 +1017,7 @@ class HeuristicAgent:
             return []
         if any(p[0] == hall for p in self.pending):
             return []
-        low = self.mine_gold.get(self.main_mine, 0) < MINE_LOW or self.main_mine not in self.mines
+        low = self.mine_gold.get(self.main_mine, 0) < MINE_LOW * self.mine_scale or self.main_mine not in self.mines
         if self.now < self._expand_at() and not low:
             return []
         camp = self._camp_at(*self.mines[self.natural])
@@ -1296,7 +1297,7 @@ class HeuristicAgent:
         if self.opt["rush_caution"] and self.t - self.threat_at < 120:
             return None
         early = 120.0 if self.enemy_race not in ("undead", "orc") or not self.opt["rush_caution"] else 0.0
-        due = self.now >= self._expand_at() - early or self.mine_gold.get(self.main_mine, 0) < MINE_LOW + 3000
+        due = self.now >= self._expand_at() - early or self.mine_gold.get(self.main_mine, 0) < (MINE_LOW + 3000) * self.mine_scale
         if natural is not None and natural["ids"] and due and mine_power > 2.0 * natural["power"]:
             return natural
         return None

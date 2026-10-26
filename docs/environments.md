@@ -19,11 +19,13 @@ flowchart LR
 | `duelrush` | 40 tiles | everything 7× faster | ~2 min |
 | `duelfast` | 48 tiles | hit points and costs ÷2, production ÷3 | ~6 min |
 | `echofast` | Echo Isles | duelfast's rules in the real map | ~10 min |
+| `echofast2` | Echo Isles | echofast with the mines' gold and the starting gold and lumber ÷2 too | — |
 | `echoP` | Echo Isles | P% of the way to the game's rules | — |
 | `echo100` | Echo Isles | the game's rules (the real game) | wins ~9 min, losses ~28 |
 
 * The duel maps have two bases like Echo Isles' main bases, a gold mine each and creep camps. They have no expansions, items or shops.
 * `echofast` and `echoP` put the rules' tables into a copy of Echo Isles. The terrain, creeps, mines and expansions are the real map's.
+* `echofast2` scales the economy like the costs: each mine holds half its gold (main mines 6,750, the expansions' 6,250) and players start with 250 gold and 75 lumber. On `echofast` a mine held twice the real game's worth of units, so a training game never mined one out and expanding never paid (audit 12: 0 expansions in 286 real games, the main mine dry ~22 min in). The map script does it (the mines' `SetResourceAmount`, the starting resources after melee initialization); a real-game check read 6,750 / 6,250 in the mines and 250 / 75 at the first step. Trees keep their lumber. The agent's mine feature stays gold / 12,500, so a fresh mine reads 0.5 there and 1.0 in the real game.
 
 ## What the agent sees and does
 
