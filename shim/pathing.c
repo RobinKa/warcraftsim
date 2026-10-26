@@ -674,8 +674,22 @@ static int __fastcall Astar3_hook(BYTE *s) {
     }
     g_as_runs++;
     g_in = 1;
+    unsigned long long c0 = g_ax_stats ? __builtin_ia32_rdtsc() : 0;
     int r = run(s, g, sc);
     g_in = 0;
+    if (r == -1 && *(DWORD *)(s + 0x6c) > *(DWORD *)(s + 0x68))
+        g_ax_as_last_exh = 1; /* (approx.c 35184372088832: out of nodes) */
+    if (g_ax_stats) { /* (W3SIM_APPROX_STATS: the runs' expansions, the ones that ended on the budget +0x68) */
+        DWORD e = *(DWORD *)(s + 0x6c), lim = *(DWORD *)(s + 0x68);
+        int k = e < 32 ? 0 : e < 64 ? 1 : e < 128 ? 2 : e < 256 ? 3 : e < 512 ? 4 : e <= lim ? 5 : 6;
+        g_ax_eb_n[k]++, g_ax_eb_e[k] += e, g_ax_eb_c[k] += __builtin_ia32_rdtsc() - c0;
+        g_ax_as_e += e;
+        g_ax_as_lim += lim;
+        if (r == -1 && e > lim)
+            g_ax_as_exh++, g_ax_as_exh_e += e;
+        else if (r == -1)
+            g_ax_as_empty++, g_ax_as_empty_e += e;
+    }
     return r;
 }
 

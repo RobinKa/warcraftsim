@@ -119,6 +119,7 @@ def run_config(run_dir: Path, host: str, games: int, start_update) -> tuple[dict
     main_root = str(Path(c["runs"]).parent) if c.get("runs") else None
     evals = re.findall(r"PosixPath\('((?:[^'\\]|\\.)*)'\)", c.get("eval_checkpoints") or "")
     local = {str(local_path(p, main_root)): p for p in evals}
+    from ..runtime.instance import exact_cuts
     from . import features as fx
     races = list(fx.RACES) if c.get("races", "all") == "all" else c["races"].split(",")
     cfg = {"run_dir": str(run_dir), "vocab": str(run_dir / "vocab.json"), "map": c.get("eval_map") or c["map"], "races": races,  # (--eval-map)
@@ -128,7 +129,7 @@ def run_config(run_dir: Path, host: str, games: int, start_update) -> tuple[dict
            "wait_floor_ms": num("wait_floor_ms", 5, int), "games_per_process": num("games_per_process", 2, int),
            "agent_games_factor": num("agent_games_factor", 1, int), "pairs": num("pairs", 1, int),
            "scripted_reset": _flag(c.get("scripted_reset", 0)), "native_obs": _flag(c.get("native_obs", 1)),
-           "game_nice": num("game_nice", 10, int), "game_cuts": num("game_cuts", 0, int) or None,
+           "game_nice": num("game_nice", 10, int), "game_cuts": exact_cuts(num("game_cuts", 0, int)) or None,  # (never approximations)
            "features": num("features", fx.F, int), "inputs": num("inputs", 1, int),  # (--inputs, the masks)
            "tech_mask": num("tech_mask", 0, int), "valid_mask": num("valid_mask", 0, int), "neutral": num("neutral", 0, int), "macros": num("macros", 0, int), "spells": num("spells", 0, int), "fine_points": num("fine_points", 0, int),
            "macros_off": "" if c.get("macros_off") in (None, "None") else str(c.get("macros_off")),

@@ -42,6 +42,16 @@ if False:  # typing only
     from ..scenario import Scenario  # noqa: F401
 
 SHIM_DIR = paths.REPO_ROOT / "build" / "shim"
+# W3SIM_CUTS bits from 2^44 on are approximations (shim/approx.c): they change what the game computes, for training
+# games only and only once the user approved them. Evaluation games keep the exact bits alone (exact_cuts).
+EXACT_CUTS_MASK = (1 << 44) - 1
+
+
+def exact_cuts(cuts: int | None) -> int:
+    """`cuts` without its approximation bits (shim/approx.c): the exact game's speedups only."""
+    return int(cuts or 0) & EXACT_CUTS_MASK
+
+
 _map_lock = threading.Lock()
 # Map loading renders the loading screen in software as fast as it can; many simultaneous loads
 # starve each other. Concurrent launches are limited machine-wide (file locks in /dev/shm, so the

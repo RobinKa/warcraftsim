@@ -242,6 +242,40 @@ Side by side on 29 games: -4.2% cycles a step, -4.6% on fgself-153's. What is le
 
 Round 7 (2026-10-26, `--game-cuts 17592186041849`) took pathing apart on the live runs' games (fgself-154 against insane, fgself-153's 40 minutes between agents) at round 6's cuts: the local A* search 6.5-11% of the main thread, the long-range search 7-11%, path following's own work 6-7.5% (half of it soft float), the proximity events of moving units 4.3-5.4% (their handlers are the abilities', the AI's and the orders' code), collision 3.6-4.3%, the per-agent update 3.4-3.6%, range sensors 4.5-5% (their grid query and their enter/leave events), the grid's dirty cells' pass 2.1-2.3%, timers and the tick's rest ~4%. Nearly all of it waits on memory or runs the game's logic: prefetching the grid's walks and A*'s cells (the two bits above) gave -1.4% cycles on 33 games; prefetching the long-range search's next node halved its cell-lookup stall without making it faster, and two layouts of A*'s memo were slower. What is left is better served by approximations (fewer or shared searches, sensors and steering less often): [the log](reference/optimization-log.md) lists them with what each could save.
 
+## Approximations (disabled)
+
+*If training games may differ a little from the real game, how much faster could they be?* (2026-10-26, after round 7.) An approximation is a `--game-cuts` bit from 2⁴⁴ on (`shim/approx.c`): off by default, never in a run's flags without the user's approval, and evaluation games drop them (`exact_cuts` in `runtime/instance.py`: the run's own evaluation slots and the remote worker play the exact game whatever `--game-cuts` says). **None of the three tried is worth a run**: the one that saves CPU breaks the economy, the one that keeps the game saves nothing measurable.
+
+**Where an approximation could act.** Counters of the shim (`W3SIM_APPROX_STATS=1`, timed with the TSC around each call; a loaded machine stretches them a little) on 1,400 steps of two live-run games, shares of the main thread:
+
+| | an agent against insane (fgself-154) | agents, 40 minutes (fgself-153) |
+|---|---|---|
+| relation timers (the 'sig^' wheel: range sensors, their queries and enter/leave events), all | ~15% | ~12% |
+| – of it timers with periods of 1-4 s (~0.1 M cycles a firing: wide queries) | ~7% | ~7% |
+| the local searches (0x8a6cc0, A* inside) | ~13% | ~7% |
+| – of it A* runs that ran out of their node budget (~680; 9% of the runs, 41% of the expansions) | ~5% | ~2% |
+| the long-range searches (0x8a6a20) | ~10% | ~9% |
+| – of it repeats of the unit's previous goal (40% of the searches: cheap ones) | ~1.2% | ~1.3% |
+
+The pathing tick runs 32 times a game second; a unit may search locally at most once in 10 ticks (the game's own limit, dropped when its movement class's budget has room).
+
+**The three bits.** Speed in paired windows: a replay played back side by side with the exact cuts and with the bit acting from step K on (`W3SIM_APPROX_FROM_TICK`), the main thread's instructions over steps K+10 to K+60 (cycles are useless here: other games' load moves them ±10%); 6 windows of 6 games (fgself-153/154, AI recordings). Gameplay in closed loop: the hand-written player on `echofast` against insane and against itself, the same matchups, races and sides in every arm (`scripts/heuristic_match.py`, chunks of 8 games interleaved by arm; agent slots at normal; 95% bootstrap intervals over games).
+
+| bit | what | speed (windows) | gameplay (closed loop) |
+|---|---|---|---|
+| 17592186044416 (2⁴⁴) | periodic relation timers with periods of 1 s or more do their work on every other firing | instructions -9.8% [-12.9, -6.8] | **rejected**: the player's gold a minute -48% [-83, -11] against insane (8 games against 24) and -56% [-89, -20] against itself; its most food used -36% [-69, -3], its food at 4 minutes -45% [-76, -16] |
+| 70368744177664 (2⁴⁶) | the same for periods of 0.25 s up to 1 s | instructions -6.6% [-12.5, -1.5] | **rejected**: gold a minute -29% [-61, -4], food at 4 minutes -23% [-53, -1] against insane (8 games) |
+| 35184372088832 (2⁴⁵) | after a local A* search that ran out of nodes, the unit's next local search waits 20 pathing ticks (not 10) | instructions +1.7% [-5.9, +10.2]; the main thread's CPU a game second, games of the same chunk (same load): +1.0%, +0.4% against insane, -0.2%, -2.9% against itself; at most ~2.5% by the counters (half of a stuck unit's retries) | unchanged against insane, 24 games each: gold a minute +1.1% [-4.8, +6.2], most food used +0.4% [-3.3, +3.9], food at 4 minutes +0.4% [-3.0, +3.8], units lost -8% [-28, +9]; against itself (24 each): wins 33% and 33%, most food used +0.2% [-3.8, +4.2], food at 4 minutes -1.3% [-4.8, +2.3], but gold a minute +16.5% [+5, +28] on both sides alike (the other +14.5% [+1, +28]) in games 28% shorter [-58, +4]: a rate over shorter games, to watch |
+| all three | | instructions -8.0% [-12.9, -1.3] | rejected: gold a minute -50% [-86, -14] against insane, -48% [-87, -8] against itself (8 games) |
+
+Open loop (`scripts/approx_drift.py` on fgself-154's first game: the replay's commands as recorded, so the games part by construction): with 2⁴⁴ the observations differ from step 11 (5.5 s; at 30 s 14 of 122 units elsewhere, by ~900 on the median); with 2⁴⁵ from step 81 (40 s; at 60 s 7 of 134 units, ~170); with 2⁴⁶ from step 113 (56 s).
+
+**Why the timers cannot be thinned.** The relation timers are not polls: each owner sets the next period from the situation, when a unit could be in range at the soonest (0.1 to 150 s, many odd values: 2.44, 1.277 ...). A skipped firing is a missed event: a worker reaches the mine or the hall and waits a whole period more, so income halves; the "saving" is partly the game doing less. Doubling the period where the timer is made (the first version, `0x8b89c0`) changed nothing, neither income (gold a minute +2 to +6%, 8 games an arm) nor speed (CPU a game second -1 to +4% against the same chunk's), because the owners re-arm with periods of their own.
+
+**What would be left**, by the counters: the long-range searches' repeats ~1.2%, stuck units' A* runs ≤2.5% (above), a dirty-cells pass every fourth time ~1% (its cells are the A* runs' nodes, 160 a pass, which a later pass would clean all the same). The large parts are game logic: the relation timers' events, the searches to new goals, path following and collision. Approximating those means changing behaviour (the pathing tick at 16 Hz, coarser searches), with distortions to measure against the real game; at the size of these candidates, training games would get **a few percent faster at most**.
+
+**Tools.** `W3SIM_APPROX_STATS=1` (with `W3SIM_PROFILE=1`: the counters above in `shim.log` each second), `W3SIM_APPROX_FROM_TICK=n` (an approximation from pathing tick n on, for paired windows), `scripts/approx_drift.py` (open-loop drift), and `scripts/heuristic_match.py`'s rows now carry the main thread's CPU a game second (`main_cpu_ms_per_s`, from the game's schedstat after step 20) and both sides' food every 2 minutes (`food_t`). The CPU a game second follows the machine's load (17 against 11 ms in two chunks of the same arm): compare games that ran at the same time.
+
 ## The game's code, as we understand it
 
 From Ghidra (through REA), the shim's own profiler and `perf`. Shares are of the main thread in a training game; boxes in green are where the shim replaced or skipped the game's code, in blue our harness.
