@@ -99,7 +99,7 @@ class Teacher:
 
     def __init__(self, side: int, race: str, rng: random.Random, target: dict | None = None, target_hero: bool = False,
                  lumber: bool = False, burrows: bool = False, main_low: float = 0.0, mine_full: float = 12500.0,
-                 saturation: bool = False):
+                 saturation: bool = False, revive: bool = False):
         """`target` (the side's target strategy, if it has one): its tavern hero is the one taught, and none when it
         has none (another hero would break a narrow target). `target_hero` (--teach 2): its first hero from the altar
         taught too, when that is its first hero (the builder taught it only once due: the policy had made another one
@@ -110,6 +110,7 @@ class Teacher:
         self.burrows = burrows and race == "orc"  # (--teach 4: the burrows' stand-down)
         self.saturation = saturation and race != "undead"  # (--saturation-lesson: undead's acolytes cannot chop, and
         # --econ-masks caps them)
+        self.revive = revive  # (--revive-lesson: a dead hero's revival at the side's altar)
         # the tavern hero taught, and the heroes the side has when it is hired: a target's, at its place among the
         # target's heroes (its next hero), as soon as the altar, the tier and the money permit. (As the first or
         # second hero only, from 135 s: the lesson had fired 68 times in 3,000 target games, ~1,300 of them with a
@@ -177,6 +178,8 @@ class Teacher:
         done, counts = s[a:a + 2 * n_done], s[a + 2 * n_done:a + 2 * n_done + n_mix]
         if self.first is not None and n_heroes == 0 and now >= self.first_from:  # (the altar itself from 45 s: a target's
             out += self._first_hero(rows, n_altars, altar, player, t, build=now >= FIRST_HERO_FROM)  # builder's when due)
+        if self.revive and altar >= 0 and n_heroes > n_live:  # (--revive-lesson: a hero of the side's dead)
+            out += self._revive(rows, altar, t)
         # a tavern hero: when the side has as many heroes as come before it (the target's, or one) or more (an altar's
         # made first: 269 of 289 human games with a tavern first hero; audit 9), with an altar, the
         # tier the hero count needs (the second hero tier 2, the third tier 3) and the money (the mask's, else 425/135;
@@ -298,6 +301,27 @@ class Teacher:
         w = workers[int(np.argmin(np.hypot(workers[:, fx.C_X] - at[fx.C_X], workers[:, fx.C_Y] - at[fx.C_Y])))]
         a, r = self.rng.uniform(0, 2 * np.pi), self.rng.uniform(450, 800)
         return [Build(int(w[fx.C_ID]), fourcc(code), float(at[fx.C_X] + r * np.cos(a)), float(at[fx.C_Y] + r * np.sin(a)))]
+
+    def _revive(self, rows: np.ndarray, altar: int, t: int) -> list:
+        """--revive-lesson: the side's first dead hero the policy could revive now (`can`: its order's mask, the money,
+        the food, REVIVE_AFTER_STEPS since its death and no revival under way) revived at its first finished altar (row
+        `altar`): the hero's own order there, an altar hero's training order or a tavern hero's hire (play.BCAgent: the
+        revival; heroes stayed dead in 48% of the deaths of 53 recorded training games, fgself-150..156, and the policy
+        chose the revival in 2.4% of the steps it could pay for it; 34 of 111 deaths it could have paid for never)."""
+        from .neutral import TAVERN_HEROES
+        can = getattr(self, "can", None)
+        fl = rows[:, fx.C_FLAGS]
+        dead = rows[(rows[:, fx.C_OWNER] == self.side) & (fl & fx.HERO > 0) & (fl & fx.DEAD > 0), fx.C_TYPE]
+        a = int(rows[altar, fx.C_ID])
+        for typ in dead.tolist():
+            code = fx.rawcode(int(typ))
+            tavern = code in TAVERN_HEROES
+            if can is not None and not can(code, fx.UNIT if tavern else fx.IMMEDIATE):
+                continue
+            if not self._due("revive", t):
+                return []
+            return [Buy(a, a, int(typ)) if tavern else ImmediateOrder(a, int(typ))]
+        return []
 
     def _mix(self, n: int, counts, done: list, t: int) -> list:
         """The unit its target's army has the largest share of more than its own, trained at a building that makes it.

@@ -2168,7 +2168,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     teachers = ({s: Teacher(s, races[s], random.Random(), zs.get(s), target_hero=cfg.get("teach", 0) >= 2,
                             lumber=cfg.get("teach", 0) >= 3, burrows=cfg.get("teach", 0) >= 4,
                             main_low=cfg.get("expand_lesson", 0.0), mine_full=12500.0 * mine_scale(cfg["map"]),
-                            saturation=bool(cfg.get("saturation_lesson", 0)))
+                            saturation=bool(cfg.get("saturation_lesson", 0)), revive=bool(cfg.get("revive_lesson", 0)))
                  for s in trajs if keys[s] == "current"}
                 if cfg.get("teach") and replay is None else {})
     # --teach-heuristic: a target drawn from the hand-written player's games (strategy.from_demos names the strategy) is
@@ -3948,13 +3948,21 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--saturation-lesson", type=int, default=0, help="1: the lumber lesson (--teach 3) also whenever "
                     "a side has more workers than its finished halls' mines take (teacher.SATURATED each), not chopping "
                     "nor building: one is sent to chop (the user saw human's peasants queue at the mine)")
+    ap.add_argument("--revive-lesson", type=int, default=0, help="1: with --teach, a lesson to revive a dead hero at the "
+                    "side's finished altar whenever the policy could (its order's mask: the money, the food, the death "
+                    "~8 s ago, no revival under way; heroes stayed dead in 48%% of 143 deaths of fgself-150..156's "
+                    "recorded games, and the policy chose the revival in 2.4%% of the steps it could pay for it). "
+                    "--econ-masks 2 (bit 2; 3 with the economy masks) keeps the revival's gold from other orders")
     ap.add_argument("--expand-lesson", type=float, default=0.0, help="the teacher's expansion lessons (--teach) in every "
                     "game, a target's or not, once the main gold mine holds less than this share of a full one (0: only a "
                     "target's due expansion; audit 15: on echofast2 the main ran dry at 12-13 minutes, unexpanded)")
-    ap.add_argument("--econ-masks", type=int, default=0, help="1: mask a tech building's build order (features."
+    ap.add_argument("--econ-masks", type=int, default=0, help="bit 1: mask a tech building's build order (features."
                     "ECON_TECH: a slaughterhouse, a sanctum, a workshop...) while a copy the player has is idle (making "
                     "nothing, under construction, or a worker on its way), and the worker's train order once the "
-                    "player has as many as its mines need (features.worker_cap: 5 a mine and lumber workers; audit 12)")
+                    "player has as many as its mines need (features.worker_cap: 5 a mine and lumber workers; audit 12). "
+                    "Bit 2 (2, or 3 with bit 1): a dead hero the altar would take now (food free) keeps its revival's "
+                    "gold from the player's other paid orders (View.revive_reserve; in 94%% of the steps with a hero "
+                    "dead the player had less gold than its revival)")
     ap.add_argument("--z-workers", type=int, default=0, help="with --z-build: the builder also orders (taught: labels) "
                     "the race's worker at an idle hall while the side has fewer than its target's workers (its start's "
                     "plus the strategy's trained ones, \"n\"; at most features.worker_cap for its mines), after the due "
@@ -4615,7 +4623,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "eval_ai": [d for d in args.eval_ai.split(",") if d],

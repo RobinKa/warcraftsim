@@ -256,6 +256,7 @@ SUMMONED = 256  # (UnitFlags.SUMMONED)
 REVIVE_AFTER_STEPS = 16  # (a dead hero's revival is taken ~7 s after its death)
 REVIVE_STEPS = 240  # (a revival the altar took: not offered again for 120 s, or until the hero stands; 60 s had reopened
 # it while a real game's revival still ran, up to 110 s: ~17 refused a human real game; audit 9)
+REVIVE_ALTAR_SET = frozenset(int.from_bytes(c.encode(), "big") for c in ("halt", "oalt", "uaod", "eate"))  # (a revival's)
 NATURAL_EVERY = 4  # (steps between two looks at the natural expansion: free, taken, its camp standing)
 FLAG_BITS = (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 2048)  # UnitFlags but DEAD
 F0 = 3 + 2 + 4 + len(FLAG_BITS) + 3 + 2 + 1 + 2 + 1  # 29: ... production (queued, busy), and a worker on lumber
@@ -395,7 +396,7 @@ def set_masks(tech: bool, valid: bool) -> None:
 # one the player has stands idle (finished with nothing training or researching, under construction, or a worker on
 # its way to build one): one more only while every copy is at work; (b) the worker's train order once the player has
 # as many as its mines need (worker_cap: alive and in training)
-ECON_MASK = os.environ.get("WARCRAFTSIM_ECON_MASK", "0") == "1"
+ECON_MASK = int(os.environ.get("WARCRAFTSIM_ECON_MASK", "0") or 0) & 1 > 0
 ECON_TECH = {"human": ("hars", "harm", "hgra", "hbla", "halt", "hvlt"),
              "orc": ("osld", "otto", "obea", "oalt", "ovln"),
              "undead": ("uslh", "ugrv", "utod", "usap", "ubon", "uaod", "utom"),
@@ -408,10 +409,16 @@ ECON_WORKERS = {"human": ("hpea", ("htow", "hkee", "hcas"), 5, 13), "orc": ("ope
                 "undead": ("uaco", ("ugol",), 5, 3), "nightelf": ("ewsp", ("egol",), 5, 15)}
 
 
+REVIVE_RESERVE = int(os.environ.get("WARCRAFTSIM_ECON_MASK", "0") or 0) & 2 > 0  # (--econ-masks bit 2: View.step)
+
+
 def set_econ_masks(v) -> None:
-    global ECON_MASK
-    ECON_MASK = bool(int(v or 0))
-    os.environ["WARCRAFTSIM_ECON_MASK"] = str(int(ECON_MASK))
+    """--econ-masks: bit 1 the economy masks (ECON_MASK), bit 2 the revival's reserve (REVIVE_RESERVE: a dead hero the
+    altar would take now keeps its revival's gold from the player's other paid orders, View.step)."""
+    global ECON_MASK, REVIVE_RESERVE
+    v = int(v or 0)
+    ECON_MASK, REVIVE_RESERVE = bool(v & 1), bool(v & 2)
+    os.environ["WARCRAFTSIM_ECON_MASK"] = str(v)
 
 
 def worker_cap(race: str, mines: int) -> int:
@@ -476,9 +483,20 @@ def first_hero_free(costs: np.ndarray, vocab: dict) -> np.ndarray:
 REVIVE = (0.4, 0.1, 4.0, 700)  # MiscGame: ReviveBaseFactor, ReviveLevelFactor, ReviveMaxFactor, HeroMaxReviveCostGold
 
 
+def revive_gold(gold: int, level: int) -> int:
+    """A dead hero's revival's gold, from its own gold cost (the map's) and level: the cost times 0.4 + 0.1 per level
+    past the first (at most 4 times it, and 700), whole gold, then to the nearest 5, as the game takes it (tested in
+    the game, scripts/revive_probe.py, 2026-10-26: real game 170 / 210 / 255 / 340 at levels 1 / 2 / 3 / 5; echofast2,
+    212 gold heroes, 85 / 105 / 125 / 170. The mask's 84 at level 1 had let the order through at 84 gold: 126 of 622
+    refused revivals in fgself-155's refusals at exactly 84, ~20% at the mask's rounded-down prices)."""
+    base, per, most, cap = REVIVE
+    g = min(int(gold * (base + per * max(int(level) - 1, 0))), int(gold * most), cap)
+    return 5 * ((g + 2) // 5)
+
+
 def revive_costs(enc: "Encoder", rows: np.ndarray, player: int, dead: np.ndarray | None = None) -> np.ndarray:
     """The encoder's costs with each dead hero's order (an altar's, the one that trained it; a tavern hero's hire) at
-    its revival's: its gold times 0.4 + 0.1 per level past the first (at most 4 times it, and 700), no lumber; the costs
+    its revival's (revive_gold: its gold times 0.4 + 0.1 per level past the first, to the nearest 5), no lumber; the costs
     as they are when no hero of the player is dead (the mask had held a dead hero's revival back for good, the audit
     of 2026-10-22). `dead`: the player's dead heroes' rows, when the caller has them."""
     mine = (rows[(rows[:, C_OWNER] == player) & (rows[:, C_FLAGS] & HERO > 0) & (rows[:, C_FLAGS] & DEAD > 0)]
@@ -491,24 +509,24 @@ def _revive(enc: "Encoder", dead: list) -> np.ndarray:
     if not dead:
         return enc.costs
     c = np.array(enc.costs, copy=True)
-    base, per, most, cap = REVIVE
     for t, lvl in dead:
         k = enc.order_index.get((int(t), IMMEDIATE)) or enc.order_index.get((int(t), UNIT))
         if k is not None:
-            g = int(enc.costs[k][0])
-            c[k, 0] = min(int(g * (base + per * max(int(lvl) - 1, 0))), int(g * most), cap)
+            c[k, 0] = revive_gold(int(enc.costs[k][0]), lvl)
             c[k, 1] = 0
     return c
 
 
-def affordable(costs: np.ndarray, gold: int, lumber: int, fu: int, fc: int, reserve=None, also=None) -> np.ndarray:
+def affordable(costs: np.ndarray, gold: int, lumber: int, fu: int, fc: int, reserve=None, also=None,
+               more=()) -> np.ndarray:
     """[n_orders + 1] bool: the order classes the player can pay for (row 0, no order: always). `reserve`
     (order class, gold, lumber), --z-build: what the target's next item needs is kept from the others
-    (the item itself as before; free orders stay). `also`: another one kept (a tavern hero's hire on its way)."""
+    (the item itself as before; free orders stay). `also`: another one kept (a tavern hero's hire on its way); `more`:
+    others (a dead hero's revival, --econ-masks bit 2)."""
     c = costs
     fc = min(fc, FOOD_MAX)  # (the game's ceiling: farms past it give nothing; at 100 every unit was refused; audit 4)
     avail = (c[:, 0] <= gold) & (c[:, 1] <= lumber) & ((c[:, 2] == 0) | (fu + c[:, 2] <= fc))
-    kept = [r for r in (reserve, also) if r is not None]
+    kept = [r for r in (reserve, also, *more) if r is not None]
     if kept:
         rg, rl = sum(r[1] for r in kept), sum(r[2] for r in kept)
         keep = {r[0]: avail[r[0]] for r in kept}
@@ -1162,6 +1180,7 @@ class View:
         # --z-build: the gold and lumber saved for the target's next item (its order class, its cost) that
         # the other orders may not spend (the policy spent all on units, and a next tier never came)
         self.reserve: tuple[int, int, int] | None = None
+        self.revive_kept: tuple[int, int, int] | None = None  # (--econ-masks bit 2: a revival's kept money, View.step)
         self.upgrades = np.zeros(len(enc.upgrade_index), np.float32)
         self.own_buildings: set[int] = set()
         self.queued: dict[int, int] = {}  # building -> units / research ordered and not yet done
@@ -1306,6 +1325,25 @@ class View:
             had = bool(own_hero.any())
         return (had or any(m[0] == 2 for m in self.making.values())
                 or bool(getattr(self, "hiring_heroes", ())))  # (a tavern hire on its way: the first hero; audit 10)
+
+    def revive_reserve(self, costs: np.ndarray, t: int, dead_pairs: list, done, fu: int, fc: int) -> tuple | None:
+        """--econ-masks bit 2: the first dead hero (id, type) the player's altar would take now (a finished altar; its
+        death REVIVE_AFTER_STEPS ago; no revival of it under way; its food free) as kept money (its order class, its
+        revival's gold and lumber): the player's other paid orders masked until there is more (heroes stayed dead in
+        48% of the deaths of 53 recorded training games, fgself-150..156, for a median 234 s to the game's end: in 94%
+        of the steps with a hero dead the player had less gold than its revival). None: nothing to keep."""
+        if not REVIVE_ALTAR_SET.intersection(int(x) for x in done):
+            return None
+        since, reviving = getattr(self, "dead_since", {}), getattr(self, "reviving", {})
+        oix = self.enc.order_index
+        for i, code in dead_pairs:
+            if t - since.get(i, t) < REVIVE_AFTER_STEPS or t - reviving.get(i, -REVIVE_STEPS) < REVIVE_STEPS:
+                continue
+            k = oix.get((int(code), IMMEDIATE)) or oix.get((int(code), UNIT))
+            if k is None or (costs[k][2] and fu + costs[k][2] > min(fc, FOOD_MAX)):  # (no food: no money held for
+                continue                                                           # it, a farm may need it)
+            return k, int(costs[k][0]), int(costs[k][1])
+        return None
 
     def econ_allowed(self, rows: np.ndarray) -> np.ndarray:
         """--econ-masks: the order classes ECON_MASK leaves the player: a tech building's build order while a copy it has
@@ -1556,10 +1594,15 @@ class View:
             # pending expand only blocks a second one, below; audit 8)
             k = getattr(self, "hire_class", None)  # (a tavern hero's hire on its way: paid at the sale, play.BCAgent; the
             hire = None if k is None or getattr(self, "hire_free", False) else (k, int(c[k][0]), int(c[k][1]))  # first free)
-            kept = [r for r in (self.reserve, hire) if r is not None]
+            rv = self.revive_kept = (None if not REVIVE_RESERVE or not (len(dead3) if fast else len(dead)) else
+                                     self.revive_reserve(c, t, list(zip(dead_ids, dead_types)) if fast
+                                                         else dead[:, [C_ID, C_TYPE]].tolist(),
+                                                         done_types if fast else rows[built & (fl & CONSTRUCTING == 0), C_TYPE],
+                                                         fu, fc))
+            kept = [r for r in (self.reserve, hire, rv) if r is not None]
             avail = featnative.afford(c, gold, lumber, fu, fc, kept, self) if fast else None
             if avail is None:
-                avail = affordable(c, gold, lumber, fu, fc, self.reserve, hire)
+                avail = affordable(c, gold, lumber, fu, fc, self.reserve, hire, (rv,))
             if enc.tech:  # (--tech-mask)
                 self.t_now = t
                 avail &= (self.tech_allowed(rows, done_types=done_types, hero_types=hero_types,

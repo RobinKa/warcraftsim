@@ -275,20 +275,34 @@ class BCAgent:
             costs = self.enc.costs_first  # (the first hero free: the mask's costs, View.step)
         if costs is not None and self.enc.level_rows and getattr(self.view, "costs_now", None) is not None:
             costs = self.view.costs_now  # (the mask's, View.step: a research at its next level's cost too; a dead hero's
-            # revival differs there, but its order pays nothing here)
+            # revival at its price, below)
         hire = getattr(self.view, "hire_class", None)
-        kept = {r[0]: (r[1], r[2]) for r in (getattr(self.view, "reserve", None),) if r is not None}  # (as the mask:
+        kept = {r[0]: (r[1], r[2]) for r in (getattr(self.view, "reserve", None), getattr(self.view, "revive_kept", None))
+                if r is not None}  # (as the mask, --econ-masks bit 2's revival too;
         if hire is not None and costs is not None and not getattr(self.view, "hire_free", False):  # (the target's next
             kept[hire] = (int(costs[hire][0]), int(costs[hire][1]))  # item and a hire on its way keep theirs)
+        # a dead hero's revival the policy chose this step: its money kept before the step's other orders (its order
+        # had paid nothing, so the step's other orders spent the gold first and the game refused it: fgself-155's
+        # refused revivals mostly at 85-500 gold, the level 1 revival's 85 and more)
+        dead = self.view.dead_heroes
+        revival = getattr(self.view, "costs_now", None)  # (the mask's costs: a dead hero's order at its revival's)
+        if dead and revival is not None and budget is not None:
+            for i in np.flatnonzero(np.asarray(order[:min(st["n_own"], fx.MAX_OWN, len(order))])).tolist():
+                c = int(order[i])
+                if self.orders[c][1] in (fx.IMMEDIATE, fx.UNIT) and self.orders[c][0] in dead and c not in kept:
+                    g, l = int(revival[c][0]), int(revival[c][1])
+                    if g <= budget[0] - sum(v[0] for v in kept.values()) and l <= budget[1] - sum(v[1] for v in kept.values()):
+                        kept[c] = (g, l)  # (one it can't pay keeps nothing from the rest)
         if budget is not None:
             budget = [budget[0] - sum(v[0] for v in kept.values()), budget[1] - sum(v[1] for v in kept.values())]
 
-        def pay(c: int) -> bool:
+        def pay(c: int, table=None) -> bool:
             if budget is None or c is None:
                 return True
             back = kept.pop(c, (0, 0))  # (a kept item itself: its own money back)
             budget[0], budget[1] = budget[0] + back[0], budget[1] + back[1]
-            g, l = int(costs[c][0]), int(costs[c][1])
+            tab = costs if table is None else table  # (a revival: the mask's costs, its revival's price)
+            g, l = int(tab[c][0]), int(tab[c][1])
             # (only for what it costs, as the mask's max(0, ...): a lumber-short reserve put the lumber below 0, and every
             # order was refused, a footman or a worker too: 230 a target game, armies never trained; audit 10)
             if (g > 0 and g > max(0, budget[0])) or (l > 0 and l > max(0, budget[1])):
@@ -375,8 +389,9 @@ class BCAgent:
                     out.append(PickUp(unit, int(_macros().PICKUP_NEAR)))
                     self.pickup_orders = getattr(self, "pickup_orders", 0) + 1
                     self.__dict__.setdefault("picking_since", {})[unit] = self.t
-            elif kind == fx.IMMEDIATE and oid in self.view.dead_heroes:  # (a dead hero's order at an altar: its revival)
-                out.append(TargetOrder(unit, REVIVE, self.view.dead_heroes[oid]))
+            elif kind == fx.IMMEDIATE and oid in self.view.dead_heroes:  # (a dead hero's order at an altar: its revival,
+                if unit not in frames and pay(c, revival):  # paid at its revival's price; not at an altar's frame)
+                    out.append(TargetOrder(unit, REVIVE, self.view.dead_heroes[oid]))
             elif kind == fx.IMMEDIATE and oid in TIERS and unit in self.view.busy and self.view.making.get(unit, (4,))[0] != 4:
                 # (a hall's next tier while it trains workers: its queue cancelled first; the game takes no upgrade
                 # behind them, so the order was refused while a hall trained workers back to back: human targets
@@ -404,7 +419,7 @@ class BCAgent:
                     # audit 8)
             elif kind == fx.UNIT and oid in self.view.dead_heroes:  # (a dead tavern hero's hire: its revival at an altar of
                 altar = self._altar(sel[:st["n_own"]])            # the player's; tested 2026-10-23: 0.4 of its gold, as
-                if altar is not None:                             # an altar hero's)
+                if altar is not None and pay(c, revival):         # an altar hero's)
                     out.append(TargetOrder(altar, REVIVE, self.view.dead_heroes[oid]))
             elif kind == fx.UNIT and oid >= TYPE_CODE and is_ware(oid):  # bought at a neutral building (neutral.py):
                 shop = sel[int(tgt[i])]                    # the one pointed at, if it sells it, else the nearest that

@@ -68,6 +68,11 @@ def fourcc(c: str) -> int:
     return int.from_bytes(c.encode("latin-1"), "big")
 
 
+def _revive_gold(gold: int, level: int) -> int:
+    from .features import revive_gold  # (features.revive_gold: the game's revival price)
+    return revive_gold(gold, level)
+
+
 # ---- the races' plans ----------------------------------------------------------------------------------------------
 @dataclass
 class Plan:
@@ -1107,7 +1112,8 @@ class HeuristicAgent:
         dead = {u.type for u in self.dead_heroes}
         if altar is not None:
             for h in self.dead_heroes:  # a revival first, its money kept until the altar takes it
-                cost = int(425 * min(0.4 + 0.1 * max(h.hero_level - 1, 0), 4.0)) + 5
+                cost = _revive_gold(self._cost(h.type)[0] or 425, h.hero_level)  # (the map's, as the game takes
+                # it: echofast2's level 1 at 85, the real game's 425 x 0.4 had held it until 175; revive_probe.py)
                 if self.t - self.reviving.get(h.id, -REVIVE_WAIT) < REVIVE_WAIT:
                     continue
                 if self.now - self.dead_at.get(h.id, -99) < 8:
