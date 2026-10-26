@@ -31,7 +31,7 @@ import torch.nn.functional as F_
 
 from . import features as fx
 from . import strategy
-from .model import FullGameNet
+from .model import FullGameNet, fine_head, point_parts
 
 KEYS = ("ent", "type", "cur", "mask", "n_own", "glob", "y_order", "y_ptr", "y_x", "y_y", "ret", "avail")
 REWARD = {"gamma": 0.997, "shaping": 1.0, "shaping_scale": 2000.0, "tie_break": 0.5}  # selfplay's defaults
@@ -287,7 +287,10 @@ def losses(net: FullGameNet, b: dict, device, states: torch.Tensor | None = None
     O = min(fx.MAX_OWN, E)
     ent, typ, cur, mask = b["ent"][:, :E].float(), b["type"][:, :E].long(), b["cur"][:, :E].long(), b["mask"][:, :E]
     y_order, y_ptr = b["y_order"][:, :O].long(), b["y_ptr"][:, :O].long()
-    y_x, y_y = b["y_x"][:, :O].long(), b["y_y"][:, :O].long()
+    # (--fine-points: the labels are point indices, the bins and the sub-cell; y_f None without, or for a network
+    # without a fine head of their size)
+    y_x, y_y, y_f = point_parts(b["y_x"][:, :O].long(), b["y_y"][:, :O].long())
+    y_f = y_f if y_f is not None and fine_head(net) else None
     n_own = b["n_own"].long()
     g, u = net.encode(ent, typ, cur, mask, b["glob"].float())
     if net.memory and "lane" in b:
@@ -307,8 +310,10 @@ def losses(net: FullGameNet, b: dict, device, states: torch.Tensor | None = None
             net.allowed.index_put_((typ[:, :O].reshape(-1), y_flat), torch.ones_like(y_flat, dtype=torch.bool))
         ptr, xl, z = net.target_logits(g, u, mask, y_order)
         yl = net.y_logits(z, y_x)
-        loss = (_masked_ce(logits, y_order, w) + _masked_ce(ptr, y_ptr, w)
-                + 0.5 * (_masked_ce(xl, y_x, w) + _masked_ce(yl, y_y, w)))
+        l_pt = _masked_ce(xl, y_x, w) + _masked_ce(yl, y_y, w)
+        if y_f is not None:  # (the sub-cell given the true bins)
+            l_pt = l_pt + _masked_ce(net.fine_logits(z, y_x, y_y), y_f, w)
+        loss = _masked_ce(logits, y_order, w) + _masked_ce(ptr, y_ptr, w) + 0.5 * l_pt
         if value_coef:
             value, ret = net.value(g, b["glob"].float()).float(), b["ret"].float()
             if "valid" in b:
@@ -327,6 +332,8 @@ def losses(net: FullGameNet, b: dict, device, states: torch.Tensor | None = None
     l_ptr = F_.cross_entropy(ptr[has_ptr], y_ptr[has_ptr]) if has_ptr.any() else logits.sum() * 0
     l_pt = (F_.cross_entropy(xl[has_pt], y_x[has_pt]) + F_.cross_entropy(yl[has_pt], y_y[has_pt])
             if has_pt.any() else logits.sum() * 0)
+    if y_f is not None and has_pt.any():  # (--fine-points: the sub-cell given the true bins)
+        l_pt = l_pt + F_.cross_entropy(net.fine_logits(z, y_x, y_y)[has_pt], y_f[has_pt])
     value, ret = net.value(g, b["glob"].float()).float(), b["ret"].float()
     if "valid" in b:  # (padded steps: no value target)
         value, ret = value[b["valid"]], ret[b["valid"]]
@@ -437,6 +444,7 @@ def main(argv: list[str] | None = None) -> int:
         args.d, args.memory = net.config["d"], net.memory
         if net.bins != fx.BINS:
             raise SystemExit(f"{args.init} has {net.bins} point bins, this map's frame {fx.BINS}: scripts/grow_bins.py")
+        fx.set_fine(net.fine)  # (a network with a fine head: its labels as point indices; before the loaders)
     else:
         net = FullGameNet(enc.n_types, enc.n_cur, enc.n_orders, enc.G, d=args.d, layers=args.layers, priv=fx.PRIV,
                           dropout=args.dropout, memory=args.memory, bins=fx.BINS).to(device)

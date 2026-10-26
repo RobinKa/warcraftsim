@@ -59,6 +59,21 @@ STARTS: tuple[tuple[float, float], tuple[float, float]] = ((-2300.0, 0.0), (2300
 MAP_CX = 0.0  # the line between the bases (Encoder.side)
 BIN_RANGE = 1.0
 BINS = 128
+# selfplay --fine-points S (odd): each bin cut into S x S sub-cells, a point's index per axis bin * S + its sub-cell
+# (model.FullGameNet's fine head picks the sub-cell given both bins; a network without one the middle one: its bin's
+# centre, as before). 1: the bins alone. The actions and the labels carry these indices (int16: up to 32767).
+FINE = int(os.environ.get("WARCRAFTSIM_FINE_POINTS", "1") or 1)
+
+
+def set_fine(s: int) -> None:
+    """The point indices' sub-cells per bin and axis (0 or 1: none; else odd, so that a network without a fine head
+    plays its bins' centres exactly)."""
+    global FINE
+    s = max(1, int(s or 1))
+    if s > 1 and s % 2 == 0:
+        raise ValueError(f"--fine-points {s}: an odd number (the middle sub-cell is the bin's centre)")
+    FINE = s
+    os.environ["WARCRAFTSIM_FINE_POINTS"] = str(FINE)
 
 
 def set_geometry(starts, bin_range: float) -> None:
@@ -593,7 +608,10 @@ def describe_spaces(vocab: dict, order_names: dict[int, str] | None = None, agen
                             {"name": "point x", "size": BINS, "options": [f"{BINS} bins of {SCALE / BINS_PER_UNIT:.0f}"],
                              "used_by": ["an order at a point or on a tree (the nearest)"]},
                             {"name": "point y (given x)", "size": BINS, "options": [f"{BINS} bins"],
-                             "used_by": ["an order at a point or on a tree"]}],
+                             "used_by": ["an order at a point or on a tree"]}]
+                        + ([{"name": "point offset in its bin (given x and y)", "size": FINE * FINE,
+                             "options": [f"{FINE} x {FINE} sub-cells (--fine-points)"],
+                             "used_by": ["an order at a point or on a tree"]}] if FINE > 1 else []),
                         "masks": "Orders: those the unit's type got in the demonstrations (none always); "
                                  "the pointer: the entities in view. Harvest orders to workers already harvesting "
                                  "are not sent (the demonstrations' AI re-issued them without effect)."
@@ -623,13 +641,21 @@ def _lookup(x: np.ndarray, keys: np.ndarray, vals: np.ndarray) -> np.ndarray:
 
 
 def _bin(v: np.ndarray) -> np.ndarray:
-    """A position in a player's frame -> its bin."""
-    return np.clip(np.floor((np.asarray(v) + BIN_RANGE) * BINS_PER_UNIT).astype(np.int64), 0, BINS - 1)
+    """A position in a player's frame -> its bin (with FINE: its point index, bin * FINE + sub-cell: the bin as
+    without, the sub-cell from what is left)."""
+    if FINE <= 1:
+        return np.clip(np.floor((np.asarray(v) + BIN_RANGE) * BINS_PER_UNIT).astype(np.int64), 0, BINS - 1)
+    a = (np.asarray(v) + BIN_RANGE) * BINS_PER_UNIT
+    b = np.clip(np.floor(a).astype(np.int64), 0, BINS - 1)
+    return b * FINE + np.clip(np.floor((a - b) * FINE).astype(np.int64), 0, FINE - 1)
 
 
 def bin_center(b: np.ndarray | int) -> np.ndarray | float:
-    """A bin -> the position in a player's frame at its middle."""
-    return (np.asarray(b) + 0.5) / BINS_PER_UNIT - BIN_RANGE
+    """A bin (with FINE: a point index) -> the position in a player's frame at its middle."""
+    if FINE <= 1:
+        return (np.asarray(b) + 0.5) / BINS_PER_UNIT - BIN_RANGE
+    c, s = np.divmod(np.asarray(b), FINE)
+    return (c + (s + 0.5) / FINE) / BINS_PER_UNIT - BIN_RANGE
 
 
 def world_bins(x, y, sign: float) -> tuple[np.ndarray, np.ndarray]:
@@ -642,12 +668,17 @@ def bins_world(bx: int, by: int, sign: float) -> tuple[float, float]:
     """x and y bins in a player's view -> the point in the world (bin_center and _unsqueeze in Python's floats: the same
     float64 arithmetic, without numpy's calls on numbers, ~80k instructions an order)."""
     ox, oy = own_start(sign)
-    e = (((int(bx) + 0.5) / BINS_PER_UNIT - BIN_RANGE) - ANCHOR_X) * SCALE
+    if FINE > 1:  # (point indices: the sub-cell's middle; the middle sub-cell's is the bin's centre exactly, as
+        (cx, sx), (cy, sy) = divmod(int(bx), FINE), divmod(int(by), FINE)  # (FINE // 2 + 0.5) / FINE is 0.5)
+        px, py = cx + (sx + 0.5) / FINE, cy + (sy + 0.5) / FINE
+    else:
+        px, py = int(bx) + 0.5, int(by) + 0.5
+    e = ((px / BINS_PER_UNIT - BIN_RANGE) - ANCHOR_X) * SCALE
     D = STARTS[1][0] - STARTS[0][0]
     if not abs(D - DUEL_D) < 1e-6:
         k = (DUEL_D - 2 * NEAR) / (D - 2 * NEAR)
         e = e if e <= NEAR else e + (D - DUEL_D) if e >= DUEL_D - NEAR else NEAR + (e - NEAR) / k
-    return float(ox + sign * e), float(oy + ((int(by) + 0.5) / BINS_PER_UNIT - BIN_RANGE) * SCALE)
+    return float(ox + sign * e), float(oy + (py / BINS_PER_UNIT - BIN_RANGE) * SCALE)
 
 
 class Encoder:

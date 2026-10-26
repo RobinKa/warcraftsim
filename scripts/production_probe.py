@@ -21,7 +21,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from warcraftsim.fullgame import features as fx
 from warcraftsim.fullgame.costs import order_costs
-from warcraftsim.fullgame.model import load
+from warcraftsim.fullgame.model import load, sample_points
 from warcraftsim.fullgame.play import BCAgent, matchup_setup, unit_rows
 from warcraftsim.runtime.instance import GameInstance
 
@@ -70,13 +70,13 @@ class Probe(BCAgent):
                                   "p_none": float(p[i, 0])})
             order = self._sample(logits)
             ptr, xl, z = self.net.target_logits(g, u, mask, order)
-            tgt, bx_ = self._sample(ptr)[0], self._sample(xl)
-            by = self._sample(self.net.y_logits(z, bx_))[0]
+            tgt = self._sample(ptr)[0]
+            bx_, by, _ = sample_points(self.net, z, xl, self._sample)
         pl = obs.players.get(self.player)
         if pl is not None:
             self.rows.append({"t": t, "player": True, "gold": pl.gold, "lumber": pl.lumber, "food": pl.food_used,
                               "cap": pl.food_cap})
-        return self.commands(st, order[0].tolist(), tgt.tolist(), bx_[0].tolist(), by.tolist())
+        return self.commands(st, order[0].tolist(), tgt.tolist(), bx_[0].tolist(), by[0].tolist())
 
 
 def main() -> None:

@@ -33,14 +33,14 @@ class FullGameNet(nn.Module):
     def __init__(self, n_types: int, n_cur: int, n_orders: int, G: int, d: int = 192, heads: int = 4,
                  layers: int = 3, dropout: float = 0.0, memory: bool = False, target_temperature: float = 1.0,
                  priv: int = 0, order_temperature: float = 1.0, bins: int = 128, z: int = 0, gx: int = 0,
-                 valid: int = 0, vparts: int = 0, ghost: bool = False, privileged: bool = False):
+                 valid: int = 0, vparts: int = 0, ghost: bool = False, privileged: bool = False, fine: int = 0):
         super().__init__()
         self.config = dict(n_types=n_types, n_cur=n_cur, n_orders=n_orders, G=G, d=d, heads=heads, layers=layers,
                            dropout=dropout, memory=memory, target_temperature=target_temperature, priv=priv,
                            order_temperature=order_temperature, bins=bins, **({"z": z} if z else {}),
                            **({"gx": gx} if gx else {}), **({"valid": valid} if valid else {}),
                            **({"vparts": vparts} if vparts else {}), **({"ghost": True} if ghost else {}),
-                           **({"privileged": True} if privileged else {}))
+                           **({"privileged": True} if privileged else {}), **({"fine": int(fine)} if fine > 1 else {}))
         # the global vector's last `priv` numbers: the whole game (features.View.priv), for the value alone
         self.priv = int(priv)
         # the target heads' logits (unit, x, y) divided by it, acting and training alike: < 1 samples a unit's
@@ -96,6 +96,16 @@ class FullGameNet(nn.Module):
             self.register_buffer("ghost_bias", torch.tensor(-30.0))
         if valid:  # (--valid-mask) what each order needs of the unit (herodata.order_needs; set_valid fills them):
             self._valid_buffers(n_types, valid)  # `valid` the number of order classes that need something
+        # (--fine-points S: the point's sub-cell within its x and y bins, one of S x S, given both bins: hierarchical
+        # refinement, as precise anywhere as the bins are coarse there. Registered last: the other parameters keep
+        # their order, Adam's state by position too. grow_fine: the last layer's weights zero, its bias a prior)
+        self.fine = int(fine) if fine > 1 else 0
+        if self.fine:
+            self.fine_x = nn.Embedding(bins, d)
+            self.fine_y = nn.Embedding(bins, d)
+            self.point_f = nn.Sequential(nn.Linear(d, d), nn.ReLU(), nn.Linear(d, self.fine * self.fine))
+            nn.init.zeros_(self.point_f[2].weight)
+            nn.init.zeros_(self.point_f[2].bias)
 
     def _valid_buffers(self, n_types: int, k: int) -> None:
         self.register_buffer("valid_cols", torch.zeros(k, dtype=torch.long))  # the order classes that need something
@@ -220,6 +230,12 @@ class FullGameNet(nn.Module):
         """The point's y logits [N, O, BINS] given its x bins [N, O]."""
         return self.point_y(z + self.x_emb(x.clamp(min=0).long())) / self.target_temp
 
+    def fine_logits(self, z, x, y):
+        """(--fine-points) The point's sub-cell logits [N, O, fine * fine] (x's sub-cell * fine + y's) given its x and
+        y bins [N, O]."""
+        h = z + self.fine_x(x.clamp(min=0).long()) + self.fine_y(y.clamp(min=0).long())
+        return self.point_f(h) / self.target_temp
+
     def value_parts(self, g, glob=None):
         """[N, parts] (one: the value)."""
         if self.priv and glob is not None:  # (the privileged block: what the player does not see)
@@ -267,10 +283,47 @@ def _entropy(logits):
     return -(lp.exp() * lp).sum(-1)
 
 
+def sample_points(net: FullGameNet, z, xl, sample):
+    """A point target for each unit: its x bin from `xl`, then y given x, and with features.FINE (--fine-points) the
+    sub-cell given both -> x and y in the run's point indices [N, O] (bin * FINE + sub-cell) and their log-probability
+    [N, O]. `sample`: logits -> a draw. A network without a fine head of FINE's size (an older one: a past snapshot,
+    the anchor) takes the middle sub-cell, its bins' centres as before, and draws nothing more."""
+    bx = sample(xl)
+    yl = net.y_logits(z, bx)
+    by = sample(yl)
+    lp = _logp(xl, bx) + _logp(yl, by)
+    S = fx.FINE
+    if S > 1:
+        if net.fine == S:
+            fl = net.fine_logits(z, bx, by)
+            f = sample(fl)
+            lp = lp + _logp(fl, f)
+        else:
+            f = torch.full_like(bx, S * S // 2)
+        bx, by = bx * S + torch.div(f, S, rounding_mode="floor"), by * S + f % S
+    return bx, by, lp
+
+
+def point_parts(bx, by):
+    """Point indices [N, O] (actions, or labels with -1 for none) -> (x bins, y bins, the sub-cell's class, -1 for
+    none; None without features.FINE)."""
+    S = fx.FINE
+    if S <= 1:
+        return bx, by, None
+    f = (bx % S) * S + by % S
+    return (torch.div(bx, S, rounding_mode="floor"), torch.div(by, S, rounding_mode="floor"),
+            torch.where(bx >= 0, f, torch.full_like(f, -1)))
+
+
+def fine_head(net: FullGameNet) -> bool:
+    """Whether `net` picks the sub-cells of this run's point indices (a fine head of features.FINE's size)."""
+    return fx.FINE > 1 and net.fine == fx.FINE
+
+
 def act(net: FullGameNet, ent, typ, cur, mask, glob, n_own, avail=None, h=None, generator=None, shared=None,
         guide=None) -> dict:
     """Sample every own unit's order and targets (the first O = min(MAX_OWN, E) entities; the
-    orders each unit type got in the demonstrations). -> order, tgt, bx, by, logp [N, O] (the
+    orders each unit type got in the demonstrations). -> order, tgt, bx, by (point indices: sample_points), logp [N, O] (the
     action's log-probability per unit: order, plus the targets that order uses; 0 for padding)
     and value [N]; with memory the core's new state "h" [N, d] (`h`: the last one, None at a start).
     `shared` [N] (bool): those rows sample their units' targets (unit, x, y) with one noise vector for all of
@@ -299,12 +352,11 @@ def act(net: FullGameNet, ent, typ, cur, mask, glob, n_own, avail=None, h=None, 
     # order together or not at all: every worker builds a farm, or none does; the A/B of 2026-10-12)
     order = _gumbel_argmax(logits, generator)
     ptr, xl, z = net.target_logits(g, u, mask, order)
-    tgt, bx = sample(ptr), sample(xl)
-    yl = net.y_logits(z, bx)
-    by = sample(yl)
+    tgt = sample(ptr)
+    bx, by, lp_pt = sample_points(net, z, xl, sample)  # (with --fine-points: point indices, the sub-cell too)
     uses_ptr, uses_pt = net.uses(order)
     own = torch.arange(O, device=ent.device)[None] < n_own[:, None]
-    logp = _logp(logits, order) + uses_ptr * _logp(ptr, tgt) + uses_pt * (_logp(xl, bx) + _logp(yl, by))
+    logp = _logp(logits, order) + uses_ptr * _logp(ptr, tgt) + uses_pt * lp_pt
     ent = (_entropy(logits) * own).sum(-1) / own.sum(-1).clamp(min=1)  # the order's, mean over own units
     out = {"order": order, "tgt": tgt, "bx": bx, "by": by, "logp": logp * own, "value": net.value(g, glob), "entropy": ent}
     if net.memory:
@@ -322,13 +374,18 @@ def evaluate(net: FullGameNet, ent, typ, cur, mask, glob, n_own, order, tgt, bx,
     O = order.shape[1]
     logits = net.order_logits(g, u[:, :O], typ, n_own, avail=avail, ent=ent)
     ptr, xl, z = net.target_logits(g, u, mask, order)
-    yl = net.y_logits(z, bx)
+    cx, cy, f = point_parts(bx, by)  # (--fine-points: the bins, and the sub-cell)
+    yl = net.y_logits(z, cx)
     uses_ptr, uses_pt = net.uses(order)
-    logp = _logp(logits, order) + uses_ptr * _logp(ptr, tgt) + uses_pt * (_logp(xl, bx) + _logp(yl, by))
+    lp_pt = _logp(xl, cx) + _logp(yl, cy)
+    fl = net.fine_logits(z, cx, cy) if f is not None and fine_head(net) else None
+    if fl is not None:
+        lp_pt = lp_pt + _logp(fl, f.clamp(min=0))
+    logp = _logp(logits, order) + uses_ptr * _logp(ptr, tgt) + uses_pt * lp_pt
     vp = net.value_parts(g, glob)
     return {"logp": logp, "entropy": _entropy(logits), "logits": logits, "value": vp.sum(-1), "g": g, "u": u,
             "ptr": ptr, "xl": xl, "yl": yl, "uses_ptr": uses_ptr, "uses_pt": uses_pt,
-            **({"vparts": vp} if net.config.get("vparts") else {})}
+            **({"fl": fl} if fl is not None else {}), **({"vparts": vp} if net.config.get("vparts") else {})}
 
 
 def anchor_kl(ev: dict, ev_ref: dict, mode: str = "reverse"):
@@ -336,7 +393,9 @@ def anchor_kl(ev: dict, ev_ref: dict, mode: str = "reverse"):
     before: its pull on an order is in proportion to the policy's own probability of it, so an order RL
     drives towards 0 is no longer pulled back); "forward": KL(anchor || policy) over the orders (AlphaStar's
     direction: a rare order the anchor gives keeps its weight); "forward-all": and over the target unit
-    and the point's x and y (y given the step's x), for the units whose order uses them."""
+    and the point's x and y (y given the step's x), for the units whose order uses them; with --fine-points the
+    sub-cell too (given the step's bins) when the anchor has a fine head of its own (an anchor without one, a
+    checkpoint from before them, plays the bins' centres: no pull towards them, nor towards a fresh head's prior)."""
     def kl(a, b):  # KL(softmax a || softmax b) over the last axis
         la, lb = torch.log_softmax(a.float(), -1), torch.log_softmax(b.float(), -1)
         return (la.exp() * (la - lb)).sum(-1)
@@ -344,8 +403,10 @@ def anchor_kl(ev: dict, ev_ref: dict, mode: str = "reverse"):
         return kl(ev["logits"], ev_ref["logits"])
     out = kl(ev_ref["logits"], ev["logits"])
     if mode == "forward-all":
-        out = out + ev["uses_ptr"] * kl(ev_ref["ptr"], ev["ptr"]) \
-            + ev["uses_pt"] * (kl(ev_ref["xl"], ev["xl"]) + kl(ev_ref["yl"], ev["yl"]))
+        pt = kl(ev_ref["xl"], ev["xl"]) + kl(ev_ref["yl"], ev["yl"])
+        if "fl" in ev and "fl" in ev_ref:
+            pt = pt + kl(ev_ref["fl"], ev["fl"])
+        out = out + ev["uses_ptr"] * kl(ev_ref["ptr"], ev["ptr"]) + ev["uses_pt"] * pt
     return out
 
 
@@ -397,6 +458,7 @@ def configure_for(path) -> None:
     fx.set_macros(int(vocab.get("macros") or 0))
     fx.set_spells(int(vocab.get("spells") or 0))
     fx.set_z(c.get("z", 0))
+    fx.set_fine(c.get("fine", 0))  # (--fine-points: the sub-cells its fine head picks)
     if c.get("gx", 0) >= 3:  # (the unit channels it reads: all of them, a run's --features zeros only its weights)
         fx.ACTIVE_F = fx.F
 
@@ -520,4 +582,34 @@ def split_value(net: FullGameNet, parts: int) -> FullGameNet:
     state["value_head.2.weight"] = torch.cat([w, w.new_zeros(parts - w.shape[0], w.shape[1])])
     state["value_head.2.bias"] = torch.cat([b, b.new_zeros(parts - b.shape[0])])
     new.load_state_dict(state)
+    return new.train(net.training)
+
+
+def fine_prior(s: int, centre: float, temperature: float = 1.0) -> torch.Tensor:
+    """The fine head's starting bias [s * s]: the middle sub-cell (its bins' centre) sampled with probability `centre`
+    at the target temperature (the logits are divided by it), the others alike (centre 1 / s**2 or less: uniform)."""
+    n = s * s
+    bias = torch.zeros(n)
+    centre = min(float(centre), 1.0 - 1e-6)
+    if centre > 1.0 / n:
+        bias[n // 2] = math.log(centre * (n - 1) / (1.0 - centre)) * temperature
+    return bias
+
+
+def grow_fine(net: FullGameNet, s: int, centre: float = 0.9) -> FullGameNet:
+    """--fine-points: `net` with a fine head of s x s sub-cells per bin -> a new network (net itself if it has one).
+    Every other output is unchanged (its bins' distributions too); the sub-cell's logits start as a prior alone (the
+    last layer's weights zero): fine_prior's, the middle sub-cell, the point as before, with probability `centre`.
+    The head's x-bin embedding starts as the y head's (x_emb: what each x bin means), its y-bin one at random."""
+    if net.fine == s:
+        return net
+    if net.fine:
+        raise ValueError(f"a network with {net.fine} x {net.fine} sub-cells, not {s} x {s}")
+    new = FullGameNet(**{**net.config, "fine": s}).to(net.order_kind.device)
+    missing, unexpected = new.load_state_dict(net.state_dict(), strict=False)
+    if unexpected or any(not k.startswith(("fine_", "point_f.")) for k in missing):
+        raise RuntimeError(f"grow_fine: missing {missing}, unexpected {unexpected}")
+    with torch.no_grad():
+        new.fine_x.weight.copy_(net.x_emb.weight)
+        new.point_f[2].bias.copy_(fine_prior(s, centre, float(net.target_temp)))
     return new.train(net.training)

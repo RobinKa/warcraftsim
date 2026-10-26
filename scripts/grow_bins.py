@@ -48,7 +48,7 @@ def grow(net: FullGameNet, bins: int) -> tuple[FullGameNet, int]:
                     w[:off] -= LOW + STEP * far.flip(0)
                     w[off + old:] -= LOW + STEP * far[:bins - off - old]
                 new[k] = w
-            elif k == "x_emb.weight":
+            elif k in ("x_emb.weight", "fine_x.weight", "fine_y.weight"):  # (and --fine-points: its bins' embeddings)
                 w = torch.empty_like(new[k])
                 w[:off] = v[0]
                 w[off + old:] = v[-1]

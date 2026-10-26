@@ -57,6 +57,13 @@ flowchart TB
 * The order decides which target heads count: a unit (pointer), a point (x then y), or none.
 * Each head samples with the Gumbel-max trick, at temperature 1 (a lower order temperature made the policy passive).
 * The network had 3 layers until `fgself-51`. `scripts/grow_model.py` adds layers that start as the identity, so a grown network plays as before. `scripts/grow_bins.py` adds point bins for a larger map in the same way.
+* **Fine points** (`--fine-points S`, odd, off by default). A bin is 48 world units near the bases and in y. In x between the bases on Echo Isles it is ~206 units, because the frame is squeezed there. With fine points, a third head picks one of S × S sub-cells of the chosen bin, given both bins: z_i + Embedding(x bin) + Embedding(y bin) → Linear 192→192 · ReLU · Linear 192→S². With S = 7 that gives 6.9 units near the bases and in y, and 29 units mid-map in x.
+  * Encoding: a point's index per axis is bin × S + sub-cell, in the actions, the rollouts, the wire and the teacher's labels (`features.world_bins` / `bins_world`, `model.sample_points` / `point_parts`). The bins are the same as without the flag.
+  * Start: `model.grow_fine` gives the policy the head with its last layer's weights zero. Its bias is a prior: the middle sub-cell, which is exactly the old bin centre, with probability `--fine-centre` (0.9) at the target temperature. The bins' logits are unchanged.
+  * Old networks: a network without the head (the anchor, past snapshots, older checkpoints) plays the middle sub-cell. That is today's point bit for bit, with no extra random draw.
+  * Losses: the PPO log-prob, the cloning and distillation losses (the sub-cell given the label's bins) and the `forward-all` anchor KL include the head. The KL includes it only when the anchor has a fine head of its own.
+  * Costs: +0.5% per inference call, and +0.1 µs per point order to decode.
+  * Design choice: the alternative was a fine grid relative to the acting unit (±512 at 16–32 units). It was not chosen because it needs a mode head, it gives two encodings of one point, and it does not help orders far from the unit (an expansion hall is ordered from the main).
 * Dropout (0.1) is on for behaviour cloning only. The self-play updates run without it (`--rl-dropout 0`), as the actors play.
 
 ## Token channels
