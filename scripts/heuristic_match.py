@@ -69,7 +69,7 @@ def play_scripted(name: str, race: str, opp_race: str, opp: str, side: int, args
     slots = [mine, theirs] if side == 0 else [theirs, mine]
     setup = GameSetup(map=args.map, slots=slots, step_seconds=args.step_seconds, max_game_seconds=args.max_minutes * 60,
                       victory="decisive", window=(320, 240), draw=False, d3d_thread=False, render_threads=0,
-                      native_obs=True, nice=args.nice, cuts=args.cuts or None, wait_floor_ms=5,
+                      native_obs=True, nice=args.nice, cuts=args.cuts or None, wait_floor_ms=5, launch_timeout=args.launch_timeout,
                       record_ai_orders=record is not None and not scripted)
     cls = variant_class(args.variant) or HeuristicAgent
     t0 = time.time()
@@ -236,6 +236,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--step-seconds", type=float, default=0.5)
     ap.add_argument("--cuts", type=int, default=GAME_CUTS)
     ap.add_argument("--nice", type=int, default=15)
+    ap.add_argument("--launch-timeout", type=float, default=45.0, help="seconds a launch may take to reach the harness "
+                    "(then a retry; a loaded machine with the games niced needs more)")
     ap.add_argument("--threads", type=int, default=2, help="torch's CPU threads (policy games)")
     ap.add_argument("--slot-difficulty", default="normal",
                     help="the agent slots' difficulty: the engine gives an insane computer slot double income; normal is "
@@ -265,7 +267,8 @@ def main(argv: list[str] | None = None) -> int:
                                                                              if x in strategies(race)]
         if not options:
             return ""
-        return rng.choice(options) if a.strategy == "random" else options[(i // max(len(races), 1)) % len(options)]
+        # (each in turn after every race pairing: a strategy meets each opponent race, not always the same one)
+        return rng.choice(options) if a.strategy == "random" else options[(i // max(len(races) * len(opps), 1)) % len(options)]
     plans = []
     for i in range(a.games):
         race, opp_race = races[i % len(races)], opps[(i // len(races)) % len(opps)]
