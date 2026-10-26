@@ -66,8 +66,14 @@ Some of the slowest work in a step was ours: the harness asked the game for more
 | 1073741824 | every token the harness still wrote in JASS (the step's and time's records, events, the commands' results): an `I2S` string (the string table's lookup, insert and release: 1-2% of the main thread on its own) and a `Preload` | the harness hands the shim the integer through the mailbox, on a player of its own, and the shim writes the token; the "V", "K" and "T" records made by the shim with the same natives | -0.6 to -5% |
 | 2147483648 | the agents' commands: each integer read through a JASS function and two natives, each command applied by `W3S_ApplyOne`, a trigger evaluation per 50 | applied by the shim: `W3S_ApplyOne`'s natives that act or decide, in its order (point, target and immediate orders, hero skills, orders on trees, taxes, resources); any other command, a pending purchase or an advised player: the harness, as before | ~0-2% with the 1-3 commands a step of training games; -13% with 50 |
 | 8589934592 | the items on the ground: `EnumItemsInRect` ran `W3S_SerItem` in a JASS thread for each item | the shim's `W3S_SerItem`, the same natives in the same order (the walk itself stays: it stamps every widget it passes, state the game keeps) | -0.6% against the AI (whose creeping drops items), 0 without items |
+| 17179869184 | `ForGroup`'s callback pushed each unit's handle on the JASS state's enum stack and popped it after: the handle found by a hash lookup in the handle map, ~1% of the main thread in cache misses | the unit's handle remembered, and used while the handle table's entry still holds the unit (then it is the handle the map gives); the push and pop, which leave nothing behind for a live handle, skipped (a unit the pass drops still gets its push first) | -0.7 to -1.1% |
+| 34359738368 | each unit's ~25 natives each turned the handle back into the object, checked the unit's agent and ran a wrapper; `GetUnitX` and `GetUnitY` each computed the whole position | the natives' reads and engine calls made directly on the object the callback has, in the same order; x and y from one call | -1.3 to -3.0% |
+| 68719476736 | a hero's experience, skill points and six items read twice a record (for its hash, then for its tokens) | once | ~-0.1% in games with heroes |
+| 274877906944 | `GetOwningPlayer` looked the owner's handle up in the handle map for every unit | the handle remembered per player and checked against the handle table, as for 17179869184 | ~-0.2% |
+| 549755813888 | `IsUnitVisible` computed the unit's fog cell and asked the game's options once per seer | once per unit | -0.3 to -0.5% with two seers (games between agents), 0 with one |
+| 137438953472 | the pass waited on memory: each unit's object, the agents of its life, mana, position, order and abilities, its handle's entry | `ForGroup`'s snapshot of the group says which units come next: their memory prefetched one to four units ahead, a stage a unit (hints only) | -1.8 to -3.3% |
 
-Together with the step without files above, the harness went from most of a step (in JASS: ~7 ms for the orders, 9-13 ms for the units with 150 of them) to ~10% of the main thread. The last three bits need the harness from 2026-10-24 (round 4; it asks the shim at a game's first step, and with an older shim or the bits off it does the work itself, as before): the maps of runs started before it never ask.
+Together with the step without files above, the harness went from most of a step (in JASS: ~7 ms for the orders, 9-13 ms for the units with 150 of them) to ~10% of the main thread. The bits 1073741824 to 8589934592 need the harness from 2026-10-24 (round 4; it asks the shim at a game's first step, and with an older shim or the bits off it does the work itself, as before): the maps of runs started before it never ask. Round 5's six bits (2026-10-25) are the shim's alone: every harness that has the shim make the units pass gets them, older runs' replays included.
 
 ## Time: a virtual clock
 
@@ -125,6 +131,7 @@ Tried and dropped: pooling the events of the game's loopback messages (4: nothin
 | round 2 (2026-10-24): bits 4096 to 262144 | 521721 | -18.4% against round 1 (-20.7% with wineserver; -31% in games between agents) | 54 replays (60,772 steps), and 8 new recordings in the check mode for 262144, which changes the harness |
 | round 3 (2026-10-24): bits 524288 to 33554432 | 67106297 | -4.6% instructions, -6.6% CPU against round 2 | 45 replays (48,766 steps) |
 | round 4 (2026-10-24): bits 67108864 to 8589934592 (`W3SIM_CUTS` read as 64 bits) | 17179866617 | against round 3: on games of the new harness -8 to -9% instructions and -3 to -6% CPU (-15% with 50 commands a step); on older runs' replays, whose harness never asks for the harness bits, -6.3% and -1.5% | 63 replays (63,792 steps); 17 recordings of the new harness (pairs and recorded AI orders among them), 6 also played back with round 3's shim (its JASS paths: identical) |
+| round 5 (2026-10-25): bits 17179869184 to 549755813888 (the units pass) | 1099511625209 | against round 4: -2.2% instructions, -5.2% CPU (the units pass 7.5-12.9% → 3.5-5.4% of the main thread) | 67 replays (83,550 steps): 10 recordings of the current harness, round 4's 17, 40 training replays; a check mode comparing every unit's fields both ways |
 
 ## Wine
 
@@ -193,11 +200,24 @@ pie showData
 The first three columns are replays of training runs (fgself-139 and -140): their maps carry the harness of their run, which never asks for round 4's harness bits, so there only the soft float and the name hash act. The fourth is a live recording with the new harness (scripted agents giving the ops in about training's proportions, ~1.4 commands a step), where the rest of the step fell from 6.8% to 4.7%. The machine was busier than for round 3's table (the 40-minute game took 13.55 ms a step then).
 
 * **Pathing is most of a game**, and more of it the longer the game: more units walk farther. Its cost is spread over ~20 small functions and the game's soft-float arithmetic (9-13% of the main thread on its own, counted inside its callers), and much of it waits on memory. The long-range search's time is ~40% one cache miss per node it expands (its four-level cell lookup's first load), ~25% its relaxation (already in C), ~10% its open list; a C rewrite of the rest with the same heap order and writes would remove a part of the remaining ~20%.
-* **Our harness is the second largest part**: every unit's record each step (the units pass: ~30 natives a unit), the players' records and the result, the commands. With the new harness the rest of the step is ~90 JASS statements (~0.8 µs each: the interpreter looks every variable up by name), the items' grid walk and the commands' orders themselves.
+* **Our harness is the second largest part**: every unit's record each step (the units pass: ~30 natives a unit at round 4; since round 5 their work done on each unit's object, with its memory prefetched: see below), the players' records and the result, the commands. With the new harness the rest of the step is ~90 JASS statements (~0.8 µs each: the interpreter looks every variable up by name), the items' grid walk and the commands' orders themselves.
 * **Wine and the kernel are 4-5%** of the main thread (plus wineserver's ~1% of the games' CPU): a game without Wine would save about that, not more. The game's own code already runs natively on the CPU; Wine only answers its calls to Windows.
 * **Soft float** stays 8-12% of the main thread as leaf time with the multiply, conversions and floor as SSE: those calls cost what their operands' memory round trips cost, and the add and subtract (the largest share) round in a way IEEE does not, so they stay the game's.
 
 How it was measured: each replay played back twice side by side (`scripts/cut_ab.py`, 67106297 and 17179866617), `perf record -e cycles --call-graph fp` on each game's main thread (~10,000 samples for a short game, ~180,000 for the 40-minute one), each sample put in one part by its call chain (the first matching rule).
+
+### After round 5
+
+Round 5 (2026-10-25, `--game-cuts 1099511625209`) halved the units pass: the same rules on three other games, each played back with round 4's cuts and with round 5's (the pass's cycles a step in brackets):
+
+| part | a game between agents (fgself-147) | an agent against the AI (fgself-147) | 40 minutes of scripted agents (~230 units) |
+|---|---|---|---|
+| the units pass | 9.6% → 4.3% (2.05 → 0.83 M) | 7.5% → 3.5% (1.90 → 0.85 M) | 12.9% → 5.4% (2.25 → 0.85 M) |
+| our harness | 20.1% → 15.2% | 14.3% → 10.6% | 34.6% → 28.7% |
+| pathing | 42.8% → 44.9% | 40.2% → 43.0% | 28.1% → 30.8% |
+| unit, ability and buff timers | 12.0% → 12.9% | 11.9% → 12.3% | 12.2% → 13.3% |
+
+What is left of the pass (~4% of the main thread): `UnitIsSleeping`'s ability walk for creeps (their sleep ability heads their list, so the cache of units without one cannot help them), the prefetching's own loads, the fog query, and the soft-float arithmetic of life, mana and the position.
 
 ## The game's code, as we understand it
 
@@ -243,7 +263,7 @@ Under all of these, shared services: soft-float arithmetic (10-15% of the main t
 * **Unit, ability and buff timers.** Abilities, buffs, harvesting, gold mines, creeps (patched: a unit's ability lookup in C).
 * **Target acquisition and fog.** Units find targets in range; each turn, sight circles and line of sight make the fog.
 * **Script timers.** The JASS interpreter runs the map's timers: our harness's step every half second, and in games against it the built-in AI's scripts. Both issue orders, which the pathing tick then plans.
-* **The harness's step** (ours). The units pass (in C in the shim, its per-unit flags kept there), the players' records and the result (in the shim), the commands, the items on the ground, and the step sync with Python (over a Unix socket with Linux system calls).
+* **The harness's step** (ours). The units pass (in C in the shim, its per-unit flags kept there, the natives' work done on each unit's object and its memory prefetched ahead), the players' records and the result (in the shim), the commands, the items on the ground, and the step sync with Python (over a Unix socket with Linux system calls).
 * **Shared services.** Soft-float arithmetic keeps the simulation deterministic across machines (patched: count leading zeros and square roots as single instructions; the multiply, the conversions and floor as SSE where they are exactly IEEE). The object system turns ids and handles into objects and checks types (patched: a memoised map-version check behind `GetPlayerId`, handle conversions once per unit). Storm is the game's allocator and string hashing (patched: the name hash in one pass).
 * **Paint.** With drawing off, it still builds a frame now and then (every 50 steps), with textures that have no pixels; the Direct3D device draws nothing.
 
@@ -260,5 +280,6 @@ The addresses of every function above, and which `--game-cuts` bit acts on each,
 | round 2 (2026-10-24) | the main thread 7.72 → 6.29 ms on Echo Isles' longer games |
 | round 3 (2026-10-24: pathing in C where it is exact, the units pass's flags in the shim, the step sync over a Unix socket) | the main thread -6.6% (7.20 → 7.05 ms on a training game, 14.53 → 13.55 ms on a 40-minute one) |
 | round 4 (2026-10-24: the harness's tokens, commands and items in the shim, the name hash, soft float where exact) | the main thread -3 to -6% on games with the new harness (6.75 → 6.51 ms), -15% with many commands a step; -1.5 to -4% on older runs' replays |
+| round 5 (2026-10-25: the units pass's natives done on each unit's object, handles remembered, its memory prefetched) | the main thread -5.2% (5.66 → 5.36 ms over 67 replays), the units pass halved |
 
 The settings differ from row to row (maps, numbers of units, how loaded the machine was), so compare each row with its own "before".
