@@ -17,6 +17,16 @@
  *          queries inline with their stores in the same order (the query object's mask, the grid's stamp counter,
  *          each widget's stamp)
  *
+ * Round 7:
+ * 4398046511104  the pathing grid's two cell walks pipelined (prefetches only; the same stores and calls in the same
+ *          order): the dirty cells' pass (0x8c28c0: the bitmap's zero words skipped four at a time, each set cell's
+ *          head, first entry and widget prefetched a few cells ahead, 0x8c2c20 the game's) and the range sensors'
+ *          query (0x8bbf20 -> 0x8bbe10 per cell: in C as the widget grid's walk of W3SIM_CUTS & 2199023255552,
+ *          entries gathered ahead across cells, widgets and units prefetched, 0x8bad90 the game's)
+ * 8796093022208  (with 1048576) the local A* search's expansions prefetched: the first list entries of the ring cells
+ *          and neighbours the run has not remembered yet, together before the ring's walk, and the free list's head
+ *          entry after a node is made (reads and prefetches only)
+ *
  * Offsets are for the 1.29.2.9231 executable (VAs, 0x400000-based).
  */
 #include "w3shim.h"
@@ -167,6 +177,233 @@ static void __fastcall LRelax_hook(BYTE *s, void *edx, int idx, int parent) {
     heap_push(s + 0x70, key, idx, n[2]);
 }
 
+/* ---- 4398046511104: the pathing grid's dirty cells' pass (0x8c28c0) ----
+ * A timer (0x7faec0 -> 0x7f9740) runs 0x8c28c0 over the pathing grid: it scans the bitmap of dirty cells (+0x98,
+ * +0xa8 words) and for each set bit calls 0x8c2c20 on the cell, which walks the cell's list (+0x28 heads, +0x78
+ * entries) and drops the search nodes' entries (type 2) and the dead widgets' (+0x38 == -1). Here the scan is the
+ * same (a word read fresh after the calls before it, its bits from a copy, the word cleared after them) with the zero
+ * words skipped four at a time, and the cells' heads, first entries and widgets prefetched a few set bits ahead.
+ * 0x8c2c20 is the game's. */
+typedef void(__fastcall *DirtyCellFn)(BYTE *, void *, int);
+typedef void(__fastcall *DirtyFn)(BYTE *);
+static DirtyFn Dirty_orig;
+static DirtyCellFn DirtyCell_fn;
+static long g_dc_calls, g_dc_words, g_dc_cells;
+
+static void __fastcall Dirty_hook(BYTE *g) {
+    if (*(DWORD *)(g + 0xb4) > 0x7fffffffu)
+        *(DWORD *)(g + 0xb4) = 0;
+    DWORD n = *(DWORD *)(g + 0xa8);
+    g_dc_calls++;
+    for (DWORD i = 0; i < n; i++) {
+        DWORD *bm = *(DWORD **)(g + 0x98);
+        while (i + 4 <= n && !(bm[i] | bm[i + 1] | bm[i + 2] | bm[i + 3]))
+            i += 4;
+        if (i >= n)
+            break;
+        DWORD w = bm[i];
+        g_dc_words++;
+        if (!w)
+            continue;
+        /* the word's set cells, then two of the words after it (hints: the calls may still set bits there) */
+        int cells[34], m = 0, t;
+        for (DWORD r = w; r; r &= r - 1)
+            cells[m++] = (int)(i * 32 + __builtin_ctz(r));
+        t = m;
+        for (DWORD j = i + 1; j < n && j < i + 64 && t < m + 2; j++)
+            if (bm[j])
+                cells[t++] = (int)(j * 32 + __builtin_ctz(bm[j]));
+        const DWORD *heads = *(const DWORD **)(g + 0x28);
+        const BYTE *ents = *(const BYTE **)(g + 0x78);
+        for (int k = 0; k < t; k++)
+            __builtin_prefetch(heads + cells[k]);
+        if (t > 1) {
+            DWORD h = heads[cells[1]] & 0xffffff;
+            if (h != 0xffffff)
+                __builtin_prefetch(ents + h * 8);
+        }
+        DWORD h0 = heads[cells[0]] & 0xffffff;
+        if (h0 != 0xffffff) {
+            const DWORD *e = (const DWORD *)(ents + h0 * 8);
+            if ((e[0] & 0xff000000) != 0x2000000)
+                __builtin_prefetch((const BYTE *)(size_t)e[1] + 0x38);
+        }
+        /* the pipeline: before cell k's call, cell k+2's head read and its first entry prefetched, cell k+1's
+         * entry read and its widget prefetched */
+        for (int k = 0; k < m; k++) {
+            if (k + 2 < t) {
+                DWORD h = heads[cells[k + 2]] & 0xffffff;
+                if (h != 0xffffff)
+                    __builtin_prefetch(ents + h * 8);
+            }
+            if (k + 1 < t) {
+                DWORD h = heads[cells[k + 1]] & 0xffffff;
+                if (h != 0xffffff) {
+                    const DWORD *e = (const DWORD *)(ents + h * 8);
+                    if ((e[0] & 0xff000000) != 0x2000000)
+                        __builtin_prefetch((const BYTE *)(size_t)e[1] + 0x38);
+                }
+            }
+            g_dc_cells++;
+            DirtyCell_fn(g, NULL, cells[k]);
+            heads = *(const DWORD **)(g + 0x28);
+            ents = *(const BYTE **)(g + 0x78);
+        }
+        bm = *(DWORD **)(g + 0x98);
+        bm[i] = 0;
+    }
+}
+
+/* ---- 4398046511104: the pathing grid's range queries (0x8bbf20) pipelined across cells ----
+ * A range sensor (the 'sig^' timers 0x7fae00 -> 0x8b8ae0 -> 0x8bb120: units in range of another, their enter and
+ * leave events) collects the units in a rect of the pathing grid: 0x8bbf20 clips the rect, counts the grid's stamp
+ * (++ +0xb4, the sensor's own widget stamped with it) and calls 0x8bbe10 on each cell, row by row; that one counts
+ * the stamp again for a cell with entries and walks its list: search nodes (type 2) skipped, a widget stamped by
+ * this query or this cell or dead skipped, a unit (type 1) tested by 0x8bad90 (in range: pushed on the sensor's
+ * array) and stamped with the query's stamp, any other widget with the cell's. The same walk as the widget grid's
+ * (W3SIM_CUTS & 2199023255552): the entries gathered PG_LAG ahead across cells, their widgets prefetched, the cells
+ * PG_AHEAD ahead's first entries too; processing in the walk's order with the same stores (the gathering reads only
+ * the lists' links, which nothing in the walk changes: 0x8bad90 computes a distance) */
+#define PG_RING 64
+#define PG_LAG 24
+#define PG_AHEAD 8
+#define PG_UNIT 12 /* entries ahead of the one processed whose unit (+0x30) is prefetched */
+typedef char(__cdecl *InRangeFn)(BYTE *, BYTE *);
+typedef char(__fastcall *QGrowFn)(BYTE *, void *, unsigned, int);
+typedef void(__fastcall *RangeQFn)(BYTE *, void *, BYTE *, int *);
+static RangeQFn RangeQ_orig;
+static InRangeFn InRange_fn;
+static long g_rq_calls, g_rq_ents;
+
+static inline void rq_entry(BYTE *q, DWORD kind, BYTE *o, DWORD stamp, DWORD cs) {
+    if (kind == 0x2000000)
+        return;
+    DWORD st = *(DWORD *)(o + 0x38);
+    if (st == stamp || st == cs || st == 0xffffffffu)
+        return;
+    if (kind != 0x1000000) {
+        *(DWORD *)(o + 0x38) = cs;
+        return;
+    }
+    if (InRange_fn(o, q)) {
+        DWORD cnt = *(DWORD *)(q + 0x1c), cap = *(DWORD *)(q + 0x18);
+        int ok = 1;
+        if (cnt + 1 > cap) {
+            DWORD grow = *(DWORD *)(q + 0x14);
+            if (!grow)
+                ok = 0;
+            else {
+                DWORD need = cnt - cap + 1, add = grow > need ? grow : need;
+                if (((QGrowFn)(void *)VA_(0x9919c0))(q, NULL, (cap + add) * 8, 1))
+                    *(DWORD *)(q + 0x18) += add;
+                else
+                    ok = 0;
+            }
+        }
+        if (ok) { /* (0x809400 for one entry) */
+            DWORD c = *(DWORD *)(q + 0x1c);
+            *(DWORD *)(q + 0x1c) = c + 1;
+            DWORD *arr = *(DWORD **)(q + 0xc);
+            arr[c * 2] = (DWORD)(size_t)o;
+            arr[c * 2 + 1] = 0;
+        }
+    }
+    *(DWORD *)(o + 0x38) = stamp;
+}
+
+static void __fastcall RangeQ_hook(BYTE *q, void *edx, BYTE *g, int *r) {
+    int y1 = *(int *)(g + 0x60), x1 = *(int *)(g + 0x5c), y0 = *(int *)(g + 0x58), x0 = *(int *)(g + 0x54);
+    if (r[3] < y1)
+        y1 = r[3];
+    if (r[2] < x1)
+        x1 = r[2];
+    if (r[1] > y0)
+        y0 = r[1];
+    if (r[0] > x0)
+        x0 = r[0];
+    if (x0 >= x1 || y0 >= y1)
+        return;
+    g_rq_calls++;
+    DWORD stamp = ++*(DWORD *)(g + 0xb4);
+    if (*(BYTE **)(q + 0x20))
+        *(DWORD *)(*(BYTE **)(q + 0x20) + 0x38) = stamp;
+    const DWORD *heads = *(DWORD **)(g + 0x28);
+    BYTE *ents = *(BYTE **)(g + 0x78);
+    unsigned stride = *(DWORD *)(g + 0x3c);
+    BYTE *robj[PG_RING];
+    DWORD rkind[PG_RING]; /* the entry's kind, | 1 at a cell's first entry */
+    unsigned put = 0, take = 0;
+    DWORD cs = 0;
+    /* two cursors ahead of the walk, in its order (rows of the rect are short: across rows): PG_AHEAD * 2 cells ahead
+     * the cell's first entry prefetched, PG_AHEAD ahead that entry read and its widget and the next entry prefetched */
+    unsigned ai = (unsigned)x0, aj = (unsigned)y0, bi = (unsigned)x0, bj = (unsigned)y0;
+    for (int k = 0; k < 2 * PG_AHEAD && ai < (unsigned)x1; k++) {
+        if (k < PG_AHEAD && ++bj >= (unsigned)y1)
+            bj = (unsigned)y0, bi++;
+        if (++aj >= (unsigned)y1)
+            aj = (unsigned)y0, ai++;
+    }
+    for (unsigned i = (unsigned)x0; i < (unsigned)x1; i++) {
+        unsigned base = stride * i;
+        for (unsigned j = (unsigned)y0; j < (unsigned)y1; j++) {
+            if (ai < (unsigned)x1) {
+                DWORD a = heads[stride * ai + aj] & 0xffffff;
+                if (a != 0xffffff)
+                    __builtin_prefetch(ents + a * 8, 0);
+                if (++aj >= (unsigned)y1)
+                    aj = (unsigned)y0, ai++;
+            }
+            if (bi < (unsigned)x1) {
+                DWORD b = heads[stride * bi + bj] & 0xffffff;
+                if (b != 0xffffff) {
+                    DWORD bw = ((DWORD *)(ents + b * 8))[0];
+                    if ((bw & 0xff000000) != 0x2000000)
+                        __builtin_prefetch((BYTE *)(size_t)((DWORD *)(ents + b * 8))[1] + 0x30, 1);
+                    if ((bw & 0xffffff) != 0xffffff)
+                        __builtin_prefetch(ents + (bw & 0xffffff) * 8, 0);
+                }
+                if (++bj >= (unsigned)y1)
+                    bj = (unsigned)y0, bi++;
+            }
+            DWORD e = heads[base + j] & 0xffffff;
+            DWORD first = 1;
+            while (e != 0xffffff) {
+                DWORD w = ((DWORD *)(ents + e * 8))[0];
+                BYTE *o = (BYTE *)(size_t)((DWORD *)(ents + e * 8))[1];
+                DWORD kind = w & 0xff000000;
+                if (kind != 0x2000000)
+                    __builtin_prefetch(o + 0x30, 1);
+                robj[put & (PG_RING - 1)] = o;
+                rkind[put & (PG_RING - 1)] = kind | first;
+                put++;
+                first = 0;
+                e = w & 0xffffff;
+                if (put - take > PG_LAG) {
+                    DWORD k = rkind[take & (PG_RING - 1)];
+                    unsigned u = (take + PG_UNIT) & (PG_RING - 1);
+                    if ((rkind[u] & 0xff000000) == 0x1000000) { /* (the widget, prefetched when gathered) */
+                        const BYTE *un = *(const BYTE **)(robj[u] + 0x30);
+                        __builtin_prefetch(un + 0x14);
+                        __builtin_prefetch(un + 0x90);
+                    }
+                    if (k & 1)
+                        cs = ++*(DWORD *)(g + 0xb4);
+                    rq_entry(q, k & 0xff000000, robj[take & (PG_RING - 1)], stamp, cs);
+                    take++;
+                }
+            }
+        }
+    }
+    g_rq_ents += put;
+    while (take != put) {
+        DWORD k = rkind[take & (PG_RING - 1)];
+        if (k & 1)
+            cs = ++*(DWORD *)(g + 0xb4);
+        rq_entry(q, k & 0xff000000, robj[take & (PG_RING - 1)], stamp, cs);
+        take++;
+    }
+}
+
 /* ---- 1048576: the local A* search ---- */
 static AstarFn Astar_orig;
 static CellFn Cell_fn;
@@ -178,6 +415,7 @@ static UnlinkFn Unlink_fn;
 static DWORD *g_m;
 static unsigned g_mcap, g_mw, g_mh;
 static DWORD g_mrun;
+static int g_as_pf; /* (8796093022208) */
 static int g_in;
 
 /* the heuristic 0x8bda00 (k = 15), transcribed (checked against the code at install) */
@@ -264,8 +502,14 @@ static inline int node_at(BYTE *s, BYTE *g, int x, int y) {
             if ((e[0] & 0xff000000) == 0x2000000 && *(WORD *)(e + 1) == *(WORD *)(s + 0x20))
                 r = (int)((WORD *)e)[3];
         }
-        if (r < 0)
+        if (r < 0) {
             r = Node_fn(s, NULL, x, y);
+            if (g_as_pf) { /* (the next node's entry: the free list's head, 0x8c22c0 takes it) */
+                DWORD f = *(DWORD *)(g + 0xac) & 0xffffff;
+                if (f != 0xffffff)
+                    __builtin_prefetch(*(BYTE **)(g + 0x78) + f * 8, 1);
+            }
+        }
         if (r >= 0 && r < 0xffff)
             g_m[i] = v | ((DWORD)(r + 1) << 3);
         return r;
@@ -321,9 +565,42 @@ static const struct {
 static const int g_dx[8] = {-1, 0, 1, -1, 1, -1, 0, 1}, g_dy[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
 static const unsigned g_cost[8] = {0x15, 0xf, 0x15, 0xf, 0xf, 0x15, 0xf, 0x15};
 
+/* (8796093022208) the cells an expansion will ask the game about, their lists' first entries prefetched together
+ * before the ring's walk: a cell of the ring whose query this run has not remembered (0x8bdbe0 walks its list) and a
+ * neighbour whose node it has not (0x8bcf30 reads its list's head entry). Each head is read here (the loads overlap),
+ * and the entry it names prefetched; the ring's walk and the nodes then find them in the cache. Reads only */
+static inline void pf_cell(const DWORD *heads, const BYTE *ents, int x, int y, DWORD need) {
+    if ((unsigned)x < g_mw && (unsigned)y < g_mh) {
+        unsigned i = (unsigned)y * g_mw + (unsigned)x;
+        DWORD v = g_m[i];
+        if (M_RUN(v) == g_mrun && (v & need))
+            return;
+        DWORD h = heads[i] & 0xffffff;
+        if (h != 0xffffff)
+            __builtin_prefetch(ents + h * 8);
+    }
+}
+static inline void pf_expand(BYTE *g, int x, int y, int r, int n) {
+    const DWORD *heads = *(const DWORD **)(g + 0x28);
+    const BYTE *ents = *(const BYTE **)(g + 0x78);
+    int x0 = x - r, y0 = y - r;
+    for (int i = 0; i < n; i++) {
+        pf_cell(heads, ents, x0 + i, y0, 4);
+        pf_cell(heads, ents, x0 + i, y0 + n - 1, 4);
+    }
+    for (int j = 1; j < n - 1; j++) {
+        pf_cell(heads, ents, x0, y0 + j, 4);
+        pf_cell(heads, ents, x0 + n - 1, y0 + j, 4);
+    }
+    for (int k = 0; k < 8; k++)
+        pf_cell(heads, ents, x + g_dx[k], y + g_dy[k], 0x7fff8);
+}
+
 static inline void expand(BYTE *s, BYTE *g, unsigned sc, int node) {
     BYTE *nodes = *(BYTE **)(s + 0x30);
     int x = *(int *)(nodes + node * 0x24), y = *(int *)(nodes + node * 0x24 + 4);
+    if (g_as_pf)
+        pf_expand(g, x, y, g_sc[sc].r, g_sc[sc].n);
     unsigned mask = ring(s, x, y, g_sc[sc].r, g_sc[sc].n);
     if (sc == 0)
         mask &= 0xff; /* (0x8c09c0 tests the ring's byte) */
@@ -478,7 +755,7 @@ static int check_call(DWORD at, DWORD target) {
 }
 
 void pathing_install(long long cuts) {
-    if (!(cuts & (524288 | 1048576 | 4194304)))
+    if (!(cuts & (524288 | 1048576 | 4194304 | 4398046511104LL)))
         return;
     if (MH_Initialize() != MH_OK && MH_Initialize() != MH_ERROR_ALREADY_INITIALIZED)
         return;
@@ -517,10 +794,28 @@ void pathing_install(long long cuts) {
         Node_fn = (NodeFn)(void *)VA_(VA_NODE);
         Heur_fn = (HeurFn)(void *)VA_(VA_HEUR);
         Unlink_fn = (UnlinkFn)(void *)VA_(VA_AUNLINK);
+        g_as_pf = (cuts & 8796093022208LL) != 0;
+        if (g_as_pf)
+            shim_log("pathing: the A* expansions' cells prefetched (W3SIM_CUTS & 8796093022208)");
         if (hook_at(VA_ASTAR, (void *)Astar3_hook, (void **)&Astar_orig, "A* loop"))
             shim_log("pathing: the local A* search's loop in C (W3SIM_CUTS & 1048576)");
     } else if (cuts & 1048576)
         shim_log("pathing: A* loop: unexpected code, not hooked");
+    if ((cuts & 4398046511104LL) && check_call(0x8c2928, 0x8c2c20) && VA_(0x8c2954)[0] == 0xc3 &&
+        VA_(0x8c2910)[0] == 0x8b && VA_(0x8c2910)[1] == 0x1c && VA_(0x8c2910)[2] == 0x19) {
+        DirtyCell_fn = (DirtyCellFn)(void *)VA_(0x8c2c20);
+        if (hook_at(0x8c28c0, (void *)Dirty_hook, (void **)&Dirty_orig, "dirty cells"))
+            shim_log("pathing: the pathing grid's dirty cells' pass in C, prefetched (W3SIM_CUTS & 4398046511104)");
+    } else if (cuts & 4398046511104LL)
+        shim_log("pathing: dirty cells: unexpected code, not hooked");
+    if ((cuts & 4398046511104LL) && check_call(0x8bbfad, 0x8bbe10) && check_call(0x8bbe8d, 0x8bad90) &&
+        check_call(0x8bbecd, 0x9919c0) && check_call(0x8bbeed, 0x809400) && VA_(0x8bbfcf)[0] == 0xc2 &&
+        VA_(0x8bbfcf)[1] == 0x08 && VA_(0x8bbf15)[0] == 0xc2 && VA_(0x8bbf15)[1] == 0x0c) {
+        InRange_fn = (InRangeFn)(void *)VA_(0x8bad90);
+        if (hook_at(0x8bbf20, (void *)RangeQ_hook, (void **)&RangeQ_orig, "range query"))
+            shim_log("pathing: the pathing grid's range queries pipelined (W3SIM_CUTS & 4398046511104)");
+    } else if (cuts & 4398046511104LL)
+        shim_log("pathing: range query: unexpected code, not hooked");
     if ((cuts & 4194304) && check_call(0x8b78d7, 0x8be7a0) && check_call(0x8b7901, 0x8be7a0) &&
         check_call(0x8b7923, 0x8be7a0) && check_call(0x8b7945, 0x8be7a0) && check_call(0x8be7b6, 0x8be420) &&
         VA_(0x8b7981)[0] == 0xc2 && VA_(0x8b7981)[1] == 0x14) {
@@ -533,5 +828,8 @@ void pathing_install(long long cuts) {
 void pathing_report(void) {
     shim_log("pathing/s: long relax=%ld early=%ld; A* runs=%ld pops=%ld cells hit=%ld miss=%ld; map cells=%ld", g_lr_n,
              g_lr_early, g_as_runs, g_as_pops, g_as_hits, g_as_miss, g_rc_n);
+    shim_log("pathing/s: dirty passes=%ld words=%ld cells=%ld; range queries=%ld entries=%ld", g_dc_calls,
+             g_dc_words, g_dc_cells, g_rq_calls, g_rq_ents);
+    g_dc_calls = g_dc_words = g_dc_cells = g_rq_calls = g_rq_ents = 0;
     g_lr_n = g_lr_early = g_as_runs = g_as_pops = g_as_hits = g_as_miss = g_rc_n = 0;
 }
