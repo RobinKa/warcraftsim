@@ -1822,8 +1822,16 @@ Game cuts round 5 is in it from 00:30 (the units pass from the unit objects, `--
 
 Merged, not yet in a run: fine target points (`--fine-points 7 --fine-centre 0.9`: a sub-cell within the chosen bin, 6.9 world units near the bases and 29 mid-map, was 48 and ~206; the agent found the coarse bins do not explain the off-site halls, which come from the bin chosen).
 
+**Audit 13** (today's code and `fgself-154`'s games): `fgself-154`'s relaunch resumed from its step-0 checkpoint, saved without Adam's state, so it went on with a fresh Adam, silently (fixed: the step-0 checkpoint saves it, a resume falls back to the start's, a note when Adam starts fresh); the undead hall lesson never taught (its mine out of sight: the acolyte now walks there first); Cloud was offered without a castle (the game's file gives its Requires twice; both count now); the forbid kind was not followed (0-1% for the spam units). Working as meant: research levels' costs (refusals 0.6 → 0.03 a game), the army-mix lessons (kept 100%, was 0%), the hall lessons (100% for human, orc, night elf), the composition kinds drawn.
+
+**`fgself-154`, not kept** (16:30, ~230 games a policy): against insane 48% (its start 47.6% in the same window), with a target 20.5%, head to head with its start 42% of 206 and falling by thirds (52%, 41%, 33%). **Audit 14**: the no-target play drifted toward the target games' styles (tier 3 in 24% of evaluation games, from 4%; more unit types), most likely from the composition kinds' penalties (forbid never kept: its penalty at its most every time) and the army-mix lesson that now teaches, shared through one network; the fresh Adam and the game shares ruled out. Orc's forbidden "spam" unit was the grunt (it spams headhunters): fixed.
+
+**`fgself-155`** (from `fgself-153`'s 38318278, 16:31): the training map `echofast2` (mines and start scaled with the costs; the mine feature reads the map's full mine), `--econ-masks 1`, `--z-workers 1`, `--spells 1`, audit 12-13 fixes, game cuts round 7 (`--game-cuts 17592186041849`); `--teach 3` kept (teach 4's no-target lumber lesson would fire nearly all game) and no composition kinds. Judged against its start in the same window, by race; expansions and wins past 18 minutes.
+
+Process rule since: agent branches are merged only while no run is live (at a fork), since a run executes from the checkout (the 13:49 crash; audit 14).
+
 The queue:
-1. The audit-12 economy fixes (an agent): a training map whose mines and start scale with its costs (`echofast2`), workers labelled up to the target's count, masks against duplicate tech buildings and surplus workers, orc burrow and no-target lumber lessons.
+1. (done: in `fgself-155`) The audit-12 economy fixes: a training map whose mines and start scale with its costs (`echofast2`), workers labelled up to the target's count, masks against duplicate tech buildings and surplus workers, orc burrow and no-target lumber lessons.
 2. Cloning the scripted strategy family as anchor and teacher (AlphaStar's recipe with scripted data). First tune its weak plans, and add night elf and undead expansion plans. Then record thousands of echofast games (`scripts/heuristic_match.py --record`), train a cloning policy, and use it as the KL anchor and a distillation teacher.
 3. `--teach-heuristic` (live lessons from the matching scripted strategy), the exploiters back on, fine points in a run.
 4. Snapshots by wall time (every 15-30 minutes).
