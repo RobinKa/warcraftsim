@@ -23,11 +23,14 @@ import time
 from pathlib import Path
 
 ANCHOR = "insane AI"
+# the insane AI's games against a policy at the same double income (an agent slot took the advisor's difficulty, insane,
+# until 2026-10-26: docs/reference/engine-notes.md): another opponent than the anchor, which plays a person's income
+EQUAL = "insane AI, equal income"
 ANCHOR_RATING = 1500.0
 SCALE = 400.0 / math.log(10.0)  # Elo points per unit of log-strength
 PRIOR_GAMES = 1.0  # each player's virtual tie against the anchor: finite ratings for a few games
-CACHE = ".ratings-cache-v4.json"  # (v2: the "+shops" players; v3: Echo Isles runs only, hours from the creation; v4: the
-# pairs' games by the hour they were played). Every game counts alike, however old (the user, 2026-10-25: a decay could
+CACHE = ".ratings-cache-v5.json"  # (v2: the "+shops" players; v3: Echo Isles runs only, hours from the creation; v4: the
+# pairs' games by the hour they were played; v5: games at the doubled income against EQUAL). Every game counts alike, however old (the user, 2026-10-25: a decay could
 # lose a good past policy); the top rated ones are played anew under today's rules by the evaluation worker's gauntlet
 # the evaluation games could buy from the neutral buildings from here on (2026-10-21 14:27: the laptop's evaluation
 # worker started with the harness that reaches a shop in the fog; before, every buy order was refused)
@@ -47,10 +50,11 @@ def checkpoint_name(path: str) -> str | None:
 
 
 def players_of(row: dict, run: str, start: float, untrained=lambda run: False,
-               aliases: dict | None = None) -> tuple[str, str] | None:
+               aliases: dict | None = None, slot: str = "normal") -> tuple[str, str] | None:
     """An evaluation row's (player, opponent), or None when it is no rated game. `untrained(run)`: whether that
     checkpoint's run lacked the neutral wares the game is played with (its checkpoints then "+shops"). `aliases`:
-    checkpoint -> the run's policy by the hour it stands for (the gauntlet's; ALIASES)."""
+    checkpoint -> the run's policy by the hour it stands for (the gauntlet's; ALIASES). `slot`: the run's agent slots'
+    difficulty for rows without their own ("slot_difficulty"; --opd-difficulty then)."""
     if not row.get("eval"):
         return None
     key, opp = str(row.get("eval_key") or "current"), str(row.get("opponent") or "")
@@ -68,7 +72,8 @@ def players_of(row: dict, run: str, start: float, untrained=lambda run: False,
         if b is None:
             return None
     elif "ai-insane" in opp and "(real)" in opp:
-        b = ANCHOR
+        doubled = (row.get("slot_difficulty") or ("normal" if key == "current+human" else slot)) == "insane"
+        b = EQUAL if doubled else ANCHOR
     else:
         return None
     if key.startswith("current") or key.startswith("vs "):
@@ -155,7 +160,7 @@ class Ratings:
                         row = json.loads(line)
                     except ValueError:
                         continue
-                    pair = players_of(row, d.name, start, untrained, aliases)
+                    pair = players_of(row, d.name, start, untrained, aliases, self._slot(d.name))
                     if pair is not None:
                         self._add(pair, float(row.get("outcome", 0.0)), float(row.get("time", 0.0)), d.name)
                         changed = True
@@ -177,6 +182,17 @@ class Ratings:
                 cache[run] = 0
         return cache[run]
 
+    def _slot(self, run: str) -> str:
+        """A run's agent slots' difficulty before its rows said (the advisor's: --opd-difficulty)."""
+        cache = self.__dict__.setdefault("_slots", {})
+        if run not in cache:
+            try:
+                cache[run] = str(json.loads((self.runs_dir / run / "run.json").read_text()).get("config", {})
+                                 .get("opd_difficulty") or "normal")
+            except (OSError, ValueError):
+                cache[run] = "normal"
+        return cache[run]
+
     def _add(self, pair: tuple[str, str], outcome: float, t: float, run: str) -> None:
         a, b = pair
         flip = b < a
@@ -187,7 +203,8 @@ class Ratings:
         w[0 if won else 1 if lost else 2] += 1
         for p in pair:
             m = self.state["meta"].setdefault(p, {"run": p.split()[0].split("/")[0] if p != ANCHOR else "",
-                                                  "kind": ("anchor" if p == ANCHOR else "heuristic" if p.startswith("heuristic:")
+                                                  "kind": ("anchor" if p == ANCHOR else "ai" if p == EQUAL
+                                                           else "heuristic" if p.startswith("heuristic:")
                                                            else "+z" if p.endswith("+z") or
                                                            p.endswith("+zg") else "checkpoint" if "/" in p else "current"),
                                                   "first": t, "last": t})
@@ -258,8 +275,8 @@ class Ratings:
             m = self.state["meta"].get(name, {"run": "", "kind": "anchor", "first": 0, "last": 0})
             out.append({"name": name, "rating": round(ANCHOR_RATING + SCALE * math.log(max(gamma[i], 1e-12)), 1),
                         "se": None if i == anchor else round(SCALE * math.sqrt(max(v, 1e-12)), 1),
-                        "games": count[i], "score": round((wins[i] - (0.5 * PRIOR_GAMES if i != anchor else 0.0))
-                                                          / max(count[i], 1), 3), **m})
+                        "games": count[i], "score": round((wins[i] - 0.5 * PRIOR_GAMES * (1 if i != anchor else n - 1))
+                                                          / max(count[i], 1), 3), **m})  # (the prior's ties out)
         out.sort(key=lambda r: -r["rating"])
         self._table = {"players": out, "games": sum(sum(v) for _, v in pairs), "pairs": len(pairs),
                        "anchor": ANCHOR, "anchor_rating": ANCHOR_RATING, "updated": time.time()}

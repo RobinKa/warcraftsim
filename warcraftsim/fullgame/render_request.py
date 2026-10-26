@@ -283,7 +283,8 @@ def play_and_render(r: dict, runs: Path, update) -> dict:
     from .collect import claim_slot
     from .evalworker import newest_checkpoint, run_config
     from .model import load
-    from .selfplay import Inference, Nets, film_game, play_one, publish, render_video, strategy_pool
+    from .selfplay import (Inference, Nets, agent_difficulty, film_game, play_one, publish, render_video,
+                           strategy_pool)
     q, out_dir = r["request"], renders(runs)
     run_dir = runs / q["run"]
     rng = random.Random(f"render/{r['id']}/{r['time']}")
@@ -346,7 +347,7 @@ def play_and_render(r: dict, runs: Path, update) -> dict:
     races = [""] * 2
     races[slot_a], races[1 - slot_a] = played
     side = slot_of[q["follow"]]
-    adv = cfg.get("opd_difficulty", "normal")
+    adv = agent_difficulty(cfg)  # (a person's income)
     slots = [Agent(races[s], handicap=cfg["handicap"], difficulty=adv) for s in (0, 1)]
     if b["kind"] == "ai":
         slots[slot_of["b"]] = BuiltinAI(races[slot_of["b"]], b["difficulty"], handicap=cfg["handicap"])

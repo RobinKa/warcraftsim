@@ -192,9 +192,8 @@ class PolicyMatch:
         cfg = self.cfg
         races = [""] * 2
         races[side], races[1 - side] = race, opp_race
-        # (both agent slots as the run's own: its games give them the advisor's difficulty, and an insane computer
-        # slot gathers twice as much, the learner's too)
-        diff = args.slot_difficulty or cfg.get("opd_difficulty", "normal")
+        # (both agent slots at --slot-difficulty: an insane computer slot gathers twice as much)
+        diff = args.slot_difficulty
         slots = [Agent(races[s], handicap=cfg["handicap"], difficulty=diff) for s in (0, 1)]
         setup = GameSetup(map=cfg["map"], slots=slots, step_seconds=cfg["step_seconds"],
                           max_game_seconds=args.max_minutes * 60, victory="decisive", window=(320, 240), draw=False,
@@ -237,9 +236,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--cuts", type=int, default=GAME_CUTS)
     ap.add_argument("--nice", type=int, default=15)
     ap.add_argument("--threads", type=int, default=2, help="torch's CPU threads (policy games)")
-    ap.add_argument("--slot-difficulty", default="insane",
-                    help="the agent slots' difficulty: the engine gives an insane computer slot double income, and the "
-                         "runs' agent slots are insane (--opd-difficulty): the learner gathers twice as much in its games")
+    ap.add_argument("--slot-difficulty", default="normal",
+                    help="the agent slots' difficulty: the engine gives an insane computer slot double income; normal is "
+                         "a person's, as the runs' agent slots since 2026-10-26 (selfplay.agent_difficulty)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", type=Path, help="rows (.jsonl); default runs/heuristic/matches.jsonl")
     ap.add_argument("--label", default="", help="a name for this batch in the rows")

@@ -1207,6 +1207,14 @@ def smoothed_rate(m: Member, window: int = 50) -> float | None:
     return (sum(r) + 1.0) / (len(r) + 2.0) if r else None
 
 
+def agent_difficulty(cfg: dict) -> str:
+    """An agent slot's difficulty: normal, a person's income. An agent slot is a computer slot, and the engine gives it
+    its difficulty's income (insane: double; docs/reference/engine-notes.md), so the learner had gathered twice what a
+    person does until 2026-10-26 (the user: never again, in training or evaluation). Only the advisor (--opd-share)
+    takes --opd-difficulty, and not insane (main)."""
+    return str(cfg.get("opd_difficulty") or "normal") if cfg.get("opd_share", 0.0) > 0 else "normal"
+
+
 def matchup(mirror: bool, race: str, opp: str) -> str:
     """The key of the curriculum's level for a learner playing `race` against `opp` (League)."""
     return race if mirror else f"{race}/{opp}"
@@ -1361,7 +1369,7 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                 paired = [(list(races), side, diff, key) for key in keys]
             races, side, diff, eval_key = paired.pop(0)
             ai = {"kind": "ai", "difficulty": diff, "real": True}
-        adv = cfg.get("opd_difficulty", "normal")  # (an agent slot's AI: the advisor's, protocol.ShadowAI)
+        adv = agent_difficulty(cfg)  # (a person's income; with --opd-share the advisor's, protocol.ShadowAI)
         slots = [Agent(races[0], handicap=cfg["handicap"], difficulty=adv), Agent(races[1], handicap=cfg["handicap"], difficulty=adv)]
         real = bool(ai.get("real"))  # the real game (the yardstick, no curriculum)
         curr = ai["kind"] == "ai" and "by_race" in ai  # a curriculum game (League.knobs, by the learner's race)
@@ -1370,8 +1378,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
             ai = {**ai, **ai["by_race"].get(key, {})}
         late = curr and ai.get("delay", 0.0) > 0  # the AI starts late: an agent slot till then
         if evaluating and not versus and not heur and eval_key == "current+human":  # (--eval-human: the policy's slot at
-            slots[side] = Agent(races[side], handicap=cfg["handicap"], difficulty="normal")  # a human's income: an agent
-            # slot takes its difficulty's income, and insane doubles it; the game's insane AI keeps its double income)
+            slots[side] = Agent(races[side], handicap=cfg["handicap"], difficulty="normal")  # a person's income, as every
+            # agent slot's now: agent_difficulty)
         if ai["kind"] == "ai":
             slots[1 - side] = (Agent(races[1 - side], handicap=cfg["handicap"], difficulty=ai["difficulty"]) if late
                                else BuiltinAI(races[1 - side], ai["difficulty"], handicap=cfg["handicap"]))
@@ -2385,6 +2393,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             "z_missed": sorted(c for c, t0 in zs[side]["t"].items() if t0 <= min(obs.game_time, strat.horizon(zs[side])) and made[side].get(c, 1e9) > min(obs.game_time, strat.horizon(zs[side]))),
             "z_extra": sorted(c for c, t0 in made[side].items() if t0 <= min(obs.game_time, strat.horizon(zs[side])) and zs[side]["t"].get(c, 1e9) > min(obs.game_time, strat.horizon(zs[side])) and c in pool["items"][races[side]])} if side in zs else {}),
         **({"branch": round(replay["t"] * cfg["step_seconds"]), "branch_same": same} if replay is not None else {}),
+        "slot_difficulty": g.setup.slots[side].difficulty,  # (its income: insane's doubles it; agent_difficulty)
         **({} if train else {"eval": True, "eval_key": opp.get("eval_tag") or opp.get("eval_key") or "current"})}
     out_q.put({"episode": dict(ep)})  # (a copy: the queue pickles later, and a filmed game's trace goes into ep below;
     if grpo is not None:                # 354 rows of 0.1-1.5 MB in the episode files; audit 3)
@@ -3808,8 +3817,8 @@ def main(argv: list[str] | None = None) -> int:
                     "a share of the training games start in")
     ap.add_argument("--scenario-share", type=float, default=0.0, help="--scenarios: the share of the training games")
     ap.add_argument("--eval-human", type=int, default=0, help="1: evaluation games of the current policy from a slot at a "
-                    "human's income too (current+human: an agent slot takes the advisor's difficulty, and insane's doubles the "
-                    "income; against the game's insane AI, which keeps its double income, as a person would play it)")
+                    "person's income too (current+human; since 2026-10-26 every agent slot is at a person's income, "
+                    "agent_difficulty, so these are the same games as current's)")
     ap.add_argument("--macros-off", default="", help="macro orders masked, comma-separated (mix, creep, expand): the "
                     "policy learns their low-level orders itself, from the lessons and rewards")
     ap.add_argument("--label-norm", choices=("lessons", "units"), default="lessons", help="the teacher's lessons in "
@@ -4002,7 +4011,8 @@ def main(argv: list[str] | None = None) -> int:
                          "advises the learner's side (protocol.ShadowAI: its orders are labels, undone); the "
                          "learner's steps there get its labels and a cloning loss towards them (--opd-coef)")
     ap.add_argument("--opd-coef", type=float, default=0.05, help="the distillation loss's weight (--opd-share)")
-    ap.add_argument("--opd-difficulty", default="insane", help="the advising AI's difficulty")
+    ap.add_argument("--opd-difficulty", default="normal", help="the advising AI's difficulty (--opd-share; the agent "
+                    "slot's too, so its income: not insane, which doubles it)")
     ap.add_argument("--real-share", type=float, default=0.1, help="with a curriculum: the share of launches against "
                                                                    "the built-in AI that play the real game (the yardstick)")
     ap.add_argument("--curriculum-mode", default="hp", choices=("hp", "delay", "tax"),
@@ -4156,6 +4166,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--note", default="", help="the run's notes (notes.md); with --resume, why it was restarted (the "
                                                 "restart's marker on the dashboard's charts)")
     args = ap.parse_args(argv)
+    if args.opd_share > 0 and args.opd_difficulty == "insane":
+        ap.error("--opd-difficulty insane doubles the learner's income (agent_difficulty)")
     fx.ACTIVE_F = args.features  # (the cloning loss's data workers fork from here: they inherit it)
     os.environ["WARCRAFTSIM_FEATURES"] = str(args.features)  # (and processes started anew: actors, videos)
     if args.valid_mask and args.inputs < 2:

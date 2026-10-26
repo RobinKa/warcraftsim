@@ -2392,14 +2392,15 @@ function renderVideos() {
 }
 
 // ---- the Ratings view: skill ratings from every run's evaluation games (GET /api/ratings, dashboard/ratings.py) ----
-ui.ratings = { data: null, kinds: { checkpoint: true, current: true, "+z": false, anchor: true }, min: 30, all: false, sort: "rating" };
+ui.ratings = { data: null, kinds: { checkpoint: true, current: true, "+z": false, anchor: true, ai: true }, min: 30, all: false, sort: "rating" };
 const ratingsUrl = () => "/api/ratings";
 // the table's order: the rating, either end of its 95% interval (a cautious or a hopeful ranking), games, last played
 const RATING_SORTS = { rating: ["rating", p => p.rating], low: ["95% low end", p => p.rating - 1.96 * (p.se || 0)],
                        high: ["95% high end", p => p.rating + 1.96 * (p.se || 0)], games: ["games", p => p.games],
                        last: ["last played", p => p.last || 0] };
 const RATING_KINDS = { checkpoint: ["a checkpoint", "#539bf5"], current: ["a run's policy, by the hour", "#4cc38a"],
-                       "+z": ["with a target strategy", "#e0a33a"], anchor: ["the insane AI (1500)", "#d7dee6"] };
+                       "+z": ["with a target strategy", "#e0a33a"], anchor: ["the insane AI (1500)", "#d7dee6"],
+                       ai: ["the insane AI against a policy at its double income (before 2026-10-26)", "#9aa4ae"] };
 // each policy's rank by rating among `players` and its 95% interval: ratings drawn from their estimates (normal, mean the
 // rating, sd its standard error, independently: the fit's covariances left out) 2,000 times, each time ranked; cached
 function ratingRanks(players) {
@@ -2451,7 +2452,7 @@ function renderRatings() {
   const toggles = Object.entries(RATING_KINDS).map(([k, [label, c]]) =>
     `<label class="rk"><input type="checkbox" data-kind="${k}" ${R.kinds[k] ? "checked" : ""}><i style="background:${c}"></i>${label}</label>`).join("");
   m.innerHTML = `<div class="ratings"><h2>Skill ratings</h2>
-    <p class="sub">A Bradley–Terry fit on the Elo scale over ${D.games.toLocaleString()} evaluation games in the real game (Echo Isles, the game's rules): each policy's games against the insane AI, which is 1500, and its head-to-head games against frozen checkpoints. A run's policy is rated by the hour since the run started (h0, h1, …). Bars: 95% intervals. Ties count half. The evaluation worker's gauntlet plays the top rated policies against the current one again, under today's rules: "last played" says how fresh a rating is.</p>
+    <p class="sub">A Bradley–Terry fit on the Elo scale over ${D.games.toLocaleString()} evaluation games in the real game (Echo Isles, the game's rules): each policy's games against the insane AI, which is 1500, and its head-to-head games against frozen checkpoints. Until 2026-10-26 the policies played at the insane AI's double income (an agent slot took insane's difficulty); those games count against a player of their own (\"insane AI, equal income\"), the anchor's are at a person's income. A run's policy is rated by the hour since the run started (h0, h1, …). Bars: 95% intervals. Ties count half. The evaluation worker's gauntlet plays the top rated policies against the current one again, under today's rules: "last played" says how fresh a rating is.</p>
     <div class="bar">${toggles}<label>at least <input id="rmin" type="number" min="1" value="${R.min}" style="width:4.5em"> games</label>
       <label><input type="checkbox" id="rall" ${R.all ? "checked" : ""}> all ${shown.length}</label>
       <label>sort by <select id="rsort">${Object.entries(RATING_SORTS).map(([k, [label]]) => `<option value="${k}" ${R.sort === k ? "selected" : ""}>${label}</option>`).join("")}</select></label></div>
