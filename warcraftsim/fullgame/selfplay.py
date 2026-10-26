@@ -2168,7 +2168,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     teachers = ({s: Teacher(s, races[s], random.Random(), zs.get(s), target_hero=cfg.get("teach", 0) >= 2,
                             lumber=cfg.get("teach", 0) >= 3, burrows=cfg.get("teach", 0) >= 4 or bool(cfg.get("burrow_lesson", 0)),
                             main_low=cfg.get("expand_lesson", 0.0), mine_full=12500.0 * mine_scale(cfg["map"]),
-                            saturation=bool(cfg.get("saturation_lesson", 0)), revive=bool(cfg.get("revive_lesson", 0)))
+                            saturation=bool(cfg.get("saturation_lesson", 0)), revive=bool(cfg.get("revive_lesson", 0)),
+                            militia=bool(cfg.get("militia_lesson", 0)))
                  for s in trajs if keys[s] == "current"}
                 if cfg.get("teach") and replay is None else {})
     # --teach-heuristic: a target drawn from the hand-written player's games (strategy.from_demos names the strategy) is
@@ -2462,6 +2463,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"auto_skills": getattr(bots[side], "auto_skills", 0)} if side in bots and fx.MACROS >= 3 else {}),
         **({"noop_repairs": bots[side].noop_repairs} if side in bots and getattr(bots[side], "noop_repairs", 0) else {}),
         **({"frame_cancels": bots[side].frame_cancels} if side in bots and getattr(bots[side], "frame_cancels", 0) else {}),
+        **({k: getattr(bots[side], k) for k in ("militia_back", "militia_skipped") if getattr(bots[side], k, 0)}
+           if side in bots else {}),
         **({"over_budget": bots[side].over_budget} if side in bots and getattr(bots[side], "over_budget", 0) else {}),
         **{k: getattr(bots[side], k) for k in ("full_queue", "upgrading_refused", "loaded_orders", "frame_orders")
            if side in bots and getattr(bots[side], k, 0)},  # (the agent's orders not sent, by why; audit 11)
@@ -3945,6 +3948,9 @@ def main(argv: list[str] | None = None) -> int:
                     "policy learns their low-level orders itself, from the lessons and rewards")
     ap.add_argument("--spells-bias", type=float, default=0.0, help="a fork's start (--start-weights): each spell's order "
                     "logit set to no order's less this (spells grown at -8 were never sampled; 0: as loaded)")
+    ap.add_argument("--militia-lesson", type=int, default=0, help="1 (with --teach): human's militia lesson: militia "
+                    "and no enemy unit near them nor a hall, the hall ends the town bell (audit 16: militia idled, their "
+                    "back to work refused, in 175 of 207 human games)")
     ap.add_argument("--burrow-lesson", type=int, default=0, help="1: orc's burrow stand-down lesson (--teach 4's) without "
                     "--teach 4's lumber lesson in every game (audit 16: games with 200+ orders to peons inside burrows won "
                     "0 of 69)")
@@ -3965,7 +3971,10 @@ def main(argv: list[str] | None = None) -> int:
                     "player has as many as its mines need (features.worker_cap: 5 a mine and lumber workers; audit 12). "
                     "Bit 2 (2, or 3 with bit 1): a dead hero the altar would take now (food free) keeps its revival's "
                     "gold from the player's other paid orders (View.revive_reserve; in 94%% of the steps with a hero "
-                    "dead the player had less gold than its revival)")
+                    "dead the player had less gold than its revival). Bit 4: night elf's wisps beside its mines' 10 (~8 "
+                    "choppers), not 15 (features.LEAN_REST). Bits 8, 16, 32 (View.chores; audit 16): Detonate only "
+                    "with an enemy summon near a wisp; repair only on a building below 70%% or damaged with an enemy "
+                    "near; human's call to arms only with an enemy near a hall, its end and back to work only with militia")
     ap.add_argument("--z-workers", type=int, default=0, help="with --z-build: the builder also orders (taught: labels) "
                     "the race's worker at an idle hall while the side has fewer than its target's workers (its start's "
                     "plus the strategy's trained ones, \"n\"; at most features.worker_cap for its mines), after the due "
@@ -4626,7 +4635,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "burrow_lesson": args.burrow_lesson, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "eval_ai": [d for d in args.eval_ai.split(",") if d],

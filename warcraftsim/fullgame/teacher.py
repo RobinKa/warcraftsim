@@ -33,6 +33,9 @@ selfplay --teach 1 (needs --neutral 1: the orders it teaches are the neutral bui
     a burrow:      (--teach 4, orc) a burrow with peons inside (loaded) and no enemy unit within BURROW_SAFE of it stands
                    down: its peons back to work (audit 12: in target games 14 orders a minute were skipped for a loaded
                    peon, 1.5 in training; 16-20 peons gathered like ~7)
+    militia:       (--militia-lesson 1, human) militia and no enemy unit within MILITIA_SAFE of them nor of its halls: the hall
+                   nearest them ends the town bell, every militia back to work (audit 16: the policy rang the bell, then
+                   could not send its militia back; idle until their 45 s ran out, in 175 of 207 human games)
 
 Each kind at most every GAP steps a side, so a long wait for the money is not a label a step."""
 
@@ -88,6 +91,7 @@ LUMBER_RATIO = 2  # (--teach 4, no target: lumber is short while the bank's lumb
 # is within BURROW_SAFE of it and peons are inside (LOADED)
 BURROW, PEON, STANDDOWN, LOADED = fourcc("otrb"), fourcc("opeo"), 852113, 32
 BURROW_SAFE = 1500.0
+MILITIA_SAFE = fx.MILITIA_NEAR  # (--militia-lesson: no enemy unit this near the militia or a hall)
 NEAR_MERCHANT = 2500.0
 ENEMY_NEAR = 800.0  # (an item lesson waits while an enemy unit is this near the hero: a fight)
 USESLOT = 852008
@@ -99,7 +103,7 @@ class Teacher:
 
     def __init__(self, side: int, race: str, rng: random.Random, target: dict | None = None, target_hero: bool = False,
                  lumber: bool = False, burrows: bool = False, main_low: float = 0.0, mine_full: float = 12500.0,
-                 saturation: bool = False, revive: bool = False):
+                 saturation: bool = False, revive: bool = False, militia: bool = False):
         """`target` (the side's target strategy, if it has one): its tavern hero is the one taught, and none when it
         has none (another hero would break a narrow target). `target_hero` (--teach 2): its first hero from the altar
         taught too, when that is its first hero (the builder taught it only once due: the policy had made another one
@@ -111,6 +115,7 @@ class Teacher:
         self.saturation = saturation and race != "undead"  # (--saturation-lesson: undead's acolytes cannot chop, and
         # --econ-masks caps them)
         self.revive = revive  # (--revive-lesson: a dead hero's revival at the side's altar)
+        self.militia = militia and race == "human"  # (--militia-lesson: the town bell's end once no enemy is near)
         # the tavern hero taught, and the heroes the side has when it is hired: a target's, at its place among the
         # target's heroes (its next hero), as soon as the altar, the tier and the money permit. (As the first or
         # second hero only, from 135 s: the lesson had fired 68 times in 3,000 target games, ~1,300 of them with a
@@ -227,7 +232,30 @@ class Teacher:
             out += self._lumber(fx.own_alive(rows, self.side), eco[1], eco[2], t)
         if self.burrows and t - self.last.get("burrow", -GAP) >= GAP:
             out += self._burrows(rows, t)
+        if self.militia and t - self.last.get("militia", -GAP) >= GAP:
+            out += self._militia(rows, t)
         return out
+
+    def _militia(self, rows: np.ndarray, t: int) -> list:
+        """Human: militia and no enemy unit within MILITIA_SAFE of any of them nor of a finished hall: the hall nearest
+        the militia ends the bell (townbelloff: all of them back to work, taken while there are militia)."""
+        alive = fx.own_alive(rows, self.side)
+        militia = alive[alive[:, fx.C_TYPE] == fx.MILITIA_T]
+        if not len(militia):
+            return []
+        halls = alive[np.isin(alive[:, fx.C_TYPE], fx.HUMAN_HALLS) & (alive[:, fx.C_FLAGS] & fx.CONSTRUCTING == 0)]
+        if not len(halls):
+            return []
+        enemies = rows[(rows[:, fx.C_OWNER] == 1 - self.side) & (rows[:, fx.C_FLAGS] & (fx.DEAD | fx.STRUCTURE) == 0)]
+        ex, ey = enemies[:, fx.C_X].astype(np.float64), enemies[:, fx.C_Y].astype(np.float64)
+        for u in np.concatenate([militia, halls]):
+            if (np.hypot(ex - float(u[fx.C_X]), ey - float(u[fx.C_Y])) < MILITIA_SAFE).any():
+                return []
+        mx, my = float(militia[:, fx.C_X].mean()), float(militia[:, fx.C_Y].mean())
+        k = int(np.argmin((halls[:, fx.C_X] - mx) ** 2 + (halls[:, fx.C_Y] - my) ** 2))
+        if not self._due("militia", t):
+            return []
+        return [ImmediateOrder(int(halls[k, fx.C_ID]), fx.TOWNBELL_OFF)]
 
     def _burrows(self, rows: np.ndarray, t: int) -> list:
         """Orc: each finished burrow nearest a loaded peon (inside one) with no enemy unit within BURROW_SAFE of it

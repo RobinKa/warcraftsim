@@ -103,7 +103,7 @@ WISP = int.from_bytes(b"ewsp", "big")
 REFUSED_CTX = 40  # (refused orders a game whose context is kept)
 MINE_WORKERS, MINE_NEAR = 5, 350.0  # (a haunted or entangled mine's workers at most; how near they work it)
 HIDDEN = 16  # (UnitFlags.HIDDEN: a worker inside a gold mine)
-MACHINES = {int.from_bytes(c.encode(), "big") for c in ("hgyr", "hmtt", "hrtt", "ocat", "ebal", "umtw")}  # (repairable)
+MACHINES = fx.REPAIR_MACHINES  # (repairable)
 MINED_BY = {"undead": HAUNT, "nightelf": int.from_bytes(b"egol", "big")}  # (their own; humans and orcs: a plain one)
 EXPAND_HALLS = {r: int.from_bytes(h.encode(), "big") for r, h in (("human", "htow"), ("orc", "ogre"), ("nightelf", "etol"))}
 CANCEL = 851976  # a building's queue: its last unit
@@ -118,6 +118,8 @@ HARVESTING_CODES = fx.codes(list(fx.HARVESTING) + [fx.SMART])
 ENTANGLE_NEAR, ENTANGLE_EVERY = 1200.0, 20  # (a tree this near a mine no one entangled: the order, again after so
 # many steps until it is)
 TIERS = {int.from_bytes(c.encode(), "big") for c in ("hkee", "hcas", "ostr", "ofrt", "unp1", "unp2", "etoa", "etoe")}
+MILITIA_ORDERS = frozenset((fx.MILITIA_CONVERT, fx.MILITIA_CALL, fx.MILITIA_OFF, fx.TOWNBELL_ON, fx.TOWNBELL_OFF,
+                            fx.MILITIA_UNCONVERT))  # (BCAgent._militia)
 REVIVE = 852039  # an altar's revival of a dead hero: a target order on it (its training order is refused; tested
 # 2026-10-22: accepted ~7 s after the death, at 425 x 0.4 gold for a level 1 hero)
 BUY_REACH, BUY_ARRIVED = 500.0, 6  # (a buyer this near its shop this many steps: free again, _release_buyers)
@@ -339,6 +341,8 @@ class BCAgent:
         frames = set(fr[1]) if fr is not None and fr[0] is st else set(
             own_sel[(own_sel[:, fx.C_FLAGS] & fx.CONSTRUCTING) > 0, fx.C_ID].tolist())
         n = min(st["n_own"], fx.MAX_OWN, len(order))
+        has_militia = bool((own_sel[:, fx.C_TYPE] == fx.MILITIA_T).any())
+        repair_ids = getattr(self.view, "repair_ids", None) if fx.REPAIR_MASK else None  # (--econ-masks bit 16)
         for i in np.flatnonzero(np.asarray(order[:n])).tolist():  # (the units given an order: most are given none)
             c = int(order[i])
             oid, kind = self.orders[c]
@@ -363,6 +367,16 @@ class BCAgent:
                 continue  # on its way to build, or building: another order would cancel it
             if int(sel[i, fx.C_FLAGS]) & LOADED:  # (a peon in a burrow, a unit in a transport: the game refuses its orders,
                 self.loaded_orders = getattr(self, "loaded_orders", 0) + 1  # moves orc's most refused kind; audit 10)
+                continue
+            if oid in MILITIA_ORDERS or (res is not None and int(sel[i, fx.C_TYPE]) == fx.MILITIA_T):
+                # human's militia orders in the forms the game takes (features.MILITIA_*, tested 2026-10-26): back to
+                # work a militia's own immediate order, wherever it points (refused on a peasant, ~1,650 of the sampled
+                # refusals; on a hall ~450), and a militia's harvest or tree (refused: 57 and 53 a game) its back to
+                # work; a peasant's call to arms its own immediate one; the bell's end only with militia (audit 16)
+                c2 = self._militia(sel, i, oid, has_militia)
+                if c2 is not None:
+                    self.last_sent.append((oid, kind))
+                    out.append(c2)
                 continue
             self.last_sent.append((oid, kind))
             if kind == fx.IMMEDIATE and oid == MIX:  # (--macros: the building trains its target's army mix)
@@ -460,7 +474,9 @@ class BCAgent:
                     if mine is None:
                         continue
                     out.append(TargetOrder(unit, oid, mine))
-                elif oid in (REPAIR, RESTORE, RENEW) and (not self._repairable(target) or int(sel[i, fx.C_ORDER]) == oid):  # (nothing
+                elif oid in (REPAIR, RESTORE, RENEW) and (not self._repairable(target) or int(sel[i, fx.C_ORDER]) == oid
+                                                          or (oid == REPAIR and repair_ids is not None
+                                                              and int(target[fx.C_ID]) not in repair_ids)):  # (nothing
                     # to repair there, or repairing already: the game refuses both,
                     self.noop_repairs = getattr(self, "noop_repairs", 0) + 1  # ~1,000-1,500 a game as human and orc,
                     continue  # 11-35% of the policy's orders since fgself-100; not sent: what it did, as before)
@@ -479,6 +495,22 @@ class BCAgent:
         self.sent_resources += [None] * (len(out) - len(self.sent_resources))
         self.issued += len(out)
         return out
+
+    def _militia(self, sel: np.ndarray, i: int, oid: int, has_militia: bool):
+        """A militia order (or a militia's harvest) of unit row i as the game takes it (features.MILITIA_*), or None: not
+        sent (one the game refuses)."""
+        unit, utype, cur = int(sel[i, fx.C_ID]), int(sel[i, fx.C_TYPE]), int(sel[i, fx.C_ORDER])
+        if utype == fx.MILITIA_T and oid not in (fx.MILITIA_CONVERT, fx.MILITIA_CALL, fx.TOWNBELL_ON, fx.TOWNBELL_OFF):
+            if cur in (fx.MILITIA_OFF, fx.MILITIA_UNCONVERT):  # (on its way back already)
+                return None
+            self.militia_back = getattr(self, "militia_back", 0) + 1
+            return ImmediateOrder(unit, fx.MILITIA_OFF)
+        if utype == fx.PEASANT_T and oid in (fx.MILITIA_CONVERT, fx.MILITIA_CALL):
+            return None if cur in (fx.MILITIA_CONVERT, fx.MILITIA_CALL) else ImmediateOrder(unit, fx.MILITIA_CALL)
+        if oid == fx.TOWNBELL_ON or (oid == fx.TOWNBELL_OFF and has_militia):
+            return ImmediateOrder(unit, oid)
+        self.militia_skipped = getattr(self, "militia_skipped", 0) + 1  # (a peasant's back to work, a militia's call to
+        return None                                                     # arms, the bell's end with no militia)
 
     def _nearest_tree(self, x: float, y: float) -> int:
         """min(self.trees, key=its squared distance to (x, y)), the same tree: the distances in numpy first (the dict of

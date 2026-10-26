@@ -410,20 +410,58 @@ ECON_WORKERS = {"human": ("hpea", ("htow", "hkee", "hcas"), 5, 13), "orc": ("ope
 
 
 REVIVE_RESERVE = int(os.environ.get("WARCRAFTSIM_ECON_MASK", "0") or 0) & 2 > 0  # (--econ-masks bit 2: View.step)
+# --econ-masks bit 4: night elf's allowance beside its mines' wisps lowered to LEAN_REST: ~8 choppers and 2 to build
+# (wisps building are spent; 15 had floated lumber: audit 16, night elf's bank 1,184 on average to the other races'
+# 301-509, a median of 24 wisps trained a game, 35 in losses)
+NE_LEAN = int(os.environ.get("WARCRAFTSIM_ECON_MASK", "0") or 0) & 4 > 0
+LEAN_REST = {"nightelf": 10}
+# --econ-masks bits 8, 16, 32 (View.chores; audit 16 of fgself-155/156's real games against insane):
+#   8: a wisp's Detonate only while an enemy summoned unit it sees is within DETONATE_NEAR of one of the player's wisps
+#      (it dispels and hurts summons; 3-8 wisps a game had blown up for little)
+#  16: repair only while a finished building or machine of the player's is below REPAIR_BELOW of its hit points, or
+#      damaged with an enemy unit it sees within UNDER_ATTACK_NEAR (View.repair_ids: play.BCAgent's targets too; human
+#      and orc workers had flipped between repair and harvest, 499 flips in a trace, no-op repairs a median of 126 a
+#      game). A frame is no target then (no helper builds: the power build)
+#  32: human's call to arms (the town bell, a peasant's own) only while an enemy unit it sees is within MILITIA_NEAR of
+#      one of its halls; the bell's end and a militia's back to work only while it has militia (the policy rang the
+#      bell and its militia idled: in 175 of 207 human games, 2 of 60 won past 12 minutes with 100+ refused orders)
+DETONATE_MASK = int(os.environ.get("WARCRAFTSIM_ECON_MASK", "0") or 0) & 8 > 0
+REPAIR_MASK = int(os.environ.get("WARCRAFTSIM_ECON_MASK", "0") or 0) & 16 > 0
+MILITIA_MASK = int(os.environ.get("WARCRAFTSIM_ECON_MASK", "0") or 0) & 32 > 0
+DETONATE_NEAR, REPAIR_BELOW, UNDER_ATTACK_NEAR, MILITIA_NEAR = 800.0, 0.7, 900.0, 1500.0
+DETONATE, REPAIR = 852145, 852024
+# human's militia orders (tested 2026-10-26 in real games, scripts/militia_probe.py): a peasant's own call to arms
+# "militia" (immediate) is taken and it walks to a hall and turns militia; "militiaconvert" (the vocabulary's, a target
+# order) taken on a hall, refused immediate; the hall's "townbellon" taken; its "townbelloff" taken while the player has
+# militia (all of them back, a peasant's own too), refused with none; a militia's "militiaoff" (immediate: its back to
+# work button) taken near the hall, 3,500-4,700 away, while the hall trains or upgrades: it walks to the nearest hall and
+# turns peasant, back to the harvest it had; "militiaunconvert" (the vocabulary's, a target order) taken on a hall,
+# refused on a peasant and immediate; a militia's harvest (a mine) and right-click on a tree refused, on its hall taken
+# and nothing done. A militia turns peasant by itself after 45 s, idle.
+MILITIA_CONVERT, MILITIA_CALL, MILITIA_OFF, TOWNBELL_ON, TOWNBELL_OFF, MILITIA_UNCONVERT = (
+    852071, 852072, 852073, 852082, 852083, 852651)
+MILITIA_T, PEASANT_T = int.from_bytes(b"hmil", "big"), int.from_bytes(b"hpea", "big")
+HUMAN_HALLS = tuple(int.from_bytes(c.encode(), "big") for c in ("htow", "hkee", "hcas"))
+REPAIR_MACHINES = frozenset(int.from_bytes(c.encode(), "big") for c in ("hgyr", "hmtt", "hrtt", "ocat", "ebal", "umtw"))
+WISP_T = int.from_bytes(b"ewsp", "big")
 
 
 def set_econ_masks(v) -> None:
     """--econ-masks: bit 1 the economy masks (ECON_MASK), bit 2 the revival's reserve (REVIVE_RESERVE: a dead hero the
-    altar would take now keeps its revival's gold from the player's other paid orders, View.step)."""
-    global ECON_MASK, REVIVE_RESERVE
+    altar would take now keeps its revival's gold from the player's other paid orders, View.step), bit 4 night elf's
+    lower worker allowance (NE_LEAN), bits 8, 16, 32 the Detonate, repair and call to arms masks (View.chores)."""
+    global ECON_MASK, REVIVE_RESERVE, NE_LEAN, DETONATE_MASK, REPAIR_MASK, MILITIA_MASK
     v = int(v or 0)
-    ECON_MASK, REVIVE_RESERVE = bool(v & 1), bool(v & 2)
+    ECON_MASK, REVIVE_RESERVE, NE_LEAN = bool(v & 1), bool(v & 2), bool(v & 4)
+    DETONATE_MASK, REPAIR_MASK, MILITIA_MASK = bool(v & 8), bool(v & 16), bool(v & 32)
     os.environ["WARCRAFTSIM_ECON_MASK"] = str(v)
 
 
 def worker_cap(race: str, mines: int) -> int:
-    """The most workers --econ-masks lets `race` have with `mines` worked mines (ECON_WORKERS)."""
+    """The most workers --econ-masks lets `race` have with `mines` worked mines (ECON_WORKERS; bit 4: LEAN_REST)."""
     _, _, per, rest = ECON_WORKERS[race]
+    if NE_LEAN:
+        rest = LEAN_REST.get(race, rest)
     return per * max(int(mines), 0) + rest
 # the global vector's strategy block (strategy conditioning, fullgame/strategy.py: the policy's target strategy,
 # zeros for none), between what the player knows and the privileged block; 0: none (a run's networks all
@@ -1375,6 +1413,53 @@ class View:
                 ok[wk] = False
         return ok
 
+    def chores(self, rows: np.ndarray, avail: np.ndarray) -> None:
+        """--econ-masks bits 8, 16, 32 (DETONATE_MASK, REPAIR_MASK, MILITIA_MASK): the orders that can do nothing now out
+        of `avail` (in place), from the player's units and the enemy units it sees; REPAIR_MASK also sets repair_ids,
+        the ids of the buildings and machines worth a repair (play.BCAgent sends repairs to those only)."""
+        oix = self.enc.order_index
+        race = RACES[self.races[self.player]]
+        p = self.player
+        fl = rows[:, C_FLAGS]
+        live = fl & DEAD == 0
+        own = rows[live & (rows[:, C_OWNER] == p)]
+        seen = live & (rows[:, C_OWNER] == 1 - p) & ((rows[:, C_VIS] >> p) & 1 == 1)
+        enemy = rows[seen & (fl & STRUCTURE == 0)]
+        ex, ey = enemy[:, C_X].astype(np.float64), enemy[:, C_Y].astype(np.float64)
+
+        def near(units: np.ndarray, d: float, among=None) -> np.ndarray:
+            """Per unit row: an enemy unit (of `among`'s, else any it sees) within d of it."""
+            ax, ay = (ex, ey) if among is None else (among[:, C_X].astype(np.float64), among[:, C_Y].astype(np.float64))
+            if not len(units) or not len(ax):
+                return np.zeros(len(units), bool)
+            ux, uy = units[:, C_X].astype(np.float64), units[:, C_Y].astype(np.float64)
+            return ((ux[:, None] - ax[None]) ** 2 + (uy[:, None] - ay[None]) ** 2 < d * d).any(1)
+
+        def mask(keys, ok: bool) -> None:
+            if not ok:
+                for k in keys:
+                    c = oix.get(k)
+                    if c is not None:
+                        avail[c] = False
+        if DETONATE_MASK and race == "nightelf":
+            summons = enemy[enemy[:, C_FLAGS] & SUMMONED > 0]
+            wisps = own[own[:, C_TYPE] == WISP_T]
+            mask(((DETONATE, POINT), (DETONATE, UNIT)), bool(near(wisps, DETONATE_NEAR, summons).any()))
+        if REPAIR_MASK:
+            of = own[:, C_FLAGS]
+            cand = own[((of & STRUCTURE > 0) | np.isin(own[:, C_TYPE], list(REPAIR_MACHINES))) & (of & CONSTRUCTING == 0)
+                       & (own[:, C_HP] < own[:, C_MAXHP])]
+            low = cand[:, C_HP] < REPAIR_BELOW * cand[:, C_MAXHP]
+            need = cand[low | near(cand, UNDER_ATTACK_NEAR)]
+            self.repair_ids = set(need[:, C_ID].tolist())
+            mask(((REPAIR, UNIT), (REPAIR, POINT)), len(need) > 0)
+        if MILITIA_MASK and race == "human":
+            halls = own[np.isin(own[:, C_TYPE], HUMAN_HALLS) & (own[:, C_FLAGS] & CONSTRUCTING == 0)]
+            militia = bool((own[:, C_TYPE] == MILITIA_T).any())
+            mask(((TOWNBELL_ON, IMMEDIATE), (MILITIA_CONVERT, UNIT), (MILITIA_CALL, IMMEDIATE)),
+                 bool(near(halls, MILITIA_NEAR).any()))
+            mask(((TOWNBELL_OFF, IMMEDIATE), (MILITIA_UNCONVERT, UNIT), (MILITIA_OFF, IMMEDIATE)), militia)
+
     def tech_allowed(self, rows: np.ndarray, built: np.ndarray | None = None, own_hero: np.ndarray | None = None,
                      dead_rows: np.ndarray | None = None, done_types: list | None = None, hero_types: list | None = None,
                      dead_pairs: list | None = None) -> np.ndarray:
@@ -1610,6 +1695,8 @@ class View:
                           else self.tech_allowed(rows, built, own_hero, dead))
         if avail is not None and ECON_MASK:  # (--econ-masks: no idle tech building's copy, no worker past the mines')
             avail &= self.econ_allowed(rows)
+        if avail is not None and (DETONATE_MASK or REPAIR_MASK or MILITIA_MASK):  # (--econ-masks bits 8-32: chores)
+            self.chores(rows, avail)
         if avail is not None and enc.expand_class is not None:  # (--macros: expand, while the natural is free and
             site = _mod("macros").site                            # its hall affordable; night elves' tree of life
             race = RACES[self.races[player]]                      # entangles its mine, play.BCAgent._entangle)
