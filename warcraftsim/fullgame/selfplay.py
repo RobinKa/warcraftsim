@@ -2167,7 +2167,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     # --teach: a heuristic teacher's lessons (teacher.py: a tavern hero, a town portal, a potion) label the learner's steps
     teachers = ({s: Teacher(s, races[s], random.Random(), zs.get(s), target_hero=cfg.get("teach", 0) >= 2,
                             lumber=cfg.get("teach", 0) >= 3, burrows=cfg.get("teach", 0) >= 4,
-                            main_low=cfg.get("expand_lesson", 0.0), mine_full=12500.0 * mine_scale(cfg["map"]))
+                            main_low=cfg.get("expand_lesson", 0.0), mine_full=12500.0 * mine_scale(cfg["map"]),
+                            saturation=bool(cfg.get("saturation_lesson", 0)))
                  for s in trajs if keys[s] == "current"}
                 if cfg.get("teach") and replay is None else {})
     # --teach-heuristic: a target drawn from the hand-written player's games (strategy.from_demos names the strategy) is
@@ -3944,6 +3945,9 @@ def main(argv: list[str] | None = None) -> int:
                     "policy learns their low-level orders itself, from the lessons and rewards")
     ap.add_argument("--spells-bias", type=float, default=0.0, help="a fork's start (--start-weights): each spell's order "
                     "logit set to no order's less this (spells grown at -8 were never sampled; 0: as loaded)")
+    ap.add_argument("--saturation-lesson", type=int, default=0, help="1: the lumber lesson (--teach 3) also whenever "
+                    "a side has more workers than its finished halls' mines take (teacher.SATURATED each), not chopping "
+                    "nor building: one is sent to chop (the user saw human's peasants queue at the mine)")
     ap.add_argument("--expand-lesson", type=float, default=0.0, help="the teacher's expansion lessons (--teach) in every "
                     "game, a target's or not, once the main gold mine holds less than this share of a full one (0: only a "
                     "target's due expansion; audit 15: on echofast2 the main ran dry at 12-13 minutes, unexpanded)")
@@ -4611,7 +4615,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "expand_lesson": args.expand_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "eval_ai": [d for d in args.eval_ai.split(",") if d],

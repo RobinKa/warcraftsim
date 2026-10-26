@@ -82,6 +82,7 @@ MIX_FROM, MIX_SLACK, MIX_LEAST = 120.0, 0.15, 5
 # the policy almost none (human 38 lumber a minute to 872 gold in fgself-145; fgself-120: 105), and a target's items
 # waited for lumber more than for anything else (a keep 516k blocked steps, halls of the dead 1.1M; audit 9)
 CHOPPERS = {"human": ("hpea", 5), "orc": ("opeo", 5), "undead": ("ugho", 3), "nightelf": ("ewsp", 5)}
+SATURATED = 6  # (--saturation-lesson: a worked mine's gold workers past this (5 mine, one walking) are surplus)
 LUMBER_RATIO = 2  # (--teach 4, no target: lumber is short while the bank's lumber times this is under its gold)
 # --teach 4 (orc): a burrow's stand-down (its "standdown" order: the burrow's in the demonstrations) when no enemy unit
 # is within BURROW_SAFE of it and peons are inside (LOADED)
@@ -97,7 +98,8 @@ class Teacher:
     """One side's lessons in one game (commands: what it would order now)."""
 
     def __init__(self, side: int, race: str, rng: random.Random, target: dict | None = None, target_hero: bool = False,
-                 lumber: bool = False, burrows: bool = False, main_low: float = 0.0, mine_full: float = 12500.0):
+                 lumber: bool = False, burrows: bool = False, main_low: float = 0.0, mine_full: float = 12500.0,
+                 saturation: bool = False):
         """`target` (the side's target strategy, if it has one): its tavern hero is the one taught, and none when it
         has none (another hero would break a narrow target). `target_hero` (--teach 2): its first hero from the altar
         taught too, when that is its first hero (the builder taught it only once due: the policy had made another one
@@ -106,6 +108,8 @@ class Teacher:
         self.side = side
         self.lumber = lumber  # (--teach 3: the lumber lesson)
         self.burrows = burrows and race == "orc"  # (--teach 4: the burrows' stand-down)
+        self.saturation = saturation and race != "undead"  # (--saturation-lesson: undead's acolytes cannot chop, and
+        # --econ-masks caps them)
         # the tavern hero taught, and the heroes the side has when it is hired: a target's, at its place among the
         # target's heroes (its next hero), as soon as the altar, the tier and the money permit. (As the first or
         # second hero only, from 135 s: the lesson had fired 68 times in 3,000 target games, ~1,300 of them with a
@@ -215,7 +219,8 @@ class Teacher:
         if self.mix and now >= MIX_FROM:
             out += self._mix(n_army, zip(mc[1], counts), done, t)
         eco = getattr(self, "economy", None)  # (short, the choppers' ids, the trees: play_one's, from the builder)
-        if self.lumber and eco is not None and eco[0] and eco[2] and t - self.last.get("lumber", -GAP) >= GAP:
+        if (self.lumber and eco is not None and eco[2] and t - self.last.get("lumber", -GAP) >= GAP
+                and (eco[0] or (self.saturation and self._surplus(rows, eco[1])))):
             out += self._lumber(fx.own_alive(rows, self.side), eco[1], eco[2], t)
         if self.burrows and t - self.last.get("burrow", -GAP) >= GAP:
             out += self._burrows(rows, t)
@@ -238,6 +243,18 @@ class Teacher:
         if not safe or not self._due("burrow", t):
             return []
         return [ImmediateOrder(int(burrows[k, fx.C_ID]), STANDDOWN) for k in safe]
+
+    def _surplus(self, rows: np.ndarray, choppers: set) -> bool:
+        """--saturation-lesson: more of the race's workers than its worked mines take (SATURATED a finished hall's
+        mine), not chopping nor building: the lumber lesson sends one to chop (fgself-155's human games past 10 minutes:
+        up to 26 peasants trained, ~510 gold a minute, one saturated mine's, and 58 lumber; the user saw them queue at
+        the mine)."""
+        code, _ = CHOPPERS.get(self.race, (None, 0))
+        alive = fx.own_alive(rows, self.side)
+        workers = alive[alive[:, fx.C_TYPE] == fourcc(code)] if code else alive[:0]
+        halls = alive[fx.isin(alive[:, fx.C_TYPE], HALL_CODES) & (alive[:, fx.C_FLAGS] & fx.CONSTRUCTING == 0)]
+        gold = workers[(workers[:, fx.C_ORDER] < fx.TYPE_CODE) & ~np.isin(workers[:, fx.C_ID], list(choppers))]
+        return len(gold) > SATURATED * max(len(halls), 1)
 
     def _lumber(self, alive: np.ndarray, choppers: set, trees: dict, t: int) -> list:
         """A target's next item short of lumber and fewer than CHOPPERS on it: the race's chopper nearest the tree
