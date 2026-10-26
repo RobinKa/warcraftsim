@@ -132,9 +132,10 @@ class BCAgent:
     """The policy playing one player of a live game."""
 
     def __init__(self, net, vocab: dict, player: int, device, temperature: float = 1.0, order_temperature: float = 1.0,
-                 costs=None):
-        """`costs` (costs.order_costs): orders the player can't pay for yet are masked."""
-        self.net, self.enc, self.player, self.device = net, fx.Encoder(vocab, costs), player, device
+                 costs=None, steps=None):
+        """`costs` (costs.order_costs): orders the player can't pay for yet are masked; `steps` (costs.research_steps):
+        a research at the cost of the level the player would research next."""
+        self.net, self.enc, self.player, self.device = net, fx.Encoder(vocab, costs, steps), player, device
         self.temperature = temperature
         self.order_temperature = order_temperature  # sharpens the choice among orders only
         self.orders = [(0, 0)] + [tuple(o) for o in vocab["orders"]]  # class -> (order id, kind)
@@ -272,6 +273,9 @@ class BCAgent:
         # a tier taken, then two builds refused at 212 gold; 32-140 paid orders refused a training game; audit 9)
         if costs is not None and getattr(self.view, "free_hero", False) and self.enc.costs_first is not None:
             costs = self.enc.costs_first  # (the first hero free: the mask's costs, View.step)
+        if costs is not None and self.enc.level_rows and getattr(self.view, "costs_now", None) is not None:
+            costs = self.view.costs_now  # (the mask's, View.step: a research at its next level's cost too; a dead hero's
+            # revival differs there, but its order pays nothing here)
         hire = getattr(self.view, "hire_class", None)
         kept = {r[0]: (r[1], r[2]) for r in (getattr(self.view, "reserve", None),) if r is not None}  # (as the mask:
         if hire is not None and costs is not None and not getattr(self.view, "hire_free", False):  # (the target's next
@@ -759,7 +763,7 @@ def matchup_setup(map_name: str, race: str, ai_race: str, difficulty: str, agent
 
 def play_game(g: GameInstance, obs: Observation, net, vocab: dict, device, agent_side: int,
               temperature: float, order_temperature: float = 1.0, values: dict | None = None, costs=None,
-              left_ok: bool = False) -> dict:
+              left_ok: bool = False, steps=None) -> dict:
     """One game from its first observation `obs` (the game's setup: matchup_setup). `values`
     (unit type values, fullgame.trace.unit_values): also a trace for the video's panel ("trace"). `left_ok` (a
     person at the game's window, versus.py): the game closed before its end is outcome "LEFT", not an error."""
@@ -767,7 +771,7 @@ def play_game(g: GameInstance, obs: Observation, net, vocab: dict, device, agent
     from .trace import material, trace_step
     slots = g.setup.slots
     races = [fx.RACES.index(s.race) if s.race in fx.RACES else 0 for s in slots]
-    bot = BCAgent(net, vocab, agent_side, device, temperature, order_temperature, costs=costs)
+    bot = BCAgent(net, vocab, agent_side, device, temperature, order_temperature, costs=costs, steps=steps)
     t0 = time.time()
     order_names = {v: k for k, v in (obs.orders or {}).items()}
     bot.begin(obs, races)
@@ -909,7 +913,7 @@ def main(argv: list[str] | None = None) -> int:
             i = chunk[k][0]
             film = fresh and films.due()
             r = play_game(g, obs, net, vocab, device, side, args.temperature, args.order_temperature,
-                          values=values if film else None, costs=costs)
+                          values=values if film else None, costs=costs, steps=steps)
             trace = r.pop("trace", None)
             r.update({"game": i, "checkpoint": str(args.checkpoint), "time": time.time(), "map": args.map,
                       "eval": eval_id, "label": label, "epoch": ck.get("epoch"), "temperature": args.temperature,
@@ -937,8 +941,9 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             names.put(name)
 
-    from .costs import order_costs
+    from .costs import order_costs, research_steps
     costs = order_costs(vocab, args.map) if args.avail_mask else None  # (unaffordable orders masked)
+    steps = research_steps(vocab, args.map) if args.avail_mask else None
     films = Films(out.parent, 0.0, args.videos, "bcplay_video")  # videos: the fit's Replays on the dashboard
     from .trace import unit_values
     values = unit_values() if args.videos > 0 else None

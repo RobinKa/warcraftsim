@@ -61,7 +61,7 @@ from . import modes as zmodes
 from . import scenarios
 from . import strategy as strat
 from .collect import claim_slot
-from .costs import order_costs
+from .costs import order_costs, research_steps
 from . import featnative
 from . import macros
 from . import techtree
@@ -690,6 +690,7 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
     fx.set_masks(cfg.get("tech_mask", 0), cfg.get("valid_mask", 0))
     fx.set_neutral(cfg.get("neutral", 0))
     fx.set_macros(int(cfg.get("macros", 0) or 0))
+    fx.set_spells(int(cfg.get("spells", 0) or 0))
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     nets = Nets(cfg, device)
     while nets.current is None and not stop.is_set() and alive():
@@ -2005,7 +2006,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     for s in (0, 1):
         if g.setup.slots[s].kind != "agent" or s == late or (heur is not None and s == heur.side):
             continue
-        bot = BCAgent(None, vocab, s, None, costs=cfg.get("costs_array"))
+        bot = BCAgent(None, vocab, s, None, costs=cfg.get("costs_array"),  # (a research at its next level's cost: the
+                      steps=research_steps(vocab, cfg["map"]) if cfg.get("costs_array") is not None else None)  # map's)
         bot.begin(obs, race_ix)
         bots[s] = bot
         keys[s] = ("current" if s == side or opp["kind"] == "self" else exploiter_key(cfg) if opp["kind"] == "exploiter"
@@ -2533,6 +2535,7 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
     fx.set_masks(cfg.get("tech_mask", 0), cfg.get("valid_mask", 0))
     fx.set_neutral(cfg.get("neutral", 0))
     fx.set_macros(int(cfg.get("macros", 0) or 0))
+    fx.set_spells(int(cfg.get("spells", 0) or 0))
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     if cfg.get("remote"):  # (fullgame/remoteactor.py: the calls and the steps over TCP to the learner's gateway)
         from .remoteactor import NetInference
@@ -3824,6 +3827,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--macros", type=int, default=0, help="the agent's own orders for what the game spreads over many "
                     "(macros.py: 1 expand, creep, mix; 2 also pick up, a hero takes the items lying near; 3 also a skill "
                     "point left unspent 10 s is spent as the built-in AI would; every network loaded grows to them)")
+    ap.add_argument("--spells", type=int, default=0, help="1: the melee heroes' spells the demonstrations never gave "
+                    "(War Stomp, Hex, Banish, Far Sight, Scout; spells.py) as orders: every network loaded grows to "
+                    "them, rare at first, only the hero with the ability may give one (needs --neutral)")
     ap.add_argument("--memory-fade", type=int, default=0, help="inputs 3: the remembered enemies fade into the learner's "
                     "attention over this many updates (its bias on them from -8 to 0; older networks and the anchor "
                     "keep them hidden at -30); 0: as loaded")
@@ -4206,6 +4212,9 @@ def main(argv: list[str] | None = None) -> int:
     fx.set_masks(args.tech_mask, args.valid_mask)
     fx.set_neutral(args.neutral)
     fx.set_macros(args.macros)
+    if args.spells and not args.neutral:  # (model.load extends a vocabulary, and the actors put a network's orders in
+        ap.error("--spells needs --neutral")  # the run's, in its --neutral path)
+    fx.set_spells(args.spells)
     fx.set_macros_off(args.macros_off.split(","))
     modes_part = args.z_modes > 0 or args.z_comp > 0  # (--z-comp: the modes' part too, its kinds off)
     if modes_part:  # (the strategy block with the modes' part: model.load grows older networks')
@@ -4256,6 +4265,9 @@ def main(argv: list[str] | None = None) -> int:
             if weights_vocab is not None and fx.MACROS:  # (--macros: its orders after theirs, as model.load adds them)
                 from .macros import extend as with_macros
                 weights_vocab = with_macros(weights_vocab)
+            if weights_vocab is not None and fx.SPELLS:  # (--spells: and the heroes' spells after them, spells.py)
+                from .spells import extend as with_spells
+                weights_vocab = with_spells(weights_vocab)
     net, ck = load(args.init, device, None if args.memory < 0 else bool(args.memory), vocab=weights_vocab)
     vocab = ck["vocab"]
     trained_for = ck.get("value_reward")  # the rewards BC's value head learned (fullgame/bc.py)
@@ -4392,6 +4404,9 @@ def main(argv: list[str] | None = None) -> int:
         if fx.MACROS and c.get("vocab"):  # (--macros: and its orders after them)
             from .macros import extend as with_macros
             c["vocab"] = with_macros(c["vocab"])
+        if c.get("vocab") and (fx.SPELLS or vocab.get("spells")):  # (--spells: and the heroes' spells, as model.load)
+            from .spells import extend as with_spells
+            c["vocab"] = with_spells(c["vocab"])
         from .neutral import same_orders  # (--neutral: a reordering of the run's fits, Nets.get)
         return (c["config"].get("bins", 128) == fx.BINS and c.get("vocab") is not None
                 and (c["vocab"] == vocab or bool(fx.NEUTRAL) and same_orders(c["vocab"], vocab))
@@ -4461,7 +4476,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "macros_off": args.macros_off, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "macros_off": args.macros_off, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "eval_ai": [d for d in args.eval_ai.split(",") if d],

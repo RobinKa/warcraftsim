@@ -340,6 +340,17 @@ def set_macros(level: int) -> None:
     os.environ["WARCRAFTSIM_MACROS"] = str(MACROS)
 
 
+# selfplay --spells: the melee heroes' spells the demonstrations never gave (War Stomp, Hex, Banish, Far Sight, Scout:
+# fullgame/spells.py) in every network's vocabulary (model.load extends a checkpoint's and grows its network)
+SPELLS = int(os.environ.get("WARCRAFTSIM_SPELLS", "0") or 0)
+
+
+def set_spells(v: int) -> None:
+    global SPELLS
+    SPELLS = int(v)
+    os.environ["WARCRAFTSIM_SPELLS"] = str(SPELLS)
+
+
 # --macros-off: macro orders the policy may not give (masked), so it learns their low-level orders itself from the lessons
 # and rewards (the user, 2026-10-25: diverse play without the army-mix, creep and expand orders' help)
 MACROS_OFF = frozenset(x for x in os.environ.get("WARCRAFTSIM_MACROS_OFF", "").split(",") if x)
@@ -640,11 +651,16 @@ def bins_world(bx: int, by: int, sign: float) -> tuple[float, float]:
 
 
 class Encoder:
-    def __init__(self, vocab: dict, costs: np.ndarray | None = None):
+    def __init__(self, vocab: dict, costs: np.ndarray | None = None, steps: np.ndarray | None = None):
         """`costs` (costs.order_costs: gold, lumber, food per order class): the views also give
-        each step's availability mask ("avail": what the player can pay for)."""
+        each step's availability mask ("avail": what the player can pay for). `steps` (costs.research_steps: what a
+        research's next level costs more per level): its order at the level the player would research next."""
         self.vocab = vocab
         self.costs = costs
+        self.steps = steps
+        self.level_rows = ([(int(k), int(vocab["orders"][k - 1][0])) for k in np.flatnonzero(steps.any(1))]
+                           if steps is not None else [])
+        self._at_levels = None
         # the first hero is free (the game's hero token: only its food; at the altar or the tavern): the costs then
         self.costs_first = first_hero_free(costs, vocab) if costs is not None else None
         # --macros: the expand order's class, and per race the class whose cost and mask it takes (its hall's build;
@@ -671,6 +687,20 @@ class Encoder:
         # the lookups as sorted arrays (vectorized; per-entity dict lookups were most of a step's cost)
         self._type_keys, self._type_vals = _sorted_map(self.type_index)
         self._cur_keys, self._cur_vals = _sorted_map(self.cur_index)
+
+    def at_levels(self, c: np.ndarray, levels: dict) -> np.ndarray:
+        """The step's costs `c` with each research at the level the player would research next (`levels`: research
+        id -> the level it has, View.levels; costs.at_levels) -> `c` itself while it has none of them past level 0.
+        The last one made is kept (most steps: the same costs and levels)."""
+        if not self.level_rows or c is None:
+            return c
+        key = tuple(levels.get(rid, 0) for _, rid in self.level_rows)
+        got = self._at_levels
+        if got is not None and got[0] is c and got[1] == key:
+            return got[2]
+        out = _mod("costs").at_levels(c, self.steps, self.level_rows, levels)
+        self._at_levels = (c, key, out)
+        return out
 
     @staticmethod
     def side(units_step0: np.ndarray, player: int) -> float:
@@ -931,7 +961,10 @@ def _paid_orders(enc: "Encoder", rows: np.ndarray, st: dict, me, trees: dict) ->
         c = enc.order_index.get(lab) if lab is not None else None
         if c is None:
             continue
-        cg, cl, cf = (int(v) for v in (enc.costs_first if st.get("first_free") else enc.costs)[c])  # (a first hero: free)
+        step = st.get("costs")  # (the mask's: a first hero free, a dead hero's revival, a research's next level)
+        if step is None:
+            step = enc.costs_first if st.get("first_free") else enc.costs  # (a first hero: free)
+        cg, cl, cf = (int(v) for v in step[c])
         if cg == cl == cf == 0:
             continue
         if cg <= gold and cl <= lumber and (cf == 0 or fu + cf <= min(fc, FOOD_MAX)):
@@ -1414,13 +1447,15 @@ class View:
             g[enc.G0 + enc.ZD + enc.GX:] = pv
         else:
             g[enc.G0 + enc.ZD + enc.GX:] = self.priv(rows, opp)
-        avail = None
+        avail = self.costs_now = None
         free = enc.costs is not None and not (self.has_hero(rows, hero_types=hero_types) if fast
                                               else self.has_hero(rows, own_hero))
         self.free_hero = free  # (the agent's step budget: the same costs, play.BCAgent.commands)
         if enc.costs is not None:  # what the player can pay for now (orders beyond it are masked)
             c = (enc.costs_first if free else
                  _revive(enc, list(zip(dead_types, dead3[2::3]))) if fast else revive_costs(enc, rows, self.player, dead))
+            c = enc.at_levels(c, self.levels)  # (a research's next level: costs.research_steps; the agent's budget too)
+            self.costs_now = c
             gold, lumber, fu, fc = (int(me[2]), int(me[3]), int(me[4]), int(me[5])) if me is not None else (0, 0, 0, 0)
             # (an expand order on its way keeps no money: the game takes a building's cost at its order, and the hall's
             # cost kept again during the walk had masked every paid order for 25-60 s, a penalty on expanding; the
@@ -1497,7 +1532,7 @@ class View:
         if self.active_f < F_BASE and (not fast or self.active_f > A_LAST):  # (view_step's: zeroed there, unless the
             f[:, self.active_f:F_BASE] = 0.0                                   # last orders' loop above wrote some)
         out = {"n": len(sel), "sel": sel, "n_own": n_own, "ent": f, "type": types, "cur": cur, "glob": g,
-               "first_free": free, "index": dict(zip(ids, range(len(ids)))), "avail": avail,
+               "first_free": free, "index": dict(zip(ids, range(len(ids)))), "avail": avail, "costs": self.costs_now,
                "ghost0": getattr(enc, "ghost0", len(sel)) if not self.privileged_act else len(sel)}
         if priv is not None:  # (the privileged view's global flag; its entities beside the player's: "p…")
             flag = enc.G0 + enc.ZD + enc.GX - 1
