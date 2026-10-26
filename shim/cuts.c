@@ -93,6 +93,12 @@
  * 549755813888 (with 34359738368) the visibility bits of all seers at once: the game's option and the unit's cell asked
  *      once a unit, not once a seer
  *
+ * Round 6:
+ * 1099511627776 (drawing off) the local player's fog display: 0x4c5470 (bit 31 of the fog's cells from the local
+ *      player's vision) and the terrain's shroud update 0x733830 (every vertex scanned each fog pass) return at once
+ * 2199023255552 (with 16384) the grid walk pipelined across cells: entries gathered 32 ahead of the one processed,
+ *      their widgets and the next cells' first entries prefetched (the same stores in the same order)
+ *
  * Offsets are for the 1.29.2.9231 executable (RVAs; see ~/tools/w3analysis/report.md).
  */
 #include "w3shim.h"
@@ -856,6 +862,66 @@ static inline void grid_cell(BYTE *q, BYTE *g, unsigned idx, DWORD stamp) {
     } while (e != 0xffffff);
 }
 
+/* 2199023255552 (round 6, with 16384): the walk pipelined across cells. grid_cell's prefetch only runs ahead within
+ * one cell, and most cells hold one to three entries, so each widget's stamp was read right after its prefetch (half
+ * the walk's time on that load). Here the entries are gathered GW_LAG ahead of the one processed, across cells, and
+ * the next cells' first entries prefetched: the gathering reads only the grid's lists (heads, links), which processing
+ * never changes, and processing is grid_entry's, entry by entry in the walk's order, a cell's stamp counted (++ +0xb4)
+ * at its first entry, as grid_cell does. The same stores in the same order; only the reads come earlier. */
+#define GW_RING 64 /* (a power of two, > GW_LAG) */
+#define GW_LAG 32
+#define GW_AHEAD 4 /* cells ahead whose first entry is prefetched */
+static int g_gw_pf;
+static void grid_walk_pf(BYTE *q, BYTE *g, int x0, int x1, int y0, int y1, DWORD stamp) {
+    const DWORD *heads = *(DWORD **)(g + 0x28);
+    BYTE *ents = *(BYTE **)(g + 0x78);
+    unsigned stride = *(DWORD *)(g + 0x3c);
+    BYTE *robj[GW_RING];
+    DWORD rkind[GW_RING]; /* the entry's kind, | 1 at a cell's first entry */
+    unsigned put = 0, take = 0;
+    DWORD cs = 0;
+    for (unsigned i = (unsigned)x0; i < (unsigned)x1; i++) {
+        unsigned base = stride * i;
+        for (unsigned j = (unsigned)y0; j < (unsigned)y1; j++) {
+            if (j + GW_AHEAD < (unsigned)y1) {
+                DWORD a = heads[base + j + GW_AHEAD] & 0xffffff;
+                if (a != 0xffffff)
+                    __builtin_prefetch(ents + a * 8, 0);
+            }
+            DWORD e = heads[base + j] & 0xffffff;
+            DWORD first = 1;
+            while (e != 0xffffff) {
+                DWORD w = ((DWORD *)(ents + e * 8))[0];
+                BYTE *o = (BYTE *)(size_t)((DWORD *)(ents + e * 8))[1];
+                DWORD kind = w & 0xff000000;
+                if (kind != 0x2000000) {
+                    __builtin_prefetch(o + 0x34, 1);
+                    __builtin_prefetch(o + 0x44, 0);
+                }
+                robj[put & (GW_RING - 1)] = o;
+                rkind[put & (GW_RING - 1)] = kind | first;
+                put++;
+                first = 0;
+                e = w & 0xffffff;
+                if (put - take > GW_LAG) {
+                    DWORD k = rkind[take & (GW_RING - 1)];
+                    if (k & 1)
+                        cs = ++*(DWORD *)(g + 0xb4);
+                    grid_entry(q, k & 0xff000000, robj[take & (GW_RING - 1)], stamp, cs);
+                    take++;
+                }
+            }
+        }
+    }
+    while (take != put) {
+        DWORD k = rkind[take & (GW_RING - 1)];
+        if (k & 1)
+            cs = ++*(DWORD *)(g + 0xb4);
+        grid_entry(q, k & 0xff000000, robj[take & (GW_RING - 1)], stamp, cs);
+        take++;
+    }
+}
+
 static void __fastcall GridCells_hook(BYTE *q, void *edx, BYTE *g, int *r) {
     int y1 = *(int *)(g + 0x60), x1 = *(int *)(g + 0x5c), y0 = *(int *)(g + 0x58), x0 = *(int *)(g + 0x54);
     if (r[3] < y1)
@@ -875,9 +941,53 @@ static void __fastcall GridCells_hook(BYTE *q, void *edx, BYTE *g, int *r) {
     DWORD stamp = ++*(DWORD *)(g + 0xb4);
     if (*(BYTE **)(q + 0x20))
         *(DWORD *)(*(BYTE **)(q + 0x20) + 0x38) = stamp;
+    if (g_gw_pf) {
+        grid_walk_pf(q, g, x0, x1, y0, y1, stamp);
+        return;
+    }
     for (unsigned i = (unsigned)x0; i < (unsigned)x1; i++)
         for (unsigned j = (unsigned)y0; j < (unsigned)y1; j++)
             grid_cell(q, g, *(DWORD *)(g + 0x3c) * i + j, stamp);
+}
+
+/* 1099511627776 (round 6, drawing off): the local player's fog display. Each fog pass (0x4c5a80, every unit timer
+ * round) ends with two calls, made as a pair at all six of their call sites (the pass, the fog natives' refreshes):
+ * 0x4c5470 (fastcall(fog)) sets bit 31 of every cell of the fog's map (+0x34) from the local player's vision mask
+ * (+0x3c) over +0x30 (what the local player has seen: the black mask), and 0x706e50 hands that map, with the mask |
+ * bit 31, to the terrain's 0x733830 (thiscall(terrain, map, w, h, stride, mask), ret 0x14), which scans every terrain
+ * vertex and re-tiles the ones whose shroud changed (0x732060: the vertex's display texture, neighbours varied with
+ * the C runtime's rand(), never the game's synchronized random numbers). Both are per-client state built from the
+ * local player's vision, which a multiplayer game cannot let the simulation read (it would desync), and which differs
+ * between a live game and its replay's playback (an observer), whose simulations cut_ab.py finds identical. Nobody
+ * sees it with drawing off: both return at once (bit 31 then stays as the map was loaded). */
+#define VA_FOGLOCAL 0x4c5470 /* fastcall void (fog) */
+#define VA_SHROUD 0x733830   /* thiscall void (terrain, map, w, h, stride, mask), ret 0x14 */
+typedef void(__fastcall *FogLocalFn)(BYTE *);
+typedef void(__fastcall *ShroudFn)(BYTE *, void *, DWORD *, unsigned, unsigned, int, unsigned);
+static FogLocalFn FogLocal_orig;
+static ShroudFn Shroud_orig;
+static volatile LONG g_fd_skipped;
+
+static void __fastcall FogLocal_hook(BYTE *fog) {
+    g_fd_skipped++;
+}
+
+static void __fastcall Shroud_hook(BYTE *terrain, void *edx, DWORD *map, unsigned w, unsigned h, int stride, unsigned mask) {
+}
+
+static void install_fogdisplay(void) {
+    static const BYTE fl[] = {0x55, 0x8b, 0xec, 0x83, 0xec, 0x38, 0x8b, 0xc1, 0x53, 0x56};
+    static const BYTE sh[] = {0x55, 0x8b, 0xec, 0x83, 0xec, 0x1c, 0x8b, 0x45, 0x10, 0x53};
+    BYTE *a = VA_(VA_FOGLOCAL), *b = VA_(VA_SHROUD), *c = VA_(0x706e50);
+    /* the code as read: both heads, the shroud's ret 0x14, and 0x706e50's call of it with the terrain in ECX */
+    if (memcmp(a, fl, sizeof fl) != 0 || memcmp(b, sh, sizeof sh) != 0 || memcmp(b + 0x17a, "\xc2\x14\x00", 3) != 0 ||
+        c[0x17] != 0x8b || c[0x18] != 0xc8 || c[0x19] != 0xe8 || c + 0x1e + *(int32_t *)(c + 0x1a) != b) {
+        shim_log("cuts: fog display: unexpected code, not hooked");
+        return;
+    }
+    if (hook(VA_FOGLOCAL - 0x400000, (void *)FogLocal_hook, (void **)&FogLocal_orig, "fog display") &&
+        hook(VA_SHROUD - 0x400000, (void *)Shroud_hook, (void **)&Shroud_orig, "terrain shroud"))
+        shim_log("cuts: the local player's fog display skipped (0x4c5470, 0x733830)");
 }
 
 static void install_gridwalk(void) {
@@ -1127,8 +1237,14 @@ void cuts_install(int draw) {
         if (g_sl_on)
             shim_log("cuts: units without a sleep ability remembered with their ability list's head%s", g_sl_check ? " (checked)" : "");
     }
-    if (g_cuts & 16384)
+    if (g_cuts & 16384) {
+        g_gw_pf = (g_cuts & 2199023255552LL) != 0;
         install_gridwalk();
+        if (g_gw_pf)
+            shim_log("cuts: the grid walk pipelined across cells");
+    }
+    if ((g_cuts & 1099511627776LL) && !draw)
+        install_fogdisplay();
     if (g_cuts & 32768)
         install_h2();
     if (g_cuts & 4294967296LL)
@@ -1152,7 +1268,7 @@ void cuts_report(void) {
     if (g_cuts)
         shim_log("cuts/s: mapver hits=%ld miss=%ld paint skipped=%ld events reused=%ld new=%ld textures=%ld "
                  "rings=%ld (orig %ld) cells hit=%ld miss=%ld fhash hit=%ld miss=%ld relax=%ld early=%ld isa hit=%ld miss=%ld "
-                 "findabil=%ld (isa hit %ld miss %ld) gridwalk=%ld (big %ld) cells=%ld h2 hit=%ld miss=%ld prio hit=%ld miss=%ld",
+                 "findabil=%ld (isa hit %ld miss %ld) gridwalk=%ld (big %ld) cells=%ld h2 hit=%ld miss=%ld prio hit=%ld miss=%ld fogdisp=%ld",
                  InterlockedExchange(&g_mv_hits, 0), InterlockedExchange(&g_mv_miss, 0),
                  InterlockedExchange(&g_paint_skipped, 0), InterlockedExchange(&g_evt_reused, 0),
                  InterlockedExchange(&g_evt_new, 0), InterlockedExchange(&g_tex_skipped, 0),
@@ -1165,5 +1281,6 @@ void cuts_report(void) {
                  InterlockedExchange(&g_fa_isa_miss, 0), InterlockedExchange(&g_gw_calls, 0),
                  InterlockedExchange(&g_gw_big, 0), InterlockedExchange(&g_gw_cells, 0),
                  InterlockedExchange(&g_h2_hits, 0), InterlockedExchange(&g_h2_miss, 0),
-                 InterlockedExchange(&g_prio_hits, 0), InterlockedExchange(&g_prio_miss, 0));
+                 InterlockedExchange(&g_prio_hits, 0), InterlockedExchange(&g_prio_miss, 0),
+                 InterlockedExchange(&g_fd_skipped, 0));
 }
