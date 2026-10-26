@@ -452,6 +452,42 @@ Tried and dropped: prefetching five units ahead with the next unit's fog cell (i
 
 What is left in the pass (all bits, the agents' game): 0.83 M cycles a step, ~4% of the main thread: `UnitIsSleeping`'s walk for creeps 0.65% of the main thread, the prefetching's own loads 0.6%, the visibility 0.5% (the fog query 0.23%, the cell 0.14%), life and mana 0.33% (the soft float's arithmetic of the regenerating values), the position 0.27%, a hero's ability levels, cooldowns and the harness's ability table ~0.4%, the tokens' formatting 0.16%.
 
+## The game's own code, round 6: the local player's fog display, the grid walk (2026-10-26, branch `worktree-agent-a6b23bb9cea678cff`)
+
+Profiled at round 5's cuts (`1099511625209`) on three of the live run's own games (fgself-153: every agent slot at normal difficulty), each played back once under `perf record --call-graph fp -e cycles` (the shim built with frame pointers), the round 3 breakdown's rules; shares of the main thread:
+
+| part | agents (a1, 717 steps) | an agent against insane (a5, 1,308 steps) | 40 minutes of agents (a6, steps 300-2,500) |
+|---|---|---|---|
+| pathing, all of it | 46.8% | 45.7% | 43.8% |
+| – long-range search / local A* / planning and following | 11.3 / 5.9 / 7.1% | 6.2 / 6.8 / 7.8% | 7.7 / 6.3 / 6.7% |
+| – other: events, timers, small passes / the relations timer | 11.4 / 5.1% | 12.1 / 5.6% | 10.0 / 8.0% |
+| – collision and proximity / the pathing map's updates | 3.7 / 2.3% | 3.9 / 3.3% | 3.5 / 1.7% |
+| unit, ability and buff timers | 12.3% | 11.7% | 11.9% |
+| our harness | 15.7% | 11.9% | 17.6% |
+| – W3S_Step's JASS, records, commands (of it the agents' orders themselves, Issue*OrderById, ~3.5%) | 7.6% | 4.2% | 7.6% |
+| – the units pass / EnumItemsInRect's whole-map walk / the step sync | 4.1 / 2.7 / 0.9% | 4.1 / 2.4 / 0.8% | 5.4 / 3.3 / 0.9% |
+| target acquisition | 6.6% | 5.1% | 6.7% |
+| fog of war | 5.8% | 5.2% | 6.6% |
+| the built-in AI (scripts and C++) | – | 8.9% | – |
+| Wine and the kernel / Storm's allocator / paint | 4.4 / 2.4 / 1.6% | 4.7 / 2.2 / 1.2% | 4.1 / 2.3 / 2.2% |
+
+As leaves: the soft float 9.3-10.3% (spread over its callers), the grid walk (16384's C) 3.7-5.4%, the agent table's lookup 0x4707f0 3.2-4.1% (called from everywhere), the long-range search's cell lookup 0x8a20a0 2.6-4.9%, the ability walk (8192's C) 2.3-2.5%, the terrain's 0x733830 1.3-1.9% and the fog's 0x4c5470 0.9-1.2%. Two of these were work nobody needs or work that waited on memory for no reason:
+
+* **The fog's last two calls draw.** The fog pass (0x4c5a80, from the units' timer 0x4ebb00) ends with 0x4c5470, which sets bit 31 of every cell of the fog's map (+0x34) from the local player's vision mask (+0x3c) over +0x30 (what the local player has seen), and 0x706e50, which hands the map with the mask | bit 31 to the terrain's 0x733830: a scan of every terrain vertex that re-tiles the ones whose shroud changed (0x732060: the vertex's display texture and, at random, its neighbours', with the C runtime's `rand()` 0xa7dd2d, never the game's synchronized random numbers). The pair is called together at all six of their call sites (the pass and the fog natives' refreshes). Both are state of one client, built from the local player's vision: a multiplayer game cannot let the simulation read them, and they differ between a live game and its replay's playback (an observer), whose simulations `cut_ab.py` finds identical.
+* **The grid walk's prefetch had no lead.** 16384's walk prefetched a cell's widgets and then read them at once: most cells hold one to three entries, so half of the walk's samples sat on the first widget's stamp load, and an eighth on the entries' links. Over the whole map (the harness's `EnumItemsInRect` every step: ~4,000 cells, ~5,000 entries) that was 2.4-3.3% of the main thread, the rest of it target acquisition's smaller queries.
+
+| bit | what | instructions | cycles |
+|---|---|---|---|
+| 1099511627776 | (drawing off) 0x4c5470 and 0x733830 return at once (each head and the shroud's `ret 0x14` checked before hooking); bit 31 stays as the map was loaded, the terrain's display as it was drawn last | -4.2% | -2.3% |
+| 2199023255552 | (with 16384) the walk's entries gathered across cells into a ring 32 ahead of the one processed, each widget prefetched as it is gathered and the first entry of the cell four ahead too; processing is `grid_entry`'s, entry by entry in the walk's order, each cell's stamp counted (`++` +0xb4) at its first entry: the gathering reads only the grid's heads and links, which processing never changes, so the stores and their order are the original's | 0 | -2.6% |
+| | both (`4398046508537`) | -4.1% | **-4.2%** (CPU -4.1%) |
+
+Parity and the gain, all four variants played back side by side (`1099511625209`, each bit, both; every unit, player, event, AI order, command result and ground item, and the raw observation bytes, at every step): **29 games, 37,275 measured steps (38,725 compared a variant), identical**: the 8 replays of fgself-153 (two between agents, one of them 40 minutes; six against insane), 8 of fgself-150 to -152, round 5's 10 recordings of the current harness (against their live digests too) and three new live recordings made with both bits on (agents with training's mix of commands; an agent against insane and two insane AIs, with the AI's orders recorded: there the local player is a real slot whose display was skipped live), played back with round 5's cuts and with round 6's: identical to the live game. fgself-153's replays alone: -4.9% instructions, **-4.6% cycles and CPU**; the training replays of fgself-150 to -153 -4.5% / -4.2%; the recordings -3.7% / -4.2%. With both bits the fog of war is 5.8% → 3.3% of a game between agents (6.6% → 3.9% in the 40-minute one) and `EnumItemsInRect` 2.7% → 1.5% (3.3% → 1.4%).
+
+Not usable: `cut_ab.py live` (seeded live games side by side): two games with the same cuts already differed at step 100 on echofast with scripted agents, so the live check was made through recordings instead.
+
+Not done: the agent table's lookup (0x4707f0, 3-4% as a leaf, its callers everywhere: misses on the table), the long-range search's cell lookup (round 4: one miss per node), the proximity events of unit movement (0x806ad0 posts events that Storm's dispatcher hands to ability and order handlers synchronously: 9% inclusive in the 40-minute game, game logic), the fog pass's every-fourth-round display tail (0x7057a0 and 0x706e70: 0.3%), paint (1.2-2.2%: it rebuilds the list the fog pass walks).
+
 ## The learner's intake (2026-10-12)
 
 With 8 evaluation games, the last-order features and the opponent-aware value, the run fell to ~1,550-1,600 steps/s and the learner's update to ~4.4-4.7 s (3.3 s in the morning). py-spy on the learner's main thread (20 s): ~33% receiving and unpickling the actors' trajectories, of which the answers' arrays were `np.memmap` subclasses (`astype` keeps the subclass of the shared rows; unpickling them rebuilds memmaps); ~18% waiting for the cloning loss's batches from its 2 data workers; ~13% in the update's pauses for the inference loop (by design); and before that, the last-order features' per-unit loop ran in those workers even when `--features 50` zeroed it (an update alone 3.2 → 2.7 s once skipped).
@@ -557,7 +593,7 @@ Not done (not exact, or not measured): a view's dicts' cleanup without the `View
 * **The learner**: the anchor's forward for the KL term (~5% of an update), a compiled update. (The cloning loss is off since 2026-10-14.)
 * **The video renderer**: 3.4 cores while it renders.
 * **wineserver**: ~3% of a game's CPU (2026-10-24); with 131072 the step sync makes no requests.
-* **The games' main thread after `1099511625209`** (round 5): pathing ~30-60% (the long-range search waits on a cell's cache miss per node it expands; the rest of it, the local search and planning, spread over many small functions and the soft float's add and subtract, which are not IEEE), the other agent timers, attack and fog (~20-27%), the units pass ~3.5-5.5% (creeps' sleep-ability walks, the prefetching's own loads, the fog query, the soft float of life, mana and position), EnumItemsInRect's walk (~2-3%: it stamps every widget) and ~90 JASS statements a step of W3S_Step.
+* **The games' main thread after `4398046508537`** (round 6): pathing ~45% (the long-range search waits on a cell's cache miss per node it expands; the rest of it, the local search and planning, spread over many small functions and the soft float's add and subtract, which are not IEEE), the unit, ability and buff timers ~12%, target acquisition ~7%, fog ~3.5%, the units pass ~4-5.5% (creeps' sleep-ability walks, the prefetching's own loads, the fog query, the soft float of life, mana and position), EnumItemsInRect's walk ~1.5% (it stamps every widget), ~90 JASS statements a step of W3S_Step and the agents' orders themselves (~3.5%: the game's order code).
 
 ## Measuring
 

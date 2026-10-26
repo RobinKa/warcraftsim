@@ -96,6 +96,7 @@ Nobody watches a training game. Under Wine, Direct3D 9 becomes OpenGL, and Mesa 
 * **The device draws nothing** (`shim/render.c`): `Present`, `Clear` and the `Draw*Primitive` calls return at once. The game still builds every frame, so its animations and geometry run as before. Drawing had been 18% of a game's main thread; 22.6 → 18.7 ms of CPU a step. Mesa's own no-op driver left the game without a first frame.
 * **Textures without pixels** (`--game-cuts` 8): the texture decoder allocates the same mip levels but skips the JPEG decode of each.
 * **Paint now and then** (`--game-cuts` 256): the frame's paint handler runs every 50 steps instead of ~8 times a wall second. Skipping it entirely was not safe: paint rebuilds a list of units that the fog pass walks every turn, and without it the list kept growing (the fog's share rose to 17% by step 700).
+* **No fog display** (`--game-cuts` 1099511627776, 2026-10-26): every fog pass ended by marking, in the fog's map, what the local player has seen, then scanning every terrain vertex to re-tile the black mask where it changed (with the C runtime's `rand()` for the tiles' variation, not the game's synchronized random numbers). That is one client's view: a multiplayer game cannot let the simulation read it, and a replay played back by an observer has a different one with the same simulation. Both calls now return at once: 2-3% of the main thread.
 * **A 320×240 virtual screen**, the game drawing in its own thread (Wine's command stream thread off), and llvmpipe rasterizing in the calling thread, with no threads of its own.
 
 Videos are rendered from the games' replays in a process of their own, which draws.
@@ -120,6 +121,7 @@ The game is a 2002-era C++ program built for a single-core PC with an x87 FPU, a
 | 128 | soft-float helpers: count leading zeros as a loop, an integer square root as 16 rounds of digit-by-digit | `lzcnt`, and `floor(sqrt(double))`, checked equal over all 2³² inputs | -0.82 M (the AI's code) |
 | 67108864 to 536870912 | the soft float's multiply, float-to-int, floor and int-to-float: integer code, ~40 instructions a call | SSE instructions where each is provably the IEEE operation (the multiply is IEEE's round toward zero for normal operands and results; the others on ranges like \|x\| < 2³¹), the original elsewhere; the executable's own routines run natively over all 2³² inputs (2³² random and boundary pairs for the multiply) | -4.7% instructions; the CPU within noise: the calls wait on operands their callers have just stored |
 | 4294967296 | the name hash behind every JASS identifier the interpreter resolves (it looks variables up by name at run time), and file names: the name upper-cased into a 1 KB buffer, then hashed | the same hash in one pass, upper-cased by a table | -1.9% instructions, -2.4% cycles (-3% in games against the AI, whose scripts are JASS) |
+| 2199023255552 | the widget grid's walk (16384's C) prefetched a cell's widgets and read them at once; most cells hold one to three, so half its time waited on the first widget's load (over the whole map for the harness's items every step, and for target acquisition) | the entries gathered across cells 32 ahead of the one processed, prefetched as they are gathered; the same stores in the same order | -2.6% cycles |
 
 Tried and dropped: pooling the events of the game's loopback messages (4: nothing), a cache for the type check `IsA` (2048: little, and delicate), Storm's allocator hashing its caller's source file name on every allocation (512: nothing measurable), paint every 200 steps (no change).
 
@@ -132,6 +134,7 @@ Tried and dropped: pooling the events of the game's loopback messages (4: nothin
 | round 3 (2026-10-24): bits 524288 to 33554432 | 67106297 | -4.6% instructions, -6.6% CPU against round 2 | 45 replays (48,766 steps) |
 | round 4 (2026-10-24): bits 67108864 to 8589934592 (`W3SIM_CUTS` read as 64 bits) | 17179866617 | against round 3: on games of the new harness -8 to -9% instructions and -3 to -6% CPU (-15% with 50 commands a step); on older runs' replays, whose harness never asks for the harness bits, -6.3% and -1.5% | 63 replays (63,792 steps); 17 recordings of the new harness (pairs and recorded AI orders among them), 6 also played back with round 3's shim (its JASS paths: identical) |
 | round 5 (2026-10-25): bits 17179869184 to 549755813888 (the units pass) | 1099511625209 | against round 4: -2.2% instructions, -5.2% CPU (the units pass 7.5-12.9% → 3.5-5.4% of the main thread) | 67 replays (83,550 steps): 10 recordings of the current harness, round 4's 17, 40 training replays; a check mode comparing every unit's fields both ways |
+| round 6 (2026-10-26): bits 1099511627776 (the fog display) and 2199023255552 (the grid walk) | 4398046508537 | against round 5: -4.1% instructions, -4.2% cycles, -4.1% CPU (fgself-153's games: -4.6%) | 29 games (37,275 measured steps): 16 training replays of fgself-150 to -153, round 5's 10 recordings, 3 recordings made with both bits on |
 
 ## Wine
 
@@ -219,6 +222,19 @@ Round 5 (2026-10-25, `--game-cuts 1099511625209`) halved the units pass: the sam
 
 What is left of the pass (~4% of the main thread): `UnitIsSleeping`'s ability walk for creeps (their sleep ability heads their list, so the cache of units without one cannot help them), the prefetching's own loads, the fog query, and the soft-float arithmetic of life, mana and the position.
 
+### After round 6
+
+Round 6 (2026-10-26, `--game-cuts 4398046508537`) started from a profile of the live run's own games (fgself-153, every agent slot at a person's income) at round 5's cuts: pathing 44-47% of the main thread, the unit, ability and buff timers ~12%, our harness 12-18% (of it the agents' orders themselves ~3.5%, the units pass 4-5.4%, the items' whole-map walk 2.4-3.3%), target acquisition 5-7%, fog 5.2-6.6%, the built-in AI 8.9% against it, Wine and the kernel 4-5%. Two things in it were not needed or waited for no reason: the local player's fog display (2-3%: see [drawing nothing](#drawing-nothing)) and the grid walk's prefetching without lead (bit 2199023255552 above). The same game between agents, each part's share before and after (separate playbacks):
+
+| part | a game between agents (fgself-153) | 40 minutes of agents (fgself-153) |
+|---|---|---|
+| fog of war | 5.8% → 3.3% | 6.6% → 3.9% |
+| the items' walk (`EnumItemsInRect`) | 2.7% → 1.5% | 3.3% → 1.4% |
+| target acquisition | 6.6% → 7.0% | 6.7% → 6.9% |
+| pathing | 46.8% → 49.4% | 43.8% → 45.6% |
+
+Side by side on 29 games: -4.2% cycles a step, -4.6% on fgself-153's. What is left is spread thin: the agent table's lookup (3-4% as a leaf, called from everywhere), the long-range search's cell lookup, the proximity events of moving units (handled by the abilities' and orders' own code), the soft float (9-10%, inside its callers).
+
 ## The game's code, as we understand it
 
 From Ghidra (through REA), the shim's own profiler and `perf`. Shares are of the main thread in a training game; boxes in green are where the shim replaced or skipped the game's code, in blue our harness.
@@ -281,5 +297,6 @@ The addresses of every function above, and which `--game-cuts` bit acts on each,
 | round 3 (2026-10-24: pathing in C where it is exact, the units pass's flags in the shim, the step sync over a Unix socket) | the main thread -6.6% (7.20 → 7.05 ms on a training game, 14.53 → 13.55 ms on a 40-minute one) |
 | round 4 (2026-10-24: the harness's tokens, commands and items in the shim, the name hash, soft float where exact) | the main thread -3 to -6% on games with the new harness (6.75 → 6.51 ms), -15% with many commands a step; -1.5 to -4% on older runs' replays |
 | round 5 (2026-10-25: the units pass's natives done on each unit's object, handles remembered, its memory prefetched) | the main thread -5.2% (5.66 → 5.36 ms over 67 replays), the units pass halved |
+| round 6 (2026-10-26: no fog display, the grid walk prefetched ahead) | the main thread -4.1% (6.04 → 5.79 ms over 29 games; fgself-153's 5.58 → 5.32 ms) |
 
 The settings differ from row to row (maps, numbers of units, how loaded the machine was), so compare each row with its own "before".
