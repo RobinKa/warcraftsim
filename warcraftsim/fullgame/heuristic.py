@@ -17,23 +17,26 @@ Nothing in it learns. Every half second it:
 * economy: sends idle workers to its mines (5 a mine) or the trees nearest its hall, trains workers up to the plan's
   count, builds supply ahead of its production (never supply-blocked), follows the race's build order and keeps
   every production building training the unit its army mix lacks most (waiting for that one's money: the cheaper
-  ones had starved it), takes the natural expansion once its camp is cleared (or its main mine runs low), and moves
-  workers off a mine that runs dry;
+  ones had starved it), takes the natural expansion once its camp is cleared (or its main mine runs low: a hall,
+  for undead a haunted mine, for night elves a tree of life that entangles the mine), moves workers off a mine that
+  runs dry, and spends money piling up on upgrade levels, the next tier and more production;
 * heroes: trains the plan's hero at the altar (the first one is free), learns its skills in the plan's order,
   revives it when it dies (its money kept first), casts its spells in fights (nukes and stuns on enemy heroes, the
   most clumped or the weakest enemies, heals on hurt own units, summons and area spells when enough enemies are
   near) and sends it home when it is hurt;
 * army: gathers in front of its base; clears the creep camps near home and the natural's for the hero's levels
   while nothing threatens; defends the base when enemies come near (workers into burrows for orc); attacks when its
-  army reaches the plan's size (or the enemy's army just died at its base), attack-moving to the enemy's buildings it
+  army reaches the plan's size (or two thirds of it from the plan's time, when stronger than the strongest enemy
+  army it has met; or the enemy's army just died at its base), attack-moving to the enemy's buildings it
   knows (else its start, then the other mines) while the leaders wait for the rest. In a fight each unit attacks
   the enemy in reach with the least hit points left after the damage the others already aim at it (focus fire
   without overkill; by default its ranged units only, OPTIONS["focus"]), and the army retreats home when the enemies
   near it are clearly stronger (Lanchester: hit points times damage a second, both sides).
 
 Plans give a race's build order, army mix, tiers, heroes, towers, expansion and attack timings: PLANS holds each
-race's default (orc's is the tuned one, ~50% against the learner), STRATEGIES the family of 14 (per race a tier-1
-rush, a tier-2 army with a second hero, casters, a fast expansion for orc and human), played by name
+race's default (orc's is the tuned one, ~50% against the learner), STRATEGIES the family of 16 (per race a tier-1
+rush, a tier-2 army with a second hero, casters for orc and human, a fast expansion; tuned for a person's income
+since 2026-10-26), played by name
 (HeuristicAgent(..., strategy="orc-raiders")). OPTIONS are switches for side-by-side variants (heuristic_match.py
 --variant). `log`: a timeline (a line every 30 game seconds and the army's decisions) for heuristic_match's rows
 (summary()). Its games recorded (heuristic_match.py --record, collect.Recorder) are demonstrations in collect.py's
@@ -119,8 +122,10 @@ PLANS: dict[str, Plan] = {
         rush_towers=((200.0, "owtw", 2), (300.0, "owtw", 4), (420.0, "owtw", 6)),
         army=(("ogru", 1.0), ("ohun", 1.0)),
         research=((360.0, "Rome"), (480.0, "Rora"), (600.0, "Roar")),
-        lumber_workers=((0.0, 3),),  # (5 had floated 600-1,300 lumber: peons the army lacked)
-        attack_food=45, attack_at=660.0),  # (60 and 840 s, patient: worse, 2 of 9 with hold_home)
+        # (at the insane AI's double income 3 peons on lumber had been enough; at a person's the towers and the
+        # upgrades' levels take a fourth from 5 minutes)
+        lumber_workers=((0.0, 3), (300.0, 4)),
+        expand_at=480.0, attack_food=45, attack_at=660.0),  # (60 and 840 s, patient: worse, 2 of 9 with hold_home)
     "human": Plan(
         race="human", worker="hpea", hall="htow", supply="hhou", supply_food=6, altar="halt",
         heroes=("Hmkg",),
@@ -128,21 +133,24 @@ PLANS: dict[str, Plan] = {
                 (280.0, 30, "hbla", 1)),
         army=(("hfoo", 2.0), ("hrif", 1.0)),
         research=((300.0, "Rhde"), (420.0, "Rhme"), (540.0, "Rhar")),
-        attack_food=45, attack_at=660.0),
+        lumber_workers=((0.0, 3),),  # (5 had banked ~520 lumber on average from 4 to 15 minutes, 4 ~480)
+        expand_at=480.0, attack_food=45, attack_at=660.0),
     "undead": Plan(
         race="undead", worker="uaco", hall="unpl", supply="uzig", supply_food=10, altar="uaod",
         heroes=("Udea",),
         builds=((0.0, 0, "uaod", 1), (0.0, 0, "usep", 1), (100.0, 12, "usep", 2), (200.0, 22, "usep", 3),
                 (280.0, 30, "ugrv", 1)),
         army=(("ugho", 1.0),),
-        lumber_workers=((0.0, 0),),  # (ghouls chop: _ghoul_lumber)
-        attack_food=45, attack_at=660.0),
+        # (undead: the ghouls that chop, _ghoul_lumber; 3-4 had banked ~1,500 lumber, ~210 a minute; 2-3 ~900)
+        lumber_workers=((0.0, 1), (240.0, 2)),
+        expand_at=480.0, attack_food=45, attack_at=660.0),
     "nightelf": Plan(
         race="nightelf", worker="ewsp", hall="etol", supply="emow", supply_food=10, altar="eate",
         heroes=("Edem",),
         builds=((0.0, 0, "eate", 1), (0.0, 0, "eaom", 1), (100.0, 12, "eaom", 2), (200.0, 22, "eaom", 3)),
         army=(("earc", 1.0),),
-        attack_food=45, attack_at=660.0),
+        lumber_workers=((0.0, 3),),  # (5 had banked ~760 lumber, 4 ~500: archers cost 10)
+        expand_at=480.0, attack_food=45, attack_at=660.0),
 }
 def _variant(base: Plan, name: str, **changes) -> Plan:
     import dataclasses
@@ -150,9 +158,12 @@ def _variant(base: Plan, name: str, **changes) -> Plan:
 
 
 # The family of strategies (the user's direction, 2026-10-25: diverse, coherent plans to clone and to play against):
-# per race a rush of tier-1 units (PLANS: the tuned one, orc's the strongest), a tier-2 army with a second hero, casters,
-# and for orc and human a fast expansion. Each is a Plan: build order, army mix, tiers, heroes, expansion and attack
-# timings. strategies(race) lists a race's; HeuristicAgent(..., strategy=name) plays one.
+# per race a rush of tier-1 units (PLANS), a tier-2 army with a second hero, casters (orc and human) and a fast
+# expansion. Each is a Plan: build order, army mix, tiers, heroes, expansion and attack timings. strategies(race) lists
+# a race's; HeuristicAgent(..., strategy=name) plays one. Re-tuned 2026-10-26 for a person's income (the insane AI's
+# double income until then): lumber workers to what the plan spends, every plan takes the natural (the rushes at 8
+# minutes, the tier-2 and caster plans at 7, the expansions at 3:20-4:00; 1-2 minutes later against undead and orc),
+# and money piling up goes to upgrades and the next tier (_floating).
 STRATEGIES: dict[str, Plan] = {}
 
 
@@ -168,13 +179,14 @@ _register(
              builds=((0.0, 0, "oalt", 1), (0.0, 0, "obar", 1), (90.0, 12, "obar", 2), (200.0, 22, "ofor", 1),
                      (330.0, 30, "obea", 1)),
              army=(("ogru", 1.0), ("orai", 2.0)), research=((420.0, "Roen"), (480.0, "Rome"), (600.0, "Roar")),
+             lumber_workers=((0.0, 3), (200.0, 4)), expand_at=420.0,
              rush_builds=None, rush_towers=None, towers=(), attack_food=50, attack_at=720.0),
     _variant(_O, "orc-casters", heroes=("Ofar", "Oshd"), tiers=((220.0, 24, "ostr"),),
              builds=((0.0, 0, "oalt", 1), (0.0, 0, "obar", 1), (90.0, 12, "obar", 2), (180.0, 20, "ofor", 1),
                      (300.0, 28, "osld", 1), (420.0, 40, "osld", 2)),
              army=(("ogru", 2.0), ("ohun", 1.0), ("oshm", 1.0), ("odoc", 1.0)),
              research=((360.0, "Rome"), (480.0, "Rora")), rush_builds=None, rush_towers=None, towers=(),
-             attack_food=50, attack_at=720.0),
+             lumber_workers=((0.0, 3), (200.0, 5)), expand_at=420.0, attack_food=50, attack_at=720.0),
     _variant(_O, "orc-expand", expand_at=200.0, creep_from=120.0,
              builds=((0.0, 0, "oalt", 1), (0.0, 0, "obar", 1), (240.0, 20, "obar", 2), (300.0, 26, "ofor", 1),
                      (360.0, 32, "obar", 3)),
@@ -184,36 +196,53 @@ _register(
              builds=((0.0, 0, "halt", 1), (0.0, 0, "hbar", 1), (120.0, 14, "hbla", 1), (200.0, 22, "hlum", 1),
                      (300.0, 30, "hbar", 2), (330.0, 32, "hars", 1)),
              army=(("hfoo", 2.0), ("hkni", 3.0), ("hmpr", 1.0)), research=((300.0, "Rhde"), (420.0, "Rhme"), (540.0, "Rhar")),
-             attack_food=55, attack_at=840.0),
+             lumber_workers=((0.0, 3), (150.0, 4)), expand_at=420.0, attack_food=55, attack_at=840.0),
     _variant(_H, "human-casters", heroes=("Hamg", "Hpal"), tiers=((200.0, 22, "hkee"),),
              builds=((0.0, 0, "halt", 1), (0.0, 0, "hbar", 1), (120.0, 14, "hbla", 1), (300.0, 28, "hars", 1),
                      (360.0, 34, "hars", 2), (420.0, 40, "hbar", 2)),
              army=(("hfoo", 2.0), ("hrif", 1.0), ("hmpr", 1.0), ("hsor", 1.0)), research=((360.0, "Rhde"), (480.0, "Rhme")),
-             attack_food=50, attack_at=780.0),
+             lumber_workers=((0.0, 3), (150.0, 5)), expand_at=420.0, attack_food=50, attack_at=780.0),
     _variant(_H, "human-expand", expand_at=200.0, creep_from=120.0,
              builds=((0.0, 0, "halt", 1), (0.0, 0, "hbar", 1), (240.0, 20, "hbar", 2), (300.0, 26, "hbla", 1),
                      (360.0, 32, "hbar", 3)),
-             attack_food=55, attack_at=780.0),
+             lumber_workers=((0.0, 3), (150.0, 5)), attack_food=55, attack_at=780.0),
     _variant(_U, "undead-ghouls"),  # (ghouls, a Death Knight)
     _variant(_U, "undead-fiends", heroes=("Udea", "Ulic"), tiers=((300.0, 30, "unp1"),),
              builds=((0.0, 0, "uaod", 1), (0.0, 0, "usep", 1), (90.0, 10, "ugrv", 1), (160.0, 18, "usep", 2),
                      (300.0, 30, "usep", 3)),
              army=(("ugho", 1.0), ("ucry", 2.0)), research=((420.0, "Rume"), (540.0, "Rura")),
-             attack_food=50, attack_at=720.0),
+             lumber_workers=((0.0, 2), (420.0, 3)), expand_at=420.0, attack_food=50, attack_at=720.0),
     _variant(_U, "undead-gargoyles", heroes=("Udea", "Udre"), tiers=((240.0, 26, "unp1"),),
              builds=((0.0, 0, "uaod", 1), (0.0, 0, "usep", 1), (90.0, 10, "ugrv", 1), (200.0, 22, "usep", 2),
                      (360.0, 34, "usep", 3)),
-             army=(("ugho", 2.0), ("ugar", 2.0)), research=((420.0, "Rume"),), attack_food=50, attack_at=720.0),
+             army=(("ugho", 2.0), ("ugar", 2.0)), research=((420.0, "Rume"),),
+             lumber_workers=((0.0, 2),), expand_at=420.0, attack_food=50, attack_at=720.0),
+    # the expansions of the races that had none (2026-10-26): undead haunts the natural's mine (no hall: acolytes mine
+    # a haunted mine where it stands), night elves root a tree of life there and entangle its mine
+    _variant(_U, "undead-expand", heroes=("Udea", "Ulic"), tiers=((360.0, 34, "unp1"),), expand_at=240.0, creep_from=90.0,
+             builds=((0.0, 0, "uaod", 1), (0.0, 0, "usep", 1), (100.0, 12, "ugrv", 1), (300.0, 24, "usep", 2),
+                     (480.0, 40, "usep", 3)),
+             army=(("ugho", 2.0), ("ucry", 2.0)), research=((420.0, "Rume"), (540.0, "Rura")),
+             lumber_workers=((0.0, 2), (400.0, 3)), attack_food=50, attack_at=780.0),
     _variant(_E, "nightelf-archers"),  # (archers, a Demon Hunter)
     _variant(_E, "nightelf-huntresses", heroes=("Edem", "Ekee"), tiers=((360.0, 36, "etoa"),),
              builds=((0.0, 0, "eate", 1), (0.0, 0, "eaom", 1), (90.0, 10, "edob", 1), (150.0, 16, "eaom", 2),
                      (300.0, 30, "eaom", 3)),
              army=(("esen", 2.0), ("earc", 1.0)), research=((420.0, "Resm"), (540.0, "Rema")),
-             attack_food=50, attack_at=720.0),
+             lumber_workers=((0.0, 3), (150.0, 5)), expand_at=420.0, attack_food=50, attack_at=720.0),  # (3: ~950 gold
+             # banked and 46 lumber: huntresses and the moon upgrades take lumber)
     _variant(_E, "nightelf-dryads", heroes=("Ekee", "Edem"), tiers=((240.0, 26, "etoa"),),
              builds=((0.0, 0, "eate", 1), (0.0, 0, "eaom", 1), (90.0, 10, "edob", 1), (330.0, 30, "eaoe", 1),
                      (420.0, 40, "eaom", 2)),
-             army=(("earc", 2.0), ("edry", 2.0)), research=((480.0, "Resm"),), attack_food=50, attack_at=780.0),
+             army=(("earc", 2.0), ("edry", 2.0)), research=((480.0, "Resm"),),
+             lumber_workers=((0.0, 3), (150.0, 5)), expand_at=420.0, attack_food=50, attack_at=780.0),
+    _variant(_E, "nightelf-expand", heroes=("Ekee", "Edem"), tiers=((480.0, 40, "etoa"),), expand_at=240.0,
+             creep_from=90.0,
+             builds=((0.0, 0, "eate", 1), (0.0, 0, "eaom", 1), (120.0, 12, "edob", 1), (330.0, 26, "eaom", 2),
+                     (480.0, 40, "eaom", 3)),
+             army=(("earc", 2.0), ("esen", 2.0)), research=((420.0, "Resm"), (540.0, "Rerh")),
+             lumber_workers=((0.0, 3), (150.0, 5)), attack_food=50, attack_at=780.0),  # (4: ~630 gold banked, short of
+             # lumber for its trees of life)
 )
 DEFAULT_STRATEGY = {"orc": "orc-grunts", "human": "human-footmen", "undead": "undead-ghouls", "nightelf": "nightelf-archers"}
 
@@ -254,6 +283,11 @@ TOWERS_ATTACK = {fourcc(c) for c in ("hgtw", "hctw", "hatw", "owtw", "otrb", "uz
 HALL_TYPES = {"htow", "hkee", "hcas", "ogre", "ostr", "ofrt", "unpl", "unp1", "unp2", "etol", "etoa", "etoe"}
 MINE_ID = fourcc("ngol")
 HAUNTED, ENTANGLED = fourcc("ugol"), fourcc("egol")
+MINE_KINDS = (MINE_ID, HAUNTED, ENTANGLED)  # (undead and night elves start on their own haunted or entangled one)
+ENTANGLE = 852147  # a tree of life's entangle gold mine (play.ENTANGLE: given ~800 from the mine, it uproots, walks
+# nearer and the mine is entangled ~9 s on)
+TREES_OF_LIFE = {"etol", "etoa", "etoe"}
+FAR_BUILDS = HALL_TYPES | {"ugol"}  # (a build order this far from home: its worker walks longer, its order and money kept)
 # where people built their halls at Echo Isles' natural expansions (macros.EXPAND_SPOTS: the mine -> the hall's offset)
 EXPAND_SPOTS = {(-4864, -3200): (100, 800), (4352, -3200): (-300, 700)}
 
@@ -264,17 +298,30 @@ ENGAGE = 900.0  # a unit fights the enemies within this of it
 RETREAT_RATIO = 0.6  # the army's strength below this share of the enemies' near it: retreat (away from home)
 RETREAT_STEPS = 16  # at least this long (8 s) once retreating
 RALLY_OUT = 650.0  # the rally point: this far from the hall toward the enemy's base
+RALLY_LEFT = 1000.0  # a unit this far from the rally point has left it (the army's centre on the way: _center)
 HERO_LOW, HERO_OK = 0.38, 0.75  # a hero this hurt goes home until it has this share of its hit points again
 PULL_LOW, PULL_STEPS = 0.0, 4  # a hurt melee unit steps back this long (off: chasers as fast caught them)
 CAMP_JOIN = 550.0  # creeps this near each other: one camp
+CREEP_STALL, CAMP_SKIP = 120.0, 300.0  # a camp none of whose creeps died for this long in creep mode: skipped so long
 CREEP_REACH = 3600.0  # camps this near home are crept
-MINE_LOW = 3000  # a mine with less gold left than this: the next one's hall built
+RUSH_EXPAND_DELAY = 60.0  # against undead and orc (their first waves at ~4:30) the natural this much later (120 s
+# at the insane AI's double income; at a person's the second mine is worth more than the wait)
+MINE_LOW = 5000  # a main mine with less gold left than this: the natural taken whatever the plan (~8 minutes of
+# mining at a person's income: its camp, the walk and a hall's 110-180 s of building before it runs dry)
 # (seconds a queued entry is kept per place in the queue: by its code, else its first letter; a tier takes 120-190 s)
 QUEUE_EXPIRE = {"R": 200.0, "hkee": 220.0, "ostr": 200.0, "unp1": 180.0, "etoa": 180.0, "hcas": 260.0, "ofrt": 240.0,
                 "unp2": 220.0, "etoe": 220.0}
 REVIVE_WAIT = 240  # a revival the altar took: not ordered again for 120 s (it takes up to ~110 s)
 FOOD_CAP = 80  # no army past this food (81 and more: 60% of the income lost to upkeep)
+# money piling up (the army at the food cap: 1,500-6,000 gold unspent for the last 15 minutes of long games at a
+# person's income) goes to the race's weapon and armor upgrades, each level as the tier allows, and the next tier
+FLOAT_GOLD, FLOAT_LUMBER = 700, 250
+MAX_PRODUCERS = 5  # (of the plan's first army building, built while money piles up below the food cap)
+UPGRADES = {"orc": ("Rome", "Roar", "Rora"), "human": ("Rhme", "Rhar", "Rhra", "Rhla"),
+            "undead": ("Rume", "Ruar", "Rura", "Rucr"), "nightelf": ("Resm", "Rerh", "Resw", "Rema")}
+TIER_CHAIN = {"human": ("hkee", "hcas"), "orc": ("ostr", "ofrt"), "undead": ("unp1", "unp2"), "nightelf": ("etoa", "etoe")}
 REGROUP_STEPS = 90  # after a retreat no attack for 45 s
+TIMED_EDGE = 1.2  # the timed attack (Plan.attack_at) only with this much the power of the strongest enemy army met
 TOWER_COST = 2500.0  # a known enemy tower near a target counts as this much more distance
 
 
@@ -371,6 +418,13 @@ def power(units, center=None, radius: float = FIGHT_RADIUS, workers: bool = True
         hp += max(u.hp, 0)
         dmg += dps(u.type, u.hero_level) * (0.5 if u.is_worker else 1.0)
     return hp * dmg / 1000.0
+
+
+def _plain_mines(units) -> list:
+    """The plain gold mines no haunted or entangled one stands on (that one hides the plain mine under it)."""
+    held = [(u.x, u.y) for u in units if u.type_id in (HAUNTED, ENTANGLED) and u.alive]
+    return [u for u in units if u.type_id == MINE_ID and u.alive
+            and not any(math.hypot(u.x - x, u.y - y) < 300 for x, y in held)]
 
 
 def camps_of(units) -> list[dict]:
@@ -504,7 +558,9 @@ class HeuristicAgent:
         counts = Counter(d.type for d in (obs.destructables or []))
         self.trees = {d.id: (d.x, d.y) for d in (obs.destructables or [])
                       if d.life > 0 and d.type[1:2] == "T" and counts[d.type] >= 20}
-        mines = [u for u in obs.units if u.type_id == MINE_ID]
+        # (every kind: undead and night elves start on their own haunted or entangled mine, which a plain-mine-only
+        # list had missed, so their "main" mine had been the natural and their natural the next one)
+        mines = _plain_mines(obs.units) + [u for u in obs.units if u.type_id in (HAUNTED, ENTANGLED) and u.alive]
         self.mines = {u.id: (u.x, u.y) for u in mines}
         self.mine_gold = {u.id: u.resource for u in mines}
         self.main_mine = min(mines, key=lambda u: (u.x - self.start[0]) ** 2 + (u.y - self.start[1]) ** 2).id if mines else None
@@ -535,7 +591,10 @@ class HeuristicAgent:
             self.natural_spot = (nx + off[0], ny + off[1])
         self.camps = camps_of(obs.units)  # (the map's creep camps: where they stand at the start)
         self.camp_done: set[int] = set()
+        self.creep_progress: dict[int, tuple[float, int]] = {}  # camp -> (when one of it last died or creeping began, left)
+        self.camp_skip: dict[int, float] = {}  # camp given up on -> not crept (nor waited for) before then
         self.creep_target: int | None = None
+        self.entangle_sent: dict[int, int] = {}  # tree of life -> the step its entangle order went
         self.assign: dict[int, str] = {}  # worker -> "gold" / "lumber" / "build"
         self.mine_of: dict[int, int] = {}  # gold worker -> its mine
         self.tree_of: dict[int, int] = {}  # lumber worker -> its tree
@@ -543,6 +602,7 @@ class HeuristicAgent:
         self.pending: list[list] = []  # [code, worker, x, y, since, gold, lumber]: build orders not yet started
         self.queue: dict[int, list[list]] = {}  # production building -> [[type, started, since], ...] (accepted orders)
         self.research_done: Counter = Counter()  # research -> levels done or under way
+        self.research_wait: dict[str, float] = {}  # research -> refused: not ordered again before then
         self.memory: dict[int, Memory] = {}  # enemy buildings seen
         self.mode, self.mode_since = "gather", 0
         self.retreat_until = 0
@@ -582,9 +642,12 @@ class HeuristicAgent:
         self.creeps = [u for u in units if u.alive and u.owner == CREEPS and u.visible(me)]
         present = set()
         for u in units:
-            if u.type_id == MINE_ID or u.type_id in (HAUNTED, ENTANGLED):
+            if u.type_id in MINE_KINDS and u.alive:
                 present.add(u.id)
-                if u.type_id == MINE_ID and u.id in self.mines and u.visible(me):
+                if u.id not in self.mines and u.type_id != MINE_ID:  # (a mine haunted or entangled: a unit of its
+                    # own where the plain one was)
+                    self.mines[u.id] = (u.x, u.y)
+                if u.visible(me):
                     self.mine_gold[u.id] = u.resource
         for m in [m for m in self.mines if m not in present]:  # (a mine gone: dry)
             self._note(f"mine {m} gone")
@@ -622,6 +685,15 @@ class HeuristicAgent:
                     q.pop(j)
                 if k == int(EventKind.RESEARCH_CANCEL):
                     self.research_done[rawcode(e.b)] -= 1
+        if self.t % 4 == 0:  # (a camp whose ground its units see with no creep on it: gone. Creeps killed out of its
+            # sight, by the enemy's creeping, send it no event, and their camp had held the army in creep mode for up
+            # to 9 minutes and the natural's expansion with it)
+            eyes = [(u.x, u.y) for u in self.mine_units if not u.is_structure]
+            for c in self.camps:
+                if c["ids"] and any(math.hypot(x - c["x"], y - c["y"]) < 350 for x, y in eyes) and not any(
+                        math.hypot(cr.x - c["x"], cr.y - c["y"]) < CAMP_JOIN + 300 for cr in self.creeps):
+                    c["ids"].clear()
+                    self.counts["camps found empty"] += 1
         for u in self.enemy_buildings:  # (enemy buildings seen: remembered where they stand)
             self.memory[u.id] = Memory(u.type, u.x, u.y, self.now)
         if self.memory and self.t % 4 == 0:  # (a remembered one no longer there where the player sees: gone)
@@ -634,7 +706,7 @@ class HeuristicAgent:
         p = obs.players.get(me)
         self.gold, self.lumber = (p.gold, p.lumber) if p else (0, 0)
         self.food, self.cap = (p.food_used, min(p.food_cap, 100)) if p else (0, 0)
-        self.pending = [x for x in self.pending if self.now - x[4] < 45.0 and x[1] in self.my_ids]
+        self.pending = [x for x in self.pending if self.now - x[4] < (90.0 if x[0] in FAR_BUILDS else 45.0) and x[1] in self.my_ids]
         for b in [b for b in self.queue if b not in self.my_ids]:
             del self.queue[b]
         for b, qs in self.queue.items():  # (an entry no event ended: gone after three times its build time; a missed
@@ -661,9 +733,13 @@ class HeuristicAgent:
                     self.queue.setdefault(c.unit, []).append([code, False, self.now])
                 elif code[:1] == "R":
                     self.research_done[code] -= 1
+                    self.research_wait[code] = self.now + 30.0  # (not again for 30 s: it had been every step)
+                    if self.refused[f"ImmediateOrder:{code}"] <= 2:
+                        self._note(f"research {code} refused at level {self.research_done[code]}, halls "
+                                   f"{sorted(h.type for h in self.halls)}, queue {self.queue.get(c.unit)}")
                 elif code[:1].isupper():  # (a hero refused: again soon)
                     self.hero_ordered.pop(code, None)
-            elif isinstance(c, Build) and not ok:
+            elif (isinstance(c, Build) or isinstance(c, TargetOrder) and c.order == HAUNTED) and not ok:
                 self.pending = [x for x in self.pending if x[1] != c.unit]
                 self.building.pop(c.unit, None)
                 self.assign.pop(c.unit, None)
@@ -790,7 +866,7 @@ class HeuristicAgent:
                 self.mine_of.pop(w, None)
         for w, (code, since) in list(self.building.items()):  # a builder whose building started or never did: free
             u = next((x for x in self.workers if x.id == w), None)
-            if u is None or self.now - since > 70.0 or (u.order < TYPE_CODE and self.now - since > 3.0
+            if u is None or self.now - since > (110.0 if code in FAR_BUILDS else 70.0) or (u.order < TYPE_CODE and self.now - since > 3.0
                                                          and not any(p[1] == w for p in self.pending)):
                 self.building.pop(w, None)
                 if self.assign.get(w) == "build":
@@ -830,14 +906,20 @@ class HeuristicAgent:
                 on_mine[self.mine_of.get(u.id)] -= 1
             elif role == "lumber":
                 n_lumber -= 1
+            capped = self.race in ("undead", "nightelf")  # (a haunted or entangled mine takes 5: the 6th's harvest
+            # is refused, ~1,860 refusals a game as undead and ~1,020 as night elf before 2026-10-26)
             if self.race == "undead" or not self._can_chop():
+                if n_gold >= gold_cap:  # (an acolyte past the mines' room: waits at home, the next building's)
+                    self.assign.pop(u.id, None)
+                    self.mine_of.pop(u.id, None)
+                    continue
                 role = "gold"
             elif n_gold < gold_cap and (n_lumber >= min(lumber_t, 2) or n_gold < 3):
                 role = "gold"
             elif n_lumber < lumber_t or not mines:
                 role = "lumber"
             else:
-                role = "gold" if mines else "lumber"
+                role = "gold" if mines and not capped else "lumber"
             cmd = self._send(u, role, mines, on_mine)
             if cmd is not None:
                 out.append(cmd)
@@ -891,6 +973,8 @@ class HeuristicAgent:
                 return None
             m = min(mines, key=lambda m: (on_mine[m] >= self.plan.gold_workers, on_mine[m],
                                           math.hypot(self.mines.get(m, (u.x, u.y))[0] - u.x, self.mines.get(m, (u.x, u.y))[1] - u.y)))
+            if self.race in ("undead", "nightelf") and on_mine[m] >= self.plan.gold_workers:
+                return None  # (every mine full: the game refuses a 6th)
             self.mine_of[u.id] = m
             self.tree_of.pop(u.id, None)
             self.cmd_units.add(u.id)
@@ -926,7 +1010,7 @@ class HeuristicAgent:
         out = []
         ghouls = [u for u in self.army if u.type == "ugho"]
         chopping = [u for u in ghouls if self.assign.get(u.id) == "lumber"]
-        want = 3 if self.now < 400 else 4
+        want = self._lumber_target()  # (the plan's lumber workers: 3-4 ghouls had banked ~1,500 lumber)
         for u in chopping:
             if u.order == 0:  # (idle again: back to its tree)
                 tree = self._tree_for(u)
@@ -1003,6 +1087,12 @@ class HeuristicAgent:
             if not c:  # (not affordable yet: its money kept from the army)
                 self._keep(*self._cost(code))
             break
+        if self._floating() and not out and self.food < FOOD_CAP - 10:  # (money piling up below the food cap: the
+            # production it has can't spend the second mine's gold; another of the plan's first army building)
+            builds = self.plan.rush_builds if rush and self.plan.rush_builds else self.plan.builds
+            prod = next((c for _, _, c, _ in builds if self._makes_army(c)), None)
+            if prod is not None and self.have[prod] < MAX_PRODUCERS and self._tech_ok(prod):
+                out += self._build(prod)
         towers = self.plan.rush_towers if rush and self.plan.rush_towers else self.plan.towers
         for at, code, n in towers if self.opt["towers_built"] else ():
             if self.now >= at and self.have[code] < n and self._tech_ok(code):
@@ -1012,44 +1102,98 @@ class HeuristicAgent:
         return out
 
     def _expand(self) -> list[Command]:
-        """The natural's hall (human, orc): from Plan.expand_at with its camp cleared, or when the main mine runs low;
-        the worker nearest builds it where people do."""
-        if self.race not in ("human", "orc") or self.natural is None or self.natural not in self.mines:
-            return []
-        hall = self.plan.hall
-        if any(math.hypot(h.x - self.natural_spot[0], h.y - self.natural_spot[1]) < 900
-               for h in self.structures if h.type in HALL_TYPES):
-            return []
-        if any(p[0] == hall for p in self.pending):
-            return []
+        """The natural expansion: from Plan.expand_at with its camp cleared, or when the main mine runs low. Human
+        and orc: the worker nearest builds a hall where people do; night elf: a tree of life there, which then
+        entangles the mine (_entangle); undead: an acolyte haunts the mine (no hall: acolytes mine a haunted mine
+        where it stands)."""
+        out = self._entangle()
+        if self.natural is None or self.natural not in self.mines or self._natural_taken():
+            return out
+        code = "ugol" if self.race == "undead" else self.plan.hall
+        if any(p[0] == code for p in self.pending):
+            return out
         low = self.mine_gold.get(self.main_mine, 0) < MINE_LOW * self.mine_scale or self.main_mine not in self.mines
         if self.now < self._expand_at() and not low:
-            return []
+            return out
         camp = self._camp_at(*self.mines[self.natural])
-        if camp is not None and camp["ids"]:
-            return []  # (its camp first: the army's creep mode)
+        if camp is not None and camp["ids"] and self.now >= self.camp_skip.get(self.camps.index(camp), 0.0):
+            return out  # (its camp first: the army's creep mode; one it gave up on: the hall goes up anyway)
         if any(math.hypot(e.x - self.natural_spot[0], e.y - self.natural_spot[1]) < 1200 for e in self.enemy_units):
-            return []
-        c = self._build(hall, near=self.natural_spot, rmax=500.0, avoid_lane=False)
+            return out
+        if code == "ugol":
+            c = self._haunt(self.natural)
+        else:
+            c = self._build(code, near=self.natural_spot, rmax=500.0, avoid_lane=False)
         if c:
             self._note("expanding")
+            self.counts["expansions"] += 1
         else:
-            self._keep(*self._cost(hall))
-        return c
+            self._keep(*self._cost(code))
+        return out + c
+
+    def _natural_taken(self) -> bool:
+        """A hall of the player's at the natural, or its mine haunted or entangled (by anyone: the plain one gone)."""
+        nx, ny = self.mines[self.natural]
+        if any(math.hypot(h.x - self.natural_spot[0], h.y - self.natural_spot[1]) < 900
+               for h in self.structures if h.type in HALL_TYPES):
+            return True
+        return any(u.type_id in (HAUNTED, ENTANGLED) and math.hypot(u.x - nx, u.y - ny) < 300 for u in self.obs.units
+                   if u.alive)
+
+    def _haunt(self, mine: int) -> list[Command]:
+        """Undead: an acolyte builds a haunted gold mine on `mine` (the game's build order on the mine: a target
+        order whose id is the haunted mine's code, as play.py's expand order sends it)."""
+        g, l = self._cost("ugol")
+        if (g > 0 and g > self.budget[0]) or (l > 0 and l > self.budget[1]):
+            return []
+        mx, my = self.mines[mine]
+        w = self._builder((mx, my))
+        if w is None:
+            return []
+        self._pay(g, l)
+        self.pending.append(["ugol", w.id, mx, my, self.now, g, l])
+        self.building[w.id] = ("ugol", self.now)
+        self.assign[w.id] = "build"
+        self.tree_of.pop(w.id, None)
+        self.mine_of.pop(w.id, None)
+        self.cmd_units.add(w.id)
+        return [TargetOrder(w.id, HAUNTED, mine)]
+
+    def _entangle(self) -> list[Command]:
+        """Night elves: a finished tree of life of the player's near a plain gold mine entangles it (every 10 s until
+        it is; the tree uproots, walks to it and roots there), so its wisps can mine it."""
+        if self.race != "nightelf" or self.t % 4:
+            return []
+        out = []
+        plain = _plain_mines(self.obs.units)
+        for tree in self.done:
+            if tree.type not in TREES_OF_LIFE or not plain:
+                continue
+            m = min(plain, key=lambda u: math.hypot(u.x - tree.x, u.y - tree.y))
+            if math.hypot(m.x - tree.x, m.y - tree.y) > 1200:
+                continue
+            if self.t - self.entangle_sent.get(tree.id, -99) < 20:
+                continue
+            self.entangle_sent[tree.id] = self.t
+            self.cmd_units.add(tree.id)
+            self.counts["entangle orders"] += 1
+            out.append(TargetOrder(tree.id, ENTANGLE, m.id))
+        return out
 
     def _expand_at(self) -> float:
         """The natural from Plan.expand_at; against the races whose first waves come at ~4:30 (the learner's undead
         and orc), from 9 minutes: the natural is ~6,000 from home, and the army at its camp had met their waves."""
-        return self.plan.expand_at + (120.0 if self.opt["rush_caution"] and self.enemy_race in ("undead", "orc") else 0.0)
+        return self.plan.expand_at + (RUSH_EXPAND_DELAY if self.opt["rush_caution"] and self.enemy_race in ("undead", "orc")
+                                      else 0.0)
 
     def _camp_at(self, x: float, y: float) -> dict | None:
         near = [c for c in self.camps if math.hypot(c["x"] - x, c["y"] - y) < 900]
         return max(near, key=lambda c: len(c["ids"])) if near else None
 
-    def _tech_ok(self, code: str) -> bool:
+    def _tech_ok(self, code: str, level: int = 0) -> bool:
         from . import techtree
         have = techtree.counts_as(set(self.have_done) | {c for c, n in self.research_done.items() if n > 0}, self.race)
-        return not techtree.missing(code, self.race, have, 0)
+        return not techtree.missing(code, self.race, have, level)
 
     def _build(self, code: str, near: tuple[float, float] | None = None, rmax: float = 1400.0,
                avoid_lane: bool = True) -> list[Command]:
@@ -1160,19 +1304,24 @@ class HeuristicAgent:
         """The plan's next tier when due: the hall upgrades (its workers' queue first runs out: the game refuses an
         upgrade behind them), its money kept meanwhile."""
         self.tier_hall = None
-        for at, food, code in self.plan.tiers:
-            if self.now < at or self.food < food or self.have_done.get(code):
+        extra = tuple((0.0, FOOD_CAP - 12, c) for c in TIER_CHAIN[self.race]) if self._floating() else ()
+        for at, food, code in self.plan.tiers + extra:
+            if self.now < at or self.food < food or self.have_done.get(code) or not self._tech_ok(code):
                 continue
             base = upgraded_from().get(code)
-            hall = next((h for h in self.halls if h.type == base), None)
+            hall = next((h for h in sorted(self.halls, key=lambda h: math.hypot(h.x - self.start[0], h.y - self.start[1]))
+                         if h.type == base), None)
             if hall is None:
                 if any(h.type == code for h in self.structures):  # (under way: an upgrading hall keeps its type)
                     return []
                 continue
             if any(q[0] == code for q in self.queue.get(hall.id, ())):
                 return []  # (upgrading)
-            self.tier_hall = hall.id  # (no more workers at it until it upgrades)
             g, l = self._cost(code)
+            if (g <= 0 or self.budget[0] >= g) and (l <= 0 or self.budget[1] >= l):
+                # (no more workers at it until it upgrades, once it can pay: blocked while it saved, undead's one hall
+                # had trained no acolyte for minutes, 4-6 workers at 10 minutes with two mines)
+                self.tier_hall = hall.id
             if self._queued(hall) or not self._pay(g, l):
                 self._keep(g, l)
                 return []
@@ -1230,9 +1379,12 @@ class HeuristicAgent:
         if self.mode == "creep" and (self._creep_camp() is None or not self.heroes or
                                      any(h.hp < 0.4 * h.max_hp for h in self.heroes)):
             self.mode = "gather"
-        ready = self.t >= self.no_attack_until and (
-            army_food >= self.attack_food or (self.now >= self.plan.attack_at and army_food >= self.attack_food * 2 / 3)
-            or self.food >= FOOD_CAP - 4)
+        # (the timed attack with two thirds of the plan's army only when it is stronger than the strongest enemy army
+        # it has met: at a person's income against the AI's double, those attacks had met an army twice its own, most
+        # first attacks retreating within two minutes after losing 3-10 units for each one killed)
+        timed = self.now >= self.plan.attack_at and army_food >= self.attack_food * 2 / 3 \
+            and mine_power >= TIMED_EDGE * self.enemy_army_seen
+        ready = self.t >= self.no_attack_until and (army_food >= self.attack_food or timed or self.food >= FOOD_CAP - 4)
         natural = self._natural_camp_due(units, mine_power)
         if self.mode == "creep" and natural is not None and self.creep_target == self.camps.index(natural):
             pass  # (the natural's camp first: the expansion waits for it)
@@ -1267,7 +1419,20 @@ class HeuristicAgent:
         if self.creep_target is not None:
             c = self.camps[self.creep_target]
             if c["ids"]:
-                return c
+                # (no creep of it killed for CREEP_STALL: given up for a while. An army that never reached its camp,
+                # the natural's, had stood in creep mode for up to 11 minutes without a fight, its expansion waiting)
+                k, n = self.creep_target, len(c["ids"])
+                since, n0 = self.creep_progress.get(k, (self.now, n))
+                if n < n0:
+                    since, n0 = self.now, n
+                self.creep_progress[k] = (since, n0)
+                if self.now - since <= CREEP_STALL:
+                    return c
+                self.camp_skip[k] = self.now + CAMP_SKIP
+                self.counts["camps given up"] += 1
+                self._note(f"camp given up after {self.now - since:.0f} s")
+                self.creep_target = None
+                return None
             self.creep_target = None
             self.counts["camps cleared"] += 1
             self._note("camp cleared")
@@ -1281,6 +1446,7 @@ class HeuristicAgent:
         natural = self._natural_camp_due(units, mine_power)
         if natural is not None:
             self.creep_target = self.camps.index(natural)
+            self.creep_progress[self.creep_target] = (self.now, len(natural["ids"]))
             return natural
         if not self.plan.creep_from <= self.now <= self.plan.creep_until or self.t - self.threat_at < 60:
             return None
@@ -1289,22 +1455,25 @@ class HeuristicAgent:
             reach = 2600.0 if self.now < 200 else 0.0
         cands = [(math.hypot(c["x"] - hx, c["y"] - hy), i) for i, c in enumerate(self.camps)
                  if c["ids"] and math.hypot(c["x"] - hx, c["y"] - hy) < reach and mine_power > 2.5 * c["power"]
-                 and math.hypot(c["x"] - self.enemy_start[0], c["y"] - self.enemy_start[1]) > 3500]
+                 and math.hypot(c["x"] - self.enemy_start[0], c["y"] - self.enemy_start[1]) > 3500
+                 and self.now >= self.camp_skip.get(i, 0.0)]
         if not cands:
             return None
         self.creep_target = min(cands)[1]
+        self.creep_progress[self.creep_target] = (self.now, len(self.camps[self.creep_target]["ids"]))
         return self.camps[self.creep_target]
 
     def _natural_camp_due(self, units, mine_power: float) -> dict | None:
         """The natural's camp while it stands, once the expansion is near due and the army is well stronger."""
-        if self.race not in ("human", "orc") or self.natural not in self.mines:
+        if self.natural not in self.mines:
             return None
         natural = self._camp_at(*self.mines[self.natural])
         if self.opt["rush_caution"] and self.t - self.threat_at < 120:
             return None
         early = 120.0 if self.enemy_race not in ("undead", "orc") or not self.opt["rush_caution"] else 0.0
         due = self.now >= self._expand_at() - early or self.mine_gold.get(self.main_mine, 0) < (MINE_LOW + 3000) * self.mine_scale
-        if natural is not None and natural["ids"] and due and mine_power > 2.0 * natural["power"]:
+        if natural is not None and natural["ids"] and due and mine_power > 2.0 * natural["power"] \
+                and self.now >= self.camp_skip.get(self.camps.index(natural), 0.0):
             return natural
         return None
 
@@ -1326,6 +1495,12 @@ class HeuristicAgent:
 
     def _center(self, units) -> tuple[float, float]:
         hero = next((u for u in units if u.is_hero and u.id not in self.hero_home), None)
+        if self.mode in ("attack", "creep"):  # (out on the way: the group that left, not the new units at the rally
+            # point; their median had pulled the centre home, the leaders sent back to it, and an army bound for the
+            # natural's camp 6,000 away had swung between home and halfway for up to 11 minutes)
+            out = [u for u in units if math.hypot(u.x - self.rally[0], u.y - self.rally[1]) > RALLY_LEFT]
+            if len(out) >= max(3, len(units) // 3):
+                units = out
         xs = np.array([u.x for u in units], float)
         ys = np.array([u.y for u in units], float)
         mx, my = float(np.median(xs)), float(np.median(ys))
@@ -1649,22 +1824,38 @@ class HeuristicAgent:
                 break
         return out
 
+    def _floating(self) -> bool:
+        """Money piling up past what the plan spends (its army at the food cap, or production short of it): the
+        race's upgrades and the next tier take it."""
+        return self.now >= 480 and self.gold >= FLOAT_GOLD and self.lumber >= FLOAT_LUMBER
+
     def _research(self) -> list[Command]:
+        """The plan's research in its order (a code named again: its next level), then while money piles up the
+        race's weapon and armor upgrades, each level as the tier allows."""
         from .techtree import tree
         out: list[Command] = []
-        for at, code in self.plan.research:
-            if self.now < at or self.research_done[code] > 0:
+        need: Counter = Counter()
+        extra = tuple((0.0, c) for c in UPGRADES.get(self.race, ()) for _ in range(3)) if self._floating() else ()
+        planned = len(self.plan.research)
+        for k, (at, code) in enumerate(self.plan.research + extra):
+            need[code] += 1
+            level = self.research_done[code]
+            if self.now < at or level >= need[code] or self.now < self.research_wait.get(code, 0.0):
                 continue
             makers = tree().makers.get(code, ())
-            b = next((u for u in self.done if u.type in makers and not self._queued(u)), None)
-            if b is None or not self._tech_ok(code):
+            # (an idle building, not ordered this step: two levels of one research, or a fourth research, given to
+            # one building in a step had been refused)
+            b = next((u for u in self.done if u.type in makers and not self._queued(u) and u.id not in self.cmd_units), None)
+            if b is None or not self._tech_ok(code, level):
                 continue
-            g, l = self._cost(code)
+            g, l = self._cost(code, level)
             if self._pay(g, l):
                 self.research_done[code] += 1
                 self.cmd_units.add(b.id)
+                self.counts["upgrades (float)" if k >= planned else "research"] += 1
                 out.append(ImmediateOrder(b.id, fourcc(code)))
-            break
+            if k < planned:
+                break  # (the plan's in order: the next waits for this one's money)
         return out
 
     # ---- orc's burrows -----------------------------------------------------------------------------------------
@@ -1718,6 +1909,7 @@ class HeuristicAgent:
                          "heroes": [(u.type, u.hero_level, round(u.hp / max(u.max_hp, 1), 2)) for u in self.heroes],
                          "enemy_food": getattr(self.obs.players.get(self.enemy), "food_used", None),
                          "gathered": getattr(self.obs.players.get(self.side), "gold_gathered", None),
+                         "lumber_gathered": getattr(self.obs.players.get(self.side), "lumber_gathered", None),
                          "roles": dict(Counter(self.assign.get(u.id, "none") for u in self.workers)),
                          "in_mine": sum(1 for u in self.workers if u.flags & HIDDEN),
                          "worker_orders": dict(Counter(str(u.order) for u in self.workers).most_common(4)),

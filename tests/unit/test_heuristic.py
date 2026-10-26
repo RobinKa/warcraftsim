@@ -215,3 +215,112 @@ def test_strategies_are_coherent_plans():
         assert a.plan is pl
     with pytest.raises(ValueError):
         hz.HeuristicAgent(0, "orc", map_name="no-such-map", log=False, strategy="human-knights")
+
+
+NATURAL = (-5000.0, -500.0)
+
+
+def _race_agent(race: str, units, **kw):
+    """An agent of `race` for side 0 begun on its hall at HOME and its own (haunted, entangled or plain) main mine, a
+    plain mine at NATURAL and the enemy's hall."""
+    hall, mine = {"undead": ("unpl", "ugol"), "nightelf": ("etol", "egol")}.get(race, ("ogre", "ngol"))
+    base = [_unit(1, hall, 0, *HOME, flags=UnitFlags.STRUCTURE), _unit(2, mine, 0, *MINE, flags=UnitFlags.STRUCTURE),
+            _unit(4, "ngol", 15, *NATURAL, flags=UnitFlags.STRUCTURE), _unit(3, "ogre", 1, *ENEMY, flags=UnitFlags.STRUCTURE)]
+    a = hz.HeuristicAgent(0, race, map_name="no-such-map", log=False, **kw)
+    a.begin(_obs(base + list(units), t=0.0, first=True))
+    return a, base
+
+
+def test_the_main_mine_and_the_natural_of_every_race():
+    """Undead and night elves start on their own haunted or entangled mine: it is the main one, the plain mine away
+    from home the natural (a plain-mine-only list had made the natural their main)."""
+    for race in ("undead", "nightelf", "orc"):
+        a, _ = _race_agent(race, [])
+        assert a.main_mine == 2 and a.natural == 4, race
+
+
+def test_undead_haunts_the_natural():
+    acolytes = [_unit(130 + k, "uaco", 0, HOME[0] + 200, HOME[1] - 100 * k, flags=UnitFlags.WORKER) for k in range(2)]
+    a, base = _race_agent("undead", acolytes, strategy="undead-expand")
+    cmds = _step(a, base, acolytes, t=600.0, gold=1000, lumber=400, food=10, cap=30)
+    haunt = [c for c in cmds if isinstance(c, TargetOrder) and c.order == hz.HAUNTED]
+    assert len(haunt) == 1 and haunt[0].target == 4 and haunt[0].unit in (130, 131)
+    cmds = _step(a, base, acolytes, t=600.5, gold=1000, lumber=400, food=10, cap=30)  # (pending: not twice)
+    assert not [c for c in cmds if isinstance(c, TargetOrder) and c.order == hz.HAUNTED]
+    taken = _unit(5, "ugol", 0, *NATURAL, flags=UnitFlags.STRUCTURE)  # (haunted: nothing more to take)
+    a.pending.clear()
+    cmds = _step(a, base, acolytes + [taken], t=700.0, gold=1000, lumber=400, food=10, cap=30)
+    assert a._natural_taken() and not [c for c in cmds if isinstance(c, TargetOrder) and c.order == hz.HAUNTED]
+
+
+def test_night_elves_root_a_tree_at_the_natural_and_entangle_it():
+    wisps = [_unit(140 + k, "ewsp", 0, HOME[0] + 200, HOME[1] - 100 * k, flags=UnitFlags.WORKER) for k in range(2)]
+    a, base = _race_agent("nightelf", wisps, strategy="nightelf-expand")
+    cmds = _step(a, base, wisps, t=600.0, gold=1000, lumber=400, food=10, cap=30)
+    trees = [c for c in cmds if getattr(c, "building", None) == hz.fourcc("etol")]
+    assert len(trees) == 1 and math.hypot(trees[0].x - a.natural_spot[0], trees[0].y - a.natural_spot[1]) < 500
+    tree = _unit(6, "etol", 0, a.natural_spot[0], a.natural_spot[1], flags=UnitFlags.STRUCTURE)  # (rooted, finished)
+    cmds = _step(a, base, wisps + [tree], t=650.0, gold=0, lumber=0, food=10, cap=30)
+    assert TargetOrder(6, hz.ENTANGLE, 4) in cmds and not any(c.unit == 1 and isinstance(c, TargetOrder) for c in cmds)
+
+
+def test_no_sixth_worker_on_a_haunted_mine():
+    """A haunted mine takes five acolytes: the game refuses a sixth's harvest (it had been ordered every step)."""
+    acolytes = [_unit(150 + k, "uaco", 0, HOME[0] + 100, HOME[1] - 50 * k, flags=UnitFlags.WORKER) for k in range(8)]
+    a, base = _race_agent("undead", acolytes)
+    cmds = _step(a, base, acolytes, t=30.0, gold=0, lumber=0, food=8, cap=10)
+    assert len([c for c in cmds if isinstance(c, TargetOrder) and c.order == hz.HARVEST and c.target == 2]) == 5
+
+
+def test_floating_money_buys_upgrades_one_per_building_a_step():
+    """Money piling up goes to the race's upgrades: one research a building a step (a second level, or a fourth
+    research, given in the same step had been refused)."""
+    mill = _unit(160, "ofor", 0, HOME[0] + 700, HOME[1], flags=UnitFlags.STRUCTURE)
+    a, base = _agent([mill])
+    cmds = _step(a, base, [mill], t=700.0, gold=3000, lumber=3000, food=78, cap=80)
+    assert len([c for c in cmds if isinstance(c, ImmediateOrder) and c.unit == 160]) == 1
+
+
+def test_a_camp_seen_empty_is_gone():
+    """Creeps killed out of the player's sight send no event: a camp whose ground its units see with no creep on it is
+    gone (such a camp had held the army in creep mode for minutes)."""
+    creeps = [_unit(170 + k, "nftt", 12, 0 + 100 * k, -2000) for k in range(2)]
+    a, base = _agent(creeps)
+    assert any(c["ids"] for c in a.camps)
+    grunt = _unit(175, "ogru", 0, 50, -2000)
+    _step(a, base, [grunt] + creeps, t=300.0)  # (the creeps in sight: the camp stands)
+    assert any(c["ids"] for c in a.camps)
+    _step(a, base, [grunt], t=302.0)  # (gone without an event)
+    assert not any(c["ids"] for c in a.camps)
+
+
+def test_a_camp_not_reached_is_given_up_for_a_while():
+    """No creep of the camp killed for CREEP_STALL in creep mode: the army gives it up for CAMP_SKIP (an army that
+    never reached the natural's camp had stood in creep mode for 11 minutes, its expansion waiting)."""
+    creeps = [_unit(180 + k, "nftt", 12, 0 + 100 * k, -2000) for k in range(2)]
+    a, base = _agent(creeps)
+    k = next(i for i, c in enumerate(a.camps) if c["ids"])
+    a.creep_target, a.now = k, 300.0
+    a.creep_progress[k] = (300.0, 2)
+    assert a._creep_camp() is a.camps[k]
+    a.now = 300.0 + hz.CREEP_STALL + 1
+    assert a._creep_camp() is None and a.camp_skip[k] > a.now and a.creep_target is None
+
+
+def test_the_centre_on_the_way_is_the_group_that_left():
+    """Out creeping or attacking, the army's centre is the group that left the rally point, not the new units there
+    (their median had pulled the centre home and the leaders back to it, for minutes)."""
+    a, base = _agent([])
+    rx, ry = a.rally
+    out = [_unit(190 + k, "ogru", 0, rx, ry - 3000 - 40 * k) for k in range(4)]
+    home = [_unit(195 + k, "ogru", 0, rx + 30 * k, ry) for k in range(6)]
+    a.mode = "creep"
+    cx, cy = a._center(out + home)
+    assert abs(cy - (ry - 3060)) < 100
+    a.mode = "gather"
+    assert abs(a._center(out + home)[1] - ry) < 100
+
+
+def test_every_race_has_an_expanding_strategy():
+    for race in ("orc", "human", "undead", "nightelf"):
+        assert any(hz.STRATEGIES[n].expand_at <= 300 for n in hz.strategies(race)), race
