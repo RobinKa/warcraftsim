@@ -1789,8 +1789,17 @@ Fixed since, for the next run:
 
 **`fgself-151`** (from `fgself-150`'s 16198012, 19:55): **no macro help** (`--macros-off mix,creep,expand`, the user's ask): the army-mix, creep and expand orders masked in training and evaluation. With them off, the teacher's lessons teach the low-level orders: a unit of the target's mix at a building, the hall built where people put theirs (undead: the mine haunted), workers sent to it, the heroes attack-moving to the natural's camp. Otherwise `fgself-150`.
 
+**`fgself-151`, judged at 00:25 (it ran 4 hours through a usage pause): kept; it adapted.**
+* 51.7% of 440 head to head with its start (by thirds 45%, 49%, 58%), 45.8% of 427 with `fgself-130`.
+* Against insane 93.8%, **with a target 78.4% of 429** (by thirds 62%, 83%, 90%).
+* Expansions without the expand order stay rare: 2.9% of the target games that ask for one (16.5% with it). Its halls are built off the site, plausibly from the point bins between the bases (~206 world units in x).
+
+**`fgself-152`** (from `fgself-151`'s 36116579, 00:27): **the -bt pools**, people's targets timed by their items' build times.
+* Also measured at a person's income (`--eval-human 1`, rated "+human") and against the hand-written orc (`--eval-heuristic 0.1`); both are measurement only.
+* Otherwise `fgself-151`.
+
 The queue:
-1. `fgself-152`: the new pools (`--z-pool .../strategies-echofast-narrow-tavern-bt.json --eval-z-pool .../strategies-echo-real-narrow-tavern-bt.json`).
+1. (was `fgself-152`) the new pools (`--z-pool .../strategies-echofast-narrow-tavern-bt.json --eval-z-pool .../strategies-echo-real-narrow-tavern-bt.json`).
 2. Snapshots by wall time (every 15-30 minutes).
 
 A heuristic opponent stronger than the learner is being built (the user's idea).
