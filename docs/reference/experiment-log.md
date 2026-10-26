@@ -1850,6 +1850,10 @@ Audit 16 (bad habits in `fgself-155`/`156`'s real games): one-unit armies in lon
 
 **`fgself-158`** (from `fgself-155`'s 36007395, 22:20): the masks and order fixes only (`--econ-masks 63`, the militia's order forms, the revival's price and payment), no new lessons; then the lessons one at a time, each at a lower weight or rate.
 
+**`fgself-158`, stopped at 23:40 for a shutdown, not judged** (~80 minutes, ~130 games a policy; last checkpoint 14858006): against insane 67.5% of 140, rising by thirds (59%, 64%, 80%); its start 72% in the same windows (-6.3 points with the races weighed alike); 49.6% of 122 head to head with its start (46%, 44%, 59%); with a target ~13%. The masks and order fixes alone lifted `fgself-155`'s own checkpoint from ~59% against insane (under its own run's code) to 70-78% (under `fgself-157`'s and `fgself-158`'s).
+
+Replay data (2026-10-26): only 1.29 replays play back in our client (1.26/1.28 fall out of step in 3-6 s even with the ids aligned, 1.30 at ~10 s; 1.31 and Reforged differ more): other versions give build orders only. Downloaded for build orders: 1.26 4,400, 1.27 331, 1.28 4,030, 1.30 4,004 (1v1s; the 1.26 download stopped part way). 1.29 on other stock maps converts in step: 192 of ~608 converted (`runs/fullgame/demos-human-129-maps`, includes Echo Isles again) when stopped for the shutdown. Details: [human replays](human-replays.md).
+
 The queue:
 1. (done: in `fgself-155`) The audit-12 economy fixes: a training map whose mines and start scale with its costs (`echofast2`), workers labelled up to the target's count, masks against duplicate tech buildings and surplus workers, orc burrow and no-target lumber lessons.
 2. Cloning the scripted strategy family as anchor and teacher (AlphaStar's recipe with scripted data). First tune its weak plans, and add night elf and undead expansion plans. Then record thousands of echofast games (`scripts/heuristic_match.py --record`), train a cloning policy, and use it as the KL anchor and a distillation teacher.
