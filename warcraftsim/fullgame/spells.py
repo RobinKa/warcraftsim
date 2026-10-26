@@ -33,7 +33,8 @@ SPELLS = (("AOws", "stomp", 852127, fx.IMMEDIATE), ("AOhx", "hex", 852502, fx.UN
           ("AHbn", "banish", 852486, fx.UNIT), ("AOfs", "farsight", 852122, fx.POINT),
           ("AEst", "scout", 852181, fx.IMMEDIATE))
 HEROES = {"AOws": "Otch", "AOhx": "Oshd", "AHbn": "Hblm", "AOfs": "Ofar", "AEst": "Emoo"}
-NEW_BIAS = 8.0  # (a new spell's logit: no order's less this, before the order temperature)
+NEW_BIAS = 3.0  # (a new spell's logit: no order's less this, before the order temperature; 8 had left them
+# never sampled, so never learned: 9 casts in ~13,800 games; audit 15. --spells-bias resets a grown network's)
 
 
 def code(c: str) -> int:

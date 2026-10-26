@@ -73,6 +73,7 @@ WORKER_CODES, ALTAR_CODES, MINE_CODES = fx.codes(WORKERS), fx.codes(ALTARS), fx.
 # where people built their halls at Echo Isles' natural expansions (95 games of 1.29: the mine -> the hall's offset)
 EXPAND_SPOTS = {(-4864, -3200): (100, 800), (4352, -3200): (-300, 700)}
 NATURAL_FROM_START = 1500.0  # (the main mine is nearer its start)
+LOW_EVERY = 20  # (--expand-lesson: the main mine looked at every 20 steps, 10 s)
 CAMP_NEAR = 900.0  # creeps this near the natural mine guard it
 HARVEST = 852018
 HIDDEN = 16  # (UnitFlags.HIDDEN: a worker inside a gold mine)
@@ -96,7 +97,7 @@ class Teacher:
     """One side's lessons in one game (commands: what it would order now)."""
 
     def __init__(self, side: int, race: str, rng: random.Random, target: dict | None = None, target_hero: bool = False,
-                 lumber: bool = False, burrows: bool = False):
+                 lumber: bool = False, burrows: bool = False, main_low: float = 0.0, mine_full: float = 12500.0):
         """`target` (the side's target strategy, if it has one): its tavern hero is the one taught, and none when it
         has none (another hero would break a narrow target). `target_hero` (--teach 2): its first hero from the altar
         taught too, when that is its first hero (the builder taught it only once due: the policy had made another one
@@ -130,6 +131,7 @@ class Teacher:
                 self.first, self.first_from = fourcc(heroes[0][1]), 0.0
         self.rng = rng
         self.race = race
+        self.main_low, self.mine_full, self._low_t, self._low = main_low, mine_full, -LOW_EVERY, False
         due = [v for c, v in (target or {}).get("t", {}).items() if c in (HALL.get(race), "ugol")]
         self.expand_at = min(due) if due else None  # (its target's expansion: when)
         from .strategy import is_army
@@ -208,7 +210,7 @@ class Teacher:
                 h, m = rows[i], rows[mer]
                 if np.hypot(h[fx.C_X] - m[fx.C_X], h[fx.C_Y] - m[fx.C_Y]) < NEAR_MERCHANT and self._due("town portal", t):
                     out.append(Buy(hid, int(m[fx.C_ID]), PORTAL))
-        if self.expand_at is not None and now >= self.expand_at:
+        if (self.expand_at is not None and now >= self.expand_at) or self._main_low(rows, player, t):
             out += self._expansion(rows, player, t)
         if self.mix and now >= MIX_FROM:
             out += self._mix(n_army, zip(mc[1], counts), done, t)
@@ -318,6 +320,25 @@ class Teacher:
             o = np.argsort(d)
             pos = got[key] = int(o[d[o] > NATURAL_FROM_START][0])
         return mines[3 * pos]
+
+    def _main_low(self, rows: np.ndarray, player, t: int) -> bool:
+        """--expand-lesson F: whatever the target, the natural taught once the main mine (the gold mine nearest its start,
+        its own haunted or entangled one too) holds less than F of a full one of the map's (audit 15: on echofast2 the
+        main ran dry at 12-13 minutes, the policy expanded in 2-10% of the games, and lost 95% of those past it)."""
+        if self.main_low <= 0:
+            return False
+        if 0 <= t - self._low_t < LOW_EVERY:
+            return self._low
+        self._low_t = t
+        sx, sy = getattr(player, "start_x", None), getattr(player, "start_y", None)
+        m = rows[fx.isin(rows[:, fx.C_TYPE], MINE_CODES)] if sx is not None else rows[:0]
+        if not len(m):
+            self._low = False
+            return False
+        d = np.hypot(m[:, fx.C_X] - sx, m[:, fx.C_Y] - sy)
+        i = int(np.argmin(d))
+        self._low = bool(d[i] < NATURAL_FROM_START and m[i, fx.C_RESOURCE] < self.main_low * self.mine_full)
+        return self._low
 
     def _expansion(self, rows: np.ndarray, player, t: int) -> list:
         """The next step of taking the natural expansion: clearing its camp, the hall (undead: the haunted mine), the

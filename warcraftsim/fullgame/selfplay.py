@@ -2088,28 +2088,32 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     # reward for the items made by now, theirs against the strategy's (strategy.mismatch); none in evaluation
     zs: dict[int, dict] = {}
     zm: dict[int, dict] = {}  # (--z-modes: each side's modes, modes.draw; --z-comp: its composition kinds too)
-    draw_modes = (lambda: zmodes.draw(random, cfg.get("z_modes", 0.0), cfg.get("z_comp", 0.0))  # noqa: E731
-                  if cfg.get("z_modes") or cfg.get("z_comp") else {})
+    def draw_modes(race: str) -> dict:  # (--econ-masks: a workers mode asks no more than the cap lets one base have; it
+        # had asked 15-30 at 480 s against caps of 8-20: undead kept it 0 of 305 times; audit 15)
+        m = zmodes.draw(random, cfg.get("z_modes", 0.0), cfg.get("z_comp", 0.0)) if cfg.get("z_modes") or cfg.get("z_comp") else {}
+        if "workers" in m and fx.ECON_MASK:
+            m["workers"] = float(min(m["workers"], fx.worker_cap(race, 1)))
+        return m
     pool = strategy_pool(cfg) if train else None
     for s in trajs if pool is not None and replay is None else ():
         if keys[s] == "current" and (random.random() < cfg.get("z_share", 0.5) or (record and s == side)):  # (not the
             # exploiter's sides; a filmed game's learner always: its video shows how it plays a target)
             st = strat.sample(pool, races[s], races[1 - s], random, bool(cfg.get("z_winners", 1)), cfg.get("z_src", ""))
             if st is not None:
-                zm[s] = draw_modes()
+                zm[s] = draw_modes(races[s])
                 zs[s] = target(cfg, bots[s].view, strat.scaled(st, cfg.get("z_time_scale", 1.0)), pool, races[s], vocab,
                                zm[s])
     if opp.get("eval_key") in ("current+z", "current+zg"):  # (--eval-z: the current policy's evaluation games with a target, AlphaStar's
         pool = strategy_pool(cfg)              # z at test time: drawn as in training, winners of the matchup first)
         st = strat.sample(pool, races[side], races[1 - side], random, True, cfg.get("z_src", "")) if pool else None
         if st is not None:
-            zm[side] = draw_modes()
+            zm[side] = draw_modes(races[side])
             zs[side] = target(cfg, bots[side].view, strat.scaled(st, cfg.get("z_time_scale", 1.0)), pool, races[side],
                               vocab, zm[side])
     for s, st in (opp.get("targets") or {}).items():  # (a game rendered on request: each policy side's target, chosen
         if int(s) in bots and st:                      # by render_request.py)
             s, pool = int(s), strategy_pool(cfg)
-            zm[s] = draw_modes()
+            zm[s] = draw_modes(races[s])
             zs[s] = target(cfg, bots[s].view, strat.scaled(st, cfg.get("z_time_scale", 1.0)), pool, races[s], vocab, zm[s])
     if replay is not None:  # (the source's targets)
         zs = {s: target(cfg, bots[s].view, st, pool, races[s], vocab, replay.get("zm", {}).get(s))
@@ -2158,7 +2162,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                     bots[s].view.dual = True
     # --teach: a heuristic teacher's lessons (teacher.py: a tavern hero, a town portal, a potion) label the learner's steps
     teachers = ({s: Teacher(s, races[s], random.Random(), zs.get(s), target_hero=cfg.get("teach", 0) >= 2,
-                            lumber=cfg.get("teach", 0) >= 3, burrows=cfg.get("teach", 0) >= 4)
+                            lumber=cfg.get("teach", 0) >= 3, burrows=cfg.get("teach", 0) >= 4,
+                            main_low=cfg.get("expand_lesson", 0.0), mine_full=12500.0 * mine_scale(cfg["map"]))
                  for s in trajs if keys[s] == "current"}
                 if cfg.get("teach") and replay is None else {})
     # --teach-heuristic: a target drawn from the hand-written player's games (strategy.from_demos names the strategy) is
@@ -3933,6 +3938,11 @@ def main(argv: list[str] | None = None) -> int:
                     "agent_difficulty, so these are the same games as current's)")
     ap.add_argument("--macros-off", default="", help="macro orders masked, comma-separated (mix, creep, expand): the "
                     "policy learns their low-level orders itself, from the lessons and rewards")
+    ap.add_argument("--spells-bias", type=float, default=0.0, help="a fork's start (--start-weights): each spell's order "
+                    "logit set to no order's less this (spells grown at -8 were never sampled; 0: as loaded)")
+    ap.add_argument("--expand-lesson", type=float, default=0.0, help="the teacher's expansion lessons (--teach) in every "
+                    "game, a target's or not, once the main gold mine holds less than this share of a full one (0: only a "
+                    "target's due expansion; audit 15: on echofast2 the main ran dry at 12-13 minutes, unexpanded)")
     ap.add_argument("--econ-masks", type=int, default=0, help="1: mask a tech building's build order (features."
                     "ECON_TECH: a slaughterhouse, a sanctum, a workshop...) while a copy the player has is idle (making "
                     "nothing, under construction, or a worker on its way), and the worker's train order once the "
@@ -4386,6 +4396,14 @@ def main(argv: list[str] | None = None) -> int:
             net.config["target_temperature"] = start.config.get("target_temperature", 1.0)
             net.config["order_temperature"] = start.config.get("order_temperature", 1.0)
         del start
+        if args.spells_bias > 0 and vocab.get("spells"):  # (--spells-bias: the spells' rows from "no order"'s less this,
+            from .spells import SPELLS  # as a fork starts: grown at -8 they were 1/2981 as likely, never sampled, so never
+            at = {(int(o), int(k)): i + 1 for i, (o, k) in enumerate(vocab["orders"])}  # learned (9 casts in ~13,800
+            rows = [at[(oid, kind)] for _, _, oid, kind in SPELLS if (oid, kind) in at]  # games; audit 15)
+            with torch.no_grad():
+                b = net.order[2].bias
+                b[rows] = b[0] - args.spells_bias
+            print(f"--spells-bias {args.spells_bias}: {len(rows)} spells' biases from no order's", flush=True)
     if args.target_temperature is not None:  # (the policy's, saved with its checkpoints; the anchor keeps its own)
         net.target_temp.fill_(args.target_temperature)
         net.config["target_temperature"] = args.target_temperature
@@ -4586,7 +4604,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "expand_lesson": args.expand_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "eval_ai": [d for d in args.eval_ai.split(",") if d],
