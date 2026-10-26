@@ -170,6 +170,14 @@ def eval_checkpoints(info: dict) -> list[str]:
 DASHBOARD = "http://100.120.68.79:8765/api/ratings"
 
 
+def comp_kinds(run: str) -> bool:
+    """Whether a run's policies read the composition kinds (--z-comp: six more strategy inputs)."""
+    try:
+        return float(json.loads((RUNS / run / "run.json").read_text()).get("config", {}).get("z_comp") or 0) > 0
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 def gauntlet(info: dict, run: str, size: int) -> list[str]:
     """The top rated policies the current one plays anew (evalworker --gauntlet), by the dashboard's ratings (every game
     alike): checkpoints by name, and a run's policy by the hour ("fgself-102 h2") as that run's last checkpoint saved in
@@ -204,7 +212,9 @@ def gauntlet(info: dict, run: str, size: int) -> list[str]:
             continue
         if path is None or r_ == run or path in skip or path in out or not (ROOT / path).exists():
             continue
-        out.append(path)
+        if comp_kinds(r_) and not comp_kinds(run):  # (its strategy block has the composition kinds' columns the run's
+            continue  # policies are not given: played blind, fgself-154's lost 60 of 60 to fgself-155; a run with
+        out.append(path)  # them grows an older policy's block instead)
         if len(out) >= size:
             break
     if aliases != known:  # (kept for good: the ratings read every game again when they change)

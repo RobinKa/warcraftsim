@@ -29,8 +29,9 @@ EQUAL = "insane AI, equal income"
 ANCHOR_RATING = 1500.0
 SCALE = 400.0 / math.log(10.0)  # Elo points per unit of log-strength
 PRIOR_GAMES = 1.0  # each player's virtual tie against the anchor: finite ratings for a few games
-CACHE = ".ratings-cache-v5.json"  # (v2: the "+shops" players; v3: Echo Isles runs only, hours from the creation; v4: the
-# pairs' games by the hour they were played; v5: games at the doubled income against EQUAL). Every game counts alike, however old (the user, 2026-10-25: a decay could
+CACHE = ".ratings-cache-v6.json"  # (v2: the "+shops" players; v3: Echo Isles runs only, hours from the creation; v4: the
+# pairs' games by the hour they were played; v5: games at the doubled income against EQUAL; v6: no games of a policy
+# with the composition kinds' inputs played by a run without them, blind). Every game counts alike, however old (the user, 2026-10-25: a decay could
 # lose a good past policy); the top rated ones are played anew under today's rules by the evaluation worker's gauntlet
 # the evaluation games could buy from the neutral buildings from here on (2026-10-21 14:27: the laptop's evaluation
 # worker started with the harness that reaches a shop in the fog; before, every buy order was refused)
@@ -160,6 +161,11 @@ class Ratings:
                         row = json.loads(line)
                     except ValueError:
                         continue
+                    key_ = str(row.get("eval_key") or "")
+                    m_ = _CKPT.search(key_) if key_.startswith("vs ") else None
+                    if m_ is not None and self._comp(m_.group(1)) and not self._comp(d.name):
+                        continue  # (a policy reading the composition kinds' inputs, played by a run that gives none: its
+                        # strategy block shifted, it played blind; fgself-154's lost 60 of 60 to fgself-155)
                     pair = players_of(row, d.name, start, untrained, aliases, self._slot(d.name))
                     if pair is not None:
                         self._add(pair, float(row.get("outcome", 0.0)), float(row.get("time", 0.0)), d.name)
@@ -180,6 +186,17 @@ class Ratings:
                 cache[run] = int(json.loads((self.runs_dir / run / "run.json").read_text()).get("config", {}).get("neutral") or 0)
             except (OSError, ValueError, TypeError):
                 cache[run] = 0
+        return cache[run]
+
+    def _comp(self, run: str) -> bool:
+        """Whether a run's policies read the composition kinds (--z-comp)."""
+        cache = self.__dict__.setdefault("_comps", {})
+        if run not in cache:
+            try:
+                cache[run] = float(json.loads((self.runs_dir / run / "run.json").read_text()).get("config", {})
+                                   .get("z_comp") or 0) > 0
+            except (OSError, ValueError, TypeError):
+                cache[run] = False
         return cache[run]
 
     def _slot(self, run: str) -> str:
