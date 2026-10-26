@@ -1798,8 +1798,19 @@ Fixed since, for the next run:
 * Also measured at a person's income (`--eval-human 1`, rated "+human") and against the hand-written orc (`--eval-heuristic 0.1`); both are measurement only.
 * Otherwise `fgself-151`.
 
+**`fgself-152`, stopped at 00:45 for a shutdown, not judged** (~18 minutes of evaluation, ~35 games a policy):
+* Against insane 100%, with a target 97% of 34; 56% of 27 head to head with its start, 62% of 16 with `fgself-130`.
+* **At a person's income (`current+human`): 34% of 32 against insane.** The yardstick at equal income had read ~95-100%: the agent slots' doubled income (an agent slot takes the advisor's difficulty, insane) had carried much of its play.
+* Last checkpoint 2318909.
+
+Game cuts round 5 is in it from 00:30 (the units pass from the unit objects, `--game-cuts 1099511625209`, build/shim rebuilt).
+
 The queue:
-1. (was `fgself-152`) the new pools (`--z-pool .../strategies-echofast-narrow-tavern-bt.json --eval-z-pool .../strategies-echo-real-narrow-tavern-bt.json`).
+1. Resume `fgself-152` (the -bt pools; judge it), or fork from it.
+2. Training at a person's income, or a curriculum toward it (the agent slots at normal difficulty), with `current+human` as the yardstick.
+3. Cloning the scripted strategy family as anchor and teacher (AlphaStar's recipe with scripted data). First tune its weak plans, and add night elf and undead expansion plans. Then record thousands of echofast games (`scripts/heuristic_match.py --record`), train a cloning policy, and use it as the KL anchor and a distillation teacher.
+4. `--teach-heuristic` (live lessons from the matching scripted strategy), the exploiters back on, and fine points around the acting unit (expansions without the expand order land off-site).
+5. (was) the new pools (`--z-pool .../strategies-echofast-narrow-tavern-bt.json --eval-z-pool .../strategies-echo-real-narrow-tavern-bt.json`).
 2. Snapshots by wall time (every 15-30 minutes).
 
 A heuristic opponent stronger than the learner is being built (the user's idea).
