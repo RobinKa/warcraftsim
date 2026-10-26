@@ -1809,10 +1809,24 @@ Game cuts round 5 is in it from 00:30 (the units pass from the unit objects, `--
 
 **`fgself-153`** (from `fgself-152`'s 2318909, 10:12): **a person's income in training and evaluation.** Otherwise `fgself-152` (the -bt pools). `--eval-human 0`: the current policy's games are at a person's income now. Head to head with its start and `fgself-130`/5534555. Judge it by the real game against insane at a person's income (`fgself-152`: 34% of 35), with a target, and the curriculum's tax on the AI.
 
+**`fgself-153`, kept** (13:49, ~300 games a policy; every game against insane at a person's income): 62.6% of 344 head to head with its start, 56% of 302 with `fgself-130`/5534555; against insane 39.2% of 300 (its start 33.1%, `fgself-130` 47.7%: the strongest against insane at a person's income, though `fgself-153` beats it head to head); with a target 15.8% (flat). Last checkpoint 38318278.
+
+**Audit 12** (fgself-153's games at a person's income; read-only):
+1. No late game and no expansion. Wins by length: under 12 minutes 60 of 68, 12-18 minutes 43 of 87, over 18 minutes 8 of 137. It expanded in none of 286 real games (the AI in 81 of the 175 losses, ~20 minutes in); in losses it gathered 462 gold a minute to the AI's 957 and 72 lumber to 399, and its main mine ran dry at ~22 minutes. The cause is the training map: `echofast` halves costs but keeps the real map's mines and the 500/150 start, so in its short games (wins 5-6 minutes, losses 11-16) the mine never runs out and expanding never pays.
+2. Lessons that taught nothing: the army-mix lesson labelled the mix order, masked under `--macros-off mix` (none of ~2.5 a game kept); the hall lesson fired whatever the money (~94% dropped by the mask at a person's income). Both fixed (the unit's own train order; the hall lesson only when the hall can be ordered).
+3. Target games (14%): items made 82% but a median 80 s late, tier 2 ~165 s late, expansions almost never; the targets' builds trained 13-14 workers, the policy ~5, so it cannot pay for the tech and an army. (The audit read the evaluation pool's AI targets as builds at double income; they are the normal-difficulty slots' builds, often from games lost to insane: a pool-quality question, not a bug.)
+4. Undead: ghouls as both army and lumber; in target games 3+ slaughterhouses (median 6), 13-20 acolytes past 20 minutes with 5 able to mine.
+5. Orc: peons left inside burrows (14 orders a minute skipped in the real game, 1.5 in training), tier 2 in 1% of games.
+
+**`fgself-154`** (from `fgself-153`'s 38318278, 13:49; relaunched ~14:05 after its first launch crashed: I merged the fine-points branch while its learner was starting, and its late import of `bc.py` met the old `model.py`): bundled, judged by each change's own measure and head to head (split if worse): `--z-comp 0.25` (army composition kinds: a cap on the top unit's share, a basic spam unit forbidden, a minimum of unit types), `--spells 1` (War Stomp, Hex, Banish, Far Sight, Scout), research levels' own costs, the audit-12 teacher fixes, game cuts round 6 (`--game-cuts 4398046508537`, -4.2% of the game's main thread).
+
+Merged, not yet in a run: fine target points (`--fine-points 7 --fine-centre 0.9`: a sub-cell within the chosen bin, 6.9 world units near the bases and 29 mid-map, was 48 and ~206; the agent found the coarse bins do not explain the off-site halls, which come from the bin chosen).
+
 The queue:
-1. Cloning the scripted strategy family as anchor and teacher (AlphaStar's recipe with scripted data). First tune its weak plans, and add night elf and undead expansion plans. Then record thousands of echofast games (`scripts/heuristic_match.py --record`), train a cloning policy, and use it as the KL anchor and a distillation teacher.
-2. `--teach-heuristic` (live lessons from the matching scripted strategy), the exploiters back on, and fine points around the acting unit (expansions without the expand order land off-site).
-3. Snapshots by wall time (every 15-30 minutes).
+1. The audit-12 economy fixes (an agent): a training map whose mines and start scale with its costs (`echofast2`), workers labelled up to the target's count, masks against duplicate tech buildings and surplus workers, orc burrow and no-target lumber lessons.
+2. Cloning the scripted strategy family as anchor and teacher (AlphaStar's recipe with scripted data). First tune its weak plans, and add night elf and undead expansion plans. Then record thousands of echofast games (`scripts/heuristic_match.py --record`), train a cloning policy, and use it as the KL anchor and a distillation teacher.
+3. `--teach-heuristic` (live lessons from the matching scripted strategy), the exploiters back on, fine points in a run.
+4. Snapshots by wall time (every 15-30 minutes).
 
 Still open: War Stomp, Hex, Banish, Far Sight and Scout in the vocabulary; later research levels' costs.
 
