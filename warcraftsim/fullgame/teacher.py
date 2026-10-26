@@ -37,11 +37,33 @@ selfplay --teach 1 (needs --neutral 1: the orders it teaches are the neutral bui
                    nearest them ends the town bell, every militia back to work (audit 16: the policy rang the bell, then
                    could not send its militia back; idle until their 45 s ran out, in 175 of 207 human games)
 
+    Audit 16's long games (fgself-155/156's real games against insane: most losses past 15 minutes, median 21; game
+    seconds below are a real game's, times `pace`: 0.5 on the faster rules, echofast and echofast2):
+    the army:      (--army-lesson 1) once enemy air units were seen (the most at once: `air`), while fewer than
+                   max(AIR_LEAST, AIR_RATIO x those) of its army hit air: the race's anti-air unit (ANTI_AIR) it has
+                   least of, trained at an idle finished building that makes it. Else (a game without a target mix; a
+                   target's is the army mix's business) at tier 2 with ARMY_LEAST army units or more and more than
+                   ONE_UNIT of them one type: the race's tier unit (TIER_UNITS) it has least of. (90% of the army past
+                   15 minutes was the race's basic unit, tier-2 units almost never trained; against 4+ air units the
+                   policy won 1 of 232)
+    upgrades:      (--upgrade-lesson 1) from UPGRADE_FROM, the race's upgrade building (SMITH) finished and idle: the
+                   next level of the weapon or armor upgrade of its army's main class (UPGRADES: melee or ranged,
+                   night elf's moon or wild), the lower level first, then the other class's (the policy researched 1.06
+                   levels a game, the AI 3.72)
+    creeping:      (--creep-lesson 1; 2: the heroes only) from CREEP_FROM, every living hero above CREEP_HP of its hit points, CREEP_ARMY
+                   army units or more and no enemy army unit seen within BASE_SAFE of its halls: the heroes and the
+                   army within ESCORT of them attack-move to the nearest creep camp within CREEP_REACH of its start
+                   that they are CREEP_MARGIN times stronger than (Lanchester's hit points x damage a second; the
+                   policy killed 0-2 creeps a game, the AI 13-20, its heroes stayed low)
+    The policy's masks decide (`can`: the tech, the money; a lesson they drop teaches nothing), each lesson looked at
+    every LOOK steps at most.
+
 Each kind at most every GAP steps a side, so a long wait for the money is not a label a step."""
 
 from __future__ import annotations
 
 import random
+from collections import Counter
 from operator import itemgetter
 
 import numpy as np
@@ -96,6 +118,31 @@ NEAR_MERCHANT = 2500.0
 ENEMY_NEAR = 800.0  # (an item lesson waits while an enemy unit is this near the hero: a fight)
 USESLOT = 852008
 ATTACK = 851983  # (attack-move)
+LOOK = 4  # (audit 16's lessons: looked at every 4 steps at most, 2 s; a lesson given waits GAP)
+# --army-lesson: air units (the enemy's seen), each race's anti-air units and tier units (a target-less game's army of
+# one type at tier 2), the tech tree's makers train them; the masks decide which it can now
+AIR = {fourcc(c) for c in ("hgry", "hdhw", "hgyr", "owyv", "otbr", "ugar", "ufro", "ubsp", "ehip", "ehpr", "echm", "edtm",
+                           "efdr")}
+AIR_CODES = fx.codes(AIR)
+ANTI_AIR = {"human": ("hrif", "hdhw", "hgry"), "orc": ("ohun", "otbk", "owyv", "otbr"), "undead": ("ucry", "ugar"),
+            "nightelf": ("earc", "ehip", "edry")}
+TIER_UNITS = {"human": ("hkni", "hsor", "hmpr"), "orc": ("orai", "oshm", "otau"), "undead": ("ucry", "uabo", "unec"),
+              "nightelf": ("edoc", "emtg", "edry")}
+AIR_LEAST, AIR_RATIO = 4, 1.5  # (anti-air wanted: at least 4, 1.5 a seen air unit)
+ARMY_LEAST, ONE_UNIT = 6, 0.8
+# --upgrade-lesson: the upgrade building, (weapon, armor) of the first class and of the second, the second's units
+SMITH = {"human": "hbla", "orc": "ofor", "undead": "ugrv", "nightelf": "edob"}
+UPGRADES = {"human": (("Rhme", "Rhar"), ("Rhra", "Rhla")), "orc": (("Rome", "Roar"), ("Rora", "Roar")),
+            "undead": (("Rume", "Ruar"), ("Rura", "Rucr")), "nightelf": (("Resm", "Rema"), ("Resw", "Rerh"))}
+SECOND = {r: fx.codes(fourcc(c) for c in us) for r, us in (
+    ("human", ("hrif", "hmtm", "hgyr")), ("orc", ("ohun", "otbk", "ocat", "owyv")), ("undead", ("ucry", "ugar", "ufro")),
+    ("nightelf", ("edoc", "emtg", "ehip", "echm", "efdr", "edot", "edcm", "edtm")))}  # (ranged; night elf's: wild)
+SMITH_CODES = {r: fx.codes([fourcc(c)]) for r, c in SMITH.items()}
+UPGRADE_FROM = 480.0
+# --creep-lesson
+CREEP_FROM, CREEP_HP, CREEP_ARMY = 210.0, 0.6, 6
+BASE_SAFE, ESCORT, CREEP_REACH, CREEP_MARGIN = 2500.0, 1200.0, 3600.0, 2.0
+CAMP_JOIN = 550.0  # (creeps this near each other: one camp, heuristic.CAMP_JOIN)
 
 
 class Teacher:
@@ -103,7 +150,8 @@ class Teacher:
 
     def __init__(self, side: int, race: str, rng: random.Random, target: dict | None = None, target_hero: bool = False,
                  lumber: bool = False, burrows: bool = False, main_low: float = 0.0, mine_full: float = 12500.0,
-                 saturation: bool = False, revive: bool = False, militia: bool = False):
+                 saturation: bool = False, revive: bool = False, militia: bool = False, army: bool = False,
+                 upgrades: bool = False, creep: int = 0, pace: float = 1.0):
         """`target` (the side's target strategy, if it has one): its tavern hero is the one taught, and none when it
         has none (another hero would break a narrow target). `target_hero` (--teach 2): its first hero from the altar
         taught too, when that is its first hero (the builder taught it only once due: the policy had made another one
@@ -116,6 +164,12 @@ class Teacher:
         # --econ-masks caps them)
         self.revive = revive  # (--revive-lesson: a dead hero's revival at the side's altar)
         self.militia = militia and race == "human"  # (--militia-lesson: the town bell's end once no enemy is near)
+        # audit 16's lessons (--army-lesson, --upgrade-lesson, --creep-lesson), their game seconds times `pace`
+        self.army_lesson, self.upgrade_lesson, self.creep_lesson = (army and race in ANTI_AIR, upgrades and race in SMITH,
+                                                                    creep)
+        self.pace, self.air = pace, 0  # (air: the most enemy air units seen at once)
+        self.busy: set = set()  # (the side's buildings making something, and its research levels: View.busy and
+        self.levels: dict = {}  # View.levels, play_one's of the step; read only)
         # the tavern hero taught, and the heroes the side has when it is hired: a target's, at its place among the
         # target's heroes (its next hero), as soon as the altar, the tier and the money permit. (As the first or
         # second hero only, from 135 s: the lesson had fired 68 times in 3,000 target games, ~1,300 of them with a
@@ -234,7 +288,147 @@ class Teacher:
             out += self._burrows(rows, t)
         if self.militia and t - self.last.get("militia", -GAP) >= GAP:
             out += self._militia(rows, t)
+        if self.army_lesson and t - self.last.get("army", -GAP) >= GAP and self._look("army", t):
+            out += self._army(rows, done_or, n_army, t)
+        if (self.upgrade_lesson and now >= UPGRADE_FROM * self.pace and t - self.last.get("upgrade", -GAP) >= GAP
+                and self._look("upgrade", t)):
+            out += self._upgrade(rows, t)
+        if (self.creep_lesson and n_live and n_army >= CREEP_ARMY and now >= CREEP_FROM * self.pace
+                and t - self.last.get("creep", -GAP) >= GAP and self._look("creep", t)):
+            out += self._creep(rows, player, live, t)
         return out
+
+    def _look(self, kind: str, t: int) -> bool:
+        """Whether audit 16's lesson `kind` is looked at now (every LOOK steps at most)."""
+        k = "look " + kind
+        if 0 <= t - self.last.get(k, -LOOK) < LOOK:
+            return False
+        self.last[k] = t
+        return True
+
+    def _idle(self, alive: np.ndarray, makers: np.ndarray) -> int | None:
+        """The id of the side's first finished building of the types `makers` (sorted type ids) making nothing (`busy`)."""
+        m = fx.isin(alive[:, fx.C_TYPE], makers)
+        if not m.any():
+            return None
+        b = alive[m]
+        return next((i for i, f in zip(b[:, fx.C_ID].tolist(), b[:, fx.C_FLAGS].tolist())
+                     if f & fx.STRUCTURE and not f & fx.CONSTRUCTING and i not in self.busy), None)
+
+    def _army(self, rows: np.ndarray, done_or: int, n_army: int, t: int) -> list:
+        """--army-lesson: anti-air once enemy air units were seen and too few of its army hit air; else (no target mix)
+        a tier unit while its army at tier 2 is one type's (more than ONE_UNIT of ARMY_LEAST or more)."""
+        side = self.side
+        air = fx.isin(rows[:, fx.C_TYPE], AIR_CODES)
+        if air.any():
+            a = rows[air]
+            self.air = max(self.air, int(((a[:, fx.C_OWNER] == 1 - side) & (a[:, fx.C_FLAGS] & fx.DEAD == 0)
+                                          & ((a[:, fx.C_VIS] >> side) & 1 > 0)).sum()))
+        can = getattr(self, "can", None)
+        anti = [u for u in ANTI_AIR[self.race] if can is None or can(u)] if self.air else []
+        tier = ([u for u in TIER_UNITS[self.race] if can is None or can(u)]
+                if not self.mix and done_or & K_TIER2 and n_army >= ARMY_LEAST else [])
+        if not anti and not tier:  # (nothing it could train now: no rows looked at)
+            return []
+        alive = fx.own_alive(rows, side)
+        counts = Counter(_army_of(alive)[:, fx.C_TYPE].tolist())
+        if anti:
+            hits = _hits_air(self.race)
+            if sum(k for c, k in counts.items() if c in hits) < max(AIR_LEAST, AIR_RATIO * self.air):
+                out = self._train(alive, anti, counts, t, "anti-air")
+                if out:
+                    return out
+        n = sum(counts.values())
+        if tier and n >= ARMY_LEAST:
+            top, k = counts.most_common(1)[0]
+            if k > ONE_UNIT * n:
+                return self._train(alive, [u for u in tier if fourcc(u) != top], counts, t, "tier unit")
+        return []
+
+    def _train(self, alive: np.ndarray, units, counts: Counter, t: int, counted: str) -> list:
+        """Of `units` (those the policy could train now), the one its army has least of (the first of equals), at an
+        idle finished building that makes it."""
+        best = None
+        for u in units:
+            k = counts.get(fourcc(u), 0)
+            if best is not None and k >= best[0]:
+                continue
+            at = self._idle(alive, _maker_codes(u))
+            if at is not None:
+                best = (k, u, at)
+        if best is None or not self._due("army", t, counted):
+            return []
+        return [ImmediateOrder(best[2], fourcc(best[1]))]
+
+    def _upgrade(self, rows: np.ndarray, t: int) -> list:
+        """--upgrade-lesson: at the race's idle upgrade building, the next level of its army's main class's weapon or
+        armor upgrade (the lower level first, the weapon of equals), else the other class's, that the policy could
+        research now (`can`: the tech mask's next level and its cost, costs.research_steps; without a mask: below 3)."""
+        can, lv = getattr(self, "can", None), self.levels
+        ok = [[c for c in pair if (can(c) if can is not None else lv.get(fourcc(c), 0) < 3)]
+              for pair in UPGRADES[self.race]]
+        if not ok[0] and not ok[1]:
+            return []
+        alive = fx.own_alive(rows, self.side)
+        at = self._idle(alive, SMITH_CODES[self.race])
+        if at is None:
+            return []
+        types = _army_of(alive)[:, fx.C_TYPE]
+        if 2 * int(fx.isin(types, SECOND[self.race]).sum()) > len(types):
+            ok = ok[::-1]
+        c = min(ok[0] or ok[1], key=lambda c: lv.get(fourcc(c), 0))
+        return [ImmediateOrder(at, fourcc(c))] if self._due("upgrade", t) else []
+
+    def _creep(self, rows: np.ndarray, player, live: list, t: int) -> list:
+        """--creep-lesson: healthy heroes, an army and no enemy army near its halls: the heroes and the army near them
+        attack-move to the nearest camp near its start they are CREEP_MARGIN times stronger than."""
+        hs = [(live[j], live[j + 2], live[j + 3]) for j in range(0, len(live), HF)]
+        if not hs or any(hp <= CREEP_HP * max(mx, 1) for _, hp, mx in hs):
+            return []
+        side = self.side
+        alive = fx.own_alive(rows, side)
+        army = _army_of(alive)
+        if len(army) < CREEP_ARMY:
+            return []
+        fl = rows[:, fx.C_FLAGS]
+        halls = alive[fx.isin(alive[:, fx.C_TYPE], HALL_CODES) & (alive[:, fx.C_FLAGS] & fx.CONSTRUCTING == 0)]
+        enemy = rows[(rows[:, fx.C_OWNER] == 1 - side) & (fl & (fx.DEAD | fx.STRUCTURE | fx.WORKER) == 0)
+                     & ((rows[:, fx.C_VIS] >> side) & 1 > 0)]
+        if len(enemy) and len(halls) and (np.hypot(enemy[:, None, fx.C_X] - halls[None, :, fx.C_X],
+                                                   enemy[:, None, fx.C_Y] - halls[None, :, fx.C_Y]) < BASE_SAFE).any():
+            return []
+        sx, sy = getattr(player, "start_x", None), getattr(player, "start_y", None)
+        if sx is None:
+            if not len(halls):
+                return []
+            sx, sy = halls[0, fx.C_X], halls[0, fx.C_Y]
+        cx, cy, power = self._camps(rows[(rows[:, fx.C_OWNER] == 12) & (fl & (fx.DEAD | fx.STRUCTURE) == 0)])
+        if not len(cx):
+            return []
+        heroes = rows[[int(i) for i, _, _ in hs]]
+        hx, hy = float(heroes[:, fx.C_X].mean()), float(heroes[:, fx.C_Y].mean())
+        group = np.concatenate([heroes, army[np.hypot(army[:, fx.C_X] - hx, army[:, fx.C_Y] - hy) < ESCORT]])
+        ok = (np.hypot(cx - sx, cy - sy) <= CREEP_REACH) & (CREEP_MARGIN * power <= _power(group))
+        if not ok.any() or not self._due("creep", t):
+            return []
+        k = int(np.flatnonzero(ok)[np.argmin(np.hypot(cx[ok] - hx, cy[ok] - hy))])
+        ids = (heroes if self.creep_lesson >= 2 else group)[:, fx.C_ID].tolist()  # (--creep-lesson 2: the heroes only)
+        return [PointOrder(int(u), ATTACK, float(cx[k]), float(cy[k])) for u in ids]
+
+    def _camps(self, creeps: np.ndarray) -> tuple:
+        """The creep camps' centres and strengths (_camps, _power), kept while the creeps stand where they stood."""
+        key = creeps[:, [fx.C_ID, fx.C_X, fx.C_Y, fx.C_HP]].tobytes()
+        got = self.__dict__.get("_camp_table")
+        if got is None or got[0] != key:
+            label = _camps(creeps)
+            n = int(label.max()) + 1 if len(label) else 0
+            size = np.bincount(label, minlength=n).astype(np.float64)
+            dps = np.asarray([_dps(c, lv) for c, lv in creeps[:, [fx.C_TYPE, fx.C_HLEVEL]].tolist()], np.float64)
+            got = self._camp_table = (key, np.bincount(label, creeps[:, fx.C_X], n) / np.maximum(size, 1),
+                                      np.bincount(label, creeps[:, fx.C_Y], n) / np.maximum(size, 1),
+                                      np.bincount(label, np.maximum(creeps[:, fx.C_HP], 0), n)
+                                      * np.bincount(label, dps, n) / 1000.0)
+        return got[1:]
 
     def _militia(self, rows: np.ndarray, t: int) -> list:
         """Human: militia and no enemy unit within MILITIA_SAFE of any of them nor of a finished hall: the hall nearest
@@ -631,3 +825,73 @@ def fourcc_in(types: np.ndarray, codes: set[int]) -> bool:
     if c is None or c[0] is not codes:
         c = _CODES[id(codes)] = (codes, fx.codes(codes))
     return bool(fx.isin(types, c[1]).any())
+
+
+def pace(map_name: str) -> float:
+    """Audit 16's lessons' game seconds on a map, as a real game's: half on faster rules (echofast, echofast2: a third
+    of the build times, half the costs), else the same."""
+    try:
+        from ..data.duelmap import map_rules
+        return 0.5 if map_rules(map_name).time < 1.0 else 1.0
+    except Exception:  # noqa: BLE001 (another map: the real game's)
+        return 1.0
+
+
+def _army_of(alive: np.ndarray) -> np.ndarray:
+    """The army among the side's living units: no building, worker, hero, summoned unit nor militia."""
+    fl = alive[:, fx.C_FLAGS]
+    return alive[(fl & (fx.STRUCTURE | fx.WORKER | fx.HERO | fx.SUMMONED) == 0) & (alive[:, fx.C_TYPE] != fx.MILITIA_T)]
+
+
+_AIR_HITS: dict = {}  # (a race -> the type ids of units that hit air: the game's tables, and its ANTI_AIR)
+_DPS: dict = {}  # ((type id, hero level) -> damage a second: heuristic.dps)
+
+
+def _hits_air(race: str) -> frozenset:
+    got = _AIR_HITS.get(race)
+    if got is None:
+        from ..data.objects import combat_stats
+        got = _AIR_HITS[race] = frozenset({fourcc(c) for c, s in combat_stats().items() if s.hits_air and not s.is_hero
+                                           and len(c) == 4} | {fourcc(c) for c in ANTI_AIR.get(race, ())})
+    return got
+
+
+def _dps(typ: int, level: int) -> float:
+    d = _DPS.get((typ, level))
+    if d is None:
+        from .heuristic import dps
+        d = _DPS[(typ, level)] = dps(fx.rawcode(typ), level)
+    return d
+
+
+def _power(units: np.ndarray) -> float:
+    """Lanchester's strength of a group (heuristic.power): its hit points times its damage a second, / 1000."""
+    total = sum(_dps(c, lv) for c, lv in units[:, [fx.C_TYPE, fx.C_HLEVEL]].tolist())
+    return float(np.maximum(units[:, fx.C_HP], 0).sum()) * total / 1000.0
+
+
+def _camps(creeps: np.ndarray) -> np.ndarray:
+    """The creep camps: creeps within CAMP_JOIN of one another (single link) -> each creep's camp (0, 1, ...)."""
+    xy = creeps[:, [fx.C_X, fx.C_Y]].astype(np.float64)
+    near = np.hypot(xy[:, None, 0] - xy[None, :, 0], xy[:, None, 1] - xy[None, :, 1]) < CAMP_JOIN
+    label, k = np.full(len(xy), -1), 0
+    for i in range(len(xy)):
+        if label[i] >= 0:
+            continue
+        label[i], todo = k, [i]
+        while todo:
+            new = np.flatnonzero(near[todo.pop()] & (label < 0))
+            label[new] = k
+            todo += new.tolist()
+        k += 1
+    return label
+
+
+_MAKER_CODES: dict = {}  # (a unit -> its makers' type ids, sorted: features.isin's)
+
+
+def _maker_codes(code: str) -> np.ndarray:
+    got = _MAKER_CODES.get(code)
+    if got is None:
+        got = _MAKER_CODES[code] = fx.codes(_makers(code))
+    return got

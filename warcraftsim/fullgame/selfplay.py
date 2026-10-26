@@ -69,7 +69,7 @@ from .featnative import addr as _faddr, lib as _featlib, to_f16
 from .trace import DEAD_FLAG, Production, material, trace_step, unit_values  # noqa: F401
 from .play import unit_rows
 from .model import FullGameNet, act, adapt_config, anchor_kl, arch_key, evaluate, fine_head, load, point_parts, trained
-from .teacher import Teacher, lumber_short
+from .teacher import Teacher, lumber_short, pace as teacher_pace
 from ..native import unit_from_row
 from .neutral import MERCENARIES as _MERCENARIES
 from ..protocol import Build as _Build, Buy as _Buy, ImmediateOrder as _ImmediateOrder, TargetOrder as _TargetOrder, \
@@ -2169,7 +2169,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                             lumber=cfg.get("teach", 0) >= 3, burrows=cfg.get("teach", 0) >= 4 or bool(cfg.get("burrow_lesson", 0)),
                             main_low=cfg.get("expand_lesson", 0.0), mine_full=12500.0 * mine_scale(cfg["map"]),
                             saturation=bool(cfg.get("saturation_lesson", 0)), revive=bool(cfg.get("revive_lesson", 0)),
-                            militia=bool(cfg.get("militia_lesson", 0)))
+                            militia=bool(cfg.get("militia_lesson", 0)), army=bool(cfg.get("army_lesson", 0)),
+                            upgrades=bool(cfg.get("upgrade_lesson", 0)), creep=int(cfg.get("creep_lesson", 0)),
+                            pace=cfg.get("lesson_time_scale") or teacher_pace(cfg["map"]))
                  for s in trajs if keys[s] == "current"}
                 if cfg.get("teach") and replay is None else {})
     # --teach-heuristic: a target drawn from the hand-written player's games (strategy.from_demos names the strategy) is
@@ -2288,6 +2290,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                     short = lumber_short(q.gold, q.lumber)  # (--teach 4, no builder: the bank's lumber short of its gold)
                 tc.economy = (short, bots[s].view.lumber_now, bots[s].trees)  # (the choppers: the view's of this step,
                 # View.step's set of them; read only)
+                tc.busy, tc.levels = bots[s].view.busy, bots[s].view.levels  # (audit 16's lessons: idle buildings,
+                # research levels; read only)
                 c = tc.commands(rows, obs.players.get(s), obs.game_time, t, can, getattr(bots[s].view, "pickers", ()))
                 q = obs.players.get(s)
                 if c and q is not None:
@@ -3948,6 +3952,19 @@ def main(argv: list[str] | None = None) -> int:
                     "policy learns their low-level orders itself, from the lessons and rewards")
     ap.add_argument("--spells-bias", type=float, default=0.0, help="a fork's start (--start-weights): each spell's order "
                     "logit set to no order's less this (spells grown at -8 were never sampled; 0: as loaded)")
+    ap.add_argument("--army-lesson", type=int, default=0, help="1 (with --teach): audit 16's army lesson: once enemy air "
+                    "units were seen and too few of the army hit air, the race's anti-air unit it has least of; else (no "
+                    "target mix) at tier 2 with an army of one type, a tier unit (teacher.ANTI_AIR, TIER_UNITS; against 4+ "
+                    "air units the policy won 1 of 232)")
+    ap.add_argument("--upgrade-lesson", type=int, default=0, help="1 (with --teach): audit 16's upgrade lesson: from 8 "
+                    "game minutes (times --lesson-time-scale) the idle blacksmith / war mill / graveyard / hunter's hall "
+                    "researches the next weapon or armor level of the army's main class (1.06 levels a game, the AI 3.72)")
+    ap.add_argument("--creep-lesson", type=int, default=0, help="1 (with --teach): audit 16's creep lesson: from 3.5 game "
+                    "minutes (times --lesson-time-scale), healthy heroes, 6+ army units and no enemy army near its halls: "
+                    "the heroes and the army near them attack-move to the nearest camp they are 2x stronger than (0-2 "
+                    "creeps a game, the AI 13-20); 2: the heroes only")
+    ap.add_argument("--lesson-time-scale", type=float, default=0.0, help="audit 16's lessons' game times scaled (0: "
+                    "teacher.pace, 0.5 on faster rules such as echofast2, else 1)")
     ap.add_argument("--militia-lesson", type=int, default=0, help="1 (with --teach): human's militia lesson: militia "
                     "and no enemy unit near them nor a hall, the hall ends the town bell (audit 16: militia idled, their "
                     "back to work refused, in 175 of 207 human games)")
@@ -4635,7 +4652,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "eval_ai": [d for d in args.eval_ai.split(",") if d],
