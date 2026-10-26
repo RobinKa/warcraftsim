@@ -150,3 +150,38 @@ def test_builder_due_items_before_workers(monkeypatch):
     assert len(c) == 1 and c[0].building == code("hbar")
     c = b.commands(_obs(gold=400, t=67.0), {"hbar": 66.0}, 12, 0.5, rows=rows)
     assert len(c) == 1 and c[0].order == code("hpea")
+
+
+def _placed(units) -> np.ndarray:
+    """(id, type, owner, flags, x, y) -> rows."""
+    rows = _rows([u[:4] for u in units])
+    rows[:, fx.C_X] = [u[4] for u in units]
+    rows[:, fx.C_Y] = [u[5] for u in units]
+    return rows
+
+
+def test_burrows_stand_down_when_no_enemy_is_near():
+    import random
+
+    from warcraftsim.fullgame import teacher as tm
+    from warcraftsim.protocol import ImmediateOrder
+    assert not tm.Teacher(0, "human", random.Random(0), burrows=True).burrows  # (orc only)
+    tc = tm.Teacher(0, "orc", random.Random(0), burrows=True)
+    base = [(1, "otrb", 0, fx.STRUCTURE, 0, 0), (2, "otrb", 0, fx.STRUCTURE, 3000, 0),
+            (3, "otrb", 0, fx.STRUCTURE | fx.CONSTRUCTING, 0, 3000)]
+    inside = [(10, "opeo", 0, fx.WORKER | tm.LOADED, 50, 0), (11, "opeo", 0, fx.WORKER | tm.LOADED, 40, 20),
+              (12, "opeo", 0, fx.WORKER, 3000, 50)]
+    assert tc._burrows(_placed(base + inside), 0) == [ImmediateOrder(1, tm.STANDDOWN)]  # (the one with peons inside)
+    assert tc._burrows(_placed(base + inside), 5) == []  # (a lesson every GAP steps)
+    enemy = [(30, "hfoo", 1, 0, 800, 0)]
+    assert tc._burrows(_placed(base + inside + enemy), 40) == []  # (an enemy near: they stay inside)
+    far = [(30, "hfoo", 1, 0, 6000, 0), (31, "htow", 1, fx.STRUCTURE, 500, 0), (32, "hfoo", 1, fx.DEAD, 100, 0)]
+    assert tc._burrows(_placed(base + inside + far), 40) == [ImmediateOrder(1, tm.STANDDOWN)]
+    assert tc._burrows(_placed(base + inside[2:]), 80) == []  # (none inside)
+    assert tm.Teacher(0, "orc", random.Random(0))._burrows is not None and not tm.Teacher(0, "orc", random.Random(0)).burrows
+
+
+def test_lumber_short_without_a_target():
+    from warcraftsim.fullgame.teacher import lumber_short
+    assert lumber_short(500, 150) and lumber_short(1000, 300)  # (the start; a gold-rich bank)
+    assert not lumber_short(300, 300) and not lumber_short(0, 0) and not lumber_short(200, 100)

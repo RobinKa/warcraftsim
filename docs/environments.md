@@ -64,7 +64,7 @@ flowchart LR
 Two heuristic teachers label the learner's steps with what they would order; the labels pull the policy toward them (`--teach-coef`), and nothing they say is carried out.
 
 * **The target builder** (`--z-build 2`): the earliest item of the side's target that is due and neither made nor under way, or what it needs first (the tech tree), when the player can pay for it. With `--z-workers 1` also a worker at an idle hall while the side has fewer than its target's (its start's plus the strategy's trained ones, at most `--econ-masks`' cap for its mines), after the due items and with the money they leave (audit 12: the agent trained ~5 where its targets had 13-14).
-* **The teacher** (`--teach`): a first hero in games without a target (with `--teach 2` the target's first hero, as soon as the altar stands), a tavern hero, the expansion and its camp, an army mix, a town portal or a potion when a hero is low, an item picked up.
+* **The teacher** (`--teach`): a first hero in games without a target (with `--teach 2` the target's first hero, as soon as the altar stands), a tavern hero, the expansion and its camp, an army mix, a town portal or a potion when a hero is low, an item picked up. `--teach 3` adds lumber (a worker to the tree nearest the hall, up to 5 choppers or 3 ghouls) while the target's next item is short of it. `--teach 4` also teaches lumber in games without a builder while the bank's lumber is under half its gold, and has an orc burrow with peons inside stand down when no enemy unit is within 1,500 of it (audit 12: in target games the peons stayed inside, 14 orders a minute skipped for a loaded peon).
 
 ## Rewards
 

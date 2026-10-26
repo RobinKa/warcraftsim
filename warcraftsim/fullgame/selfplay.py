@@ -69,7 +69,7 @@ from .featnative import addr as _faddr, lib as _featlib, to_f16
 from .trace import DEAD_FLAG, Production, material, trace_step, unit_values  # noqa: F401
 from .play import unit_rows
 from .model import FullGameNet, act, adapt_config, anchor_kl, arch_key, evaluate, load, trained
-from .teacher import Teacher
+from .teacher import Teacher, lumber_short
 from ..native import unit_from_row
 from .neutral import MERCENARIES as _MERCENARIES
 from ..protocol import Build as _Build, Buy as _Buy, ImmediateOrder as _ImmediateOrder, TargetOrder as _TargetOrder, \
@@ -2136,7 +2136,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                     bots[s].view.dual = True
     # --teach: a heuristic teacher's lessons (teacher.py: a tavern hero, a town portal, a potion) label the learner's steps
     teachers = ({s: Teacher(s, races[s], random.Random(), zs.get(s), target_hero=cfg.get("teach", 0) >= 2,
-                            lumber=cfg.get("teach", 0) >= 3)
+                            lumber=cfg.get("teach", 0) >= 3, burrows=cfg.get("teach", 0) >= 4)
                  for s in trajs if keys[s] == "current"}
                 if cfg.get("teach") and replay is None else {})
     # --teach-heuristic: a target drawn from the hand-written player's games (strategy.from_demos names the strategy) is
@@ -2250,8 +2250,11 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                        lambda u, k=fx.IMMEDIATE, av=av, oix=oix: (c := oix.get((int.from_bytes(u.encode(), "big"), k))) is not None
                        and bool(av[c]))
                 b = builders.get(s)  # (the target's next items short of lumber, the side's choppers: the lumber lesson)
-                tc.economy = (bool(b is not None and getattr(b, "lumber_short", False)),  # (the choppers: the view's of
-                              bots[s].view.lumber_now, bots[s].trees)  # this step, View.step's set of them; read only)
+                short = bool(b is not None and getattr(b, "lumber_short", False))
+                if b is None and cfg.get("teach", 0) >= 4 and (q := obs.players.get(s)) is not None:
+                    short = lumber_short(q.gold, q.lumber)  # (--teach 4, no builder: the bank's lumber short of its gold)
+                tc.economy = (short, bots[s].view.lumber_now, bots[s].trees)  # (the choppers: the view's of this step,
+                # View.step's set of them; read only)
                 c = tc.commands(rows, obs.players.get(s), obs.game_time, t, can, getattr(bots[s].view, "pickers", ()))
                 q = obs.players.get(s)
                 if c and q is not None:
@@ -3906,7 +3909,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--teach", type=int, default=0, help="a heuristic teacher (teacher.py: a tavern hero with a worker, "
                     "a town portal, a potion when a hero is low) labels the learner's steps, never carried out; "
                     "--opd-coef the labels' weight; needs --neutral 1. 2: with a target, its first hero from the altar "
-                    "taught too (when that is its first hero). 3: and lumber, when the target's next item is short of it")
+                    "taught too (when that is its first hero). 3: and lumber, when the target's next item is short of it. "
+                    "4: and lumber in games without a builder while the bank's lumber is under half its gold, and (orc) "
+                    "a burrow with peons inside stands down when no enemy unit is near it (audit 12)")
     ap.add_argument("--tech-mask", type=int, default=0, help="mask the orders the player lacks the tech for "
                     "(features.TechMask: buildings, tiers, research levels, the hero limit)")
     ap.add_argument("--valid-mask", type=int, default=0, help="mask each hero's orders it can't carry out now: an "
