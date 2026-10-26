@@ -75,13 +75,13 @@ class Host:
             return None
         return None if r.returncode == 255 else r
 
-    def rsync(self, files: list[str], timeout: float = 900) -> bool:
-        """Files (paths relative to this repository) to the same paths there."""
+    def rsync(self, files: list[str], timeout: float = 900, cwd: Path = ROOT) -> bool:
+        """Files (paths relative to this repository, or to `cwd`) to the same paths there."""
         if not files:
             return True
         cmd = ["rsync", "-a", "-R", "--timeout=60", "-e", " ".join(SSH)] + files + [f"{self.host}:{self.repo}/"]
         try:
-            r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=timeout)
+            r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
             return False
         if r.returncode:
@@ -134,9 +134,10 @@ def launch_key(info: dict) -> str:
                                text=True).stdout.splitlines():
         if not line.split("\t", 1)[-1].startswith(("warcraftsim/dashboard/", "scripts/")):
             h.update(line.encode())
+    shim = shim_root(info)
     for f in SHIM:
-        if (ROOT / f).exists():
-            h.update(f.encode() + b"\0" + (ROOT / f).read_bytes())
+        if (shim / f).exists():
+            h.update(f.encode() + b"\0" + (shim / f).read_bytes())
     extra = [c.get(k) for k in SETTINGS_SET if c.get(k) not in (None, "None", "0", 0)]  # (none: the key as before)
     extra += [f"{k}={c.get(k)}" for k in SETTINGS_NAMED if c.get(k) not in (None, "None", "0", 0)]
     return hashlib.sha1(json.dumps([c.get(k) for k in SETTINGS] + extra + [h.hexdigest()]).encode()).hexdigest()[:10]
@@ -150,6 +151,15 @@ def code_rev(info: dict) -> str:
     if rev and subprocess.run(["git", "cat-file", "-e", f"{rev}^{{commit}}"], cwd=ROOT, capture_output=True).returncode == 0:
         return rev
     return "HEAD"
+
+
+def shim_root(info: dict) -> Path:
+    """Where the run's shim was built: its launch's checkout of its commit (run.json's launch.code: launches run from
+    one, warcraftsim/codepin.py), else this tree (a run launched from it)."""
+    code = (info.get("launch") or {}).get("code")
+    if code and all((Path(code) / f).exists() for f in SHIM):
+        return Path(code)
+    return ROOT
 
 
 def eval_checkpoints(info: dict) -> list[str]:
@@ -326,7 +336,7 @@ class Manager:
         log(f"starting the worker for {self.run} (launch {key}): code, run files, checkpoints")
         self.h.run(f"systemctl --user stop {UNIT} 2>/dev/null; systemctl --user reset-failed {UNIT} 2>/dev/null; "
                    f"mkdir -p {shlex.quote(self.remote('checkpoints'))}", timeout=120)
-        if not self.push_code(code_rev(info)):
+        if not self.push_code(code_rev(info), shim_root(info)):
             return False
         evals = eval_checkpoints(info)
         missing = [p for p in evals if not (ROOT / p).exists()]
@@ -368,8 +378,9 @@ class Manager:
         log(f"worker started: {self.a.games} games for {self.run}")
         return True
 
-    def push_code(self, rev: str = "HEAD") -> bool:
-        """The run's commit's code there (git archive: tracked files only, as committed), and the built shim."""
+    def push_code(self, rev: str = "HEAD", shim: Path = ROOT) -> bool:
+        """The run's commit's code there (git archive: tracked files only, as committed), and its built shim (in the
+        launch's checkout: shim_root)."""
         try:
             arc = subprocess.run(["git", "archive", rev, "--", *CODE], cwd=ROOT, capture_output=True, timeout=120)
             r = subprocess.run(SSH + [self.h.host, f"cd {shlex.quote(self.a.remote_dir)} && tar -x -m -f -"],
@@ -379,7 +390,7 @@ class Manager:
         if arc.returncode or r.returncode:
             log(f"code not sent: {(arc.stderr or r.stderr).decode(errors='replace').strip()[-300:]}")
             return False
-        return self.h.rsync([f for f in SHIM if (ROOT / f).exists()])
+        return self.h.rsync([f for f in SHIM if (shim / f).exists()], cwd=shim)
 
     def drain(self, why: str) -> bool:
         """The worker told to finish its games and exit (True: it has; the caller goes on). Stopped when it takes

@@ -24,6 +24,28 @@ from .model import arch_key
 _EXT = None
 
 
+def build_source(src: Path) -> tuple[Path, str | None]:
+    """The source to build: a copy in a folder named by its hash (torch's cache: ~/.cache/torch_extensions/<python,
+    cuda>/w3_infer_loop-<hash>/), where torch builds it. One build a source, shared by the checkouts that have it (a
+    pinned launch's, codepin.py, and the main tree's: the same path, so none rebuilds another's), and none rebuilt
+    under a process that has it loaded when another checkout's source differs. -> (the source, its build folder; the
+    source itself and None, torch's default folder, if torch's private helper is gone)"""
+    import hashlib
+
+    data = src.read_bytes()
+    try:
+        from torch.utils.cpp_extension import _get_build_directory
+        d = Path(_get_build_directory(f"w3_infer_loop-{hashlib.sha1(data).hexdigest()[:12]}", False))
+    except Exception:  # noqa: BLE001
+        return src, None
+    copy = d / src.name
+    if not copy.exists() or copy.read_bytes() != data:
+        tmp = copy.with_name(f"{src.name}.{os.getpid()}.tmp")
+        tmp.write_bytes(data)
+        tmp.replace(copy)
+    return copy, str(d)
+
+
 def extension():
     """The compiled loop (torch's JIT build: once, then from its cache)."""
     global _EXT
@@ -38,7 +60,8 @@ def extension():
             raise FileNotFoundError(f"no libcudart in {nv}")
         rt = Path(cudart[-1])
         os.environ["PATH"] = f"{Path.home() / '.local' / 'bin'}:{Path(sys.executable).parent}:{os.environ.get('PATH', '')}"  # (ninja)
-        _EXT = load(name="w3_infer_loop", sources=[str(Path(__file__).with_name("csrc") / "infer_loop.cpp")],
+        src, build = build_source(Path(__file__).with_name("csrc") / "infer_loop.cpp")
+        _EXT = load(name="w3_infer_loop", sources=[str(src)], build_directory=build,
                     extra_include_paths=incs, extra_cflags=["-O2"],
                     extra_ldflags=["-ltorch_cuda", "-lc10_cuda", f"-L{rt.parent}", f"-l:{rt.name}", f"-Wl,-rpath,{rt.parent}"])
     return _EXT
