@@ -140,8 +140,9 @@ def match_map(rep: w3g.Replay, stock: dict[str, tuple[int, bytes]], any_version:
     replays carry ffffffff as the classic checksum), or with `any_version` its file name only (another
     game version's checksums cover its own common.j and Blizzard.j)."""
     if any_version:
-        name = re.split(r"[\\/]", rep.map_path)[-1].lower()
-        return next((n for n in stock if (n + ".w3x").lower() == name), None)
+        bare = lambda s: re.sub(r"^\(\d+\)", "", s.lower())  # noqa: E731 (1.26's downloads: "EchoIsles.w3x")
+        name = bare(re.split(r"[\\/]", rep.map_path)[-1])
+        return next((n for n in stock if bare(n + ".w3x") == name), None)
     for n, (xoro, sha1) in stock.items():
         if rep.map_sha1:
             if rep.map_sha1 == sha1.hex() and rep.map_checksum in (xoro, 0xFFFFFFFF):
@@ -211,6 +212,44 @@ def shift_of(probes: list[tuple[int, int]]):
     return (lambda t: (t[0] + n if t[0] >= i0 else t[0], t[1] + n if t[1] >= s0 else t[1])), n
 
 
+HALLS = {int.from_bytes(c.encode(), "big") for c in ("htow", "ogre", "unpl", "etol")}
+
+
+def version_shift(rep: w3g.Replay, obs, tags: list[list[str]]):
+    """For another version's replay (--any-version): the object-id map from its game to ours, if the
+    games made a different number of objects before the starting units (1.29 makes more: 24 players):
+    the offset of a starting hall the replay selects (its ids there, ours in the first observation),
+    for every object made after the map's preplaced units (creeps, mines: their ids are the same).
+    None when there is nothing to shift."""
+    ids = {}
+    for t in tags:
+        if t[0] == "T":
+            ids.setdefault(int(t[2]), (int(t[3]), int(t[4])))
+    ours = {}
+    preplaced = 0
+    for u in obs.units:
+        if u.id in ids:
+            if u.owner >= 24:  # (neutral: creeps, mines, shops)
+                preplaced = max(preplaced, ids[u.id][0])
+            elif u.type_id in HALLS:
+                ours[(u.owner, u.type_id)] = ids[u.id]
+    offsets = set()
+    for a in rep.actions:
+        if a.kind == w3g.SUBGROUP and a.item in HALLS and a.target and a.time < 120000:
+            mine = ours.get((rep.players[a.player].slot, a.item))
+            if mine and mine[0] == mine[1] and a.target[0] == a.target[1]:
+                offsets.add(mine[0] - a.target[0])
+    if not offsets:
+        return None
+    if len(offsets) > 1:
+        raise GameError(f"the starting halls' object ids are not one offset: {sorted(offsets)}")
+    off = offsets.pop()
+    if off == 0:
+        return None
+    first = preplaced + 1
+    return lambda t: (t[0] + off if t[0] >= first else t[0], t[1] + off if t[1] >= first else t[1])
+
+
 # ---- the playback ------------------------------------------------------------------------------
 
 def play(rep: w3g.Replay, data: bytes, name: str, obs_map: Path, checksums: tuple[int, bytes],
@@ -223,12 +262,16 @@ def play(rep: w3g.Replay, data: bytes, name: str, obs_map: Path, checksums: tupl
     g = ReplayGame(setup, obs_map, rep.map_path, name=name, timeout=timeout)
     try:
         t0 = time.time()
-        g.play(w3g.rewrite(data, checksum=checksums[0], sha1=checksums[1], version=version))
+        obs0 = g.play(w3g.rewrite(data, checksum=checksums[0], sha1=checksums[1], version=version))
         probes = [(int(p[2]), int(p[3])) for p in g.tags() if p[0] == "P"]
+        vfn = version_shift(rep, obs0, g.tags()) if version is not None else None
         g._stop_process()
         if len(probes) != 2:
             raise GameError(f"the harness reported {len(probes)} probes")
         fn, n = shift_of(probes)
+        if vfn is not None:
+            hfn = fn
+            fn = lambda t: hfn(vfn(t))  # noqa: E731
         shifted = w3g.rewrite(data, checksum=checksums[0], sha1=checksums[1], objects=fn, version=version)
         obs = g.play(shifted)
         log(f"{name}: harness objects {n} (probe {probes}); playing ({time.time() - t0:.0f}s)")

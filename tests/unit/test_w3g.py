@@ -168,6 +168,23 @@ def test_stock_map_match(rep):
     assert "version" in skip_reason(newer, stock) and skip_reason(newer, stock, any_version=True) is None
 
 
+def test_version_shift():
+    from types import SimpleNamespace as NS
+
+    from warcraftsim.fullgame.replays import version_shift
+    ogre = int.from_bytes(b"ogre", "big")
+    rep = w3g.Replay(w3g.Header("w3g", 1, "W3XP", 28, 6059, True, 0, 0, False))
+    rep.players = {3: w3g.Player(3, "a", slot=1)}
+    rep.actions = [w3g.Action(500, 3, w3g.SUBGROUP, item=ogre, target=(14907, 14907))]
+    obs = NS(units=[NS(id=7, owner=1, type_id=ogre), NS(id=8, owner=24, type_id=0)])
+    tags = [["T", "1", "7", "15387", "15387"], ["T", "1", "8", "14000", "14000"]]
+    fn = version_shift(rep, obs, tags)
+    assert fn((14907, 14907)) == (15387, 15387)  # (the 1.29 engine's 480 more objects before the start)
+    assert fn((12000, 15500)) == (12000, 15980)  # a slot from before the preplaced units' last: only its count
+    tags[0][3:] = ["14907", "14907"]
+    assert version_shift(rep, obs, tags) is None  # (the same ids: nothing to shift)
+
+
 def test_rewrite_version(data):
     out = w3g.rewrite(data, version=(30, 6061))
     h = w3g.parse_replay(out).header
