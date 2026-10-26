@@ -281,6 +281,46 @@ def test_floating_money_buys_upgrades_one_per_building_a_step():
     assert len([c for c in cmds if isinstance(c, ImmediateOrder) and c.unit == 160]) == 1
 
 
+def test_a_camp_seen_empty_is_gone():
+    """Creeps killed out of the player's sight send no event: a camp whose ground its units see with no creep on it is
+    gone (such a camp had held the army in creep mode for minutes)."""
+    creeps = [_unit(170 + k, "nftt", 12, 0 + 100 * k, -2000) for k in range(2)]
+    a, base = _agent(creeps)
+    assert any(c["ids"] for c in a.camps)
+    grunt = _unit(175, "ogru", 0, 50, -2000)
+    _step(a, base, [grunt] + creeps, t=300.0)  # (the creeps in sight: the camp stands)
+    assert any(c["ids"] for c in a.camps)
+    _step(a, base, [grunt], t=302.0)  # (gone without an event)
+    assert not any(c["ids"] for c in a.camps)
+
+
+def test_a_camp_not_reached_is_given_up_for_a_while():
+    """No creep of the camp killed for CREEP_STALL in creep mode: the army gives it up for CAMP_SKIP (an army that
+    never reached the natural's camp had stood in creep mode for 11 minutes, its expansion waiting)."""
+    creeps = [_unit(180 + k, "nftt", 12, 0 + 100 * k, -2000) for k in range(2)]
+    a, base = _agent(creeps)
+    k = next(i for i, c in enumerate(a.camps) if c["ids"])
+    a.creep_target, a.now = k, 300.0
+    a.creep_progress[k] = (300.0, 2)
+    assert a._creep_camp() is a.camps[k]
+    a.now = 300.0 + hz.CREEP_STALL + 1
+    assert a._creep_camp() is None and a.camp_skip[k] > a.now and a.creep_target is None
+
+
+def test_the_centre_on_the_way_is_the_group_that_left():
+    """Out creeping or attacking, the army's centre is the group that left the rally point, not the new units there
+    (their median had pulled the centre home and the leaders back to it, for minutes)."""
+    a, base = _agent([])
+    rx, ry = a.rally
+    out = [_unit(190 + k, "ogru", 0, rx, ry - 3000 - 40 * k) for k in range(4)]
+    home = [_unit(195 + k, "ogru", 0, rx + 30 * k, ry) for k in range(6)]
+    a.mode = "creep"
+    cx, cy = a._center(out + home)
+    assert abs(cy - (ry - 3060)) < 100
+    a.mode = "gather"
+    assert abs(a._center(out + home)[1] - ry) < 100
+
+
 def test_every_race_has_an_expanding_strategy():
     for race in ("orc", "human", "undead", "nightelf"):
         assert any(hz.STRATEGIES[n].expand_at <= 300 for n in hz.strategies(race)), race

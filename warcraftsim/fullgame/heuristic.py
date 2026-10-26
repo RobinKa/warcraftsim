@@ -17,23 +17,26 @@ Nothing in it learns. Every half second it:
 * economy: sends idle workers to its mines (5 a mine) or the trees nearest its hall, trains workers up to the plan's
   count, builds supply ahead of its production (never supply-blocked), follows the race's build order and keeps
   every production building training the unit its army mix lacks most (waiting for that one's money: the cheaper
-  ones had starved it), takes the natural expansion once its camp is cleared (or its main mine runs low), and moves
-  workers off a mine that runs dry;
+  ones had starved it), takes the natural expansion once its camp is cleared (or its main mine runs low: a hall,
+  for undead a haunted mine, for night elves a tree of life that entangles the mine), moves workers off a mine that
+  runs dry, and spends money piling up on upgrade levels, the next tier and more production;
 * heroes: trains the plan's hero at the altar (the first one is free), learns its skills in the plan's order,
   revives it when it dies (its money kept first), casts its spells in fights (nukes and stuns on enemy heroes, the
   most clumped or the weakest enemies, heals on hurt own units, summons and area spells when enough enemies are
   near) and sends it home when it is hurt;
 * army: gathers in front of its base; clears the creep camps near home and the natural's for the hero's levels
   while nothing threatens; defends the base when enemies come near (workers into burrows for orc); attacks when its
-  army reaches the plan's size (or the enemy's army just died at its base), attack-moving to the enemy's buildings it
+  army reaches the plan's size (or two thirds of it from the plan's time, when stronger than the strongest enemy
+  army it has met; or the enemy's army just died at its base), attack-moving to the enemy's buildings it
   knows (else its start, then the other mines) while the leaders wait for the rest. In a fight each unit attacks
   the enemy in reach with the least hit points left after the damage the others already aim at it (focus fire
   without overkill; by default its ranged units only, OPTIONS["focus"]), and the army retreats home when the enemies
   near it are clearly stronger (Lanchester: hit points times damage a second, both sides).
 
 Plans give a race's build order, army mix, tiers, heroes, towers, expansion and attack timings: PLANS holds each
-race's default (orc's is the tuned one, ~50% against the learner), STRATEGIES the family of 14 (per race a tier-1
-rush, a tier-2 army with a second hero, casters, a fast expansion for orc and human), played by name
+race's default (orc's is the tuned one, ~50% against the learner), STRATEGIES the family of 16 (per race a tier-1
+rush, a tier-2 army with a second hero, casters for orc and human, a fast expansion; tuned for a person's income
+since 2026-10-26), played by name
 (HeuristicAgent(..., strategy="orc-raiders")). OPTIONS are switches for side-by-side variants (heuristic_match.py
 --variant). `log`: a timeline (a line every 30 game seconds and the army's decisions) for heuristic_match's rows
 (summary()). Its games recorded (heuristic_match.py --record, collect.Recorder) are demonstrations in collect.py's
@@ -125,7 +128,7 @@ PLANS: dict[str, Plan] = {
                 (280.0, 30, "hbla", 1)),
         army=(("hfoo", 2.0), ("hrif", 1.0)),
         research=((300.0, "Rhde"), (420.0, "Rhme"), (540.0, "Rhar")),
-        lumber_workers=((0.0, 3), (150.0, 4)),  # (5 had banked ~520 lumber on average from 4 to 15 minutes)
+        lumber_workers=((0.0, 3),),  # (5 had banked ~520 lumber on average from 4 to 15 minutes, 4 ~480)
         expand_at=480.0, attack_food=45, attack_at=660.0),
     "undead": Plan(
         race="undead", worker="uaco", hall="unpl", supply="uzig", supply_food=10, altar="uaod",
@@ -133,15 +136,15 @@ PLANS: dict[str, Plan] = {
         builds=((0.0, 0, "uaod", 1), (0.0, 0, "usep", 1), (100.0, 12, "usep", 2), (200.0, 22, "usep", 3),
                 (280.0, 30, "ugrv", 1)),
         army=(("ugho", 1.0),),
-        # (undead: the ghouls that chop, _ghoul_lumber; 3-4 had banked ~1,500 lumber, ~210 a minute)
-        lumber_workers=((0.0, 2), (420.0, 3)),
+        # (undead: the ghouls that chop, _ghoul_lumber; 3-4 had banked ~1,500 lumber, ~210 a minute; 2-3 ~900)
+        lumber_workers=((0.0, 1), (240.0, 2)),
         expand_at=480.0, attack_food=45, attack_at=660.0),
     "nightelf": Plan(
         race="nightelf", worker="ewsp", hall="etol", supply="emow", supply_food=10, altar="eate",
         heroes=("Edem",),
         builds=((0.0, 0, "eate", 1), (0.0, 0, "eaom", 1), (100.0, 12, "eaom", 2), (200.0, 22, "eaom", 3)),
         army=(("earc", 1.0),),
-        lumber_workers=((0.0, 3), (150.0, 4)),  # (5 had banked ~760 lumber: archers cost 10)
+        lumber_workers=((0.0, 3),),  # (5 had banked ~760 lumber, 4 ~500: archers cost 10)
         expand_at=480.0, attack_food=45, attack_at=660.0),
 }
 def _variant(base: Plan, name: str, **changes) -> Plan:
@@ -171,7 +174,7 @@ _register(
              builds=((0.0, 0, "oalt", 1), (0.0, 0, "obar", 1), (90.0, 12, "obar", 2), (200.0, 22, "ofor", 1),
                      (330.0, 30, "obea", 1)),
              army=(("ogru", 1.0), ("orai", 2.0)), research=((420.0, "Roen"), (480.0, "Rome"), (600.0, "Roar")),
-             lumber_workers=((0.0, 3), (200.0, 5)), expand_at=420.0,
+             lumber_workers=((0.0, 3), (200.0, 4)), expand_at=420.0,
              rush_builds=None, rush_towers=None, towers=(), attack_food=50, attack_at=720.0),
     _variant(_O, "orc-casters", heroes=("Ofar", "Oshd"), tiers=((220.0, 24, "ostr"),),
              builds=((0.0, 0, "oalt", 1), (0.0, 0, "obar", 1), (90.0, 12, "obar", 2), (180.0, 20, "ofor", 1),
@@ -188,7 +191,7 @@ _register(
              builds=((0.0, 0, "halt", 1), (0.0, 0, "hbar", 1), (120.0, 14, "hbla", 1), (200.0, 22, "hlum", 1),
                      (300.0, 30, "hbar", 2), (330.0, 32, "hars", 1)),
              army=(("hfoo", 2.0), ("hkni", 3.0), ("hmpr", 1.0)), research=((300.0, "Rhde"), (420.0, "Rhme"), (540.0, "Rhar")),
-             lumber_workers=((0.0, 3), (150.0, 5)), expand_at=420.0, attack_food=55, attack_at=840.0),
+             lumber_workers=((0.0, 3), (150.0, 4)), expand_at=420.0, attack_food=55, attack_at=840.0),
     _variant(_H, "human-casters", heroes=("Hamg", "Hpal"), tiers=((200.0, 22, "hkee"),),
              builds=((0.0, 0, "halt", 1), (0.0, 0, "hbar", 1), (120.0, 14, "hbla", 1), (300.0, 28, "hars", 1),
                      (360.0, 34, "hars", 2), (420.0, 40, "hbar", 2)),
@@ -203,25 +206,26 @@ _register(
              builds=((0.0, 0, "uaod", 1), (0.0, 0, "usep", 1), (90.0, 10, "ugrv", 1), (160.0, 18, "usep", 2),
                      (300.0, 30, "usep", 3)),
              army=(("ugho", 1.0), ("ucry", 2.0)), research=((420.0, "Rume"), (540.0, "Rura")),
-             lumber_workers=((0.0, 2), (300.0, 3)), expand_at=420.0, attack_food=50, attack_at=720.0),
+             lumber_workers=((0.0, 2), (420.0, 3)), expand_at=420.0, attack_food=50, attack_at=720.0),
     _variant(_U, "undead-gargoyles", heroes=("Udea", "Udre"), tiers=((240.0, 26, "unp1"),),
              builds=((0.0, 0, "uaod", 1), (0.0, 0, "usep", 1), (90.0, 10, "ugrv", 1), (200.0, 22, "usep", 2),
                      (360.0, 34, "usep", 3)),
              army=(("ugho", 2.0), ("ugar", 2.0)), research=((420.0, "Rume"),),
-             lumber_workers=((0.0, 2), (240.0, 3)), expand_at=420.0, attack_food=50, attack_at=720.0),
+             lumber_workers=((0.0, 2),), expand_at=420.0, attack_food=50, attack_at=720.0),
     # the expansions of the races that had none (2026-10-26): undead haunts the natural's mine (no hall: acolytes mine
     # a haunted mine where it stands), night elves root a tree of life there and entangle its mine
     _variant(_U, "undead-expand", heroes=("Udea", "Ulic"), tiers=((360.0, 34, "unp1"),), expand_at=240.0, creep_from=90.0,
              builds=((0.0, 0, "uaod", 1), (0.0, 0, "usep", 1), (100.0, 12, "ugrv", 1), (300.0, 24, "usep", 2),
                      (480.0, 40, "usep", 3)),
              army=(("ugho", 2.0), ("ucry", 2.0)), research=((420.0, "Rume"), (540.0, "Rura")),
-             lumber_workers=((0.0, 3),), attack_food=50, attack_at=780.0),
+             lumber_workers=((0.0, 2), (400.0, 3)), attack_food=50, attack_at=780.0),
     _variant(_E, "nightelf-archers"),  # (archers, a Demon Hunter)
     _variant(_E, "nightelf-huntresses", heroes=("Edem", "Ekee"), tiers=((360.0, 36, "etoa"),),
              builds=((0.0, 0, "eate", 1), (0.0, 0, "eaom", 1), (90.0, 10, "edob", 1), (150.0, 16, "eaom", 2),
                      (300.0, 30, "eaom", 3)),
              army=(("esen", 2.0), ("earc", 1.0)), research=((420.0, "Resm"), (540.0, "Rema")),
-             expand_at=420.0, attack_food=50, attack_at=720.0),
+             lumber_workers=((0.0, 3), (150.0, 5)), expand_at=420.0, attack_food=50, attack_at=720.0),  # (3: ~950 gold
+             # banked and 46 lumber: huntresses and the moon upgrades take lumber)
     _variant(_E, "nightelf-dryads", heroes=("Ekee", "Edem"), tiers=((240.0, 26, "etoa"),),
              builds=((0.0, 0, "eate", 1), (0.0, 0, "eaom", 1), (90.0, 10, "edob", 1), (330.0, 30, "eaoe", 1),
                      (420.0, 40, "eaom", 2)),
@@ -288,9 +292,11 @@ ENGAGE = 900.0  # a unit fights the enemies within this of it
 RETREAT_RATIO = 0.6  # the army's strength below this share of the enemies' near it: retreat (away from home)
 RETREAT_STEPS = 16  # at least this long (8 s) once retreating
 RALLY_OUT = 650.0  # the rally point: this far from the hall toward the enemy's base
+RALLY_LEFT = 1000.0  # a unit this far from the rally point has left it (the army's centre on the way: _center)
 HERO_LOW, HERO_OK = 0.38, 0.75  # a hero this hurt goes home until it has this share of its hit points again
 PULL_LOW, PULL_STEPS = 0.0, 4  # a hurt melee unit steps back this long (off: chasers as fast caught them)
 CAMP_JOIN = 550.0  # creeps this near each other: one camp
+CREEP_STALL, CAMP_SKIP = 120.0, 300.0  # a camp none of whose creeps died for this long in creep mode: skipped so long
 CREEP_REACH = 3600.0  # camps this near home are crept
 RUSH_EXPAND_DELAY = 60.0  # against undead and orc (their first waves at ~4:30) the natural this much later (120 s
 # at the insane AI's double income; at a person's the second mine is worth more than the wait)
@@ -309,6 +315,7 @@ UPGRADES = {"orc": ("Rome", "Roar", "Rora"), "human": ("Rhme", "Rhar", "Rhra", "
             "undead": ("Rume", "Ruar", "Rura", "Rucr"), "nightelf": ("Resm", "Rerh", "Resw", "Rema")}
 TIER_CHAIN = {"human": ("hkee", "hcas"), "orc": ("ostr", "ofrt"), "undead": ("unp1", "unp2"), "nightelf": ("etoa", "etoe")}
 REGROUP_STEPS = 90  # after a retreat no attack for 45 s
+TIMED_EDGE = 1.2  # the timed attack (Plan.attack_at) only with this much the power of the strongest enemy army met
 TOWER_COST = 2500.0  # a known enemy tower near a target counts as this much more distance
 
 
@@ -578,6 +585,8 @@ class HeuristicAgent:
             self.natural_spot = (nx + off[0], ny + off[1])
         self.camps = camps_of(obs.units)  # (the map's creep camps: where they stand at the start)
         self.camp_done: set[int] = set()
+        self.creep_progress: dict[int, tuple[float, int]] = {}  # camp -> (when one of it last died or creeping began, left)
+        self.camp_skip: dict[int, float] = {}  # camp given up on -> not crept (nor waited for) before then
         self.creep_target: int | None = None
         self.entangle_sent: dict[int, int] = {}  # tree of life -> the step its entangle order went
         self.assign: dict[int, str] = {}  # worker -> "gold" / "lumber" / "build"
@@ -670,6 +679,15 @@ class HeuristicAgent:
                     q.pop(j)
                 if k == int(EventKind.RESEARCH_CANCEL):
                     self.research_done[rawcode(e.b)] -= 1
+        if self.t % 4 == 0:  # (a camp whose ground its units see with no creep on it: gone. Creeps killed out of its
+            # sight, by the enemy's creeping, send it no event, and their camp had held the army in creep mode for up
+            # to 9 minutes and the natural's expansion with it)
+            eyes = [(u.x, u.y) for u in self.mine_units if not u.is_structure]
+            for c in self.camps:
+                if c["ids"] and any(math.hypot(x - c["x"], y - c["y"]) < 350 for x, y in eyes) and not any(
+                        math.hypot(cr.x - c["x"], cr.y - c["y"]) < CAMP_JOIN + 300 for cr in self.creeps):
+                    c["ids"].clear()
+                    self.counts["camps found empty"] += 1
         for u in self.enemy_buildings:  # (enemy buildings seen: remembered where they stand)
             self.memory[u.id] = Memory(u.type, u.x, u.y, self.now)
         if self.memory and self.t % 4 == 0:  # (a remembered one no longer there where the player sees: gone)
@@ -1092,8 +1110,8 @@ class HeuristicAgent:
         if self.now < self._expand_at() and not low:
             return out
         camp = self._camp_at(*self.mines[self.natural])
-        if camp is not None and camp["ids"]:
-            return out  # (its camp first: the army's creep mode)
+        if camp is not None and camp["ids"] and self.now >= self.camp_skip.get(self.camps.index(camp), 0.0):
+            return out  # (its camp first: the army's creep mode; one it gave up on: the hall goes up anyway)
         if any(math.hypot(e.x - self.natural_spot[0], e.y - self.natural_spot[1]) < 1200 for e in self.enemy_units):
             return out
         if code == "ugol":
@@ -1351,9 +1369,12 @@ class HeuristicAgent:
         if self.mode == "creep" and (self._creep_camp() is None or not self.heroes or
                                      any(h.hp < 0.4 * h.max_hp for h in self.heroes)):
             self.mode = "gather"
-        ready = self.t >= self.no_attack_until and (
-            army_food >= self.attack_food or (self.now >= self.plan.attack_at and army_food >= self.attack_food * 2 / 3)
-            or self.food >= FOOD_CAP - 4)
+        # (the timed attack with two thirds of the plan's army only when it is stronger than the strongest enemy army
+        # it has met: at a person's income against the AI's double, those attacks had met an army twice its own, most
+        # first attacks retreating within two minutes after losing 3-10 units for each one killed)
+        timed = self.now >= self.plan.attack_at and army_food >= self.attack_food * 2 / 3 \
+            and mine_power >= TIMED_EDGE * self.enemy_army_seen
+        ready = self.t >= self.no_attack_until and (army_food >= self.attack_food or timed or self.food >= FOOD_CAP - 4)
         natural = self._natural_camp_due(units, mine_power)
         if self.mode == "creep" and natural is not None and self.creep_target == self.camps.index(natural):
             pass  # (the natural's camp first: the expansion waits for it)
@@ -1388,7 +1409,20 @@ class HeuristicAgent:
         if self.creep_target is not None:
             c = self.camps[self.creep_target]
             if c["ids"]:
-                return c
+                # (no creep of it killed for CREEP_STALL: given up for a while. An army that never reached its camp,
+                # the natural's, had stood in creep mode for up to 11 minutes without a fight, its expansion waiting)
+                k, n = self.creep_target, len(c["ids"])
+                since, n0 = self.creep_progress.get(k, (self.now, n))
+                if n < n0:
+                    since, n0 = self.now, n
+                self.creep_progress[k] = (since, n0)
+                if self.now - since <= CREEP_STALL:
+                    return c
+                self.camp_skip[k] = self.now + CAMP_SKIP
+                self.counts["camps given up"] += 1
+                self._note(f"camp given up after {self.now - since:.0f} s")
+                self.creep_target = None
+                return None
             self.creep_target = None
             self.counts["camps cleared"] += 1
             self._note("camp cleared")
@@ -1402,6 +1436,7 @@ class HeuristicAgent:
         natural = self._natural_camp_due(units, mine_power)
         if natural is not None:
             self.creep_target = self.camps.index(natural)
+            self.creep_progress[self.creep_target] = (self.now, len(natural["ids"]))
             return natural
         if not self.plan.creep_from <= self.now <= self.plan.creep_until or self.t - self.threat_at < 60:
             return None
@@ -1410,10 +1445,12 @@ class HeuristicAgent:
             reach = 2600.0 if self.now < 200 else 0.0
         cands = [(math.hypot(c["x"] - hx, c["y"] - hy), i) for i, c in enumerate(self.camps)
                  if c["ids"] and math.hypot(c["x"] - hx, c["y"] - hy) < reach and mine_power > 2.5 * c["power"]
-                 and math.hypot(c["x"] - self.enemy_start[0], c["y"] - self.enemy_start[1]) > 3500]
+                 and math.hypot(c["x"] - self.enemy_start[0], c["y"] - self.enemy_start[1]) > 3500
+                 and self.now >= self.camp_skip.get(i, 0.0)]
         if not cands:
             return None
         self.creep_target = min(cands)[1]
+        self.creep_progress[self.creep_target] = (self.now, len(self.camps[self.creep_target]["ids"]))
         return self.camps[self.creep_target]
 
     def _natural_camp_due(self, units, mine_power: float) -> dict | None:
@@ -1425,7 +1462,8 @@ class HeuristicAgent:
             return None
         early = 120.0 if self.enemy_race not in ("undead", "orc") or not self.opt["rush_caution"] else 0.0
         due = self.now >= self._expand_at() - early or self.mine_gold.get(self.main_mine, 0) < (MINE_LOW + 3000) * self.mine_scale
-        if natural is not None and natural["ids"] and due and mine_power > 2.0 * natural["power"]:
+        if natural is not None and natural["ids"] and due and mine_power > 2.0 * natural["power"] \
+                and self.now >= self.camp_skip.get(self.camps.index(natural), 0.0):
             return natural
         return None
 
@@ -1447,6 +1485,12 @@ class HeuristicAgent:
 
     def _center(self, units) -> tuple[float, float]:
         hero = next((u for u in units if u.is_hero and u.id not in self.hero_home), None)
+        if self.mode in ("attack", "creep"):  # (out on the way: the group that left, not the new units at the rally
+            # point; their median had pulled the centre home, the leaders sent back to it, and an army bound for the
+            # natural's camp 6,000 away had swung between home and halfway for up to 11 minutes)
+            out = [u for u in units if math.hypot(u.x - self.rally[0], u.y - self.rally[1]) > RALLY_LEFT]
+            if len(out) >= max(3, len(units) // 3):
+                units = out
         xs = np.array([u.x for u in units], float)
         ys = np.array([u.y for u in units], float)
         mx, my = float(np.median(xs)), float(np.median(ys))
