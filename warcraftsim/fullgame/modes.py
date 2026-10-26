@@ -64,7 +64,8 @@ DECIDED_AT = {"workers": 480.0, "creep": 420.0, "harass": 600.0, "army": 600.0, 
 CAP_FROM, CAP_LEAST = 300.0, 12  # cap: measured from this second, while the army has this much food
 # forbid: each race's basic units (parameter 0 the spam unit, drawn FORBID_FIRST of the time), and how many of one
 # may live at once (undead's ghouls gather its lumber: the teacher's choppers); a violation of 1 at FORBID_FULL more
-FORBID = {"human": ("hfoo", "hrif"), "orc": ("ogru", "ohun"), "undead": ("ugho", "ucry"), "nightelf": ("earc", "esen")}
+FORBID = {"human": ("hfoo", "hrif"), "orc": ("ohun", "ogru"), "undead": ("ugho", "ucry"), "nightelf": ("earc", "esen")}
+# (orc's spam unit is the headhunter, ~41 a game to ~5 grunts: grunts first had forbidden what it hardly made; audit 14)
 FORBID_FIRST, FORBID_FULL = 0.75, 4
 ALLOW = {"ugho": 3}
 # (the measures each kind reads while undecided: Tracker.step's need bits; no_rush's until its second, no_expand's
