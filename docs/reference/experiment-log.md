@@ -1830,6 +1830,16 @@ Merged, not yet in a run: fine target points (`--fine-points 7 --fine-centre 0.9
 
 Process rule since: agent branches are merged only while no run is live (at a fork), since a run executes from the checkout (the 13:49 crash; audit 14).
 
+**Audit 15** (`fgself-155`'s games): on `echofast2` the main mine runs dry at 12-13 minutes and the policy expands in 2-10% of the training games (none of 207 real games); games past 12 minutes are lost ~95% at every tax level (the tax only changes how many end before the mine runs out). A workers mode asked for more workers than the new caps allow (undead never kept it); the spells started 1/2981 as likely as no order and were never cast (9 casts in ~13,800 games). The tax curriculum, the mine feature's scale and the masks against target items checked fine.
+
+**`fgself-155`, kept** (19:42, ~340 games a policy): 54.7% of 331 head to head with its start (rising: 50%, 54%, 61%), 64.4% of 378 with `fgself-130`; against insane 59.4%, +2.5 points over its start in the same windows with the races weighed alike (`head_to_head.py --vs`); with a target 22%. Last checkpoint 36007395.
+
+The approximation study (the user's question: how much faster with small differences): thinning the range sensors' timers saved ~7-10% of the game's main thread but cut income by 29-48% (each timer is set to when its event can happen, e.g. a worker reaching the mine), and the stuck units' A* wait was safe but saved ~0-2.5%; at most a few percent without breaking the economy. The user: no approximations for now (the bits stay off; evaluation games drop them always).
+
+Since 19:47 every launch runs from its own checkout of its commit (`~/wc3/code/<commit>`, `warcraftsim/codepin.py`): merges no longer reach a live run.
+
+**`fgself-156`** (from `fgself-155`'s 36007395, 19:47, the first pinned launch): `--expand-lesson 0.4` (the teacher's expansion lessons in every game once the main mine holds less than 40% of a full one), `--spells-bias 3`, the workers mode capped. Judged by expansions and the wins past 12-18 minutes, spells cast, and against its start in the same windows.
+
 The queue:
 1. (done: in `fgself-155`) The audit-12 economy fixes: a training map whose mines and start scale with its costs (`echofast2`), workers labelled up to the target's count, masks against duplicate tech buildings and surplus workers, orc burrow and no-target lumber lessons.
 2. Cloning the scripted strategy family as anchor and teacher (AlphaStar's recipe with scripted data). First tune its weak plans, and add night elf and undead expansion plans. Then record thousands of echofast games (`scripts/heuristic_match.py --record`), train a cloning policy, and use it as the KL anchor and a distillation teacher.
