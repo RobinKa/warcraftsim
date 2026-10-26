@@ -28,7 +28,11 @@ selfplay --teach 1 (needs --neutral 1: the orders it teaches are the neutral bui
 
     lumber:        (--teach 3) a target's next item short of lumber (the builder's) and fewer than CHOPPERS on lumber: the race's
                    chopper (undead: a ghoul) nearest the tree nearest its hall harvests it (the policy had all but stopped
-                   chopping: human 38 lumber a minute to 872 gold)
+                   chopping: human 38 lumber a minute to 872 gold). With --teach 4 also in games without a builder (no
+                   target) while lumber is short of the gold (lumber_short: the bank's lumber under half its gold)
+    a burrow:      (--teach 4, orc) a burrow with peons inside (loaded) and no enemy unit within BURROW_SAFE of it stands
+                   down: its peons back to work (audit 12: in target games 14 orders a minute were skipped for a loaded
+                   peon, 1.5 in training; 16-20 peons gathered like ~7)
 
 Each kind at most every GAP steps a side, so a long wait for the money is not a label a step."""
 
@@ -77,6 +81,11 @@ MIX_FROM, MIX_SLACK, MIX_LEAST = 120.0, 0.15, 5
 # the policy almost none (human 38 lumber a minute to 872 gold in fgself-145; fgself-120: 105), and a target's items
 # waited for lumber more than for anything else (a keep 516k blocked steps, halls of the dead 1.1M; audit 9)
 CHOPPERS = {"human": ("hpea", 5), "orc": ("opeo", 5), "undead": ("ugho", 3), "nightelf": ("ewsp", 5)}
+LUMBER_RATIO = 2  # (--teach 4, no target: lumber is short while the bank's lumber times this is under its gold)
+# --teach 4 (orc): a burrow's stand-down (its "standdown" order: the burrow's in the demonstrations) when no enemy unit
+# is within BURROW_SAFE of it and peons are inside (LOADED)
+BURROW, PEON, STANDDOWN, LOADED = fourcc("otrb"), fourcc("opeo"), 852113, 32
+BURROW_SAFE = 1500.0
 NEAR_MERCHANT = 2500.0
 ENEMY_NEAR = 800.0  # (an item lesson waits while an enemy unit is this near the hero: a fight)
 USESLOT = 852008
@@ -87,7 +96,7 @@ class Teacher:
     """One side's lessons in one game (commands: what it would order now)."""
 
     def __init__(self, side: int, race: str, rng: random.Random, target: dict | None = None, target_hero: bool = False,
-                 lumber: bool = False):
+                 lumber: bool = False, burrows: bool = False):
         """`target` (the side's target strategy, if it has one): its tavern hero is the one taught, and none when it
         has none (another hero would break a narrow target). `target_hero` (--teach 2): its first hero from the altar
         taught too, when that is its first hero (the builder taught it only once due: the policy had made another one
@@ -95,6 +104,7 @@ class Teacher:
         from .neutral import TAVERN_HEROES
         self.side = side
         self.lumber = lumber  # (--teach 3: the lumber lesson)
+        self.burrows = burrows and race == "orc"  # (--teach 4: the burrows' stand-down)
         # the tavern hero taught, and the heroes the side has when it is hired: a target's, at its place among the
         # target's heroes (its next hero), as soon as the altar, the tier and the money permit. (As the first or
         # second hero only, from 135 s: the lesson had fired 68 times in 3,000 target games, ~1,300 of them with a
@@ -205,7 +215,27 @@ class Teacher:
         eco = getattr(self, "economy", None)  # (short, the choppers' ids, the trees: play_one's, from the builder)
         if self.lumber and eco is not None and eco[0] and eco[2] and t - self.last.get("lumber", -GAP) >= GAP:
             out += self._lumber(fx.own_alive(rows, self.side), eco[1], eco[2], t)
+        if self.burrows and t - self.last.get("burrow", -GAP) >= GAP:
+            out += self._burrows(rows, t)
         return out
+
+    def _burrows(self, rows: np.ndarray, t: int) -> list:
+        """Orc: each finished burrow nearest a loaded peon (inside one) with no enemy unit within BURROW_SAFE of it
+        stands down (its peons back to work)."""
+        alive = fx.own_alive(rows, self.side)
+        fl = alive[:, fx.C_FLAGS]
+        loaded = alive[(alive[:, fx.C_TYPE] == PEON) & (fl & LOADED > 0)]
+        burrows = alive[(alive[:, fx.C_TYPE] == BURROW) & (fl & fx.CONSTRUCTING == 0)]
+        if not len(loaded) or not len(burrows):
+            return []
+        bx, by = burrows[:, fx.C_X].astype(np.float64), burrows[:, fx.C_Y].astype(np.float64)
+        full = {int(np.argmin((bx - x) ** 2 + (by - y) ** 2)) for x, y in loaded[:, [fx.C_X, fx.C_Y]].tolist()}
+        enemies = rows[(rows[:, fx.C_OWNER] == 1 - self.side) & (rows[:, fx.C_FLAGS] & (fx.DEAD | fx.STRUCTURE) == 0)]
+        ex, ey = enemies[:, fx.C_X].astype(np.float64), enemies[:, fx.C_Y].astype(np.float64)
+        safe = [k for k in sorted(full) if not (np.hypot(ex - bx[k], ey - by[k]) < BURROW_SAFE).any()]
+        if not safe or not self._due("burrow", t):
+            return []
+        return [ImmediateOrder(int(burrows[k, fx.C_ID]), STANDDOWN) for k in safe]
 
     def _lumber(self, alive: np.ndarray, choppers: set, trees: dict, t: int) -> list:
         """A target's next item short of lumber and fewer than CHOPPERS on it: the race's chopper nearest the tree
@@ -358,6 +388,12 @@ class Teacher:
 
 
 TH, EH, HF = rulesnative.TH, rulesnative.EH, rulesnative.HF  # (the C's facts: their heads, a hero's fields)
+def lumber_short(gold: int, lumber: int) -> bool:
+    """--teach 4, a game without a builder: the lumber lesson's 'short' (the bank's lumber under half its gold: a
+    person's gold and lumber income run ~2-3 to 1; the policy's 462 to 72 a minute in its real-game losses, audit 12)."""
+    return lumber * LUMBER_RATIO < gold
+
+
 _SECOND = itemgetter(1)
 K_ALTAR, K_TIER2, K_TIER3 = rulesnative.K_ALTAR, rulesnative.K_TIER2, rulesnative.K_TIER3
 _CLS: list = []  # ([the C's table of type classes]: made once)

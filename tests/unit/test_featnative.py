@@ -72,3 +72,26 @@ def test_to_f16_matches_numpy():
         got = to_f16(a)
         assert got.dtype == np.float16 and got.shape == a.shape
         assert np.array_equal(got.view(np.uint16), a.astype(np.float16).view(np.uint16))
+
+
+@pytest.mark.skipif(featnative.lib() is None, reason="no C compiler")
+def test_mine_feature_reads_the_maps_full_mine(monkeypatch):
+    """Encoder.mine_full (echofast2: its mines halved with its costs): a fresh mine reads 1 there as in the real game,
+    in C as in numpy."""
+    vocab = {"types": [int.from_bytes(c.encode(), "big") for c in ("hpea", "htow", "ngol")],
+             "current_orders": [851983], "upgrades": [], "orders": [[851983, fx.POINT]]}
+    rows = _rows(np.random.default_rng(1), 40)
+    rows[:, fx.C_TYPE] = int.from_bytes(b"ngol", "big")
+    rows[:, fx.C_OWNER] = 15
+    col = 9 + len(fx.FLAG_BITS) + 1
+    out = {}
+    for full in (12500.0, 6250.0):
+        enc = fx.Encoder(vocab)
+        enc.mine_full = full
+        native = enc.entities(rows, 0, 1.0, None, set())
+        monkeypatch.setattr(featnative, "_lib", False)
+        py = enc.entities(rows, 0, 1.0, None, set())
+        monkeypatch.setattr(featnative, "_lib", None)
+        assert np.allclose(native[2], py[2], rtol=0, atol=1e-6)
+        out[full] = native[2][:, col]
+    assert np.allclose(out[6250.0], 2 * out[12500.0], atol=1e-6) and out[12500.0].max() > 0

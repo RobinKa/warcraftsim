@@ -387,6 +387,37 @@ def set_masks(tech: bool, valid: bool) -> None:
     global TECH_MASK, VALID_MASK
     TECH_MASK, VALID_MASK = bool(tech), bool(valid)
     os.environ["WARCRAFTSIM_TECH_MASK"], os.environ["WARCRAFTSIM_VALID_MASK"] = str(int(TECH_MASK)), str(int(VALID_MASK))
+
+
+# selfplay --econ-masks 1 (audit 12, fgself-153's real games: undead built a median 6 slaughterhouses in target games and
+# 13-20 acolytes with 5 able to mine): (a) a tech building's build order (ECON_TECH: research, casters, siege and air,
+# the altar, the shop; not the main barracks, the halls, supply, towers or the human and orc lumber drop-offs) while
+# one the player has stands idle (finished with nothing training or researching, under construction, or a worker on
+# its way to build one): one more only while every copy is at work; (b) the worker's train order once the player has
+# as many as its mines need (worker_cap: alive and in training)
+ECON_MASK = os.environ.get("WARCRAFTSIM_ECON_MASK", "0") == "1"
+ECON_TECH = {"human": ("hars", "harm", "hgra", "hbla", "halt", "hvlt"),
+             "orc": ("osld", "otto", "obea", "oalt", "ovln"),
+             "undead": ("uslh", "ugrv", "utod", "usap", "ubon", "uaod", "utom"),
+             "nightelf": ("eaoe", "eaow", "edos", "edob", "eate", "eden")}
+# per race: its worker, the buildings that count as a worked mine (human and orc: a hall, built or building; undead: a
+# haunted mine; night elves: an entangled mine), the workers per mine (5 fill a mine's gold) and the rest (lumber and
+# building): at one base human 18, orc 17 (people's one-base economies: 15-18), night elf 20 (wisps also chop and are
+# spent on each building), undead 8 (ghouls chop: 5 on gold and 3 to build)
+ECON_WORKERS = {"human": ("hpea", ("htow", "hkee", "hcas"), 5, 13), "orc": ("opeo", ("ogre", "ostr", "ofrt"), 5, 12),
+                "undead": ("uaco", ("ugol",), 5, 3), "nightelf": ("ewsp", ("egol",), 5, 15)}
+
+
+def set_econ_masks(v) -> None:
+    global ECON_MASK
+    ECON_MASK = bool(int(v or 0))
+    os.environ["WARCRAFTSIM_ECON_MASK"] = str(int(ECON_MASK))
+
+
+def worker_cap(race: str, mines: int) -> int:
+    """The most workers --econ-masks lets `race` have with `mines` worked mines (ECON_WORKERS)."""
+    _, _, per, rest = ECON_WORKERS[race]
+    return per * max(int(mines), 0) + rest
 # the global vector's strategy block (strategy conditioning, fullgame/strategy.py: the policy's target strategy,
 # zeros for none), between what the player knows and the privileged block; 0: none (a run's networks all
 # have it or none: set_z from the run's network)
@@ -689,6 +720,8 @@ class Encoder:
         self.vocab = vocab
         self.costs = costs
         self.steps = steps
+        self.mine_full = 12500.0  # (a full gold mine of the game's map: the mine feature's 1; echofast2's are halved,
+        # with its costs, so a fresh mine reads 1 there as in the real game: selfplay.play_one sets it per game)
         self.level_rows = ([(int(k), int(vocab["orders"][k - 1][0])) for k in np.flatnonzero(steps.any(1))]
                            if steps is not None else [])
         self._at_levels = None
@@ -803,7 +836,7 @@ class Encoder:
         # the flag had told a Blademaster's images apart; audit 4)
         a = 9 + len(FLAG_BITS)
         f[:, a] = sel[:, C_HLEVEL] / 10.0
-        f[:, a + 1] = sel[:, C_RESOURCE] / 12500.0
+        f[:, a + 1] = sel[:, C_RESOURCE] / self.mine_full
         f[:n_own, a + 2] = sel[:n_own, C_SKILLPTS] / 3.0  # (an enemy hero's unspent points: the game shows none)
         rad = np.radians(sel[:, C_FACING].astype(np.float32))
         f[:, a + 3] = np.sin(rad)
@@ -1274,6 +1307,36 @@ class View:
         return (had or any(m[0] == 2 for m in self.making.values())
                 or bool(getattr(self, "hiring_heroes", ())))  # (a tavern hire on its way: the first hero; audit 10)
 
+    def econ_allowed(self, rows: np.ndarray) -> np.ndarray:
+        """--econ-masks: the order classes ECON_MASK leaves the player: a tech building's build order while a copy it has
+        is idle (finished and making nothing: View.busy; under construction; or a worker on its way to build one),
+        and its worker's train order once its workers, alive and in training, reach worker_cap for its mines."""
+        enc = self.enc
+        race = RACES[self.races[self.player]]
+        cls = self.__dict__.get("_econ_cls")
+        if cls is None or cls[0] is not enc:  # (the race's classes, once: [(type code, build class)], worker, mines)
+            w, mines, _, _ = ECON_WORKERS[race]
+            codes = [int.from_bytes(x.encode(), "big") for x in ECON_TECH[race]]
+            tech = [(c, enc.order_index[(c, POINT)]) for c in codes if (c, POINT) in enc.order_index]
+            wc = int.from_bytes(w.encode(), "big")
+            cls = self._econ_cls = (enc, tech, wc, enc.order_index.get((wc, IMMEDIATE)),
+                                    np.array([int.from_bytes(m.encode(), "big") for m in mines], np.int64))
+        _, tech, wc, wk, mines = cls
+        ok = np.ones(enc.n_orders, bool)
+        r = rows[(rows[:, C_OWNER] == self.player) & (rows[:, C_FLAGS] & DEAD == 0)]
+        types, fl = r[:, C_TYPE], r[:, C_FLAGS]
+        built = fl & STRUCTURE > 0
+        coming = set(r[(fl & WORKER > 0) & (r[:, C_ORDER] >= TYPE_CODE), C_ORDER].tolist())  # (on their way to build)
+        for c, k in tech:
+            copies = r[built & (types == c)][:, [C_ID, C_FLAGS]].tolist()
+            if c in coming or any(i not in self.busy or f & CONSTRUCTING for i, f in copies):  # (a copy idle or building)
+                ok[k] = False
+        if wk is not None:
+            n = int((types == wc).sum()) + sum(1 for m in self.making.values() if m[0] == 0 and m[1] == wc)
+            if n >= worker_cap(race, int((built & np.isin(types, mines)).sum())):
+                ok[wk] = False
+        return ok
+
     def tech_allowed(self, rows: np.ndarray, built: np.ndarray | None = None, own_hero: np.ndarray | None = None,
                      dead_rows: np.ndarray | None = None, done_types: list | None = None, hero_types: list | None = None,
                      dead_pairs: list | None = None) -> np.ndarray:
@@ -1502,6 +1565,8 @@ class View:
                 avail &= (self.tech_allowed(rows, done_types=done_types, hero_types=hero_types,
                                             dead_pairs=list(zip(dead_ids, dead_types))) if fast
                           else self.tech_allowed(rows, built, own_hero, dead))
+        if avail is not None and ECON_MASK:  # (--econ-masks: no idle tech building's copy, no worker past the mines')
+            avail &= self.econ_allowed(rows)
         if avail is not None and enc.expand_class is not None:  # (--macros: expand, while the natural is free and
             site = _mod("macros").site                            # its hall affordable; night elves' tree of life
             race = RACES[self.races[player]]                      # entangles its mine, play.BCAgent._entangle)

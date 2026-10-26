@@ -92,7 +92,7 @@ def view_tables(enc, fx) -> tuple | None:
     """w3f_view's fixed tables for this encoder and the features' module as they are (kept on the encoder with their
     addresses; made again when the map's geometry or the inputs change): None when a hero ability has more mana
     costs than the table holds (the Python hero block then)."""
-    key = (fx.STARTS, fx.F, fx.NEUTRAL, fx.MAX_OWN, fx.MAX_ENT)
+    key = (fx.STARTS, fx.F, fx.NEUTRAL, fx.MAX_OWN, fx.MAX_ENT, enc.mine_full)
     got = getattr(enc, "_view_tables", None)
     if got is not None and got[0] == key:
         return got[1]
@@ -100,7 +100,7 @@ def view_tables(enc, fx) -> tuple | None:
             np.ascontiguousarray(np.sort(fx.SHOP_IDS).astype(np.int64)),
             np.ascontiguousarray(enc._type_keys, np.int64), np.ascontiguousarray(enc._type_vals, np.int64),
             np.ascontiguousarray(enc._cur_keys, np.int64), np.ascontiguousarray(enc._cur_vals, np.int64),
-            geometry(fx)]
+            geometry(fx, enc.mine_full)]
     do_hero = fx.F > fx.F_BASE
     htypes, hslots, itemk, itemv, maxl = np.zeros(1, np.int64), np.zeros(1), np.zeros(1, np.int64), np.zeros(4), 1
     if do_hero:
@@ -313,9 +313,10 @@ def _keyed(queued, busy, lumber) -> tuple[np.ndarray, int, int, int]:
     return np.array([*(k for k, _ in q), *(v for _, v in q), *b, *lm, 0], np.int64), len(q), len(b), len(lm)
 
 
-def geometry(fx) -> np.ndarray:
+def geometry(fx, mine_full: float = 12500.0) -> np.ndarray:
+    """The map's frame for the C, and a full gold mine of the game's map (the mine feature's 1: Encoder.mine_full)."""
     (ax, ay), (bx, by) = fx.STARTS
-    return np.array([ax, ay, bx, by, fx.DUEL_D, fx.NEAR, fx.SCALE, fx.ANCHOR_X], np.float64)
+    return np.array([ax, ay, bx, by, fx.DUEL_D, fx.NEAR, fx.SCALE, fx.ANCHOR_X, mine_full], np.float64)
 
 
 def entities(enc, fx, rows: np.ndarray, player: int, sign: float, production, lumber):
@@ -326,14 +327,14 @@ def entities(enc, fx, rows: np.ndarray, player: int, sign: float, production, lu
     keys, nq, nb, nl = _keyed(queued, busy, lumber)
     qk = keys.ctypes.data
     qv, bk, lk = qk + 8 * nq, qk + 16 * nq, qk + 8 * (2 * nq + nb)
-    if getattr(enc, "_native_key", None) != (fx.STARTS, fx.F):  # (the tables, kept with their pointers)
+    if getattr(enc, "_native_key", None) != (fx.STARTS, fx.F, enc.mine_full):  # (the tables, kept with their pointers)
         arrs = (np.ascontiguousarray(np.sort(fx.PASSIVE_IDS).astype(np.int64)),
                 np.ascontiguousarray(np.sort(fx.SHOP_IDS).astype(np.int64)),
                 np.ascontiguousarray(enc._type_keys, np.int64), np.ascontiguousarray(enc._type_vals, np.int64),
                 np.ascontiguousarray(enc._cur_keys, np.int64), np.ascontiguousarray(enc._cur_vals, np.int64),
-                geometry(fx))
+                geometry(fx, enc.mine_full))
         enc._native_tables = (arrs, [a.ctypes.data for a in arrs])
-        enc._native_key = (fx.STARTS, fx.F)
+        enc._native_key = (fx.STARTS, fx.F, enc.mine_full)
     arrs, (passive, shops, tk, tv, ck, cv, geo) = enc._native_tables
     E = fx.MAX_ENT
     out = np.zeros(3 * E + 5, np.int64)  # (the indices, types, current orders and counts: one array, one pointer)

@@ -69,7 +69,7 @@ from .featnative import addr as _faddr, lib as _featlib, to_f16
 from .trace import DEAD_FLAG, Production, material, trace_step, unit_values  # noqa: F401
 from .play import unit_rows
 from .model import FullGameNet, act, adapt_config, anchor_kl, arch_key, evaluate, fine_head, load, point_parts, trained
-from .teacher import Teacher
+from .teacher import Teacher, lumber_short
 from ..native import unit_from_row
 from .neutral import MERCENARIES as _MERCENARIES
 from ..protocol import Build as _Build, Buy as _Buy, ImmediateOrder as _ImmediateOrder, TargetOrder as _TargetOrder, \
@@ -693,6 +693,7 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
     fx.set_spells(int(cfg.get("spells", 0) or 0))
     fx.set_fine(int(cfg.get("fine_points", 0) or 0))  # (--fine-points: the point indices)
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
+    fx.set_econ_masks(cfg.get("econ_masks", 0))
     nets = Nets(cfg, device)
     while nets.current is None and not stop.is_set() and alive():
         time.sleep(1)
@@ -1209,6 +1210,15 @@ def smoothed_rate(m: Member, window: int = 50) -> float | None:
     return (sum(r) + 1.0) / (len(r) + 2.0) if r else None
 
 
+def mine_scale(map_name: str) -> float:
+    """A map's gold mines against the real game's (echofast2: 0.5, with its costs; data.duelmap's rules)."""
+    try:
+        from ..data.duelmap import map_rules
+        return float(map_rules(map_name).mine_gold)
+    except Exception:  # noqa: BLE001 (another map: the real game's)
+        return 1.0
+
+
 def agent_difficulty(cfg: dict) -> str:
     """An agent slot's difficulty: normal, a person's income. An agent slot is a computer slot, and the engine gives it
     its difficulty's income (insane: double; docs/reference/engine-notes.md), so the learner had gathered twice what a
@@ -1607,6 +1617,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         self.why_not = ""
         self.reserve: tuple[int, int, int] | None = None  # (order class, gold, lumber): saved for (View.reserve)
         self.ctx: list = []
+        self.z_workers = bool(cfg.get("z_workers", 0))  # (--z-workers: its target's workers, workers())
+        self.worker_at = -99.0  # (game time of its last worker order)
 
     def observe(self, obs) -> None:
         """The items the side started, finished or cancelled in the step just taken (its events)."""
@@ -1709,7 +1721,7 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             due.insert(0, (0.0, food))  # 3-7 food items had waited as "food" with no farm taught; audit 9)
         if not due:
             self.reserve = None
-            return []
+            return self.workers(obs, p, t)
         own = self._own_rows(obs)
         mine = done = None  # (Unit objects: made when an order needs them)
         if own is not None and self._cols is _ROW_COLS and featnative.lib() is not None:  # (featnative.side's, made
@@ -1754,7 +1766,46 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
                 self.reserve = save
                 return cmds
         self.reserve = save
-        return []
+        return self.workers(obs, p, t)
+
+    def worker_goal(self, obs) -> tuple[int, int]:
+        """--z-workers: (the side's workers, alive and in training; how many its target has): its race's start (5, an
+        undead's 3) plus the strategy's trained ones ("n": a whole game's, as the pools record them), at most
+        features.worker_cap for the mines it works (a hall, a haunted or an entangled mine)."""
+        w = WORKER_TYPES.get(self.race)
+        own = self._own_rows(obs)
+        if w is None or own is None:
+            return 0, 0
+        c = self._cols
+        wc = int.from_bytes(w.encode(), "big")
+        mines = [int.from_bytes(m.encode(), "big") for m in fx.ECON_WORKERS[self.race][1]]
+        have = int((own[:, c[1]] == wc).sum()) + sum(1 for made in self.busy.values() if w in made)
+        start = 3 if self.race == "undead" else 5
+        goal = min(start + int((self.st.get("n") or {}).get(w, 0)),
+                   fx.worker_cap(self.race, int(np.isin(own[:, c[1]], mines).sum())))
+        return have, goal
+
+    def workers(self, obs, p, t: int) -> list:
+        """--z-workers: with nothing else to order, the race's worker at an idle hall while the side has fewer than its
+        target's (worker_goal), with the money a due item short of it leaves (self.held: _affords); one a hall's
+        training time apart (5 game seconds: a worker's on echofast; taught, the label is not carried out)."""
+        w = WORKER_TYPES.get(self.race)
+        now = obs.game_time
+        if not self.z_workers or w is None or now - self.worker_at < 5.0:
+            return []
+        have, goal = self.worker_goal(obs)
+        if have >= goal:
+            return []
+        makers = {int.from_bytes(m.encode(), "big") for m in self.tree.makers.get(w, ())}
+        hall = next((u for u in self._done(obs) if u.type_id in makers and u.id not in self.busy), None)
+        code = int.from_bytes(w.encode(), "big")
+        k = self.cls.get((code, fx.IMMEDIATE))
+        if hall is None or k is None or not self._affords(k, p):
+            return []
+        self.worker_at, self.last = now, w
+        self.ctx = [w, p.gold, p.lumber, p.food_used, p.food_cap, hall.type, ""]
+        self.log.setdefault(w, [0, 0])[0] += 1
+        return [_ImmediateOrder(hall.id, code)]
 
     def _expansion_reserve(self, obs, due: list, p, t: int, own=None, rows=None):
         """--macros: a due expansion (the race's hall or a haunted mine among the due items) with the natural free:
@@ -2009,6 +2060,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             continue
         bot = BCAgent(None, vocab, s, None, costs=cfg.get("costs_array"),  # (a research at its next level's cost: the
                       steps=research_steps(vocab, cfg["map"]) if cfg.get("costs_array") is not None else None)  # map's)
+        bot.enc.mine_full = 12500.0 * mine_scale(cfg["map"])
         bot.begin(obs, race_ix)
         bots[s] = bot
         keys[s] = ("current" if s == side or opp["kind"] == "self" else exploiter_key(cfg) if opp["kind"] == "exploiter"
@@ -2095,7 +2147,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                     bots[s].view.dual = True
     # --teach: a heuristic teacher's lessons (teacher.py: a tavern hero, a town portal, a potion) label the learner's steps
     teachers = ({s: Teacher(s, races[s], random.Random(), zs.get(s), target_hero=cfg.get("teach", 0) >= 2,
-                            lumber=cfg.get("teach", 0) >= 3)
+                            lumber=cfg.get("teach", 0) >= 3, burrows=cfg.get("teach", 0) >= 4)
                  for s in trajs if keys[s] == "current"}
                 if cfg.get("teach") and replay is None else {})
     # --teach-heuristic: a target drawn from the hand-written player's games (strategy.from_demos names the strategy) is
@@ -2209,8 +2261,11 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                        lambda u, k=fx.IMMEDIATE, av=av, oix=oix: (c := oix.get((int.from_bytes(u.encode(), "big"), k))) is not None
                        and bool(av[c]))
                 b = builders.get(s)  # (the target's next items short of lumber, the side's choppers: the lumber lesson)
-                tc.economy = (bool(b is not None and getattr(b, "lumber_short", False)),  # (the choppers: the view's of
-                              bots[s].view.lumber_now, bots[s].trees)  # this step, View.step's set of them; read only)
+                short = bool(b is not None and getattr(b, "lumber_short", False))
+                if b is None and cfg.get("teach", 0) >= 4 and (q := obs.players.get(s)) is not None:
+                    short = lumber_short(q.gold, q.lumber)  # (--teach 4, no builder: the bank's lumber short of its gold)
+                tc.economy = (short, bots[s].view.lumber_now, bots[s].trees)  # (the choppers: the view's of this step,
+                # View.step's set of them; read only)
                 c = tc.commands(rows, obs.players.get(s), obs.game_time, t, can, getattr(bots[s].view, "pickers", ()))
                 q = obs.players.get(s)
                 if c and q is not None:
@@ -2539,6 +2594,7 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
     fx.set_spells(int(cfg.get("spells", 0) or 0))
     fx.set_fine(int(cfg.get("fine_points", 0) or 0))  # (--fine-points: the point indices)
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
+    fx.set_econ_masks(cfg.get("econ_masks", 0))
     if cfg.get("remote"):  # (fullgame/remoteactor.py: the calls and the steps over TCP to the learner's gateway)
         from .remoteactor import NetInference
         out_q = NetInference(cfg["remote"])  # (its request() and the learner's queue's put() both)
@@ -3863,13 +3919,23 @@ def main(argv: list[str] | None = None) -> int:
                     "agent_difficulty, so these are the same games as current's)")
     ap.add_argument("--macros-off", default="", help="macro orders masked, comma-separated (mix, creep, expand): the "
                     "policy learns their low-level orders itself, from the lessons and rewards")
+    ap.add_argument("--econ-masks", type=int, default=0, help="1: mask a tech building's build order (features."
+                    "ECON_TECH: a slaughterhouse, a sanctum, a workshop...) while a copy the player has is idle (making "
+                    "nothing, under construction, or a worker on its way), and the worker's train order once the "
+                    "player has as many as its mines need (features.worker_cap: 5 a mine and lumber workers; audit 12)")
+    ap.add_argument("--z-workers", type=int, default=0, help="with --z-build: the builder also orders (taught: labels) "
+                    "the race's worker at an idle hall while the side has fewer than its target's workers (its start's "
+                    "plus the strategy's trained ones, \"n\"; at most features.worker_cap for its mines), after the due "
+                    "items and only with the money they leave (audit 12: the agent trained ~5 where the targets had 13-14)")
     ap.add_argument("--label-norm", choices=("lessons", "units"), default="lessons", help="the teacher's lessons in "
                     "the cloning loss averaged over themselves (lessons: a minibatch with one carries the whole --teach-coef) "
                     "or over the labelled steps' own units, as the builder's labels (units)")
     ap.add_argument("--teach", type=int, default=0, help="a heuristic teacher (teacher.py: a tavern hero with a worker, "
                     "a town portal, a potion when a hero is low) labels the learner's steps, never carried out; "
                     "--opd-coef the labels' weight; needs --neutral 1. 2: with a target, its first hero from the altar "
-                    "taught too (when that is its first hero). 3: and lumber, when the target's next item is short of it")
+                    "taught too (when that is its first hero). 3: and lumber, when the target's next item is short of it. "
+                    "4: and lumber in games without a builder while the bank's lumber is under half its gold, and (orc) "
+                    "a burrow with peons inside stands down when no enemy unit is near it (audit 12)")
     ap.add_argument("--tech-mask", type=int, default=0, help="mask the orders the player lacks the tech for "
                     "(features.TechMask: buildings, tiers, research levels, the hero limit)")
     ap.add_argument("--valid-mask", type=int, default=0, help="mask each hero's orders it can't carry out now: an "
@@ -4231,6 +4297,7 @@ def main(argv: list[str] | None = None) -> int:
     fx.set_spells(args.spells)
     fx.set_fine(args.fine_points)  # (--fine-points; a policy with a fine head sets it again below, with its size)
     fx.set_macros_off(args.macros_off.split(","))
+    fx.set_econ_masks(args.econ_masks)
     modes_part = args.z_modes > 0 or args.z_comp > 0  # (--z-comp: the modes' part too, its kinds off)
     if modes_part:  # (the strategy block with the modes' part: model.load grows older networks')
         fx.set_z(strat.ZDIM + zmodes.MDIM)
@@ -4501,7 +4568,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "fine_points": args.fine_points, "macros_off": args.macros_off, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "eval_ai": [d for d in args.eval_ai.split(",") if d],
@@ -4516,7 +4583,7 @@ def main(argv: list[str] | None = None) -> int:
            "costs": order_costs(vocab, args.map).tolist() if args.avail_mask else None, "max_past": args.max_past,
            "eval_fallback": args.eval_fallback, "worker_cap": args.worker_cap, "z_dim": fx.ZDIM, "z_pool": str(args.z_pool) if args.z_pool else "", "z_share": args.z_share, "win_balance": args.win_balance,
            "z_reward": args.z_reward, "z_mix": args.z_mix, "z_mix_reward": args.z_mix_reward, "reward_parts": args.reward_parts, "z_modes": args.z_modes, "z_mode_reward": args.z_mode_reward, "z_comp": args.z_comp, "z_forbid_mask": args.z_forbid_mask, "z_winners": args.z_winners, "z_src": args.z_src, "eval_z": args.eval_z,
-           "z_enforce": args.z_enforce, "z_time_scale": args.z_time_scale, "z_build": args.z_build, "z_build_labels": args.z_build_labels,
+           "z_enforce": args.z_enforce, "z_time_scale": args.z_time_scale, "z_build": args.z_build, "z_build_labels": args.z_build_labels, "z_workers": args.z_workers,
            "grpo_share": args.grpo_share, "grpo_group": args.grpo_group, "grpo_coef": args.grpo_coef,
            "grpo_seeds": args.grpo_seeds, "grpo_branch": [float(x) for x in args.grpo_branch.split("-")],
            "eval_map": args.eval_map, "eval_z_pool": str(args.eval_z_pool) if args.eval_z_pool else "", "eval_vs": args.eval_vs,

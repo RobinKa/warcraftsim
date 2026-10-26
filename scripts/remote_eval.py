@@ -121,6 +121,7 @@ SETTINGS = ("map", "handicap", "step_seconds", "max_minutes", "wait_floor_ms", "
             "inputs", "tech_mask", "valid_mask", "z_modes", "neutral", "opsd_share", "opsd_coef", "macros", "z_mix",
             "macros_off", "eval_human", "z_comp", "z_forbid_mask")
 SETTINGS_SET = ("spells",)  # (settings added since: in the key only when set)
+SETTINGS_NAMED = ("econ_masks", "z_workers")  # (the same, with their names: audit 12's)
 
 
 def launch_key(info: dict) -> str:
@@ -137,6 +138,7 @@ def launch_key(info: dict) -> str:
         if (ROOT / f).exists():
             h.update(f.encode() + b"\0" + (ROOT / f).read_bytes())
     extra = [c.get(k) for k in SETTINGS_SET if c.get(k) not in (None, "None", "0", 0)]  # (none: the key as before)
+    extra += [f"{k}={c.get(k)}" for k in SETTINGS_NAMED if c.get(k) not in (None, "None", "0", 0)]
     return hashlib.sha1(json.dumps([c.get(k) for k in SETTINGS] + extra + [h.hexdigest()]).encode()).hexdigest()[:10]
 
 

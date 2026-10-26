@@ -19,11 +19,13 @@ flowchart LR
 | `duelrush` | 40 tiles | everything 7× faster | ~2 min |
 | `duelfast` | 48 tiles | hit points and costs ÷2, production ÷3 | ~6 min |
 | `echofast` | Echo Isles | duelfast's rules in the real map | ~10 min |
+| `echofast2` | Echo Isles | echofast with the mines' gold and the starting gold and lumber ÷2 too | — |
 | `echoP` | Echo Isles | P% of the way to the game's rules | — |
 | `echo100` | Echo Isles | the game's rules (the real game) | wins ~9 min, losses ~28 |
 
 * The duel maps have two bases like Echo Isles' main bases, a gold mine each and creep camps. They have no expansions, items or shops.
 * `echofast` and `echoP` put the rules' tables into a copy of Echo Isles. The terrain, creeps, mines and expansions are the real map's.
+* `echofast2` scales the economy like the costs: each mine holds half its gold (main mines 6,750, the expansions' 6,250) and players start with 250 gold and 75 lumber. On `echofast` a mine held twice the real game's worth of units, so a training game never mined one out and expanding never paid (audit 12: 0 expansions in 286 real games, the main mine dry ~22 min in). The map script does it (the mines' `SetResourceAmount`, the starting resources after melee initialization); a real-game check read 6,750 / 6,250 in the mines and 250 / 75 at the first step. Trees keep their lumber. The agent's mine feature stays gold / 12,500, so a fresh mine reads 0.5 there and 1.0 in the real game.
 
 ## What the agent sees and does
 
@@ -44,6 +46,7 @@ flowchart LR
 * `--macros` adds orders of the agent's own for what the game spreads over many: expand (a worker builds the race's hall at the natural expansion where people build theirs; undead haunt the mine, night elves' tree of life entangles it), creep (attack-move to the natural's camp), mix (a building trains its target's army mix). `--macros 2` adds pick up: a hero takes the nearest item lying within 1,000 (the harness reports the items on the ground each player sees; creeps drop them). `--macros 3` also spends a hero's skill points the policy leaves unspent for 10 s, in the built-in AI's order.
 * Orders the game would refuse are not sent (each is counted in the episode row): a repair of what needs none or a power build without lumber, a harvest at a mine the race cannot mine, a hall's tier while it trains (its queue is cancelled first).
 * Masks: a unit's type gets only the orders its type got in the demonstrations, and only what the player can pay for (a research at the level the player would research next: weapons 100/50, then 175/175, then 250/300; level 1's for every level until 2026-10-26). `--tech-mask` also masks what the player lacks the tech for (a building, a tier, a research's next level, the hero limit), `--valid-mask` a hero's orders it can't carry out now (an ability not learned, cooling down or without the mana, no skill point, an empty item slot).
+* `--econ-masks 1` (audit 12: undead built a median 6 slaughterhouses in target games, and 13-20 acolytes with 5 able to mine) masks a tech building's build order while a copy the player has is idle (finished and making nothing, under construction, or a worker on its way to build one): slaughterhouse, graveyard, temple of the damned, sacrificial pit, boneyard, tomb of relics, arcane sanctum, workshop, aviary, blacksmith, arcane vault, spirit lodge, tauren totem, beastiary, voodoo lounge, the ancients of lore and wind, chimaera roost, hunter's hall, ancient of wonders and every altar. Not the main barracks, halls, supply, towers or the human and orc lumber drop-offs. It also masks the worker's train order once the player has (alive and in training) 5 a worked mine (a hall, a haunted or an entangled mine) plus 13 peasants, 12 peons, 15 wisps or 3 acolytes (ghouls chop): 18, 17, 20 and 8 at one base.
 * [The whole-game model](model.md) shows the tokens, the transformer and the action heads.
 
 ## Opponents
@@ -60,8 +63,8 @@ flowchart LR
 
 Two heuristic teachers label the learner's steps with what they would order; the labels pull the policy toward them (`--teach-coef`), and nothing they say is carried out.
 
-* **The target builder** (`--z-build 2`): the earliest item of the side's target that is due and neither made nor under way, or what it needs first (the tech tree), when the player can pay for it.
-* **The teacher** (`--teach`): a first hero in games without a target (with `--teach 2` the target's first hero, as soon as the altar stands), a tavern hero, the expansion and its camp, an army mix, a town portal or a potion when a hero is low, an item picked up.
+* **The target builder** (`--z-build 2`): the earliest item of the side's target that is due and neither made nor under way, or what it needs first (the tech tree), when the player can pay for it. With `--z-workers 1` also a worker at an idle hall while the side has fewer than its target's (its start's plus the strategy's trained ones, at most `--econ-masks`' cap for its mines), after the due items and with the money they leave (audit 12: the agent trained ~5 where its targets had 13-14).
+* **The teacher** (`--teach`): a first hero in games without a target (with `--teach 2` the target's first hero, as soon as the altar stands), a tavern hero, the expansion and its camp, an army mix, a town portal or a potion when a hero is low, an item picked up. `--teach 3` adds lumber (a worker to the tree nearest the hall, up to 5 choppers or 3 ghouls) while the target's next item is short of it. `--teach 4` also teaches lumber in games without a builder while the bank's lumber is under half its gold, and has an orc burrow with peons inside stand down when no enemy unit is within 1,500 of it (audit 12: in target games the peons stayed inside, 14 orders a minute skipped for a loaded peon).
 
 ## Rewards
 

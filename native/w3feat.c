@@ -129,7 +129,7 @@ int w3f_entities(const int64_t *rows, int nrows, int ncols, int player, double s
         for (int b = 0; b < N_FLAGS; b++) o[9 + b] = (r[C_FLAGS] & FLAG_BITS[b]) ? 1.0f : 0.0f;
         if (!is_own) o[ILLUSION_COL] = 0.0f;  /* (an enemy's illusion looks real) */
         o[a] = (float)((double)r[C_HLEVEL] / 10.0);
-        o[a + 1] = (float)((double)r[C_RESOURCE] / 12500.0);
+        o[a + 1] = (float)((double)r[C_RESOURCE] / geo[8]);  /* (a full mine of the game's map: geometry's last) */
         if (is_own) o[a + 2] = (float)((double)r[C_SKILLPTS] / 3.0);
         float rad = (float)r[C_FACING] * (float)(M_PI / 180.0);
         o[a + 3] = sinf(rad);
