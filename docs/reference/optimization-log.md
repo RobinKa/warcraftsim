@@ -488,6 +488,53 @@ Not usable: `cut_ab.py live` (seeded live games side by side): two games with th
 
 Not done: the agent table's lookup (0x4707f0, 3-4% as a leaf, its callers everywhere: misses on the table), the long-range search's cell lookup (round 4: one miss per node), the proximity events of unit movement (0x806ad0 posts events that Storm's dispatcher hands to ability and order handlers synchronously: 9% inclusive in the 40-minute game, game logic), the fog pass's every-fourth-round display tail (0x7057a0 and 0x706e70: 0.3%), paint (1.2-2.2%: it rebuilds the list the fog pass walks).
 
+## The game's own code, round 7: pathing (2026-10-26, branch `worktree-agent-a581d2110c9018588`)
+
+Profiled at round 6's cuts (`4398046508537`) on two of the live runs' games, each played back under `perf record --call-graph fp -e cycles` (the shim with frame pointers; the round 3 breakdown's rules): fgself-154's first game (an agent against insane on `echofast2`, 2,501 steps) and fgself-153's 40-minute game between agents (steps 300-2,500). Pathing as a whole: 44-48% of the main thread.
+
+| part of pathing | agent vs insane (fgself-154) | 40 minutes of agents (fgself-153) |
+|---|---|---|
+| the local A* search (1048576's C: of it the memo's and the cells' lists' misses ~2.5%) | 11.0% | 6.5% |
+| the long-range search | 6.7% | 7.7% |
+| path following's own work (0x8afee0 outside the searches: 0x8a5760 -> 0x8a59c0, 0x8a6ed0, 0x8a5f30, ...; half of it soft float leaves) | 7.5% | 5.9% |
+| the proximity events of moving units (0x806ad0 -> 0x7f2b20 -> 0x83ee30: the abilities', the AI's and the orders' handlers) | 4.3% | 5.4% |
+| collision and proximity (0x8ac620) | 4.3% | 3.6% |
+| the per-agent update's rest (0x8ac110) | 3.6% | 3.4% |
+| range sensors (the 'sig^' timers 0x7fae00 -> 0x8b8ae0 -> 0x8bb120): their query of the grid (0x8bb0b0 -> 0x8bbf20 -> 0x8bbe10 per cell -> 0x8bad90, a distance test) | 2.9% | 2.7% |
+| range sensors: the enter/leave diff and its events (0x8bb420 -> 0x8bb4a0) | 2.3% | 1.8% |
+| the pathing grid's dirty cells' pass (a timer 0x7faec0 -> 0x7f9740 -> 0x8c28c0: a bitmap scan, 0x8c2c20 per set cell drops the searches' node entries and dead widgets' from the cell's list) | 2.3% | 2.1% |
+| the timer wheel (0x7fae00 / 0x7f9660), the pathing tick's rest (mostly soft float), 0x8aa740's rest | 1.7 / 1.8 / 1.2% | 2.0 / 1.2 / 0.9% |
+| the pathing map's update | 1.3% | 1.8% |
+
+Round 6's "other pathing" (the relations timer, events, small passes, planning and following: 26-28%) is these rows from path following down. The largest single functions by their own time in it: the range query's cell walk 0x8bbe10 (1.7%), the dirty cell's list walk 0x8c2c20 (1.5%) and its bitmap scan 0x8c28c0 (0.8%), the soft float's add and subtract (1.7 / 1.2%), the range test 0x8bad90 (0.5%), the timer heap's pop 0x7f76e0 (0.5%). All of it waits on memory or is game logic (the events' handlers).
+
+| bit | what | its part's cycles a step (agent vs insane / 40 minutes), M |
+|---|---|---|
+| 4398046511104 | the pathing grid's two walks pipelined, the same stores and calls in the same order: the range sensors' query in C as round 6's walk (entries gathered 24 ahead across cells, two cursors 4 and 8 cells ahead in the walk's order: across the rect's short rows, the next entries and widgets prefetched; the units under the widgets 12 entries ahead; 0x8bad90 and the array's growth the game's); the dirty cells' pass in C (the bitmap's zero words skipped four at a time, the set cells' heads, first entries and widgets prefetched one and two set cells ahead, 0x8c2c20 the game's) | query 0.81 → 0.71 / 0.43 → 0.36; dirty pass 0.62 → 0.62 / 0.36 → 0.29 |
+| 8796093022208 | (with 1048576) the local A* search's expansions prefetched: before the ring's walk, the first list entries of the ring's cells and the eight neighbours that the run has not remembered (each head read, the loads overlapping, the entry prefetched), and after a node is made the free list's head entry (0x8c22c0 takes it next) | A* 3.02 → 2.83 / 1.16 → 1.06 |
+| | over the suite, main thread, steps-weighted: 4398046511104 alone / both (`17592186041849`) | cycles -1.0% / **-1.4%**, CPU -1.1% / -1.3%, instructions 0 / +0.2% |
+
+Parity and the gain, the three variants played back side by side (`4398046508537`, `8796093019641`, `17592186041849`; every unit, player, event, AI order, command result and ground item, and the raw observation bytes, at every step): **33 games, 43,707 measured steps (45,357 compared a variant), identical**: round 5's 10 recordings and round 6's 3 (against their live digests too), 6 replays of fgself-150 to -152, the 8 of fgself-153 (one of them 40 minutes) and the first 4 of fgself-154 (`echofast2`). By group (both bits): the recordings -1.3% cycles, fgself-150 to -152 -1.4%, fgself-153 -1.7% (the grid walks alone -2.0%), fgself-154 -1.1%. The A* bit adds ~0.4% to the grid walks' ~1.0%: below the round's 1% bar on its own, kept because it is exact and small (`8796093019641` is the grid walks alone).
+
+Tried and dropped (each identical, none faster):
+
+* **The long-range search's loop in C with the next node's cells prefetched** (the open list's top after a pop: its level-0 3x4 cells or its level's 3x3, before the popped node's expansion; also the next candidates' node entries and the popped node's neighbours' nodes). The first-load stall in 0x8a20a0 halved (1.3-1.5% → 0.8% of the main thread), but the search's cycles a step did not move (2.01 → 2.03 M; the loop alone in C 2.14): the stall moves to the relaxation's node loads, and the loop's own work (the pop inline: 0.77% against the game's 0.62%) takes the rest. Round 4 found the same with a simpler prefetch.
+* **The A* memo in 4x4 tiles of a cache line** (the shim's own array): +1.9% instructions (the index arithmetic of ~3.8 M lookups a second), the A* search +6% cycles.
+* **The A* memo in a 32 KB hash table** (a run's ~500 cells in the core's caches instead of a grid-sized array): the A* search +19% cycles (the probes' branches); its misses were not the array's.
+
+What an approximation could save (not done; each changes the simulation, so a run would have to accept it), as rough shares of the main thread:
+
+| where | now | how | could save |
+|---|---|---|---|
+| the long-range search | 7-11% | one search for the units of one order with one target (a group now searches once per unit), or recent (start region, goal) paths reused; a coarser grid | 3-6% |
+| the local A* search | 6.5-11% | a lower node budget (+0x68), a blocked unit's last local path kept while its blockers have not moved, blocked units replanned every other tick | 3-5% |
+| path following's own work | 6-7.5% | settled or idle units steered less often; SSE for its soft-float add and subtract (not IEEE: their rounding differs) | 2-3% |
+| range sensors | 4.5-5% | queried every other tick, or only when a unit crossed a cell | 2-3% |
+| proximity events of moving units | 4.3-5.4% | posted only on cell changes (their handlers are acquisition and abilities: behaviour) | ~2% |
+| the dirty cells' pass | 2-2.3% | every fourth tick (the searches' node entries stay longer, walks skip them; dead widgets go later) | ~1.5% |
+| the soft float's add and subtract everywhere | ~4.4% as leaves | SSE (round toward zero is not their rounding) | ≤1% (the multiply's SSE gave -2.5% instructions and no CPU: the callers wait on memory) |
+| outside pathing: target acquisition, the units' timers | 5-7%, ~12% | idle or far units' acquisition less often | ~3% |
+
 ## The learner's intake (2026-10-12)
 
 With 8 evaluation games, the last-order features and the opponent-aware value, the run fell to ~1,550-1,600 steps/s and the learner's update to ~4.4-4.7 s (3.3 s in the morning). py-spy on the learner's main thread (20 s): ~33% receiving and unpickling the actors' trajectories, of which the answers' arrays were `np.memmap` subclasses (`astype` keeps the subclass of the shared rows; unpickling them rebuilds memmaps); ~18% waiting for the cloning loss's batches from its 2 data workers; ~13% in the update's pauses for the inference loop (by design); and before that, the last-order features' per-unit loop ran in those workers even when `--features 50` zeroed it (an update alone 3.2 → 2.7 s once skipped).
@@ -593,7 +640,7 @@ Not done (not exact, or not measured): a view's dicts' cleanup without the `View
 * **The learner**: the anchor's forward for the KL term (~5% of an update), a compiled update. (The cloning loss is off since 2026-10-14.)
 * **The video renderer**: 3.4 cores while it renders.
 * **wineserver**: ~3% of a game's CPU (2026-10-24); with 131072 the step sync makes no requests.
-* **The games' main thread after `4398046508537`** (round 6): pathing ~45% (the long-range search waits on a cell's cache miss per node it expands; the rest of it, the local search and planning, spread over many small functions and the soft float's add and subtract, which are not IEEE), the unit, ability and buff timers ~12%, target acquisition ~7%, fog ~3.5%, the units pass ~4-5.5% (creeps' sleep-ability walks, the prefetching's own loads, the fog query, the soft float of life, mana and position), EnumItemsInRect's walk ~1.5% (it stamps every widget), ~90 JASS statements a step of W3S_Step and the agents' orders themselves (~3.5%: the game's order code).
+* **The games' main thread after `17592186041849`** (round 7; round 6's numbers): pathing ~45% (broken down in round 7: the searches, path following, sensors and the proximity events, nearly all of it memory-bound or game logic; round 7's table of approximations says what each could save) (the long-range search waits on a cell's cache miss per node it expands; the rest of it, the local search and planning, spread over many small functions and the soft float's add and subtract, which are not IEEE), the unit, ability and buff timers ~12%, target acquisition ~7%, fog ~3.5%, the units pass ~4-5.5% (creeps' sleep-ability walks, the prefetching's own loads, the fog query, the soft float of life, mana and position), EnumItemsInRect's walk ~1.5% (it stamps every widget), ~90 JASS statements a step of W3S_Step and the agents' orders themselves (~3.5%: the game's order code).
 
 ## Measuring
 
