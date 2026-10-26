@@ -24,6 +24,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from selfplay_restart import ROOT, add_launch_args, pinned, start, stop  # noqa: E402
 
 
+def as_read(p: Path) -> str:
+    """A path as the learner reads it in its checkout: one in runs as runs/... (a link there to this tree's runs),
+    another absolute."""
+    runs = (ROOT / "runs").resolve()
+    return str(Path("runs") / p.relative_to(runs)) if p.is_relative_to(runs) else str(p)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("parent")
@@ -62,12 +69,12 @@ def main() -> None:
         if v:
             flags.append([f"--{k}", *v.split()])
     argv = [sys.executable, "-m", "warcraftsim.fullgame.selfplay", "--name", args.child,
-            *[w for f in flags for w in f], "--start-weights", str(weights.relative_to(ROOT)), f"--note={args.note}",
+            *[w for f in flags for w in f], "--start-weights", as_read(weights), f"--note={args.note}",
             *([f"--title={args.title}"] if args.title else []),
             *(["--league-from", args.league or args.parent] if (args.league or "") != "none" else [])]
     start(argv, code, args.child, args.dry_run)
     if not args.dry_run:
-        print(f"{args.child} from {weights.relative_to(ROOT)} in {code}:", " ".join(shlex.quote(a) for a in argv[3:]))
+        print(f"{args.child} from {as_read(weights)} in {code}:", " ".join(shlex.quote(a) for a in argv[3:]))
 
 
 if __name__ == "__main__":
