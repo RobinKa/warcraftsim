@@ -236,7 +236,8 @@ _register(
              builds=((0.0, 0, "eate", 1), (0.0, 0, "eaom", 1), (120.0, 12, "edob", 1), (330.0, 26, "eaom", 2),
                      (480.0, 40, "eaom", 3)),
              army=(("earc", 2.0), ("esen", 2.0)), research=((420.0, "Resm"), (540.0, "Rerh")),
-             lumber_workers=((0.0, 3), (150.0, 4)), attack_food=50, attack_at=780.0),
+             lumber_workers=((0.0, 3), (150.0, 5)), attack_food=50, attack_at=780.0),  # (4: ~630 gold banked, short of
+             # lumber for its trees of life)
 )
 DEFAULT_STRATEGY = {"orc": "orc-grunts", "human": "human-footmen", "undead": "undead-ghouls", "nightelf": "nightelf-archers"}
 
@@ -1310,8 +1311,11 @@ class HeuristicAgent:
                 continue
             if any(q[0] == code for q in self.queue.get(hall.id, ())):
                 return []  # (upgrading)
-            self.tier_hall = hall.id  # (no more workers at it until it upgrades)
             g, l = self._cost(code)
+            if (g <= 0 or self.budget[0] >= g) and (l <= 0 or self.budget[1] >= l):
+                # (no more workers at it until it upgrades, once it can pay: blocked while it saved, undead's one hall
+                # had trained no acolyte for minutes, 4-6 workers at 10 minutes with two mines)
+                self.tier_hall = hall.id
             if self._queued(hall) or not self._pay(g, l):
                 self._keep(g, l)
                 return []
