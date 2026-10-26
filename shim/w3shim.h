@@ -109,6 +109,7 @@ long long cuts_flags(void);
 void softfloat_install(long long cuts); /* W3SIM_CUTS 67108864.. (softfloat.c) */
 void cuts_game_start(void); /* a game's first step (units.c) */
 void cuts_unit_begin(int on); /* units.c: a unit's natives begin (1) / end (0) (W3SIM_CUTS & 32768) */
+void cuts_sleep_prefetch(const BYTE *u); /* units.c: the sleep cache's slot of a unit ahead (W3SIM_CUTS & 137438953472) */
 extern volatile DWORD g_step_tid; /* sync.c: the thread that steps the game */
 void cuts_report(void);
 void pathing_install(long long cuts); /* W3SIM_CUTS 524288, 1048576, 4194304 (pathing.c) */
