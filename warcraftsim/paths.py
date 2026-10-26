@@ -28,6 +28,10 @@ RUNTIME_DIR = _env_path("WARCRAFTSIM_RUNTIME", Path.home() / "wc3" / "runtime")
 
 STORMLIB_PATH = _env_path("WARCRAFTSIM_STORMLIB", REPO_ROOT / "build" / "stormlib" / "libstorm.so")
 PJASS_PATH = _env_path("WARCRAFTSIM_PJASS", REPO_ROOT / "build" / "pjass" / "pjass")
+MINHOOK_DIR = _env_path("WARCRAFTSIM_MINHOOK", REPO_ROOT / "third_party" / "minhook")  # (the shim's build)
+
+# Pinned checkouts that self-play launches run from (codepin.py: one detached worktree per commit).
+CODE_DIR = _env_path("WARCRAFTSIM_CODE", Path.home() / "wc3" / "code")
 
 # Base game archives in lookup priority order (first hit wins), matching the game's own order.
 GAME_ARCHIVES = ("War3xLocal.mpq", "War3x.mpq", "War3Local.mpq", "War3.mpq", "Deprecated.mpq")

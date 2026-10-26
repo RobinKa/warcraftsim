@@ -5,6 +5,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 runs/
+/runs
 # Blizzard game data must never be committed
 *.mpq
 *.w3x

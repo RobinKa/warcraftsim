@@ -76,7 +76,9 @@ from ..protocol import Build as _Build, Buy as _Buy, ImmediateOrder as _Immediat
     rawcode as _rawcode
 from ..rl.league import Member, pfsp_weight
 
-RUNS = Path(__file__).resolve().parents[2] / "runs"
+# (resolved: a launch runs from a pinned checkout (codepin.py) whose runs is a link to the main tree's, and the
+# paths it writes (league.json, exploiter.json, run.json) stay the main tree's: they outlive the checkout)
+RUNS = (Path(__file__).resolve().parents[2] / "runs").resolve()
 
 
 # ---- actors ---------------------------------------------------------------------------------------
@@ -4447,7 +4449,8 @@ def main(argv: list[str] | None = None) -> int:
                        "bc_data": [str(d) for d in (args.bc_data or [])],
                        **({"advisor": f"built-in AI ({args.opd_difficulty})"} if args.opd_share > 0 else {})},
             "launch": {"command": "python3 -m warcraftsim.fullgame.selfplay " + " ".join(sys.argv[1:] if argv is None else argv),
-                       "argv": list(sys.argv[1:] if argv is None else argv), "git": git_info()}}
+                       "argv": list(sys.argv[1:] if argv is None else argv), "git": git_info(),
+                       "code": str(Path(__file__).resolve().parents[2])}}  # (the checkout it runs: codepin.py)
 
     resumed = None
     if args.resume and (run_dir / "run.json").exists():  # the run goes on: its weights, league and counts

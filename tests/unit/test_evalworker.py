@@ -101,7 +101,7 @@ def test_remote_eval_manager_follows_the_run(tmp_path, monkeypatch):
     (tmp_path / "runs/x/checkpoints/1.pt").write_bytes(b"")
     for run in ("r1", "r2"):
         (tmp_path / "runs" / run).mkdir()
-    monkeypatch.setattr(rm.Manager, "push_code", lambda self, rev="HEAD": True)
+    monkeypatch.setattr(rm.Manager, "push_code", lambda self, rev="HEAD", shim=None: True)
     monkeypatch.setattr(rm, "newest_checkpoint", lambda run: "0000000000000100.pt")
     configs = {"r1": {"map": "echo100", "eval_checkpoints": "None"}, "r2": {"map": "echo100", "eval_checkpoints": "None"}}
     monkeypatch.setattr(rm, "run_info", lambda run: {"config": configs[run]})
@@ -123,7 +123,7 @@ def test_remote_eval_manager_follows_the_run(tmp_path, monkeypatch):
                 there.update(active="inactive", unit=f"{rm.UNIT}.service")
             return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
-        def rsync(self, files, timeout=900):
+        def rsync(self, files, timeout=900, cwd=None):
             return True
     a = type("A", (), dict(host="h", name="h", run=None, games=4, processes=0, remote_dir="warcraftsim", every=60.0,
                            push_every=240.0, keep=3, grace=10.0, nice=10, gauntlet_games=0, gauntlet_size=5,
