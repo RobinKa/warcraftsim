@@ -375,7 +375,10 @@ class Teacher:
             # is its own business, macros.py; --macros-off expand: the hall's own build order below, where people put theirs)
             return [ImmediateOrder(nearest, fx._mod("macros").EXPAND)]
         if self.race == "undead":  # (an acolyte haunts the mine: its gold, no hall needed)
-            return [TargetOrder(nearest, HAUNTED, nat_id)]
+            m = rows[rows[:, fx.C_ID] == nat_id]
+            if not len(m) or not (int(m[0, fx.C_VIS]) >> self.side) & 1:  # (a mine it has not in sight: the label had
+                return [PointOrder(nearest, fx.MOVE, mx, my)]  # no target and was dropped, 0 of 40 kept: the acolyte
+            return [TargetOrder(nearest, HAUNTED, nat_id)]      # walks there first; audit 13)
         ox, oy = EXPAND_SPOTS.get((int(round(mx)), int(round(my))), (None, None))
         if ox is None:  # (another map's: 750 toward its start)
             n = max(float(np.hypot(sx - mx, sy - my)), 1.0)

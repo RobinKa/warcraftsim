@@ -1210,6 +1210,17 @@ def smoothed_rate(m: Member, window: int = 50) -> float | None:
     return (sum(r) + 1.0) / (len(r) + 2.0) if r else None
 
 
+def spells_cast(results: dict) -> dict:
+    """play.BCAgent.order_results ("Kind:order id" -> (sent, refused)) -> each spell's casts sent (spells.SPELLS)."""
+    from .spells import SPELLS
+    out = {}
+    for _, name, oid, _ in SPELLS:
+        n = sum(v[0] for k, v in results.items() if k.endswith(f":{oid}"))
+        if n:
+            out[name] = n
+    return out
+
+
 def mine_scale(map_name: str) -> float:
     """A map's gold mines against the real game's (echofast2: 0.5, with its costs; data.duelmap's rules)."""
     try:
@@ -2452,6 +2463,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                                    key=lambda kv: -kv[1])[:12])}
            if side in bots and getattr(bots[side], "order_results", None) else {}),
         **({"scenario": scenario} if scenario else {}),
+        **({"spells": cast} if fx.SPELLS and side in bots and (cast := spells_cast(getattr(bots[side], "order_results", {})))
+           else {}),  # (--spells: the learner's casts of each, sent to the game; audit 13 found no way to tell)
         **({"z_t": {c: round(v) for c, v in zs[side]["t"].items()},
             "z_made": {c: round(v) for c, v in made[side].items()}} if side in zs else {}),
         **({"z_mix_gap": round(strat.mix_gap(prod.trained[side], zs[side]), 3),
@@ -3759,6 +3772,7 @@ def load_optimizer(opt, checkpoint: Path, device, lr: float, net: FullGameNet | 
         near = sorted(Path(checkpoint).parent.glob("[0-9]*.adam"),  # a fresh Adam cost forks ~10 points early on)
                       key=lambda q: abs(int(q.stem) - int(Path(checkpoint).stem)) if q.stem.isdigit() and Path(checkpoint).stem.isdigit() else 1 << 62)
         if not near or not near[0].stem.isdigit():
+            print(f"note: no Adam state saved with {Path(checkpoint).name} or beside it: a fresh one", flush=True)
             return False
         print(f"note: no Adam state saved with {Path(checkpoint).name}: the nearest one's, {near[0].name}", flush=True)
         path = near[0]
@@ -4445,7 +4459,9 @@ def main(argv: list[str] | None = None) -> int:
         if src:
             last = torch.load(src, map_location=device, weights_only=False)
             net.load_state_dict(trained(last["model"], net))
-            load_optimizer(opt, src, device, args.lr, net)
+            if (not load_optimizer(opt, src, device, args.lr, net) and args.start_weights
+                    and Path(src).stem == f"{0:016d}"):  # (a resume before the first checkpoint: the fork's start's
+                load_optimizer(opt, args.start_weights, device, args.lr, net)  # state, as the fork had; audit 13)
         resumed = {"steps": rows[-1]["agent_steps"] if rows else 0, "update": rows[-1]["epoch"] if rows else 0,
                    "episodes": sum(1 for _ in open(run_dir / "episodes.jsonl")) if (run_dir / "episodes.jsonl").exists() else 0,
                    "checkpoint": Path(src).name if src else None,
@@ -4529,6 +4545,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"league from {src.name}: {len(taken)} past snapshots ({', '.join(taken)})", flush=True)
         first = run_dir / "checkpoints" / f"{0:016d}.pt"
         torch.save({**ck, "model": net.state_dict(), "config": net.config, "vocab": vocab, "agent_steps": 0}, first)
+        torch.save(opt.state_dict(), first.with_suffix(".adam"))  # (a resume from it goes on with the fork's Adam: a
+        # bare checkpoint had restarted fgself-154 with a fresh one, silently; audit 13)
         league.add_snapshot(first, 0)  # the clone itself (a fork: its start), a past opponent
     league.fixed_share = args.league_add_share
     for path in args.league_add:  # --league-add: opponents of the league's for good (newer snapshots replace them not)

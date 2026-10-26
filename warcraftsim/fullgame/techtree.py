@@ -48,8 +48,12 @@ def parse(texts: list[str]) -> Tree:
                 for c in codes:
                     if sec not in makers.setdefault(c, []):
                         makers[c].append(sec)
-            elif (m := re.fullmatch(r"Requires(\d*)", k)) is not None:
-                needs.setdefault(sec, {})[int(m.group(1) or 0)] = codes
+            elif (m := re.fullmatch(r"Requires(\d*)", k)) is not None:  # (a key given twice in a section: both
+                # lines count, as in the game: Cloud's Requires=hcas and Requires=hvlt; the last alone had let the
+                # mask offer it without a castle, refused every time; audit 13)
+                got = needs.setdefault(sec, {})
+                lvl = int(m.group(1) or 0)
+                got[lvl] = tuple(dict.fromkeys(got.get(lvl, ()) + codes))
             elif (m := re.fullmatch(r"Requiresamount(\d*)", k)) is not None:
                 amounts.setdefault(sec, {})[int(m.group(1) or 0)] = codes
     levels: dict[str, dict[int, dict[str, int]]] = {}
