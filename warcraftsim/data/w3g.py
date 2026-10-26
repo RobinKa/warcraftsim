@@ -540,6 +540,8 @@ def _actions(rep: Replay, block: bytes, pid: int, t: int, version: int, out: lis
                 x, y = r.f32(), r.f32()
                 r.skip(1)
                 out.append(Action(t, pid, k, x=x, y=y))
+            elif k == 0x77 and version < 32:  # 1.30-1.31: 12 bytes (twice a game; meaning unknown)
+                r.skip(12)
             elif k == 0x77:  # Reforged: BlzSendSyncData (prefix, data, a dword)
                 out.append(Action(t, pid, k, text=r.cstr() + "|" + r.cstr()))
                 r.skip(4)
