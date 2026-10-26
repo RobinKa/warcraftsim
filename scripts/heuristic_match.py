@@ -53,6 +53,52 @@ def variant_class(spec: str | None):
     return functools.partial(cls, **kw) if kw else cls
 
 
+class MainThread:
+    """The game's main thread's CPU time (schedstat, ns) from the step it is found on: the thread that used the most
+    CPU since the first look (the game's simulation; Python's time is not in it)."""
+
+    def __init__(self, prefix):
+        self.pid = self.tid = None
+        self.c0: dict[int, int] = {}
+        want = f"WINEPREFIX={prefix}".encode()
+        for d in Path("/proc").iterdir():
+            try:
+                if d.name.isdigit() and (d / "comm").read_text().startswith("Warcraft III") and \
+                        want in (d / "environ").read_bytes().split(b"\0"):
+                    self.pid = int(d.name)
+                    break
+            except OSError:
+                continue
+        self.c0 = self._threads()
+
+    def _threads(self) -> dict[int, int]:
+        out = {}
+        if self.pid is None:
+            return out
+        try:
+            for t in Path(f"/proc/{self.pid}/task").iterdir():
+                try:
+                    out[int(t.name)] = int((t / "schedstat").read_text().split()[0])
+                except (OSError, ValueError, IndexError):
+                    pass
+        except OSError:
+            pass
+        return out
+
+    def start(self, game_ms: int) -> None:
+        c1 = self._threads()
+        if c1:
+            self.tid = max(c1, key=lambda k: c1[k] - self.c0.get(k, 0))
+            self.ns0, self.ms0 = c1[self.tid], game_ms
+
+    def per_second(self, game_ms: int) -> float | None:
+        """Main-thread CPU ms per game second since start()."""
+        if self.tid is None or game_ms <= self.ms0:
+            return None
+        ns = self._threads().get(self.tid)
+        return None if ns is None else round((ns - self.ns0) / 1e6 / ((game_ms - self.ms0) / 1000), 3)
+
+
 def play_scripted(name: str, race: str, opp_race: str, opp: str, side: int, args, strategy: str = "",
                   opp_strategy: str = "", record: Path | None = None) -> dict:
     """One game of the heuristic (`strategy`, "" its race's default) on `side` against the built-in AI (`opp` a
@@ -86,7 +132,14 @@ def play_scripted(name: str, race: str, opp_race: str, opp: str, side: int, args
         prod = Production()
         prod.step(obs)
         t = 0
+        main = MainThread(g.prefix)
+        food_t, cpu = [], None  # (army food every 2 game minutes, both sides; the main thread's CPU per game second)
         while not obs.game_over:
+            if t == 20:
+                main.start(obs.game_ms)
+            if t % int(120 / args.step_seconds) == 0:
+                food_t.append([round(obs.game_time), *[getattr(obs.players.get(p_), "food_used", None)
+                                                       for p_ in (side, 1 - side)]])
             if rec is not None:
                 rec.state(obs, t)
             cmds, spans = [], {}
@@ -103,6 +156,7 @@ def play_scripted(name: str, race: str, opp_race: str, opp: str, side: int, args
                 rec.issued(obs)
             prod.step(obs)
             t += 1
+        cpu = main.per_second(obs.game_ms)
         if rec is not None:
             rec.state(obs, t)
     res = obs.players[side].result.name if side in obs.players else "TIE"
@@ -128,6 +182,7 @@ def play_scripted(name: str, race: str, opp_race: str, opp: str, side: int, args
             "side": side, "strategy": names[side], **({"opp_strategy": names[1 - side]} if scripted else {}),
             "outcome": outcome, "game_time": round(obs.game_time, 1), "wall_seconds": round(time.time() - t0, 1),
             "prod": prod.row(side, obs), "opp_prod": prod.row(1 - side, obs), "heuristic": agent.summary(),
+            "main_cpu_ms_per_s": cpu, "food_t": food_t, "cuts": args.cuts, "steps": t,
             **({"record": str(record)} if record is not None else {})}
 
 

@@ -1257,10 +1257,12 @@ void cuts_install(int draw) {
             shim_log("cuts: thread priority imports not found");
     }
     softfloat_install(g_cuts);
+    approx_install(g_cuts);
     shim_log("cuts installed: %lld", g_cuts);
 }
 
 void cuts_report(void) {
+    approx_report();
     if (g_cuts & (524288 | 1048576 | 4194304))
         pathing_report();
     if (g_cuts & 2147483648LL)

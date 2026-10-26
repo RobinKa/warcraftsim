@@ -114,4 +114,11 @@ extern volatile DWORD g_step_tid; /* sync.c: the thread that steps the game */
 void cuts_report(void);
 void pathing_install(long long cuts); /* W3SIM_CUTS 524288, 1048576, 4194304 (pathing.c) */
 void pathing_report(void);
+/* approx.c: approximations of the simulation for training games only (W3SIM_CUTS 2^44.., never in a run's flags
+ * unless approved) and W3SIM_APPROX_STATS=1's counters (the local A* runs' ones kept by pathing.c) */
+void approx_install(long long cuts);
+void approx_report(void);
+extern int g_ax_stats, g_ax_as_last_exh;
+extern long long g_ax_as_e, g_ax_as_lim, g_ax_as_exh, g_ax_as_exh_e, g_ax_as_empty, g_ax_as_empty_e;
+extern long long g_ax_eb_n[8], g_ax_eb_c[8], g_ax_eb_e[8];
 int turbo_get(void);

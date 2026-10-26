@@ -1310,7 +1310,7 @@ def release_group(games: list[tuple[dict, dict, bool]], coef: float) -> None:
 
 
 def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render_q) -> None:
-    from ..runtime.instance import Agent, BuiltinAI, GameInstance, GameSetup
+    from ..runtime.instance import Agent, BuiltinAI, GameInstance, GameSetup, exact_cuts
     from .play import BCAgent
 
     rng = game_rng(cfg, wid, k)
@@ -1420,7 +1420,9 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                           draw=False,  # (nobody looks: videos are played back from the replays, drawing)
                           wait_floor_ms=cfg["wait_floor_ms"], melee_reset=agents_only and cfg["scripted_reset"],
                           native_obs=cfg["native_obs"], nice=cfg.get("game_nice", 0), d3d_thread=False,
-                          render_threads=0, pairs=cfg.get("pairs", 1), cuts=cfg.get("game_cuts") or None,
+                          render_threads=0, pairs=cfg.get("pairs", 1),
+                          # (evaluation: the exact game, never shim/approx.c's approximations)
+                          cuts=(exact_cuts(cfg.get("game_cuts")) if evaluating else cfg.get("game_cuts")) or None,
                           seed=rng.randint(1, cfg.get("grpo_seeds", 8)) if seeded else 0)
         per_launch = cfg["games_per_process"] * (cfg["agent_games_factor"] if agents_only else 1)
         if evaluating:  # (a launch's games share their matchup and opponent: at 8 a launch, 34 of a policy's 40 games head
@@ -4186,7 +4188,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--bf16", type=int, default=1, help="the updates' matmuls in bfloat16")
     ap.add_argument("--game-cuts", type=int, default=0, help="the training games' W3SIM_CUTS (shim/cuts.c: equivalent "
                                                             "speedups of the game's own code; 1529: all verified ones, "
-                                                            "~28%% less CPU a game step); 0: none")
+                                                            "~28%% less CPU a game step); 0: none. Bits from 2^44 on "
+                                                            "are approximations (shim/approx.c, not the real game: "
+                                                            "only with the user's approval; evaluation games drop them)")
     ap.add_argument("--unit-credit", type=float, default=0.0, help="each own unit's advantage also gets this much of "
                                                                  "a share of its own (OpenAI Five's team spirit: the "
                                                                  "material it lost and killed over the next few steps, "
