@@ -268,7 +268,9 @@ class Teacher:
             mk = _makers(unit)
             at = next((done[j + 1] for j in range(0, len(done), 2) if done[j] in mk), None)
             if at is not None:
-                if fx.MACROS:  # (the building's mix order: which unit is its business, macros.MIX)
+                if fx.MACROS and "mix" not in fx.MACROS_OFF:  # (the building's mix order: which unit is its business,
+                    # macros.MIX; --macros-off mix: the unit's own train order below, the mix order masked had kept none
+                    # of ~2.5 lessons a game; audit 12)
                     return [ImmediateOrder(at, fx._mod("macros").MIX)] if self._due("army mix", t) else []
                 return [ImmediateOrder(at, fourcc(unit))] if self._due("army mix", t) else []
         return []
@@ -330,7 +332,14 @@ class Teacher:
                 return [PointOrder(h, ATTACK, cx, cy) for h in e[EH:EH + n_heroes]]
             creep = fx._mod("macros").CREEP
             return [ImmediateOrder(h, creep) for h in e[EH:EH + n_heroes]]
-        if not n_workers or not self._due("expansion: the hall", t):
+        if not n_workers:
+            return []
+        can = getattr(self, "can", None)
+        if (can is not None and not (fx.MACROS and "expand" not in fx.MACROS_OFF)  # (the hall's own build order: only
+                and not any(can(c, k) for c in (("ugol",) if self.race == "undead" else (HALL[self.race],))
+                            for k in (fx.POINT, fx.UNIT))):  # when the policy could order it: at a person's income the
+            return []  # mask dropped ~94% of them, the hall not affordable; audit 12)
+        if not self._due("expansion: the hall", t):
             return []
         if fx.MACROS and "expand" not in fx.MACROS_OFF:  # (the agent's expand order, the worker nearest: where to build
             # is its own business, macros.py; --macros-off expand: the hall's own build order below, where people put theirs)
