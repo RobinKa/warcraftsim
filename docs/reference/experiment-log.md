@@ -1846,6 +1846,10 @@ Audit 16 (bad habits in `fgself-155`/`156`'s real games): one-unit armies in lon
 
 **`fgself-157`** (from `fgself-155`'s 36007395, 21:33): the fixes for clearly bad habits only (`--saturation-lesson 1 --econ-masks 63 --revive-lesson 1 --burrow-lesson 1 --militia-lesson 1` and the always-on militia and revival fixes), no strategic lessons; those follow one at a time.
 
+**`fgself-157`, not kept** (22:15, ~40 minutes, stopped: the gap clear): against insane 37% where its start played 70% in the same windows, under the same code and masks (-28 points with the races weighed alike); 36.8% of 72 head to head. The masks were not the cause (the start checkpoint plays 70% under them); the new lessons were: revival 2.3 a game, burrows 1.3, lumber 1.2 (0.15 before the oversaturation trigger) raised the teacher's loss ninefold at the start (0.054 to 0.006), KL 0.11-0.17 in the first updates, the distance to the anchor 0.15 (0.08). Lessons that fire this often pull the policy off what wins before it learns their point.
+
+**`fgself-158`** (from `fgself-155`'s 36007395, 22:20): the masks and order fixes only (`--econ-masks 63`, the militia's order forms, the revival's price and payment), no new lessons; then the lessons one at a time, each at a lower weight or rate.
+
 The queue:
 1. (done: in `fgself-155`) The audit-12 economy fixes: a training map whose mines and start scale with its costs (`echofast2`), workers labelled up to the target's count, masks against duplicate tech buildings and surplus workers, orc burrow and no-target lumber lessons.
 2. Cloning the scripted strategy family as anchor and teacher (AlphaStar's recipe with scripted data). First tune its weak plans, and add night elf and undead expansion plans. Then record thousands of echofast games (`scripts/heuristic_match.py --record`), train a cloning policy, and use it as the KL anchor and a distillation teacher.
