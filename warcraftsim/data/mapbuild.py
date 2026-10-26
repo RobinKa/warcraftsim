@@ -317,11 +317,13 @@ def stock_map_path(name: str) -> Path:
     if parse_echo_name(name) is not None:  # Echo Isles under other rules ("echofast", "echoP")
         return echo_map_path(name)
     candidates = []
-    for sub in ("Maps/FrozenThrone", "Maps"):
+    for sub in ("Maps/FrozenThrone", "Maps/FrozenThrone/Community", "Maps"):  # (1.29's Community: Last Refuge, Amazonia)
         d = paths.GAME_DIR / sub
         if not d.exists():
             continue
         for f in d.iterdir():
+            if not f.is_file():
+                continue
             stem = f.stem.lower()
             if stem == name.lower() or re.sub(r"^\(\d+\)", "", stem) == name.lower():
                 candidates.append(f)

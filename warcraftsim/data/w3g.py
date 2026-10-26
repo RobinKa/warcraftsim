@@ -540,6 +540,8 @@ def _actions(rep: Replay, block: bytes, pid: int, t: int, version: int, out: lis
                 x, y = r.f32(), r.f32()
                 r.skip(1)
                 out.append(Action(t, pid, k, x=x, y=y))
+            elif k == 0x77 and version < 32:  # 1.30-1.31: 12 bytes (twice a game; meaning unknown)
+                r.skip(12)
             elif k == 0x77:  # Reforged: BlzSendSyncData (prefix, data, a dword)
                 out.append(Action(t, pid, k, text=r.cstr() + "|" + r.cstr()))
                 r.skip(4)
@@ -627,9 +629,11 @@ def _fold(crc: int) -> int:
 
 
 def rewrite(data: bytes, map_path: str | None = None, checksum: int | None = None, sha1: bytes | None = None,
-            objects=None) -> bytes:
+            objects=None, version: tuple[int, int] | None = None) -> bytes:
     """The replay file's bytes with the game info's map path and/or checksums replaced and/or every
-    object id in the actions mapped by `objects((id1, id2)) -> (id1, id2)`, as a classic .w3g (a GRBN
+    object id in the actions mapped by `objects((id1, id2)) -> (id1, id2)` and/or the header's game
+    version and build set to `version` (to try another version's replay in our client: the game plays
+    back only its own), as a classic .w3g (a GRBN
     container's metadata is dropped). The blocks are compressed anew, with the checksums the game
     checks on loading: the header's CRC-32 (over the header with it zeroed), and each block's: the
     CRC-32s of its 8-byte header (checksum zeroed) and of its compressed bytes, each folded to 16
@@ -675,6 +679,10 @@ def rewrite(data: bytes, map_path: str | None = None, checksum: int | None = Non
     struct.pack_into("<I", head, 32, len(head) + len(out))
     struct.pack_into("<I", head, 40, size)
     struct.pack_into("<I", head, 44, len(blocks))
+    if version is not None:
+        if not header.header_version:
+            raise ReplayError("no version to rewrite in a header before 1.07")
+        struct.pack_into("<IH", head, 52, *version)
     struct.pack_into("<I", head, len(head) - 4, 0)
     struct.pack_into("<I", head, len(head) - 4, zlib.crc32(bytes(head)))
     return bytes(head) + out
