@@ -120,6 +120,7 @@ SETTINGS = ("map", "handicap", "step_seconds", "max_minutes", "wait_floor_ms", "
             "eval_z", "z_pool", "z_src", "z_enforce", "z_time_scale", "z_build", "eval_map", "eval_z_pool", "eval_vs", "eval_guide",
             "inputs", "tech_mask", "valid_mask", "z_modes", "neutral", "opsd_share", "opsd_coef", "macros", "z_mix",
             "macros_off", "eval_human", "z_comp", "z_forbid_mask")
+SETTINGS_SET = ("spells",)  # (settings added since: in the key only when set)
 
 
 def launch_key(info: dict) -> str:
@@ -135,7 +136,8 @@ def launch_key(info: dict) -> str:
     for f in SHIM:
         if (ROOT / f).exists():
             h.update(f.encode() + b"\0" + (ROOT / f).read_bytes())
-    return hashlib.sha1(json.dumps([c.get(k) for k in SETTINGS] + [h.hexdigest()]).encode()).hexdigest()[:10]
+    extra = [c.get(k) for k in SETTINGS_SET if c.get(k) not in (None, "None", "0", 0)]  # (none: the key as before)
+    return hashlib.sha1(json.dumps([c.get(k) for k in SETTINGS] + extra + [h.hexdigest()]).encode()).hexdigest()[:10]
 
 
 def code_rev(info: dict) -> str:

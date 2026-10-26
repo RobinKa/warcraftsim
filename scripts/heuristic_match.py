@@ -160,6 +160,7 @@ class PolicyMatch:
         fx.set_masks(cfg["tech_mask"], cfg["valid_mask"])
         fx.set_neutral(cfg["neutral"])
         fx.set_macros(int(cfg.get("macros", 0) or 0))
+        fx.set_spells(int(cfg.get("spells", 0) or 0))
         from warcraftsim.data.mapbuild import stock_map_path
         fx.set_geometry(*fx.map_geometry(stock_map_path(cfg["map"])))
         ck = torch.load(checkpoint, map_location="cpu", weights_only=False)

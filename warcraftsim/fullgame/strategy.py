@@ -133,16 +133,35 @@ def build_seconds() -> dict[str, float]:
     return out
 
 
+@lru_cache(maxsize=1)
+def research_time_steps() -> dict[str, float]:
+    """Each research's time more per level past the first (UpgradeData timemod: level n takes timebase + (n - 1) *
+    timemod, 60, 75, 90 s for the forges' weapons)."""
+    from ..data.mpq import GameArchives
+    from ..data.objects import parse_slk
+    with GameArchives() as g:
+        upgrades = parse_slk(g.read("Units\\UpgradeData.slk").decode("latin-1"))
+    out = {}
+    for r in upgrades:
+        try:
+            out[r.get("upgradeid")] = float(r.get("timemod") or 0.0)
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
 def from_replays(stats: Path, lag: str = "build") -> list[dict]:
     """Every 1v1 player's strategy in replay_stats.py's rows (people's replays). `lag`: an item's time is its click's
     plus its build time ("build"), or plus CLICK_LAG ("fixed": the pools before 2026-10-25)."""
     out = []
     bt = build_seconds() if lag == "build" else {}
+    more = research_time_steps() if lag == "build" else {}
 
-    def done(t_ms: int, kind: str, code: str) -> float:
+    def done(t_ms: int, kind: str, code: str, level: int = 1) -> float:
+        """(`level`: a research's, its clicks so far: a later level takes longer; its first time is level 1's)"""
         if lag != "build" or code not in bt:
             return t_ms / 1000.0 + CLICK_LAG
-        return t_ms / 1000.0 + bt[code] + (BUILD_WALK if kind == "build" else 0.0)
+        return t_ms / 1000.0 + bt[code] + (level - 1) * more.get(code, 0.0) + (BUILD_WALK if kind == "build" else 0.0)
     for line in stats.open():
         r = json.loads(line)
         if r.get("type") != "1v1":
@@ -152,8 +171,12 @@ def from_replays(stats: Path, lag: str = "build") -> list[dict]:
         if len(bos) != 2 or any(x not in RACES for x in races):
             continue
         for i, b in enumerate(bos):
-            pairs = [(code, done(t_ms, kind, code)) for t_ms, kind, code, *_ in b["build"]
-                     if kind in ("train", "build", "hero", "research", "upgrade")]
+            clicks: Counter = Counter()  # (a research's clicks so far: its level)
+            pairs = []
+            for t_ms, kind, code, *_ in b["build"]:
+                if kind in ("train", "build", "hero", "research", "upgrade"):
+                    clicks[code] += code[:1] == "R"
+                    pairs.append((code, done(t_ms, kind, code, max(clicks[code], 1))))
             n = Counter(code for t_ms, kind, code, *_ in b["build"] if kind == "train")
             out.append({"race": races[i], "opp": races[1 - i], "src": "human", "won": bool(b.get("won")),
                         "t": _first_times(pairs), "n": dict(n), "replay": r.get("file"), "slot": b.get("slot"),

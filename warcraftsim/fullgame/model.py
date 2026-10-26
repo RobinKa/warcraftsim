@@ -395,6 +395,7 @@ def configure_for(path) -> None:
             neutral = 2
     fx.set_neutral(neutral)
     fx.set_macros(int(vocab.get("macros") or 0))
+    fx.set_spells(int(vocab.get("spells") or 0))
     fx.set_z(c.get("z", 0))
     if c.get("gx", 0) >= 3:  # (the unit channels it reads: all of them, a run's --features zeros only its weights)
         fx.ACTIVE_F = fx.F
@@ -423,7 +424,7 @@ def load(path, device="cpu", memory: bool | None = None, vocab: dict | None = No
     added since (features.set_inputs: unit features, the clock) start with zero weights, and with --valid-mask
     (features.VALID_MASK) its hero orders' mask is set (set_valid). `vocab` (--neutral: the run's): its orders in
     that vocabulary's order (neutral.reorder; one extended in another process may list a toggle's two the other
-    way round)."""
+    way round); with --spells, or a `vocab` that has them, the heroes' spells it lacked (spells.py)."""
     ck = torch.load(path, map_location=device, weights_only=False)
     config, gx_old, z_old, G_old = glob_layout(ck)
     if memory is not None:
@@ -461,6 +462,13 @@ def load(path, device="cpu", memory: bool | None = None, vocab: dict | None = No
                 net = macros.grow(net, ck["vocab"], new)
                 ck = {**ck, "vocab": new}
             macros.allow(net, ck["vocab"])
+        from . import spells  # (--spells, or a run whose vocabulary has them: the heroes' spells it lacked, spells.py)
+        if (fx.SPELLS or vocab is not None and vocab.get("spells")) and not spells.extended(ck["vocab"]):
+            new = spells.extend(ck["vocab"])
+            net = spells.grow(net, ck["vocab"], new)
+            ck = {**ck, "vocab": new}
+        if ck["vocab"].get("spells"):
+            spells.allow(net, ck["vocab"])
         if vocab is not None and ck["vocab"]["orders"] != vocab["orders"]:
             if neutral.reorder(net, ck["vocab"], vocab) is None:
                 raise RuntimeError(f"{path}: its vocabulary has other orders than the run's")

@@ -64,6 +64,7 @@ def settings(run: str) -> tuple[dict, dict]:
     fx.set_masks(cfg["tech_mask"], cfg["valid_mask"])
     fx.set_neutral(cfg["neutral"])
     fx.set_macros(int(cfg.get("macros", 0) or 0))
+    fx.set_spells(int(cfg.get("spells", 0) or 0))
     if hasattr(fx, "set_macros_off"):  # (--macros-off, as the actors set it; a tree from before it has none)
         fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     from warcraftsim.data.duelmap import parse_duel_name

@@ -25,7 +25,7 @@ import torch
 from ..runtime.instance import Agent, GameInstance, GameSetup, Human
 from . import features as fx
 from .collect import Films
-from .costs import order_costs
+from .costs import order_costs, research_steps
 from .model import load
 from .play import play_game
 from .trace import unit_values
@@ -122,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
     with GameInstance(setup, name="versus", display=display, timeout=600) as g:
         obs = g.start()
         phase("playing")
-        r = play_game(g, obs, net, vocab, device, 1 - side, args.temperature, costs=order_costs(vocab, args.map),
+        r = play_game(g, obs, net, vocab, device, 1 - side, args.temperature, costs=order_costs(vocab, args.map), steps=research_steps(vocab, args.map),
                       values=values, left_ok=True)
         trace = r.pop("trace", None)
         you_, it = r["sides"].get("ai", {}), r["sides"].get("agent", {})  # (play_game calls the other side "ai": you)

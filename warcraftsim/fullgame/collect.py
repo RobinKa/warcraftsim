@@ -429,12 +429,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.policy:
         import torch
 
-        from .costs import order_costs
+        from .costs import order_costs, research_steps
         from .model import load
         torch.set_num_threads(2)  # (the games' threads call it at once; the games need the cores)
         net, ck = load(args.policy, args.device)
         policy = {"net": net, "vocab": ck["vocab"], "device": torch.device(args.device),
-                  "costs": order_costs(ck["vocab"], args.map)}
+                  "costs": order_costs(ck["vocab"], args.map), "steps": research_steps(ck["vocab"], args.map)}
     lock = threading.Lock()
     done = {"n": 0, "t0": time.time()}
     # one game instance name per worker (games reuse their names' Wine prefixes); a machine-wide
@@ -498,7 +498,8 @@ def main(argv: list[str] | None = None) -> int:
             driver = None
             if side >= 0:
                 from .play import BCAgent
-                bot = BCAgent(policy["net"], policy["vocab"], side, policy["device"], costs=policy["costs"])
+                bot = BCAgent(policy["net"], policy["vocab"], side, policy["device"], costs=policy["costs"],
+                              steps=policy["steps"])
                 bot.begin(obs, [RACES.index(r) for r in (r0, r1)])
                 driver = Shadow(bot, side) if args.shadow else Takeover(bot, side, chunk[k][6])
             data = play_game(g, obs, values=values if film else None, driver=driver)
