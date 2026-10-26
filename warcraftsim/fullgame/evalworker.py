@@ -141,6 +141,7 @@ def run_config(run_dir: Path, host: str, games: int, start_update) -> tuple[dict
            # (a number: 2 is the builder as a teacher only, never carrying out; as a flag it was True, == 1, and the
            # worker's current+z games had the builder carry out the target until 2026-10-19)
            "z_build": num("z_build", 0, int), "z_modes": num("z_modes", 0.0), "z_mix": num("z_mix", 0, int),  # (--z-modes: drawn and measured)
+           "z_comp": num("z_comp", 0.0), "z_forbid_mask": num("z_forbid_mask", 0, int),
            "grpo_share": 0.0, "grpo_group": 4, "grpo_branch": [60.0, 480.0],  # (evaluation games never branch)
            "eval_map": "", "eval_costs": None,  # (its map is the evaluation games' already: --eval-map)
            "eval_vs": num("eval_vs", 0.0),  # (--eval-vs: the current policy against a listed checkpoint)

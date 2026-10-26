@@ -26,7 +26,7 @@ LIB = native.lib_path(SRC, "w3rules")
 _lib = None
 # type classes (w3rules.c's K_*): bits of a type code in a table()
 K_ALTAR, K_TIER2, K_TIER3, K_WORKER, K_MINE, K_HOLD, K_OWN_MINE = 1, 2, 4, 8, 16, 32, 64
-TH, EH, MH = 12, 19, 8  # (the outputs' heads: w3r_teach's, w3r_expansion's, w3r_modes')
+TH, EH, MH = 12, 19, 11  # (the outputs' heads: w3r_teach's, w3r_expansion's, w3r_modes')
 # the argument's head (w3rules.c's A_*): the rows' descriptor, the side, a table (keys, values, length), the doubles'
 # address, then the function's own slots
 A_ROWS, A_SIDE, A_KEYS, A_VALS, A_NKEYS, A_DOUBLES = 0, 3, 4, 5, 6, 7
@@ -142,18 +142,18 @@ def expansion(holder, rows: np.ndarray, side: int, sx: float, sy: float, cls: tu
 def modes(holder, rows: np.ndarray, need: int, setup) -> list | None:
     """w3r_modes' measures (its comment), None without the library. `setup()`: the tracker's constants, (side, the
     enemy's start, near2, scout2, its own start or None, far2, at2, the tables of the halls, gold mines, workers and
-    food), asked once (they are fixed)."""
+    food, the forbidden unit's type code or 0), asked once (they are fixed)."""
     L = _lib or lib()
     if L is None:
         return None
     r = _rows(rows)
     c = holder.__dict__.get("_rules_modes")
     if c is None or c[2] < MH + 2 * r[2]:
-        side, enemy, near2, scout2, own, far2, at2, halls, mines, workers, food = setup()
+        side, enemy, near2, scout2, own, far2, at2, halls, mines, workers, food, forbid = setup()
         ox, oy = own if own is not None else (0.0, 0.0)
         c = holder._rules_modes = _arg(
             MH + 2 * r[2], {A_SIDE: side, A_X[1]: int(own is not None), A_X[2]: at2, A_X[3]: halls[2], A_X[4]: halls[4],
-                            A_X[5]: mines[2], A_X[6]: mines[4], A_X[7]: workers[2], A_X[8]: workers[4],
+                            A_X[5]: mines[2], A_X[6]: mines[4], A_X[7]: workers[2], A_X[8]: workers[4], A_X[9]: forbid,
                             A_KEYS: food[2], A_VALS: food[3], A_NKEYS: food[4]},
             (enemy[0], enemy[1], near2, scout2, ox, oy, far2), (halls, mines, workers, food))
     a = c[0]

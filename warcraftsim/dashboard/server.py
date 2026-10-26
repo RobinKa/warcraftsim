@@ -110,7 +110,8 @@ EPISODE_SERIES.update({  # strategy conditioning (selfplay --z-pool): the traini
     # (--z-modes, fullgame/modes.py: each kind followed, a violation of at most 0.1, in the games it was on)
     **{f"mode_{k}": (lambda k: lambda e: (1.0 if e["z_modes"][k][1] <= 0.1 else 0.0) if k in (e.get("z_modes") or {})
                      else None)(k)
-       for k in ("no_rush", "rush", "expand", "no_expand", "workers", "creep", "harass", "scout", "army", "low_upkeep")},
+       for k in ("no_rush", "rush", "expand", "no_expand", "workers", "creep", "harass", "scout", "army", "low_upkeep",
+                 "cap", "forbid", "variety")},
     "z_win": lambda e: (1.0 if e.get("outcome", 0) > 0 else 0.0) if "z" in e and _vs_ai(e) else None,
     "noz_win": lambda e: (1.0 if e.get("outcome", 0) > 0 else 0.0) if "z" not in e and _vs_ai(e) and "prod" in e else None,
     "z_t2": lambda e: float(any(c in ((e.get("prod") or {}).get("built") or {}) for c in TIER2)) if "z" in e and _vs_ai(e) else None,

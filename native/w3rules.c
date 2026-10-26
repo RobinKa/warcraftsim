@@ -253,18 +253,23 @@ int w3r_expansion(int64_t *a) {
  * unit of it is within sqrt(scout2), out[2] its workers, out[3] its heroes' highest level (0), out[4] (need & 4) its
  * army's food but the heroes', out[5] (need & 1) its halls (buildings): with its own start known 1 + those farther
  * than sqrt(far2) from it and within sqrt(at2) of a gold mine (any row), else their count; (need & 2) out[6] the
- * enemy's workers (owner 1 - side, any) and out[7] its living units, then their ids. The output holds MH + 2 *
- * nrows. Returns its length (-1: out of memory). */
-#define MH 8
+ * enemy's workers (owner 1 - side, any) and out[7] its living units, then their ids. The army's composition
+ * (modes' composition kinds): (need & 128) out[8] the most food one type of its army has (heroes and types of no
+ * food, summons, left out) and out[9] how many types of food it has; (need & 256) out[10] its units of type A_X9.
+ * The output holds MH + 2 * nrows. Returns its length (-1: out of memory). */
+#define MH 11
+#define MIX_TYPES 64 /* (the army's types counted at most: an army has ~1-8) */
 int w3r_modes(int64_t *a) {
     const int64_t *rows = (const int64_t *)RD(a)[0], *fk = (const int64_t *)a[A_KEYS], *fv = (const int64_t *)a[A_VALS];
     const int64_t *hk = (const int64_t *)a[A_X3], *gk = (const int64_t *)a[A_X5], *wk = (const int64_t *)a[A_X7];
     const double *dd = (const double *)a[A_DOUBLES];
     int nrows = (int)RD(a)[1], ncols = (int)RD(a)[2], nf = (int)a[A_NKEYS], nhk = (int)a[A_X4],
         ngk = (int)a[A_X6], nwk = (int)a[A_X8], need = (int)a[A_X0], has_own = (int)a[A_X1];
-    int64_t side = a[A_SIDE], at2 = a[A_X2], *out = a + HEAD;
+    int64_t side = a[A_SIDE], at2 = a[A_X2], forbid = a[A_X9], *out = a + HEAD;
     double ex = dd[0], ey = dd[1], near2 = dd[2], scout2 = dd[3], ox = dd[4], oy = dd[5], far2 = dd[6];
-    int64_t near = 0, scout = 0, workers = 0, level = 0, food = 0, halls = 0, ne = 0, no = 0;
+    int64_t near = 0, scout = 0, workers = 0, level = 0, food = 0, halls = 0, ne = 0, no = 0, nforbid = 0;
+    int64_t mix_t[MIX_TYPES], mix_f[MIX_TYPES];  /* (need & 128: each army type's food) */
+    int nmix = 0;
     int64_t *ids = out + MH;
     int n_far = 0, *far = NULL;  /* (the halls far from its start: at a gold mine?, after the pass) */
     if (need & 2)  /* the enemy's workers first (their ids), the side's own after them */
@@ -282,8 +287,18 @@ int w3r_modes(int64_t *a) {
         if (d2 < scout2) scout = 1;
         if (!(fl & (STRUCTURE | WORKER))) {
             if (d2 < near2) near++;
-            if ((need & 4) && !(fl & HERO)) food += cls(fk, fv, nf, r[C_TYPE]);
+            if ((need & (4 | 128)) && !(fl & HERO)) {
+                int64_t f = cls(fk, fv, nf, r[C_TYPE]);
+                food += f;
+                if ((need & 128) && f > 0) {
+                    int q = 0;
+                    while (q < nmix && mix_t[q] != r[C_TYPE]) q++;
+                    if (q < nmix) mix_f[q] += f;
+                    else if (nmix < MIX_TYPES) { mix_t[nmix] = r[C_TYPE]; mix_f[nmix++] = f; }
+                }
+            }
         }
+        if ((need & 256) && r[C_TYPE] == forbid) nforbid++;
         if (in_sorted(wk, nwk, r[C_TYPE])) workers++;
         if ((fl & HERO) && r[C_HLEVEL] > level) level = r[C_HLEVEL];
         if ((need & 1) && (fl & STRUCTURE) && in_sorted(hk, nhk, r[C_TYPE])) {
@@ -311,5 +326,8 @@ int w3r_modes(int64_t *a) {
     free(far);
     out[0] = near; out[1] = scout; out[2] = workers; out[3] = level; out[4] = food; out[5] = halls; out[6] = ne;
     out[7] = no;
+    int64_t top = 0;
+    for (int q = 0; q < nmix; q++) if (mix_f[q] > top) top = mix_f[q];
+    out[8] = top; out[9] = nmix; out[10] = nforbid;
     return MH + ne + no;
 }

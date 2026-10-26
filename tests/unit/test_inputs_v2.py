@@ -276,6 +276,36 @@ def test_strategy_block_grows_with_the_modes(v2, tmp_path):
         fx.set_z(0)
 
 
+def test_strategy_block_grows_with_the_composition_kinds(v2, tmp_path):
+    """--z-comp: a network with the modes and the mix grows the composition kinds' block at the strategy block's end
+    (zero weights: it reads the rest as before, whatever the block holds)."""
+    from warcraftsim.fullgame import modes, strategy
+    from warcraftsim.fullgame.model import FullGameNet, load
+    fx.set_inputs(2)
+    z_old = strategy.ZDIM + modes.MDIM + strategy.SLOTS
+    fx.set_z(z_old)
+    try:
+        vocab = {**VOCAB, "upgrades": [code("Rhme")]}
+        enc = fx.Encoder(vocab)
+        torch.manual_seed(0)
+        old = FullGameNet(n_types=5, n_cur=2, n_orders=7, G=enc.G, d=32, layers=1, priv=fx.PRIV, z=z_old,
+                          gx=fx.GX).eval()
+        torch.save({"config": old.config, "model": old.state_dict(), "vocab": vocab}, tmp_path / "z.pt")
+        fx.set_z(z_old + modes.CDIM)
+        net, _ = load(tmp_path / "z.pt")
+        assert net.config["z"] == z_old + modes.CDIM and net.config["G"] == enc.G + modes.CDIM
+        at = enc.G0 + z_old
+        assert not net.glob[0].weight[:, at:at + modes.CDIM].any()
+        glob_old = torch.randn(1, enc.G)
+        glob = torch.cat([glob_old[:, :at], torch.randn(1, modes.CDIM), glob_old[:, at:]], 1)
+        ent, typ = torch.randn(1, 2, fx.F), torch.tensor([[1, 2]])
+        cur, mask = torch.zeros(1, 2, dtype=torch.long), torch.ones(1, 2, dtype=torch.bool)
+        with torch.no_grad():
+            assert torch.allclose(net.encode(ent, typ, cur, mask, glob)[0], old.encode(ent, typ, cur, mask, glob_old)[0], atol=1e-5)
+    finally:
+        fx.set_z(0)
+
+
 def test_neutral_wares_as_orders(v2, tmp_path):
     """--neutral: a checkpoint's vocabulary gets the neutral buildings' wares and the tavern heroes' orders, its
     network grows (old orders and types as they were); a buy order on a shop is a Buy, on anything else nothing;

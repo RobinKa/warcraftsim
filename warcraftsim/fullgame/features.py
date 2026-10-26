@@ -1060,6 +1060,8 @@ class View:
         self.z: np.ndarray | None = None  # the target strategy (strategy.vector; the encoder's ZD numbers)
         self.zmask: np.ndarray | None = None  # --z-enforce: the orders the target allows (strategy.allowed)
         self.zmask_until = 0  # ... until this step (the strategies' horizon)
+        self.forbid: tuple | None = None  # --z-forbid-mask: (the forbidden unit's train order class, its type code,
+        # until this step, how many may live)
         # --z-build: the gold and lumber saved for the target's next item (its order class, its cost) that
         # the other orders may not spend (the policy spent all on units, and a next tier never came)
         self.reserve: tuple[int, int, int] | None = None
@@ -1485,6 +1487,11 @@ class View:
             pickable = _mod("macros").pickable                    # near; the ground items: play.BCAgent.observe)
             self.pickers = pickable(rows, player, getattr(self, "ground", ())) if MACROS >= 2 else []
             avail[enc.pickup_class] = bool(self.pickers)
+        fb = self.forbid  # (--z-forbid-mask: the forbidden unit's train order, while as many as allowed live)
+        if fb is not None and avail is not None and t < fb[2] and (not fb[3] or int(
+                ((rows[:, C_OWNER] == player) & (rows[:, C_TYPE] == fb[1]) & (rows[:, C_FLAGS] & DEAD == 0)).sum())
+                >= fb[3]):
+            avail[fb[0]] = False
         if self.zmask is not None and t < self.zmask_until:  # (--z-enforce: only the target's items)
             avail = self.zmask.copy() if avail is None else avail & self.zmask
         if self.active_f < F_BASE and (not fast or self.active_f > A_LAST):  # (view_step's: zeroed there, unless the
