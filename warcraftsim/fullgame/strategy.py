@@ -150,9 +150,11 @@ def research_time_steps() -> dict[str, float]:
     return out
 
 
-def from_replays(stats: Path, lag: str = "build") -> list[dict]:
+def from_replays(stats: Path, lag: str = "build", patches: set[str] | None = None) -> list[dict]:
     """Every 1v1 player's strategy in replay_stats.py's rows (people's replays). `lag`: an item's time is its click's
-    plus its build time ("build"), or plus CLICK_LAG ("fixed": the pools before 2026-10-25)."""
+    plus its build time ("build"), or plus CLICK_LAG ("fixed": the pools before 2026-10-25). `patches`: only replays
+    of these game versions ("1.29", "1.30", ...; build times are 1.29's, and other versions' balance differs:
+    docs/reference/human-replays.md)."""
     out = []
     bt = build_seconds() if lag == "build" else {}
     more = research_time_steps() if lag == "build" else {}
@@ -164,7 +166,7 @@ def from_replays(stats: Path, lag: str = "build") -> list[dict]:
         return t_ms / 1000.0 + bt[code] + (level - 1) * more.get(code, 0.0) + (BUILD_WALK if kind == "build" else 0.0)
     for line in stats.open():
         r = json.loads(line)
-        if r.get("type") != "1v1":
+        if r.get("type") != "1v1" or (patches and r.get("patch") not in patches):
             continue
         bos = r.get("build_orders") or []
         races = [b.get("race_played") for b in bos]
@@ -180,6 +182,7 @@ def from_replays(stats: Path, lag: str = "build") -> list[dict]:
             n = Counter(code for t_ms, kind, code, *_ in b["build"] if kind == "train")
             out.append({"race": races[i], "opp": races[1 - i], "src": "human", "won": bool(b.get("won")),
                         "t": _first_times(pairs), "n": dict(n), "replay": r.get("file"), "slot": b.get("slot"),
+                        **({"patch": r["patch"]} if r.get("patch") and r["patch"] != "1.29" else {}),
                         "end": round(r.get("length_ms", HORIZON * 1000) / 1000.0, 1)})
     return out
 
@@ -481,6 +484,8 @@ def main(argv: list[str] | None = None) -> int:
                     "what they need (narrow): buildings and research outside them free; drawn evenly per signature")
     ap.add_argument("--click-lag", choices=("build", "fixed"), default="build", help="people's items done their click's "
                     "time plus their build time (build), or plus CLICK_LAG (fixed: the pools before 2026-10-25)")
+    ap.add_argument("--replay-patches", nargs="*", default=[], help="only people's replays of these game versions "
+                    "(e.g. 1.29 1.30; default: all; their strategies carry \"patch\" when not 1.29)")
     ap.add_argument("--rescale-people", type=float, default=0.0, help="people's times onto the demonstrations' rules, "
                     "no item earlier than this quantile of the AI's (strategy.rescale_people; 0: as recorded)")
     a = ap.parse_args(argv)
@@ -492,7 +497,7 @@ def main(argv: list[str] | None = None) -> int:
     if a.difficulty:
         strategies = [s for s in strategies if s.get("difficulty") == a.difficulty]
     for f in a.replays:
-        strategies += from_replays(f, a.click_lag)
+        strategies += from_replays(f, a.click_lag, set(a.replay_patches) or None)
     if a.rescale_people > 0:
         print("people's times, factor per race:", rescale_people(strategies, a.rescale_people))
     keep = orderable(json.loads(a.vocab.read_text())) if a.vocab else None

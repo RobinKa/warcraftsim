@@ -149,6 +149,32 @@ def test_skip_reasons(rep):
     assert "version" in skip_reason(w3g.Replay(w3g.Header("w3g", 1, "W3XP", 30, 6061, True, 0, 0, False)), stock)
 
 
+def test_stock_map_match(rep):
+    import copy
+
+    from warcraftsim.fullgame.replays import match_map, skip_reason
+    sums = (rep.map_checksum, bytes.fromhex(rep.map_sha1))
+    stock = {"(2)Other": (1, bytes(20)), "(2)EchoIsles": sums}
+    assert match_map(rep, stock) == "(2)EchoIsles" and skip_reason(rep, stock) is None
+    blank = copy.copy(rep)
+    blank.map_checksum = 0xFFFFFFFF  # (some replays carry no classic checksum: the SHA-1 decides)
+    assert match_map(blank, stock) == "(2)EchoIsles"
+    other = copy.copy(rep)
+    other.map_sha1 = "00" * 20  # (another version of the map, or another game version's scripts)
+    assert match_map(other, stock) is None and "checksum" in skip_reason(other, stock)
+    assert match_map(other, stock, any_version=True) == "(2)EchoIsles"
+    newer = copy.copy(other)
+    newer.header = w3g.Header("w3g", 1, "W3XP", 30, 6061, True, 0, 0, False)
+    assert "version" in skip_reason(newer, stock) and skip_reason(newer, stock, any_version=True) is None
+
+
+def test_rewrite_version(data):
+    out = w3g.rewrite(data, version=(30, 6061))
+    h = w3g.parse_replay(out).header
+    assert (h.version, h.build) == (30, 6061)
+    assert w3g.parse_replay(w3g.rewrite(out, version=(29, 6060))).actions == w3g.parse_replay(data).actions
+
+
 def test_object_id_shift():
     from warcraftsim.fullgame.replays import shift_of
     fn, n = shift_of([(15874, 15880), (15889, 15895)])

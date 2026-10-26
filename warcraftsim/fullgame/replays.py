@@ -85,7 +85,7 @@ class ReplayGame(GameInstance):
         if not doc_link.is_symlink():
             doc_link.symlink_to(work, target_is_directory=True)
         # a replay resolves its map from the Documents folder (and finds it only with its checksums)
-        dest = docs.joinpath(*self.map_path.split("\\"))
+        dest = docs.joinpath(*re.split(r"[\\/]", self.map_path))
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(self.map_file, dest)
         self._set_window_size()
@@ -117,9 +117,38 @@ class ReplayGame(GameInstance):
 
 # ---- which replays -------------------------------------------------------------------------------
 
-def stock_checksums() -> tuple[int, bytes]:
+def stock_checksums(name: str = ECHO) -> tuple[int, bytes]:
     from ..data.mapbuild import stock_map_path
-    return file_checksums(stock_map_path(ECHO))
+    return file_checksums(stock_map_path(name))
+
+
+def stock_maps(spec: str = "echo") -> dict[str, tuple[int, bytes]]:
+    """The stock maps to convert and their checksums: "echo", "all" (every melee map of the game's
+    Maps/FrozenThrone, Community included) or names ("(2)LastRefuge-1.3,(2)Amazonia")."""
+    if spec in ("echo", "EchoIsles", ECHO):
+        return {ECHO: stock_checksums()}
+    if spec == "all":
+        root = paths.GAME_DIR / "Maps" / "FrozenThrone"
+        names = sorted(f.stem for f in [*root.glob("*.w3x"), *(root / "Community").glob("*.w3x")])
+    else:
+        names = [n.strip() for n in spec.split(",") if n.strip()]
+    return {n: stock_checksums(n) for n in names}
+
+
+def match_map(rep: w3g.Replay, stock: dict[str, tuple[int, bytes]], any_version: bool = False) -> str | None:
+    """The stock map the replay was played on: its checksums (the SHA-1 when the replay has one; some
+    replays carry ffffffff as the classic checksum), or with `any_version` its file name only (another
+    game version's checksums cover its own common.j and Blizzard.j)."""
+    if any_version:
+        name = re.split(r"[\\/]", rep.map_path)[-1].lower()
+        return next((n for n in stock if (n + ".w3x").lower() == name), None)
+    for n, (xoro, sha1) in stock.items():
+        if rep.map_sha1:
+            if rep.map_sha1 == sha1.hex() and rep.map_checksum in (xoro, 0xFFFFFFFF):
+                return n
+        elif rep.map_checksum == xoro:
+            return n
+    return None
 
 
 def file_checksums(path: Path) -> tuple[int, bytes]:
@@ -132,18 +161,23 @@ def file_checksums(path: Path) -> tuple[int, bytes]:
     return w3g.map_checksums(files, common, blizzard)
 
 
-def skip_reason(rep: w3g.Replay, stock: tuple[int, bytes]) -> str | None:
-    """Why a replay can't be converted (None: it can): our client plays back only its own build, and
-    the observer map is stock Echo Isles."""
+def skip_reason(rep: w3g.Replay, stock: dict[str, tuple[int, bytes]] | tuple[int, bytes],
+                any_version: bool = False) -> str | None:
+    """Why a replay can't be converted (None: it can): our client plays back only its own build (unless
+    `any_version`: a test), and only on a stock map of its own (`stock`: name -> checksums; a pair:
+    Echo Isles') that the replay's checksums match."""
+    if isinstance(stock, tuple):
+        stock = {ECHO: stock}
     h = rep.header
-    if h.version >= 10000 or h.version != 29 or h.build != 6060:
+    if not any_version and (h.version >= 10000 or h.version != 29 or h.build != 6060):
         return f"version {h.patch} build {h.build} (the client is 1.29 build 6060)"
-    if not re.search(r"(^|[\\/])\(2\)EchoIsles\.w3x$", rep.map_path, re.I):
-        return f"map {rep.map_path}"
     if ".." in rep.map_path or ":" in rep.map_path:
         return "map path outside the maps folder"
-    if rep.map_checksum != stock[0] or (rep.map_sha1 and rep.map_sha1 != stock[1].hex()):
-        return "another version of Echo Isles (map checksum)"
+    if match_map(rep, stock, any_version) is None:
+        name = re.split(r"[\\/]", rep.map_path)[-1]
+        if any((n + ".w3x").lower() == name.lower() for n in stock):
+            return f"another version of {name} (map checksum)"
+        return f"map {rep.map_path}"
     playing = rep.playing
     if len(playing) != 2 or len({p.team for p in playing}) != 2:
         return f"not a 1v1 ({len(playing)} players)"
@@ -152,15 +186,16 @@ def skip_reason(rep: w3g.Replay, stock: tuple[int, bytes]) -> str | None:
     return None
 
 
-def observer_map(step_seconds: float = STEP_SECONDS) -> Path:
-    """Echo Isles with the observing harness (cached by the harness's source)."""
+def observer_map(name: str = ECHO, step_seconds: float = STEP_SECONDS) -> Path:
+    """A stock map (Echo Isles) with the observing harness (cached by the harness's source)."""
     import hashlib
 
     from ..data.mapbuild import HarnessConfig, build_map, observer_source
     key = hashlib.sha1((observer_source() + f"{step_seconds}").encode()).hexdigest()[:12]
-    path = paths.CACHE_DIR / "maps" / f"echo-obs-{key}.w3x"
+    slug = "echo" if name == ECHO else re.sub(r"[^A-Za-z0-9_.-]", "", name)
+    path = paths.CACHE_DIR / "maps" / f"{slug}-obs-{key}.w3x"
     if not path.exists():
-        build_map(ECHO, path, HarnessConfig(step_seconds=step_seconds), observer=True)
+        build_map(name, path, HarnessConfig(step_seconds=step_seconds), observer=True)
     return path
 
 
@@ -179,21 +214,22 @@ def shift_of(probes: list[tuple[int, int]]):
 # ---- the playback ------------------------------------------------------------------------------
 
 def play(rep: w3g.Replay, data: bytes, name: str, obs_map: Path, checksums: tuple[int, bytes],
-         timeout: float = 30.0, nice: int = 10, log=print) -> dict:
+         timeout: float = 30.0, nice: int = 10, log=print, map_name: str = ECHO,
+         version: tuple[int, int] | None = None) -> dict:
     """Both playbacks of one replay; returns the raw recording: per step the units, heroes, players,
     the harness's research events, the units' object ids, the trees and theirs, the order names."""
-    setup = GameSetup(map=ECHO, step_seconds=STEP_SECONDS, nice=nice, launch_timeout=90, window=(320, 240),
+    setup = GameSetup(map=map_name, step_seconds=STEP_SECONDS, nice=nice, launch_timeout=90, window=(320, 240),
                       warm_spare=False, draw=False, d3d_thread=False, render_threads=0, shim_dir=str(REPLAY_SHIM))
     g = ReplayGame(setup, obs_map, rep.map_path, name=name, timeout=timeout)
     try:
         t0 = time.time()
-        g.play(w3g.rewrite(data, checksum=checksums[0], sha1=checksums[1]))
+        g.play(w3g.rewrite(data, checksum=checksums[0], sha1=checksums[1], version=version))
         probes = [(int(p[2]), int(p[3])) for p in g.tags() if p[0] == "P"]
         g._stop_process()
         if len(probes) != 2:
             raise GameError(f"the harness reported {len(probes)} probes")
         fn, n = shift_of(probes)
-        shifted = w3g.rewrite(data, checksum=checksums[0], sha1=checksums[1], objects=fn)
+        shifted = w3g.rewrite(data, checksum=checksums[0], sha1=checksums[1], objects=fn, version=version)
         obs = g.play(shifted)
         log(f"{name}: harness objects {n} (probe {probes}); playing ({time.time() - t0:.0f}s)")
         rec = {"units": [], "heroes": [], "players": [], "events": [], "ms": [],
@@ -532,9 +568,10 @@ def sync_check(rep: w3g.Replay, shifted: w3g.Replay, players: list[int], ms: lis
 
 
 def convert(path: Path, rep: w3g.Replay, data: bytes, name: str, obs_map: Path, checksums: tuple[int, bytes],
-            log=print, nice: int = 10) -> tuple[dict, dict]:
+            log=print, nice: int = 10, map_name: str = ECHO, version: tuple[int, int] | None = None
+            ) -> tuple[dict, dict]:
     """One replay to the demonstration's arrays and its meta."""
-    rec = play(rep, data, name, obs_map, checksums, nice=nice, log=log)
+    rec = play(rep, data, name, obs_map, checksums, nice=nice, log=log, map_name=map_name, version=version)
     playing = rep.playing
     real = [p.slot for p in playing]  # (a melee player's id in the game is its slot)
     remap_players(rec, real)
@@ -562,7 +599,7 @@ def convert(path: Path, rep: w3g.Replay, data: bytes, name: str, obs_map: Path, 
               for k, p in enumerate(playing)}
     apm = {s["player"]: s["apm"] for s in summary["players"]}
     meta = {"races": [rec["races"].get(r, p.race) for r, p in zip(real, playing)],
-            "difficulties": ["human", "human"], "handicap": playing[0].handicap, "map": ECHO, "map_file": ECHO,
+            "difficulties": ["human", "human"], "handicap": playing[0].handicap, "map": map_name, "map_file": map_name,
             "victory": "melee", "step_seconds": STEP_SECONDS, "order_names": rec["order_names"],
             "result": result, "steps": steps, "game_seconds": rec["ms"][-1] / 1000.0,
             "source": {"replay": path.name, "patch": rep.header.patch, "build": rep.header.build,
@@ -596,7 +633,11 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--replays", type=Path, required=True, help="a directory of .w3g files (or one)")
     ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--map", default="echo", help="the map to convert (only Echo Isles for now)")
+    ap.add_argument("--map", default="echo",
+                    help='the stock maps to convert: "echo", "all" or names ("(2)LastRefuge-1.3,(2)Amazonia")')
+    ap.add_argument("--any-version", action="store_true",
+                    help="a test: replays of other game versions too, their header set to 1.29 build 6060 and "
+                         "their map found by its file name (does the playback stay in step?)")
     ap.add_argument("--parallel", type=int, default=2, help="games played back at once")
     ap.add_argument("--limit", type=int, default=0, help="at most this many conversions (0: all)")
     ap.add_argument("--min-sync", type=float, default=1.0,
@@ -607,8 +648,6 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--fsync", type=int, default=1, help="with a Proton Wine: its fsync")
     ap.add_argument("--retry-failed", action="store_true", help="convert replays that failed before again")
     args = ap.parse_args(argv)
-    if args.map not in ("echo", "EchoIsles", ECHO):
-        ap.error("only Echo Isles (--map echo)")
     if args.wine:
         wine.use_wine(args.wine, fsync=bool(args.fsync))
     if not (REPLAY_SHIM / "w3shim.dll").exists():
@@ -633,9 +672,9 @@ def main(argv: list[str] | None = None) -> int:
             "status": "converting", "pid": os.getpid(), "step_seconds": STEP_SECONDS,
             "command": "python -m warcraftsim.fullgame.replays " + " ".join(sys.argv[1:] if argv is None else argv)}
     write_info(out, info)
-    stock = stock_checksums()
-    obs_map = observer_map()
-    checksums = file_checksums(obs_map)
+    stock = stock_maps(args.map)
+    observers: dict[str, tuple[Path, tuple[int, bytes]]] = {}  # map -> its observer map and that's checksums
+    version = (29, 6060) if args.any_version else None
     lock = threading.Lock()
     taken = {int(p.stem[4:]) for p in out.rglob("game*.npz") if p.stem[4:].isdigit()}
     todo = []
@@ -643,7 +682,8 @@ def main(argv: list[str] | None = None) -> int:
         if path.name in done:
             continue
         try:
-            reason = skip_reason(w3g.parse_replay(path.read_bytes(), actions=False), stock)
+            head = w3g.parse_replay(path.read_bytes(), actions=False)
+            reason = skip_reason(head, stock, args.any_version)
         except (w3g.ReplayError, ValueError, IndexError, OSError) as e:
             reason = f"unreadable: {e}"
         if reason:
@@ -652,7 +692,11 @@ def main(argv: list[str] | None = None) -> int:
             continue
         n = game_number(path, taken)
         taken.add(n)
-        todo.append((path, n))
+        map_name = match_map(head, stock, args.any_version)
+        if map_name not in observers:
+            obs = observer_map(map_name)
+            observers[map_name] = obs, file_checksums(obs)
+        todo.append((path, n, map_name))
         if args.limit and len(todo) >= args.limit:
             break
     print(f"{len(files)} replays: {len(todo)} to convert ({len(done)} done before)", flush=True)
@@ -663,14 +707,15 @@ def main(argv: list[str] | None = None) -> int:
     stats = {"n": 0, "ok": 0, "t0": time.time()}
 
     def run(job) -> None:
-        path, n = job
+        path, n, map_name = job
+        obs_map, checksums = observers[map_name]
         name = names.get()
         t0 = time.time()
         try:
             data = path.read_bytes()
             rep = w3g.parse_replay(data)
             arrays, meta = convert(path, rep, data, name, obs_map, checksums, nice=args.nice,
-                                   log=lambda m: print(m, flush=True))
+                                   log=lambda m: print(m, flush=True), map_name=map_name, version=version)
             sync = meta["sync"]
             share = sync["subgroup_matched"] / max(1, sync["subgroup_units"])
             dest = out / (f"game{n:05d}.npz" if share >= args.min_sync else f"desync/game{n:05d}.npz")
@@ -684,7 +729,7 @@ def main(argv: list[str] | None = None) -> int:
                 with open(out / "games.jsonl", "a") as f:
                     f.write(json.dumps(row) + "\n")
                 stats["ok"] += share >= args.min_sync
-            print(f"{path.name} -> {dest.name}: {meta['races'][0]} vs {meta['races'][1]}, {meta['result']}, "
+            print(f"{path.name} -> {dest.name} ({map_name}): {meta['races'][0]} vs {meta['races'][1]}, {meta['result']}, "
                   f"{meta['game_seconds'] / 60:.1f} min, {len(arrays['orders'])} orders, sync "
                   f"{sync['subgroup_matched']}/{sync['subgroup_units']} units, {sync['buildings_found']}/"
                   f"{sync['buildings_placed']} buildings ({time.time() - t0:.0f}s)", flush=True)
