@@ -2988,7 +2988,13 @@ slider.addEventListener("input", () => {
 });
 setupRunTools();
 document.getElementById("nav-docs").onclick = () => openDocs(state.view === "docs" ? null : undefined);
-document.getElementById("nav-runs").onclick = () => { if (["docs", "lineage", "ratings", "videos"].includes(state.view)) openRun(state.selected || (state.runs[0] || {}).name); };
+document.getElementById("nav-runs").onclick = async () => {
+  if (!["docs", "lineage", "ratings", "videos"].includes(state.view)) return;
+  if (!state.selected && !state.runs.length) {  // (a page opened first, as a phone reopens it: the run list never
+    try { state.runs = await getJSON("/api/runs"); } catch (e) { /* (none) */ }  // loaded, so there was no run to open)
+  }
+  openRun(state.selected || (state.runs[0] || {}).name);
+};
 document.getElementById("nav-videos").onclick = () => openVideos();
 document.getElementById("nav-lineage").onclick = () => openLineage();
 document.getElementById("nav-ratings").onclick = () => openRatings();
