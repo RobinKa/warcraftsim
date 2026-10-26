@@ -306,6 +306,39 @@ def test_strategy_block_grows_with_the_composition_kinds(v2, tmp_path):
         fx.set_z(0)
 
 
+
+def test_adam_state_grows_where_the_strategy_block_grows(v2, tmp_path):
+    """A fork that grows the strategy block (--z-comp) inserts its columns in the middle of glob.0.weight: Adam's
+    state grows there too (padded at the end, the clock's and the privileged inputs' columns took others' state)."""
+    from warcraftsim.fullgame import modes, strategy
+    from warcraftsim.fullgame.model import FullGameNet, load
+    from warcraftsim.fullgame.selfplay import load_optimizer
+    fx.set_inputs(2)
+    z_old = strategy.ZDIM + modes.MDIM + strategy.SLOTS
+    fx.set_z(z_old)
+    try:
+        vocab = {**VOCAB, "upgrades": [code("Rhme")]}
+        enc = fx.Encoder(vocab)
+        old = FullGameNet(n_types=5, n_cur=2, n_orders=7, G=enc.G, d=16, layers=1, priv=fx.PRIV, z=z_old, gx=fx.GX)
+        opt = torch.optim.Adam(old.parameters(), lr=1e-3)
+        old.value(old.encode(torch.randn(1, 2, fx.F), torch.tensor([[1, 2]]), torch.zeros(1, 2, dtype=torch.long),
+                             torch.ones(1, 2, dtype=torch.bool), torch.randn(1, enc.G))[0]).sum().backward()
+        opt.step()
+        torch.save({"config": old.config, "model": old.state_dict(), "vocab": vocab}, tmp_path / "c.pt")
+        torch.save(opt.state_dict(), tmp_path / "c.adam")
+        before = opt.state[old.glob[0].weight]["exp_avg_sq"].clone()
+        fx.set_z(z_old + modes.CDIM)
+        net, _ = load(tmp_path / "c.pt")
+        opt2 = torch.optim.Adam(net.parameters(), lr=1e-3)
+        assert load_optimizer(opt2, tmp_path / "c.pt", torch.device("cpu"), 1e-3, net)
+        after = opt2.state[net.glob[0].weight]["exp_avg_sq"]
+        at = enc.G0 + z_old
+        assert after.shape == net.glob[0].weight.shape
+        assert torch.equal(after[:, :at], before[:, :at]) and not after[:, at:at + modes.CDIM].any()
+        assert torch.equal(after[:, at + modes.CDIM:], before[:, at:])  # (the clock's and the rest: their own)
+    finally:
+        fx.set_z(0)
+
 def test_neutral_wares_as_orders(v2, tmp_path):
     """--neutral: a checkpoint's vocabulary gets the neutral buildings' wares and the tavern heroes' orders, its
     network grows (old orders and types as they were); a buy order on a shop is a Buy, on anything else nothing;

@@ -3711,6 +3711,17 @@ def load_optimizer(opt, checkpoint: Path, device, lr: float, net: FullGameNet | 
         except (ValueError, RuntimeError, KeyError) as e2:
             print(f"note: Adam's state in {path} does not fit ({e}; {e2}); a fresh one", flush=True)
             return False
+    w = dict(net.named_parameters()).get("glob.0.weight") if net is not None else None
+    if w is not None and any(torch.is_tensor(v) and v.dim() == 2 and v.shape != w.shape for v in opt.state.get(w, {}).values()):
+        # the policy's inputs grown in the middle (model.grow_glob): its state the same way (padded at the end, the
+        # clock's and the privileged inputs' columns had taken others' state)
+        from .model import glob_layout, grow_glob
+        _, gx_old, z_old, G_old = glob_layout(torch.load(checkpoint, map_location="cpu", weights_only=False))
+        for k, v in list(opt.state[w].items()):
+            if torch.is_tensor(v) and v.dim() == 2 and v.shape[0] == w.shape[0] and v.shape[1] < w.shape[1]:
+                grown = grow_glob(v, net.config, gx_old, z_old, G_old)
+                if grown.shape == w.shape:  # (else padded at the end, below)
+                    opt.state[w][k] = grown
     for g in opt.param_groups:  # inputs added since (model.load: columns at the end of a weight): their state zeros
         for p in g["params"]:
             for k, v in opt.state.get(p, {}).items():

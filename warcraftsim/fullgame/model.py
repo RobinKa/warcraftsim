@@ -400,6 +400,24 @@ def configure_for(path) -> None:
         fx.ACTIVE_F = fx.F
 
 
+def glob_layout(ck: dict) -> tuple[dict, int, int, int]:
+    """A checkpoint's config (the privileged block it lacks added) and what its policy read: (config, gx, z, G)."""
+    config = dict(ck["config"])
+    if "vocab" in ck:  # global features added since (the privileged block at the end): the value's, zero at first
+        G_now = fx.Encoder(ck["vocab"]).G - fx.GX + config.get("gx", 0)
+        if config["G"] < G_now and not config.get("priv"):
+            config["priv"], config["G"] = G_now - config["G"], G_now
+    return config, config.get("gx", 0), config.get("z", 0), config["G"]
+
+
+def grow_glob(w: torch.Tensor, config: dict, gx_old: int, z_old: int, G_old: int) -> torch.Tensor:
+    """glob.0.weight (or Adam's state of it) read as [known | strategy block | clock] by a network of G_old inputs,
+    for `config`'s: the grown parts zeros, where they are (the strategy block's end, and the end)."""
+    at = G_old - config.get("priv", 0) - gx_old  # (the strategy block's end)
+    dz, dg = config.get("z", 0) - z_old, config.get("gx", 0) - gx_old
+    return torch.cat([w[:, :at], w.new_zeros(w.shape[0], dz), w[:, at:], w.new_zeros(w.shape[0], dg)], 1)
+
+
 def load(path, device="cpu", memory: bool | None = None, vocab: dict | None = None) -> tuple[FullGameNet, dict]:
     """A checkpoint's network. `memory`: with (a new core, which does nothing at first) or without one. Inputs
     added since (features.set_inputs: unit features, the clock) start with zero weights, and with --valid-mask
@@ -407,14 +425,9 @@ def load(path, device="cpu", memory: bool | None = None, vocab: dict | None = No
     that vocabulary's order (neutral.reorder; one extended in another process may list a toggle's two the other
     way round)."""
     ck = torch.load(path, map_location=device, weights_only=False)
-    config = dict(ck["config"])
+    config, gx_old, z_old, G_old = glob_layout(ck)
     if memory is not None:
         config["memory"] = memory
-    if "vocab" in ck:  # global features added since (the privileged block at the end): the value's, zero at first
-        G_now = fx.Encoder(ck["vocab"]).G - fx.GX + config.get("gx", 0)
-        if config["G"] < G_now and not config.get("priv"):
-            config["priv"], config["G"] = G_now - config["G"], G_now
-    gx_old, z_old, G_old = config.get("gx", 0), config.get("z", 0), config["G"]
     config = adapt_config(config)
     valid = bool(config.get("valid"))
     net = FullGameNet(**config).to(device)
@@ -426,10 +439,7 @@ def load(path, device="cpu", memory: bool | None = None, vocab: dict | None = No
         state = {**state, "ent.weight": w[:, :fx.F]}
     w = state.get("glob.0.weight")
     if w is not None and config["G"] > G_old:  # what the policy reads, [known | strategy block | clock]: grown parts zeros
-        at = G_old - config.get("priv", 0) - gx_old  # (the strategy block's end)
-        dz, dg = config.get("z", 0) - z_old, config.get("gx", 0) - gx_old
-        state = {**state, "glob.0.weight": torch.cat([w[:, :at], w.new_zeros(w.shape[0], dz), w[:, at:],
-                                                      w.new_zeros(w.shape[0], dg)], 1)}
+        state = {**state, "glob.0.weight": grow_glob(w, config, gx_old, z_old, G_old)}
     missing, unexpected = net.load_state_dict(state, strict=False)
     if unexpected or any(not (k.startswith(("value_head.", "mem_", "priv_proj.", "priv_pol.")) or k in ("order_kind", "target_temp", "ghost_bias"))
                          for k in missing):
