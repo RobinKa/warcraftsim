@@ -307,6 +307,7 @@ def play_and_render(r: dict, runs: Path, update) -> dict:
     fx.set_neutral(cfg["neutral"])
     fx.set_macros(int(cfg.get("macros", 0) or 0))
     fx.set_spells(int(cfg.get("spells", 0) or 0))
+    fx.set_fine(int(cfg.get("fine_points", 0) or 0))  # (--fine-points: the point indices)
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     from ..data.duelmap import parse_duel_name
     if parse_duel_name(cfg["map"]) is None:

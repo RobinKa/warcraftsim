@@ -31,7 +31,7 @@ from ..protocol import (Build, Buy, Command, EventKind, ImmediateOrder, LearnSki
 from ..runtime.instance import Agent, BuiltinAI, GameInstance, GameSetup
 from . import features as fx
 from .collect import Films, series
-from .model import load
+from .model import load, sample_points
 from .neutral import is_ware, nearest_shop, sells
 
 TYPE_CODE = fx.TYPE_CODE  # orders at or above this are unit / building / upgrade / ability codes
@@ -745,9 +745,9 @@ class BCAgent:
                 again = self._sample(logits[..., 1:] / self.order_temperature) + 1
                 order = torch.where(order > 0, again, order)
             ptr, xl, z = self.net.target_logits(g, u, mask, order)
-            tgt, bx_ = self._sample(ptr)[0], self._sample(xl)
-            by = self._sample(self.net.y_logits(z, bx_))[0]
-        return self.commands(st, order[0].tolist(), tgt.tolist(), bx_[0].tolist(), by.tolist())
+            tgt = self._sample(ptr)[0]
+            bx_, by, _ = sample_points(self.net, z, xl, self._sample)  # (--fine-points: point indices)
+        return self.commands(st, order[0].tolist(), tgt.tolist(), bx_[0].tolist(), by[0].tolist())
 
 
 def matchup_setup(map_name: str, race: str, ai_race: str, difficulty: str, agent_side: int, handicap: int,
@@ -873,6 +873,7 @@ def main(argv: list[str] | None = None) -> int:
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     net, ck = load(args.checkpoint, device)
     fx.set_z(net.config.get("z", 0))  # (a strategy-conditioned network reads a strategy block: none given, zeros)
+    fx.set_fine(net.fine)  # (--fine-points: its point indices)
     from ..data.duelmap import parse_duel_name
     if parse_duel_name(args.map) is None:  # (another map's frame, as selfplay's: Echo Isles' starts and point bins)
         from ..data.mapbuild import stock_map_path

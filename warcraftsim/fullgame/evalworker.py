@@ -130,7 +130,7 @@ def run_config(run_dir: Path, host: str, games: int, start_update) -> tuple[dict
            "scripted_reset": _flag(c.get("scripted_reset", 0)), "native_obs": _flag(c.get("native_obs", 1)),
            "game_nice": num("game_nice", 10, int), "game_cuts": num("game_cuts", 0, int) or None,
            "features": num("features", fx.F, int), "inputs": num("inputs", 1, int),  # (--inputs, the masks)
-           "tech_mask": num("tech_mask", 0, int), "valid_mask": num("valid_mask", 0, int), "neutral": num("neutral", 0, int), "macros": num("macros", 0, int), "spells": num("spells", 0, int),
+           "tech_mask": num("tech_mask", 0, int), "valid_mask": num("valid_mask", 0, int), "neutral": num("neutral", 0, int), "macros": num("macros", 0, int), "spells": num("spells", 0, int), "fine_points": num("fine_points", 0, int),
            "macros_off": "" if c.get("macros_off") in (None, "None") else str(c.get("macros_off")),
            "eval_human": num("eval_human", 0, int),
            "privileged": num("opsd_share", 0.0) > 0 or num("opsd_coef", 0.0) > 0,  # (the networks' channels only)
@@ -202,6 +202,7 @@ def worker_main(wid: int, cfg: dict, games: int, keys: dict, host: str, q, stop)
     fx.set_neutral(cfg.get("neutral", 0))
     fx.set_macros(int(cfg.get("macros", 0) or 0))
     fx.set_spells(int(cfg.get("spells", 0) or 0))
+    fx.set_fine(int(cfg.get("fine_points", 0) or 0))  # (--fine-points: the point indices)
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     torch.set_num_threads(1)
     sys.setswitchinterval(0.001)  # (a game thread woken by its answer waits for the GIL: 5 ms by default)
@@ -298,6 +299,7 @@ def main(argv: list[str] | None = None) -> int:
     fx.set_neutral(cfg["neutral"])
     fx.set_macros(int(cfg.get("macros", 0) or 0))
     fx.set_spells(int(cfg.get("spells", 0) or 0))
+    fx.set_fine(int(cfg.get("fine_points", 0) or 0))  # (--fine-points: the point indices)
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     from ..data.duelmap import parse_duel_name
     if parse_duel_name(cfg["map"]) is None:  # (as selfplay.main: another map's frame; set_geometry exports it)

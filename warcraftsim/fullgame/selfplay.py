@@ -68,7 +68,7 @@ from . import techtree
 from .featnative import addr as _faddr, lib as _featlib, to_f16
 from .trace import DEAD_FLAG, Production, material, trace_step, unit_values  # noqa: F401
 from .play import unit_rows
-from .model import FullGameNet, act, adapt_config, anchor_kl, arch_key, evaluate, load, trained
+from .model import FullGameNet, act, adapt_config, anchor_kl, arch_key, evaluate, fine_head, load, point_parts, trained
 from .teacher import Teacher
 from ..native import unit_from_row
 from .neutral import MERCENARIES as _MERCENARIES
@@ -691,6 +691,7 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
     fx.set_neutral(cfg.get("neutral", 0))
     fx.set_macros(int(cfg.get("macros", 0) or 0))
     fx.set_spells(int(cfg.get("spells", 0) or 0))
+    fx.set_fine(int(cfg.get("fine_points", 0) or 0))  # (--fine-points: the point indices)
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     nets = Nets(cfg, device)
     while nets.current is None and not stop.is_set() and alive():
@@ -2536,6 +2537,7 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
     fx.set_neutral(cfg.get("neutral", 0))
     fx.set_macros(int(cfg.get("macros", 0) or 0))
     fx.set_spells(int(cfg.get("spells", 0) or 0))
+    fx.set_fine(int(cfg.get("fine_points", 0) or 0))  # (--fine-points: the point indices)
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     if cfg.get("remote"):  # (fullgame/remoteactor.py: the calls and the steps over TCP to the learner's gateway)
         from .remoteactor import NetInference
@@ -3014,11 +3016,15 @@ def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast, teach_scale: fl
     denom = every.sum().clamp(min=1)
     l_order = -(lp_y * ok).sum() / denom
     ptr, xl, z = net.target_logits(ev["g"], ev["u"], mb["mask"], y)  # (in the caller's autocast)
-    yl = net.y_logits(z, mb["y_x"])
+    y_x, y_y, y_f = point_parts(mb["y_x"], mb["y_y"])  # (--fine-points: the labels' bins, and their sub-cell)
+    yl = net.y_logits(z, y_x)
     # (masked means, not boolean indexing: every index or any() was a wait for the GPU)
     share = ok.sum() / denom
     l_ptr = _masked_ce(ptr, mb["y_ptr"], ok) * share
-    l_pt = (_masked_ce(xl, mb["y_x"], ok) + _masked_ce(yl, mb["y_y"], ok)) * share
+    l_pt = _masked_ce(xl, y_x, ok) + _masked_ce(yl, y_y, ok)
+    if y_f is not None and fine_head(net):  # (the sub-cell given the labels' bins)
+        l_pt = l_pt + _masked_ce(net.fine_logits(z, y_x, y_y), y_f, ok)
+    l_pt = l_pt * share
     with torch.no_grad():
         issued = ok * (y > 0)
         acc = ((lp[..., 1:].argmax(-1) + 1 == y) * issued).sum() / issued.sum().clamp(min=1)
@@ -3060,7 +3066,8 @@ def _masked_ce(logits: torch.Tensor, y: torch.Tensor, weight: torch.Tensor) -> t
 NOISE_GROUPS = (("input", ("ent.", "type_emb.", "cur_emb.", "glob.", "priv_proj.")), ("memory", ("mem_",)),
                 *((f"layer {i}", (f"transformer.layers.{i}.",)) for i in range(16)),
                 ("order head", ("order.", "order_emb.")),
-                ("target heads", ("cond.", "query.", "key.", "point_x.", "x_emb.", "point_y.")), ("value head", ("value_head.",)))
+                ("target heads", ("cond.", "query.", "key.", "point_x.", "x_emb.", "point_y.", "fine_x.", "fine_y.", "point_f.")),
+                ("value head", ("value_head.",)))
 
 
 def noise_group(name: str) -> str:
@@ -3827,6 +3834,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--macros", type=int, default=0, help="the agent's own orders for what the game spreads over many "
                     "(macros.py: 1 expand, creep, mix; 2 also pick up, a hero takes the items lying near; 3 also a skill "
                     "point left unspent 10 s is spent as the built-in AI would; every network loaded grows to them)")
+    ap.add_argument("--fine-points", type=int, default=0, help="S (odd, e.g. 7): finer point targets, each point bin cut "
+                    "into S x S sub-cells that a fine head picks given the x and y bins (model.grow_fine: the policy "
+                    "grows one, its last layer zero, its bias --fine-centre's prior; the anchor and past snapshots "
+                    "without one play their bins' centres, as before). 0: the bins alone (a policy with a fine head: "
+                    "its size)")
+    ap.add_argument("--fine-centre", type=float, default=0.9, help="--fine-points: the grown fine head's chance of the "
+                    "middle sub-cell (the bin's centre, the point as before) at the start; 1 / S^2 or less: uniform")
     ap.add_argument("--spells", type=int, default=0, help="1: the melee heroes' spells the demonstrations never gave "
                     "(War Stomp, Hex, Banish, Far Sight, Scout; spells.py) as orders: every network loaded grows to "
                     "them, rare at first, only the hero with the ability may give one (needs --neutral)")
@@ -4215,6 +4229,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.spells and not args.neutral:  # (model.load extends a vocabulary, and the actors put a network's orders in
         ap.error("--spells needs --neutral")  # the run's, in its --neutral path)
     fx.set_spells(args.spells)
+    fx.set_fine(args.fine_points)  # (--fine-points; a policy with a fine head sets it again below, with its size)
     fx.set_macros_off(args.macros_off.split(","))
     modes_part = args.z_modes > 0 or args.z_comp > 0  # (--z-comp: the modes' part too, its kinds off)
     if modes_part:  # (the strategy block with the modes' part: model.load grows older networks')
@@ -4313,6 +4328,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.reward_parts:  # (a value per reward: the old value is the first, the others start at zero)
         from .model import split_value
         net = split_value(net, len(PART_NAMES))
+    if not args.fine_points and net.fine:  # (a fork of a run with --fine-points: its policy's sub-cells, as before)
+        args.fine_points = net.fine
+    if args.fine_points > 1:  # --fine-points: the policy's fine head (model.grow_fine: a prior at first); the anchor
+        from .model import grow_fine  # and past snapshots without one play their bins' centres (sample_points)
+        if args.ref_update > 0 and ref is not None and ref.fine != args.fine_points:
+            raise SystemExit("--ref-update copies the policy into the anchor: with --fine-points it needs --init with "
+                             "the same fine head")
+        net = grow_fine(net, args.fine_points, args.fine_centre)
+        fx.set_fine(args.fine_points)
+        print(f"fine points: {args.fine_points} x {args.fine_points} sub-cells per point bin", flush=True)
     if args.rl_dropout >= 0:  # the updates' dropout (the actors act without: eval mode)
         set_dropout(net, args.rl_dropout)
     graphed = bool(args.cuda_graphs) and device.type == "cuda" and bool(net.memory)
@@ -4476,7 +4501,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "macros_off": args.macros_off, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "fine_points": args.fine_points, "macros_off": args.macros_off, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "eval_ai": [d for d in args.eval_ai.split(",") if d],
