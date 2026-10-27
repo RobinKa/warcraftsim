@@ -1854,6 +1854,10 @@ Audit 16 (bad habits in `fgself-155`/`156`'s real games): one-unit armies in lon
 
 Replay data (2026-10-26): only 1.29 replays play back in our client (1.26/1.28 fall out of step in 3-6 s even with the ids aligned, 1.30 at ~10 s; 1.31 and Reforged differ more): other versions give build orders only. Downloaded for build orders: 1.26 4,400, 1.27 331, 1.28 4,030, 1.30 4,004 (1v1s; the 1.26 download stopped part way). 1.29 on other stock maps converts in step: 192 of ~608 converted (`runs/fullgame/demos-human-129-maps`, includes Echo Isles again) when stopped for the shutdown. Details: [human replays](human-replays.md).
 
+**`fgself-158`, kept** (11:07 on 2026-10-27, ~330 games a policy, resumed after a shutdown): 54.3% of 324 head to head with its start (49%, 53%, 61% by thirds); against insane 71.5% to its start's 73-74% in the same windows (-2 points with the races weighed alike, interval -8 to +5); with a target 26%. The first behaviour scorecard (`scripts/scorecard.py`): workers trained +1.0, orders to loaded peons -12 (orc's burrows), the top unit's share +0.02 (0.93); unchanged and still poor: no expansions, ~0.7 weapon/armour levels, ~1 creep camp, human anti-air 6% of its army against air. Undead weaker against insane than its start (69% to 87%).
+
+**`fgself-159`** (from `fgself-158`'s last, 11:10): the oversaturation lesson alone (`--saturation-lesson 1`), one lesson at a time.
+
 The queue:
 1. (done: in `fgself-155`) The audit-12 economy fixes: a training map whose mines and start scale with its costs (`echofast2`), workers labelled up to the target's count, masks against duplicate tech buildings and surplus workers, orc burrow and no-target lumber lessons.
 2. Cloning the scripted strategy family as anchor and teacher (AlphaStar's recipe with scripted data). First tune its weak plans, and add night elf and undead expansion plans. Then record thousands of echofast games (`scripts/heuristic_match.py --record`), train a cloning policy, and use it as the KL anchor and a distillation teacher.
