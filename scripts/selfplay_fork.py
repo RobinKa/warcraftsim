@@ -39,7 +39,7 @@ def main() -> None:
     ap.add_argument("--title", default="", help="the change in a few words (summary.txt: the lineage's line for it)")
     ap.add_argument("--league", help="the run whose league the new one starts with (default: the parent's; none: "
                     "its own)")
-    ap.add_argument("--set", action="append", default=[], help="flag=value (without the dashes); flag= drops it")
+    ap.add_argument("--set", action="append", default=[], help="flag=value (without the dashes); flag= drops it; \"start\" in a value: the fork's start weights (e.g. eval-checkpoints=start runs/fgself-130/...)")
     ap.add_argument("--weights", help="the parent's checkpoint to start from (default: its latest)")
     add_launch_args(ap)
     args = ap.parse_args()
@@ -66,8 +66,9 @@ def main() -> None:
     for s in args.set:
         k, _, v = s.partition("=")
         flags = [f for f in flags if f[0] != f"--{k}"]
-        if v:
-            flags.append([f"--{k}", *v.split()])
+        if v:  # ("start" in a value: the fork's start weights, as chosen after the parent stopped and saved its last;
+            # a checkpoint named before that had been an older one: fgself-159's eval list; audit 17)
+            flags.append([f"--{k}", *[as_read(weights) if x == "start" else x for x in v.split()]])
     argv = [sys.executable, "-m", "warcraftsim.fullgame.selfplay", "--name", args.child,
             *[w for f in flags for w in f], "--start-weights", as_read(weights), f"--note={args.note}",
             *([f"--title={args.title}"] if args.title else []),

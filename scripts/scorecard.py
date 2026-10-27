@@ -68,6 +68,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("run")
     ap.add_argument("--vs", required=True, help="a listed checkpoint's key part, e.g. fgself-155/0000000036007395")
     ap.add_argument("--since", type=float, default=0.0)
+    ap.add_argument("--last", type=int, default=3, help="the last N hours both played (0: all; the first hours, the "
+                    "current policy still nearly its start, had diluted the difference; audit 17)")
     ap.add_argument("--runs", type=Path, default=Path("runs"))
     a = ap.parse_args(argv)
     rows: dict[str, list[dict]] = collections.defaultdict(list)
@@ -88,6 +90,8 @@ def main(argv: list[str] | None = None) -> int:
     cur, old = rows["current"], rows[ref]
     t0 = min(r["time"] for r in cur + old)
     hours = {int((r["time"] - t0) // 3600) for r in cur} & {int((r["time"] - t0) // 3600) for r in old}
+    if a.last > 0:
+        hours = set(sorted(hours)[-a.last:])
     cur = [r for r in cur if int((r["time"] - t0) // 3600) in hours]  # (the same windows: hours both played in)
     old = [r for r in old if int((r["time"] - t0) // 3600) in hours]
     races = sorted({r["race"] for r in cur} & {r["race"] for r in old})

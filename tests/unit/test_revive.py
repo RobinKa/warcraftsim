@@ -101,15 +101,16 @@ def test_revival_reserve_masks_the_rest(v2):
         fx.set_econ_masks(0)
 
 
-@pytest.mark.parametrize("dead,want", [("Hpal", "immediate"), ("Npbm", "buy"), ("Hpal", None)])
+@pytest.mark.parametrize("dead,want", [("Hpal", "immediate"), ("Npbm", None), ("Hpal", None)])
 def test_revive_lesson(v2, dead, want):
     """--revive-lesson: a dead hero the policy could revive (its order's mask) taught at the finished altar: an altar
-    hero's own order, a tavern hero's hire (play.BCAgent sends either as the revival); none the mask holds back."""
+    hero's own order; none for a tavern hero (its revival is a hire on some unit: labelled as the altar's own hire it had
+    widened the allowed table; audit 17), none the mask holds back."""
     from warcraftsim.fullgame.teacher import Teacher
     from warcraftsim.protocol import Buy, ImmediateOrder
     tc = Teacher(0, "human", random.Random(0), revive=True)
     player = SimpleNamespace(gold=300, lumber=100, food_used=5, food_cap=30, start_x=-2000.0, start_y=0.0)
-    can = (lambda u, k=fx.IMMEDIATE: True) if want else (lambda u, k=fx.IMMEDIATE: False)
+    can = (lambda u, k=fx.IMMEDIATE: True) if want or dead == "Npbm" else (lambda u, k=fx.IMMEDIATE: False)
     out = tc.commands(_rows(dead), player, 300.0, 100, can)
     assert out == ([ImmediateOrder(3, code(dead))] if want == "immediate" else [Buy(3, 3, code(dead))] if want else [])
     assert Teacher(0, "human", random.Random(0)).commands(_rows(dead), player, 300.0, 100, can) == []  # (off)

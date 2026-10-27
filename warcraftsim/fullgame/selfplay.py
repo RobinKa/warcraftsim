@@ -1223,6 +1223,16 @@ def spells_cast(results: dict) -> dict:
     return out
 
 
+def label_weight(update: int, warmup: int, ramp: int) -> float:
+    """The lessons' (and the advisor's) labels' weight in an update: none in the value warm-up, whose updates have no
+    policy gradient to answer them (a fork's first updates had moved the policy by the labels alone: KL 0.07-0.16 from
+    one new lesson, and fgself-157 lost 28 points; audit 17), then rising to full over `ramp` updates (--teach-ramp;
+    counted from the run's start, so a resume past it is at full weight)."""
+    if update < warmup:
+        return 0.0
+    return 1.0 if ramp <= 0 else min(1.0, (update - warmup + 1) / ramp)
+
+
 def mine_scale(map_name: str) -> float:
     """A map's gold mines against the real game's (echofast2: 0.5, with its costs; data.duelmap's rules)."""
     try:
@@ -3444,7 +3454,7 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
             if getattr(args, "opd_coef", 0.0) > 0 and mb.get("y_any"):
                 l_opd, opd_acc, l_teach = distill_loss(net, ev, mb, autocast, getattr(args, "teach_coef", 0.0) / args.opd_coef,
                                                        getattr(args, "label_norm", "lessons"))
-                loss = loss + args.opd_coef * l_opd
+                loss = loss + args.opd_coef * getattr(args, "label_w", 1.0) * l_opd  # (label_weight: none in the warm-up)
                 stats.setdefault("loss/opd", []).append(l_opd.detach())
                 stats.setdefault("loss/teach", []).append(l_teach)
                 stats.setdefault("opd/acc", []).append(opd_acc)
@@ -3515,6 +3525,7 @@ class GraphedUpdate:
         self.mean = torch.zeros((), device=device)
         self.std = torch.ones((), device=device)
         self.pg_coef = torch.ones((), device=device)
+        self.label_coef = torch.ones((), device=device)  # (the labels' weight this update: label_weight)
         self.lstd = torch.ones((), device=device)  # (the units' own advantages' spread: --unit-credit)
         self.umean, self.ustd = torch.zeros((), device=device), torch.ones((), device=device)  # (--upgo)
         self._losses = self._loss
@@ -3574,7 +3585,7 @@ class GraphedUpdate:
             if getattr(args, "opd_coef", 0.0) > 0:
                 l_opd, opd_acc, l_teach = distill_loss(net, ev, s, None, getattr(args, "teach_coef", 0.0) / args.opd_coef,
                                                        getattr(args, "label_norm", "lessons"))
-                loss = loss + args.opd_coef * l_opd
+                loss = loss + args.opd_coef * self.label_coef * l_opd
                 out.update({"loss/opd": l_opd, "loss/teach": l_teach, "opd/acc": opd_acc, "opd/steps": s["y_has"].float().sum() / valid.sum().clamp(min=1)})
             if b is not None:
                 from .bc import losses as bc_losses
@@ -3690,6 +3701,7 @@ class GraphedUpdate:
         self.umean.fill_(um)
         self.ustd.fill_(us)
         self.pg_coef.fill_(0.0 if warmup else 1.0)
+        self.label_coef.fill_(float(getattr(args, "label_w", 1.0)))
         if getattr(args, "opd_coef", 0.0) > 0:  # the advisor's orders become orders the unit type can get
             typ_y = [(s["type"][:s["n_own"]], s["y_order"]) for s in steps if "y_order" in s]
             if typ_y:
@@ -3968,6 +3980,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--militia-lesson", type=int, default=0, help="1 (with --teach): human's militia lesson: militia "
                     "and no enemy unit near them nor a hall, the hall ends the town bell (audit 16: militia idled, their "
                     "back to work refused, in 175 of 207 human games)")
+    ap.add_argument("--teach-ramp", type=int, default=100, help="updates after the value warm-up over which the labels' "
+                    "weight (--teach, --opd-*) rises from 0 to full (none during the warm-up; audit 17: one new lesson "
+                    "alone had moved a fork's policy by KL 0.07-0.16 in its first updates); 0: full at once")
     ap.add_argument("--burrow-lesson", type=int, default=0, help="1: orc's burrow stand-down lesson (--teach 4's) without "
                     "--teach 4's lumber lesson in every game (audit 16: games with 200+ orders to peons inside burrows won "
                     "0 of 69)")
@@ -4537,7 +4552,10 @@ def main(argv: list[str] | None = None) -> int:
                     inputs=old.get("inputs") or info["inputs"],
                     resumes=old.get("resumes", []) + [{"time": time.time(), **resumed, **({"note": args.note} if args.note else {}),
                                                        **({"title": args.title} if args.title else {}),
-                                                       "inputs": info["inputs"], "argv": info["launch"]["argv"]}])
+                                                       "inputs": info["inputs"], "argv": info["launch"]["argv"],
+                                                       "git": info["launch"]["git"], "code": info["launch"]["code"]}],
+                    first_launch=old.get("first_launch") or {k: old.get("launch", {}).get(k) for k in ("git", "code")})
+        # (each resume's code with it, and the first launch's kept: launch.git is the latest one's; audit 17)
 
     def save_info():
         try:  # notes written on the restarts since (by hand, in run.json) stay
@@ -4865,6 +4883,7 @@ def main(argv: list[str] | None = None) -> int:
             t_train = time.time()
             steps, buf, batch_chunks, chunks = buf, [], chunks, []
             warmup = update < args.value_warmup
+            args.label_w = label_weight(update, args.value_warmup, args.teach_ramp)
             stats = None
             if native is not None:  # (the inference loop's statistics: rounds during the update apart)
                 native.loop.learner_busy = 1

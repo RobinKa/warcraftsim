@@ -174,10 +174,13 @@ def test_burrows_stand_down_when_no_enemy_is_near():
     assert tc._burrows(_placed(base + inside), 0) == [ImmediateOrder(1, tm.STANDDOWN)]  # (the one with peons inside)
     assert tc._burrows(_placed(base + inside), 5) == []  # (a lesson every GAP steps)
     enemy = [(30, "hfoo", 1, 0, 800, 0)]
-    assert tc._burrows(_placed(base + inside + enemy), 40) == []  # (an enemy near: they stay inside)
+    rows = _placed(base + inside + enemy)
+    assert tc._burrows(rows, 40) != []  # (an enemy it does not see: the masks' view, audit 17)
+    rows[-1, fx.C_VIS] = 1  # (seen by side 0)
+    assert tc._burrows(rows, 41) == []  # (an enemy near: they stay inside)
     far = [(30, "hfoo", 1, 0, 6000, 0), (31, "htow", 1, fx.STRUCTURE, 500, 0), (32, "hfoo", 1, fx.DEAD, 100, 0)]
-    assert tc._burrows(_placed(base + inside + far), 40) == [ImmediateOrder(1, tm.STANDDOWN)]
-    assert tc._burrows(_placed(base + inside[2:]), 80) == []  # (none inside)
+    assert tc._burrows(_placed(base + inside + far), 80) == [ImmediateOrder(1, tm.STANDDOWN)]
+    assert tc._burrows(_placed(base + inside[2:]), 120) == []  # (none inside)
     assert tm.Teacher(0, "orc", random.Random(0))._burrows is not None and not tm.Teacher(0, "orc", random.Random(0)).burrows
 
 

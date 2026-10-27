@@ -440,7 +440,8 @@ class Teacher:
         halls = alive[np.isin(alive[:, fx.C_TYPE], fx.HUMAN_HALLS) & (alive[:, fx.C_FLAGS] & fx.CONSTRUCTING == 0)]
         if not len(halls):
             return []
-        enemies = rows[(rows[:, fx.C_OWNER] == 1 - self.side) & (rows[:, fx.C_FLAGS] & (fx.DEAD | fx.STRUCTURE) == 0)]
+        enemies = rows[(rows[:, fx.C_OWNER] == 1 - self.side) & (rows[:, fx.C_FLAGS] & (fx.DEAD | fx.STRUCTURE) == 0)
+                       & ((rows[:, fx.C_VIS] >> self.side) & 1 == 1)]  # (those it sees, as the masks; audit 17)
         ex, ey = enemies[:, fx.C_X].astype(np.float64), enemies[:, fx.C_Y].astype(np.float64)
         for u in np.concatenate([militia, halls]):
             if (np.hypot(ex - float(u[fx.C_X]), ey - float(u[fx.C_Y])) < MILITIA_SAFE).any():
@@ -462,7 +463,8 @@ class Teacher:
             return []
         bx, by = burrows[:, fx.C_X].astype(np.float64), burrows[:, fx.C_Y].astype(np.float64)
         full = {int(np.argmin((bx - x) ** 2 + (by - y) ** 2)) for x, y in loaded[:, [fx.C_X, fx.C_Y]].tolist()}
-        enemies = rows[(rows[:, fx.C_OWNER] == 1 - self.side) & (rows[:, fx.C_FLAGS] & (fx.DEAD | fx.STRUCTURE) == 0)]
+        enemies = rows[(rows[:, fx.C_OWNER] == 1 - self.side) & (rows[:, fx.C_FLAGS] & (fx.DEAD | fx.STRUCTURE) == 0)
+                       & ((rows[:, fx.C_VIS] >> self.side) & 1 == 1)]  # (those it sees, as the masks; audit 17)
         ex, ey = enemies[:, fx.C_X].astype(np.float64), enemies[:, fx.C_Y].astype(np.float64)
         safe = [k for k in sorted(full) if not (np.hypot(ex - bx[k], ey - by[k]) < BURROW_SAFE).any()]
         if not safe or not self._due("burrow", t):
@@ -478,7 +480,8 @@ class Teacher:
         alive = fx.own_alive(rows, self.side)
         workers = alive[alive[:, fx.C_TYPE] == fourcc(code)] if code else alive[:0]
         halls = alive[fx.isin(alive[:, fx.C_TYPE], HALL_CODES) & (alive[:, fx.C_FLAGS] & fx.CONSTRUCTING == 0)]
-        gold = workers[(workers[:, fx.C_ORDER] < fx.TYPE_CODE) & ~np.isin(workers[:, fx.C_ID], list(choppers))]
+        gold = workers[(workers[:, fx.C_ORDER] < fx.TYPE_CODE) & (workers[:, fx.C_FLAGS] & LOADED == 0)
+                       & ~np.isin(workers[:, fx.C_ID], list(choppers))]  # (not in a burrow; audit 17)
         return len(gold) > SATURATED * max(len(halls), 1)
 
     def _lumber(self, alive: np.ndarray, choppers: set, trees: dict, t: int) -> list:
@@ -538,11 +541,13 @@ class Teacher:
         for typ in dead.tolist():
             code = fx.rawcode(int(typ))
             tavern = code in TAVERN_HEROES
-            if can is not None and not can(code, fx.UNIT if tavern else fx.IMMEDIATE):
+            if tavern:  # (a tavern hero's revival is the policy's hire order on some unit, play.py; labelled as the
+                continue  # altar's own hire it had widened the allowed table: altars hiring for good; audit 17)
+            if can is not None and not can(code, fx.IMMEDIATE):
                 continue
             if not self._due("revive", t):
                 return []
-            return [Buy(a, a, int(typ)) if tavern else ImmediateOrder(a, int(typ))]
+            return [ImmediateOrder(a, int(typ))]
         return []
 
     def _mix(self, n: int, counts, done: list, t: int) -> list:
