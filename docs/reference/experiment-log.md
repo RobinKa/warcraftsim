@@ -1866,6 +1866,10 @@ Replay data (2026-10-26): only 1.29 replays play back in our client (1.26/1.28 f
 
 **The human anchor** (13:25): `bc.py --like-run runs/fgself-158` on 554 converted 1.29 replays on six stock maps (`runs/fullgame/demos-human-129-maps`, 520 training games, 35 held out), 12 epochs, into `runs/bc/human-anchor-1/`: the first clone of people's play shaped like the RL runs' network, to become their KL anchor.
 
+**The human anchor, `runs/bc/human-anchor-2`** (15:35): cloned (`bc.py --like-run runs/fgself-158`) from 575 converted 1.29 replays on six stock maps (539 training games, 36 held out), 12 epochs in 1.9 hours, after audit 18's fixes (a point clipped to the frame's edge left out; the research levels' costs in the encoder): held-out order accuracy 0.747 (0.718 after the first epoch), target 0.672, points 9.1 bins off at the median, its value poor (explained variance -0.14; not used as an anchor). A first run (`human-anchor-1`) was stopped at epoch 3 for the fixes.
+
+**`fgself-161`** (from `fgself-158`'s 33539153, 15:40): the human clone as the KL anchor (`--init runs/bc/human-anchor-2/policy.pt`, forward KL over every head at `--ref-kl 0.025`), in place of the built-in AI's clone (`fgself-100/13649982`), and every mask on (`--econ-masks 127`). The clone plays in the evaluation games too. Judged by the scorecard (expansions, upgrades, creeps, army mix, anti-air), head to head, and the KL to the new anchor.
+
 The queue:
 1. (done: in `fgself-155`) The audit-12 economy fixes: a training map whose mines and start scale with its costs (`echofast2`), workers labelled up to the target's count, masks against duplicate tech buildings and surplus workers, orc burrow and no-target lumber lessons.
 2. Cloning the scripted strategy family as anchor and teacher (AlphaStar's recipe with scripted data). First tune its weak plans, and add night elf and undead expansion plans. Then record thousands of echofast games (`scripts/heuristic_match.py --record`), train a cloning policy, and use it as the KL anchor and a distillation teacher.
