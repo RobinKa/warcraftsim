@@ -167,3 +167,4 @@ What the versions change (for playback, and for build orders as targets):
 
 `strategy.py --replay-patches 1.28 1.29 ...` picks versions; strategies of other versions carry `"patch"`. Build times are 1.29's (`build_seconds`).
 
+**Looking for NetEase's 1.29 map files** (2026-10-27): they make extra objects all game (a platform script), so their ~1,800 replays need NetEase's own files. Not found in epicwar's 36 uploads of the six maps, archive.org's "Warcraft III The Frozen Throne Maps" (its Echo Isles is our stock 1.29 one, ccd6b5ca), or w3replayers' NetEase pack (46 maps: NetEase versions, but not 1.29's; probably their later editions). `scripts/map_match.py <maps...>` checks candidates: the exact checksum, and each map peeled back out of the replays' checksums (two maps leaving the same remainder are the replays' versions under NetEase's own scripts; the stock scripts leave c3aa7b5f).
