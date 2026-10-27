@@ -567,6 +567,21 @@ def prune_allowed(net: FullGameNet, vocab: dict) -> int:
         if bad:
             net.allowed[bad, c] = False
             n += len(bad)
+    if fx.FUTILE_MASK:  # (--econ-masks bit 64: a burrowed crypt fiend or a stone gargoyle takes only its way back, the
+        index = {(int(o), int(k)): c for c, (o, k) in enumerate(vocab["orders"], start=1)}  # unmorphed form not that)
+        tix = {fx.rawcode(int(t)): i for i, t in enumerate(vocab["types"], start=1)}
+        for form, (base, back) in fx.MORPHED.items():
+            i, j, c = tix.get(form), tix.get(base), index.get((back, fx.IMMEDIATE))
+            if i is not None and i < net.allowed.shape[0]:
+                was = net.allowed[i].clone()
+                net.allowed[i, 1:] = False
+                if c is not None and c < net.allowed.shape[1]:
+                    net.allowed[i, c] = True
+                n += int((was & ~net.allowed[i]).sum())
+            if j is not None and j < net.allowed.shape[0] and c is not None and c < net.allowed.shape[1] \
+                    and bool(net.allowed[j, c]):
+                net.allowed[j, c] = False
+                n += 1
     return n
 
 

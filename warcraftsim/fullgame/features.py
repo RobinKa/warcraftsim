@@ -225,6 +225,10 @@ def codes(values) -> np.ndarray:
     return np.unique(np.fromiter((int(v) for v in values), np.int64))
 
 
+_MINING = codes(list(HARVESTING) + [SMART])  # (a worker's current orders at its mine: mine_workers)
+HIDDEN_FLAG = 16  # (UnitFlags.HIDDEN: a worker inside a gold mine)
+
+
 def isin(a: np.ndarray, sorted_codes: np.ndarray) -> np.ndarray:
     """np.isin(a, sorted_codes) for a 1-d int array and a few codes sorted (codes()): a binary search (np.isin's
     general path took ~60-100 us a call on a step's rows, ~30,000 calls a game in an actor)."""
@@ -441,6 +445,50 @@ DETONATE, REPAIR = 852145, 852024
 MILITIA_CONVERT, MILITIA_CALL, MILITIA_OFF, TOWNBELL_ON, TOWNBELL_OFF, MILITIA_UNCONVERT = (
     852071, 852072, 852073, 852082, 852083, 852651)
 MILITIA_T, PEASANT_T = int.from_bytes(b"hmil", "big"), int.from_bytes(b"hpea", "big")
+# --econ-masks bit 64 (View.futile, play.BCAgent.commands; audit 17 of fgself-158's undead games against insane: refused
+# orders 66 a game to its start's 35, games 17.9 min to 13.3): orders the game refuses, out of the masks, and not sent
+# when the unit or its target can't take them (tested 2026-10-27, scripts/undead_probe.py: scripted games, and the
+# policy's own real games against insane with each refusal's context):
+#  * a harvest at the player's haunted or entangled mines while each has MINE_WORKERS workers on it, or refused a
+#    harvest in the last MINE_FULL_STEPS (a haunted mine takes 5 acolytes, the 6th refused at once; damaged, with
+#    acolytes restoring it or on their way to it, it takes one while it has 4. In a real game 5 miners went on mining
+#    with their current order 0: counted by their orders the mine had room, and 111 harvests were refused in a game)
+#  * Death Coil and Holy Light (FUTILE_SPELLS) only while a unit takes it: one of the player's of the kind it heals
+#    below full health (undead for Death Coil, the living for Holy Light), not the caster itself, or another player's
+#    unit of the other kind that it sees; never a building, a machine, an ancient or a spell immune unit (fgself-158's
+#    refusal records: Death Coil on enemy undead 414, own undead at full health 94, the knight itself 39; Holy Light
+#    on the paladin itself 166, own units at full health 121, the enemy's living 149)
+#  * a burrowed crypt fiend's or a stone gargoyle's orders but its way back (MORPHED; model.prune_allowed: by type),
+#    and that way back on the unmorphed form (moves and attacks on burrowed fiends: 635 records, on stone gargoyles 92)
+#  * an item's immediate use from an inventory slot: the game refuses the slot's order ("useslot1" on, immediate) for
+#    every item tried (dust of appearance, a healing salve; full health or hurt) and takes the item's use (UnitUseItem):
+#    play.BCAgent sends that. Masked while no hero of the player's holds a usable item there that needs no target
+#    (TARGETED_ITEMS: the town portal scrolls and wards the policy's heroes had tried, 2-11 a game)
+FUTILE_MASK = int(os.environ.get("WARCRAFTSIM_ECON_MASK", "0") or 0) & 64 > 0
+DEATH_COIL, HOLY_LIGHT = 852222, 852092
+FUTILE_SPELLS = {DEATH_COIL: "undead", HOLY_LIGHT: "living"}  # (the kind of own unit each heals: it hurts the other)
+SPELL_CASTERS = {DEATH_COIL: int.from_bytes(b"Udea", "big"), HOLY_LIGHT: int.from_bytes(b"Hpal", "big")}
+SPELL_IMMUNE = tuple(int.from_bytes(c.encode(), "big") for c in ("edry", "hspt", "efdr", "ubsp"))
+MINE_WORKERS, MINE_NEAR = 5, 350.0  # (a haunted or entangled mine's workers at most; how near they work it)
+MINE_FULL_STEPS = 60  # (a mine that refused a harvest: full for 30 s)
+MINED_MINES = {"undead": int.from_bytes(b"ugol", "big"), "nightelf": int.from_bytes(b"egol", "big")}
+# a morphed form whose orders the game refuses but its way back (immediate), and the unmorphed form refusing that one
+MORPHED = {"ucrm": ("ucry", 852534), "ugrm": ("ugar", 852207)}  # (unburrow; unstoneform)
+USESLOT = 852008
+# items whose use needs a target (a unit or a point): town portal, staff of teleportation, sentry and other wards,
+# sacrificial skull, the staffs and wands cast on something, the tiny buildings, ritual dagger
+TARGETED_ITEMS = frozenset(int.from_bytes(c.encode(), "big") for c in (
+    "stwp", "stel", "wswd", "wshs", "wlsd", "wcyc", "wneg", "wneu", "will", "skul", "ssil", "spre", "sneg", "infs",
+    "ritd", "tgrh", "tcas", "tbak", "tbar", "tbsm", "tfar", "tlum", "tsct", "tsot"))
+
+
+def item_use_now(item: int, hero: np.ndarray) -> bool:
+    """FUTILE_MASK: whether the item (its type id: 0 none) in a hero's slot has a use the game takes now without a
+    target (play.BCAgent sends it as the item's use, protocol.UseItem): usable (herodata.item_table), not one of
+    TARGETED_ITEMS."""
+    if not item or item in TARGETED_ITEMS:
+        return False
+    return bool(_mod("herodata").item_table().get(item, (0, 0, 0, 0))[0])
 HUMAN_HALLS = tuple(int.from_bytes(c.encode(), "big") for c in ("htow", "hkee", "hcas"))
 REPAIR_MACHINES = frozenset(int.from_bytes(c.encode(), "big") for c in ("hgyr", "hmtt", "hrtt", "ocat", "ebal", "umtw"))
 WISP_T = int.from_bytes(b"ewsp", "big")
@@ -449,12 +497,50 @@ WISP_T = int.from_bytes(b"ewsp", "big")
 def set_econ_masks(v) -> None:
     """--econ-masks: bit 1 the economy masks (ECON_MASK), bit 2 the revival's reserve (REVIVE_RESERVE: a dead hero the
     altar would take now keeps its revival's gold from the player's other paid orders, View.step), bit 4 night elf's
-    lower worker allowance (NE_LEAN), bits 8, 16, 32 the Detonate, repair and call to arms masks (View.chores)."""
-    global ECON_MASK, REVIVE_RESERVE, NE_LEAN, DETONATE_MASK, REPAIR_MASK, MILITIA_MASK
+    lower worker allowance (NE_LEAN), bits 8, 16, 32 the Detonate, repair and call to arms masks (View.chores), bit 64
+    the orders the game refuses (FUTILE_MASK: View.futile; model.prune_allowed's morphed forms)."""
+    global ECON_MASK, REVIVE_RESERVE, NE_LEAN, DETONATE_MASK, REPAIR_MASK, MILITIA_MASK, FUTILE_MASK
     v = int(v or 0)
     ECON_MASK, REVIVE_RESERVE, NE_LEAN = bool(v & 1), bool(v & 2), bool(v & 4)
-    DETONATE_MASK, REPAIR_MASK, MILITIA_MASK = bool(v & 8), bool(v & 16), bool(v & 32)
+    DETONATE_MASK, REPAIR_MASK, MILITIA_MASK, FUTILE_MASK = bool(v & 8), bool(v & 16), bool(v & 32), bool(v & 64)
     os.environ["WARCRAFTSIM_ECON_MASK"] = str(v)
+
+
+_KINDS: dict | None = None
+
+
+def _kinds() -> dict:
+    """herodata.unit_kinds (undead, mechanical, ancient) and SPELL_IMMUNE as isin's sorted codes, once."""
+    global _KINDS
+    if _KINDS is None:
+        _KINDS = {k: codes(v) for k, v in _mod("herodata").unit_kinds().items()}
+        _KINDS["immune"] = codes(SPELL_IMMUNE)
+    return _KINDS
+
+
+def spell_targets(order: int, rows: np.ndarray, player: int) -> np.ndarray:
+    """FUTILE_MASK: per row, whether `player`'s spell `order` (FUTILE_SPELLS: Death Coil, Holy Light) takes that unit
+    as its target: a unit of the player's of the kind it heals below full health, or another player's unit of the other
+    kind that the player sees; no building, machine, ancient, spell immune unit (Death Coil and Holy Light: "organic,
+    nonancient" in AbilityData.slk) or dead one. The caster itself is one too here (a spell refuses it: the caller's)."""
+    k = _kinds()
+    typ, fl = rows[:, C_TYPE], rows[:, C_FLAGS]
+    undead = isin(typ, k["undead"])
+    healed = undead if FUTILE_SPELLS[order] == "undead" else ~undead
+    own = rows[:, C_OWNER] == player
+    ok = (fl & (DEAD | STRUCTURE) == 0) & ~isin(typ, k["mechanical"]) & ~isin(typ, k["ancient"])
+    mine = own & healed & (rows[:, C_HP] < rows[:, C_MAXHP])
+    other = ~own & ~healed & ((rows[:, C_VIS] >> player) & 1 == 1) & ~isin(typ, k["immune"])
+    return ok & (mine | other)
+
+
+def mine_workers(rows: np.ndarray, mine: np.ndarray) -> np.ndarray:
+    """The rows of the workers (of `rows`, a player's living units) working the mine row `mine`: within MINE_NEAR of it,
+    harvesting (or a right-click, as a wisp's shows) or inside it (play.BCAgent._miner_ids, View.futile)."""
+    w = rows[rows[:, C_FLAGS] & WORKER > 0]
+    near = np.hypot(w[:, C_X] - mine[C_X], w[:, C_Y] - mine[C_Y]) < MINE_NEAR
+    working = isin(w[:, C_ORDER], _MINING) | (w[:, C_FLAGS] & HIDDEN_FLAG > 0)
+    return w[near & working]
 
 
 def worker_cap(race: str, mines: int) -> int:
@@ -1460,6 +1546,39 @@ class View:
                  bool(near(halls, MILITIA_NEAR).any()))
             mask(((TOWNBELL_OFF, IMMEDIATE), (MILITIA_UNCONVERT, UNIT), (MILITIA_OFF, IMMEDIATE)), militia)
 
+    def futile(self, rows: np.ndarray, avail: np.ndarray, t: int) -> None:
+        """--econ-masks bit 64 (FUTILE_MASK): the orders no unit of the player's can give now with the game taking it,
+        out of `avail` (in place) at step t: a harvest while its haunted or entangled mines are full, Death Coil and Holy
+        Light with no unit it sees to take them, an item slot's immediate use with no hero holding an item there that it
+        can use so (the per-unit and per-target checks: play.BCAgent)."""
+        oix = self.enc.order_index
+        race = RACES[self.races[self.player]]
+        p = self.player
+        own = own_alive(rows, p)
+
+        def off(keys) -> None:
+            for k in keys:
+                c = oix.get(k)
+                if c is not None:
+                    avail[c] = False
+        mined = MINED_MINES.get(race)
+        if mined is not None and avail[oix.get((HARVEST, UNIT), 0)]:
+            mines = own[(own[:, C_TYPE] == mined) & (own[:, C_FLAGS] & CONSTRUCTING == 0)]
+            full = self.__dict__.get("full_mines") or {}  # (play.BCAgent.accepted: a mine's refused harvest, its step)
+            if not any(len(mine_workers(own, m)) < MINE_WORKERS and not 0 <= t - full.get(int(m[C_ID]), -MINE_FULL_STEPS)
+                       < MINE_FULL_STEPS for m in mines):
+                off(((HARVEST, UNIT),))
+        for o in FUTILE_SPELLS:
+            c = oix.get((o, UNIT))
+            if c is not None and avail[c] and not (spell_targets(o, rows, p) & ~((rows[:, C_TYPE] == SPELL_CASTERS[o])
+                                                                               & (rows[:, C_OWNER] == p))).any():
+                avail[c] = False  # (the caster itself no target: its kind's units of the player's left out)
+        heroes = own[own[:, C_FLAGS] & HERO > 0] if own.shape[1] > C_ITEM0 + 5 else own[:0]
+        for k in range(6):
+            c = oix.get((USESLOT + k, IMMEDIATE))
+            if c is not None and avail[c] and not any(item_use_now(int(h[C_ITEM0 + k]), h) for h in heroes):
+                avail[c] = False
+
     def tech_allowed(self, rows: np.ndarray, built: np.ndarray | None = None, own_hero: np.ndarray | None = None,
                      dead_rows: np.ndarray | None = None, done_types: list | None = None, hero_types: list | None = None,
                      dead_pairs: list | None = None) -> np.ndarray:
@@ -1697,6 +1816,8 @@ class View:
             avail &= self.econ_allowed(rows)
         if avail is not None and (DETONATE_MASK or REPAIR_MASK or MILITIA_MASK):  # (--econ-masks bits 8-32: chores)
             self.chores(rows, avail)
+        if avail is not None and FUTILE_MASK:  # (--econ-masks bit 64: orders the game refuses)
+            self.futile(rows, avail, t)
         if avail is not None and enc.expand_class is not None:  # (--macros: expand, while the natural is free and
             site = _mod("macros").site                            # its hall affordable; night elves' tree of life
             race = RACES[self.races[player]]                      # entangles its mine, play.BCAgent._entangle)

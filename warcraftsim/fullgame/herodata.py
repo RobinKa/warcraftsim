@@ -83,6 +83,31 @@ def item_table() -> dict[int, tuple[int, int, int, int]]:
     return out
 
 
+@lru_cache(1)
+def unit_kinds() -> dict[str, frozenset[int]]:
+    """The unit types of each classification a spell's targets depend on ("undead", "mechanical", "ancient":
+    Units\\UnitBalance.slk's type column) -> their type ids (Death Coil and Holy Light heal one kind and hurt the
+    other, neither touches machines or ancients: features.View.futile)."""
+    cache = paths.CACHE_DIR / "unit_kinds.json"
+    if cache.exists():
+        return {k: frozenset(v) for k, v in json.loads(cache.read_text()).items()}
+    from ..data.mpq import GameArchives
+    from ..data.objects import parse_slk
+    with GameArchives() as g:
+        rows = parse_slk(g.read("Units\\UnitBalance.slk").decode("latin-1"))
+    out: dict[str, list[int]] = {"undead": [], "mechanical": [], "ancient": []}
+    for r in rows:
+        code = r.get("unitBalanceID") or ""
+        kinds = {k.strip().lower() for k in str(r.get("type") or "").split(",")}
+        if len(code) == 4:
+            for k in out:
+                if k in kinds:
+                    out[k].append(fourcc(code))
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps(out))
+    return {k: frozenset(v) for k, v in out.items()}
+
+
 def order_needs(vocab: dict) -> dict[tuple[int, int], int]:
     """(unit type index, order class) -> what the order needs of the unit (model.FullGameNet's "valid_need"):
     0..3 the ability in that slot ready (learned, cooled down, the mana), 4..7 learned (its toggles),

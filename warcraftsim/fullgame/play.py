@@ -27,7 +27,7 @@ import numpy as np
 import torch
 
 from ..protocol import (Build, Buy, Command, EventKind, ImmediateOrder, LearnSkill, Observation, PickUp, PointOrder,
-                        TargetDestructable, TargetOrder)
+                        TargetDestructable, TargetOrder, UseItem)
 from ..runtime.instance import Agent, BuiltinAI, GameInstance, GameSetup
 from . import features as fx
 from .collect import Films, series
@@ -101,7 +101,10 @@ EXPAND, CREEP, MIX, PICKUP = 990001, 990002, 990003, 990004  # (macros.EXPAND, .
 HAUNT = int.from_bytes(b"ugol", "big")
 WISP = int.from_bytes(b"ewsp", "big")
 REFUSED_CTX = 40  # (refused orders a game whose context is kept)
-MINE_WORKERS, MINE_NEAR = 5, 350.0  # (a haunted or entangled mine's workers at most; how near they work it)
+MINE_WORKERS, MINE_NEAR = fx.MINE_WORKERS, fx.MINE_NEAR  # (a haunted or entangled mine's workers at most; how near)
+# (--econ-masks bit 64: a morphed form's type -> its way back, the unmorphed form's -> that order: features.MORPHED)
+MORPHED_BACK = {int.from_bytes(f.encode(), "big"): back for f, (_, back) in fx.MORPHED.items()}
+UNMORPHED = {int.from_bytes(b.encode(), "big"): back for _, (b, back) in fx.MORPHED.items()}
 HIDDEN = 16  # (UnitFlags.HIDDEN: a worker inside a gold mine)
 MACHINES = fx.REPAIR_MACHINES  # (repairable)
 MINED_BY = {"undead": HAUNT, "nightelf": int.from_bytes(b"egol", "big")}  # (their own; humans and orcs: a plain one)
@@ -203,6 +206,11 @@ class BCAgent:
             tally[key] = (sent + 1, refused + (not ok))
             if not ok and len(ctx) < REFUSED_CTX and rows is not None:
                 ctx.append(self._refusal(c, key, rows))
+        if fx.FUTILE_MASK:  # (--econ-masks bit 64: a mine that refused a harvest is full for a while, its miners
+            full = self.view.__dict__.setdefault("full_mines", {})  # mining with their current order 0 at times)
+            for c, ok in zip(cmds, results):
+                if not ok and isinstance(c, TargetOrder) and c.order == fx.HARVEST:
+                    full[c.target] = self.t
         for c, ok in zip(cmds, results):  # (a revival the altar took: under way, View.tech_allowed)
             if ok and isinstance(c, TargetOrder) and c.order == REVIVE:
                 self.view.__dict__.setdefault("reviving", {})[c.target] = self.t
@@ -368,6 +376,9 @@ class BCAgent:
             if int(sel[i, fx.C_FLAGS]) & LOADED:  # (a peon in a burrow, a unit in a transport: the game refuses its orders,
                 self.loaded_orders = getattr(self, "loaded_orders", 0) + 1  # moves orc's most refused kind; audit 10)
                 continue
+            if fx.FUTILE_MASK and self._futile(sel, i, oid, kind, int(tgt[i])):  # (--econ-masks bit 64: one the game
+                self.futile_orders = getattr(self, "futile_orders", 0) + 1     # refuses; not sent, what it did)
+                continue
             if oid in MILITIA_ORDERS or (res is not None and int(sel[i, fx.C_TYPE]) == fx.MILITIA_T):
                 # human's militia orders in the forms the game takes (features.MILITIA_*, tested 2026-10-26): back to
                 # work a militia's own immediate order, wherever it points (refused on a peasant, ~1,650 of the sampled
@@ -418,6 +429,9 @@ class BCAgent:
                 # (a frame cancelled: a quarter of its cost lost, and the game removes it outright; the policy cancelled
                 # its own frames 2-10 times a game, the cancel learned from the demonstrations' training queues; audit 9)
                 self.frame_cancels = getattr(self, "frame_cancels", 0) + 1
+            elif kind == fx.IMMEDIATE and fx.FUTILE_MASK and fx.USESLOT <= oid < fx.USESLOT + 6:
+                out.append(UseItem(unit, oid - fx.USESLOT))  # (--econ-masks bit 64: the item's use, the form the game
+                # takes; its slot's immediate order refused for every item tried, scripts/undead_probe.py)
             elif kind == fx.IMMEDIATE:
                 if oid < TYPE_CODE or produce(unit, oid, c):  # (a hero too: the first one's cost 0, the mask's costs)
                     out.append(ImmediateOrder(unit, oid))
@@ -630,7 +644,9 @@ class BCAgent:
         cands = self._mine_cands(sel, want, mined)
         if mined:
             uid = int(sel[i, fx.C_ID])
-            cands = [c for c in cands if len(c[4]) - c[4].count(uid) < MINE_WORKERS]
+            full = self.view.__dict__.get("full_mines") if fx.FUTILE_MASK and self.view is not None else None
+            cands = [c for c in cands if len(c[4]) - c[4].count(uid) < MINE_WORKERS
+                     and not (full and 0 <= self.t - full.get(c[1], -fx.MINE_FULL_STEPS) < fx.MINE_FULL_STEPS)]
         n = len(sel)
         if 0 <= k < n:
             for c in cands:
@@ -705,6 +721,26 @@ class BCAgent:
         """A unit row within MINE_NEAR of one of the player's entangled or haunted gold mines."""
         m = sel[fx.isin(sel[:, fx.C_TYPE], MINED_CODES) & (sel[:, fx.C_OWNER] == self.player)]
         return bool(len(m)) and bool((np.hypot(m[:, fx.C_X] - sel[i, fx.C_X], m[:, fx.C_Y] - sel[i, fx.C_Y]) < MINE_NEAR).any())
+
+    def _futile(self, sel: np.ndarray, i: int, oid: int, kind: int, k: int) -> bool:
+        """--econ-masks bit 64 (features.FUTILE_MASK): unit row i's order one the game refuses (tested in real games,
+        scripts/undead_probe.py): a burrowed crypt fiend's or a stone gargoyle's order but its way back, that way back on
+        the unmorphed form; Death Coil or Holy Light on a unit that can't take it (features.spell_targets: own full
+        health, the caster itself, an enemy of the kind it heals); an item slot's immediate use that its item can't
+        make (features.item_use_now: none, passive, or one that needs a target; the others go out as the item's use).
+        (A harvest at a full mine: _mine.)"""
+        row = sel[i]
+        typ = int(row[fx.C_TYPE])
+        back = MORPHED_BACK.get(typ)
+        if back is not None:
+            return not (kind == fx.IMMEDIATE and oid == back)
+        if kind == fx.IMMEDIATE and UNMORPHED.get(typ) == oid:
+            return True
+        if oid in fx.FUTILE_SPELLS and kind == fx.UNIT:
+            return not (0 <= k < len(sel) and k != i and bool(fx.spell_targets(oid, sel[k:k + 1], self.player)[0]))
+        if kind == fx.IMMEDIATE and fx.USESLOT <= oid < fx.USESLOT + 6 and len(row) > fx.C_ITEM0 + 5:
+            return not fx.item_use_now(int(row[fx.C_ITEM0 + oid - fx.USESLOT]), row)
+        return False
 
     def _repairable(self, row: np.ndarray) -> bool:
         """A repair's target: a building or a machine of the player's that is damaged or unfinished (a frame: while the
