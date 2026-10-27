@@ -197,6 +197,22 @@ def own_target(strategy_: dict, items: list[str], orderable_=None, mercenaries=f
     return strategy.narrow({**strategy_, "t": t}, tree())
 
 
+RESEARCH_MAP = "(2)EchoIsles"  # (the research levels' costs of the demonstrations' maps: main sets it with the costs)
+_STEPS: dict = {}
+
+
+def research_levels(vocab: dict, costs) -> np.ndarray | None:
+    """costs.research_steps for the encoder, as the actors give theirs (a research's next level at its own cost: without
+    it the mask checked levels 2-3 at level 1's cost; audit 18); none without the costs."""
+    if costs is None:
+        return None
+    key = (id(vocab), RESEARCH_MAP)
+    if key not in _STEPS:
+        from .costs import research_steps
+        _STEPS[key] = research_steps(vocab, RESEARCH_MAP)
+    return _STEPS[key]
+
+
 def drop_labels(out: dict, drop=(), allowed: np.ndarray | None = None) -> int:
     """Labels of orders the step's mask rules out (avail; as self-play's masks, which the recorded play didn't
     follow), in `drop`, or (`allowed`, the run's policy's [n_types, n_orders]) its unit's type may not get: left out
@@ -213,6 +229,12 @@ def drop_labels(out: dict, drop=(), allowed: np.ndarray | None = None) -> int:
     out["y_order"][bad] = IGNORE
     for k in ("y_ptr", "y_x", "y_y"):
         out[k][bad] = -1
+    # a point past the frame's range is clipped to the edge bin: its point label taught "the edge" (on the 4-player maps
+    # with neighbouring starts, up to 14% of a side's points; audit 18): the order kept, its point left out
+    last = fx.BINS * max(int(getattr(fx, "FINE", 1)), 1) - 1
+    edge = ((out["y_x"] == 0) | (out["y_x"] == last) | (out["y_y"] == 0) | (out["y_y"] == last)) & (out["y_x"] >= 0)
+    out["y_x"][edge] = -1
+    out["y_y"][edge] = -1
     return int(bad.sum())
 
 
@@ -341,7 +363,7 @@ class Steps(torch.utils.data.IterableDataset):
         paths = self.paths[wid::nw]
         rng.shuffle(paths)
         fx.set_z(self.zdim)
-        enc = fx.Encoder(self.vocab, self.costs)
+        enc = fx.Encoder(self.vocab, self.costs, research_levels(self.vocab, self.costs))
         pick = np.random.default_rng(rng.randrange(1 << 30))
         cap = max(self.buffer_steps, self.batch)
         buf: dict[str, np.ndarray] = {}
@@ -404,7 +426,7 @@ class Sequences(torch.utils.data.IterableDataset):
         paths = self.paths[wid::nw]
         rng.shuffle(paths)
         fx.set_z(self.zdim)
-        enc = fx.Encoder(self.vocab, self.costs)
+        enc = fx.Encoder(self.vocab, self.costs, research_levels(self.vocab, self.costs))
         games, pending = iter(paths), []
 
         def side():  # the next game side's arrays, or None when the games are used up
@@ -452,7 +474,7 @@ def whole_sides(paths: list[Path], vocab: dict, values: dict, costs=None, sides:
     longest ("valid" marks the steps; lane-major as Sequences, each lane starting at its side's start).
     The same batches for every model, with memory or without. `prep`: as game_sides reads them (each side
     given its target: the same inputs every epoch)."""
-    enc = fx.Encoder(vocab, costs)
+    enc = fx.Encoder(vocab, costs, research_levels(vocab, costs))
     todo = []
     for p in paths:
         if prep is not None:
@@ -786,6 +808,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.avail_mask:
         from .costs import order_costs
         costs = order_costs(vocab, map_name)
+        global RESEARCH_MAP
+        RESEARCH_MAP = map_name
     info = {"kind": "bc", "name": args.name, "created": time.time(), "task": "fullgame",
             "policy": "recorded play" if cfg is not None else "built-in AI",
             **({"like_run": str(args.like_run), "z_share": prep.z_share if prep.items else 0.0} if cfg is not None else {}),
