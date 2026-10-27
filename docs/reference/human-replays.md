@@ -188,6 +188,34 @@ So the points stay in range and mean "this far towards the enemy base, this far 
 
 **Risks.** The targets' times are people's real-game times, the training map's (echofast2) are faster: the anchor reads an echofast2 target as a slower schedule than the run's policy does. The forward KL over points (`--ref-kl-mode forward-all`) pulls towards people's places, learned on six maps turned level (Echo Isles is a fifth of the games). The anchor gives the macros (expand, creep, mix, pickup) almost no weight (people never use them): the forward KL does not pull the policy off them. A tenth of people's clicks are left out (above), so the anchor's order rates are off where those were (rallies, following own units). People's micro (many orders a second) is in the labels: the clone may give more weight to orders than the run's policy, which the KL then pulls towards.
 
+### What people order, not when (`--acting-only`, `--ref-kl-mode forward-acting`; 2026-10-27)
+
+The clones of people barely play (`human-anchor-2` and `human-ft-1`: 0 of ~55 real games against insane each; 5 workers, no army, 157 orders a game), and as the anchor `human-anchor-2` pulled `fgself-161` down. The likely cause is *when* to act: people command groups with sparse clicks, a unit getting an order in ~5% of its steps (the clone's rate 0.049), while the run's policy decides per unit every 0.5 s and gives one in ~93% of them (`fgself-158`'s validation rate on people's games, below). Cloning the "none" class teaches passivity; what people order when they act is what is wanted. Two switches keep the act/no-act tendency the RL policy's:
+
+* **`bc.py --acting-only`**: the order's loss only for the units that got one, over the orders without "none" (class 0 masked out of the softmax: no gradient to its logit; `bc.acting`); the targets' and points' losses as before (labels only with an order). With `--init` it first prints the start's validation (`start: ... rate`, also `start_val` in `bc.json`), so the fine-tune's drift of the order rate reads against it (no term holds the rate: the shared trunk may still move it).
+* **`selfplay --ref-kl-mode forward-acting`** (`model.anchor_kl`): as `forward-all`, but the order's term is the forward KL of the orders given one (both distributions renormalized without "none"), times the policy's chance of giving one, a constant (detached: through it the KL would be lowered by not acting, a pull towards "none" again). The target unit, x, y (and the sub-cell) given the step's order as `forward-all`. Both update paths (the eager one and `GraphedUpdate`) call `anchor_kl` with the mode, so they agree. Unit tests: `tests/unit/test_acting_only.py`.
+
+CPU smoke test (3 games, 4 batches of 32 from `fgself-158`'s 33539153): start rate 0.934 against people's 0.052, order accuracy given one 0.005 (the RL policy's conditional order loss on people's orders ~11 nats), rate 0.933 after.
+
+**Run it** (the GPU; once `fgself-162` has stopped, or between its launches; the same as `human-ft-1` but `--acting-only`):
+
+    .venv/bin/python -m warcraftsim.fullgame.bc --like-run runs/fgself-158 \
+        --init runs/fgself-158/checkpoints/0000000033539153.pt --acting-only \
+        --data runs/fullgame/demos-human-129-maps --name human-act-1 --epochs 2 --batch 256 --seq-len 16 \
+        --lr 3e-5 --dropout 0.1 --val-pct 5 --workers 16 --log-every 500
+
+Read per epoch: `rate` stays near the start's (~0.93; `human-ft-1` learned people's), `order acc` given one against `human-ft-1`'s 0.703, target against its 0.562.
+
+**Check its play first** (a clone is checked in real games before it anchors anything): as an evaluation checkpoint of the running run, e.g. `fgself-162` relaunched with it added (`scripts/selfplay_restart.py fgself-162 --note "human-act-1 among the evaluation checkpoints" --set "eval-checkpoints=runs/fgself-158/checkpoints/0000000033539153.pt runs/bc/human-act-1/policy.pt runs/fgself-130/checkpoints/0000000005534555.pt"`, `--dry-run` first), then its wins against insane in `episodes.jsonl` (`eval_key`) and `scripts/scorecard.py fgself-162 --vs bc/human-act-1/policy` (workers, army, expansions, orders a game) against `fgself-158`'s in the same hours. Expected: near `fgself-158`'s record (it keeps the policy's rate); far below it means the fine-tune broke the play, and it should not anchor.
+
+**As the anchor** (this code merged into master first: launches run from a checkout of master's HEAD): fork with it as `--init` and the new KL mode, the policy unchanged:
+
+    python3 scripts/selfplay_fork.py fgself-162 fgself-163 --title "people's orders given one as the KL anchor" \
+        --note "Anchor: human-act-1 (fgself-158 fine-tuned on people's orders given one, bc --acting-only); --ref-kl-mode forward-acting (the anchor never pulls towards none)." \
+        --set init=runs/bc/human-act-1/policy.pt --set ref-kl-mode=forward-acting --dry-run
+
+(`--weights runs/fgself-158/checkpoints/0000000033539153.pt` to start where `fgself-161` started; `--ref-kl 0.025` inherited.) Judge by `loss/ref_kl` (its start: the anchor descends from the start, but its orders given one differ), the win rate against insane at a person's income, head to head against the start, and the scorecard (expansions, upgrades, creeps, army mix).
+
 ## Other versions
 
 Playback in our 1.29.2 client (`replays.py --any-version`: the header set to 1.29 build 6060, the map found by its name; a test):

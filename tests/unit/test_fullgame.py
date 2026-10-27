@@ -543,7 +543,7 @@ def test_steps_shuffle_buffer_pays_out_every_step_once(monkeypatch):
         return out
 
     monkeypatch.setattr(bc.fx, "load_game", lambda p: p)
-    monkeypatch.setattr(bc.fx, "Encoder", lambda vocab, costs: None)
+    monkeypatch.setattr(bc.fx, "Encoder", lambda vocab, costs, research=None: None)
     monkeypatch.setattr(bc, "side_data", side)
     batches = list(bc.Steps(list(range(9)), {}, 8, {}, buffer_steps=64))
     seen = np.concatenate([b["n_own"].numpy() for b in batches])

@@ -395,14 +395,23 @@ def anchor_kl(ev: dict, ev_ref: dict, mode: str = "reverse"):
     direction: a rare order the anchor gives keeps its weight); "forward-all": and over the target unit
     and the point's x and y (y given the step's x), for the units whose order uses them; with --fine-points the
     sub-cell too (given the step's bins) when the anchor has a fine head of its own (an anchor without one, a
-    checkpoint from before them, plays the bins' centres: no pull towards them, nor towards a fresh head's prior)."""
+    checkpoint from before them, plays the bins' centres: no pull towards them, nor towards a fresh head's prior).
+    "forward-acting": as forward-all, but the order's term only over the orders given one (both distributions
+    renormalized without "none", class 0) and weighted by the policy's chance of giving one (a constant: no gradient
+    through it), so the anchor says what to order, never whether to: people's clones give an order in ~5% of a
+    unit's steps, and a pull towards their "none" taught passivity (fgself-161). The targets' terms as forward-all
+    (given the step's order: none for a unit that gave none)."""
     def kl(a, b):  # KL(softmax a || softmax b) over the last axis
         la, lb = torch.log_softmax(a.float(), -1), torch.log_softmax(b.float(), -1)
         return (la.exp() * (la - lb)).sum(-1)
     if mode == "reverse":
         return kl(ev["logits"], ev_ref["logits"])
-    out = kl(ev_ref["logits"], ev["logits"])
-    if mode == "forward-all":
+    if mode == "forward-acting":
+        acting = 1.0 - torch.softmax(ev["logits"].float(), -1)[..., 0].detach()
+        out = acting * kl(ev_ref["logits"][..., 1:], ev["logits"][..., 1:])
+    else:
+        out = kl(ev_ref["logits"], ev["logits"])
+    if mode in ("forward-all", "forward-acting"):
         pt = kl(ev_ref["xl"], ev["xl"]) + kl(ev_ref["yl"], ev["yl"])
         if "fl" in ev and "fl" in ev_ref:
             pt = pt + kl(ev_ref["fl"], ev["fl"])

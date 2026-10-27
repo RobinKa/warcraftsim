@@ -61,7 +61,7 @@ flowchart TB
   * Encoding: a point's index per axis is bin × S + sub-cell, in the actions, the rollouts, the wire and the teacher's labels (`features.world_bins` / `bins_world`, `model.sample_points` / `point_parts`). The bins are the same as without the flag.
   * Start: `model.grow_fine` gives the policy the head with its last layer's weights zero. Its bias is a prior: the middle sub-cell, which is exactly the old bin centre, with probability `--fine-centre` (0.9) at the target temperature. The bins' logits are unchanged.
   * Old networks: a network without the head (the anchor, past snapshots, older checkpoints) plays the middle sub-cell. That is today's point bit for bit, with no extra random draw.
-  * Losses: the PPO log-prob, the cloning and distillation losses (the sub-cell given the label's bins) and the `forward-all` anchor KL include the head. The KL includes it only when the anchor has a fine head of its own.
+  * Losses: the PPO log-prob, the cloning and distillation losses (the sub-cell given the label's bins) and the `forward-all` and `forward-acting` anchor KL include the head. The KL includes it only when the anchor has a fine head of its own.
   * Costs: +0.5% per inference call, and +0.1 µs per point order to decode.
   * Design choice: the alternative was a fine grid relative to the acting unit (±512 at 16–32 units). It was not chosen because it needs a mode head, it gives two encodings of one point, and it does not help orders far from the unit (an expansion hall is ordered from the main).
 * Dropout (0.1) is on for behaviour cloning only. The self-play updates run without it (`--rl-dropout 0`), as the actors play.

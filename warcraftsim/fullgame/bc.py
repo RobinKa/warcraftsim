@@ -43,7 +43,7 @@ import torch.nn.functional as F_
 
 from . import features as fx
 from . import strategy
-from .model import FullGameNet, fine_head, point_parts
+from .model import NEG, FullGameNet, fine_head, point_parts
 
 KEYS = ("ent", "type", "cur", "mask", "n_own", "glob", "y_order", "y_ptr", "y_x", "y_y", "ret", "avail")
 REWARD = {"gamma": 0.997, "shaping": 1.0, "shaping_scale": 2000.0, "tie_break": 0.5}  # selfplay's defaults
@@ -525,11 +525,15 @@ def allowed_orders(paths: list[Path], vocab: dict) -> np.ndarray:
 
 
 def losses(net: FullGameNet, b: dict, device, states: torch.Tensor | None = None,
-           value_coef: float = 0.5, avail_mask: bool = True, stats: bool = True, width: int | None = None) -> tuple[torch.Tensor, dict]:
+           value_coef: float = 0.5, avail_mask: bool = True, stats: bool = True, width: int | None = None,
+           acting_only: bool = False) -> tuple[torch.Tensor, dict]:
     """The loss of a batch and its statistics (`stats` False: none, and a dozen waits for the GPU
     fewer). With memory, `states` [lanes, d] holds each lane's state after its last chunk (read, and
     updated with the batch's). `width`: the entities to look at (default: the batch's widest view;
-    a CUDA graph needs it given: finding it on the GPU is a wait)."""
+    a CUDA graph needs it given: finding it on the GPU is a wait). `acting_only` (--acting-only): the order's
+    loss only for the units that got one, over the orders without "none" (class 0 out of the softmax: no
+    gradient to it), so what to order is learned and whether to (people order a unit in ~5% of its steps)
+    is left as it was; the targets' losses as before (they had labels only with an order)."""
     E = width or int(b["mask"].any(0).nonzero().max()) + 1  # the batch's widest view (before the copy: no wait for the GPU)
     b = {k: v.to(device, non_blocking=True) for k, v in b.items()}
     O = min(fx.MAX_OWN, E)
@@ -561,7 +565,9 @@ def losses(net: FullGameNet, b: dict, device, states: torch.Tensor | None = None
         l_pt = _masked_ce(xl, y_x, w) + _masked_ce(yl, y_y, w)
         if y_f is not None:  # (the sub-cell given the true bins)
             l_pt = l_pt + _masked_ce(net.fine_logits(z, y_x, y_y), y_f, w)
-        loss = _masked_ce(logits, y_order, w) + _masked_ce(ptr, y_ptr, w) + 0.5 * l_pt
+        l_order = (_masked_ce(acting(logits), y_order, w * (y_order > 0).float()) if acting_only
+                   else _masked_ce(logits, y_order, w))
+        loss = l_order + _masked_ce(ptr, y_ptr, w) + 0.5 * l_pt
         if value_coef:
             value, ret = net.value(g, b["glob"].float()).float(), b["ret"].float()
             if "valid" in b:
@@ -570,7 +576,11 @@ def losses(net: FullGameNet, b: dict, device, states: torch.Tensor | None = None
             else:
                 loss = loss + value_coef * 0.5 * ((value - ret) ** 2).mean()
         return loss, {}
-    l_order = F_.cross_entropy(logits[own], y_order[own], ignore_index=IGNORE)  # (IGNORE: a label left out, drop_labels)
+    if acting_only:  # (the orders given one: "none" labels and the none class left out)
+        given = own & (y_order > 0)
+        l_order = F_.cross_entropy(acting(logits)[given], y_order[given]) if given.any() else logits.sum() * 0
+    else:
+        l_order = F_.cross_entropy(logits[own], y_order[own], ignore_index=IGNORE)  # (IGNORE: a label left out, drop_labels)
     if net.training:  # the orders each unit type gets (the mask for playing)
         issued_ = own & (y_order > 0)
         net.allowed[typ[:, :O][issued_], y_order[issued_]] = True
@@ -600,6 +610,12 @@ def losses(net: FullGameNet, b: dict, device, states: torch.Tensor | None = None
                  "ret_n": len(ret), "ret_sum": float(ret.sum()), "ret_sq": float((ret ** 2).sum()),
                  "err_sq": float(((value - ret) ** 2).sum())}
     return l_order + l_ptr + 0.5 * l_pt + value_coef * l_value, stats
+
+
+def acting(logits: torch.Tensor) -> torch.Tensor:
+    """Order logits [..., C] with "none" (class 0) ruled out: their softmax is the distribution over the orders given
+    one (--acting-only)."""
+    return logits.masked_fill(torch.arange(logits.shape[-1], device=logits.device) == 0, NEG)
 
 
 def _masked_ce(logits: torch.Tensor, y: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
@@ -740,6 +756,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--val-pct", type=float, default=0.0, help="hold out this percentage of the games by a hash of "
                     "their names (instead of --val-games: the same games while a directory grows)")
     ap.add_argument("--max-batches", type=int, default=0, help="stop after this many batches (0: --epochs)")
+    ap.add_argument("--acting-only", action="store_true", help="the order learned only given one: no loss for the "
+                    "'none' labels and 'none' out of the softmax (bc.losses), so a fine-tune keeps its network's rate "
+                    "of giving orders (people's: ~5%% of a unit's steps) and learns what people order; targets as before")
     ap.add_argument("--log-every", type=int, default=2000)
     ap.add_argument("--note", default="")
     args = ap.parse_args(argv)
@@ -864,6 +883,16 @@ def main(argv: list[str] | None = None) -> int:
                                    prep=prep))
     print(f"{len(train)} training games, {len(val)} validation ({len(val_batches)} batches); "
           f"{enc.n_types} unit types, {enc.n_orders} order classes", flush=True)
+    if args.acting_only and init:  # (the start's validation: its rate of giving orders, which the fine-tune should keep)
+        net.eval()
+        with torch.no_grad():
+            vs = torch.zeros(len(val_batches[0]["lane"]), args.d, device=device) if args.memory else None
+            va = summarize([losses(net, b, device, vs, args.value_coef, bool(args.avail_mask), acting_only=True)[1]
+                            for b in val_batches])
+        info["start_val"] = va
+        (out / "bc.json").write_text(json.dumps(info, indent=1))
+        print(f"start: order acc {va['order_acc']:.3f} rate {va['order_rate_pred']:.3f} (people's "
+              f"{va['orders_per_unit_step']:.3f}) target {va['target_acc']:.3f}", flush=True)
     t0 = time.time()
     total_batches = args.max_batches or None
     step = 0
@@ -881,7 +910,7 @@ def main(argv: list[str] | None = None) -> int:
             if total_batches:  # cosine decay over the run
                 for pg in opt.param_groups:
                     pg["lr"] = args.lr * 0.5 * (1 + np.cos(np.pi * min(step / total_batches, 1.0)))
-            loss, st = losses(net, b, device, states, args.value_coef, bool(args.avail_mask))
+            loss, st = losses(net, b, device, states, args.value_coef, bool(args.avail_mask), acting_only=args.acting_only)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
@@ -899,7 +928,8 @@ def main(argv: list[str] | None = None) -> int:
         net.eval()
         with torch.no_grad():
             vs = torch.zeros(len(val_batches[0]["lane"]), args.d, device=device) if args.memory else None
-            val_stats = [losses(net, b, device, vs, args.value_coef, bool(args.avail_mask))[1] for b in val_batches]
+            val_stats = [losses(net, b, device, vs, args.value_coef, bool(args.avail_mask), acting_only=args.acting_only)[1]
+                         for b in val_batches]
         tr, va = summarize(train_stats), summarize(val_stats)
         row = {"epoch": epoch, "time": time.time(), "seconds": round(time.time() - t0, 1),
                "lr": opt.param_groups[0]["lr"], "train_loss": tr["loss_order"] + tr["loss_target"] + 0.5 * tr["loss_point"],

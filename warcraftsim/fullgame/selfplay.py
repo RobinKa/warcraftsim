@@ -4246,10 +4246,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--vf-coef", type=float, default=0.5)
     ap.add_argument("--ent-coef", type=float, default=0.0)
     ap.add_argument("--ref-kl", type=float, default=0.05, help="the KL term towards the initial (cloned) policy")
-    ap.add_argument("--ref-kl-mode", default="reverse", choices=["reverse", "forward", "forward-all"],
+    ap.add_argument("--ref-kl-mode", default="reverse", choices=["reverse", "forward", "forward-all", "forward-acting"],
                     help="that term's direction and heads (model.anchor_kl): reverse KL over the orders (as before), "
                          "forward KL over the orders (AlphaStar's direction: rare orders keep their weight), "
-                         "or forward over the orders and their targets")
+                         "forward over the orders and their targets, or forward-acting: as forward-all with the orders "
+                         "given one (no 'none'), weighted by the policy's chance of giving one (an anchor cloned from "
+                         "people: what to order, never whether to)")
     ap.add_argument("--value-warmup", type=int, default=-1, help="first updates: the value head only (default: 10, "
                                                                   "2 when BC trained the value head)")
     ap.add_argument("--max-grad-norm", type=float, default=1.0)
