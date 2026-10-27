@@ -67,6 +67,29 @@ def test_drop_labels_the_mask_rules_out():
     assert out["y_ptr"][0, 1] == -1 and out["y_x"][1, 2] == -1 and out["y_ptr"][0, 0] == 2
 
 
+def test_drop_labels_outside_the_runs_table():
+    out = {"y_order": np.array([[1, 2, 0]], np.int16), "y_ptr": np.full((1, 3), -1, np.int16),
+           "y_x": np.full((1, 3), -1, np.int16), "y_y": np.full((1, 3), -1, np.int16), "avail": np.ones((1, 4), bool),
+           "type": np.array([[1, 2, 0, 1]], np.int16)}
+    allowed = np.ones((3, 4), bool)
+    allowed[2, 2] = False  # (type 2 may not get order 2)
+    assert bc.drop_labels(out, allowed=allowed) == 1 and out["y_order"].tolist() == [[1, bc.IGNORE, 0]]
+
+
+def test_resolve_smart():
+    """A unit's right click on a point: a move; on an enemy or a creep: an attack; a building's, on an own unit: kept."""
+    def u(t, uid, owner, flags=0):
+        return [t, uid, 1, owner, 0, 0, 0, 100, 100, 0, 0, 0, flags, 3] + [0] * 4
+    units = [u(0, 10, 0), u(0, 11, 0, fx.STRUCTURE), u(0, 20, 1), u(0, 30, bc.NEUTRAL_HOSTILE), u(0, 12, 0)]
+    S = bc.SMART
+    orders = [[0, 10, S, 1, 5, 5, 0], [0, 10, S, 2, 0, 0, 20], [0, 10, S, 2, 0, 0, 30], [0, 10, S, 2, 0, 0, 12],
+              [0, 11, S, 1, 5, 5, 0], [0, 10, 851972, 0, 0, 0, 0]]
+    g = {"units": np.array(units, np.int64), "orders": np.array(orders, np.int64), "meta": {"steps": 0}}
+    out = bc.resolve_smart(g)
+    assert out["orders"][:, 2].tolist() == [bc.MOVE, bc.ATTACK, bc.ATTACK, S, S, 851972]
+    assert g["orders"][0, 2] == S  # (the game itself unchanged)
+
+
 @pytest.mark.parametrize("stats", [True, False])
 def test_losses_skip_ignored_labels(stats):
     from warcraftsim.fullgame.model import FullGameNet

@@ -148,6 +148,46 @@ Surveyed 2026-10-26 (`runs/fullgame/replay-survey/`: `w3info-index.jsonl`, warcr
 
 A pilot of 54 1.29 games on Last Refuge (28), Amazonia (23) and Terenas Stand LV (3) converted (2026-10-26, `runs/fullgame/demos-human-129-maps`): **none out of step**: 5,760 of 5,760 subgroup units, 1,795 of 1,834 buildings (98%); one playback timed out (`--retry-failed`). 14.1 hours of play, 202,756 side-steps, each game read through `bc.py`'s encoder in its own map's frame. 82 s a game per playback slot (two at a time beside the training, load ~90 on 32 threads): the other ~460 convertible 1.29 games take about 5 hours at two at a time (~10 slot-hours).
 
+## Cloning people (the anchor to be)
+
+`bc.py --like-run runs/<run>` clones these games into a policy a self-play run can take as `--init` (its KL anchor; [five changes](../proposals/five-changes.md), 1) and later as a teacher (2026-10-27):
+
+* **The run's network.** Its settings as its learner sets them (`apply_run`: `--features`, `--inputs`, the tech, valid and economy masks, `--neutral 2`, `--macros 3`, `--spells 1`, the strategy block's size, the map's frame and bins), `--init` defaulting to the run's (`fgself-100/13649982`, the clone of the built-in AI) loaded through `model.load` with the run's `vocab.json`: the same architecture (5 layers, the minGRU core, 352 point bins), vocabulary and order of the orders, so `selfplay` takes it as `--init` and the anchor's KL compares like with like. `--fresh`: that architecture and its tables with new weights.
+* **Own targets.** Each side's own strategy (`strategy.from_demos`) cut and narrowed as the run's pool holds its strategies (the `--z-pool`'s item slots, the horizon, at least 5 items, `strategy.narrow`, no mercenaries), given as the strategy input to the run's `--z-share` of the sides (0.75; the rest zeros, as the run's games without a target). The modes' and mix parts of the block are zeros, and their weights are zeroed (`zero_z_extras`), so a run that fills them sees the clone as without them. Validation gives every side its target.
+* **Right clicks.** People give a third to a half of their orders as `smart` (a right click), which the built-in AI never gives, so the run's policy may give it only to workers (its table of orders by unit type). `resolve_smart` turns a unit's right click on a point into a move and on an enemy's unit or a creep into an attack, as the game does (`--resolve-smart 1`); a building's (its rally: not in the vocabulary), on its own units, trees, mines and shops stay right clicks.
+* **Labels the run can't give are left out** (`IGNORE`, `drop_labels`): those the step's masks rule out (the economy masks, tech, ...: 0.1-0.3%), mercenaries (`--neutral 2`), and orders the run's policy's table rules out for the unit's type (`--run-orders 1`, the table of its last checkpoint; self-play gives the anchor the policy's table before each update, so weight there would only be taken from the other orders). In all 5-17% of the labels a map (Echo Isles 9%, Last Refuge 12%, Twisted Meadows 17%: mostly buildings' rally clicks and clicks on own units); without the right clicks resolved 51-67%. The clone's own table is the run's.
+* **The value** learns the run's rewards (its gamma, shaping and tie-break).
+* **Each game its own frame** (`game_frame`). The features' frame reads a map with the bases left and right (it mirrors x only, and squeezes the stretch between the bases to the duel maps' 4,600), as Echo Isles'. Every other map's bases are diagonal, so each game is turned (`level_frame`: units, facings, point and target orders, trees) about the midpoint of the two starts its players used (on a 4-player map the start nearest each player's hall at the first step: `used_starts`) until they lie level. The bins keep the network's reach (Echo Isles' ±2.75, 352 bins) on every map:
+
+| map | bases apart (Echo Isles 9,856) | turned | middle squeezed to | point labels in an edge bin |
+|---|---|---|---|---|
+| Echo Isles | 9,856 | 0° | 0.23 | 0 |
+| Last Refuge | 10,549 | 43° | 0.21 | 0.3% |
+| Amazonia | 9,458 | 45° | 0.25 | 0 |
+| Terenas Stand LV | 11,860 | -46° | 0.18 | 0 |
+| Turtle Rock (34 games) | 10,061-11,254 (23 games); 4,172-4,345 (11: close spawns) | -64° to 49° | 0.19-0.23; close: 1.19-1.37 (stretched) | 0 (close spawns too) |
+| Twisted Meadows (25) | 8,177-8,664 (16, adjacent); 11,857-12,125 (9, across) | -52° to 86° | 0.17-0.31 | 0 |
+
+So the points stay in range and mean "this far towards the enemy base, this far to its side" on every map; what differs is the scale of the middle stretch (a bin there is 48 world units divided by the squeeze: ~200 on Echo Isles, ~150-270 elsewhere, ~40 in a close spawn) and the side: the frame mirrors x only, so on a map symmetric under a half turn (most of these) the right player's view is the left's upside down, as it is on Echo Isles. Games on maps not on this machine, or whose starts can't be told, are skipped.
+
+**Run it** (the GPU; once `fgself-158` has stopped: one GPU job at a time):
+
+    .venv/bin/python -m warcraftsim.fullgame.bc --like-run runs/fgself-158 \
+        --data runs/fullgame/demos-human-129 runs/fullgame/demos-human-129-maps \
+        --name human-anchor-1 --epochs 12 --batch 256 --seq-len 16 --lr 1e-4 --dropout 0.1 \
+        --val-pct 5 --workers 16 --log-every 500
+
+`--val-pct 5` holds out ~5% of the games by a hash of their names (the same games while the conversion adds more). `policy.pt` is the epoch with the lowest validation loss. Time: ~3 million side-steps when the conversion is done (~800 games, ~3,750 side-steps a game), ~11,700 batches an epoch; the encoding takes ~2-5 s a game per loader worker (~4 minutes an epoch on 16 workers), the network's steps likely more: about 5-10 minutes an epoch, 1-2 hours for 12 (not measured on the GPU: the CPU smoke test below ran ~2 s a batch of 64).
+
+**Smoke test** (CPU, 2026-10-27; 8 games: Echo Isles 3, Last Refuge 3, Turtle Rock 2; 2 held out; `--batch 64 --seq-len 16 --workers 1 --max-batches 300 --lr 1e-4`): the cloning loss fell (train order loss 0.56 after 25 batches, 0.25 after 250), validation (the 2 held-out games' every step, targets given) from the start's (`fgself-100`: total 11.91, order accuracy given one 0.20, predicted order rate 0.51 against people's 0.044, target 0.20, point error 33.4 bins) to 8.51 (0.47, 0.073, 0.34, 25.3 bins) in 300 batches; ~2.7 s a batch of 64 on the CPU beside the training (load ~90). The checkpoint loads as the run's `--init` (`selfplay.main`'s path: `model.load` under its settings with the start weights' vocabulary): the same `arch_key` as `fgself-158`'s policy (the policy's weights load into it), 352 bins, 318 global inputs (a strategy block of 212), the same 493 orders in the same order; the forward-all KL from it to `fgself-158`'s policy on 400 steps of a held-out Echo Isles game is finite, 0.37 a unit (the old anchor's 0.20: the policy descends from it); its log-likelihood of people's orders there -6.90 (the old anchor's -7.08).
+
+**Evaluate it:**
+
+1. *The real game against insane at a person's income:* add `runs/bc/human-anchor-1/policy.pt` to a run's `--eval-checkpoints` (its evaluation games: real Echo Isles, insane, the eval pool's targets in real time) and read `scripts/scorecard.py <run> --vs bc/human-anchor-1/policy` (expansions, workers, upgrades, creeping, ...) and its wins in `episodes.jsonl` (`eval_key`). The clone alone is expected to lose to insane at first (fgself-100 did too); what counts is its macro (expansions: people expand in 81% of Echo Isles games, the policies in none).
+2. *As the anchor:* fork with it as `--init`, the policy unchanged: `scripts/selfplay_fork.py fgself-158 fgself-159 --title "people's clone as the KL anchor" --set init=runs/bc/human-anchor-1/policy.pt` (`--dry-run` first), then `scripts/scorecard.py fgself-159 --vs <its start>` against the start in the same hours, and the win rate against insane at a person's income.
+
+**Risks.** The targets' times are people's real-game times, the training map's (echofast2) are faster: the anchor reads an echofast2 target as a slower schedule than the run's policy does. The forward KL over points (`--ref-kl-mode forward-all`) pulls towards people's places, learned on six maps turned level (Echo Isles is a fifth of the games). The anchor gives the macros (expand, creep, mix, pickup) almost no weight (people never use them): the forward KL does not pull the policy off them. A tenth of people's clicks are left out (above), so the anchor's order rates are off where those were (rallies, following own units). People's micro (many orders a second) is in the labels: the clone may give more weight to orders than the run's policy, which the KL then pulls towards.
+
 ## Other versions
 
 Playback in our 1.29.2 client (`replays.py --any-version`: the header set to 1.29 build 6060, the map found by its name; a test):

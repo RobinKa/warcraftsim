@@ -58,7 +58,9 @@ class Prep:
     item slots per race): each side's own target as the strategy input (own_target), given to a share `z_share` of
     the sides (the rest zeros: self-play's games without a target), in a block of `zdim` (its modes' and mix parts
     after strategy.ZDIM: zeros); labels whose order the step's mask rules out (the run's masks, --econ-masks ...)
-    or in `drop` (--neutral 2: mercenaries) are left out (IGNORE)."""
+    or in `drop` (--neutral 2: mercenaries) are left out (IGNORE), and with `allowed` (the run's policy's table of
+    the orders each unit type may get, [n_types, n_orders]) those it rules out; `smart`: people's right clicks as
+    the orders the game makes of them (resolve_smart)."""
     frames: bool = False
     bin_range: float = 0.0
     items: dict | None = None
@@ -68,6 +70,42 @@ class Prep:
     reward: dict = field(default_factory=lambda: dict(REWARD))
     orderable: frozenset | None = None
     mercenaries: frozenset = frozenset()
+    allowed: np.ndarray | None = None
+    smart: bool = False
+
+
+SMART, MOVE, ATTACK = 851971, 851986, 851983
+NEUTRAL_HOSTILE = 12  # (the creeps' player; 15: the neutral buildings, mines and critters)
+
+
+def resolve_smart(game: dict) -> dict:
+    """People's right clicks (smart: 30% of a human game's orders, which the built-in AI never gives, so a run's
+    policy may not give them but to workers) as the orders the game makes of them: a unit's (not a building's) on a
+    point a move, on an enemy's or a creep's unit an attack; the others (a building's rally, on its own units, trees,
+    mines, shops) as they were."""
+    od = game["orders"]
+    at = np.flatnonzero(od[:, 2] == SMART) if len(od) else []
+    if not len(at):
+        return game
+    u, T = game["units"], int(game["meta"]["steps"]) + 1
+    sl = np.searchsorted(u[:, fx.C_STEP], np.arange(T + 1), side="left")
+    od, seen = od.copy(), {}
+    for i in at:
+        t, unit, kind, target = int(od[i, 0]), int(od[i, 1]), int(od[i, 3]), int(od[i, 6])
+        if t >= T:
+            continue
+        rows = seen.get(t)
+        if rows is None:
+            r = u[sl[t]:sl[t + 1]]
+            rows = seen[t] = dict(zip(r[:, fx.C_ID].tolist(), zip(r[:, fx.C_OWNER].tolist(), r[:, fx.C_FLAGS].tolist())))
+        me = rows.get(unit)
+        if me is None or me[0] not in (0, 1) or me[1] & fx.STRUCTURE:
+            continue
+        if kind == 1:
+            od[i, 2] = MOVE
+        elif kind == 2 and rows.get(target, (None,))[0] in (1 - me[0], NEUTRAL_HOSTILE):
+            od[i, 2] = ATTACK
+    return {**game, "orders": od}
 
 
 @lru_cache(None)
@@ -159,14 +197,19 @@ def own_target(strategy_: dict, items: list[str], orderable_=None, mercenaries=f
     return strategy.narrow({**strategy_, "t": t}, tree())
 
 
-def drop_labels(out: dict, drop=()) -> int:
+def drop_labels(out: dict, drop=(), allowed: np.ndarray | None = None) -> int:
     """Labels of orders the step's mask rules out (avail; as self-play's masks, which the recorded play didn't
-    follow) or in `drop`: left out (y_order IGNORE, no target), in place; how many."""
+    follow), in `drop`, or (`allowed`, the run's policy's [n_types, n_orders]) its unit's type may not get: left out
+    (y_order IGNORE, no target), in place; how many. (Self-play's anchor plays with the policy's table: an order
+    outside it would only take weight from the others.)"""
     y = out["y_order"].astype(np.int64)
     T = len(y)
     bad = (y > 0) & ~out["avail"][np.arange(T)[:, None], np.clip(y, 0, None)]
     if len(drop):
         bad |= np.isin(y, np.asarray(drop, np.int64))
+    if allowed is not None:  # (own units first: the labels' columns are the first entities')
+        typ = np.clip(out["type"][:, :y.shape[1]].astype(np.int64), 0, len(allowed) - 1)
+        bad |= (y > 0) & ~allowed[typ, np.clip(y, 0, allowed.shape[1] - 1)]
     out["y_order"][bad] = IGNORE
     for k in ("y_ptr", "y_x", "y_y"):
         out[k][bad] = -1
@@ -181,6 +224,8 @@ def game_sides(path: Path, enc: fx.Encoder, values: dict, prep: Prep, rng: rando
         game = game_frame(game, prep.bin_range)
         if game is None:
             return []
+    if prep.smart:
+        game = resolve_smart(game)
     own = {}
     if prep.items is not None:
         own = {s["player"]: own_target(s, prep.items[s["race"]], prep.orderable, prep.mercenaries)
@@ -229,7 +274,7 @@ def side_data(enc: fx.Encoder, game: dict, player: int, values: dict, z: np.ndar
     out = enc.encode(game, player, z)
     out["ret"] = returns(game, player, values, prep.reward if prep is not None else REWARD)
     if prep is not None:
-        drop_labels(out, prep.drop)
+        drop_labels(out, prep.drop, prep.allowed)
     tk = game["meta"].get("takeover")
     if tk and tk["player"] == player and tk["step"] > 0:
         out = {k: v[tk["step"]:] for k, v in out.items()}
@@ -663,6 +708,10 @@ def main(argv: list[str] | None = None) -> int:
                     "frame and bins), its vocabulary, its rewards for the value; --init defaults to its --init; each "
                     "side's own target from its --z-pool's slots (own_target) as the strategy input; each game in its "
                     "own frame (game_frame)")
+    ap.add_argument("--run-orders", type=int, default=1, help="with --like-run: labels of orders the run's policy's "
+                    "table rules out for the unit's type left out (drop_labels; the anchor plays with that table)")
+    ap.add_argument("--resolve-smart", type=int, default=1, help="with --like-run: people's right clicks as the move "
+                    "or attack the game makes of them (resolve_smart)")
     ap.add_argument("--fresh", action="store_true", help="with --init: its architecture and tables, new weights")
     ap.add_argument("--z-share", type=float, help="with --like-run: the share of sides given their own target "
                     "(default: the run's --z-share)")
@@ -727,6 +776,12 @@ def main(argv: list[str] | None = None) -> int:
             prep.items, prep.zdim = pool["items"], fx.ZDIM
             prep.z_share = args.z_share if args.z_share is not None else _float(cfg.get("z_share") or 1.0)
             prep.orderable = frozenset(strategy.orderable(vocab))
+        if args.run_orders:  # (the run's policy's table of orders by unit type: its last checkpoint's, as load gives it)
+            from .model import load
+            own_ck = sorted((Path(cfg["runs"]) / cfg["name"] / "checkpoints").glob("[0-9]*.pt"))
+            prep.allowed = load(own_ck[-1] if own_ck else args.init, "cpu", args.memory,
+                                vocab=run_vocab)[0].allowed.numpy().copy()
+        prep.smart = bool(args.resolve_smart)
     costs = None
     if args.avail_mask:
         from .costs import order_costs
@@ -760,6 +815,8 @@ def main(argv: list[str] | None = None) -> int:
         if cfg is not None:
             set_dropout(net, args.dropout)
             zero_z_extras(net)
+            if prep.allowed is not None:  # (the run's table: the labels outside it are left out)
+                net.allowed.copy_(torch.as_tensor(prep.allowed, device=net.allowed.device))
         args.d, args.memory = net.config["d"], net.memory
         if net.bins != fx.BINS:
             raise SystemExit(f"{args.init} has {net.bins} point bins, this map's frame {fx.BINS}: scripts/grow_bins.py")
