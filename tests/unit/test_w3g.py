@@ -166,6 +166,8 @@ def test_stock_map_match(rep):
     newer = copy.copy(other)
     newer.header = w3g.Header("w3g", 1, "W3XP", 30, 6061, True, 0, 0, False)
     assert "version" in skip_reason(newer, stock) and skip_reason(newer, stock, any_version=True) is None
+    assert skip_reason(other, stock, other_maps=True) is None  # (NetEase's map versions: by the file name)
+    assert "version" in skip_reason(newer, stock, other_maps=True)
 
 
 def test_version_shift():
@@ -176,13 +178,14 @@ def test_version_shift():
     rep = w3g.Replay(w3g.Header("w3g", 1, "W3XP", 28, 6059, True, 0, 0, False))
     rep.players = {3: w3g.Player(3, "a", slot=1)}
     rep.actions = [w3g.Action(500, 3, w3g.SUBGROUP, item=ogre, target=(14907, 14907))]
-    obs = NS(units=[NS(id=7, owner=1, type_id=ogre), NS(id=8, owner=24, type_id=0)])
+    obs = NS(units=[NS(id=7, owner=1, type_id=ogre, x=0.0, y=0.0), NS(id=8, owner=24, type_id=0, x=0.0, y=0.0)])
     tags = [["T", "1", "7", "15387", "15387"], ["T", "1", "8", "14000", "14000"]]
-    fn = version_shift(rep, obs, tags)
+    fn, offsets = version_shift(rep, obs, tags)
+    assert offsets == (0, 480)
     assert fn((14907, 14907)) == (15387, 15387)  # (the 1.29 engine's 480 more objects before the start)
     assert fn((12000, 15500)) == (12000, 15980)  # a slot from before the preplaced units' last: only its count
     tags[0][3:] = ["14907", "14907"]
-    assert version_shift(rep, obs, tags) is None  # (the same ids: nothing to shift)
+    assert version_shift(rep, obs, tags) == (None, (0, 0))  # (the same ids: nothing to shift)
 
 
 def test_rewrite_version(data):
@@ -270,3 +273,21 @@ def test_reforged_records(data, rep):
     assert w3g.fourcc(out[0].item2) == "Aque"
     assert w3g.Header("w3g", 1, "W3XP", 10200, 7000, True, 0, 0, True).patch == "2.0"
     assert w3g.Header("w3g", 1, "W3XP", 10036, 6116, True, 0, 0, True).patch == "1.36"
+
+
+def test_other_map_version_ids():
+    from warcraftsim.fullgame.replays import id_map, preplaced_offsets
+    # NetEase's Last Refuge: its trees as ours, 3 more objects before the preplaced units, starting units as those
+    f = id_map(first_unit=11736, preplaced_off=-3, first_player=15505, player_off=-3)
+    assert f((4013, 4013)) == (4013, 4013) and f((11739, 11739)) == (11736, 11736)
+    assert f((15508, 15508)) == (15505, 15505) and f((15720, 15726)) == (15717, 15723)
+    # NetEase's Echo Isles: 96 more objects before the starting units
+    g = id_map(first_unit=11700, preplaced_off=-3, first_player=15387, player_off=-99)
+    assert g((12295, 12295)) == (12292, 12292) and g((15486, 15486)) == (15387, 15387)
+    assert id_map(11736, 0, 15505, 0) is None
+    rep = w3g.Replay(w3g.Header("w3g", 1, "W3XP", 29, 6060, True, 0, 0, False))
+    rep.actions = [w3g.Action(0, 1, w3g.ABILITY_TARGET, x=100.0, y=200.0, target=(11763, 11763)),
+                   w3g.Action(10, 1, w3g.ABILITY_TARGET, x=100.0, y=200.0, target=(11763, 11763)),
+                   w3g.Action(20, 1, w3g.ABILITY_TARGET, x=-500.0, y=0.0, target=(11786, 11786)),
+                   w3g.Action(30, 1, w3g.ABILITY_TARGET, x=900.0, y=900.0, target=(15000, 15000))]
+    assert preplaced_offsets(rep, [(110.0, 190.0, 11760), (-500.0, 10.0, 11783)]) == {-3: 2}

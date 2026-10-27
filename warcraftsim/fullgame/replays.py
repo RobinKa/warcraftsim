@@ -138,7 +138,8 @@ def stock_maps(spec: str = "echo") -> dict[str, tuple[int, bytes]]:
 def match_map(rep: w3g.Replay, stock: dict[str, tuple[int, bytes]], any_version: bool = False) -> str | None:
     """The stock map the replay was played on: its checksums (the SHA-1 when the replay has one; some
     replays carry ffffffff as the classic checksum), or with `any_version` its file name only (another
-    game version's checksums cover its own common.j and Blizzard.j)."""
+    game version's checksums cover its own common.j and Blizzard.j; another version of the map:
+    NetEase's)."""
     if any_version:
         bare = lambda s: re.sub(r"^\(\d+\)", "", s.lower())  # noqa: E731 (1.26's downloads: "EchoIsles.w3x")
         name = bare(re.split(r"[\\/]", rep.map_path)[-1])
@@ -163,10 +164,11 @@ def file_checksums(path: Path) -> tuple[int, bytes]:
 
 
 def skip_reason(rep: w3g.Replay, stock: dict[str, tuple[int, bytes]] | tuple[int, bytes],
-                any_version: bool = False) -> str | None:
+                any_version: bool = False, other_maps: bool = False) -> str | None:
     """Why a replay can't be converted (None: it can): our client plays back only its own build (unless
     `any_version`: a test), and only on a stock map of its own (`stock`: name -> checksums; a pair:
-    Echo Isles') that the replay's checksums match."""
+    Echo Isles') that the replay's checksums match (or with `other_maps` any version of it: by its
+    file name)."""
     if isinstance(stock, tuple):
         stock = {ECHO: stock}
     h = rep.header
@@ -174,7 +176,7 @@ def skip_reason(rep: w3g.Replay, stock: dict[str, tuple[int, bytes]] | tuple[int
         return f"version {h.patch} build {h.build} (the client is 1.29 build 6060)"
     if ".." in rep.map_path or ":" in rep.map_path:
         return "map path outside the maps folder"
-    if match_map(rep, stock, any_version) is None:
+    if match_map(rep, stock, any_version or other_maps) is None:
         name = re.split(r"[\\/]", rep.map_path)[-1]
         if any((n + ".w3x").lower() == name.lower() for n in stock):
             return f"another version of {name} (map checksum)"
@@ -215,24 +217,61 @@ def shift_of(probes: list[tuple[int, int]]):
 HALLS = {int.from_bytes(c.encode(), "big") for c in ("htow", "ogre", "unpl", "etol")}
 
 
+def preplaced_offsets(rep: w3g.Replay, neutral: list[tuple[float, float, int]], near: float = 32.0) -> dict:
+    """How often each offset (our id - the replay's) names a preplaced unit: every object the replay's
+    orders target (the first time; an order carries its target's position) matched to the one neutral
+    unit of ours there (`neutral`: x, y, object id in the first observation; mines, shops, creeps)."""
+    seen, offsets = set(), {}
+    for a in rep.actions:
+        if a.kind != w3g.ABILITY_TARGET or not a.target or a.target == w3g.NO_OBJECT or a.target[0] != a.target[1] \
+                or a.target[0] in seen:
+            continue
+        seen.add(a.target[0])
+        there = [i for x, y, i in neutral if abs(x - a.x) <= near and abs(y - a.y) <= near]
+        if len(there) == 1:
+            offsets[there[0] - a.target[0]] = offsets.get(there[0] - a.target[0], 0) + 1
+    return offsets
+
+
+def id_map(first_unit: int, preplaced_off: int, first_player: int, player_off: int):
+    """The object-id map from a replay's game to ours (`first_unit`, `first_player`: our first preplaced
+    unit's and first starting unit's ids; the offsets: ours - the replay's): the map's trees (made
+    before its units) keep their ids, its preplaced units move by one offset, everything from the
+    starting units on by the other. None when both are 0."""
+    if preplaced_off == 0 and player_off == 0:
+        return None
+    a, b = first_unit - preplaced_off, first_player - player_off  # (in the replay's numbering)
+
+    def f(v: int) -> int:
+        return v + player_off if v >= b else v + preplaced_off if v >= a else v
+    return lambda t: (f(t[0]), f(t[1]))
+
+
 def version_shift(rep: w3g.Replay, obs, tags: list[list[str]]):
-    """For another version's replay (--any-version): the object-id map from its game to ours, if the
-    games made a different number of objects before the starting units (1.29 makes more: 24 players):
-    the offset of a starting hall the replay selects (its ids there, ours in the first observation),
-    for every object made after the map's preplaced units (creeps, mines: their ids are the same).
-    None when there is nothing to shift."""
+    """For another version's replay (--any-version) or one on another version of the map
+    (--other-map-versions): the object-id map from its game to ours, when the games made a different
+    number of objects before the map's preplaced units (NetEase's map versions: 3 or 5 more) or before
+    the starting units (1.29 makes more: 24 players; NetEase's Echo Isles, Turtle Rock and Twisted
+    Meadows ~96 more). The preplaced units' offset: the objects the replay's orders target matched to
+    ours by position (one offset, or the map's units differ: an error); the starting units': a
+    starting hall the replay selects (its ids there, ours in the first observation). The trees keep
+    their ids. Returns the map (None when there is nothing to shift) and the two offsets."""
     ids = {}
     for t in tags:
         if t[0] == "T":
             ids.setdefault(int(t[2]), (int(t[3]), int(t[4])))
-    ours = {}
-    preplaced = 0
+    ours, neutral = {}, []
+    first_unit = first_player = 1 << 31
     for u in obs.units:
         if u.id in ids:
+            first_unit = min(first_unit, ids[u.id][0])
             if u.owner >= 24:  # (neutral: creeps, mines, shops)
-                preplaced = max(preplaced, ids[u.id][0])
-            elif u.type_id in HALLS:
-                ours[(u.owner, u.type_id)] = ids[u.id]
+                if ids[u.id][0] == ids[u.id][1]:
+                    neutral.append((u.x, u.y, ids[u.id][0]))
+            else:
+                first_player = min(first_player, ids[u.id][0])
+                if u.type_id in HALLS:
+                    ours[(u.owner, u.type_id)] = ids[u.id]
     offsets = set()
     for a in rep.actions:
         if a.kind == w3g.SUBGROUP and a.item in HALLS and a.target and a.time < 120000:
@@ -240,23 +279,26 @@ def version_shift(rep: w3g.Replay, obs, tags: list[list[str]]):
             if mine and mine[0] == mine[1] and a.target[0] == a.target[1]:
                 offsets.add(mine[0] - a.target[0])
     if not offsets:
-        return None
+        return None, None
     if len(offsets) > 1:
         raise GameError(f"the starting halls' object ids are not one offset: {sorted(offsets)}")
     off = offsets.pop()
-    if off == 0:
-        return None
-    first = preplaced + 1
-    return lambda t: (t[0] + off if t[0] >= first else t[0], t[1] + off if t[1] >= first else t[1])
+    pre = preplaced_offsets(rep, neutral)
+    pre_off, n = max(pre.items(), key=lambda kv: kv[1], default=(0, 0))
+    if n and n < 0.8 * sum(pre.values()):
+        raise GameError(f"the preplaced units' object ids are not one offset (ours - the replay's: count): {pre}")
+    return id_map(first_unit, pre_off, first_player, off), (pre_off, off)
 
 
 # ---- the playback ------------------------------------------------------------------------------
 
 def play(rep: w3g.Replay, data: bytes, name: str, obs_map: Path, checksums: tuple[int, bytes],
          timeout: float = 30.0, nice: int = 10, log=print, map_name: str = ECHO,
-         version: tuple[int, int] | None = None) -> dict:
+         version: tuple[int, int] | None = None, other_map: bool = False) -> dict:
     """Both playbacks of one replay; returns the raw recording: per step the units, heroes, players,
-    the harness's research events, the units' object ids, the trees and theirs, the order names."""
+    the harness's research events, the units' object ids, the trees and theirs, the order names.
+    `version` (another game version's replay) or `other_map` (on another version of the map): its
+    object ids mapped to ours (version_shift)."""
     setup = GameSetup(map=map_name, step_seconds=STEP_SECONDS, nice=nice, launch_timeout=90, window=(320, 240),
                       warm_spare=False, draw=False, d3d_thread=False, render_threads=0, shim_dir=str(REPLAY_SHIM))
     g = ReplayGame(setup, obs_map, rep.map_path, name=name, timeout=timeout)
@@ -264,7 +306,7 @@ def play(rep: w3g.Replay, data: bytes, name: str, obs_map: Path, checksums: tupl
         t0 = time.time()
         obs0 = g.play(w3g.rewrite(data, checksum=checksums[0], sha1=checksums[1], version=version))
         probes = [(int(p[2]), int(p[3])) for p in g.tags() if p[0] == "P"]
-        vfn = version_shift(rep, obs0, g.tags()) if version is not None else None
+        vfn, voff = version_shift(rep, obs0, g.tags()) if version is not None or other_map else (None, None)
         g._stop_process()
         if len(probes) != 2:
             raise GameError(f"the harness reported {len(probes)} probes")
@@ -274,7 +316,8 @@ def play(rep: w3g.Replay, data: bytes, name: str, obs_map: Path, checksums: tupl
             fn = lambda t: hfn(vfn(t))  # noqa: E731
         shifted = w3g.rewrite(data, checksum=checksums[0], sha1=checksums[1], objects=fn, version=version)
         obs = g.play(shifted)
-        log(f"{name}: harness objects {n} (probe {probes}); playing ({time.time() - t0:.0f}s)")
+        log(f"{name}: harness objects {n} (probe {probes}){f'; ids shifted {voff}' if vfn else ''}; "
+            f"playing ({time.time() - t0:.0f}s)")
         rec = {"units": [], "heroes": [], "players": [], "events": [], "ms": [],
                "trees": [(d.id, d.type_id, d.x, d.y, d.life) for d in (obs.destructables or [])]}
         rec["order_names"] = dict(obs.orders or {})
@@ -312,7 +355,7 @@ def play(rep: w3g.Replay, data: bytes, name: str, obs_map: Path, checksums: tupl
             t += 1
         rec["end_ms"] = obs.game_ms
         rec["tags"] = g.tags()
-        rec["probes"], rec["shift"] = probes, n
+        rec["probes"], rec["shift"], rec["version_shift"] = probes, n, voff
         rec["seconds"] = time.time() - t0
         rec["shifted"] = shifted
         return rec
@@ -611,10 +654,12 @@ def sync_check(rep: w3g.Replay, shifted: w3g.Replay, players: list[int], ms: lis
 
 
 def convert(path: Path, rep: w3g.Replay, data: bytes, name: str, obs_map: Path, checksums: tuple[int, bytes],
-            log=print, nice: int = 10, map_name: str = ECHO, version: tuple[int, int] | None = None
+            log=print, nice: int = 10, map_name: str = ECHO, version: tuple[int, int] | None = None,
+            other_map: bool = False
             ) -> tuple[dict, dict]:
     """One replay to the demonstration's arrays and its meta."""
-    rec = play(rep, data, name, obs_map, checksums, nice=nice, log=log, map_name=map_name, version=version)
+    rec = play(rep, data, name, obs_map, checksums, nice=nice, log=log, map_name=map_name, version=version,
+               other_map=other_map)
     playing = rep.playing
     real = [p.slot for p in playing]  # (a melee player's id in the game is its slot)
     remap_players(rec, real)
@@ -646,9 +691,11 @@ def convert(path: Path, rep: w3g.Replay, data: bytes, name: str, obs_map: Path, 
             "victory": "melee", "step_seconds": STEP_SECONDS, "order_names": rec["order_names"],
             "result": result, "steps": steps, "game_seconds": rec["ms"][-1] / 1000.0,
             "source": {"replay": path.name, "patch": rep.header.patch, "build": rep.header.build,
+                       "map_checksum": f"{rep.map_checksum or 0:08x}",
                        "winner": summary["winner_how"], "length_ms": rep.length_ms, "played_ms": rec["end_ms"],
                        "apm": [apm.get(p.id) for p in playing], "slots": real,
-                       "harness_objects": rec["shift"], "probes": rec["probes"]},
+                       "harness_objects": rec["shift"], "probes": rec["probes"],
+                       "version_shift": rec["version_shift"]},
             "derived": "orders from the replay's actions and selections; events from the units' states",
             "sync": sync, "seconds": round(rec["seconds"], 1)}
     players = as_array(rec["players"], len(PLAYER_COLS))
@@ -681,6 +728,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--any-version", action="store_true",
                     help="a test: replays of other game versions too, their header set to 1.29 build 6060 and "
                          "their map found by its file name (does the playback stay in step?)")
+    ap.add_argument("--other-map-versions", action="store_true",
+                    help="1.29 replays on another version of a stock map too (NetEase's: found by its file name), "
+                         "their object ids mapped to the stock map's (version_shift)")
     ap.add_argument("--parallel", type=int, default=2, help="games played back at once")
     ap.add_argument("--limit", type=int, default=0, help="at most this many conversions (0: all)")
     ap.add_argument("--min-sync", type=float, default=1.0,
@@ -726,7 +776,7 @@ def main(argv: list[str] | None = None) -> int:
             continue
         try:
             head = w3g.parse_replay(path.read_bytes(), actions=False)
-            reason = skip_reason(head, stock, args.any_version)
+            reason = skip_reason(head, stock, args.any_version, args.other_map_versions)
         except (w3g.ReplayError, ValueError, IndexError, OSError) as e:
             reason = f"unreadable: {e}"
         if reason:
@@ -735,7 +785,7 @@ def main(argv: list[str] | None = None) -> int:
             continue
         n = game_number(path, taken)
         taken.add(n)
-        map_name = match_map(head, stock, args.any_version)
+        map_name = match_map(head, stock, args.any_version or args.other_map_versions)
         if map_name not in observers:
             obs = observer_map(map_name)
             observers[map_name] = obs, file_checksums(obs)
@@ -758,7 +808,8 @@ def main(argv: list[str] | None = None) -> int:
             data = path.read_bytes()
             rep = w3g.parse_replay(data)
             arrays, meta = convert(path, rep, data, name, obs_map, checksums, nice=args.nice,
-                                   log=lambda m: print(m, flush=True), map_name=map_name, version=version)
+                                   log=lambda m: print(m, flush=True), map_name=map_name, version=version,
+                                   other_map=args.other_map_versions)
             sync = meta["sync"]
             share = sync["subgroup_matched"] / max(1, sync["subgroup_units"])
             dest = out / (f"game{n:05d}.npz" if share >= args.min_sync else f"desync/game{n:05d}.npz")
