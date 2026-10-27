@@ -2477,6 +2477,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"auto_skills": getattr(bots[side], "auto_skills", 0)} if side in bots and fx.MACROS >= 3 else {}),
         **({"noop_repairs": bots[side].noop_repairs} if side in bots and getattr(bots[side], "noop_repairs", 0) else {}),
         **({"frame_cancels": bots[side].frame_cancels} if side in bots and getattr(bots[side], "frame_cancels", 0) else {}),
+        **({"futile_orders": bots[side].futile_orders} if side in bots and getattr(bots[side], "futile_orders", 0) else {}),
         **({k: getattr(bots[side], k) for k in ("militia_back", "militia_skipped") if getattr(bots[side], k, 0)}
            if side in bots else {}),
         **({"over_budget": bots[side].over_budget} if side in bots and getattr(bots[side], "over_budget", 0) else {}),
@@ -4006,7 +4007,11 @@ def main(argv: list[str] | None = None) -> int:
                     "dead the player had less gold than its revival). Bit 4: night elf's wisps beside its mines' 10 (~8 "
                     "choppers), not 15 (features.LEAN_REST). Bits 8, 16, 32 (View.chores; audit 16): Detonate only "
                     "with an enemy summon near a wisp; repair only on a building below 70%% or damaged with an enemy "
-                    "near; human's call to arms only with an enemy near a hall, its end and back to work only with militia")
+                    "near; human's call to arms only with an enemy near a hall, its end and back to work only with militia. "
+                    "Bit 64 (View.futile; audit 17): orders the game refuses: a harvest at full (or just refused) haunted "
+                    "and entangled mines, Death Coil and Holy Light on targets they can't take, a burrowed crypt fiend's "
+                    "or stone gargoyle's orders but its way back (by type), an item slot's use with no item there usable "
+                    "without a target (and sent as the item's use: the slot's order is refused)")
     ap.add_argument("--z-workers", type=int, default=0, help="with --z-build: the builder also orders (taught: labels) "
                     "the race's worker at an idle hall while the side has fewer than its target's workers (its start's "
                     "plus the strategy's trained ones, \"n\"; at most features.worker_cap for its mines), after the due "
