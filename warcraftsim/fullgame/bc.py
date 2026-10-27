@@ -526,14 +526,19 @@ def allowed_orders(paths: list[Path], vocab: dict) -> np.ndarray:
 
 def losses(net: FullGameNet, b: dict, device, states: torch.Tensor | None = None,
            value_coef: float = 0.5, avail_mask: bool = True, stats: bool = True, width: int | None = None,
-           acting_only: bool = False) -> tuple[torch.Tensor, dict]:
+           acting_only: bool = False, ref: FullGameNet | None = None, ref_states: torch.Tensor | None = None,
+           hold_start: float = 0.0, hold_all: float = 0.0) -> tuple[torch.Tensor, dict]:
     """The loss of a batch and its statistics (`stats` False: none, and a dozen waits for the GPU
     fewer). With memory, `states` [lanes, d] holds each lane's state after its last chunk (read, and
     updated with the batch's). `width`: the entities to look at (default: the batch's widest view;
     a CUDA graph needs it given: finding it on the GPU is a wait). `acting_only` (--acting-only): the order's
     loss only for the units that got one, over the orders without "none" (class 0 out of the softmax: no
     gradient to it), so what to order is learned and whether to (people order a unit in ~5% of its steps)
-    is left as it was; the targets' losses as before (they had labels only with an order)."""
+    is left as it was; the targets' losses as before (they had labels only with an order).
+    `ref` (a fine-tune's start network, frozen; with memory its lanes' states in `ref_states`): `hold_start` times
+    KL(start || network) of the act/no-act decision per own unit (Bernoulli on P(none), the orders as played: the
+    unit type's table), `hold_all` times the forward KL over every head (model.anchor_kl's forward-all: the orders,
+    and the target unit, x and y given the label's order and x for the units that got one), on the batch's states."""
     E = width or int(b["mask"].any(0).nonzero().max()) + 1  # the batch's widest view (before the copy: no wait for the GPU)
     b = {k: v.to(device, non_blocking=True) for k, v in b.items()}
     O = min(fx.MAX_OWN, E)
@@ -596,11 +601,42 @@ def losses(net: FullGameNet, b: dict, device, states: torch.Tensor | None = None
     if "valid" in b:  # (padded steps: no value target)
         value, ret = value[b["valid"]], ret[b["valid"]]
     l_value = 0.5 * ((value - ret) ** 2).mean()
+    play = played(net, logits, typ[:, :O])  # (as the policy plays: the unit type's orders)
+    l_hold, hold = logits.sum() * 0, {}
+    if ref is not None and (hold_start or hold_all):  # (the start network's view of the same states, frozen)
+        with torch.no_grad():
+            g_r, u_r = ref.encode(ent, typ, cur, mask, b["glob"].float())
+            if ref.memory and "lane" in b:
+                c_r, h_r = ref.context_seq(g_r.view(len(b["lane"]), -1, g_r.shape[-1]), ref_states[b["lane"]],
+                                           b["starts"])
+                ref_states[b["lane"]] = h_r[:, -1].to(ref_states.dtype)
+                g_r = c_r.reshape(g_r.shape)
+            elif ref.memory:
+                g_r = ref.context(g_r, None)[0]
+            play_r = played(net, ref.order_logits(g_r, u_r[:, :O], typ, n_own, by_type=False, avail=avail), typ[:, :O])
+        units = (torch.arange(O, device=device)[None] < n_own[:, None]).float()  # (every own unit, labelled or not)
+        n_u = units.sum().clamp(min=1)
+        k_act = (act_kl(play_r, play) * units).sum() / n_u
+        k_all = k_act * 0
+        if hold_all:
+            from .model import anchor_kl
+            with torch.no_grad():
+                ptr_r, xl_r, z_r = ref.target_logits(g_r, u_r, mask, y_order.clamp(min=0))
+                ev_r = {"logits": play_r, "ptr": ptr_r, "xl": xl_r, "yl": ref.y_logits(z_r, y_x)}
+                if y_f is not None and fine_head(ref):
+                    ev_r["fl"] = ref.fine_logits(z_r, y_x, y_y)
+            ev = {"logits": play, "ptr": ptr, "xl": xl, "yl": yl, "uses_ptr": has_ptr.float(), "uses_pt": has_pt.float()}
+            if "fl" in ev_r:
+                ev["fl"] = net.fine_logits(z, y_x, y_y)
+            k_all = (anchor_kl(ev, ev_r, "forward-all") * units).sum() / n_u
+        l_hold = hold_start * k_act + hold_all * k_all
+        hold = {"hold_n": 1, "kl_act": float(k_act.detach()), "kl_all": float(k_all.detach())}
     with torch.no_grad():
         issued = own & (y_order > 0)
         p_order = 1 - logits.softmax(-1)[..., 0]  # the chance of any order
         pred = logits[..., 1:].argmax(-1) + 1  # the most likely order, given one
         stats = {"n": int(own.sum()), "issued": int(issued.sum()), "p_issued": float(p_order[own].sum()),
+                 "p_played": float((1 - play.softmax(-1)[..., 0])[own].sum()), **hold,
                  "issued_hit": int((issued & (pred == y_order)).sum()),
                  "none_hit": 0,
                  "ptr_n": int(has_ptr.sum()), "ptr_hit": int((has_ptr & (ptr.argmax(-1) == y_ptr)).sum()),
@@ -609,7 +645,36 @@ def losses(net: FullGameNet, b: dict, device, states: torch.Tensor | None = None
                  "l_order": float(l_order), "l_ptr": float(l_ptr), "l_pt": float(l_pt), "l_value": float(l_value),
                  "ret_n": len(ret), "ret_sum": float(ret.sum()), "ret_sq": float((ret ** 2).sum()),
                  "err_sq": float(((value - ret) ** 2).sum())}
-    return l_order + l_ptr + 0.5 * l_pt + value_coef * l_value, stats
+    return l_order + l_ptr + 0.5 * l_pt + value_coef * l_value + l_hold, stats
+
+
+def played(net: FullGameNet, logits: torch.Tensor, typ: torch.Tensor) -> torch.Tensor:
+    """Order logits [N, O, C] as the policy plays them: only the orders the unit's type may give (the network's table,
+    model.order_logits' by_type; "none" always)."""
+    ok = net.allowed[typ.long()].clone()
+    ok[..., 0] = True
+    return logits.masked_fill(~ok, NEG)
+
+
+def act_kl(ref_logits: torch.Tensor, logits: torch.Tensor) -> torch.Tensor:
+    """KL(ref || current) of the act/no-act decision per unit [...] from order logits [..., C]: the Bernoulli on
+    P(none) (class 0) against P(any order) (--hold-start: a fine-tune keeps its start's rate of giving orders)."""
+    lq, lp = torch.log_softmax(ref_logits.float(), -1), torch.log_softmax(logits.float(), -1)
+    q0, p0 = lq[..., 0], lp[..., 0]
+    q1, p1 = torch.logsumexp(lq[..., 1:], -1), torch.logsumexp(lp[..., 1:], -1)
+    return q0.exp() * (q0 - p0) + q1.exp() * (q1 - p1)
+
+
+HEADS = ("order.", "order_emb.", "cond.", "query.", "key.", "point_x.", "x_emb.", "point_y.", "fine_x.", "fine_y.",
+         "point_f.", "value_head.", "priv_proj.")  # (--train-heads: the parameters after the trunk)
+
+
+def train_heads(net: FullGameNet) -> int:
+    """Only the heads trainable (--train-heads: the orders', the targets', the value's; the entity and global
+    encoders, the transformer and the memory core frozen) -> the number of trainable parameters."""
+    for name, p in net.named_parameters():
+        p.requires_grad_(name.startswith(HEADS))
+    return sum(p.numel() for p in net.parameters() if p.requires_grad)
 
 
 def acting(logits: torch.Tensor) -> torch.Tensor:
@@ -637,7 +702,9 @@ def summarize(stats: list[dict]) -> dict:
             "order_rate_pred": s["p_issued"] / max(s["n"], 1),  # vs orders_per_unit_step: calibration
             "target_acc": s["ptr_hit"] / max(s["ptr_n"], 1),
             "point_error_bins": s["pt_err"] / max(s["pt_n"], 1) / 2,
-            "orders_per_unit_step": s["issued"] / max(s["n"], 1)}
+            "orders_per_unit_step": s["issued"] / max(s["n"], 1),
+            **({"order_rate_played": s["p_played"] / max(s["n"], 1)} if "p_played" in s else {}),
+            **({"kl_act": s["kl_act"] / s["hold_n"], "kl_all": s["kl_all"] / s["hold_n"]} if "hold_n" in s else {})}
 
 
 def run_config(path: Path) -> tuple[dict, Path]:
@@ -759,6 +826,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--acting-only", action="store_true", help="the order learned only given one: no loss for the "
                     "'none' labels and 'none' out of the softmax (bc.losses), so a fine-tune keeps its network's rate "
                     "of giving orders (people's: ~5%% of a unit's steps) and learns what people order; targets as before")
+    ap.add_argument("--hold-start", type=float, default=0.0, help="with --init: this times KL(start || network) of "
+                    "the act/no-act decision per own unit on the demonstrations' states (Bernoulli on P(none), the "
+                    "start network frozen): a fine-tune keeps its start's rate of giving orders (e.g. 1-10)")
+    ap.add_argument("--hold-all", type=float, default=0.0, help="with --init: this times the forward KL from the start "
+                    "over every head (the orders, and the target unit and point given the label's order; self-play's "
+                    "forward-all anchor) on the demonstrations' states: a trust region around the start")
+    ap.add_argument("--train-heads", action="store_true", help="with --init: train only the heads (the orders', "
+                    "the targets', the value's; bc.HEADS), the trunk (encoders, transformer, memory core) frozen")
+    ap.add_argument("--z-extras", choices=("auto", "zero", "keep"), default="auto", help="with --like-run: the "
+                    "strategy block's modes' and mix parts' weights (the demonstrations have them zero): zero (the clone "
+                    "reads them as without them), keep (as --init reads them: a fine-tune of a policy that learned "
+                    "them), auto: keep when --init's own network has them (a run's policy with --z-mix/--z-modes)")
     ap.add_argument("--log-every", type=int, default=2000)
     ap.add_argument("--note", default="")
     args = ap.parse_args(argv)
@@ -857,7 +936,12 @@ def main(argv: list[str] | None = None) -> int:
             net = new
         if cfg is not None:
             set_dropout(net, args.dropout)
-            zero_z_extras(net)
+            own_z = init["config"].get("z", 0) >= net.config.get("z", 0)  # (--init's own weights for the extras)
+            if args.z_extras == "zero" or (args.z_extras == "auto" and not own_z):
+                zero_z_extras(net)
+            elif net.config.get("z", 0) > strategy.ZDIM:
+                print(f"the strategy block's modes' and mix parts read as {args.init} reads them (--z-extras "
+                      f"{args.z_extras})", flush=True)
             if prep.allowed is not None:  # (the run's table: the labels outside it are left out)
                 net.allowed.copy_(torch.as_tensor(prep.allowed, device=net.allowed.device))
         args.d, args.memory = net.config["d"], net.memory
@@ -869,30 +953,46 @@ def main(argv: list[str] | None = None) -> int:
                           dropout=args.dropout, memory=args.memory, bins=fx.BINS).to(device)
         net.allowed[0] = True  # unknown unit types: any order
         net.order_kind.copy_(torch.as_tensor(enc.order_kind, device=device))
-    opt = torch.optim.AdamW(net.parameters(), lr=args.lr, weight_decay=1e-4)
+    hold = args.hold_start > 0 or args.hold_all > 0
+    if (hold or args.train_heads) and (not init or args.fresh):
+        raise SystemExit("--hold-start, --hold-all and --train-heads fine-tune --init's network (not with --fresh)")
+    ref = None
+    if hold:  # the start, frozen (eval: no dropout), for the KL that holds the fine-tune near it
+        import copy
+        ref = copy.deepcopy(net).eval()
+        ref.requires_grad_(False)
+    if args.train_heads:
+        n_train = train_heads(net)
+        print(f"--train-heads: {n_train:,} of {sum(p.numel() for p in net.parameters()):,} parameters trained "
+              f"(the heads), the trunk frozen", flush=True)
+    opt = torch.optim.AdamW([p for p in net.parameters() if p.requires_grad], lr=args.lr, weight_decay=1e-4)
+    kw = {"value_coef": args.value_coef, "avail_mask": bool(args.avail_mask), "acting_only": args.acting_only,
+          "ref": ref, "hold_start": args.hold_start, "hold_all": args.hold_all}
     if args.memory:  # args.batch steps: lanes of seq_len steps
         lanes = max(1, args.batch // args.seq_len)
         data = Sequences(train, vocab, lanes, args.seq_len, values, costs, winners=args.winners_only,
                          max_minutes=args.max_minutes, prep=prep)
         states = torch.zeros(max(args.workers, 1) * lanes, args.d, device=device)
+        ref_states = torch.zeros_like(states) if ref is not None else None  # (the start's own lanes' states)
     else:
         data = Steps(train, vocab, args.batch, values, costs, winners=args.winners_only, max_minutes=args.max_minutes,
                      prep=prep)
-        states = None
+        states = ref_states = None
     val_batches = list(whole_sides(val, vocab, values, costs, winners=args.winners_only, max_minutes=args.max_minutes,
                                    prep=prep))
     print(f"{len(train)} training games, {len(val)} validation ({len(val_batches)} batches); "
           f"{enc.n_types} unit types, {enc.n_orders} order classes", flush=True)
-    if args.acting_only and init:  # (the start's validation: its rate of giving orders, which the fine-tune should keep)
-        net.eval()
+    start_val = None
+    if init and not args.fresh and (args.acting_only or hold or args.train_heads):  # (the start's validation: its rate
+        net.eval()                                                  # of giving orders, which the fine-tune should keep)
         with torch.no_grad():
             vs = torch.zeros(len(val_batches[0]["lane"]), args.d, device=device) if args.memory else None
-            va = summarize([losses(net, b, device, vs, args.value_coef, bool(args.avail_mask), acting_only=True)[1]
-                            for b in val_batches])
-        info["start_val"] = va
+            start_val = summarize([losses(net, b, device, vs, **{**kw, "ref": None})[1] for b in val_batches])
+        info["start_val"] = start_val
         (out / "bc.json").write_text(json.dumps(info, indent=1))
-        print(f"start: order acc {va['order_acc']:.3f} rate {va['order_rate_pred']:.3f} (people's "
-              f"{va['orders_per_unit_step']:.3f}) target {va['target_acc']:.3f}", flush=True)
+        print(f"start: order acc {start_val['order_acc']:.3f} rate {start_val['order_rate_pred']:.3f} (as played "
+              f"{start_val['order_rate_played']:.3f}; people's {start_val['orders_per_unit_step']:.3f}) target "
+              f"{start_val['target_acc']:.3f}", flush=True)
     t0 = time.time()
     total_batches = args.max_batches or None
     step = 0
@@ -910,7 +1010,7 @@ def main(argv: list[str] | None = None) -> int:
             if total_batches:  # cosine decay over the run
                 for pg in opt.param_groups:
                     pg["lr"] = args.lr * 0.5 * (1 + np.cos(np.pi * min(step / total_batches, 1.0)))
-            loss, st = losses(net, b, device, states, args.value_coef, bool(args.avail_mask), acting_only=args.acting_only)
+            loss, st = losses(net, b, device, states, ref_states=ref_states, **kw)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
@@ -919,8 +1019,10 @@ def main(argv: list[str] | None = None) -> int:
             n += 1
             step += 1
             if n % args.log_every == 0:  # (an epoch of whole games can take an hour: how far it is)
-                print(f"epoch {epoch}: {n} batches, {time.time() - t0:.0f} s, order loss "
-                      f"{summarize(train_stats[-args.log_every:])['loss_order']:.3f}", flush=True)
+                tr_ = summarize(train_stats[-args.log_every:])
+                print(f"epoch {epoch}: {n} batches, {time.time() - t0:.0f} s, order loss {tr_['loss_order']:.3f} "
+                      f"acc {tr_['order_acc']:.3f} rate {tr_['order_rate_played']:.3f}"
+                      + (f" kl act {tr_['kl_act']:.4f} all {tr_['kl_all']:.4f}" if ref is not None else ""), flush=True)
         if not train_stats:
             raise SystemExit("no batch in an epoch: with --memory each loader worker needs more game sides than lanes "
                              "(--batch / --seq-len); fewer --workers or a smaller --batch")
@@ -928,8 +1030,8 @@ def main(argv: list[str] | None = None) -> int:
         net.eval()
         with torch.no_grad():
             vs = torch.zeros(len(val_batches[0]["lane"]), args.d, device=device) if args.memory else None
-            val_stats = [losses(net, b, device, vs, args.value_coef, bool(args.avail_mask), acting_only=args.acting_only)[1]
-                         for b in val_batches]
+            vs_ref = torch.zeros_like(vs) if args.memory and ref is not None else None
+            val_stats = [losses(net, b, device, vs, ref_states=vs_ref, **kw)[1] for b in val_batches]
         tr, va = summarize(train_stats), summarize(val_stats)
         row = {"epoch": epoch, "time": time.time(), "seconds": round(time.time() - t0, 1),
                "lr": opt.param_groups[0]["lr"], "train_loss": tr["loss_order"] + tr["loss_target"] + 0.5 * tr["loss_point"],
@@ -937,13 +1039,21 @@ def main(argv: list[str] | None = None) -> int:
                "acc": {"order (given one)": va["order_acc"], "target": va["target_acc"],
                        "value (explained variance)": va["value_explained_variance"]},
                "val": va, "train": tr}
-        with open(out / "fit.jsonl", "a") as f:
-            f.write(json.dumps(row) + "\n")
         print(f"epoch {epoch}: train {row['train_loss']:.3f} val {row['val_loss']:.3f} | order acc "
-              f"{va['order_acc']:.3f} rate {va['order_rate_pred']:.3f} (actual {va['orders_per_unit_step']:.3f}) "
+              f"{va['order_acc']:.3f} rate {va['order_rate_played']:.3f} as played, {va['order_rate_pred']:.3f} "
+              f"without the type's table (actual {va['orders_per_unit_step']:.3f}) "
               f"target {va['target_acc']:.3f} point err {va['point_error_bins']:.1f} bins value ev "
               f"{va['value_explained_variance']:.3f} ({n} batches, "
               f"{time.time() - t0:.0f}s)", flush=True)
+        if start_val is not None:  # (the drift from the start: the rate as played, kept by --hold-start)
+            row["drift"] = {"rate": va["order_rate_pred"] - start_val["order_rate_pred"],
+                            "rate_played": va["order_rate_played"] - start_val["order_rate_played"]}
+            print(f"  drift from the start: rate {row['drift']['rate']:+.3f}, as played "
+                  f"{row['drift']['rate_played']:+.3f} ({start_val['order_rate_played']:.3f} -> "
+                  f"{va['order_rate_played']:.3f})" + (f"; KL act {va['kl_act']:.4f} all {va['kl_all']:.4f}"
+                                                       if ref is not None else ""), flush=True)
+        with open(out / "fit.jsonl", "a") as f:
+            f.write(json.dumps(row) + "\n")
         ck = {"model": net.state_dict(), "config": net.config, "vocab": vocab, "epoch": epoch, "val_loss": row["val_loss"],
               "value_reward": info["value_reward"]}
         torch.save(ck, out / "last.pt")
