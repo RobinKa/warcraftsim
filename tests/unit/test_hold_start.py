@@ -101,3 +101,30 @@ def test_train_heads_freezes_the_trunk():
             assert not p.requires_grad and not moved, name
     assert not torch.equal(before["order.2.weight"], after["order.2.weight"])
     assert any(n.startswith("transformer.") for n, _ in net.named_parameters())
+
+
+def test_hold_all_is_the_forward_all_anchor_kl():
+    """--hold-all's KL (the targets' terms over the units that use them only) equals model.anchor_kl's forward-all
+    over every own unit."""
+    from warcraftsim.fullgame import features as fx
+    from warcraftsim.fullgame.model import anchor_kl
+    net, ref = _net(0).eval(), _net(1).eval()
+    y = np.random.default_rng(4).integers(0, 12, (5, 6))
+    b = _batch(y, seed=5)
+    with torch.no_grad():
+        st = bc.losses(net, b, CPU, None, value_coef=0.0, ref=ref, hold_all=1.0)[1]
+        O = min(fx.MAX_OWN, y.shape[1])
+        args = (b["ent"], b["type"], b["cur"], b["mask"], b["glob"])
+        order, y_x = b["y_order"][:, :O].long(), b["y_x"][:, :O].long()
+        own = torch.arange(O)[None] < b["n_own"][:, None]
+        ev = {}
+        for k, m in (("net", net), ("ref", ref)):
+            g, u = m.encode(*args)
+            logits = m.order_logits(g, u[:, :O], b["type"], b["n_own"], by_type=False, avail=b["avail"])
+            ptr, xl, z = m.target_logits(g, u, b["mask"], order.clamp(min=0))
+            ev[k] = {"logits": bc.played(net, logits, b["type"][:, :O]), "ptr": ptr, "xl": xl,
+                     "yl": m.y_logits(z, y_x)}
+        ev["net"]["uses_ptr"] = ((b["y_ptr"][:, :O] >= 0) & own).float()
+        ev["net"]["uses_pt"] = ((y_x >= 0) & own).float()
+        want = (anchor_kl(ev["net"], ev["ref"], "forward-all") * own).sum() / own.sum()
+    assert st["kl_all"] > 0.01 and abs(st["kl_all"] - float(want)) < 1e-4

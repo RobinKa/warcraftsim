@@ -204,7 +204,7 @@ CPU smoke test (3 games, 4 batches of 32 from `fgself-158`'s 33539153): start ra
         --data runs/fullgame/demos-human-129-maps --name human-act-1 --epochs 2 --batch 256 --seq-len 16 \
         --lr 3e-5 --dropout 0.1 --val-pct 5 --workers 16 --log-every 500
 
-Read per epoch: `rate` stays near the start's (~0.93; `human-ft-1` learned people's), `order acc` given one against `human-ft-1`'s 0.703, target against its 0.562.
+Read per epoch: `rate` stays near the start's (~0.93; `human-ft-1` learned people's; but that rate is without the type's table: read the rate as played, "Held near the start" below), `order acc` given one against `human-ft-1`'s 0.703, target against its 0.562.
 
 **Check its play first** (a clone is checked in real games before it anchors anything): as an evaluation checkpoint of the running run, e.g. `fgself-162` relaunched with it added (`scripts/selfplay_restart.py fgself-162 --note "human-act-1 among the evaluation checkpoints" --set "eval-checkpoints=runs/fgself-158/checkpoints/0000000033539153.pt runs/bc/human-act-1/policy.pt runs/fgself-130/checkpoints/0000000005534555.pt"`, `--dry-run` first), then its wins against insane in `episodes.jsonl` (`eval_key`) and `scripts/scorecard.py fgself-162 --vs bc/human-act-1/policy` (workers, army, expansions, orders a game) against `fgself-158`'s in the same hours. Expected: near `fgself-158`'s record (it keeps the policy's rate); far below it means the fine-tune broke the play, and it should not anchor.
 
@@ -215,6 +215,42 @@ Read per epoch: `rate` stays near the start's (~0.93; `human-ft-1` learned peopl
         --set init=runs/bc/human-act-1/policy.pt --set ref-kl-mode=forward-acting --dry-run
 
 (`--weights runs/fgself-158/checkpoints/0000000033539153.pt` to start where `fgself-161` started; `--ref-kl 0.025` inherited.) Judge by `loss/ref_kl` (its start: the anchor descends from the start, but its orders given one differ), the win rate against insane at a person's income, head to head against the start, and the scorecard (expansions, upgrades, creeps, army mix).
+
+### Held near the start (`--hold-start`, `--hold-all`, `--train-heads`, `--z-extras`; 2026-10-27)
+
+`human-act-1` (above, 2 epochs at 3e-5) learned people's orders given one (accuracy 0.020 to 0.727) but won 0 of 36 real games against insane (`fgself-158`: ~70%). Two things broke it besides what it learned:
+
+* **Its strategy inputs.** `zero_z_extras` zeroed the weights of the strategy block's modes' and mix parts (glob.0.weight's columns 208-292: norm 3.80 to 0) because they were meant for clones of `fgself-100`, whose network had no such parts (`load` grows them as zeros anyway). `fgself-158` learned them (`--z-mix 1`, `--z-modes 0.15`), so `human-act-1` and `human-ft-1` played blind to their targets' modes and army mix. Now `--z-extras auto` (the default) keeps `--init`'s weights when its own network has the parts and zeros them otherwise, as before.
+* **Its rate of giving orders, read the wrong way.** The `rate` printed so far was the chance of an order *without* the unit type's table of orders. The RL policy keeps most of that mass on orders its table rules out (RL never moves masked logits), so playing renormalizes onto "none". On people's states, `fgself-158` as played gives an order in 12-35% of a unit's steps, not 93%. Validation now prints both, `rate ... as played` (the table applied, as `model.order_logits(by_type=True)`), and a `drift from the start` line (`fit.jsonl` `"drift"`). On one held-out game, `human-act-1`'s rate as played is 0.294 against `fgself-158`'s 0.122: 2.4 times as many orders, although the unmasked rate fell (0.883 to 0.406).
+
+The switches (the start network frozen in eval mode, its own memory states; `bc.losses`):
+
+* **`--hold-start β`**: β times KL(start ‖ network) of the act/no-act decision of every own unit, labelled or not, on the demonstrations' states. It is a Bernoulli on P(none) of the orders as played (`bc.act_kl`). "none" gets a gradient only from this term (`--acting-only` gives it none).
+* **`--hold-all β2`**: β2 times the forward KL from the start over every head: the orders as played, plus the target unit, x and y (given the label's order and x) for the units that got one. It is self-play's `forward-all` anchor (`model.anchor_kl`; a test checks they agree), with the targets' terms computed over the labelled units only (a whole game's validation batch over all of them ran out of memory).
+* **`--train-heads`**: only the heads train (`bc.HEADS`: the order, target and point heads and the value head, 0.73 of 3.24 million parameters); the encoders, transformer and memory core stay frozen. The order head's hidden layer still moves the rate, so use it with `--hold-start`.
+
+**CPU smoke test** (2026-10-27; 2 training games, 1 held out, 60 batches of 32, `--lr 3e-4` (10 times the GPU's), `--dropout 0 --value-coef 0 --workers 0`, under 3 GB; start: rate as played 0.122, order accuracy given one 0.043, people's rate 0.043):
+
+| switches | rate as played | drift | order acc given one | KL act (val) |
+|---|---|---|---|---|
+| `--acting-only` | 0.360 | +0.238 | 0.512 | |
+| `--hold-start 10` | 0.111 | -0.011 | 0.415 | 0.082 |
+| `--hold-start 100` | 0.102 | -0.020 | 0.270 | 0.039 |
+| `--train-heads --hold-start 100` | 0.116 | -0.007 | 0.200 | 0.006 |
+| `--hold-start 100 --hold-all 1` | 0.102 | -0.020 | 0.264 | 0.039 (all 0.100) |
+
+On 6 other games `--hold-start 10` drifted -0.072 (KL act 0.20): β 100 is the safer choice. The holds learn the orders more slowly; at the GPU's lr over 2 epochs the accuracy should keep rising.
+
+**Run it** (the GPU, when it is free; `--dropout 0`: the RL policy trained without dropout; `--value-coef 0`: an anchor's value is unused, and the value loss moves the shared trunk):
+
+    .venv/bin/python -m warcraftsim.fullgame.bc --like-run runs/fgself-158 \
+        --init runs/fgself-158/checkpoints/0000000033539153.pt --acting-only --hold-start 100 \
+        --data runs/fullgame/demos-human-129-maps --name human-hold-1 --epochs 2 --batch 256 --seq-len 16 \
+        --lr 3e-5 --dropout 0 --value-coef 0 --val-pct 5 --workers 16 --log-every 500
+
+(or with `--train-heads` added, as `human-heads-1`, for the trunk left exactly as RL left it; `--hold-all 1` for a trust region over the targets too). Read per epoch: `drift ... as played` within ~0.02 of the start's, and `order acc` rising towards `human-act-1`'s 0.727.
+
+**Before using it anywhere** (as an anchor or a teacher): check its play in the real game. Add it to a running run's `--eval-checkpoints` (as for `human-act-1` above) and compare its wins against insane at a person's income (`episodes.jsonl`, `eval_key`) and `scripts/scorecard.py <run> --vs bc/human-hold-1/policy` (orders a game, workers, army, expansions) with `fgself-158`'s in the same hours. It should be near `fgself-158`'s ~70%. Far below that means the orders given one, learned from people's sparse clicks, break play at the policy's own rate: people click when something changes, while the policy decides for every unit every 0.5 s. In that case it should not anchor.
 
 ## Other versions
 

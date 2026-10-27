@@ -618,17 +618,17 @@ def losses(net: FullGameNet, b: dict, device, states: torch.Tensor | None = None
         n_u = units.sum().clamp(min=1)
         k_act = (act_kl(play_r, play) * units).sum() / n_u
         k_all = k_act * 0
-        if hold_all:
-            from .model import anchor_kl
-            with torch.no_grad():
+        if hold_all:  # (model.anchor_kl's forward-all, the targets' terms over the units that use them only: a whole
+            with torch.no_grad():  # game's validation batch of [N, O, bins] log-softmaxes is gigabytes)
                 ptr_r, xl_r, z_r = ref.target_logits(g_r, u_r, mask, y_order.clamp(min=0))
-                ev_r = {"logits": play_r, "ptr": ptr_r, "xl": xl_r, "yl": ref.y_logits(z_r, y_x)}
-                if y_f is not None and fine_head(ref):
-                    ev_r["fl"] = ref.fine_logits(z_r, y_x, y_y)
-            ev = {"logits": play, "ptr": ptr, "xl": xl, "yl": yl, "uses_ptr": has_ptr.float(), "uses_pt": has_pt.float()}
-            if "fl" in ev_r:
-                ev["fl"] = net.fine_logits(z, y_x, y_y)
-            k_all = (anchor_kl(ev, ev_r, "forward-all") * units).sum() / n_u
+                ptr_r, xl_r, z_r = ptr_r[has_ptr], xl_r[has_pt], z_r[has_pt]
+                yl_r = ref.y_logits(z_r, y_x[has_pt])
+                fl_r = (ref.fine_logits(z_r, y_x[has_pt], y_y[has_pt]) if y_f is not None and fine_head(ref)
+                        else None)
+            k_t = kl_rows(ptr_r, ptr[has_ptr]).sum() + (kl_rows(xl_r, xl[has_pt]) + kl_rows(yl_r, yl[has_pt])).sum()
+            if fl_r is not None:
+                k_t = k_t + kl_rows(fl_r, net.fine_logits(z[has_pt], y_x[has_pt], y_y[has_pt])).sum()
+            k_all = ((kl_rows(play_r, play) * units).sum() + k_t) / n_u
         l_hold = hold_start * k_act + hold_all * k_all
         hold = {"hold_n": 1, "kl_act": float(k_act.detach()), "kl_all": float(k_all.detach())}
     with torch.no_grad():
@@ -665,7 +665,13 @@ def act_kl(ref_logits: torch.Tensor, logits: torch.Tensor) -> torch.Tensor:
     return q0.exp() * (q0 - p0) + q1.exp() * (q1 - p1)
 
 
-HEADS = ("order.", "order_emb.", "cond.", "query.", "key.", "point_x.", "x_emb.", "point_y.", "fine_x.", "fine_y.",
+def kl_rows(ref_logits: torch.Tensor, logits: torch.Tensor) -> torch.Tensor:
+    """KL(softmax ref || softmax current) over the last axis (model.anchor_kl's)."""
+    lq, lp = torch.log_softmax(ref_logits.float(), -1), torch.log_softmax(logits.float(), -1)
+    return (lq.exp() * (lq - lp)).sum(-1)
+
+
+HEADS = ("order.","order_emb.", "cond.", "query.", "key.", "point_x.", "x_emb.", "point_y.", "fine_x.", "fine_y.",
          "point_f.", "value_head.", "priv_proj.")  # (--train-heads: the parameters after the trunk)
 
 
@@ -828,7 +834,7 @@ def main(argv: list[str] | None = None) -> int:
                     "of giving orders (people's: ~5%% of a unit's steps) and learns what people order; targets as before")
     ap.add_argument("--hold-start", type=float, default=0.0, help="with --init: this times KL(start || network) of "
                     "the act/no-act decision per own unit on the demonstrations' states (Bernoulli on P(none), the "
-                    "start network frozen): a fine-tune keeps its start's rate of giving orders (e.g. 1-10)")
+                    "start network frozen): a fine-tune keeps its start's rate of giving orders (100: within ~0.02)")
     ap.add_argument("--hold-all", type=float, default=0.0, help="with --init: this times the forward KL from the start "
                     "over every head (the orders, and the target unit and point given the label's order; self-play's "
                     "forward-all anchor) on the demonstrations' states: a trust region around the start")
