@@ -25,6 +25,8 @@ Most fixes this week treated symptoms: a lesson, a mask or a bug fix for each ha
 
 **Cost.** Days: replay playback on more maps, a cloning run, a new anchor. AlphaStar's recipe ([ideas from AlphaStar](../reference/ideas-from-alphastar-and-openai-five.md)).
 
+**Status (2026-10-27).** Ready to run on the GPU: `bc.py --like-run` clones people's games on several maps into a network a run takes as `--init` (each game turned level in its own frame, its own targets as the strategy input, right clicks resolved, labels the run can't give left out); a CPU smoke test passed. The command, the evaluation and the risks: [cloning people](../reference/human-replays.md#cloning-people-the-anchor-to-be).
+
 ## 2. Train the late game directly
 
 **Problem.** Training games are short, so mines running dry, tier 2-3 armies and upgrades are rarely trained, and a long game spends many steps for one late outcome.
