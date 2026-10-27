@@ -1862,6 +1862,10 @@ Replay data (2026-10-26): only 1.29 replays play back in our client (1.26/1.28 f
 
 **`fgself-159`, stopped unjudged** (11:35): its oversaturation lesson moved the policy in the warm-up (KL 0.07-0.16); against insane 33% of 44, ~36 points below its start. **`fgself-160`** (11:36): the same lesson alone from the same start (`fgself-158`'s 33539153, its league), under the label fix.
 
+**`fgself-160`, not kept** (13:20, ~170 games a policy): with the labels off in the warm-up its updates stayed small (KL 0.0001-0.0015 in the first 14), yet the oversaturation lesson still cost strength: against insane -17.6 points below its start with the races weighed alike (human 17% to 50%, orc 37% to 81%), 40.9% of 192 head to head. The lesson itself hurts (a label still weighs 9-140x a PPO decision); oversaturation is to be handled by a mask instead (no gold harvest to a mine with five workers), as every mask so far helped and every new lesson hurt.
+
+**The human anchor** (13:25): `bc.py --like-run runs/fgself-158` on 554 converted 1.29 replays on six stock maps (`runs/fullgame/demos-human-129-maps`, 520 training games, 35 held out), 12 epochs, into `runs/bc/human-anchor-1/`: the first clone of people's play shaped like the RL runs' network, to become their KL anchor.
+
 The queue:
 1. (done: in `fgself-155`) The audit-12 economy fixes: a training map whose mines and start scale with its costs (`echofast2`), workers labelled up to the target's count, masks against duplicate tech buildings and surplus workers, orc burrow and no-target lumber lessons.
 2. Cloning the scripted strategy family as anchor and teacher (AlphaStar's recipe with scripted data). First tune its weak plans, and add night elf and undead expansion plans. Then record thousands of echofast games (`scripts/heuristic_match.py --record`), train a cloning policy, and use it as the KL anchor and a distillation teacher.
