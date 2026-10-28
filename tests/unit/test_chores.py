@@ -152,3 +152,31 @@ def test_militia_lesson():
     assert taught(_base(extra=[_unit(9, 1, -1200, 0, "hfoo", vis=1)])) == []  # (an enemy near: they fight)
     assert taught(_base(militia=False)) == []
     assert taught(_base(), on=False) == []
+
+
+def test_burrow_mask_and_stand_down():
+    """--econ-masks 128: battle stations only with a seen enemy near a hall or burrow; a burrow holding peons stands down
+    once no seen enemy has been near it for BURROW_SAFE_STEPS steps."""
+    import numpy as np
+    from warcraftsim.fullgame import features as fx
+    fx.set_econ_masks(128)
+    try:
+        assert fx.BURROW_MASK
+        r = np.zeros((3, fx.ROW_COLS), np.int64)
+        r[0, [fx.C_ID, fx.C_TYPE, fx.C_FLAGS]] = 1, fx.BURROW_T, fx.STRUCTURE
+        r[1, [fx.C_ID, fx.C_TYPE, fx.C_FLAGS, fx.C_X]] = 2, fx.PEON_T, fx.LOADED_FLAG, 50
+        r[2, [fx.C_ID, fx.C_TYPE, fx.C_OWNER, fx.C_X]] = 3, int.from_bytes(b"hfoo", "big"), 1, 6000
+        r[2, fx.C_VIS] = 1
+        from types import SimpleNamespace
+        from warcraftsim.fullgame.play import BCAgent
+        bot = SimpleNamespace(view=SimpleNamespace(burrows_safe={1}, races=[1, 0]), player=0, t=0)
+        bot.__dict__.update({})
+        out = BCAgent._stand_down(bot, r)
+        assert out == []  # (safe only from now)
+        bot.t = fx.BURROW_SAFE_STEPS
+        out = BCAgent._stand_down(bot, r)
+        assert len(out) == 1 and out[0].order == fx.STANDDOWN and out[0].unit == 1
+        bot.t += 1
+        assert BCAgent._stand_down(bot, r) == []  # (not again at once)
+    finally:
+        fx.set_econ_masks(0)

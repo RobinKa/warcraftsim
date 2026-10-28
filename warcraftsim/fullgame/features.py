@@ -432,6 +432,14 @@ LEAN_REST = {"nightelf": 10}
 DETONATE_MASK = int(os.environ.get("WARCRAFTSIM_ECON_MASK", "0") or 0) & 8 > 0
 REPAIR_MASK = int(os.environ.get("WARCRAFTSIM_ECON_MASK", "0") or 0) & 16 > 0
 MILITIA_MASK = int(os.environ.get("WARCRAFTSIM_ECON_MASK", "0") or 0) & 32 > 0
+# 128: orc's burrows: battle stations only while an enemy unit it sees is within MILITIA_NEAR of a hall or burrow of its,
+#      and play.BCAgent stands a burrow down with peons inside once no enemy it sees has been near it for BURROW_SAFE_STEPS
+#      (fgself-163's orc: orders to peons inside burrows 14 -> 95 a game over its training, gold a minute 561 -> 516 with
+#      more peons, against insane 88% -> 56%)
+BURROW_MASK = int(os.environ.get("WARCRAFTSIM_ECON_MASK", "0") or 0) & 128 > 0
+BATTLESTATIONS, STANDDOWN, BURROW_SAFE_STEPS = 852099, 852113, 20
+ORC_HALLS = tuple(int.from_bytes(c.encode(), "big") for c in ("ogre", "ostr", "ofrt"))
+BURROW_T, PEON_T, LOADED_FLAG = int.from_bytes(b"otrb", "big"), int.from_bytes(b"opeo", "big"), 32
 DETONATE_NEAR, REPAIR_BELOW, UNDER_ATTACK_NEAR, MILITIA_NEAR = 800.0, 0.7, 900.0, 1500.0
 DETONATE, REPAIR = 852145, 852024
 # human's militia orders (tested 2026-10-26 in real games, scripts/militia_probe.py): a peasant's own call to arms
@@ -499,8 +507,9 @@ def set_econ_masks(v) -> None:
     altar would take now keeps its revival's gold from the player's other paid orders, View.step), bit 4 night elf's
     lower worker allowance (NE_LEAN), bits 8, 16, 32 the Detonate, repair and call to arms masks (View.chores), bit 64
     the orders the game refuses (FUTILE_MASK: View.futile; model.prune_allowed's morphed forms)."""
-    global ECON_MASK, REVIVE_RESERVE, NE_LEAN, DETONATE_MASK, REPAIR_MASK, MILITIA_MASK, FUTILE_MASK
+    global ECON_MASK, REVIVE_RESERVE, NE_LEAN, DETONATE_MASK, REPAIR_MASK, MILITIA_MASK, FUTILE_MASK, BURROW_MASK
     v = int(v or 0)
+    BURROW_MASK = bool(v & 128)  # (bit 128: orc's burrows, View.chores and play.BCAgent)
     ECON_MASK, REVIVE_RESERVE, NE_LEAN = bool(v & 1), bool(v & 2), bool(v & 4)
     DETONATE_MASK, REPAIR_MASK, MILITIA_MASK, FUTILE_MASK = bool(v & 8), bool(v & 16), bool(v & 32), bool(v & 64)
     os.environ["WARCRAFTSIM_ECON_MASK"] = str(v)
@@ -1545,6 +1554,12 @@ class View:
             mask(((TOWNBELL_ON, IMMEDIATE), (MILITIA_CONVERT, UNIT), (MILITIA_CALL, IMMEDIATE)),
                  bool(near(halls, MILITIA_NEAR).any()))
             mask(((TOWNBELL_OFF, IMMEDIATE), (MILITIA_UNCONVERT, UNIT), (MILITIA_OFF, IMMEDIATE)), militia)
+        if BURROW_MASK and race == "orc":
+            of = own[:, C_FLAGS]
+            burrows = own[(own[:, C_TYPE] == BURROW_T) & (of & CONSTRUCTING == 0)]
+            halls = own[np.isin(own[:, C_TYPE], ORC_HALLS) & (of & CONSTRUCTING == 0)]
+            mask(((BATTLESTATIONS, IMMEDIATE),), bool(near(np.concatenate([burrows, halls]), MILITIA_NEAR).any()))
+            self.burrows_safe = set(burrows[~near(burrows, MILITIA_NEAR), C_ID].tolist())  # (play.BCAgent's stand-down)
 
     def futile(self, rows: np.ndarray, avail: np.ndarray, t: int) -> None:
         """--econ-masks bit 64 (FUTILE_MASK): the orders no unit of the player's can give now with the game taking it,
@@ -1814,7 +1829,7 @@ class View:
                           else self.tech_allowed(rows, built, own_hero, dead))
         if avail is not None and ECON_MASK:  # (--econ-masks: no idle tech building's copy, no worker past the mines')
             avail &= self.econ_allowed(rows)
-        if avail is not None and (DETONATE_MASK or REPAIR_MASK or MILITIA_MASK):  # (--econ-masks bits 8-32: chores)
+        if avail is not None and (DETONATE_MASK or REPAIR_MASK or MILITIA_MASK or BURROW_MASK):  # (bits 8-32, 128: chores)
             self.chores(rows, avail)
         if avail is not None and FUTILE_MASK:  # (--econ-masks bit 64: orders the game refuses)
             self.futile(rows, avail, t)

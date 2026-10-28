@@ -2494,7 +2494,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"noop_repairs": bots[side].noop_repairs} if side in bots and getattr(bots[side], "noop_repairs", 0) else {}),
         **({"frame_cancels": bots[side].frame_cancels} if side in bots and getattr(bots[side], "frame_cancels", 0) else {}),
         **({"futile_orders": bots[side].futile_orders} if side in bots and getattr(bots[side], "futile_orders", 0) else {}),
-        **({k: getattr(bots[side], k) for k in ("militia_back", "militia_skipped") if getattr(bots[side], k, 0)}
+        **({k: getattr(bots[side], k) for k in ("militia_back", "militia_skipped", "stood_down_n") if getattr(bots[side], k, 0)}
            if side in bots else {}),
         **({"over_budget": bots[side].over_budget} if side in bots and getattr(bots[side], "over_budget", 0) else {}),
         **{k: getattr(bots[side], k) for k in ("full_queue", "upgrading_refused", "loaded_orders", "frame_orders")

@@ -506,6 +506,8 @@ class BCAgent:
             out += self._entangle(self.rows)  # (--macros: the expansion's mine; the policy has no entangle order)
         if fx.MACROS >= 3 and getattr(self, "rows", None) is not None:
             out += self._auto_skills(self.rows, out)  # (--macros 3: a skill point the policy left unspent)
+        if fx.BURROW_MASK and fx.RACES[self.view.races[self.player]] == "orc" and getattr(self, "rows", None) is not None:
+            out += self._stand_down(self.rows)  # (--econ-masks 128: peons back to work once the burrow is safe)
         self.sent_resources += [None] * (len(out) - len(self.sent_resources))
         self.issued += len(out)
         return out
@@ -679,6 +681,34 @@ class BCAgent:
             got = memo[1][(want, mined)] = [(j, v[0], v[1], v[2], self._miner_ids(sel, j) if mined else None)
                                             for j, v in zip(js, vals)]
         return got
+
+    def _stand_down(self, rows: np.ndarray) -> list:
+        """--econ-masks bit 128: each finished burrow of the player's holding peons (the burrow nearest a loaded peon)
+        that no enemy unit it sees has come within fx.MILITIA_NEAR of for fx.BURROW_SAFE_STEPS steps stands down (its
+        peons back to work; View.chores keeps the safe ones, burrows_safe)."""
+        safe = getattr(self.view, "burrows_safe", set())
+        since = self.__dict__.setdefault("burrow_safe_since", {})
+        for b in list(since):
+            if b not in safe:
+                del since[b]
+        for b in safe:
+            since.setdefault(b, self.t)
+        own = rows[(rows[:, fx.C_OWNER] == self.player) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0)]
+        loaded = own[(own[:, fx.C_TYPE] == fx.PEON_T) & (own[:, fx.C_FLAGS] & fx.LOADED_FLAG > 0)]
+        burrows = own[np.isin(own[:, fx.C_ID], list(safe))]
+        if not len(loaded) or not len(burrows):
+            return []
+        bx, by = burrows[:, fx.C_X].astype(np.float64), burrows[:, fx.C_Y].astype(np.float64)
+        full = {int(burrows[int(np.argmin((bx - x) ** 2 + (by - y) ** 2)), fx.C_ID])
+                for x, y in loaded[:, [fx.C_X, fx.C_Y]].tolist()}
+        last = self.__dict__.setdefault("stood_down", {})
+        out = []
+        for b in sorted(full):
+            if self.t - since.get(b, self.t) >= fx.BURROW_SAFE_STEPS and self.t - last.get(b, -10 ** 9) >= fx.BURROW_SAFE_STEPS:
+                last[b] = self.t
+                out.append(ImmediateOrder(b, fx.STANDDOWN))
+        self.stood_down_n = getattr(self, "stood_down_n", 0) + len(out)
+        return out
 
     def _refusal(self, c, key: str, rows: np.ndarray) -> list:
         """A refused order's context: [its kind, the unit's type, flags and current order, the target's type, whose
