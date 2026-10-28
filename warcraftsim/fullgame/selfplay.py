@@ -2197,6 +2197,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                                 strategy=zs[s]["strategy"])
                 hteach[s].begin(obs)
     zphi = {s: 0.0 for s in zs}  # their strategy potentials at the last recorded step
+    zdecided: dict[int, float] = {}  # (--z-decided: each side's strategy potential when its win was decided)
     # the built-in AI advises the learner's sides (opp["advise"]): its orders label their steps
     advised = [s for s in trajs if keys[s] == "current"] if opp.get("advise") else []
     for s in advised:
@@ -2415,6 +2416,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                         z_new -= cfg.get("z_mix_reward", 0.0) * strat.mix_gap(prod.trained[s], zs[s])
                     r_z = fade * (cfg["gamma"] * z_new - zphi[s])
                     zphi[s] = z_new
+                    dec = cfg.get("z_decided", 0.0)  # (the opponent down to this share of the side's material: the
+                    if dec > 0 and s not in zdecided and mat[1 - s] < dec * mat[s]:  # win decided, its potential kept)
+                        zdecided[s] = z_new
                 if tr.steps and "rparts" in tr.steps[-1]:
                     tr.steps[-1]["rparts"][1:] += (r, r_z)
                 r += r_z
@@ -2436,7 +2440,11 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                     else cfg.get("tie_value", 0.0) + cfg["tie_break"] * math.tanh(2.0 * lead[s]))
         fade = cfg["shaping_decay"] ** (obs.game_time / 600.0) if cfg.get("shaping_decay", 0.0) > 0 else 1.0
         last = terminal - fade * shaping * phi.get(s, 0.0)
-        tr.end(last, (terminal, -fade * shaping * phi.get(s, 0.0), 0.0))
+        z_back = 0.0
+        if outcome[s] > 0 and s in zdecided and s in zphi:  # (--z-decided: a win's strategy potential as when it was
+            z_back = fade * (zdecided[s] - zphi[s])  # decided: target items made while the beaten side was kept alive
+            last += z_back  # earned nothing; fgself-161's learner left undead's last mine ~170 s, making overdue items)
+        tr.end(last, (terminal, -fade * shaping * phi.get(s, 0.0), z_back))
         ret[s] += last
         if record and trace:
             trace[-1].setdefault("reward", {})[str(s)] = round(last, 4)
@@ -3987,6 +3995,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--burrow-lesson", type=int, default=0, help="1: orc's burrow stand-down lesson (--teach 4's) without "
                     "--teach 4's lumber lesson in every game (audit 16: games with 200+ orders to peons inside burrows won "
                     "0 of 69)")
+    ap.add_argument("--z-decided", type=float, default=0.0, help="a won game's strategy potential (the target reward) "
+                    "taken as when the opponent's material first fell below this share of the side's (0: off; e.g. 0.15): "
+                    "target items made while a beaten opponent is kept alive earn nothing (the user saw night elf leave "
+                    "undead's last mine alone while it finished target items)")
     ap.add_argument("--saturation-lesson", type=int, default=0, help="1: the lumber lesson (--teach 3) also whenever "
                     "a side has more workers than its finished halls' mines take (teacher.SATURATED each), not chopping "
                     "nor building: one is sent to chop (the user saw human's peasants queue at the mine)")
@@ -4677,7 +4689,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "eval_ai": [d for d in args.eval_ai.split(",") if d],
