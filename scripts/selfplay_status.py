@@ -25,8 +25,14 @@ def main(name: str, window: float = 1800.0) -> None:
     alive = subprocess.run(["pgrep", "-f", f"selfplay --name {name}( |$)"], capture_output=True, text=True).stdout.split()
     log = run.parent / f"{name}.log"
     tracebacks = log.read_text(errors="replace").count("Traceback") if log.exists() else 0
-    rows = [json.loads(line) for line in open(run / "train.jsonl")]
-    eps = [json.loads(line) for line in open(run / "episodes.jsonl")]
+    def lines(path):  # (a line a machine reset left half written: skipped)
+        for line in open(path, errors="replace"):
+            try:
+                yield json.loads(line)
+            except ValueError:
+                pass
+    rows = list(lines(run / "train.jsonl"))
+    eps = list(lines(run / "episodes.jsonl"))
     now, r = time.time(), rows[-1]
     recent = [x for x in rows if x["time"] > now - window] or rows[-5:]
     print(f"alive: {bool(alive)}  tracebacks: {tracebacks}  steps {r['agent_steps'] / 1e6:.2f}M  "

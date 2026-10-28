@@ -1223,6 +1223,14 @@ def spells_cast(results: dict) -> dict:
     return out
 
 
+def _json_or_none(line: str):
+    """A JSON line, or None for one a machine reset left unfinished (NUL bytes, cut short)."""
+    try:
+        return json.loads(line)
+    except ValueError:
+        return None
+
+
 def label_weight(update: int, warmup: int, ramp: int) -> float:
     """The lessons' (and the advisor's) labels' weight in an update: none in the value warm-up, whose updates have no
     policy gradient to answer them (a fork's first updates had moved the policy by the labels alone: KL 0.07-0.16 from
@@ -3795,8 +3803,16 @@ def save_checkpoint(path: Path, net: FullGameNet, opt, vocab: dict, agent_steps:
     for obj, dest in (({"model": net.state_dict(), "config": net.config, "vocab": vocab, "agent_steps": agent_steps,
                         "update": update}, path), (opt.state_dict(), path.with_suffix(".adam"))):
         tmp = dest.with_name(dest.name + ".tmp")  # (whole or not at all: a learner stopped while saving left a
-        torch.save(obj, tmp)                       # truncated checkpoint, and the resume failed on it)
-        os.replace(tmp, dest)
+        with open(tmp, "wb") as fh:                # truncated checkpoint, and the resume failed on it)
+            torch.save(obj, fh)
+            fh.flush()
+            os.fsync(fh.fileno())  # (on disk before the rename: a machine reset at 11:13 on 2026-10-28 left the
+        os.replace(tmp, dest)      # renamed newest checkpoint and its Adam state empty, 0 bytes)
+    dfd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(dfd)  # (the renames themselves)
+    finally:
+        os.close(dfd)
     for old in sorted(path.parent.glob("[0-9]*.adam"))[:-keep_opt]:
         old.unlink(missing_ok=True)
 
@@ -4552,7 +4568,8 @@ def main(argv: list[str] | None = None) -> int:
     resumed = None
     if args.resume and (run_dir / "run.json").exists():  # the run goes on: its weights, league and counts
         old = json.loads((run_dir / "run.json").read_text())
-        rows = [json.loads(line) for line in open(run_dir / "train.jsonl")] if (run_dir / "train.jsonl").exists() else []
+        rows = [r for r in map(_json_or_none, open(run_dir / "train.jsonl", errors="replace")) if r is not None] \
+            if (run_dir / "train.jsonl").exists() else []  # (a line a machine reset left half written: skipped)
         cks = sorted((run_dir / "checkpoints").glob("[0-9]*.pt"))
         # --resume-weights: an earlier checkpoint's weights instead (a roll back; the counts and league go on)
         src = args.resume_weights if args.resume_weights else (cks[-1] if cks else None)
