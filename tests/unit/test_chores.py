@@ -16,12 +16,14 @@ def code(s: str) -> int:
     return int.from_bytes(s.encode(), "big")
 
 
-VOCAB = {"types": [code(c) for c in ("hpea", "hmil", "htow", "ngol", "hfoo", "ewsp", "etol", "hbar", "hwat")],
+VOCAB = {"types": [code(c) for c in ("hpea", "hmil", "htow", "ngol", "hfoo", "ewsp", "etol", "hbar", "hwat", "ogre", "otrb",
+                                       "opeo")],
          "current_orders": [], "upgrades": [],
          "orders": [[fx.MILITIA_UNCONVERT, fx.UNIT], [fx.HARVEST, fx.UNIT], [fx.MILITIA_CONVERT, fx.UNIT],
                     [fx.TOWNBELL_OFF, fx.IMMEDIATE], [fx.TOWNBELL_ON, fx.IMMEDIATE], [fx.REPAIR, fx.UNIT],
-                    [fx.DETONATE, fx.POINT], [fx.DETONATE, fx.UNIT]]}
-UNCONVERT, HARVEST, CONVERT, BELL_OFF, BELL_ON, REPAIR, DET_P, DET_U = range(1, 9)
+                    [fx.DETONATE, fx.POINT], [fx.DETONATE, fx.UNIT], [fx.BATTLESTATIONS, fx.IMMEDIATE],
+                    [fx.BOARD, fx.UNIT]]}
+UNCONVERT, HARVEST, CONVERT, BELL_OFF, BELL_ON, REPAIR, DET_P, DET_U, STATIONS, BOARD = range(1, 11)
 
 
 def _unit(i: int, owner: int, x: int, y: int, typ: str, flags: int = 0, vis: int = 3, hp: int = 400) -> np.ndarray:
@@ -110,6 +112,23 @@ def test_call_to_arms_mask(bits):
     bits(0)
     av, _ = _avail(_base(militia=False))
     assert av[BELL_ON] and av[BELL_OFF]  # (off: as before)
+
+
+def test_burrow_orders_mask(bits):
+    """--econ-masks 128: battle stations and a peon's board onto a burrow only with a seen enemy near a hall or burrow
+    (audit 19)."""
+    bits(128)
+    orc = [_unit(1, 0, -2000, 0, "ogre", fx.STRUCTURE), _unit(2, 0, -1700, 0, "otrb", fx.STRUCTURE),
+           _unit(4, 0, -2000, 300, "opeo", fx.WORKER), _unit(7, 15, -2000, 700, "ngol", fx.STRUCTURE)]
+    av, _ = _avail(np.stack(orc), race=1)
+    assert not av[STATIONS] and not av[BOARD]
+    av, _ = _avail(np.stack(orc + [_unit(9, 1, -500, 0, "hfoo", vis=1)]), race=1)  # (seen within 1500 of the burrow)
+    assert av[STATIONS] and av[BOARD]
+    av, _ = _avail(np.stack(orc + [_unit(9, 1, -500, 0, "hfoo", vis=2)]), race=1)  # (unseen)
+    assert not av[STATIONS] and not av[BOARD]
+    bits(0)
+    av, _ = _avail(np.stack(orc), race=1)
+    assert av[STATIONS] and av[BOARD]
 
 
 def test_repair_mask(bits):

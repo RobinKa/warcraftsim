@@ -435,9 +435,10 @@ MILITIA_MASK = int(os.environ.get("WARCRAFTSIM_ECON_MASK", "0") or 0) & 32 > 0
 # 128: orc's burrows: battle stations only while an enemy unit it sees is within MILITIA_NEAR of a hall or burrow of its,
 #      and play.BCAgent stands a burrow down with peons inside once no enemy it sees has been near it for BURROW_SAFE_STEPS
 #      (fgself-163's orc: orders to peons inside burrows 14 -> 95 a game over its training, gold a minute 561 -> 516 with
-#      more peons, against insane 88% -> 56%)
+#      more peons, against insane 88% -> 56%); a peon's own board onto a burrow likewise (audit 19: the mask on battle
+#      stations alone left fgself-164's orc 35-42% without a target, its peons still boarding by themselves)
 BURROW_MASK = int(os.environ.get("WARCRAFTSIM_ECON_MASK", "0") or 0) & 128 > 0
-BATTLESTATIONS, STANDDOWN, BURROW_SAFE_STEPS = 852099, 852113, 20
+BATTLESTATIONS, STANDDOWN, BOARD, BURROW_SAFE_STEPS = 852099, 852113, 852043, 20
 ORC_HALLS = tuple(int.from_bytes(c.encode(), "big") for c in ("ogre", "ostr", "ofrt"))
 BURROW_T, PEON_T, LOADED_FLAG = int.from_bytes(b"otrb", "big"), int.from_bytes(b"opeo", "big"), 32
 DETONATE_NEAR, REPAIR_BELOW, UNDER_ATTACK_NEAR, MILITIA_NEAR = 800.0, 0.7, 900.0, 1500.0
@@ -1558,7 +1559,8 @@ class View:
             of = own[:, C_FLAGS]
             burrows = own[(own[:, C_TYPE] == BURROW_T) & (of & CONSTRUCTING == 0)]
             halls = own[np.isin(own[:, C_TYPE], ORC_HALLS) & (of & CONSTRUCTING == 0)]
-            mask(((BATTLESTATIONS, IMMEDIATE),), bool(near(np.concatenate([burrows, halls]), MILITIA_NEAR).any()))
+            mask(((BATTLESTATIONS, IMMEDIATE), (BOARD, UNIT)),
+                 bool(near(np.concatenate([burrows, halls]), MILITIA_NEAR).any()))
             self.burrows_safe = set(burrows[~near(burrows, MILITIA_NEAR), C_ID].tolist())  # (play.BCAgent's stand-down)
 
     def futile(self, rows: np.ndarray, avail: np.ndarray, t: int) -> None:
