@@ -984,8 +984,10 @@ def main(argv: list[str] | None = None) -> int:
         data = Steps(train, vocab, args.batch, values, costs, winners=args.winners_only, max_minutes=args.max_minutes,
                      prep=prep)
         states = ref_states = None
-    val_batches = list(whole_sides(val, vocab, values, costs, winners=args.winners_only, max_minutes=args.max_minutes,
-                                   prep=prep))
+    held = bool(getattr(args, "hold_start", 0.0) or getattr(args, "hold_all", 0.0))
+    val_batches = list(whole_sides(val, vocab, values, costs, sides=2 if held else 4, winners=args.winners_only,
+                                   max_minutes=args.max_minutes, prep=prep))  # (with --hold-*: the start network beside
+    # it on the GPU, 4 whole sides a batch ran out of memory in the first validation: human-hold-1)
     print(f"{len(train)} training games, {len(val)} validation ({len(val_batches)} batches); "
           f"{enc.n_types} unit types, {enc.n_orders} order classes", flush=True)
     start_val = None
@@ -1034,6 +1036,8 @@ def main(argv: list[str] | None = None) -> int:
                              "(--batch / --seq-len); fewer --workers or a smaller --batch")
         total_batches = total_batches or n * args.epochs
         net.eval()
+        if device.type == "cuda":
+            torch.cuda.empty_cache()  # (the training batches' cached blocks: validation's sides are whole games)
         with torch.no_grad():
             vs = torch.zeros(len(val_batches[0]["lane"]), args.d, device=device) if args.memory else None
             vs_ref = torch.zeros_like(vs) if args.memory and ref is not None else None
