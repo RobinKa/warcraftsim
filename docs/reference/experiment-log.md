@@ -1886,6 +1886,10 @@ Replay data (2026-10-26): only 1.29 replays play back in our client (1.26/1.28 f
 
 **`human-hold-1`** (10:35 on 2026-10-28): `fgself-158`'s last fine-tuned on people's order choices (`--acting-only --hold-start 100`, its strategy weights kept, 2 epochs): order accuracy given one 0.02 to 0.676, target 0.22 to 0.548, the act rate as played held (0.270 to 0.270); its value spoiled (explained variance -0.71; no matter for evaluation or an anchor). **`fgself-163`** (10:37, from `fgself-158`'s 33539153 and its league): `--econ-masks 127 --z-decided 0.15`, `human-hold-1` among its evaluation checkpoints.
 
+**`fgself-163`, kept** (17:07 on 2026-10-28, ~236 games a policy; a machine reset at 11:13, a CPU machine check, cost it its newest checkpoint, now synced to disk before renaming): 54% of 213 head to head with its start; against insane 62% to its start's 67% in the same windows (-4.7 points, races weighed alike), all from orc (53% to 84%: its orders to peons inside burrows rose from 14 to 95 a game, gold a minute 561 to 516 with more peons); human up (62% to 47%), workers +1.2, lumber +12 a minute, creeps -0.4. `human-hold-1` (people's order choices, the act rate held) won 16 of 246 against insane: ruled out as an anchor; copying people's per-unit order choices makes play worse even when the rate holds.
+
+**`fgself-164`** (17:10, from `fgself-163`'s last): `--econ-masks 255`, adding bit 128 (orc's burrows: battle stations only with a seen enemy near, the agent stands burrows down after 20 safe steps).
+
 The queue:
 1. (done: in `fgself-155`) The audit-12 economy fixes: a training map whose mines and start scale with its costs (`echofast2`), workers labelled up to the target's count, masks against duplicate tech buildings and surplus workers, orc burrow and no-target lumber lessons.
 2. Cloning the scripted strategy family as anchor and teacher (AlphaStar's recipe with scripted data). First tune its weak plans, and add night elf and undead expansion plans. Then record thousands of echofast games (`scripts/heuristic_match.py --record`), train a cloning policy, and use it as the KL anchor and a distillation teacher.
