@@ -1890,6 +1890,12 @@ Replay data (2026-10-26): only 1.29 replays play back in our client (1.26/1.28 f
 
 **`fgself-164`** (17:10, from `fgself-163`'s last): `--econ-masks 255`, adding bit 128 (orc's burrows: battle stations only with a seen enemy near, the agent stands burrows down after 20 safe steps).
 
+**Audit 19** (orc's slide, 2026-10-28 evening): no mask or code bug found; `fgself-163`'s orc changed in training. Without a target against insane it fell from 84% to 53% (p = 0.0003), its wins by 12 minutes from 41% to 15%: it lost its early headhunter push and grew greedy (peons 8.1 to 11.9 while gold a minute fell 554 to 507, its barracks at 1.4 minutes instead of 0.8). Burrow orders rose 20 to 103 a game; bit 128 cuts them, but orc still won only 35-42%, and bit 128 masked battle stations only, not a peon's own board order (852043). Suspects: `--z-decided 0.15` and orc's falling win-balance tax. So `fgself-163`'s "kept" was wrong for orc: the head-to-head gain hid a collapse of one race.
+
+**`fgself-164`, stopped** (20:05, ~99 games a policy): level with its start (61% to 59% against insane, orc 42% to 35%, upgrades +0.3, lumber −15 a minute). Bit 128 now also masks a peon's board order unless a seen enemy is within 1500 of a hall or burrow.
+
+**`fgself-165`** (20:06, from `fgself-158`'s 33539153 with `fgself-164`'s league): `--econ-masks 255` without `--z-decided`, the first half of audit 19's ablation. Judged on orc's wins by 16 minutes (its start: 68%), peons (~8) and barracks time, and head to head with its start and with `fgself-163`'s last. Next: the same with `--z-decided 0.15`.
+
 The queue:
 1. (done: in `fgself-155`) The audit-12 economy fixes: a training map whose mines and start scale with its costs (`echofast2`), workers labelled up to the target's count, masks against duplicate tech buildings and surplus workers, orc burrow and no-target lumber lessons.
 2. Cloning the scripted strategy family as anchor and teacher (AlphaStar's recipe with scripted data). First tune its weak plans, and add night elf and undead expansion plans. Then record thousands of echofast games (`scripts/heuristic_match.py --record`), train a cloning policy, and use it as the KL anchor and a distillation teacher.
