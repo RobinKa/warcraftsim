@@ -33,6 +33,8 @@ Most fixes this week treated symptoms: a lesson, a mask or a bug fix for each ha
 
 **Change.** Start a share of training games from mid- or late-game states (minute 8-20), from the policy's own games or from replays, on `echofast2` or the real map, whose economies match the real game's.
 
+**Status (2026-10-29).** Built, behind flags (`fullgame/late.py`): `--late-capture P` writes a share of the training games' states at a minute in `--late-minutes` (8-16) to the run's `late-states.jsonl`; the scenario `late` (`--scenarios ...,late --late-states FILES`) starts a game between agents from one whose races and start locations are the game's (Echo Isles is not symmetric enough to mirror a state). Five harness ops place it (units, buildings, a hall at its tier in place of the start's, heroes with level, experience, skills and items, research levels, mines' gold, creeps killed); in the real game every count, level and amount matched the capture at step 1 for all four races ([engine notes](../reference/engine-notes.md), `scripts/late_probe.py`). The built-in AI does not take over a placed base, so games against it never start late. Not reproduced: trees cut down, items on the ground, cooldowns, queues and research under way.
+
 ## 3. Measure behaviour automatically
 
 **Problem.** Most bad habits were found by watching videos, and several yardsticks were wrong for a while: the doubled income, the laptop's relaunches inflating results, raw thirds misread as a decline, blind gauntlet games.
