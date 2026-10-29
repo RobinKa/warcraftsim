@@ -12,11 +12,21 @@ order and where it is) and its heroes (level, experience, skills, items, dead or
 still standing. A decided game gives none (a side
 without a complete town hall, or with under DECIDED of the other's material).
 
-Start (the scenario "late", --scenarios ...,late --late-states PATH[,PATH]): a training game's first step sets up a
-captured state of its map and races whose start locations are the game's. Echo Isles is only roughly mirror-symmetric
-about the line between its starts (43% of its trees and 92% of its pathing cells match their mirror image, 2026-10-29),
-so a state is never mirrored: it fits as captured or with its sides swapped (races and start locations together), and
-half the states of a matchup fit a game's draw of the start locations. The commands (step 0, `commands`):
+People's games (from_demo, scripts/late_from_demos.py): the same states from the demonstrations of people's replays
+played back in the real game (fullgame/replays.py: its observations every 0.5 s hold all the capture reads; the research
+levels from the harness's polled levels, the start locations from the town halls at step 0), at set minutes, none from a
+game out of step with its replay, none in its last minute (people leave a lost game). They are states of the real map,
+(2)EchoIsles; `rescaled` makes them echofast2's (the same map files but for the mines' gold and the starting resources:
+the mines' gold and each side's gold and lumber halved, as the map's mines and costs are).
+
+Start (the scenario "late", --scenarios ...,late --late-states PATH[:W][,PATH[:W]]): a training game's first step sets
+up a captured state of its map and races whose start locations are the game's. Echo Isles is only roughly
+mirror-symmetric about the line between its starts (43% of its trees and 92% of its pathing cells match their mirror
+image, 2026-10-29), so a state is never mirrored: it fits as captured or with its sides swapped (races and start
+locations together), and half the states of a matchup fit a game's draw of the start locations. A file's weight W: its
+states are that share of the late starts (people's states half of them, however many of its own a run piles up); the
+files without one share the rest, their states alike (no weight given: all states alike). The commands (step 0,
+`commands`):
   creeps     the camps' units the captured game had killed taken out (RemoveUnit: no bounty, no drop)
   mines      each mine's gold as captured (SetMineGold); one the captured game had mined out collapses
   halls      the start's town hall kept where the state has one of its type there, else taken out (a keep, a stronghold,
@@ -50,6 +60,7 @@ import math
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -186,20 +197,119 @@ def fit(state: dict, map_name: str, races: list[str], starts: list) -> dict | No
     return None
 
 
+def layout(map_name: str) -> str | None:
+    """The stock map whose layout (terrain, trees, start locations, mines, camps) a map has: an Echo Isles of other rules
+    (data.duelmap: echofast, echofast2, echoP) Echo Isles'; a generated duel map none; another its own."""
+    from ..data.duelmap import parse_duel_name, parse_echo_name
+    echo = parse_echo_name(map_name)
+    return echo[0] if echo is not None else None if parse_duel_name(map_name) is not None else map_name
+
+
+def rescaled(state: dict, map_name: str) -> dict | None:
+    """`state` as a state of `map_name`, a map of its map's layout under other rules (the real Echo Isles' as
+    echofast2's: their files are the same but for the mines' gold and the starting resources, scripts/late_from_demos.py
+    checks): the mines' gold scaled as the rules' (mine_gold), each side's gold and lumber as their costs; hit points and
+    mana are per mille of the map's own, levels, experience and research the same. None: another layout."""
+    from ..data.duelmap import map_rules
+    if state["map"] == map_name:
+        return state
+    if layout(state["map"]) is None or layout(state["map"]) != layout(map_name):
+        return None
+    a, b = map_rules(state["map"]), map_rules(map_name)
+    gold, cost = b.mine_gold / a.mine_gold, b.cost / a.cost
+    return dict(state, map=map_name, captured_on=state.get("captured_on", state["map"]),
+                mines=[[t, x, y, _r(g * gold)] for t, x, y, g in state.get("mines", ())],
+                sides=[dict(s, gold=_r(s["gold"] * cost), lumber=_r(s["lumber"] * cost)) for s in state["sides"]])
+
+
+def from_demo(arrays: dict, meta: dict, minutes, starts, values: dict | None = None,
+              before_end: float = 1.0) -> list[dict]:
+    """A demonstration's states (collect.py's arrays and meta; people's games: fullgame/replays.py's, the real game's
+    observations of a replay's playback every 0.5 s) at each of `minutes` (game minutes) at least `before_end` minutes
+    before its end (a person leaves a lost game), as capture's (none from a decided game) with how the game ended
+    (winner, end_minute) and its replay. starts: its map's two start locations (a side's: the one nearest its town hall
+    at step 0). The research levels from its research events (replays.py: the harness's polled levels, at the player's
+    building), the harvesters' jobs guessed (their orders and places: no agent's view); values (trace.unit_values): the
+    material that tells a decided game (None: none told). A game out of step with its replay (meta "sync") gives none."""
+    from .trace import material_steps
+    sync = meta.get("sync") or {}
+    if sync.get("first_miss") or sync.get("subgroup_matched", 0) < sync.get("subgroup_units", 0):
+        return []
+    units, heroes, players, events = (np.asarray(arrays[k]) for k in ("units", "heroes", "players", "events"))
+    step_s, steps = float(meta.get("step_seconds", 0.5)), int(meta["steps"])
+    ub = np.searchsorted(units[:, fx.C_STEP], np.arange(steps + 2), side="left")
+    hb = np.searchsorted(heroes[:, 0], np.arange(steps + 2), side="left") if len(heroes) else np.zeros(steps + 2, int)
+    at = lambda t: units[ub[t]:ub[t + 1]]  # noqa: E731  (a step's unit rows)
+    first = at(0)
+    home = {}
+    for s in (0, 1):  # (each side's start location: the one nearest its town hall at step 0)
+        halls = first[(first[:, fx.C_OWNER] == s) & np.isin(first[:, fx.C_TYPE], [fourcc(h) for h in HALLS])]
+        if len(halls):
+            home[s] = min(starts, key=lambda xy: math.hypot(xy[0] - halls[0, fx.C_X], xy[1] - halls[0, fx.C_Y]))
+    if len(home) < 2 or home[0] == home[1]:
+        return []
+    mat = material_steps(units, steps + 1, values) if values is not None else None
+    research = events[events[:, 1] == fx.RESEARCH_FINISH] if len(events) else np.zeros((0, 5), np.int64)
+    seen, done = {0: {}, 1: {}}, 0
+    result = meta.get("result") or {}
+    out = []
+    for m in sorted(minutes):
+        t = int(round(m * 60.0 / step_s))
+        if t > steps - max(before_end, 0.0) * 60.0 / step_s or ub[t] == ub[t + 1]:
+            continue
+        while done < len(research) and research[done, 0] <= t:  # (its building's owner: at the event's step, or the
+            e, k = research[done], int(research[done, 0])           # one before, where one dying then still is)
+            note_research(seen, [SimpleNamespace(kind=int(e[1]), a=int(e[2]), b=int(e[3]), c=int(e[4]))],
+                          np.concatenate([at(k), at(k - 1)]) if k > 0 else at(k))
+            done += 1
+        rows = fx.hero_rows(at(t), heroes[hb[t]:hb[t + 1]])
+        p = players[players[:, 0] == t]
+        ps = {int(r[1]): SimpleNamespace(gold=int(r[2]), lumber=int(r[3]), start_x=home[int(r[1])][0],
+                                         start_y=home[int(r[1])][1]) for r in p if int(r[1]) in home}
+        st = capture(rows, ps, list(meta["races"]), meta["map"], seen, t * step_s, None,
+                     {0: float(mat[t, 0]), 1: float(mat[t, 1])} if mat is not None else None)
+        if st is not None:
+            st.update(winner=next((s for s in (0, 1) if result.get(str(s)) == "VICTORY"), None),
+                      end_minute=round(steps * step_s / 60.0, 2), replay=(meta.get("source") or {}).get("replay"))
+            out.append(st)
+    return out
+
+
 def _key(map_name: str, races, starts) -> tuple:
     return (map_name, *races, *(_r(v) for xy in starts for v in xy))
+
+
+def weighted(spec: str) -> tuple[str, float | None]:
+    """A --late-states entry, "PATH" or "PATH:W": the path and its weight (None: none given; a suffix that is no number
+    is the path's). A weight below 0 or not finite: ValueError."""
+    path, sep, w = spec.rpartition(":")
+    try:
+        v = float(w) if sep and path else None
+    except ValueError:
+        v = None
+    if v is None:
+        return spec, None
+    if not (math.isfinite(v) and v >= 0.0):
+        raise ValueError(f"--late-states {spec}: a file's weight is a share, 0 or more")
+    return path, v
 
 
 class States:
     """The captured states of --late-states files, by map, races and start locations as a game draws them (each state
     under both its orientations): a line's file and offset, read when picked (a run's file grows to thousands of lines;
     12 actors held none of it). A file is read again for its new lines at most every `refresh` seconds (the run that
-    captures them may be the one that uses them)."""
+    captures them may be the one that uses them). A file given a weight ("PATH:W", weighted) is drawn with it, the
+    files without one share the rest (1 less the weights given, at least 0) as one pool of states drawn alike; among the
+    files with a state that fits the game, renormalized (people's states half of the late starts while a run's own pile
+    up; a matchup only one file has comes from it)."""
 
     def __init__(self, files: list[str], refresh: float = 600.0):
-        self.files = [Path(f) for f in files]
+        parsed = [weighted(str(f)) for f in files]
+        self.files = [Path(f) for f, _ in parsed]
+        self.weights = [w for _, w in parsed]
+        self.rest = max(0.0, 1.0 - sum(w for w in self.weights if w is not None))  # (the files without a weight)
         self.refresh = refresh
-        self.index: dict[tuple, list[tuple[int, int, bool]]] = {}
+        self.index: dict[tuple, dict[int, list[tuple[int, bool]]]] = {}  # key -> file -> [(offset, swapped)]
         self.done = [0] * len(self.files)  # (each file's bytes indexed)
         self.checked = 0.0
         self.count = 0
@@ -225,7 +335,8 @@ class States:
                         st = json.loads(line)
                         for flip in (False, True):
                             o = swapped(st) if flip else st
-                            self.index.setdefault(_key(o["map"], o["races"], o["starts"]), []).append((k, at, flip))
+                            self.index.setdefault(_key(o["map"], o["races"], o["starts"]), {}).setdefault(
+                                k, []).append((at, flip))
                         self.count += 1
                     except (ValueError, KeyError, TypeError):
                         pass
@@ -233,12 +344,35 @@ class States:
                 self.done[k] = at
 
     def pick(self, map_name: str, races: list[str], starts: list, rng) -> dict | None:
-        """A state that fits the game (fit), drawn uniformly, or None."""
+        """A state that fits the game (fit), or None: a file drawn by its weight (the class's), then one of its states
+        alike (without weights: all files' states alike)."""
         self._update()
-        options = self.index.get(_key(map_name, races, starts))
-        if not options:
+        by_file = self.index.get(_key(map_name, races, starts))
+        if not by_file:
             return None
-        k, at, flip = options[rng.randrange(len(options))]
+        groups = [(self.weights[k], [k]) for k in by_file if self.weights[k] is not None]
+        pool = [k for k in by_file if self.weights[k] is None]
+        if pool:
+            groups.append((self.rest, pool))
+        if len(groups) > 1:  # (one group: no draw, as before weights)
+            total = sum(w for w, _ in groups)
+            if total <= 0:
+                return None
+            r = rng.random() * total
+            for w, files in [g for g in groups if g[0] > 0]:  # (none past: the last, a rounding's)
+                r -= w
+                if r < 0:
+                    break
+        elif groups[0][0] <= 0:  # (a file of weight 0, or a pool left nothing: never drawn)
+            return None
+        else:
+            files = groups[0][1]
+        i = rng.randrange(sum(len(by_file[k]) for k in files))
+        for k in files:
+            if i < len(by_file[k]):
+                break
+            i -= len(by_file[k])
+        at, flip = by_file[k][i]
         with open(self.files[k], "rb") as fh:
             fh.seek(at)
             st = json.loads(fh.readline())

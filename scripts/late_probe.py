@@ -23,6 +23,13 @@ hero level, experience, skill, item and death, all research levels (29, 29, 22),
 lumber as captured (human and undead 1 of each short at step 1: a repair under way). The built-in AI from the undead
 state floated 7,500 gold by 5 minutes and 11,700 by 15 while training 15 units: late starts are for games between
 agents only.
+
+People's states (scripts/late_from_demos.py, rescaled to echofast2; a line of its file as STATE.json), 2026-10-29: orc
+(fortress, 39 units) against human (castle, 61, a tavern hero) at minute 16, human (62) against night elf (43) at 14,
+human (62) against undead (40, a haunted expansion) at 16: every unit type's count, hall tier, expansion (both sides'),
+hero level, experience, skill, item, research level (10, 6, 5) and creep at step 1, gold and lumber at echofast2's scale
+(undead 1 of each short); the entangled and haunted mines set by the follow-ups as for the AI's states; all 25, 23 and
+21 harvest orders taken.
 """
 
 from __future__ import annotations
@@ -101,6 +108,12 @@ def tier(c: Counter) -> int:
     return max((late.HALLS[t] for t in c if t in late.HALLS), default=0)
 
 
+def expansions(halls, mines, start) -> int:
+    """Town halls ((type, x, y)) 1500 from the start and 1000 from a mine ((x, y)): expansions (trace.Production's)."""
+    return sum(1 for t, x, y in halls if t in late.HALLS and math.hypot(x - start[0], y - start[1]) > 1500
+               and any(math.hypot(x - mx, y - my) < 1000 for mx, my in mines))
+
+
 def answers(cmds: list, results: list) -> list[bool]:
     """Each command's answer: all of its ops' (a Place with skills, items or a death encodes to several)."""
     out, k = [], 0
@@ -129,6 +142,11 @@ def check(st: dict, obs, rows, cmds: list) -> int:
             print(f"  by type (captured, game): {diff}", flush=True)
             bad += len(diff)
         bad += (p.gold != st["sides"][s]["gold"]) + (p.lumber != st["sides"][s]["lumber"]) + (tier(have) != tier(want))
+        ex_want = expansions([u[:3] for u in st["sides"][s]["units"]], [m[1:3] for m in st["mines"]], st["starts"][s])
+        ex_have = expansions([(u.type, u.x, u.y) for u in obs.units if u.owner == s and u.alive],
+                             [(u.x, u.y) for u in obs.units if u.type in late.MINES and u.alive], st["starts"][s])
+        print(f"  expansions {ex_have} (captured {ex_want})", flush=True)
+        bad += ex_have != ex_want
         abil = __import__("warcraftsim.data.abilities", fromlist=["x"]).hero_abilities()
         for t, x, y, hp, mana, level, xp, skills, items, dead in st["sides"][s]["heroes"]:
             hs = [u for u in obs.units if u.owner == s and u.type == t]

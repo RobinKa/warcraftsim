@@ -230,3 +230,95 @@ def test_states_file(tmp_path, heroes):
         fh.write(':["orc","orc"]}\n')  # (the line completed: indexed now, not a state of these races)
     s.pick("echofast2", ["human", "undead"], [L, R], rng)
     assert s.count == 2 and s.done[0] == f.stat().st_size
+
+
+def test_weighted_files(tmp_path, heroes):
+    """--late-states PATH:W: a file's states are a share W of the late starts however many the others hold; the files
+    without a weight share the rest alike; without weights every state alike, as before."""
+    assert late.weighted("runs/a/late-states.jsonl") == ("runs/a/late-states.jsonl", None)
+    assert late.weighted("people.jsonl:0.5") == ("people.jsonl", 0.5)
+    assert late.weighted("dir:x/a.jsonl") == ("dir:x/a.jsonl", None) and late.weighted(":0.5") == (":0.5", None)
+    with pytest.raises(ValueError):
+        late.weighted("people.jsonl:-1")
+    st = late.capture(midgame(), players(), ["human", "undead"], "echofast2", {0: {}, 1: {}}, 600.0)
+    own, people = tmp_path / "own.jsonl", tmp_path / "people.jsonl"
+    for k in range(9):
+        late.append(own, dict(st, tag="own"))
+    late.append(people, dict(st, tag="people"))
+    late.append(people, dict(st, tag="people", races=["orc", "orc"]))  # (another matchup: only people's file has it)
+
+    def share(files, races=("human", "undead"), n=4000):
+        s, rng = late.States([str(f) for f in files], refresh=0.0), random.Random(1)
+        got = [s.pick("echofast2", list(races), [L, R], rng) for _ in range(n)]
+        return sum(g is not None and g["tag"] == "people" for g in got) / n, sum(g is None for g in got) / n
+
+    assert abs(share([own, people])[0] - 0.1) < 0.02  # (no weights: each state alike, 1 of 10)
+    assert abs(share([own, f"{people}:0.5"])[0] - 0.5) < 0.03  # (the own file: the rest, 0.5)
+    assert abs(share([f"{own}:0.25", f"{people}:0.25"])[0] - 0.5) < 0.03  # (weights only: renormalized)
+    assert abs(share([own, f"{people}:0.8"])[0] - 0.8) < 0.03
+    assert share([own, f"{people}:0"]) == (0.0, 0.0)  # (weight 0: never)
+    assert share([own, f"{people}:1"]) == (1.0, 0.0)  # (the rest 0: the own file never, while people's fits)
+    assert share([own, f"{people}:0.5"], races=("orc", "orc")) == (1.0, 0.0)  # (the only file that fits)
+    assert share([f"{own}:0.5"], races=("orc", "orc")) == (0.0, 1.0)  # (none fits: a game from the start)
+
+
+def test_rescaled(heroes):
+    """A state of the real Echo Isles as echofast2's (the same layout: their map files differ only in the mines' gold
+    and the starting resources): the mines' gold and each side's gold and lumber halved, the rest as it was."""
+    st = late.capture(midgame(), players(gold=(800, 401), lumber=(300, 51)), ["human", "undead"], "(2)EchoIsles",
+                      {0: {"Rhme": 2}, 1: {}}, 600.0)
+    assert late.layout("echofast2") == late.layout("echo50") == late.layout("(2)EchoIsles") == "(2)EchoIsles"
+    assert late.layout("duelfast") is None and late.rescaled(st, "duelfast") is None
+    assert late.rescaled(st, "(2)LastRefuge-1.3") is None and late.rescaled(st, "(2)EchoIsles") is st
+    e = late.rescaled(st, "echofast2")
+    assert e["map"] == "echofast2" and e["captured_on"] == "(2)EchoIsles" and st["map"] == "(2)EchoIsles"
+    assert [(s["gold"], s["lumber"]) for s in e["sides"]] == [(400, 150), (200, 26)]  # (rounded to even: 200.5, 25.5)
+    assert ["ngol", 4352, -3200, 3125] in e["mines"] and ["ugol", 4352, -3200, 2275] in e["mines"]
+    assert e["sides"][0]["units"] == st["sides"][0]["units"] and e["sides"][0]["research"] == {"Rhme": 2}
+    assert e["sides"][1]["heroes"] == st["sides"][1]["heroes"] and e["creeps"] == st["creeps"]
+    assert late.fit(e, "echofast2", ["undead", "human"], [R, L])["sides"][1]["gold"] == 400
+    back = late.rescaled(e, "(2)EchoIsles")
+    assert back["captured_on"] == "(2)EchoIsles" and back["sides"][0]["gold"] == 800
+
+
+def demo(steps: int = 12) -> tuple[dict, dict]:
+    """A demonstration's arrays (collect.py's; a step a minute): the fresh game at step 0, midgame() after, the human's
+    barracks researching Rhme (levels 1, 2, 3 at steps 3, 5, 11)."""
+    mid, first = midgame(), fresh()
+    units = np.concatenate([np.c_[np.full(len(first), 0), first[:, 1:18]]]
+                           + [np.c_[np.full(len(mid), t), mid[:, 1:18]] for t in range(1, steps + 1)])
+    hero = mid[(mid[:, fx.C_FLAGS] & HERO) > 0]
+    heroes = np.asarray([[t, int(h[fx.C_ID]), *h[fx.C_ITEM0:fx.C_ITEM0 + 6], *h[fx.C_ABIL0:fx.C_ABIL0 + 8:2], 0, 0, 0, 0]
+                         for t in range(1, steps + 1) for h in hero], np.int64)
+    players_ = np.asarray([[t, s, 500 + 10 * t, 100 + s, 0, 0, 0, 0, 0, 0, 0] for t in range(steps + 1) for s in (0, 1)])
+    events = np.asarray([[t, fx.RESEARCH_FINISH, 2, fourcc("Rhme"), lv] for t, lv in ((3, 1), (5, 2), (11, 3))])
+    meta = {"races": ["human", "undead"], "map": "(2)EchoIsles", "steps": steps, "step_seconds": 60.0,
+            "result": {"0": "DEFEAT", "1": "VICTORY"}, "source": {"replay": "10900.w3g"},
+            "sync": {"subgroup_units": 5, "subgroup_matched": 5, "first_miss": None}}
+    return {"units": units, "heroes": heroes, "players": players_, "events": events}, meta
+
+
+def test_from_demo(heroes):
+    """People's states from a demonstration: capture's at each minute it reached (not in its last one), the research
+    levels by then, each side's start location the one nearest its town hall at step 0, how the game ended."""
+    arrays, meta = demo()
+    got = late.from_demo(arrays, meta, [4, 10, 12, 14], [R, L])  # (12: the game's last minute; 14: past its end)
+    assert [s["minute"] for s in got] == [4.0, 10.0]
+    a, b = got
+    assert a["starts"] == [list(L), list(R)] and a["races"] == ["human", "undead"] and a["map"] == "(2)EchoIsles"
+    assert a["sides"][0]["research"] == {"Rhme": 1} and b["sides"][0]["research"] == {"Rhme": 2}
+    assert (a["sides"][0]["gold"], a["sides"][1]["lumber"]) == (540, 101)
+    assert (b["winner"], b["end_minute"], b["replay"]) == (1, 12.0, "10900.w3g")
+    mag = a["sides"][0]["heroes"][0]
+    assert mag[0] == "Hamg" and mag[5:9] == [4, 900, ["AHbz", "AHab", "AHwe", "AHbz"], ["stwp"]]
+    want = late.capture(fx.hero_rows(arrays["units"][arrays["units"][:, 0] == 10],
+                                     arrays["heroes"][arrays["heroes"][:, 0] == 10]),
+                        players(gold=(600, 600), lumber=(100, 101)), ["human", "undead"], "(2)EchoIsles",
+                        {0: {"Rhme": 2}, 1: {}}, 600.0)
+    assert b["sides"][0]["units"] == want["sides"][0]["units"] and b["mines"] == want["mines"]
+    assert late.from_demo(arrays, meta, [10], [R, L], before_end=3.0) == []
+    off = dict(meta, sync={"subgroup_units": 5, "subgroup_matched": 4, "first_miss": None})
+    assert late.from_demo(arrays, off, [4, 10], [R, L]) == []  # (out of step with its replay)
+    values = {str(fourcc("hkee")): 1000, str(fourcc("unpl")): 10}  # (the undead under a quarter: decided)
+    assert late.from_demo(arrays, meta, [4, 10], [R, L], values) == []
+    assert len(late.from_demo(arrays, meta, [4, 10], [R, L], {str(fourcc("hkee")): 1000, str(fourcc("unpl")): 900})) == 2

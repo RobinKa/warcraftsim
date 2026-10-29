@@ -252,6 +252,36 @@ On 6 other games `--hold-start 10` drifted -0.072 (KL act 0.20): β 100 is the s
 
 **Before using it anywhere** (as an anchor or a teacher): check its play in the real game. Add it to a running run's `--eval-checkpoints` (as for `human-act-1` above) and compare its wins against insane at a person's income (`episodes.jsonl`, `eval_key`) and `scripts/scorecard.py <run> --vs bc/human-hold-1/policy` (orders a game, workers, army, expansions) with `fgself-158`'s in the same hours. It should be near `fgself-158`'s ~70%. Far below that means the orders given one, learned from people's sparse clicks, break play at the policy's own rate: people click when something changes, while the policy decides for every unit every 0.5 s. In that case it should not anchor.
 
+## Late-game starts from people's games
+
+Self-play's late starts ([five changes](../proposals/five-changes.md), 2; `fullgame/late.py`) can begin from mid-game states of people's games as well as the run's own. `fgself-166`'s own states hold one-unit armies, and its late game did not change. The demonstrations already hold everything a training capture reads. They are the real game's observations of the playback every 0.5 s: units with hit points, mana and orders, heroes with level, experience, skills and items, resources, the mines' gold and the creeps. They also hold research levels, from the harness's polled levels (each event at the player's building). So `late.from_demo` takes the states from the `.npz` files and no new playback is needed. Each side's start location is the one nearest its town hall at step 0 (a tree of life stands 200 off it).
+
+    python3 scripts/late_from_demos.py runs/fullgame/demos-human-129 --out runs/fullgame/late-states-human-129.jsonl
+    python3 scripts/late_from_demos.py --describe runs/fgself-166/late-states.jsonl --map echofast2   # a run's own
+
+* **Which states.** Minutes 8, 10, 12, 14 and 16 of each game. None comes from a game out of step with its replay, from a game's last minute (people leave a lost game), or from a decided game (`late.capture`: no town hall, or under a quarter of the other side's material). Harvesters' jobs are guessed from their orders and places, as for the built-in AI's sides: 13% of peasants have none (fgself-166's own: 19%).
+* **For echofast2.** `echofast2` is Echo Isles with other object data. Its terrain, pathing, doodads and trees, pre-placed units and start locations are the same files byte for byte, and its script differs only in the mines' gold and the starting resources (both halved). The script checks this each time. `late.rescaled` writes each state for both maps: on `echofast2` the mines' gold and each side's gold and lumber are halved (its costs are). Hit points and mana are per mille of the map's own, and levels, experience and research stay the same. Hero experience is not scaled on `echofast2`.
+* **Weights.** `--late-states own.jsonl,runs/fullgame/late-states-human-129.jsonl:0.5`: people's states are half of the late starts in every game that has one, however many own states pile up. Files without a weight share the rest, and without any weights every state is drawn alike (as before). The episode row's `late_replay` names the replay of a people's start.
+
+**What they hold** (2026-10-29, the 95 games): 262 states (211 minutes past a game's end, 2 decided). Matchups: human-human 56, orc-undead 52, human-orc 41, human-undead 39, human-night elf 25, night elf-undead 23, night elf-orc 11, orc-orc 8, undead-undead 7, night elf-night elf 0. A state fits only the start locations it was captured at (or swapped), so for a game's race at each start: 15 of the 16 pairs have some, from 2 (undead left, night elf right) to 56. Per side, against `fgself-166`'s own 2,479 states. Four in five of those come from its training games against the built-in AI, so they hold the AI's side too:
+
+| per side | people's | fgself-166's learner | the built-in AI there |
+|---|---|---|---|
+| army (no workers, heroes or harvesters at work) | 7.0 | 6.8 | 11.7 |
+| top unit's share (armies of 5+) | 58% | 82% | 45% |
+| air units (any) | 0.6 (12%; 25% at minute 16) | 0.7 (21%) | 0.9 (31%) |
+| expanded | 34% (55% at minute 16) | 20% | 41% |
+| tier 1/2/3 | 9/52/39% | 14/50/36% | 7/44/49% |
+| research levels | 1.8 | 5.1 | 11.7 |
+| heroes alive (level) | 2.0 (2.7) | 1.3 (3.2) | 2.1 (4.0) |
+| workers | 12.6 | 13.7 | 11.9 |
+
+Against the learner's own sides, people's armies are more mixed. They also have more heroes, often a tavern hero or mercenaries, with items, and they expand more often. They have less research and fewer air units. Their top units are footmen, grunts and crypt fiends, while the learner's are ghouls, footmen and archers.
+
+**In the real game** (2026-10-29, `scripts/late_probe.py start` on `echofast2`, both sides idle agents). Three people's states were tried. Orc (fortress, expansion, 2 heroes, 6 items each) against human (castle, expansion, an alchemist from the tavern) at minute 16 matched at step 1 with no mismatch: 39 and 61 units by type, tiers, both expansions, 10 of 10 research levels, gold and lumber at `echofast2`'s scale, the mines and 11 creeps. Human against night elf (expansions on both sides, a tinker) at minute 14 and human against undead (a haunted expansion, a pit lord) at minute 16 also matched every unit type, hero, item, tier, expansion and research level at step 1. The exceptions were the entangled and haunted mines, which the follow-ups set right by step 3 as designed, and the undead's gold and lumber, 1 short (a repair under way). Every harvest order was taken (25, 23 and 21). People's armies are often in a fight when captured: idle, a side lost up to 41 food in the first 30 s.
+
+**Not faithful.** Everything `late.py` does not reproduce (trees cut down, items on the ground, cooldowns and buffs, queues, research and upgrades under way, summons) is missing here too; people cut many trees by minute 16. Units the harness never saw (hidden from the moment they were made) are missing. Harvesters' jobs are guesses, and a worker that was building or repairing stands idle. The state's minute is the real game's, while on `echofast2` production runs three times as fast. Some start pairs have only a few states, and those are drawn often.
+
 ## Other versions
 
 Playback in our 1.29.2 client (`replays.py --any-version`: the header set to 1.29 build 6060, the map found by its name; a test):

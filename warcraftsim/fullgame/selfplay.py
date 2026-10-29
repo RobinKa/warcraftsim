@@ -2560,6 +2560,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
            if side in bots and getattr(bots[side], "order_results", None) else {}),
         **({"scenario": scenario} if scenario else {}),
         **({"late_minute": late_start["minute"]} if late_start is not None else {}),  # (the state's minute)
+        **({"late_replay": late_start["replay"]} if late_start is not None and late_start.get("replay") else {}),
+        # (a state of people's games, late.from_demo: its replay)
         **({"late_captured": captured["minute"]} if captured else {}),  # (--late-capture: this game's state at it)
         **({"spells": cast} if fx.SPELLS and side in bots and (cast := spells_cast(getattr(bots[side], "order_results", {})))
            else {}),  # (--spells: the learner's casts of each, sent to the game; audit 13 found no way to tell)
@@ -4047,7 +4049,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--late-minutes", default="8,16", help="--late-capture: the range of the game minute captured")
     ap.add_argument("--late-states", default="", help="the scenario \"late\" (--scenarios ...,late): the files of "
                     "captured states it starts from (comma-separated; each read again for new lines every 10 minutes), "
-                    "a state of the game's map and races whose start locations are the game's")
+                    "a state of the game's map and races whose start locations are the game's. PATH:W: that file's "
+                    "states are a share W of the late starts (e.g. people's, runs/fullgame/late-states-human-129.jsonl:0.5"
+                    "; late.States), the files without a weight share the rest; without weights all states alike")
     ap.add_argument("--eval-human", type=int, default=0, help="1: evaluation games of the current policy from a slot at a "
                     "person's income too (current+human; since 2026-10-26 every agent slot is at a person's income, "
                     "agent_difficulty, so these are the same games as current's)")
@@ -4472,6 +4476,10 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--opd-difficulty insane doubles the learner's income (agent_difficulty)")
     if "late" in args.scenarios.split(",") and not args.late_states:
         ap.error("the scenario late starts from captured states: --late-states")
+    try:
+        [late_game.weighted(x) for x in args.late_states.split(",") if x]
+    except ValueError as e:
+        ap.error(str(e))
     if len(args.late_minutes.split(",")) != 2:
         ap.error("--late-minutes: two game minutes, the capture's range (8,16)")
     fx.ACTIVE_F = args.features  # (the cloning loss's data workers fork from here: they inherit it)
