@@ -1898,6 +1898,8 @@ Replay data (2026-10-26): only 1.29 replays play back in our client (1.26/1.28 f
 
 **Stopped for a shutdown** (00:06 on 2026-10-29): `fgself-165` at 57.3M steps (checkpoint 57296548, loads), level so far: ~150 games a policy against insane 69% to its start's 67% in the same windows (+1.4 points, races weighed alike), orc 50% to 54% (28 games each), human 81% to 68%, wins past 18 minutes 0.34 to 0.48; orders to loaded units still ~50 a game for orc, so the board mask has not cut them. Next: resume `fgself-165` (`--commit launch`) to ~250 games a policy and judge it; then the `--z-decided 0.15` half.
 
+**Resumed** (09:36 on 2026-10-29, after a clean shutdown): `fgself-165` from 57296548. The ~50 orders a game to orc's loaded peons are not a hole in bit 128: the evaluation plays the start under the run's own masks too (50 there; 95 under `fgself-163`'s masks 127). They are orders the policy picks for peons sheltered in a real fight, not sent (the bot skips them), so they waste a pick and nothing in the game.
+
 The queue:
 1. (done: in `fgself-155`) The audit-12 economy fixes: a training map whose mines and start scale with its costs (`echofast2`), workers labelled up to the target's count, masks against duplicate tech buildings and surplus workers, orc burrow and no-target lumber lessons.
 2. Cloning the scripted strategy family as anchor and teacher (AlphaStar's recipe with scripted data). First tune its weak plans, and add night elf and undead expansion plans. Then record thousands of echofast games (`scripts/heuristic_match.py --record`), train a cloning policy, and use it as the KL anchor and a distillation teacher.
