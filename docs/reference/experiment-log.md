@@ -1914,6 +1914,8 @@ Replay data (2026-10-26): only 1.29 replays play back in our client (1.26/1.28 f
 
 **`fgself-167`** (19:10, from `fgself-166`'s last, 65304585, its league): half of the late starts from people's states (`late-states-human-129.jsonl:0.5`), the other half from `fgself-166`'s and its own captures. Evaluation checkpoints: its start, `fgself-158`'s 33539153, `fgself-130`'s.
 
+**Stopped for a shutdown** (23:55 on 2026-10-29): `fgself-167` at 52.6M steps (checkpoint 52554108, loads), ~5,980 late starts, half of them people's. Interim at 174 games a policy: level against insane (68% to its start's 69%, the same windows; races weighed alike −0.8 at 148), head to head 49% of 107 with its start. Its play moved the intended way: the top unit's share 0.91 to 0.95 (−0.04, the interval excludes 0), weapon and armour levels +0.31, creeps +0.4, lumber +11 a minute, wins past 18 minutes 44% to 39% (not significant), still no expansions. With a target 19% to `fgself-166`'s 28% (late starts have no target, so fewer target games). Next: resume `fgself-167` to ~250 games a policy and judge it.
+
 The queue:
 1. (done: in `fgself-155`) The audit-12 economy fixes: a training map whose mines and start scale with its costs (`echofast2`), workers labelled up to the target's count, masks against duplicate tech buildings and surplus workers, orc burrow and no-target lumber lessons.
 2. Cloning the scripted strategy family as anchor and teacher (AlphaStar's recipe with scripted data). First tune its weak plans, and add night elf and undead expansion plans. Then record thousands of echofast games (`scripts/heuristic_match.py --record`), train a cloning policy, and use it as the KL anchor and a distillation teacher.
