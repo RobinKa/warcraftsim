@@ -58,6 +58,7 @@ os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR", str(Path.home() / ".cache" / "t
 
 from . import features as fx
 from . import modes as zmodes
+from . import late as late_game
 from . import scenarios
 from . import strategy as strat
 from .collect import claim_slot
@@ -2174,7 +2175,33 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     scenario = (random.choice(cfg["scenarios"]) if train and replay is None and cfg.get("scenarios")
                 and "(real)" not in str(opp.get("name")) and random.random() < cfg.get("scenario_share", 0.0) else None)
     # (not the untaxed real-game launches: they are the training's yardstick; audit 6)
-    scenario_cmds = scenarios.commands(scenario, obs, side, races, random.Random()) if scenario else []
+    scenario_cmds = (scenarios.commands(scenario, obs, side, races, random.Random()) if scenario and scenario != "late"
+                     else [])
+    # the scenario "late" (late.py, --late-states): the game starts from a captured mid-game state of its map and races
+    # whose start locations are the game's (none fits: a game from the start). Only games between agents: the built-in
+    # AI's script starts its build order and hero picks anew at minute 0, and from a placed base it floated 7,500 gold by
+    # 5 minutes (11,700 by 15) while training 15 units (2026-10-29, scripts/late_probe.py); not the hand-written
+    # player's, nor GRPO's seeded games (their own starts). Without strategy targets (their timings count from minute
+    # 0). Steps 0 and 1 set it up (late.commands, late.again): no side acts, no step recorded
+    late_start = late_given = None
+    if scenario == "late":
+        if (cfg.get("late_states") and opp.get("kind") != "ai" and grpo is None and late is None and heur is None
+                and not opp.get("advise") and all(obs.players.get(s) is not None for s in (0, 1))):
+            late_start = late_game.states(cfg.get("late_states")).pick(
+                cfg["map"], races, [(obs.players[s].start_x, obs.players[s].start_y) for s in (0, 1)], random)
+        scenario_cmds = late_game.commands(late_start, unit_rows(obs, 0)) if late_start is not None else None
+        if scenario_cmds is None:  # (no state fits, or its commands would not fit in a step)
+            scenario, late_start, scenario_cmds = None, None, []
+        else:
+            for d in (zs, zm, made, builders, trackers, viol):
+                d.clear()
+    # --late-capture: this share of the training games give their state at a game minute drawn in --late-minutes (late.py;
+    # not a late start's: the research it set up gave no events)
+    capture_at = (random.uniform(*cfg.get("late_minutes", late_game.MINUTES)[:2]) * 60.0
+                  if cfg.get("late_capture", 0.0) > 0 and train and replay is None and scenario != "late"
+                  and random.random() < cfg.get("late_capture", 0.0) else None)
+    research_seen = {0: {}, 1: {}}  # (each side's research levels, from the game's events: the capture's)
+    captured = None
     if cfg.get("privileged") and train:  # (--opsd-*: a teacher game acts on the privileged view; the others give it beside)
         for s in trajs:
             if keys[s] == "current":
@@ -2252,6 +2279,13 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         held = {s: obs.players.get(s) for s in advised}  # (the labels count what the player could pay for)
         held = {s: np.asarray([t, s, p.gold, p.lumber, p.food_used, p.food_cap, p.upkeep]) for s, p in held.items() if p}
         rows = rows_next if rows_next is not None else unit_rows(obs, t)  # once for both sides
+        if late_start is not None and 1 <= t <= 2:  # (a late start's follow-up: the mines it made or uncovered, the
+            cmds += late_game.again(late_start, rows)  # entangled ones; late.again)
+        if late_start is not None and t == 2:  # (each agent side's placed harvesters back to their captured jobs, before
+            # the agents' own orders: theirs for a worker come after and stand; late.jobs)
+            late_given = {s: late_game.jobs(late_start, rows, s, races[s], bots[s].trees) for s in bots}
+            late_at = len(cmds)
+            cmds += [c for s in late_given for c, *_ in late_given[s]]
         if cfg.get("unit_credit", 0.0) > 0 and t > 0:  # each own unit's reward of its own for the last step
             for s, tr in trajs.items():
                 last = tr.steps[-1] if tr.steps else None
@@ -2261,6 +2295,12 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             if s in bots:
                 bots[s].view.reserve = b.reserve
         sts = {s: bot.observe(obs, t, rows) for s, bot in bots.items()}
+        if capture_at is not None:  # (--late-capture: the research so far, then the state at its minute)
+            late_game.note_research(research_seen, obs.events, rows)
+            if obs.game_time >= capture_at:
+                captured = late_game.capture(rows, obs.players, races, cfg["map"], research_seen, obs.game_time,
+                                             {u: r for b in bots.values() for u, r in b.view.assign.items()}, mat)
+                capture_at = None
         replaying = replay is not None and t < replay["t"]
         if replay is not None and t == replay["t"]:  # (the branch: the memory as it was, the strategy's potential)
             same = state_print(obs) == replay["print"]
@@ -2271,6 +2311,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         if rec is not None and t == rec["t"]:
             rec["h"], rec["print"] = {s: bots[s].h for s in bots}, state_print(obs)
         live = [s for s in bots if sts[s] is not None]
+        if late_start is not None and t < 2:  # (a late start's setup steps: no side acts)
+            live = []
         for s in live:
             sts[s]["h"] = bots[s].h
             if shared_noise:
@@ -2367,6 +2409,14 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             rec["spans"].append(dict(spans))
             rec["res"].append({s_: list(bots[s_].sent_resources) for s_ in spans})
         obs = g.step(cmds)
+        if late_start is not None and t == 0:  # (the views learn the state's research levels: View.levels, which only
+            for s in bots:                      # research events set)
+                bots[s].view.levels.update(late_game.levels(late_start, s))
+        elif late_given:  # (the harvesters' jobs the game took: the views' assignments, before the agents' own orders')
+            for s, given_s in late_given.items():
+                late_game.noted(bots[s].view, given_s, obs.command_results[late_at:late_at + len(given_s)])
+                late_at += len(given_s)
+            late_given = None
         for s, at in given.items():  # (the builder's log: its order accepted?)
             if obs.command_results[at]:
                 builders[s].log[builders[s].last][1] += 1
@@ -2389,6 +2439,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         if hspan is not None:
             heur.accepted(cmds[hspan[0]:hspan[1]], obs.command_results[hspan[0]:hspan[1]])
         t += 1
+        if late_start is not None and t == 2:  # (a late start: what the sides make from it, not the placed units)
+            prod = Production()
         prod.step(obs)
         for s in zs:  # (what each side with a strategy has made: its items' first times)
             ms = made[s]
@@ -2507,6 +2559,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                                    key=lambda kv: -kv[1])[:12])}
            if side in bots and getattr(bots[side], "order_results", None) else {}),
         **({"scenario": scenario} if scenario else {}),
+        **({"late_minute": late_start["minute"]} if late_start is not None else {}),  # (the state's minute)
+        **({"late_captured": captured["minute"]} if captured else {}),  # (--late-capture: this game's state at it)
         **({"spells": cast} if fx.SPELLS and side in bots and (cast := spells_cast(getattr(bots[side], "order_results", {})))
            else {}),  # (--spells: the learner's casts of each, sent to the game; audit 13 found no way to tell)
         **({"z_t": {c: round(v) for c, v in zs[side]["t"].items()},
@@ -2521,8 +2575,12 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"branch": round(replay["t"] * cfg["step_seconds"]), "branch_same": same} if replay is not None else {}),
         "slot_difficulty": g.setup.slots[side].difficulty,  # (its income: insane's doubles it; agent_difficulty)
         **({} if train else {"eval": True, "eval_key": opp.get("eval_tag") or opp.get("eval_key") or "current"})}
-    out_q.put({"episode": dict(ep)})  # (a copy: the queue pickles later, and a filmed game's trace goes into ep below;
-    if grpo is not None:                # 354 rows of 0.1-1.5 MB in the episode files; audit 3)
+    if captured:  # (--late-capture: the state with how its game ended, the learner's line of late-states.jsonl)
+        captured.update(winner=next((s for s in (0, 1) if outcome[s] > 0), None), end_minute=round(obs.game_time / 60.0, 2),
+                        run=Path(cfg["run_dir"]).name, learner=side, opponent=opp["name"], time=round(time.time()))
+    out_q.put({"episode": dict(ep),  # (a copy: the queue pickles later, and a filmed game's trace goes into ep below;
+               **({"late_state": captured} if captured else {})})  # 354 rows of 0.1-1.5 MB in the episode files; audit 3)
+    if grpo is not None:
         grpo["same"] = same
         if rec is not None and "h" in rec and t > rec["t"] + 20:  # (the game reached its branch with a minute to go)
             grpo["record"] = rec
@@ -3979,9 +4037,17 @@ def main(argv: list[str] | None = None) -> int:
                     "unit, the opponent's resources: the network learns to use it); never in evaluation")
     ap.add_argument("--opsd-coef", type=float, default=0.0, help="the other games' steps: a KL from the same network's "
                     "orders given the privileged view (no gradient through it) to its orders given the player's")
-    ap.add_argument("--scenarios", default="", help="scenarios (scenarios.py: clash, raid, rich; comma-separated) "
-                    "a share of the training games start in")
+    ap.add_argument("--scenarios", default="", help="scenarios (scenarios.py: clash, raid, rich, natural; late.py: late; "
+                    "comma-separated; one named twice is drawn twice as often) a share of the training games start in "
+                    "(late: games between agents only, else a game from the start)")
     ap.add_argument("--scenario-share", type=float, default=0.0, help="--scenarios: the share of the training games")
+    ap.add_argument("--late-capture", type=float, default=0.0, help="late-game starts (late.py): this share of the "
+                    "training games give their state at a game minute drawn in --late-minutes, a line of the run's "
+                    "late-states.jsonl (none from a decided game or a late start)")
+    ap.add_argument("--late-minutes", default="8,16", help="--late-capture: the range of the game minute captured")
+    ap.add_argument("--late-states", default="", help="the scenario \"late\" (--scenarios ...,late): the files of "
+                    "captured states it starts from (comma-separated; each read again for new lines every 10 minutes), "
+                    "a state of the game's map and races whose start locations are the game's")
     ap.add_argument("--eval-human", type=int, default=0, help="1: evaluation games of the current policy from a slot at a "
                     "person's income too (current+human; since 2026-10-26 every agent slot is at a person's income, "
                     "agent_difficulty, so these are the same games as current's)")
@@ -4404,6 +4470,10 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     if args.opd_share > 0 and args.opd_difficulty == "insane":
         ap.error("--opd-difficulty insane doubles the learner's income (agent_difficulty)")
+    if "late" in args.scenarios.split(",") and not args.late_states:
+        ap.error("the scenario late starts from captured states: --late-states")
+    if len(args.late_minutes.split(",")) != 2:
+        ap.error("--late-minutes: two game minutes, the capture's range (8,16)")
     fx.ACTIVE_F = args.features  # (the cloning loss's data workers fork from here: they inherit it)
     os.environ["WARCRAFTSIM_FEATURES"] = str(args.features)  # (and processes started anew: actors, videos)
     if args.valid_mask and args.inputs < 2:
@@ -4709,6 +4779,8 @@ def main(argv: list[str] | None = None) -> int:
            "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
+           "late_capture": args.late_capture, "late_minutes": [float(x) for x in args.late_minutes.split(",")],
+           "late_states": [x for x in args.late_states.split(",") if x],
            "eval_ai": [d for d in args.eval_ai.split(",") if d],
            "map_geometry": [fx.STARTS, fx.BIN_RANGE],
            "infer_entities": [int(x) for x in args.infer_entities.split(",")],
@@ -4906,6 +4978,8 @@ def main(argv: list[str] | None = None) -> int:
                         league.win_balance.add(e["tb_x"], e.get("balance_tax", 0.0), e["outcome"])
                     with open(run_dir / "episodes.jsonl", "a") as f:
                         f.write(json.dumps(e) + "\n")
+                    if msg.get("late_state"):  # (--late-capture: the game's state at its minute, late.py)
+                        late_game.append(run_dir / "late-states.jsonl", msg["late_state"])
                     continue
                 if (msg.get("info") or {}).get("learner") == "exploiter":
                     xbuf += msg["steps"]
