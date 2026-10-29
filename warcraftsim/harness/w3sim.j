@@ -96,6 +96,10 @@ globals
     real w3s_pick_d = 0.0
     boolean w3s_pick_free = false
     rect w3s_clear_rect = null  // (op 88: the cleared area, its dropped items swept)
+    // late-game starts (ops 74-78, fullgame/late.py): the unit placed last (op 77), which op 78 gives a skill, an item or
+    // its death; the unit W3S_Nearest found
+    unit w3s_placed = null
+    unit w3s_near = null
     integer array w3s_qs_player
     integer array w3s_qs_type
     real array w3s_qs_x
@@ -1545,6 +1549,101 @@ function W3S_ClearCreeps takes real x, real y, real r returns nothing
     set w3s_clear_rect = null
 endfunction
 
+// late-game starts: w3s_near, the living unit of type t1, t2 or t3 nearest (x, y) within r, player p's (p < 0:
+// anyone's). (An enumeration: a hidden unit, the gold mine under an entangled one, is not met.)
+function W3S_Nearest takes integer t1, integer t2, integer t3, integer p, real x, real y, real r returns nothing
+    local group g = CreateGroup()
+    local unit u
+    local integer t
+    local real d
+    local real best = r * r
+    set w3s_near = null
+    call GroupEnumUnitsInRange(g, x, y, r, null)
+    loop
+        set u = FirstOfGroup(g)
+        exitwhen u == null
+        call GroupRemoveUnit(g, u)
+        set t = GetUnitTypeId(u)
+        if (t == t1 or t == t2 or t == t3) and not IsUnitType(u, UNIT_TYPE_DEAD) and (p < 0 or GetPlayerId(GetOwningPlayer(u)) == p) then
+            set d = (GetUnitX(u) - x) * (GetUnitX(u) - x) + (GetUnitY(u) - y) * (GetUnitY(u) - y)
+            if d <= best then
+                set best = d
+                set w3s_near = u
+            endif
+        endif
+    endloop
+    call DestroyGroup(g)
+    set g = null
+endfunction
+
+// op 77 (late-game starts): a unit as it was in another game (w3s_placed): a building complete, hit points and mana per
+// mille of the maximum (hit points 0: full), a hero at its level and experience (its player's free first hero used up).
+// "ugol": the gold mine nearest the point haunted for the player, its gold kept (as the melee start's); "egol": the
+// player's tree nearest it entangles it (the night elves' start's instant entangle). p: the real player.
+function W3S_Place takes integer p, integer t, real x, real y, integer hp, integer mana, integer level, integer xp returns boolean
+    local unit u
+    local boolean ok = false
+    set w3s_placed = null
+    if t == 'ugol' or t == 'egol' then
+        call W3S_Nearest('ngol', 'ngol', 'ngol', -1, x, y, 400.0)
+        set u = w3s_near
+        if u != null and t == 'ugol' then
+            set w3s_placed = BlightGoldMineForPlayerBJ(u, Player(p))
+            set ok = w3s_placed != null
+        elseif u != null then
+            call W3S_Nearest('etol', 'etoa', 'etoe', p, GetUnitX(u), GetUnitY(u), 1200.0)
+            set ok = w3s_near != null and IssueTargetOrder(w3s_near, "entangleinstant", u)
+        endif
+        set u = null
+        set w3s_near = null
+        return ok
+    endif
+    set u = CreateUnit(Player(p), t, x, y, 270.0)
+    if u == null then
+        return false
+    endif
+    set w3s_placed = u
+    if IsUnitType(u, UNIT_TYPE_HERO) then
+        if level > 1 then
+            call SetHeroLevel(u, level, false)
+        endif
+        if xp > GetHeroXP(u) then  // (the way to its next level as it was)
+            call SetHeroXP(u, xp, false)
+        endif
+        call SetPlayerState(Player(p), PLAYER_STATE_RESOURCE_HERO_TOKENS, 0)
+    endif
+    if hp > 0 then
+        call SetUnitState(u, UNIT_STATE_LIFE, RMaxBJ(GetUnitState(u, UNIT_STATE_MAX_LIFE) * I2R(hp) / 1000.0, 1.0))
+    endif
+    if GetUnitState(u, UNIT_STATE_MAX_MANA) > 0.0 then
+        call SetUnitState(u, UNIT_STATE_MANA, GetUnitState(u, UNIT_STATE_MAX_MANA) * I2R(mana) / 1000.0)
+    endif
+    if w3s_agent[p] then
+        call RemoveGuardPosition(u)  // (an agent's unit: no AI guard post to walk back to)
+    endif
+    set u = null
+    return true
+endfunction
+
+// op 78: the unit placed last (op 77): 1 learns the skill `id` (with a point its level gave it), 2 gets the item `id`,
+// 3 dies (a hero its altar may revive)
+function W3S_Placed takes integer what, integer id returns boolean
+    local integer before
+    if w3s_placed == null or GetUnitTypeId(w3s_placed) == 0 then
+        return false
+    elseif what == 1 then
+        set before = GetUnitAbilityLevel(w3s_placed, id)
+        call SelectHeroSkill(w3s_placed, id)
+        return GetUnitAbilityLevel(w3s_placed, id) > before
+    elseif what == 2 then
+        return UnitAddItemById(w3s_placed, id) != null
+    elseif what == 3 then
+        call KillUnit(w3s_placed)
+        return true
+    endif
+    return false
+endfunction
+
 function W3S_ApplyOne takes integer at returns integer
     local integer op = w3s_cmd[at]
     local unit u = W3S_Unit(w3s_cmd[at + 1])
@@ -1675,6 +1774,41 @@ function W3S_ApplyOne takes integer at returns integer
             call SetHeroLevel(u, w3s_cmd[at + 5], false)
         endif
         set ok = u != null
+    elseif op == 74 then
+        // a unit taken out of the game (late-game starts: a start's unit the captured state replaces, a creep it had
+        // killed): no death, no bounty, no drop; the pass that no longer meets it writes its "R" record
+        set n = 2
+        if u != null and GetUnitTypeId(u) != 0 then
+            call RemoveUnit(u)
+            set ok = true
+        endif
+    elseif op == 75 then
+        // a gold mine's gold (late-game starts): unit, gold; 0: it collapses (killed, as a mine mined out; its gold 0
+        // first: an entangled mine killed with gold left gave its gold mine back, and that was entangled again). It
+        // counts as complete: an entangled mine a tree entangled at once (op 77's "egol") has no construction finish
+        set n = 3
+        if u != null and GetUnitTypeId(u) != 0 then
+            call SaveBoolean(w3s_ht, GetHandleId(u), 1, false)
+            call SetResourceAmount(u, w3s_cmd[at + 2])
+            if w3s_cmd[at + 2] <= 0 then
+                call KillUnit(u)
+            endif
+            set ok = true
+        endif
+    elseif op == 76 then
+        // a player's research at a level (late-game starts): player, tech, level; the answer: it has that level now
+        set n = 4
+        call SetPlayerTechResearched(Player(W3S_Real(w3s_cmd[at + 1])), w3s_cmd[at + 2], w3s_cmd[at + 3])
+        set ok = GetPlayerTechCount(Player(W3S_Real(w3s_cmd[at + 1])), w3s_cmd[at + 2], true) >= w3s_cmd[at + 3]
+    elseif op == 77 then
+        // a unit as it was in another game (late-game starts, W3S_Place): player, type, x, y, hit points and mana per
+        // mille, hero level and experience
+        set n = 9
+        set ok = W3S_Place(W3S_Real(w3s_cmd[at + 1]), w3s_cmd[at + 2], I2R(w3s_cmd[at + 3] - 65536), I2R(w3s_cmd[at + 4] - 65536), w3s_cmd[at + 5], w3s_cmd[at + 6], w3s_cmd[at + 7], w3s_cmd[at + 8])
+    elseif op == 78 then
+        // the unit placed last (op 77) learns a skill, gets an item or dies (W3S_Placed): what, code
+        set n = 3
+        set ok = W3S_Placed(w3s_cmd[at + 1], w3s_cmd[at + 2])
     elseif op == 80 then
         set n = 1
         call W3S_VisClear()

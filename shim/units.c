@@ -1347,14 +1347,14 @@ static int c3(int k, int a, int b, int c) {
 static int jass_len(int op) {
     switch (op) {
     case 80: case 97: case 98: case 99: return 1;
-    case 93: case 94: case 95: case 84: return 2;
-    case 3: case 5: case 9: case 96: return 3;
-    case 2: case 6: case 8: case 87: case 88: case 90: return 4;
+    case 74: case 93: case 94: case 95: case 84: return 2;
+    case 3: case 5: case 9: case 75: case 78: case 96: return 3;
+    case 2: case 6: case 8: case 76: case 87: case 88: case 90: return 4;
     case 1: case 4: case 91: case 83: return 5;
     case 89: case 81: return 6;
     case 7: return 7;
     case 92: return 8;
-    case 82: return 9;
+    case 77: case 82: return 9;
     default: return 1000000;
     }
 }

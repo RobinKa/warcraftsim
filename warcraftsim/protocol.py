@@ -486,6 +486,11 @@ class Op(IntEnum):
     ITEM = 7
     BUY = 8
     PICK_UP = 9
+    REMOVE_UNIT = 74
+    SET_MINE_GOLD = 75
+    SET_RESEARCH = 76
+    PLACE = 77
+    PLACED = 78
     CLEAR_CREEPS = 88
     TAKE_RESOURCES = 87
     VIS_CLEAR = 80
@@ -734,6 +739,70 @@ class QueueSkill(Command):
 
 
 @dataclass(frozen=True)
+class RemoveUnit(Command):
+    """Late-game starts (fullgame/late.py): a unit taken out of the game (no death, no bounty, no drop)."""
+    unit: int
+
+    def encode(self) -> list[int]:
+        return [Op.REMOVE_UNIT, self.unit]
+
+
+@dataclass(frozen=True)
+class SetMineGold(Command):
+    """Late-game starts: a gold mine's gold left (haunted and entangled mines too); 0: it collapses (killed, as a mine
+    mined out)."""
+    unit: int
+    gold: int
+
+    def encode(self) -> list[int]:
+        return [Op.SET_MINE_GOLD, self.unit, max(0, int(self.gold))]
+
+
+@dataclass(frozen=True)
+class SetResearch(Command):
+    """Late-game starts: a player's research `tech` at `level` (SetPlayerTechResearched: its effects on the player's
+    units, the next level's price; no event). The game's answer: whether the player has that level now."""
+    player: int
+    tech: int | str
+    level: int
+
+    def encode(self) -> list[int]:
+        return [Op.SET_RESEARCH, self.player, fourcc(self.tech), int(self.level)]
+
+
+@dataclass(frozen=True)
+class Place(Command):
+    """Late-game starts: a unit as it was in another game: its hit points and mana per mille of its maximum, a hero at
+    `hero_level` and `hero_xp` (its player's free first hero used up) with `skills` learned in order (one entry per skill point) and
+    `items`, and `dead`: a hero killed at once (its altar may revive it). A building is made complete. "ugol" haunts
+    the gold mine nearest the point for the player, "egol" has the player's tree there entangle it (the start's
+    instant entangle). Encodes as PLACE, then a PLACED per skill, item and the death."""
+    player: int
+    unit_type: str
+    x: float
+    y: float
+    hp_permille: int = 0  # (0: full)
+    mana_permille: int = 1000
+    hero_level: int = 0
+    skills: tuple[str, ...] = ()
+    items: tuple[str, ...] = ()
+    dead: bool = False
+    hero_xp: int = 0
+
+    def encode(self) -> list[int]:
+        out = [Op.PLACE, self.player, fourcc(self.unit_type), _coord(self.x), _coord(self.y),
+               min(1000, max(0, int(self.hp_permille))), min(1000, max(0, int(self.mana_permille))), int(self.hero_level),
+               max(0, int(self.hero_xp))]
+        for skill in self.skills:
+            out += [Op.PLACED, 1, fourcc(skill)]
+        for item in self.items:
+            out += [Op.PLACED, 2, fourcc(item)]
+        if self.dead:
+            out += [Op.PLACED, 3, 0]
+        return out
+
+
+@dataclass(frozen=True)
 class Camera(Command):
     """Move the local camera (watching / screenshots only; no effect on the game state)."""
     playback: ClassVar[bool] = True
@@ -851,7 +920,8 @@ def encode_commands(commands: Iterable[Command]) -> list[int]:
 
 
 _OP_LENGTHS = {Op.POINT: 5, Op.TARGET: 4, Op.IMMEDIATE: 3, Op.BUILD: 5, Op.LEARN: 3, Op.TARGET_DESTRUCTABLE: 4,
-               Op.ITEM: 7, Op.BUY: 4, Op.PICK_UP: 3, Op.VIS_CLEAR: 1, Op.VIS_MARK: 6, Op.VIS_LINE: 9, Op.VIS_AREA: 5, Op.CAMERA_ZOOM: 2,
+               Op.ITEM: 7, Op.BUY: 4, Op.PICK_UP: 3, Op.REMOVE_UNIT: 2, Op.SET_MINE_GOLD: 3, Op.SET_RESEARCH: 4, Op.PLACE: 9,
+               Op.PLACED: 3, Op.VIS_CLEAR: 1, Op.VIS_MARK: 6, Op.VIS_LINE: 9, Op.VIS_AREA: 5, Op.CAMERA_ZOOM: 2,
                Op.SET_RESOURCES: 4, Op.TAKE_RESOURCES: 4, Op.SPAWN: 5, Op.SPAWN_HERO: 6, Op.CLEAR_CREEPS: 4, Op.QUEUE_SPAWN: 8, Op.QUEUE_SKILL: 2, Op.START_AI: 2, Op.SHADOW_AI: 2, Op.CAMERA: 3,
                Op.END_GAME: 1, Op.SNAPSHOT: 1, Op.RESTART: 1}
 
