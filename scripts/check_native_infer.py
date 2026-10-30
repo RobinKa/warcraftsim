@@ -25,6 +25,7 @@ import torch.multiprocessing as mp
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from warcraftsim.fullgame import features as fx  # noqa: E402
 from warcraftsim.fullgame.costs import order_costs  # noqa: E402
 from warcraftsim.fullgame.model import load  # noqa: E402
 from warcraftsim.fullgame.native_infer import NativeServer  # noqa: E402
@@ -42,8 +43,14 @@ def main() -> int:
     ap.add_argument("--past-entities", default="64", help="selfplay --infer-past-entities")
     ap.add_argument("--gpu-split", type=int, default=0, help="selfplay --gpu-split: the loop's streams in a part of "
                                                             "the GPU of this many SMs")
+    ap.add_argument("--past-period-ms", type=float, default=0.0, help="selfplay --infer-past-period-ms")
+    ap.add_argument("--setup", action="store_true", help="the run's input settings first (scripts/bench_view.setup: a "
+                                                          "recent run needs them)")
     a = ap.parse_args()
     device = torch.device("cuda")
+    if a.setup:
+        from bench_view import setup
+        setup(str(a.run.resolve()))
     tmp = Path(tempfile.mkdtemp(prefix="native_infer_"))
     latest = max((a.run / "checkpoints").glob("*.pt"))
     net, ck = load(latest, device)
@@ -57,7 +64,8 @@ def main() -> int:
     pipes = [mp.get_context("spawn").Pipe() for _ in range(a.games)]
     cfg = {"run_dir": str(tmp), "device": "cuda", "learner_pid": os.getpid(), "infer_batch": 64, "compile": True,
            "max_past": 32, "shared_rows": spec, "infer_fuse": 1, "infer_past_slots": 4, "infer_period": 0.004,
-           "exploiter_share": 0, "infer_entities": [int(x) for x in a.entities.split(",")],
+           "exploiter_share": 0, "infer_entities": [int(x) for x in a.entities.split(",")], "vocab": str(a.run / "vocab.json"),
+           "infer_past_period": a.past_period_ms / 1000.0,
            "infer_past_entities": [int(x) for x in a.past_entities.split(",")]}
     split = None
     if a.gpu_split:
@@ -70,26 +78,32 @@ def main() -> int:
     steps = view_steps(sorted(a.data.glob("game*.npz"))[:3], ck["vocab"], order_costs(ck["vocab"], "duelfast"), 400)
     direct = Inference(None, device, 64, compile_=False, thread=False)
     keys = ["current"] + past
-    nets = {k: (net if k == "current" else load(k, device)[0].eval()) for k in keys}
+    nets = {k: (net if k == "current" else load(k, device, vocab=ck["vocab"] if fx.NEUTRAL else None)[0].eval()) for k in keys}
     errors, counts, rng0 = [], {"calls": 0}, np.random.default_rng(0)
     lock = threading.Lock()
+    slowest = [0.0]
 
     def game(seed: int, check: bool, until: float):
         rng = np.random.default_rng(seed)
         while time.time() < until:
-            key = keys[int(rng.integers(len(keys)))]
+            # a game's request: one side's row or both sides' (the current network with a past snapshot, or two
+            # networks: a mixed request's answers may come from different rounds with --past-period-ms)
+            asked = [keys[int(rng.integers(len(keys)))] for _ in range(1 + int(rng.integers(2)))]
             st = dict(steps[int(rng.integers(len(steps)))])
             st["h"] = rng.normal(size=c["d"]).astype(np.float32) if net.memory and rng.random() < 0.5 else None
-            got = remote.request([(key, st)])[0]
+            t_asked = time.time()
+            answers = remote.request([(key, dict(st)) for key in asked])
             with lock:
                 counts["calls"] += 1
+                slowest[0] = max(slowest[0], time.time() - t_asked)
             if check:
-                want = direct._finish(direct._launch(nets[key], [st]))[0]
-                bad = got is None or abs(got["value"] - want["value"]) > 1e-3 or abs(got["entropy"] - want["entropy"]) > 1e-3 \
-                    or got["version"] != (7 if key == "current" else -1)
-                if bad:
-                    errors.append((key, None if got is None else (got["value"], got["entropy"], got["version"]),
-                                   (want["value"], want["entropy"])))
+                for key, got in zip(asked, answers):
+                    want = direct._finish(direct._launch(nets[key], [st]))[0]
+                    bad = got is None or abs(got["value"] - want["value"]) > 1e-3 or abs(got["entropy"] - want["entropy"]) > 1e-3 \
+                        or got["version"] != (7 if key == "current" else -1)
+                    if bad:
+                        errors.append((key, None if got is None else (got["value"], got["entropy"], got["version"]),
+                                       (want["value"], want["entropy"])))
             if server.failed():
                 errors.append(("server", server.failed()))
                 return
@@ -110,7 +124,8 @@ def main() -> int:
     threads = [threading.Thread(target=game, args=(100 + s, False, t0 + a.seconds)) for s in range(a.games - 5)]  # (a pipe per thread: 5 used above)
     [t.start() for t in threads]
     [t.join() for t in threads]
-    print(f"{counts['calls'] / (time.time() - t0):.0f} requests a second from {a.games - 5} threads", flush=True)
+    print(f"{counts['calls'] / (time.time() - t0):.0f} requests a second from {a.games - 5} threads; the slowest answer "
+          f"{1000 * slowest[0]:.0f} ms", flush=True)
     server.stop()
     print("stats:", (tmp / "inference.jsonl").read_text().splitlines()[-1:] if (tmp / "inference.jsonl").exists() else "-")
     shutil.rmtree(tmp, ignore_errors=True)
