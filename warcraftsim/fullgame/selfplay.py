@@ -44,6 +44,7 @@ import traceback
 import types
 import weakref
 from collections import Counter, deque
+from functools import lru_cache
 from itertools import accumulate, repeat
 from operator import attrgetter, eq, itemgetter
 from pathlib import Path
@@ -1529,6 +1530,13 @@ def heuristic_strategy(cfg: dict, race: str, rng: random.Random) -> str:
 _POOLS: dict[str, dict] = {}
 
 
+@lru_cache(maxsize=1)
+def trainable_units() -> frozenset:
+    """The units a race's building trains (strategy_pool's army mixes; a late start's targets, late.plan_target)."""
+    from .techtree import tree
+    return frozenset(u for u, ms in tree().makers.items() if any(m[:1] in "houe" for m in ms))
+
+
 def strategy_pool(cfg: dict) -> dict | None:
     """The run's strategies (--z-pool: fullgame/strategy.py), read once per process."""
     path = cfg.get("z_pool")
@@ -1542,8 +1550,7 @@ def strategy_pool(cfg: dict) -> dict | None:
                                   for s in pool["strategies"]]  # (the items' list stays: it is the inputs' slots)
         # the army mixes: only units a race's building trains (mercenaries, zeppelins, shredders, a morph's other
         # form: a third of the target games' mixes held some, a gap no play could close; audit 4)
-        from .techtree import tree
-        trainable = {u for u, ms in tree().makers.items() if any(m[:1] in "houe" for m in ms)}
+        trainable = trainable_units()
         pool["strategies"] = [{**s, "n": {c: v for c, v in (s.get("n") or {}).items()
                                           if not strat.is_army(c) or c in trainable}} for s in pool["strategies"]]
         _POOLS[path] = pool
@@ -1653,6 +1660,9 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         self.ctx: list = []
         self.z_workers = bool(cfg.get("z_workers", 0))  # (--z-workers: its target's workers, workers())
         self.worker_at = -99.0  # (game time of its last worker order)
+        held = st.get("held") or ()  # (--late-z: what a placed base holds and no game event told: a hero's place among
+        self.placed_research = {c for c in held if c[:1] == "R"}  # the side's, what its research leads to)
+        self.placed_heroes = sum(1 for c in held if techtree.is_hero(c))
 
     def observe(self, obs) -> None:
         """The items the side started, finished or cancelled in the step just taken (its events)."""
@@ -1773,8 +1783,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             mine = self._mine(obs)
             done = [u for u in mine if u.is_structure and not int(u.flags) & fx.CONSTRUCTING]
             types, hero = {u.type for u in done}, any(getattr(u, "is_hero", False) for u in mine)
-        have = techtree.counts_as(types | {c for c in made if c[0] == "R"}, self.race)
-        heroes = len({c for c in (*made, *self.started) if techtree.is_hero(c) or fx.is_hero_code(c)})
+        have = techtree.counts_as(types | {c for c in made if c[0] == "R"} | self.placed_research, self.race)
+        heroes = len({c for c in (*made, *self.started) if techtree.is_hero(c) or fx.is_hero_code(c)}) + self.placed_heroes
         expansion = None if supply_first else self._expansion_reserve(obs, due, p, t, own, rows)  # (--macros: money kept for
         self.first_free = heroes == 0 and not hero  # (a free first hero)  # a due expansion; supply comes first)
         save = expansion
@@ -2149,19 +2159,22 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         opp.pop("tax_side", None)
         opp.pop("win_balance", None)
         taxed = None
-    if cfg.get("win_balance") and train and opp.get("kind") in ("self", "past") and replay is None:
-        # --win-balance: the features of who is expected to win (balance.py), and from the league's model the tax
-        # that evens the game out (the favoured side's income); the races' balance until it is fitted
-        from .balance import features as balance_features, tax as balance_tax_for
-        x = balance_features(races[side], races[1 - side], zs.get(side), zs.get(1 - side), opp["kind"] == "past")
-        opp["tb_x"] = [round(float(v), 3) for v in x]
-        t = balance_tax_for(opp.get("win_balance"), x, random)
-        if t is not None:
-            opp.pop("tax", None)
-            opp.pop("tax_side", None)
-            if abs(t) > 1e-3:
-                opp["tax"], opp["tax_side"] = round(abs(t), 3), (side if t > 0 else 1 - side)
-            taxed = opp.get("tax_side") if opp.get("tax") else None
+    def even_out() -> None:
+        nonlocal taxed
+        if cfg.get("win_balance") and train and opp.get("kind") in ("self", "past") and replay is None:
+            # --win-balance: the features of who is expected to win (balance.py), and from the league's model the tax
+            # that evens the game out (the favoured side's income); the races' balance until it is fitted
+            from .balance import features as balance_features, tax as balance_tax_for
+            x = balance_features(races[side], races[1 - side], zs.get(side), zs.get(1 - side), opp["kind"] == "past")
+            opp["tb_x"] = [round(float(v), 3) for v in x]
+            t = balance_tax_for(opp.get("win_balance"), x, random)
+            if t is not None:
+                opp.pop("tax", None)
+                opp.pop("tax_side", None)
+                if abs(t) > 1e-3:
+                    opp["tax"], opp["tax_side"] = round(abs(t), 3), (side if t > 0 else 1 - side)
+                taxed = opp.get("tax_side") if opp.get("tax") else None
+    even_out()
     # --z-modes: each side's modes measured each step (modes.Tracker: their violations, the strategy potential's)
     trackers = {s: zmodes.Tracker(m, s, (obs.players[1 - s].start_x, obs.players[1 - s].start_y), unit_food(),
                                   WORKER_IDS, (obs.players[s].start_x, obs.players[s].start_y), races[s])
@@ -2182,7 +2195,12 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     # AI's script starts its build order and hero picks anew at minute 0, and from a placed base it floated 7,500 gold by
     # 5 minutes (11,700 by 15) while training 15 units (2026-10-29, scripts/late_probe.py); not the hand-written
     # player's, nor GRPO's seeded games (their own starts). Without strategy targets (their timings count from minute
-    # 0). Steps 0 and 1 set it up (late.commands, late.again): no side acts, no step recorded
+    # 0). Steps 0 and 1 set it up (late.commands, late.again): no side acts, no step recorded. With --late-z a person's
+    # state keeps the strategy on: each trained side's target is what that person went on to make (late.plan_target, its
+    # times counted from the state). The items it holds are not its plan's (no windfall); `made`, as what the sides make
+    # below, counts from step 2's reset, so the first steps' potential is 0. Its modes are none (a game's from minute 0).
+    # The first drawn targets' inputs go too (cleared below they had stayed in the views, seen and never paid), and the
+    # balance is told the targets the game has.
     late_start = late_given = None
     if scenario == "late":
         if (cfg.get("late_states") and opp.get("kind") != "ai" and grpo is None and late is None and heur is None
@@ -2195,6 +2213,19 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         else:
             for d in (zs, zm, made, builders, trackers, viol):
                 d.clear()
+            if cfg.get("late_z"):
+                for s, bot in bots.items():
+                    bot.view.z, bot.view.zmask, bot.view.forbid, bot.view.mix_target = None, None, None, {}
+                for s in trajs if pool is not None else ():
+                    st = late_game.plan_target(late_start, s, pool["items"][races[s]],
+                                               _MERCENARIES if fx.NEUTRAL == 2 else (), trainable_units())
+                    if keys[s] == "current" and st is not None:  # (not the exploiter's sides, as any target)
+                        zs[s] = target(cfg, bots[s].view, strat.scaled(st, cfg.get("z_time_scale", 1.0)), pool, races[s],
+                                       vocab, {})
+                        made[s] = {}
+                        if cfg.get("z_build"):
+                            builders[s] = TargetBuilder(cfg, vocab, s, zs[s], random.Random())
+                even_out()
     # --late-capture: this share of the training games give their state at a game minute drawn in --late-minutes (late.py;
     # not a late start's: the research it set up gave no events)
     capture_at = (random.uniform(*cfg.get("late_minutes", late_game.MINUTES)[:2]) * 60.0
@@ -2377,7 +2408,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                     merge_labels(trajs[s].steps[-1], y, teach=True)
                     ha.counts["lessons"] += len(c)
         built, given = {}, {}
-        for s, b in builders.items():  # (--z-build: after the agents' orders, so a worker it takes is taken)
+        for s, b in () if late_start is not None and t < 2 else builders.items():  # (--z-build: after the agents' orders,
+            # so a worker it takes is taken; none in a late start's setup, the base not yet there)
             c = b.commands(obs, made[s], t, cfg["step_seconds"], cmds[spans[s][0]:spans[s][1]] if s in spans else (), rows)
             if c and cfg.get("z_build", 0) != 2:
                 given[s] = len(cmds) + len(c) - 1  # (its order: last, after a queue's cancels)
@@ -2442,8 +2474,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         if late_start is not None and t == 2:  # (a late start: what the sides make from it, not the placed units)
             prod = Production()
         prod.step(obs)
-        for s in zs:  # (what each side with a strategy has made: its items' first times)
-            ms = made[s]
+        for s in () if late_start is not None and t < 2 else zs:  # (what each side with a strategy has made: its items'
+            ms = made[s]                                          # first times; --late-z: from step 2's reset)
             ver = (len(prod.trained[s]), len(prod.built[s]), len(prod.research[s]), bool(prod.expansions[s]))
             if made_ver.get(s) != ver:  # (their keys are only ever added: the same counts, no new item to time)
                 made_ver[s] = ver
@@ -2573,7 +2605,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             "z_miss": strat.mismatch(made[side], zs[side], pool["items"][races[side]], obs.game_time),
             # (which: the strategy's items due by now and not made; made and not in it)
             "z_missed": sorted(c for c, t0 in zs[side]["t"].items() if t0 <= min(obs.game_time, strat.horizon(zs[side])) and made[side].get(c, 1e9) > min(obs.game_time, strat.horizon(zs[side]))),
-            "z_extra": sorted(c for c, t0 in made[side].items() if t0 <= min(obs.game_time, strat.horizon(zs[side])) and zs[side]["t"].get(c, 1e9) > min(obs.game_time, strat.horizon(zs[side])) and c in pool["items"][races[side]])} if side in zs else {}),
+            "z_extra": sorted(c for c, t0 in made[side].items() if t0 <= min(obs.game_time, strat.horizon(zs[side])) and zs[side]["t"].get(c, 1e9) > min(obs.game_time, strat.horizon(zs[side])) and c in pool["items"][races[side]] and c not in (zs[side].get("held") or ()))} if side in zs else {}),
         **({"branch": round(replay["t"] * cfg["step_seconds"]), "branch_same": same} if replay is not None else {}),
         "slot_difficulty": g.setup.slots[side].difficulty,  # (its income: insane's doubles it; agent_difficulty)
         **({} if train else {"eval": True, "eval_key": opp.get("eval_tag") or opp.get("eval_key") or "current"})}
@@ -4052,6 +4084,10 @@ def main(argv: list[str] | None = None) -> int:
                     "a state of the game's map and races whose start locations are the game's. PATH:W: that file's "
                     "states are a share W of the late starts (e.g. people's, runs/fullgame/late-states-human-129.jsonl:0.5"
                     "; late.States), the files without a weight share the rest; without weights all states alike")
+    ap.add_argument("--late-z", type=int, default=0, help="1: in a late start from a state with plans (scripts/"
+                    "late_from_demos.py --plans 1: people's games), each trained side's target is what that person went on "
+                    "to make from then (late.plan_target, with --z-pool's slots); a state without plans: no target, no "
+                    "input (0, as before: no target or reward in a late start, the input drawn before it stays)")
     ap.add_argument("--eval-human", type=int, default=0, help="1: evaluation games of the current policy from a slot at a "
                     "person's income too (current+human; since 2026-10-26 every agent slot is at a person's income, "
                     "agent_difficulty, so these are the same games as current's)")
@@ -4790,7 +4826,7 @@ def main(argv: list[str] | None = None) -> int:
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "late_capture": args.late_capture, "late_minutes": [float(x) for x in args.late_minutes.split(",")],
-           "late_states": [x for x in args.late_states.split(",") if x],
+           "late_states": [x for x in args.late_states.split(",") if x], "late_z": args.late_z,
            "eval_ai": [d for d in args.eval_ai.split(",") if d],
            "map_geometry": [fx.STARTS, fx.BIN_RANGE],
            "infer_entities": [int(x) for x in args.infer_entities.split(",")],
