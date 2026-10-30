@@ -3,7 +3,7 @@ there its inference (fullgame/gateway.py on the learner's machine, selfplay --re
 and the actors' Python run here (selfplay.actor_main, game_loop and play_one, as the learner's own actors);
 their network calls and their steps go to the gateway over TCP. No GPU here, no network's weights.
 
-    python -m warcraftsim.fullgame.remoteactor --host <learner's machine> [--port 8770] --actors 8 --games-per-actor 7
+    python -m warcraftsim.fullgame.remoteactor --host <learner's machine> [--port 8770] --actors 8 --games-per-actor 7 [--ksm 1]
 
 * At its start (and whenever the learner comes back after a restart) the gateway sends the actors' settings
   (the learner's own, as its actors get them), vocab.json, the strategy pool and Wine's settings; they go
@@ -36,6 +36,8 @@ import types
 from pathlib import Path
 
 from . import wire
+
+PR_SET_MEMORY_MERGE = 67  # (inherited by children, kept across exec; Linux 6.4)
 
 
 class NetInference:
@@ -200,7 +202,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--wine", help="Wine's bin folder here (default: the run's, at the same path under this home)")
     ap.add_argument("--wait", type=float, default=600.0, help="seconds a game waits for the gateway before it ends")
     ap.add_argument("--spec-every", type=float, default=5.0, help="seconds between asks for the league's launches")
+    ap.add_argument("--ksm", type=int, default=0, help="1: this process and all it starts (actors, Wine, the games) opt in "
+                    "to same-page merging (/sys/kernel/mm/ksm/run must be on): 42 games used 13-17 GB instead of 22, "
+                    "ksmd 1-2%% of a core, no slower a step (2026-10-30)")
     a = ap.parse_args(argv)
+    if a.ksm:
+        import ctypes
+        if ctypes.CDLL(None, use_errno=True).prctl(PR_SET_MEMORY_MERGE, 1, 0, 0, 0):
+            raise SystemExit(f"--ksm: {os.strerror(ctypes.get_errno())}")
     import multiprocessing as mp
 
     from .. import paths

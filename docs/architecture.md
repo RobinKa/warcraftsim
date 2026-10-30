@@ -105,7 +105,7 @@ flowchart LR
 
 ```
 python -m warcraftsim.fullgame.selfplay ... --remote-games 56 [--remote-port 8770] [--remote-bind <this machine's address>]
-python -m warcraftsim.fullgame.remoteactor --host <the run's machine> --actors 8 --games-per-actor 7   # there
+python -m warcraftsim.fullgame.remoteactor --host <the run's machine> --actors 8 --games-per-actor 7 [--ksm 1]   # there
 ```
 
 ## Machines' readings
