@@ -1918,6 +1918,8 @@ Replay data (2026-10-26): only 1.29 replays play back in our client (1.26/1.28 f
 
 **The games box** (14:15 on 2026-10-30): `tora-ms-a2`, a Minisforum MS-A2, set up and playing `fgself-167`'s evaluation games with inference on its CPU, ~1,085 games an hour at first (the laptop ~790); measurements in [scaling up the CPUs](scaling-cpus.md#the-box-we-bought-measured-2026-10-30). `fgself-167` resumed at 14:03 from 52554108. `remote_eval.py` compared the host's row count with the whole local file, so a second host's rows waited until their count passed the first's, and that many were then lost: now it counts its own host's rows (none lost here, caught at 160 rows).
 
+**Stopped to move the box** (14:21): `fgself-167` at 55.3M steps (checkpoint 55349539, loads). At 222 games a policy, level with its start against insane: 70% to 71% (+0.1 points, races weighed alike); head to head 48% of 139; with a target 22%. The top unit's share 0.91 to 0.94 (the interval excludes 0), anti-air against 4+ air 0.26 to 0.31 (also excludes 0), wins past 18 minutes 45% to 35% (not significant), no expansions. Next: resume it to ~250 games and judge it.
+
 The queue:
 1. (done: in `fgself-155`) The audit-12 economy fixes: a training map whose mines and start scale with its costs (`echofast2`), workers labelled up to the target's count, masks against duplicate tech buildings and surplus workers, orc burrow and no-target lumber lessons.
 2. Cloning the scripted strategy family as anchor and teacher (AlphaStar's recipe with scripted data). First tune its weak plans, and add night elf and undead expansion plans. Then record thousands of echofast games (`scripts/heuristic_match.py --record`), train a cloning policy, and use it as the KL anchor and a distillation teacher.
