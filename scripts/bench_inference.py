@@ -119,7 +119,9 @@ def main() -> int:
     if a.compare:  # fused, side by side: the given entity counts against these
         base, t_base = run(True, fuse=True)
         out, t = run(True, fuse=True, live_e=a.compare[0], past_e=a.compare[1])
-        worst = max(abs(x[0] - y[0]) + abs(x[1] - y[1]) for rs, rp in zip(base, out) for x, y in zip(rs, rp))
+        # (sorted: other entity counts split a round's rows into other calls, so the answers come in another order; compared
+        # in order, 3.27 "differed" on 2026-10-30, with a network whose outputs don't change at all with the padding)
+        worst = max(abs(x[0] - y[0]) + abs(x[1] - y[1]) for rs, rp in zip(base, out) for x, y in zip(sorted(rs), sorted(rp)))
         for name, tt in ((f"{a.entities} / {a.past_entities}", t_base), (f"{a.compare[0]} / {a.compare[1]}", t)):
             print(f"entities {name}: {tt.sum():.2f} ms a round (launching {tt[0]:.2f}, GPU {tt[1]:.2f}, answers {tt[2]:.2f})")
         print(f"largest difference in value + entropy {worst:.2e}")
