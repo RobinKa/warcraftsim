@@ -27,7 +27,7 @@ The link to the main machine, which is on Wi-Fi: 36 MB/s to the box, 62 MB/s fro
 
 With a direct cable between the main machine's `eno1` and the box's `enp4s0` (2.5 GbE, addresses 10.77.0.1 and 10.77.0.2, NetworkManager's `games-link`, no internet route over it): **281 MB/s each way, 0.56 ms idle, 0.87 ms on average and 1.4 ms at worst while busy**. Tailscale's traffic takes the cable by itself.
 
-As a training machine: 64 games with same-page merging and four gateways, 3,280 to **4,450 steps/s**; the limit is now the GPU ([log](optimization-log.md#training-games-on-a-second-machine-2026-10-30)).
+As a training machine: 56 games with same-page merging and four gateways, 3,280 to **4,625 steps/s**; the limit is now the GPU ([log](optimization-log.md#training-games-on-a-second-machine-2026-10-30)).
 
 ## Electricity
 

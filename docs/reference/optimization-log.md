@@ -666,6 +666,7 @@ The games box (MS-A2, 8945HX, capped at 4.0 GHz) plays training games for the le
 | 42 games | 4,030-4,240 | ~1,250 | 33-36 ms | 22 of 28 GB | the box's memory |
 | 42 games, same-page merging (`--ksm 1`) | as above | as above | 35.6 ms | 13-17 GB, ksmd 1-2% of a core | |
 | 64 games, one gateway | 4,210 | 1,440 | 42.8 ms | | the gateway's GIL, ~95% of a core |
-| 64 games, 4 gateways (`--remote-gateways 4`) | **4,450** | 1,800 | 33.0 ms | 24 GB, ~5 GB merged, ksmd 5% | **the GPU** |
+| 64 games, 4 gateways (`--remote-gateways 4`) | 4,450 | 1,800 | 33.0 ms | full: 2.2 GB available, 3.1 GB of swap, ~5 GB merged, ksmd 5% | the box's memory, the GPU |
+| 56 games, 4 gateways, merging's scan 2.5 times as fast (2,500 pages each 20 ms) | **4,625** | 1,660 | 31.9 ms | 19.7 GB, ~9.6 GB merged, ksmd 8%, no swap | **the GPU** |
 
-With the box's games at the pace of the main machine's, the RTX 3090 is the limit: the inference server is busy 99% of the time, 55% of its rounds overlap a learner update (latency 8.3 ms, 17.9 ms in an update), and the update's ~35% of the GPU and inference's ~65% fill it. The box's CPU is still ~60% idle. Steps a second rose 36%, with 89% more games. More games won't help until a step costs the GPU less: 66% of inference calls are past snapshots', each a small batch of its own.
+With the box's games at the pace of the main machine's, the RTX 3090 is the limit: the inference server is busy 99% of the time, 55% of its rounds overlap a learner update (latency 8.3 ms, 17.9 ms in an update), and the update's ~35% of the GPU and inference's ~65% fill it. The box's CPU is still ~50% idle. Steps a second rose 41%, with 78% more games. More games won't help until a step costs the GPU less: 66% of inference calls are past snapshots', each a small batch of its own.
