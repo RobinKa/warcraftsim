@@ -1668,7 +1668,8 @@ def _machine_split(episodes: list[dict], now: float, window: float = SPLIT_WINDO
             if kind == "train":
                 m["steps_recent"] += e.get("length") or 0
     for m in out.values():
-        m["steps_per_s_recent"] = m.pop("steps_recent") / window
+        first = m["first_train"]  # (a run younger than the window: over its life, or it reads low)
+        m["steps_per_s_recent"] = m.pop("steps_recent") / max(min(window, now - first), 60.0)
         span, steps = end - m.pop("first_train"), m.pop("steps")
         m["steps_per_s"] = steps / span if span > 60 and m["train"] else None
     return sorted(out.values(), key=lambda m: (m["machine"] != me, m["machine"]))

@@ -1388,7 +1388,7 @@ function renderMain() {
         return show.map(p => { const e = 1.96 * (p.se || 0), rk = ranks.get(p.name);
           return `${Math.round(p.rating)} <small>(95% ${Math.round(p.rating - e)}–${Math.round(p.rating + e)}) · ${esc(p.name)}, ${p.games} games${rk ? ` · rank ${rk.rank} (${rk.lo}–${rk.hi}) of ${pool.length}` : ""}</small>`; }).join("<br>"); })()],
       ["KL anchor", anchorCard(info)],
-      ["Games", `${info.envs} <small>at once</small>`],
+      ["Games", `${info.envs}${+(info.config || {}).remote_games ? ` <small>here + ${+info.config.remote_games} slots on another machine</small>` : " <small>at once</small>"}`],
       ["Trained", dur(info.trained_seconds || elapsed) + (info.resumes ? ` <small>${info.resumes.length + 1} sessions</small>` : "")],
     ] : [
       ["Game speed", bridge.game_x_realtime ? `${fmt(bridge.game_x_realtime, 0)}× <small>realtime, all games</small>` : "–"],
