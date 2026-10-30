@@ -655,3 +655,17 @@ Round 7's candidates measured (the whole account in [speeding up the game itself
 * `runs/<run>/inference.jsonl` (the server's rounds, rows, waits); `scripts/selfplay_status.py <run>`.
 * `scripts/production_probe.py` and `scripts/order_probability.py`: what a policy does at its buildings, and how likely it is to give the built-in AI's orders.
 * Benchmarks with many games must share one measurement window (games launched at different times never overlap).
+
+## Training games on a second machine (2026-10-30)
+
+The games box (MS-A2, 8945HX, capped at 4.0 GHz) plays training games for the learner over a direct 2.5 GbE cable (`--remote-games`, `fullgame/remoteactor.py`). Measured over ~5 minutes each, on the same run; 72 games stay on the main machine, evaluation games on the laptop.
+
+| on the box | steps/s | the box's side-steps/s | a box game's step | the box's memory | what held it back |
+|---|---|---|---|---|---|
+| none | 3,280 | | | | the main machine's CPU |
+| 42 games | 4,030-4,240 | ~1,250 | 33-36 ms | 22 of 28 GB | the box's memory |
+| 42 games, same-page merging (`--ksm 1`) | as above | as above | 35.6 ms | 13-17 GB, ksmd 1-2% of a core | |
+| 64 games, one gateway | 4,210 | 1,440 | 42.8 ms | | the gateway's GIL, ~95% of a core |
+| 64 games, 4 gateways (`--remote-gateways 4`) | **4,450** | 1,800 | 33.0 ms | 24 GB, ~5 GB merged, ksmd 5% | **the GPU** |
+
+With the box's games at the pace of the main machine's, the RTX 3090 is the limit: the inference server is busy 99% of the time, 55% of its rounds overlap a learner update (latency 8.3 ms, 17.9 ms in an update), and the update's ~35% of the GPU and inference's ~65% fill it. The box's CPU is still ~60% idle. Steps a second rose 36%, with 89% more games. More games won't help until a step costs the GPU less: 66% of inference calls are past snapshots', each a small batch of its own.
