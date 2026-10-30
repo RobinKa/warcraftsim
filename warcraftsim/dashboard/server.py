@@ -27,6 +27,7 @@ import json
 import mimetypes
 from collections import OrderedDict
 import os
+import socket
 import threading
 import time
 import urllib.parse
@@ -1550,10 +1551,16 @@ class Dashboard:
         stamp = self.run_stamp(d)
         cached = self._pages.get(name)
         if cached and cached[0] == stamp:  # (nothing changed: a finished run, or between two updates)
-            return self._with_video_info(name, cached[1])
+            return self._with_machines(self._with_video_info(name, cached[1]))
         page = self._run_page(name, d)
         self._pages[name] = (stamp, page)
-        return self._with_video_info(name, page)
+        return self._with_machines(self._with_video_info(name, page))
+
+    def _with_machines(self, page: dict) -> dict:
+        """The page with the machines' readings (host_stats.py writes them on its own: not cached with the page)."""
+        if page.get("info", {}).get("trainer") != "fullgame":
+            return page
+        return {**page, "machines": _machines(self.runs_dir / "hosts", self.cache, time.time())}
 
     def _with_video_info(self, name: str, page: dict) -> dict:
         """The page with its videos' info (videos.py; made by a thread, so added as it comes, not cached with the page)."""
@@ -1600,13 +1607,16 @@ class Dashboard:
         system = _system(self.cache.read(d / "system.jsonl"), self.cache.read(d / "inference.jsonl"), train_rows) \
             if fullgame else None
         production = _production(episodes[-800:]) if fullgame else None
+        split = _machine_split(episodes, time.time()) if fullgame else None
         if fullgame:
             info["trained_seconds"] = _trained_seconds(train_rows)
             info["real_game"] = _real_game(episodes)
             argv = [str(x) for x in (info.get("launch") or {}).get("argv") or []]
             try:  # the remote evaluation worker (scripts/remote_eval.py marks each arrival of its games)
                 # (when its games last came, not how long ago: the page counts; the answer stays the same)
+                remote = self.cache.read(d / "episodes-remote.jsonl")  # (the machine that played the newest game)
                 info["remote_eval"] = {"seen": (d / "remote-eval.alive").stat().st_mtime,
+                                       "host": next((r["host"] for r in reversed(remote) if r.get("host")), None),
                                        "fallback": next((float(v) for x, v in zip(argv, argv[1:]) if x == "--eval-fallback"),
                                                         0.0)}
             except FileNotFoundError:
@@ -1627,7 +1637,58 @@ class Dashboard:
             "evals": self.cache.read(d / "evals.jsonl"),
             "league": _read_json(d / "league.json"),
             "system": system,
+            "split": split,
         }
+
+
+SPLIT_WINDOW = 1800.0  # seconds: the "last 30 minutes" of the per-machine split
+HOST_SHOW = 3600.0  # a machine with a row this recent is shown
+HOST_SPAN = 86400.0  # the charts' time range
+
+
+def _machine_split(episodes: list[dict], now: float, window: float = SPLIT_WINDOW) -> list[dict]:
+    """The run's games by machine (a row without `host` is this machine's): training and evaluation games over the last
+    `window` seconds and over the run, and the training games' agent side-steps (`length`) a second (over the window,
+    and over the run from that machine's first training game to the run's newest game)."""
+    me = socket.gethostname()
+    end = max((e.get("time", 0) for e in episodes), default=now)
+    out: dict[str, dict] = {}
+    for e in episodes:
+        t = e.get("time", 0)
+        name = e.get("host") or me
+        m = out.setdefault(name, {"machine": name, "train": 0, "eval": 0, "train_recent": 0, "eval_recent": 0,
+                                  "steps": 0, "steps_recent": 0, "first_train": end})
+        kind = "eval" if e.get("eval") else "train"
+        m[kind] += 1
+        if kind == "train":
+            m["steps"] += e.get("length") or 0
+            m["first_train"] = min(m["first_train"], t)
+        if t >= now - window:
+            m[kind + "_recent"] += 1
+            if kind == "train":
+                m["steps_recent"] += e.get("length") or 0
+    for m in out.values():
+        m["steps_per_s_recent"] = m.pop("steps_recent") / window
+        span, steps = end - m.pop("first_train"), m.pop("steps")
+        m["steps_per_s"] = steps / span if span > 60 and m["train"] else None
+    return sorted(out.values(), key=lambda m: (m["machine"] != me, m["machine"]))
+
+
+def _machines(hosts_dir: Path, cache: "_JsonlCache", now: float) -> list[dict]:
+    """The machines of a run (scripts/host_stats.py: runs/hosts/<name>.jsonl) with a row in the last hour: the newest
+    row, the newest one where it answered (and when), and the last day's temperature, CPU and memory (<= 200 points)."""
+    out = []
+    for f in sorted(hosts_dir.glob("*.jsonl")) if hosts_dir.is_dir() else []:
+        rows = cache.read(f)
+        if not rows or now - rows[-1].get("time", 0) > HOST_SHOW:
+            continue
+        up = [r for r in rows[-3000:] if r.get("up")]
+        recent = [r for r in up if r.get("time", 0) >= now - HOST_SPAN]
+        series = [{"time": r["time"], "temp": r.get("temp"), "cpu": r.get("cpu_busy"),
+                   "mem": None if r.get("mem_total") is None or r.get("mem_avail") is None else r["mem_total"] - r["mem_avail"]}
+                  for r in _downsample(recent, 200)]
+        out.append({"name": f.stem, "last": rows[-1], "reading": up[-1] if up else None, "series": series})
+    return out
 
 
 def _system(sysrows: list[dict], infer: list[dict], train: list[dict]) -> dict:

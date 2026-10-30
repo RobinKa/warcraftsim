@@ -108,6 +108,17 @@ python -m warcraftsim.fullgame.selfplay ... --remote-games 56 [--remote-port 877
 python -m warcraftsim.fullgame.remoteactor --host <the run's machine> --actors 8 --games-per-actor 7   # there
 ```
 
+## Machines' readings
+
+`scripts/host_stats.py` (no torch, started by hand like `remote_eval.py`) looks at each machine of a run every 30 s with one ssh call (BatchMode, a connect timeout and a subprocess timeout: Tailscale SSH can wait for an approval in a browser): CPU busy (two `/proc/stat` samples a second apart), memory, load, Tctl from `sensors` (null where there are none, as in WSL), mean and max clock, the game processes (counted by their comm in `/proc`, so nothing matches its own shell), uptime and the power profile. One row each in `runs/hosts/<name>.jsonl`; a machine that does not answer gets `up: false` and the others carry on. Rows older than a week are dropped at the start and every 6 hours.
+
+```
+setsid nohup .venv/bin/python scripts/host_stats.py --host robin@laptop-wsl --host tora-ms-a2@tora-ms-a2 > runs/host_stats.log 2>&1 &
+.venv/bin/python scripts/host_stats.py --host robin@laptop-wsl --once    # one look, printed, nothing written
+```
+
+The dashboard's System tab shows the machines with a row in the last hour (cards, and charts of the last day's temperature, CPU and memory; the temperature is red from 90 C) and the run's games by machine (`split` of `GET /api/runs/<run>`: training and evaluation games and the training games' side-steps a second, over the last 30 minutes and over the run; a row without `host` is this machine's).
+
 ## One step
 
 ```mermaid

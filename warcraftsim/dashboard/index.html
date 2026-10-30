@@ -60,6 +60,13 @@ main { padding:14px 18px 40px; overflow:auto; min-height:0; }
 .bverdict { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin-bottom:10px; }
 .bgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(420px,100%),1fr)); gap:10px; }
 .bgrid .panel.wide { grid-column:1 / -1; }
+.mgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(260px,100%),1fr)); gap:10px; margin-bottom:10px; }
+.mach dl { display:grid; grid-template-columns:auto 1fr; gap:2px 12px; margin:0; font-variant-numeric:tabular-nums; }
+.mach dt { color:var(--muted); } .mach dd { margin:0; text-align:right; }
+.mach .hot { color:var(--bad); font-weight:600; }
+.mach .down { color:var(--bad); }
+.scroll { overflow-x:auto; }
+.scroll table { border:0; min-width:520px; }
 .blegend { display:flex; flex-wrap:wrap; gap:4px 14px; margin-top:8px; font-size:12px; color:var(--muted); }
 .blegend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; vertical-align:-1px; }
 .blegend b { color:var(--text); font-weight:600; }
@@ -1318,7 +1325,7 @@ function renderMain() {
               <div class="row"><button id="savenotes">save</button><span>Ctrl+Enter saves</span></div></div>
             <div class="panel"><h3>Lineage</h3><dl class="facts" id="lineage"></dl></div>
           </div>`],
-        ...SECTIONS.map(([name, charts]) => [slug(name), name, (name === "System" ? `<div id="bottleneck"></div>` : "") + `<div class="grid">${charts.map(box).join("")}</div>`
+        ...SECTIONS.map(([name, charts]) => [slug(name), name, (name === "System" ? `<div id="machines"></div><div id="bottleneck"></div>` : "") + `<div class="grid">${charts.map(box).join("")}</div>`
           + (name === "Production" ? `<div id="production"></div>` : ""), true]),
         ["leaguetable", "League table", `<div id="leaguetable"></div>`],
         ["matchups", "Matchups", `<div id="matchups"></div>`],
@@ -1339,6 +1346,7 @@ function renderMain() {
   renderLineage(d);
   renderCheckpoints(d);
   renderProduction(d);
+  renderMachines(d);
   renderBottleneck(d);
   renderMatchups(d);
   chartVisibility(d);
@@ -1370,7 +1378,7 @@ function renderMain() {
     ...(info.trainer === "fullgame" ? [
       ...(info.remote_eval && info.status === "training" ? [["Evaluation worker", (() => { const r = { ...info.remote_eval }; r.age = r.seen != null ? Date.now() / 1000 - r.seen : r.age; const m = r.age / 60, down = r.fallback && r.age > r.fallback;
         return down ? `<span style="color:var(--bad, #e5534b)">silent ${m.toFixed(0)} min</span> <small>· this machine's fallback plays the evaluation games</small>`
-          : `${m < 1 ? "up" : `last game ${m.toFixed(0)} min ago`} <small>· the laptop plays the evaluation games${r.fallback ? " · this machine's wait" : ""}</small>`; })()]] : []),
+          : `${m < 1 ? "up" : `last game ${m.toFixed(0)} min ago`} <small>· ${r.host ? esc(r.host) : "another machine"} plays the evaluation games${r.fallback ? " · this machine's wait" : ""}</small>`; })()]] : []),
       ["Real game", info.real_game ? `${(100 * info.real_game.wins).toFixed(0)}% <small>won · ${(100 * info.real_game.ties).toFixed(0)}% tied · last ${info.real_game.games} ${info.real_game.evaluation ? "evaluation games" : "vs the built-in AI"}${Object.entries(info.real_game.vs || {}).map(([k, v]) => ` · ${esc(k)}: ${(100 * v).toFixed(0)}%`).join("")}</small>` : "–"],
       ["Rating", (() => { const D = ratingsForRun(); if (!D) return "–";
         const R = ui.ratings, pool = D.players.filter(p => R.kinds[p.kind] && (p.kind === "anchor" || p.games >= R.min)), ranks = ratingRanks(pool);
@@ -1435,7 +1443,7 @@ function renderMain() {
       d.recent_episodes.map(e => { const p = e.prod || {}, o = e.opp_prod || {};
         const opp = esc(e.opponent) + (e.ai_tax ? ` <small>taxed ${(100 * e.ai_tax).toFixed(0)}%</small>` : e.ai_delay ? ` <small>${fmt(e.ai_delay, 0)} s late</small>` : "")
           + (e.advised ? ` <small title="the built-in AI advised the learner (on-policy distillation)">advised</small>` : "")
-          + (e.host ? ` <small title="an evaluation game another machine played (fullgame/evalworker.py, episodes-remote.jsonl)">on ${esc(e.host)}</small>` : "");
+          + (e.host ? ` <small title="${e.eval ? "an evaluation game another machine played (fullgame/evalworker.py, episodes-remote.jsonl)" : "a training game another machine played (fullgame/remoteactor.py)"}">on ${esc(e.host)}</small>` : "");
         return `<tr><td>${e.episode}</td><td>${opp}</td><td>${esc(e.race || "")} <small>vs</small> ${esc(e.opponent_race || "–")}</td>${outc(e)}<td>${fmt(e.return, 3)}</td><td>${e.game_time ? e.game_time.toFixed(1) + "s" : "–"}</td>
           <td>${fmt(e.material_lead, 2)}</td><td>${two(p.army, o.army)}</td><td>${two(p.heroes, o.heroes)}</td><td>${two(p.kills, p.lost)}</td><td>${two(e.gold, p.lumber)}</td><td>${ago(e.time)}</td></tr>`; }).join("") +
       `</table>` : `<div class="empty">no episodes yet</div>`;
@@ -2002,6 +2010,62 @@ function drawStack(box, opts) {
     tip.style.top = (ev.clientY + 12) + "px";
   };
   svg.onpointerleave = () => { cur.setAttribute("visibility", "hidden"); tip.style.display = "none"; };
+}
+
+// ---- the machines of the run (GET /api/runs/<run>: "machines", scripts/host_stats.py; "split", server.py _machine_split) ----
+const MACHINE_COLORS = ["#539bf5", "#e0a33a", "#4cc38a", "#b083f0", "#39c5cf"];
+function drawLines(box, opts) {  // opts: { series: [[label, color, [[t, v]]]], yLabel, unit, ymax, mark (a line, e.g. 90 C) }
+  if (!box) return;
+  const all = opts.series.flatMap(s => s[2]).filter(p => p[1] != null);
+  if (all.length < 2) { box.innerHTML = `<div class="sub">not enough samples yet</div>`; return; }
+  const W = Math.max(200, box.clientWidth), H = 130, L = 36, R = 8, T = 8, B = 20, pw = W - L - R, ph = H - T - B;
+  const t0 = Math.min(...all.map(p => p[0])), t1 = Math.max(...all.map(p => p[0]));
+  const ymax = opts.ymax || Math.max(1, ...all.map(p => p[1]), opts.mark || 0) * 1.1;
+  const X = t => L + (t - t0) / Math.max(t1 - t0, 1e-9) * pw, Y = v => T + ph - v / ymax * ph;
+  const when = t => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const out = [0, 0.5, 1].map(f => `<line x1="${L}" x2="${W - R}" y1="${Y(f * ymax)}" y2="${Y(f * ymax)}" stroke="var(--line)"/><text x="${L - 5}" y="${Y(f * ymax) + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${+(f * ymax).toFixed(f === 1 ? 0 : 1)}</text>`);
+  if (opts.mark) out.push(`<line x1="${L}" x2="${W - R}" y1="${Y(opts.mark)}" y2="${Y(opts.mark)}" stroke="var(--bad)" stroke-dasharray="4 3" opacity="0.7"/>`);
+  out.push(`<text x="${L}" y="${H - 4}" font-size="11" fill="var(--muted)">${when(t0)}</text><text x="${W - R}" y="${H - 4}" text-anchor="end" font-size="11" fill="var(--muted)">${when(t1)}</text>`);
+  for (const [label, color, pts] of opts.series) {  // (a gap in the readings, e.g. a null temperature, breaks the line)
+    let path = "", pen = false;
+    for (const [t, v] of pts) { if (v == null) { pen = false; continue; } path += `${pen ? "L" : "M"}${X(t).toFixed(1)},${Y(v).toFixed(1)}`; pen = true; }
+    out.push(`<path d="${path}" fill="none" stroke="${color}" stroke-width="1.6"><title>${esc(label)}</title></path>`);
+  }
+  box.innerHTML = `<svg width="${W}" height="${H}" style="display:block">${out.join("")}</svg>`;
+}
+function renderMachines(d) {
+  const el = document.getElementById("machines");
+  if (!el) return;
+  const M = d.machines || [], S = (d.split || []).filter(m => m.train || m.eval);
+  if (!M.length && S.length < 2) { el.innerHTML = ""; return; }  // (one machine: nothing to split; no host rows: nothing to show)
+  const num = (v, dg = 0, u = "") => v == null ? "–" : v.toFixed(dg) + u;
+  const cards = M.map(m => { const r = m.reading || {}, l = m.last, up = l.up, hot = r.temp != null && r.temp >= 90;
+    const used = r.mem_total != null && r.mem_avail != null ? `${(r.mem_total - r.mem_avail).toFixed(1)} / ${r.mem_total.toFixed(1)} GB` : "–";
+    const state = up ? `<span style="color:var(--good)">up</span>` : `<span class="down">${m.reading ? "down · last seen " + ago(r.time) : "not answering"}</span>`;
+    return `<div class="panel mach"><h3>${esc(m.name)}<span>${state}</span></h3><dl>
+      <dt>CPU busy</dt><dd>${num(r.cpu_busy, 0, " %")}</dd><dt>Memory used</dt><dd>${used}</dd>
+      <dt>Temperature</dt><dd class="${hot ? "hot" : ""}">${num(r.temp, 0, " °C")}</dd>
+      <dt>Clock</dt><dd>${r.mhz_mean != null ? `${(r.mhz_mean / 1000).toFixed(2)} GHz <small>(max ${(r.mhz_max / 1000).toFixed(2)})</small>` : "–"}</dd>
+      <dt>Games running</dt><dd>${num(r.games)}</dd>
+      <dt>Load</dt><dd>${r.load ? r.load.map(v => v.toFixed(1)).join(" ") : "–"}</dd>
+      <dt>Up for</dt><dd>${dur(r.uptime)}${r.profile ? ` <small>· ${esc(r.profile)}</small>` : ""}</dd></dl></div>`; }).join("");
+  const line = f => M.map((m, i) => [m.name, MACHINE_COLORS[i % MACHINE_COLORS.length], m.series.map(p => [p.time, f(p)])]);
+  const leg = M.map((m, i) => `<span><i style="background:${MACHINE_COLORS[i % MACHINE_COLORS.length]}"></i>${esc(m.name)}</span>`).join("");
+  const row = m => `<tr><td>${esc(m.machine)}</td><td>${m.train_recent}</td><td>${m.eval_recent}</td><td>${fmt(m.steps_per_s_recent, 0)}</td>
+      <td>${m.train}</td><td>${m.eval}</td><td>${fmt(m.steps_per_s, 0)}</td></tr>`;
+  el.innerHTML = `<div class="bneck"><h3 style="margin:0 0 8px;font-size:12px;color:var(--muted)">Machines</h3>
+    ${M.length ? `<div class="mgrid">${cards}</div>
+    <div class="mgrid">
+      <div class="panel"><h3>Temperature <span>°C, last 24 h</span></h3><div id="mc-temp"></div></div>
+      <div class="panel"><h3>CPU busy <span>%, last 24 h</span></h3><div id="mc-cpu"></div></div>
+      <div class="panel"><h3>Memory used <span>GB, last 24 h</span></h3><div id="mc-mem"></div></div>
+    </div><div class="blegend" style="margin:0 0 10px">${leg}</div>` : ""}
+    ${S.length ? `<div class="panel"><h3>Games by machine <span>training games' side-steps a second</span></h3><div class="scroll"><table>
+      <tr><th>machine</th><th>training 30 min</th><th>evaluation 30 min</th><th>steps/s 30 min</th><th>training run</th><th>evaluation run</th><th>steps/s run</th></tr>
+      ${S.map(row).join("")}</table></div></div>` : ""}</div>`;
+  drawLines(document.getElementById("mc-temp"), { series: line(p => p.temp), mark: 90 });
+  drawLines(document.getElementById("mc-cpu"), { series: line(p => p.cpu), ymax: 100 });
+  drawLines(document.getElementById("mc-mem"), { series: line(p => p.mem) });
 }
 
 function renderBottleneck(d) {
