@@ -13,6 +13,7 @@ KL term, the cloning loss on 64-step batches, the distillation loss). It needs t
 from __future__ import annotations
 
 import argparse
+import json
 import random
 import sys
 import time
@@ -101,6 +102,10 @@ def main() -> int:
     ap.add_argument("--no-dropout", action="store_true", help="dropout off (to compare the eager and graphed updates)")
     ap.add_argument("--ref-bf16", action="store_true", help="the KL term's clone with its weights in bfloat16")
     ap.add_argument("--bc-batch", type=int, default=64, help="steps of demonstrations a minibatch's cloning loss reads")
+    ap.add_argument("--adam-fused", action="store_true", help="selfplay --adam-fused")
+    ap.add_argument("--games", type=int, default=0, help="at most this many of the demonstrations (0: all of them)")
+    ap.add_argument("--ref-memory", action="store_true", help="the clone with a memory core, as in a run (--ref: the same architecture)")
+    ap.add_argument("--json", type=Path, help="write each update's seconds and statistics here (bench_gpu_round.py)")
     a = ap.parse_args()
     device = torch.device(a.device)
     if a.run:
@@ -111,13 +116,13 @@ def main() -> int:
     net, ck = load(a.checkpoint, device)
     vocab = ck.get("vocab") or __import__("json").loads((Path("runs") / a.run / "vocab.json").read_text())  # (a run's
     # current.pt: its vocabulary is the run's)
-    ref = load(a.ref, device, memory=False)[0] if a.ref else None
+    ref = load(a.ref, device, memory=a.ref_memory)[0] if a.ref else None
     if ref is not None:
         ref.eval()
         if a.ref_bf16:  # (frozen: its weights cast once instead of at every use)
             ref.to(torch.bfloat16)
     costs = order_costs(vocab, "duelfast")
-    paths = sorted(p for d in a.data for p in d.glob("game*.npz"))
+    paths = sorted(p for d in a.data for p in d.glob("game*.npz"))[:a.games or None]
     t0 = time.time()
     steps, chunks = make_steps(paths, vocab, costs, net, device, a.steps)
     print(f"{len(steps)} steps in {len(chunks)} chunks ({time.time() - t0:.0f} s)", flush=True)
@@ -150,10 +155,10 @@ def main() -> int:
                 m.p = 0.0
             if hasattr(m, "dropout") and isinstance(getattr(m, "dropout"), float):
                 m.dropout = 0.0
-    opt = torch.optim.Adam(net.parameters(), lr=3e-5, eps=1e-5, capturable=a.graphs)
+    opt = torch.optim.Adam(net.parameters(), lr=3e-5, eps=1e-5, capturable=a.graphs, **({"fused": True} if a.adam_fused else {}))
     from warcraftsim.fullgame.selfplay import GraphedUpdate
     updater = GraphedUpdate(net, ref, opt, args, device) if a.graphs else None
-    times = []
+    times, stats = [], []
     for u in range(a.updates + 1):
         torch.cuda.synchronize() if device.type == "cuda" else None
         t = time.time()
@@ -172,10 +177,15 @@ def main() -> int:
         out = updater.update(steps, chunks, False, bc_iter) if updater else ppo_update(net, ref, opt, steps, args, False, device, chunks, bc_iter)
         torch.cuda.synchronize() if device.type == "cuda" else None
         times.append(time.time() - t)
+        stats.append(out)
         print(f"update {u}: {times[-1]:.2f} s  " + " ".join(f"{k} {v:.4f}" for k, v in sorted(out.items())), flush=True)
     if len(times) > 1:
         print(f"seconds per update (after the first): {np.mean(times[1:]):.2f}")
-    print("weights checksum:", float(sum(p.detach().double().sum() for p in net.parameters())))
+    checksum = float(sum(p.detach().double().sum() for p in net.parameters()))
+    print("weights checksum:", checksum)
+    if a.json:
+        a.json.write_text(json.dumps({"seconds": times, "stats": stats, "checksum": checksum,
+                                      "gpu_gb": torch.cuda.max_memory_reserved() / 2 ** 30 if device.type == "cuda" else 0}))
     return 0
 
 

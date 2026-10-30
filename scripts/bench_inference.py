@@ -54,11 +54,20 @@ def main() -> int:
                                                                         "32,48,64,96): the same answers, ms a round")
     ap.add_argument("--fuse", action="store_true", help="compare the compiled (fused) calls with the plain ones, "
                                                           "both side by side")
+    ap.add_argument("--live-rows", default="3,20", help="the current network's rows a round, at random between these")
+    ap.add_argument("--past-rows", default="1,6", help="a past snapshot's rows a round, at random between these")
+    ap.add_argument("--setup", action="store_true", help="the run's input settings first (scripts/bench_view.setup: "
+                                                          "a run with --inputs, the masks, --neutral, --macros; a recent one needs them)")
+    ap.add_argument("--json", type=Path, help="write --compare's numbers here (bench_gpu_round.py)")
     a = ap.parse_args()
     device = torch.device("cuda")
+    if a.setup:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from bench_view import setup
+        setup(str(a.run.resolve()))
     league = json.loads((a.run / "league.json").read_text())
     keys = [m["path"] for m in league["members"] if m.get("path")][-a.past:]
-    cfg = {"run_dir": str(a.run), "max_past": 32, "exploiter_share": 0}
+    cfg = {"run_dir": str(a.run), "max_past": 32, "exploiter_share": 0, "vocab": str(a.run / "vocab.json")}
     nets = Nets(cfg, device)
     latest = max((a.run / "checkpoints").glob("*.pt"))
     vocab = torch.load(latest, map_location="cpu", weights_only=False)["vocab"]
@@ -66,10 +75,11 @@ def main() -> int:
     print(f"{len(steps)} view steps, {len(keys)} past snapshots", flush=True)
     rng = random.Random(0)
     rounds = []
+    live_rows, past_rows = (tuple(int(x) for x in text.split(",")) for text in (a.live_rows, a.past_rows))
     for _ in range(a.rounds):  # like the run's: ~10 rows of the current network, ~3-4 past snapshots with a few each
-        groups = {"current": [(None, i, rng.choice(steps)) for i in range(rng.randint(3, 20))]}
+        groups = {"current": [(None, i, rng.choice(steps)) for i in range(rng.randint(*live_rows))]}
         for key in rng.sample(keys, rng.randint(1, min(len(keys), 6))):
-            groups[key] = [(None, i, rng.choice(steps)) for i in range(rng.randint(1, 6))]
+            groups[key] = [(None, i, rng.choice(steps)) for i in range(rng.randint(*past_rows))]
         rounds.append(groups)
 
     ents = lambda text: tuple(int(x) for x in text.split(","))  # noqa: E731
@@ -113,6 +123,9 @@ def main() -> int:
         for name, tt in ((f"{a.entities} / {a.past_entities}", t_base), (f"{a.compare[0]} / {a.compare[1]}", t)):
             print(f"entities {name}: {tt.sum():.2f} ms a round (launching {tt[0]:.2f}, GPU {tt[1]:.2f}, answers {tt[2]:.2f})")
         print(f"largest difference in value + entropy {worst:.2e}")
+        if a.json:
+            a.json.write_text(json.dumps({"base_ms": t_base.tolist(), "other_ms": t.tolist(), "worst": worst,
+                                          "gpu_gb": torch.cuda.max_memory_reserved() / 2 ** 30}))
         return 0 if worst < 1e-3 else 1
     if a.fuse:  # fp32 plain (the reference), fused, bf16, fused bf16
         base, t_base = run(True)

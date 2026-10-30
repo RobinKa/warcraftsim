@@ -28,22 +28,28 @@ def build_source(src: Path) -> tuple[Path, str | None]:
     """The source to build: a copy in a folder named by its hash (torch's cache: ~/.cache/torch_extensions/<python,
     cuda>/w3_infer_loop-<hash>/), where torch builds it. One build a source, shared by the checkouts that have it (a
     pinned launch's, codepin.py, and the main tree's: the same path, so none rebuilds another's), and none rebuilt
-    under a process that has it loaded when another checkout's source differs. -> (the source, its build folder; the
-    source itself and None, torch's default folder, if torch's private helper is gone)"""
+    under a process that has it loaded when another checkout's source differs. The headers beside it (past_hold.h)
+    count as the source and are copied with it. -> (the source, its build folder; the source itself and None, torch's
+    default folder, if torch's private helper is gone)"""
     import hashlib
 
     data = src.read_bytes()
+    headers = sorted(src.parent.glob("*.h"))
+    digest = hashlib.sha1(data)
+    for h in headers:
+        digest.update(h.read_bytes())
     try:
         from torch.utils.cpp_extension import _get_build_directory
-        d = Path(_get_build_directory(f"w3_infer_loop-{hashlib.sha1(data).hexdigest()[:12]}", False))
+        d = Path(_get_build_directory(f"w3_infer_loop-{digest.hexdigest()[:12]}", False))
     except Exception:  # noqa: BLE001
         return src, None
-    copy = d / src.name
-    if not copy.exists() or copy.read_bytes() != data:
-        tmp = copy.with_name(f"{src.name}.{os.getpid()}.tmp")
-        tmp.write_bytes(data)
-        tmp.replace(copy)
-    return copy, str(d)
+    for f in [*headers, src]:  # (the source last: its copy there means the whole set is)
+        copy, body = d / f.name, f.read_bytes()
+        if not copy.exists() or copy.read_bytes() != body:
+            tmp = copy.with_name(f"{f.name}.{os.getpid()}.tmp")
+            tmp.write_bytes(body)
+            tmp.replace(copy)
+    return d / src.name, str(d)
 
 
 def extension():
@@ -134,6 +140,7 @@ class NativeServer:
                     loop.add_slot_shape(a, k, B, E, x.shape[1], out.shape[1], graph, x.data_ptr(), out.data_ptr())
         loop.set_callbacks(self._reload, self._snapshot, self._stats)
         loop.period = self.cfg.get("infer_period", 0.0)
+        loop.past_period = self.cfg.get("infer_past_period", 0.0)
         loop.version = self.nets.version
         return loop
 
@@ -173,6 +180,13 @@ class NativeServer:
                                 "round_ms": round(1000 * s["busy"] / rounds, 2), "wait_ms": round(1000 * s["wait"] / rounds, 2),
                                 "busy": round(1 - s["idle"] / dt, 3), "entities": round(s["ents"] / rows, 1),
                                 "entities_max_mean": round(s["ents_max"] / calls, 1), "native": True,
+                                # the past snapshots' calls: their rows, the wait in the hold (--infer-past-period-ms), the
+                                # weights copied into slots; each kind's calls by widest row and by rows (8 a bin)
+                                "past_rows_per_s": round(s["past_rows"] / dt, 1),
+                                "past_rows_per_call": round(s["past_rows"] / max(s["past"], 1), 2),
+                                "past_held_ms": round(1000 * s["held_wait"] / max(s["held_rows"], 1), 2),
+                                "past_swaps_per_s": round(s["swaps"] / dt, 1),
+                                "calls_by_entities": s["wide"], "calls_by_rows": s["nrows"],
                                 # rounds launched while the learner was idle / in its update: latency and GPU time
                                 **{f"{k}_{ph}": round(1000 * s[k][i] / max(s["n"][i], 1), 2)
                                    for k in ("lat", "gpu", "launch", "tail") for i, ph in enumerate(("idle", "update"))},
