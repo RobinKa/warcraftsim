@@ -670,3 +670,7 @@ The games box (MS-A2, 8945HX, capped at 4.0 GHz) plays training games for the le
 | 56 games, 4 gateways, merging's scan 2.5 times as fast (2,500 pages each 20 ms) | **4,625** | 1,660 | 31.9 ms | 19.7 GB, ~9.6 GB merged, ksmd 8%, no swap | **the GPU** |
 
 With the box's games at the pace of the main machine's, the RTX 3090 is the limit: the inference server is busy 99% of the time, 55% of its rounds overlap a learner update (latency 8.3 ms, 17.9 ms in an update), and the update's ~35% of the GPU and inference's ~65% fill it. The box's CPU is still ~50% idle. Steps a second rose 41%, with 78% more games. More games won't help until a step costs the GPU less: 66% of inference calls are past snapshots', each a small batch of its own.
+
+The learner's pause after each minibatch, with 56 games on the box, four minutes' mean each (one reading each, so a few percent of noise): 2 ms 4,330 steps/s, **4 ms 4,625**, 8 ms 4,320. It stays at 4 ms.
+
+Where the GPU goes next: the current network's calls carry ~3,600 rows a second in ~190 calls, past snapshots' ~1,000 rows in ~330 calls (about 3 rows a call). So a fifth of the rows take about two thirds of the calls, at about 1 ms of GPU a call whatever its size. Two ways to spend less: serve a past network's calls less often than every round, so they batch (games against past snapshots wait a little, and they are ~20% of the launches), or answer past snapshots on the box's idle CPU for the box's games (weights sent there, more work).
