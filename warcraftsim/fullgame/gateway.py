@@ -18,7 +18,11 @@ and their steps come here over TCP.
 * Only clients with the shared key (wire.KEY_PATH, on both machines) get past the handshake, and nothing they
   send is unpickled.
 
-runs/<run>/remote-actors.json: the connections by host, calls and steps a second and bytes in and out.
+One process's threads share its GIL: at 64 games (~1,450 calls and ~1,600 steps a second) one gateway sat at ~95% of a
+core and the remote games waited for it, with the box's CPU two thirds idle (2026-10-30): --remote-gateways N.
+
+runs/<run>/remote-actors.json (-<index>.json for each further gateway): the connections by host, calls and steps a
+second and bytes in and out.
 """
 
 from __future__ import annotations
@@ -89,10 +93,13 @@ def call(conn, shared, row: int, rid: int, items: list[tuple[str, dict]], timeou
 
 class Gateway:
     def __init__(self, cfg: dict, conns: list, first_row: int, out_q, stop, port: int, bind: str = "0.0.0.0",
-                 key: bytes | None = None, hello: dict | None = None, shared=None, code: str | None = "here"):
+                 key: bytes | None = None, hello: dict | None = None, shared=None, code: str | None = "here",
+                 index: int | None = None):
         """`hello`: what a remote machine's control connection is sent (selfplay.main: the actors' settings and
         files); `shared`: the SharedRows (default: cfg's); `code`: the code_version remote machines must run (here:
-        this tree's, as the learner started; None: any)."""
+        this tree's, as the learner started; None: any); `index`: this gateway's number of several sharing the port
+        (--remote-gateways: the kernel deals the connections out, and one that finds no free slot here asks again
+        and lands elsewhere)."""
         from .selfplay import SharedRows
         self.cfg, self.out_q, self.stop = cfg, out_q, stop
         self.slots = Slots(conns, first_row)
@@ -102,7 +109,8 @@ class Gateway:
         self.code = wire.code_version() if code == "here" else code
         self.stats = Stats()
         self.run_dir = Path(cfg["run_dir"])
-        self.server = socket.create_server((bind, port), reuse_port=False)
+        self.index = index
+        self.server = socket.create_server((bind, port), reuse_port=index is not None)
         self.server.settimeout(1.0)
         self.port = self.server.getsockname()[1]
 
@@ -211,9 +219,10 @@ class Gateway:
                 row.update({f"{k}_per_s": round((row[k] - last[k]) / dt, 1)
                             for k in ("calls", "steps", "episodes", "bytes_in", "bytes_out")})
             self._last = row
-        tmp = self.run_dir / "remote-actors.json.tmp"
+        name = "remote-actors" if not self.index else f"remote-actors-{self.index}"
+        tmp = self.run_dir / f"{name}.json.tmp"
         tmp.write_text(json.dumps(row, indent=1))
-        tmp.replace(self.run_dir / "remote-actors.json")
+        tmp.replace(self.run_dir / f"{name}.json")
 
 
 
@@ -224,6 +233,7 @@ def gateway_main(cfg: dict, conns: list, first_row: int, out_q, stop, opts: dict
     sys.setswitchinterval(0.001)  # (a call's thread woken by its answer waits for the GIL: 5 ms by default)
     out_q.cancel_join_thread()
     key = wire.load_key(opts.get("key"), create=True)
-    gw = Gateway(cfg, conns, first_row, out_q, stop, opts["port"], opts.get("bind", "0.0.0.0"), key, opts.get("hello"))
+    gw = Gateway(cfg, conns, first_row, out_q, stop, opts["port"], opts.get("bind", "0.0.0.0"), key, opts.get("hello"),
+                 index=opts.get("index"))
     print(f"gateway: {len(conns)} remote game slots on port {gw.port} (key {opts.get('key') or wire.KEY_PATH})", flush=True)
     gw.serve_forever(lambda: os.getppid() == cfg["learner_pid"])

@@ -317,3 +317,35 @@ def test_actor_settings_and_restarts(tmp_path):
     restarted = {**hello, "cfg": {**cfg, "learner_pid": 2, "start_update": 9, "shared_rows": ("/dev/shm/y", 4, 30, 30, 64)}}
     assert fingerprint(restarted) == fingerprint(hello)
     assert fingerprint({**hello, "cfg": {**cfg, "map": "echo100"}}) != fingerprint(hello)
+
+
+def test_gateways_sharing_a_port_fill_every_slot(tmp_path):
+    """--remote-gateways: connections dealt out by the kernel, and one that finds no free slot asks again."""
+    from warcraftsim.fullgame.gateway import Gateway
+    key = b"k" * 32
+    stop = threading.Event()
+
+    def make(port, index, first_row):
+        return Gateway({"run_dir": str(tmp_path)}, [mp.Pipe()[0] for _ in range(4)], first_row, queue.Queue(), stop, port,
+                       "127.0.0.1", key, {}, shared=object(), code=None, index=index)
+    gws = [make(0, 0, 0)]
+    port = gws[0].port
+    gws.append(make(port, 1, 8))
+    for gw in gws:
+        threading.Thread(target=gw.serve_forever, daemon=True).start()
+    socks = []
+    try:
+        for _ in range(8):
+            for _ in range(200):  # (as NetInference._link: BUSY, then again from another source port)
+                s = socket.create_connection(("127.0.0.1", port), timeout=10)
+                wire.client_handshake(s, key, {"kind": "game", "host": "h"})
+                kind, _, _ = wire.recv_frame(s)
+                if kind == wire.READY:
+                    socks.append(s)
+                    break
+                s.close()
+        assert len(socks) == 8 and all(not gw.slots.free for gw in gws)
+    finally:
+        stop.set()
+        for s in socks:
+            s.close()

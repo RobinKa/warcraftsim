@@ -4422,6 +4422,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--remote-games", type=int, default=0, help="game slots for actors on other machines "
                                                                 "(fullgame/remoteactor.py there): their calls and steps come "
                                                                 "over TCP to a gateway here (fullgame/gateway.py)")
+    ap.add_argument("--remote-gateways", type=int, default=1, help="--remote-games: gateway processes, the slots split "
+                    "among them on one port (one holds ~40 games before its GIL holds them back)")
     ap.add_argument("--remote-port", type=int, default=8770, help="the gateway's TCP port (--remote-games)")
     ap.add_argument("--remote-bind", default="0.0.0.0", help="the gateway's address (e.g. this machine's LAN or "
                                                              "Tailscale address only)")
@@ -4844,10 +4846,16 @@ def main(argv: list[str] | None = None) -> int:
                  "wine": {"wine": args.wine, "fsync": bool(args.fsync), "ntsync": bool(args.ntsync)}}
         from . import wire
         wire.pack_value(hello)  # (a setting the wire cannot carry: here, not at a remote machine's first connection)
-        actors.append(ctx.Process(target=gateway_main, args=(cfg, [a for a, _ in remote_pipes], local_rows, out_q, stop,
-                                                             {"port": args.remote_port, "bind": args.remote_bind,
-                                                              "key": args.remote_key or None, "hello": hello}),
-                                  daemon=True))
+        wire.load_key(args.remote_key or None, create=True)  # (made once, before several gateways look for it)
+        n_gw = max(1, min(args.remote_gateways, len(remote_pipes)))
+        for g in range(n_gw):  # (each its share of the slots and of their rows)
+            a0, a1 = g * len(remote_pipes) // n_gw, (g + 1) * len(remote_pipes) // n_gw
+            actors.append(ctx.Process(target=gateway_main, args=(cfg, [a for a, _ in remote_pipes[a0:a1]],
+                                                                 local_rows + 2 * a0, out_q, stop,
+                                                                 {"port": args.remote_port, "bind": args.remote_bind,
+                                                                  "key": args.remote_key or None, "hello": hello,
+                                                                  "index": g if n_gw > 1 else None}),
+                                      daemon=True))
     server_conns = [b for ps in pipes for _, b in ps] + [b for _, b in remote_pipes] if args.central_inference else []
     infer_thread = native = None
     if args.central_inference and args.infer_native:

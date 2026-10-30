@@ -104,8 +104,9 @@ flowchart LR
 * A side-step on recorded Echo Isles games (56 entities): ~3.8 KB up for the call, ~2.2 KB for the trajectory, ~1.4 KB down (zstd; zlib on Python before 3.14 is ~15% more). ~1,900 side-steps a second are ~11 MB/s up: a wired link.
 
 ```
-python -m warcraftsim.fullgame.selfplay ... --remote-games 56 [--remote-port 8770] [--remote-bind <this machine's address>]
+python -m warcraftsim.fullgame.selfplay ... --remote-games 56 [--remote-gateways 4] [--remote-port 8770] [--remote-bind <this machine's address>]
 python -m warcraftsim.fullgame.remoteactor --host <the run's machine> --actors 8 --games-per-actor 7 [--ksm 1]   # there
+scripts/box_games.sh <the run's commit> [actors] [games a actor]   # or from here: mirrors the code, checks it, starts them
 ```
 
 ## Machines' readings
