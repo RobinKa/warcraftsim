@@ -5,6 +5,11 @@ the mines' gold, the creeps), written for training on the real Echo Isles and on
 
     python3 scripts/late_from_demos.py runs/fullgame/demos-human-129 --out runs/fullgame/late-states-human-129.jsonl
     python3 scripts/late_from_demos.py --describe runs/fgself-166/late-states.jsonl [--map echofast2]
+    python3 scripts/late_from_demos.py runs/fullgame/demos-human-129 --plans 1 --out runs/fullgame/late-states-human-129-z.jsonl
+
+--plans 1: each side's state also carries what that person went on to make (late.plan_of; selfplay --late-z plays it as the
+side's target), and --describe tells how the plans look by race: the sides with one, their items, new units by top
+unit's share, expansions, tier, tavern heroes, by the map's times.
 
 Each state goes into --out once per map of --maps: as captured on the demonstrations' map, and as each other map's
 whose layout it is (late.rescaled: the mines' gold and the sides' gold and lumber scaled; checked here: the maps' files
@@ -118,6 +123,38 @@ def describe(states: list[dict], title: str) -> None:
               f"{mean('workers'):4.1f}, gold {mean('gold'):5.0f}, lumber {mean('lumber'):5.0f}")
     tops = collections.Counter(x["top unit"] for _, x in rows if x["top unit"])
     print("  top units: " + ", ".join(f"{c} {n}" for c, n in tops.most_common(12)))
+    describe_plans(states)
+
+
+def describe_plans(states: list[dict]) -> None:
+    """The sides' plans (late.plan_of), by race: how many sides have one, their items in "t" (by kind), the top unit's
+    share of the army units they go on to train and how many types, expansions and tiers planned, the seconds to their
+    items and their games' ends."""
+    from warcraftsim.fullgame.strategy import is_army
+    from warcraftsim.fullgame.techtree import is_hero
+    sides = [(st["races"][s], st["sides"][s].get("plan"), st, s) for st in states for s in (0, 1)]
+    if not any(p for _, p, _, _ in sides):
+        return
+    print("  plans by race (sides with one of all; then per plan):")
+    for race in ("human", "orc", "undead", "nightelf"):
+        all_ = [x for x in sides if x[0] == race]
+        mine = [p for _, p, _, _ in all_ if p]
+        if not mine:
+            print(f"    {race:8} 0 of {len(all_)}")
+            continue
+        army = [{c: v for c, v in p["n"].items() if is_army(c) and v > 0} for p in mine]
+        mixed = [max(a.values()) / sum(a.values()) for a in army if sum(a.values()) >= 5]
+        mean = lambda v: float(np.mean(v)) if len(v) else float("nan")  # noqa: E731
+        kinds = [(sum(c[0] == "R" for c in p["t"]), sum(is_hero(c) for c in p["t"]),
+                  sum(c in late.EXPANSION_ITEMS for c in p["t"]), sum(c in late.HALLS for c in p["t"])) for p in mine]
+        tops = collections.Counter(max(a, key=a.get) for a in army if a)
+        print(f"    {race:8} {len(mine)} of {len(all_)}: items {mean([len(p['t']) for p in mine]):.1f} (research "
+              f"{mean([k[0] for k in kinds]):.1f}, heroes {mean([k[1] for k in kinds]):.2f}), army trained "
+              f"{mean([sum(a.values()) for a in army]):.1f} of {mean([len(a) for a in army]):.1f} types, top unit "
+              f"{mean(mixed):.0%}, expansion planned {mean([k[2] > 0 for k in kinds]):.0%}, a hall's tier planned "
+              f"{mean([k[3] - k[2] > 0 for k in kinds]):.0%}, won {mean([bool(p.get('won')) for p in mine]):.0%}, median "
+              f"item {np.median([v for p in mine for v in p['t'].values()] or [0]):.0f} s, end "
+              f"{np.median([p['end'] for p in mine]):.0f} s; top units {tops.most_common(5)}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -128,6 +165,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--maps", default="(2)EchoIsles,echofast2", help="the maps each state is written for (the "
                     "demonstrations' own and maps of its layout under other rules)")
     ap.add_argument("--before-end", type=float, default=1.0, help="no state in a game's last this many minutes")
+    ap.add_argument("--plans", type=int, default=0, help="1: each side's plan too, what its player went on to make "
+                    "(late.plan_of; selfplay --late-z)")
     ap.add_argument("--describe", type=Path, help="only describe this states file")
     ap.add_argument("--map", default="", help="--describe: only this map's states")
     a = ap.parse_args(argv)
@@ -152,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
                 if meta["map"] not in geometry:
                     geometry[meta["map"]] = map_geometry(stock_map_path(meta["map"]))[0]
                 got = late.from_demo({k: z[k] for k in ("units", "heroes", "players", "events")}, meta, minutes,
-                                     geometry[meta["map"]], values, a.before_end)
+                                     geometry[meta["map"]], values, a.before_end, bool(a.plans))
             reached = sum(1 for m in minutes if m <= meta["steps"] * meta.get("step_seconds", 0.5) / 60.0 - a.before_end)
             skipped["minutes past the game's end"] += len(minutes) - reached
             skipped["decided, or out of step"] += reached - len(got)

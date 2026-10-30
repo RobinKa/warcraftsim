@@ -3,6 +3,9 @@ what the game shows at step 1 against the capture; then whether the economy runs
 
     python3 scripts/late_probe.py capture --races human,undead --minute 10 --out STATE.json
     python3 scripts/late_probe.py start STATE.json [--ai 1] [--minutes 4]
+    python3 scripts/late_probe.py play STATE.json [--run runs/fgself-168] [--minutes 5]
+
+play: a training game of a state with plans under --late-z 1 (see its docstring).
 
 capture: a game between two built-in AIs (insane) to the minute, its state (late.capture: the jobs guessed, as for an AI's
 side) written to --out. start: a game of the state's races until its start locations fit the state (as captured or
@@ -30,6 +33,11 @@ human (62) against undead (40, a haunted expansion) at 16: every unit type's cou
 hero level, experience, skill, item, research level (10, 6, 5) and creep at step 1, gold and lumber at echofast2's scale
 (undead 1 of each short); the entangled and haunted mines set by the follow-ups as for the AI's states; all 25, 23 and
 21 harvest orders taken.
+
+play, 2026-10-30 (fgself-168's policy on the CPU, echofast2, 5 minutes): night elf against undead from minute 10, human
+against undead from minute 14: targets of 4 and 5, 12 and 11 items; the input 212 numbers in 0..1; mismatch 0 at every step
+to 13 and 18 s (placed units and expansions no windfall, more footmen of a held type no change); items credited (the
+human's castle due at 100 s, made at 105 s: 6 to 5). See docs/reference/human-replays.md.
 """
 
 from __future__ import annotations
@@ -254,10 +262,139 @@ def start(a) -> int:
     return 0 if bad == 0 else 2
 
 
+def play(a) -> int:
+    """A game of a state with plans (a line of its file, STATE.json: late_from_demos.py --plans 1) as selfplay.play_one
+    plays a training game with --late-z 1, both sides a run's policy on the CPU: each side's target (its items and their
+    times, what it holds, the input's range), the strategy potential's parts at the first steps and each time they change,
+    what was credited and when, the episode row's z fields."""
+    import shutil
+    import tempfile
+
+    import torch
+
+    from warcraftsim.data.mapbuild import stock_map_path
+    from warcraftsim.fullgame import selfplay, strategy as strat
+    from warcraftsim.fullgame.costs import order_costs
+    from warcraftsim.fullgame.evalworker import run_config
+    from warcraftsim.fullgame.model import load
+    from warcraftsim.fullgame.trace import unit_values
+    from warcraftsim.runtime.instance import Agent, GameSetup as Setup
+    run = Path(a.run).resolve()
+    st0 = json.loads(Path(a.state).read_text())
+    races = list(st0["races"])
+    c = json.loads((run / "run.json").read_text())["config"]
+    root = run.parent.parent
+    ck = Path(a.checkpoint) if a.checkpoint else sorted((run / "checkpoints").glob("*.pt"))[-1]
+    out = Path(tempfile.mkdtemp(prefix="lateprobe", dir=a.tmp or None))
+    cfg, _ = run_config(run, "probe", 1, 0)
+    cfg = {k: v for k, v in cfg.items() if not k.startswith("_")}
+    states = out / "state.jsonl"
+    states.write_text(json.dumps(st0) + "\n")
+    cfg.update(run_dir=str(out), map=st0["map"], z_pool=str(root / c["z_pool"]), z_share=1.0, z_reward=float(c["z_reward"]),
+               z_mix_reward=float(c.get("z_mix_reward", 0.0)), z_mode_reward=float(c.get("z_mode_reward", 0.0)),
+               z_build_labels=int(c.get("z_build_labels", 0)), teach=int(c.get("teach", 0)), win_balance=float(c.get("win_balance", 0.0)),
+               scenarios=["late"], scenario_share=1.0, late_states=[str(states)], late_z=1, eval_checkpoints=[],
+               max_minutes=a.minutes, max_steps=int(a.minutes * 60 / cfg["step_seconds"]) + 20, device="cpu",
+               values=unit_values(), order_names={})
+    fx.ACTIVE_F = cfg["features"]
+    os.environ["WARCRAFTSIM_FEATURES"] = str(cfg["features"])
+    fx.set_inputs(cfg["inputs"], bool(cfg["privileged"]))
+    fx.set_masks(cfg["tech_mask"], cfg["valid_mask"])
+    fx.set_neutral(cfg["neutral"])
+    fx.set_macros(int(cfg.get("macros", 0) or 0))
+    fx.set_spells(int(cfg.get("spells", 0) or 0))
+    fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
+    fx.set_econ_masks(cfg.get("econ_masks", 0))
+    fx.set_geometry(*fx.map_geometry(stock_map_path(cfg["map"])))
+    checkpoint = torch.load(ck, map_location="cpu", weights_only=False)
+    cfg["z_dim"] = checkpoint["config"].get("z", 0)
+    fx.set_z(cfg["z_dim"])
+    version = int(checkpoint.get("update", checkpoint.get("version", 0)) or 0)
+    del checkpoint
+    vocab = json.loads(Path(cfg["vocab"]).read_text())
+    selfplay.publish(load(ck, "cpu", vocab=vocab if fx.NEUTRAL else None)[0], version, out)
+    cfg["costs"] = order_costs(vocab, cfg["map"]).tolist() if cfg["avail_mask"] else None
+    cfg["costs_array"] = np.asarray(cfg["costs"], np.int64) if cfg["avail_mask"] else None
+    cfg["learner_pid"] = os.getpid()
+    torch.set_num_threads(a.threads)
+    infer = selfplay.Inference(selfplay.Nets(cfg, torch.device("cpu")), torch.device("cpu"), 2, compile_=False,
+                               buckets=(1, 2), entities=tuple(cfg["infer_entities"]))
+
+    target, miss, gap = selfplay.target, strat.mismatch, strat.mix_gap
+    seen: dict = {}  # (each target's times by id: its side)
+    last: dict = {}
+    starts = []
+
+    def targets(cfg_, view, st, *rest, **kw):  # (the target play_one sets, and the view's input as the network reads it)
+        got = target(cfg_, view, st, *rest, **kw)
+        seen[id(got["t"])] = len(seen)
+        print(f"target {len(seen) - 1}: {got['race']} against {got['opp']}, src {got['src']}, won {got['won']}, end {got.get('end')}: "
+              f"{len(got['t'])} items {sorted(got['t'].items(), key=lambda kv: kv[1])}; army {({k: v for k, v in got['n'].items() if strat.is_army(k)})}; "
+              f"holds {sorted(got.get('held') or ())}", flush=True)
+        print(f"  input: {len(view.z)} numbers (the network's {fx.ZDIM}), range {view.z.min():.3f}..{view.z.max():.3f}", flush=True)
+        return got
+
+    def mismatch(made, st, items, now):
+        v = miss(made, st, items, now)
+        k = seen.get(id(st["t"]), "?")
+        if k not in last or last[k][0] != v or now < 4.0:
+            print(f"  {now:6.1f} s  target {k}: mismatch {v}, potential {-cfg['z_reward'] * v:.3f}", flush=True)
+        last[k] = (v, dict(made))
+        return v
+
+    def mix_gap(trained, st, least=5):
+        g = gap(trained, st, least)
+        k = seen.get(id(st["t"]), "?")
+        if g and (k not in starts):
+            starts.append(k)
+            print(f"  target {k}: the mix's gap first {g:.3f} ({dict(trained)})", flush=True)
+        return g
+    selfplay.target, strat.mismatch, strat.mix_gap = targets, mismatch, mix_gap
+
+    class Rows:
+        def __init__(self):
+            self.ep = None
+
+        def put(self, msg):
+            if "episode" in msg:
+                self.ep = msg["episode"]
+
+    rows = Rows()
+    slots = [Agent(races[s], handicap=100, difficulty="normal") for s in (0, 1)]
+    g_setup = Setup(map=cfg["map"], slots=slots, step_seconds=cfg["step_seconds"], max_game_seconds=a.minutes * 60,
+                    victory="decisive", window=(320, 240), draw=False, wait_floor_ms=cfg["wait_floor_ms"],
+                    native_obs=cfg["native_obs"], d3d_thread=False, render_threads=0, nice=10, shim_dir=a.shim)
+    try:
+        with GameInstance(g_setup, name=f"lateprobe_play{a.name}", timeout=300) as g:
+            for tries in range(16):
+                obs = g.start() if tries == 0 else g.restart()
+                if late.fit(st0, st0["map"], races, [(obs.players[s].start_x, obs.players[s].start_y) for s in (0, 1)]):
+                    break
+            else:
+                return 1
+            print(f"try {tries + 1}: fits", flush=True)
+            ep = selfplay.play_one(g, obs, cfg, vocab, races, 0, {"name": "self", "kind": "self"}, infer, rows, 0)
+    finally:
+        shutil.rmtree(out, ignore_errors=True)
+    print(f"over at {ep['game_time']:.0f} s, outcome {ep['outcome']}, scenario {ep.get('scenario')}, late {ep.get('late_minute')}, "
+          f"balance features {ep.get('tb_x')}", flush=True)
+    for k in ("z", "z_items", "z_miss", "z_t", "z_made", "z_missed", "z_extra", "z_mix_gap", "z_n", "z_build", "taught"):
+        print(f"  {k}: {ep.get(k)}", flush=True)
+    print(f"  trained {ep['prod']['trained']}, built {ep['prod']['built']}, research {ep['prod']['research']}, "
+          f"expansions {ep['prod']['expansions']}", flush=True)
+    print(f"  the other side: trained {ep['opp_prod']['trained']}, built {ep['opp_prod']['built']}, expansions "
+          f"{ep['opp_prod']['expansions']}; both as credited {[(k, v[1]) for k, v in last.items()]}", flush=True)
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("what", choices=("capture", "start"))
+    ap.add_argument("what", choices=("capture", "start", "play"))
     ap.add_argument("state", nargs="?")
+    ap.add_argument("--run", default="runs/fgself-168", help="play: the run whose recipe and policy play")
+    ap.add_argument("--checkpoint", default="", help="play: its checkpoint (default: its newest)")
+    ap.add_argument("--threads", type=int, default=2, help="play: torch's threads")
+    ap.add_argument("--tmp", default="", help="play: where its temporary run goes")
     ap.add_argument("--map", default="echofast2")
     ap.add_argument("--races", default="human,undead")
     ap.add_argument("--minute", type=float, default=10.0)
@@ -272,7 +409,7 @@ def main() -> int:
     wine.use_wine(a.wine, True)
     wine.ensure_template()
     random.seed()
-    return capture(a) if a.what == "capture" else start(a)
+    return capture(a) if a.what == "capture" else start(a) if a.what == "start" else play(a)
 
 
 if __name__ == "__main__":

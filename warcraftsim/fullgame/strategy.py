@@ -321,15 +321,19 @@ def narrow(strategy: dict, tree=None) -> dict | None:
 
 def vector(strategy: dict | None, items: list[str]) -> np.ndarray:
     """The policy's input for a strategy (zeros: none): per slot, made (1) and its time / HORIZON
-    (1: never) in the second half."""
+    (1: never) in the second half. What a late start's target holds already ("held", late.plan_target): made, at 0
+    (the build it goes on with, as an item made earlier in a game from the start)."""
     z = np.zeros(ZDIM, np.float32)
     if strategy is None:
         return z
     z[SLOTS:SLOTS + len(items)] = 1.0
+    held = strategy.get("held") or ()
     for k, code in enumerate(items):
         t = strategy["t"].get(code)
         if t is not None and t <= HORIZON:
             z[k], z[SLOTS + k] = 1.0, t / HORIZON
+        elif code in held:
+            z[k], z[SLOTS + k] = 1.0, 0.0
     return z
 
 
@@ -345,6 +349,7 @@ def allowed(strategy: dict, items: list[str], orders: list) -> np.ndarray:
     from . import features as fx
     from .techtree import closure
     keep = (closure(strategy["t"], strategy["race"]) if "race" in strategy else set(strategy["t"])) | ALWAYS
+    keep |= set(strategy.get("held") or ())  # (a late start's target: more of what its side holds, late.plan_target)
     listed = set(items)
     free = strategy.get("narrow")  # (a narrow strategy: buildings and research it does not list are free)
     out = np.ones(len(orders) + 1, bool)
@@ -426,11 +431,13 @@ def scaled(strategy: dict, scale: float) -> dict:
 
 def mismatch(made: dict[str, float], strategy: dict, items: list[str], now: float) -> int:
     """The race's items made by game second `now` (up to the strategy's horizon) by one of the player
-    (`made`: each item's first time) and the strategy, not both."""
+    (`made`: each item's first time) and the strategy, not both. A late start's target (late.plan_target, always
+    narrow): more units of a type its side holds ("held") count as neither."""
     now = min(now, horizon(strategy))
     t = strategy["t"]
     if strategy.get("narrow"):  # (its own items as any strategy's; outside them, heroes and army units only)
-        counted = _once("narrow", t, items, lambda: [c for c in items if c in t or restricted(c)])
+        held = strategy.get("held") or ()
+        counted = _once("narrow", t, items, lambda: [c for c in items if c in t or (restricted(c) and c not in held)])
     else:
         counted = items
     # (the answer stands while `made` is as it was and `now` lies between the same two of the times compared: every

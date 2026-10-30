@@ -48,6 +48,21 @@ start late (selfplay.play_one: the built-in AI's script starts its build order a
 floated gold from a placed base). Strategy targets (z) are off in a late start (their timings count from minute 0); the
 game clock and the time of day start at 0.
 
+Plans (--late-z 1; from_demo's `plans`, scripts/late_from_demos.py --plans): in a start from a person's state, each trained
+side's target is what that person went on to make in that game. A side's "plan" in the state's line (it moves with the
+side in swapped): "t" each item's first time after the state, in seconds from it (the clock starts at 0 there); "n" the
+units trained after it (the army's mix, compared with what the side trains from the start, Production reset at step 2; its
+workers as many more than a race's start as the side had by then and trained after: the target builder's worker goal);
+"held" what the state holds; "end" the seconds its game went on; "won". Not in "t": what the state holds (units, heroes,
+dead ones too, complete buildings with a hall's lower tiers), but a research's next level and an expansion after the state,
+whatever it holds (a hall or haunted mine far from home at a mine: trace.Production's, what makes the item `made` in the
+game). The state has no building under way, queue or research under way, so what the person finished soon after it must
+be started again: no item is due before its build time and PLAN_SLACK. On FAST's rules (echofast2: rescaled) the times go
+at the people's pace of those maps' pools (PEOPLE_PACE). A side gone within PLAN_LEAST_END, or that went on to make little
+(fewer than PLAN_LEAST_ITEMS items and PLAN_LEAST_UNITS army units), has no plan. As a target (plan_target): the pool's
+items only, narrow (buildings and research outside it free; heroes and army units outside it and outside what it holds
+count against it), no modes (their timings are a game's from minute 0).
+
 Not reproduced: trees cut down (the new game's trees are whole), items on the ground, cooldowns, buffs, orders under way
 (a building's queue, research under way, a building being built or upgraded: only complete buildings are captured),
 summoned units and illusions, units inside a transport or a burrow (placed beside it).
@@ -65,6 +80,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from . import features as fx
+from . import strategy as strat
 from ..protocol import (Place, RemoveUnit, SetMineGold, SetResearch, SetResources, TargetDestructable, TargetOrder,
                         UnitFlags, encode_commands, fourcc, rawcode)
 
@@ -88,6 +104,14 @@ CREEP_SAME = 700.0  # a creep and a captured one of its type this close: still s
 JOB_SAME = 200.0  # a placed harvester and its captured self this close: the same unit (placed where it stood)
 JOB_REACH = 2500.0  # the farthest mine or tree a placed harvester is sent to
 MAX_INTS = 6000  # a state's step-0 commands at most (the step's 8000, protocol.MAX_COMMAND_INTS, with room to spare)
+EXPANSION_ITEMS = ("htow", "ogre", "unpl", "etol", "ugol")  # (selfplay's: a target's expansion; the start's hall is none)
+EXPANSION_FROM_START, EXPANSION_AT_MINE = 1500.0, 1000.0  # (trace.Production's)
+PLAN_SLACK = 5.0  # a plan's item is due no sooner than its build time and this (the real game's seconds: its order)
+PLAN_LEAST_END, PLAN_LEAST_ITEMS, PLAN_LEAST_UNITS = 60.0, 2, 5  # (a plan: its game went on so long, and so much made)
+WORKER_START = {"human": 5, "orc": 5, "undead": 3, "nightelf": 5}  # (selfplay.TargetBuilder.worker_goal's)
+# the people's pace on FAST's rules (echofast, echofast2): an item's time there over its time in the real game, per race:
+# strategy.rescale_people's factors in strategies-echofast-*.json (those pools' times over strategies-echo-real-*'s)
+PEOPLE_PACE = {"human": 0.688, "orc": 0.728, "undead": 0.53, "nightelf": 0.714}
 
 
 def _r(v: float) -> int:
@@ -205,11 +229,19 @@ def layout(map_name: str) -> str | None:
     return echo[0] if echo is not None else None if parse_duel_name(map_name) is not None else map_name
 
 
+def pace(map_name: str, race: str) -> float:
+    """A person's times in the real game to their times on `map_name`: PEOPLE_PACE on FAST's rules (echofast, echofast2),
+    1 on the game's, in between by the rules' time (echoP)."""
+    from ..data.duelmap import FAST, map_rules
+    return 1.0 + (PEOPLE_PACE[race] - 1.0) * (1.0 - map_rules(map_name).time) / (1.0 - FAST.time)
+
+
 def rescaled(state: dict, map_name: str) -> dict | None:
     """`state` as a state of `map_name`, a map of its map's layout under other rules (the real Echo Isles' as
     echofast2's: their files are the same but for the mines' gold and the starting resources, scripts/late_from_demos.py
-    checks): the mines' gold scaled as the rules' (mine_gold), each side's gold and lumber as their costs; hit points and
-    mana are per mille of the map's own, levels, experience and research the same. None: another layout."""
+    checks): the mines' gold scaled as the rules' (mine_gold), each side's gold and lumber as their costs, its plan's times
+    as the people's pace (pace); hit points and mana are per mille of the map's own, levels, experience and research the
+    same. None: another layout."""
     from ..data.duelmap import map_rules
     if state["map"] == map_name:
         return state
@@ -217,20 +249,115 @@ def rescaled(state: dict, map_name: str) -> dict | None:
         return None
     a, b = map_rules(state["map"]), map_rules(map_name)
     gold, cost = b.mine_gold / a.mine_gold, b.cost / a.cost
+
+    def paced(plan: dict, f: float) -> dict:
+        return dict(plan, t={c: round(v * f, 1) for c, v in plan["t"].items()}, end=round(plan["end"] * f, 1))
     return dict(state, map=map_name, captured_on=state.get("captured_on", state["map"]),
                 mines=[[t, x, y, _r(g * gold)] for t, x, y, g in state.get("mines", ())],
-                sides=[dict(s, gold=_r(s["gold"] * cost), lumber=_r(s["lumber"] * cost)) for s in state["sides"]])
+                sides=[dict(s, gold=_r(s["gold"] * cost), lumber=_r(s["lumber"] * cost),
+                            **({"plan": paced(s["plan"], pace(map_name, race) / pace(state["map"], race))}
+                               if s.get("plan") else {})) for s, race in zip(state["sides"], state.get("races", ()))])
+
+
+def _expansion(xy, start, mines) -> bool:
+    """A hall's or haunted mine's place (x, y) an expansion's: far from `start`, near a gold mine (trace.Production's)."""
+    return (math.hypot(xy[0] - start[0], xy[1] - start[1]) > EXPANSION_FROM_START
+            and any(math.hypot(xy[0] - x, xy[1] - y) < EXPANSION_AT_MINE for x, y in mines))
+
+
+def made_log(units: np.ndarray, events: np.ndarray, home: dict, mines: list) -> dict[int, list[tuple]]:
+    """What each side made in a demonstration, {side: [(step, code, level, trained)]} by step: units trained, buildings
+    finished and upgraded, research done with its level (the events, each one's unit's owner as strategy.from_demos reads
+    it); tavern heroes and mercenaries first seen (hired: no event; trace.Production._hires), and of a first-tier hall or
+    a haunted mine only expansions, first seen finished (a replay's derived events hold few of the haunted mines). `home`:
+    each side's start, `mines`: the map's gold mines (x, y)."""
+    from .trace import HIRED
+    log: dict[int, list[tuple]] = {0: [], 1: []}
+    made = events[np.isin(events[:, 1], (3, 6, 9, 12))] if len(events) else np.zeros((0, 5), np.int64)
+    for (step, kind, _a, b, c), p in zip(made.tolist(), strat.owners_at(units, made) if len(made) else ()):
+        code = rawcode(c if kind == 6 else b)
+        if p in log and code not in EXPANSION_ITEMS:
+            log[p].append((step, code, c if kind == 9 else 1, kind == 6))
+    fl = units[:, fx.C_FLAGS]
+    keep = ((units[:, fx.C_OWNER] <= 1) & ((fl & (UnitFlags.DEAD | UnitFlags.CONSTRUCTING)) == 0)
+            & np.isin(units[:, fx.C_TYPE], [*(fourcc(c) for c in EXPANSION_ITEMS), *HIRED]))
+    seen = set()
+    for step, uid, t, owner, x, y in units[keep][:, [fx.C_STEP, fx.C_ID, fx.C_TYPE, fx.C_OWNER, fx.C_X, fx.C_Y]].tolist():
+        if (uid, t) not in seen:
+            seen.add((uid, t))
+            if step > 0 and owner in home and (t in HIRED or _expansion((x, y), home[owner], mines)):
+                log[owner].append((step, rawcode(t), 1, t in HIRED))
+    for v in log.values():
+        v.sort(key=lambda e: e[0])
+    return log
+
+
+def holds(state: dict, side: int) -> set[str]:
+    """What a side of `state` holds, for its plan: its units' and complete buildings' types with a hall's lower tiers, its
+    heroes (dead ones too: revived, not made), its research; of the first-tier halls and haunted mines only those that are
+    expansions (the start's is no item)."""
+    from .techtree import counts_as
+    s, mines = state["sides"][side], [m[1:3] for m in state.get("mines", ())]
+    have = counts_as({u[0] for u in s["units"]} | {h[0] for h in s["heroes"]}, state["races"][side])
+    return ((have - set(EXPANSION_ITEMS)) | set(s.get("research", ()))
+            | {u[0] for u in s["units"] if u[0] in EXPANSION_ITEMS and _expansion(u[1:3], state["starts"][side], mines)})
+
+
+def plan_of(state: dict, side: int, log: list[tuple], at: int, steps: int, step_s: float, won: bool) -> dict | None:
+    """What a side of a person's `state` (of step `at` of a game of `steps`) went on to make (`log`: made_log's): its
+    "plan" (the module's docstring), or None: gone soon after, or little made."""
+    race, end, s = state["races"][side], (steps - at) * step_s, state["sides"][side]
+    if end < PLAN_LEAST_END:
+        return None
+    bt, more = strat.build_seconds(), strat.research_time_steps()
+    held = holds(state, side)
+    levels = s.get("research", {})
+    t: dict[str, float] = {}
+    n: dict[str, int] = {}
+    for step, code, level, trained in log:
+        if step <= at or not strat.of_race(code, race):
+            continue
+        if trained:
+            n[code] = n.get(code, 0) + 1
+        if code in strat.WORKERS or code in t:
+            continue
+        if code[:1] == "R" and level <= levels.get(code, 0) or code[:1] != "R" and code in held and code not in EXPANSION_ITEMS:
+            continue
+        t[code] = round(max((step - at) * step_s, bt.get(code, 0.0) + (level - 1) * more.get(code, 0.0) + PLAN_SLACK), 1)
+    if len(t) < PLAN_LEAST_ITEMS and sum(v for c, v in n.items() if strat.is_army(c)) < PLAN_LEAST_UNITS:
+        return None
+    worker = next(c for c in strat.WORKER_CODES if strat.of_race(c, race))
+    n[worker] = max(0, sum(1 for u in s["units"] if u[0] == worker) + n.get(worker, 0) - WORKER_START[race])
+    strat.consistent({"race": race, "t": t})  # (no item before what it needs: a floor may have moved one)
+    return {"t": t, "n": n, "held": sorted(held), "end": round(end, 1), "won": won}
+
+
+def plan_target(state: dict, side: int, items: list[str], drop=(), trainable=None) -> dict | None:
+    """A side's plan in `state` (fit's) as its target strategy, or None (no plan, or nothing of it in this pool): the
+    pool's `items` within the horizon but `drop` (--neutral 2's mercenaries), the army's mix of units a race's building
+    trains (`trainable`; strategy_pool's filters, as its strategies have them)."""
+    plan = state["sides"][side].get("plan")
+    if not plan:
+        return None
+    t = {c: v for c, v in plan["t"].items() if v <= strat.HORIZON and c in items and c not in drop}
+    n = {c: v for c, v in plan["n"].items() if not strat.is_army(c) or trainable is None or c in trainable}
+    if not t and not any(strat.is_army(c) for c in n):
+        return None
+    return {"race": state["races"][side], "opp": state["races"][1 - side], "src": "late", "won": bool(plan.get("won")),
+            "t": t, "n": n, "end": plan["end"], "held": frozenset(plan.get("held", ())), "narrow": True,
+            "replay": state.get("replay")}
 
 
 def from_demo(arrays: dict, meta: dict, minutes, starts, values: dict | None = None,
-              before_end: float = 1.0) -> list[dict]:
+              before_end: float = 1.0, plans: bool = False) -> list[dict]:
     """A demonstration's states (collect.py's arrays and meta; people's games: fullgame/replays.py's, the real game's
     observations of a replay's playback every 0.5 s) at each of `minutes` (game minutes) at least `before_end` minutes
     before its end (a person leaves a lost game), as capture's (none from a decided game) with how the game ended
     (winner, end_minute) and its replay. starts: its map's two start locations (a side's: the one nearest its town hall
     at step 0). The research levels from its research events (replays.py: the harness's polled levels, at the player's
     building), the harvesters' jobs guessed (their orders and places: no agent's view); values (trace.unit_values): the
-    material that tells a decided game (None: none told). A game out of step with its replay (meta "sync") gives none."""
+    material that tells a decided game (None: none told). A game out of step with its replay (meta "sync") gives none.
+    `plans`: each side's plan too, what its player went on to make (plan_of)."""
     from .trace import material_steps
     sync = meta.get("sync") or {}
     if sync.get("first_miss") or sync.get("subgroup_matched", 0) < sync.get("subgroup_units", 0):
@@ -252,6 +379,10 @@ def from_demo(arrays: dict, meta: dict, minutes, starts, values: dict | None = N
     research = events[events[:, 1] == fx.RESEARCH_FINISH] if len(events) else np.zeros((0, 5), np.int64)
     seen, done = {0: {}, 1: {}}, 0
     result = meta.get("result") or {}
+    log = None
+    if plans:
+        mined = first[np.isin(first[:, fx.C_TYPE], [fourcc(c) for c in MINES])]
+        log = made_log(units, np.asarray(arrays["events"]), home, mined[:, [fx.C_X, fx.C_Y]].tolist())
     out = []
     for m in sorted(minutes):
         t = int(round(m * 60.0 / step_s))
@@ -271,6 +402,11 @@ def from_demo(arrays: dict, meta: dict, minutes, starts, values: dict | None = N
         if st is not None:
             st.update(winner=next((s for s in (0, 1) if result.get(str(s)) == "VICTORY"), None),
                       end_minute=round(steps * step_s / 60.0, 2), replay=(meta.get("source") or {}).get("replay"))
+            if log is not None:
+                for s in (0, 1):
+                    plan = plan_of(st, s, log[s], t, steps, step_s, result.get(str(s)) == "VICTORY")
+                    if plan is not None:
+                        st["sides"][s]["plan"] = plan
             out.append(st)
     return out
 

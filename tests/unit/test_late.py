@@ -298,6 +298,122 @@ def demo(steps: int = 12) -> tuple[dict, dict]:
     return {"units": units, "heroes": heroes, "players": players_, "events": events}, meta
 
 
+@pytest.fixture
+def plans(heroes, monkeypatch):
+    """Plans without the game's data: the build times, research levels' times, the tech tree (none between the items)."""
+    from warcraftsim.fullgame import strategy as strat, techtree
+    monkeypatch.setattr(strat, "build_seconds", lambda: {"hbar": 60.0, "hcas": 140.0, "Rhme": 60.0, "hsor": 30.0})
+    monkeypatch.setattr(strat, "research_time_steps", lambda: {"Rhme": 15.0})
+    monkeypatch.setattr(strat, "consistent", lambda st, tree=None: st)
+    monkeypatch.setattr(techtree, "counts_as", lambda types, race: set(types) | ({"htow"} if "hkee" in types else set()))
+    monkeypatch.setattr(strat, "restricted", lambda c: c[:1].isupper() or c in ("hfoo", "hsor", "hrif", "hkni"))
+
+
+def planned_demo():
+    """demo() with what the human goes on to make after minute 4 (a step a minute): footmen (held) and sorceresses (new),
+    a castle, Rhme's next levels, a second barracks (held); a new expansion's hall first seen at minute 8; a tavern hero at 9;
+    the undead side makes one ghoul only."""
+    arrays, meta = demo()
+    extra = [[t, 3, 2, fourcc(c), 0] for t, c in ((6, "hbar"),)] + [[7, 12, 1, fourcc("hcas"), 0]]
+    extra += [[t, 6, 2, 900 + t, fourcc(c)] for t, c in ((5, "hfoo"), (6, "hfoo"), (7, "hsor"), (8, "hsor"), (9, "hsor"),
+                                                         (3, "hrif"))]  # (the rifleman: before the state)
+    extra += [[5, 6, 20, 950, fourcc("ugho")]]
+    arrays["events"] = np.asarray(sorted(extra + arrays["events"].tolist()), np.int64)
+    units = arrays["units"]
+    hall = row(60, "htow", 0, 4352, -3200, flags=STRUCT)  # (at the fresh map's mine, far from its start)
+    tav = row(61, "Nalc", 0, -3000, 100, flags=HERO)
+    new = [np.c_[np.full(1, t), hall[None, 1:18]] for t in range(8, 13)] + [np.c_[np.full(1, t), tav[None, 1:18]]
+                                                                             for t in range(9, 13)]
+    arrays["units"] = np.concatenate([units, *new])
+    arrays["units"] = arrays["units"][np.argsort(arrays["units"][:, 0], kind="stable")]
+    return arrays, meta
+
+
+def test_plan_from_demo(plans):
+    """A person's plan: what the side made after the state, timed from it, without what it holds; its next research
+    level and an expansion all the same; a side that made little has none; none far from the end."""
+    arrays, meta = planned_demo()
+    st = late.from_demo(arrays, meta, [4], [R, L], plans=True)[0]
+    p = st["sides"][0]["plan"]
+    assert set(p["t"]) == {"hsor", "hcas", "Rhme", "htow", "Nalc"}  # (not hfoo, hbar, Hamg: the state holds them)
+    assert p["t"]["hsor"] == 180.0  # (at minute 7, from minute 4)
+    assert p["t"]["hcas"] == 180.0 and p["t"]["Nalc"] == 300.0 and p["t"]["htow"] == 240.0
+    assert p["t"]["Rhme"] == 80.0  # (level 2 finished a minute later, but research under way is not in the state: its time)
+    assert p["n"]["hsor"] == 3 and p["n"]["hfoo"] == 2 and "hrif" not in p["n"]  # (the units trained after the state only)
+    assert p["n"]["hpea"] == 0  # (3 peasants held, under a race's 5)
+    assert {"hfoo", "hbar", "Hamg", "hkee", "Rhme"} <= set(p["held"]) and "htow" not in p["held"]  # (its hall at no mine)
+    assert (p["end"], p["won"]) == (480.0, False)
+    assert "plan" not in st["sides"][1]  # (one ghoul made: little)
+    assert all("plan" not in s for s in late.from_demo(arrays, meta, [10], [R, L], plans=True)[0]["sides"])  # (one item)
+    # a hall at a mine is an expansion the state holds; the plan's own expansion comes all the same
+    with_mine = dict(st, mines=[*st["mines"], ["ngol", -4864, -3200, 6250]])
+    assert "htow" in late.holds(with_mine, 0)
+    assert "htow" not in late.holds(st, 0) and "unpl" not in late.holds(st, 1)  # (the start's hall: no item)
+    # the old states' format without --plans
+    assert all("plan" not in s for s in late.from_demo(arrays, meta, [4], [R, L])[0]["sides"])
+    json.dumps(st)
+
+
+def test_plan_moves_with_the_side_and_the_rules(plans):
+    """A swapped state swaps the plans; on echofast2 the plan's times go at the people's pace, by the side's race."""
+    arrays, meta = planned_demo()
+    st = late.from_demo(arrays, meta, [4], [R, L], plans=True)[0]
+    sw = late.fit(st, "(2)EchoIsles", ["undead", "human"], [R, L])
+    assert sw["sides"][1]["plan"] is st["sides"][0]["plan"] and "plan" not in sw["sides"][0]
+    assert late.plan_target(sw, 1, ["hsor"])["race"] == "human" and late.plan_target(sw, 0, ["hsor"]) is None
+    assert late.plan_target(sw, 1, ["hsor"])["opp"] == "undead"
+    e = late.rescaled(st, "echofast2")
+    f = late.PEOPLE_PACE["human"]
+    assert e["sides"][0]["plan"]["t"]["hsor"] == round(180.0 * f, 1) and e["sides"][0]["plan"]["end"] == round(480.0 * f, 1)
+    assert st["sides"][0]["plan"]["t"]["hsor"] == 180.0  # (the state itself as it was)
+    sw2 = late.fit(e, "echofast2", ["undead", "human"], [R, L])
+    assert sw2["sides"][1]["plan"]["t"] == e["sides"][0]["plan"]["t"]
+    assert late.rescaled(e, "(2)EchoIsles")["sides"][0]["plan"]["t"]["hsor"] == pytest.approx(180.0, abs=0.2)
+    assert late.pace("(2)EchoIsles", "orc") == 1.0 and 0.0 < late.pace("echo50", "orc") - 0.728 < 0.272
+
+
+def test_plan_as_a_target_no_windfall(plans):
+    """As a target: only the pool's items, what it holds no windfall and no penalty; a plan's item made later credited,
+    and the input in range (made, at 0, for what it holds)."""
+    from warcraftsim.fullgame import strategy as strat
+    arrays, meta = planned_demo()
+    st = late.from_demo(arrays, meta, [4], [R, L], plans=True)[0]
+    items = ["hfoo", "hrif", "hsor", "hkee", "Rhme", "Hamg", "hbar", "Nalc", "htow", "hkni"]
+    z = late.plan_target(st, 0, items, drop=("Nalc",), trainable={"hsor", "hfoo"})
+    assert z["narrow"] and z["src"] == "late" and z["race"] == "human" and "Nalc" not in z["t"]
+    assert z["n"].get("hrif") is None and z["n"]["hsor"] == 3  # (the army's mix: units trained)
+    made: dict = {}
+    assert strat.mismatch(made, z, items, 1.5) == 0  # (the first steps: nothing due, nothing counted)
+    assert strat.mix_gap({}, z) == 0.0
+    assert strat.mismatch(made, z, items, 79.0) == 0
+    assert strat.mismatch(made, z, items, 81.0) == 1  # (Rhme's next level due)
+    made["Rhme"] = 81.0
+    assert strat.mismatch(made, z, items, 81.0) == 0  # (made: credited)
+    made["hfoo"] = 20.0  # (more of what it holds: neither made nor missed)
+    assert strat.mismatch(made, z, items, 81.0) == 0
+    made["hkni"] = 30.0  # (an army unit neither planned nor held: counts, as any narrow target's)
+    assert strat.mismatch(made, z, items, 81.0) == 1
+    v = strat.vector(z, items)
+    assert v.min() >= 0.0 and v.max() <= 1.0
+    k = {c: i for i, c in enumerate(items)}
+    assert (v[k["hfoo"]], v[strat.SLOTS + k["hfoo"]]) == (1.0, 0.0)  # (held: made, at 0)
+    assert v[k["hsor"]] == 1.0 and v[strat.SLOTS + k["hsor"]] == pytest.approx(180.0 / strat.HORIZON)
+    assert (v[k["hrif"]], v[strat.SLOTS + k["hrif"]]) == (0.0, 1.0)  # (not in it)
+    assert late.plan_target(st, 1, items) is None  # (no plan: no target)
+    own = late.from_demo(arrays, meta, [4], [R, L])[0]
+    assert late.plan_target(own, 0, items) is None  # (a state without plans: an own game's)
+    assert late.plan_target(st, 0, ["hrif"]) is not None  # (its army's mix alone)
+
+
+def test_late_z_keeps_defaults():
+    """Without "held" the strategy's functions read as before."""
+    from warcraftsim.fullgame import strategy as strat
+    s = {"t": {"hfoo": 90.0}, "race": "human"}
+    v = strat.vector(s, ["hfoo", "hrif"])
+    assert (v[0], v[strat.SLOTS], v[1], v[strat.SLOTS + 1]) == (1.0, 0.1, 0.0, 1.0)
+    assert strat.mismatch({"hrif": 10.0}, s, ["hfoo", "hrif"], 100.0) == 2
+
+
 def test_from_demo(heroes):
     """People's states from a demonstration: capture's at each minute it reached (not in its last one), the research
     levels by then, each side's start location the one nearest its town hall at step 0, how the game ended."""
