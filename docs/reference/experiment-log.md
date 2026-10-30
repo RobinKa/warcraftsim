@@ -1920,6 +1920,10 @@ Replay data (2026-10-26): only 1.29 replays play back in our client (1.26/1.28 f
 
 **Stopped to move the box** (14:21): `fgself-167` at 55.3M steps (checkpoint 55349539, loads). At 222 games a policy, level with its start against insane: 70% to 71% (+0.1 points, races weighed alike); head to head 48% of 139; with a target 22%. The top unit's share 0.91 to 0.94 (the interval excludes 0), anti-air against 4+ air 0.26 to 0.31 (also excludes 0), wins past 18 minutes 45% to 35% (not significant), no expansions. Next: resume it to ~250 games and judge it.
 
+**`fgself-167`, level** (15:20, 285 games a policy; half of its late starts from people's games): against insane 68% to its start's 72% (−2.1 points, races weighed alike), human 72% to 77%, orc 60% to 67%, night elf 99% to 93%, undead 53% to 55%; head to head 47% of 178; with a target 24%. Its play improved a little: weapon and armour levels +0.24, creeps +0.3, the top unit's share 0.94 to 0.91, fewer refused orders; anti-air against 4+ air 0.31 to 0.26, and still no expansions, so people's states alone don't teach taking one.
+
+**`fgself-168`** (15:25, from `fgself-167`'s last and recipe): the first real run of remote training games: 42 games on the games box (`--remote-games 42 --remote-bind 10.77.0.1`, `remoteactor --actors 6 --games-per-actor 7`) beside the 72 here, over the direct cable; evaluation games on the laptop. Measures steps a second, whether the learner keeps up, and the box's load.
+
 The queue:
 1. (done: in `fgself-155`) The audit-12 economy fixes: a training map whose mines and start scale with its costs (`echofast2`), workers labelled up to the target's count, masks against duplicate tech buildings and surplus workers, orc burrow and no-target lumber lessons.
 2. Cloning the scripted strategy family as anchor and teacher (AlphaStar's recipe with scripted data). First tune its weak plans, and add night elf and undead expansion plans. Then record thousands of echofast games (`scripts/heuristic_match.py --record`), train a cloning policy, and use it as the KL anchor and a distillation teacher.
