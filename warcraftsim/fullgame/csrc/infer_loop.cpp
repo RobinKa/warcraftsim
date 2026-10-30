@@ -23,8 +23,10 @@
 #include <arpa/inet.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <deque>
 #include <map>
@@ -33,6 +35,8 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+
+#include "past_hold.h"
 
 namespace {
 
@@ -69,8 +73,17 @@ struct Snapshot {
     std::vector<std::pair<const void*, size_t>> src;
 };
 
+struct Request {  // a game's request: the answers, and how many are still to come (a past snapshot's may be held
+    int conn = -1;  // back beyond the round that read it: --infer-past-period-ms)
+    uint32_t rid = 0;
+    std::vector<std::array<int32_t, 3>> answers;
+    int left = 0;
+    bool sent = false;
+};
+
 struct Item {
     int conn, k, n, n_own, row;
+    std::shared_ptr<Request> request;
 };
 
 struct Call {
@@ -87,7 +100,7 @@ struct Pending {
     std::vector<cudaEvent_t> starts;  // (timed: each stream's part of the round on the GPU, start to end)
     int learner_busy = 0;  // (the learner was in its update when the round was launched)
     double t_launched = 0;  // (the round's last call enqueued)
-    std::map<int, std::pair<uint32_t, std::vector<std::array<int32_t, 3>>>> replies;  // conn -> (rid, answers)
+    std::vector<std::shared_ptr<Request>> requests;  // read this round, or with items launched in it (in the order read)
     double t0;
 };
 
@@ -134,6 +147,7 @@ class Loop {
     std::vector<std::vector<Group>> past;  // [arch][slot]
     int past_max_batch = 16;
     double period = 0.004;
+    double past_period = 0;  // (--infer-past-period-ms: a past network's calls at most this often, see PastHold)
     int version = -1;
     int learner_busy = 0;  // (set by the learner around its updates: the statistics keep its rounds apart)
     py::object reload_fn, snapshot_fn, stats_fn;
@@ -158,12 +172,19 @@ class Loop {
     std::atomic<bool> failed_{false};
     std::string error_;
     std::unordered_map<std::string, Snapshot> snapshots_;
+    PastHold<Item> hold_;
     // statistics since the last report
     double st_t = 0, st_busy = 0, st_wait = 0, st_idle = 0;
     double st_lat[2] = {0, 0}, st_gpu[2] = {0, 0};  // rounds' latency and GPU time, the learner idle / updating
     double st_launch[2] = {0, 0}, st_tail[2] = {0, 0};  // of the latency: enqueueing the round; answering it
     long st_n[2] = {0, 0};
     long st_rounds = 0, st_calls = 0, st_past = 0, st_rows = 0, st_ents = 0, st_ents_max = 0;
+    long st_past_rows = 0, st_swaps = 0;  // (a past network's weights copied into a slot)
+    // calls by their widest row (8 entities a bin) and their rows (8 a bin), [0] the current network's, [1] past ones':
+    // what the padding of --infer-entities and the batch sizes cost, from the run itself
+    static constexpr int WIDE_BINS = 20, ROWS_BINS = 8;
+    std::array<std::array<long, WIDE_BINS>, 2> st_wide{};
+    std::array<std::array<long, ROWS_BINS>, 2> st_nrows{};
 
     float* host(std::vector<float*>& pool, size_t k, size_t n) {
         while (pool.size() <= k) {
@@ -256,9 +277,19 @@ class Loop {
         s["launch"] = py::make_tuple(st_launch[0], st_launch[1]);
         s["tail"] = py::make_tuple(st_tail[0], st_tail[1]);
         s["idle"] = st_idle;
+        s["past_rows"] = st_past_rows;
+        s["swaps"] = st_swaps;
+        s["held_rows"] = hold_.rows_out;
+        s["held_wait"] = hold_.waited;
+        s["wide"] = st_wide;
+        s["nrows"] = st_nrows;
         stats_fn(s);
         st_t = now();
         st_rounds = st_calls = st_past = st_rows = st_ents = st_ents_max = 0;
+        st_past_rows = st_swaps = 0;
+        hold_.rows_out = 0, hold_.waited = 0;
+        st_wide = {};
+        st_nrows = {};
         st_busy = st_wait = st_idle = 0;
         st_lat[0] = st_lat[1] = st_gpu[0] = st_gpu[1] = 0;
         st_n[0] = st_n[1] = 0;
@@ -283,17 +314,21 @@ class Loop {
             for (size_t i = 0; i < c.items.size(); i++) {
                 const Item& it = c.items[i];
                 std::memcpy(out + size_t(it.row) * out_w, c.hout + i * cols, sizeof(float) * cols);
-                p.replies[it.conn].second[it.k] = {c.version, O, width};
-            }
+                it.request->answers[it.k] = {c.version, O, width};
+                it.request->left--;  // (here, not at the launch: an earlier round's completion must not answer a
+            }                        // request whose held row is on the GPU in a later one)
         }
-        for (auto& [conn, r] : p.replies) {
-            std::vector<char> buf(4 + 4 + 1 + r.second.size() * 8);
+        for (auto& r : p.requests) {  // (those all answered; the rest go with the round of their last item)
+            if (r->left > 0 || r->sent) continue;
+            r->sent = true;
+            const int conn = r->conn;
+            std::vector<char> buf(4 + 4 + 1 + r->answers.size() * 8);
             uint32_t len = htonl(uint32_t(buf.size() - 4));
             std::memcpy(buf.data(), &len, 4);
-            std::memcpy(buf.data() + 4, &r.first, 4);
-            buf[8] = char(r.second.size());
+            std::memcpy(buf.data() + 4, &r->rid, 4);
+            buf[8] = char(r->answers.size());
             char* q = buf.data() + 9;
-            for (auto& a : r.second) {
+            for (auto& a : r->answers) {
                 int32_t v = a[0];
                 uint16_t o = uint16_t(a[1]), w = uint16_t(a[2]);
                 std::memcpy(q, &v, 4);
@@ -339,6 +374,8 @@ class Loop {
         int bank = 0;
         double t_round = 0, t_reload = now(), t_report = now();
         st_t = now();
+        hold_.period = past_period;
+        hold_.full = size_t(past_max_batch);
         while (!stop_) {
             if (now() - t_reload > 5.0) {
                 reload();
@@ -356,8 +393,14 @@ class Loop {
             for (int fd : fds) pfds.push_back({fd, short(fd >= 0 ? POLLIN : 0), 0});
             double t_idle = now();
             const bool full = int(inflight.size()) >= Shape::BANKS - 1;
-            int ready = full ? 0 : ::poll(pfds.data(), pfds.size(), inflight.empty() ? 100 : 0);
-            if (ready <= 0) {
+            int timeout = inflight.empty() ? 100 : 0;
+            if (timeout && hold_.on() && hold_.holding())  // (held rows' deadline: nothing else may come to wake the loop)
+                timeout = int(std::clamp(std::ceil((hold_.next_due() - now()) * 1000), 0.0, 100.0));
+            int ready = full ? 0 : ::poll(pfds.data(), pfds.size(), timeout);
+            const bool due = !full && hold_.on() && hold_.holding() && now() >= hold_.next_due();
+            if (ready <= 0 && due)  // (a round for the held rows alone)
+                for (auto& p : pfds) p.revents = 0;
+            if (ready <= 0 && !due) {
                 if (!inflight.empty()) {  // nothing new: wait a little for the GPU (or the oldest round, if full)
                     if (full) {
                         double t = now();
@@ -380,6 +423,7 @@ class Loop {
                 for (auto& p : pfds) p.revents = 0;
                 ::poll(pfds.data(), pfds.size(), 0);
             }
+            const double t_last = t_round;
             t_round = now();
             auto round = std::make_unique<Pending>();
             round->t0 = t_round;
@@ -395,9 +439,10 @@ class Loop {
                 uint32_t rid;
                 std::memcpy(&rid, msg.data(), 4);
                 int count = uint8_t(msg[4]);
-                auto& rep = round->replies[int(c)];
-                rep.first = rid;
-                rep.second.assign(count, {-2, 0, 0});
+                auto rep = std::make_shared<Request>();
+                rep->conn = int(c), rep->rid = rid, rep->left = count;
+                rep->answers.assign(count, {-2, 0, 0});
+                round->requests.push_back(rep);
                 const char* q = msg.data() + 5;
                 for (int k = 0; k < count; k++) {
                     uint16_t n, own, klen;
@@ -408,7 +453,20 @@ class Loop {
                     std::memcpy(&klen, q + 8, 2);
                     std::string key(q + 10, klen);
                     q += 10 + klen;
-                    groups[key].push_back({int(c), k, int(n), int(own), int(row)});
+                    groups[key].push_back({int(c), k, int(n), int(own), int(row), rep});
+                }
+            }
+            if (hold_.on()) {  // past snapshots' rows wait their turn (a request's current row goes now: same answer)
+                for (auto it = groups.begin(); it != groups.end();) {
+                    if (it->first == "current") { ++it; continue; }
+                    hold_.add(it->first, std::move(it->second), t_round);
+                    it = groups.erase(it);
+                }
+                hold_.take_due(now(), groups, [&](const Item& it) { round->requests.push_back(it.request); });
+                if (groups.empty() && std::none_of(round->requests.begin(), round->requests.end(),
+                                                   [](auto& r) { return r->left == 0; })) {
+                    t_round = t_last;  // (all held: no round, and the pace not spent)
+                    continue;
                 }
             }
             // the calls: the current network, then each past snapshot in a slot of its architecture
@@ -447,6 +505,7 @@ class Loop {
                         C10_CUDA_CHECK(cudaMemcpyAsync(g->dst[i].first, snap->src[i].first, g->dst[i].second,
                                                        cudaMemcpyDeviceToDevice, g->stream->stream()));
                     g->holding = key;
+                    st_swaps++;
                 }
                 const int size = g->max_batch;
                 for (size_t a = 0; a < items.size(); a += size) {
@@ -454,7 +513,10 @@ class Loop {
                     int widest = 1;
                     for (auto& it : part) widest = std::max(widest, it.n);
                     Shape* s = pick(*g, int(part.size()), widest);
-                    if (!s) continue;  // (no graph for it: no answer, version -2)
+                    if (!s) {  // (no graph for it: no answer, version -2)
+                        for (auto& it : part) it.request->left--;
+                        continue;
+                    }
                     int k = nth[s]++;
                     float* hin = host(s->hin[bank], k, size_t(s->B) * s->W);
                     float* hout = host(s->hout[bank], k, size_t(s->B) * s->cols);
@@ -469,8 +531,11 @@ class Loop {
                     st_calls++;
                     st_past += g != &live;
                     st_rows += round->calls.back().items.size();
+                    if (g != &live) st_past_rows += round->calls.back().items.size();
                     for (auto& it : round->calls.back().items) st_ents += it.n;
                     st_ents_max += widest;
+                    st_wide[g != &live][std::min(WIDE_BINS - 1, (widest - 1) / 8)]++;
+                    st_nrows[g != &live][std::min(ROWS_BINS - 1, (int(round->calls.back().items.size()) - 1) / 8)]++;
                 }
             }
             for (Group* g : used) {
@@ -542,6 +607,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
             l.reload_fn = reload, l.snapshot_fn = snapshot, l.stats_fn = stats;
         })
         .def_readwrite("period", &Loop::period)
+        .def_readwrite("past_period", &Loop::past_period)
         .def_readwrite("version", &Loop::version)
         .def_readwrite("learner_busy", &Loop::learner_busy)
         .def("start", &Loop::start)

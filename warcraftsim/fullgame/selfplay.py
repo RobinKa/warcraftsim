@@ -720,7 +720,7 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
         warm_inference(nets, infer, past, swap, keys + list(cfg.get("eval_checkpoints") or []))
         print(f"inference thread: graphs captured in {time.time() - t0:.0f} s", flush=True)
     def fresh():
-        return {"calls": 0, "past": 0, "rows": 0, "busy": 0.0, "wait": 0.0, "idle": 0.0, "ents": 0, "ents_max": 0,
+        return {"calls": 0, "past": 0, "past_rows": 0, "rows": 0, "busy": 0.0, "wait": 0.0, "idle": 0.0, "ents": 0, "ents_max": 0,
                 "rounds": 0, "t": time.time()}
     stats = fresh()  # -> inference.jsonl
     stats_path = Path(cfg["run_dir"]) / "inference.jsonl"
@@ -733,6 +733,16 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
     pipeline = bool(cfg.get("infer_pipeline", 0))
     pending = None  # the round in flight: (asked, calls, events, its start)
     bank = 0
+    # --infer-past-period-ms (as PastHold in csrc/past_hold.h): a past snapshot's calls at most this often per network, its
+    # rows held meanwhile, so a request can be answered rounds after it was read: open[pipe] = [its answer, items to come]
+    past_period = cfg.get("infer_past_period", 0.0)
+    held: dict[str, list] = {}  # network -> its rows, as in `groups`
+    last_past: dict[str, float] = {}
+    open_requests: dict = {}
+
+    def next_due() -> float:
+        """When the earliest network with held rows may go (inf: nothing held)."""
+        return min((last_past[k] + past_period for k in held), default=float("inf"))
 
     def complete(p) -> None:
         asked, calls, events, t0 = p
@@ -755,8 +765,12 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
                 traceback.print_exc()
                 results = [None] * len(part)
             for (c, k, _), res in zip(part, results):
-                asked[c][1][k] = res
-        for c, answer in asked.items():
+                asked[c][0][1][k] = res
+                asked[c][1] -= 1
+        for c, (answer, left) in asked.items():
+            if left > 0 or open_requests.get(c) is not asked[c]:  # (items still held, or answered already)
+                continue
+            del open_requests[c]
             try:
                 c.send_bytes(pack_reply(answer[0], answer[1])) if shared is not None else c.send(answer)
             except OSError:
@@ -773,16 +787,18 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
                                     "rows_per_s": round(stats["rows"] / dt, 1), "rows_per_call": round(stats["rows"] / stats["calls"], 2),
                                     "rounds_per_s": round(stats["rounds"] / dt, 1),
                                     "past_calls_per_s": round(stats["past"] / dt, 1),
+                                    "past_rows_per_s": round(stats["past_rows"] / dt, 1),
+                                    "past_rows_per_call": round(stats["past_rows"] / max(stats["past"], 1), 2),
                                     "round_ms": round(1000 * stats["busy"] / max(stats["rounds"], 1), 2),  # requests in to answers out
                                     "wait_ms": round(1000 * stats["wait"] / max(stats["rounds"], 1), 2),  # of it: for the GPU
                                     "busy": round(1 - stats["idle"] / dt, 3), "entities": round(stats["ents"] / stats["rows"], 1),
                                     "entities_max_mean": round(stats["ents_max"] / stats["calls"], 1)}) + "\n")
             stats = fresh()
         t_idle = time.time()
-        ready = wait(live, timeout=0 if pending else 1.0)
+        ready = wait(live, timeout=0 if pending else min(1.0, max(0.0, next_due() - t_idle)))
         if pending is None:
             stats["idle"] += time.time() - t_idle
-        if not ready:
+        if not ready and time.time() < next_due():
             if pending:
                 complete(pending)
                 pending = None
@@ -798,8 +814,8 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
             if pause > 0:
                 time.sleep(pause)
             ready = wait(live, timeout=0)
-        t_round = time.time()
-        asked: dict = {}  # game pipe -> (its request's id, the answers)
+        t_last, t_round = t_round, time.time()
+        asked: dict = {}  # game pipe -> open_requests' entry: [(its request's id, the answers), items to come]
         groups: dict[str, list] = {}  # network -> [(pipe, item, view step)]
         for c in ready:
             try:
@@ -807,13 +823,26 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
             except (EOFError, OSError):  # its actor is gone
                 live.remove(c)
                 continue
-            asked[c] = (rid, [None] * len(items))
+            asked[c] = open_requests[c] = [(rid, [None] * len(items)), len(items)]
             for k, item in enumerate(items):
                 if len(item) == 4:  # (key, entities, own units, its row in the shared memory)
                     key, st = item[0], {"n": item[1], "n_own": item[2], "row": item[3]}
                 else:
                     key, st = item
                 groups.setdefault(key, []).append((c, k, st))
+        if past_period > 0:  # (a request's current row goes now, its past one when that network's turn comes)
+            now = time.time()
+            for key in [k for k in groups if k not in LIVE]:
+                held.setdefault(key, []).extend(groups.pop(key))
+            for key in list(held):
+                if now >= last_past.get(key, 0.0) + past_period or len(held[key]) >= 16:
+                    groups[key] = held.pop(key)
+                    last_past[key] = now
+                    for c, _, _ in groups[key]:
+                        asked.setdefault(c, open_requests[c])
+            if not groups and not any(e[1] == 0 for e in asked.values()):
+                t_round = t_last  # (all held: no round, and the pace not spent)
+                continue
         infer.begin(bank)
         past.begin(bank)
         calls, used = launch_round(groups, nets, infer, past, swap, top, streams, priority)  # all started before the one wait
@@ -827,6 +856,7 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
             ns = [it[2]["n"] for it in part]
             stats["calls"] += 1
             stats["past"] += fwd is past
+            stats["past_rows"] += len(part) if fwd is past else 0
             stats["rows"] += len(part)
             stats["ents"] += sum(ns)
             stats["ents_max"] += max(ns)
@@ -3613,8 +3643,28 @@ EVAL_PER_LAUNCH = 2  # an evaluation launch's games at most (--games-per-process
 WIDTHS = (32, 48, 64, 96, 128, fx.MAX_ENT)  # the padded entity counts the update's CUDA graphs are captured for
 
 
-def _width(n: int) -> int:
-    return next(w for w in WIDTHS if w >= n)
+def _width(n: int, widths: tuple = WIDTHS) -> int:
+    return next(w for w in widths if w >= n)
+
+
+def update_widths(text: str) -> tuple:
+    """--update-widths: the padded entity counts, sorted, up to fx.MAX_ENT always (empty: WIDTHS)."""
+    given = {int(x) for x in str(text or "").split(",") if x.strip()}
+    if any(w < 1 or w > fx.MAX_ENT for w in given):
+        raise ValueError(f"--update-widths {text}: each from 1 to {fx.MAX_ENT}")
+    return tuple(sorted(given | {fx.MAX_ENT})) if given else WIDTHS
+
+
+class _WholeLoss(torch.nn.Module):
+    """GraphedUpdate._loss as a module over the network's parameters, for torch.func.functional_call: it swaps them
+    in the module tree, and _loss reads the same network objects (their buffers stay the real ones: --update-grad-fuse)."""
+
+    def __init__(self, net: FullGameNet, loss):
+        super().__init__()
+        self.net, self.loss = net, loss
+
+    def forward(self, s: dict, b: dict | None) -> tuple:
+        return self.loss(s, b)
 
 
 class GraphedUpdate:
@@ -3628,9 +3678,11 @@ class GraphedUpdate:
     def __init__(self, net: FullGameNet, ref: FullGameNet | None, opt, args, device):
         self.net, self.ref, self.opt, self.args, self.device = net, ref, opt, args, device
         self.graphs: dict[tuple, tuple] = {}
-        self.pool = torch.cuda.graph_pool_handle()
+        cuda = device.type == "cuda"  # (on the CPU only _backward and _step are of use: tests)
+        self.pool = torch.cuda.graph_pool_handle() if cuda else None
         self.mgraphs: dict[tuple, tuple] = {}  # (the noise measurement's: GraphedUpdate.measure)
-        self.mpool = torch.cuda.graph_pool_handle()
+        self.mpool = torch.cuda.graph_pool_handle() if cuda else None
+        self.widths = update_widths(getattr(args, "update_widths", ""))  # (--update-widths)
         self.mean = torch.zeros((), device=device)
         self.std = torch.ones((), device=device)
         self.pg_coef = torch.ones((), device=device)
@@ -3645,11 +3697,42 @@ class GraphedUpdate:
                 if hasattr(dc, k):  # per shape: the entity widths, with the labels' keys or not)
                     setattr(dc, k, max(getattr(dc, k), 64))
             self._losses = torch.compile(self._loss, mode=mode, dynamic=False)
+        # --update-grad-fuse: the gradients computed inside one compiled function with the forward passes and the
+        # losses. (Without it the backward is compiled too, but apart: torch.compile's AOTAutograd cuts the traced
+        # forward and backward in two, and loss.backward() runs the second through its CompiledFunctionBackward node;
+        # here both are one program, nothing kept for a later backward.) Over detached weights: AOTAutograd then has
+        # no differentiation of its own to do (the anchor's likewise). Without --update-fuse: eager (the tests).
+        self._grads, self._unused = None, set()
+        self._named = [("net." + n, p) for n, p in net.named_parameters()]
+        if getattr(args, "update_grad_fuse", 0):
+            from torch.func import functional_call, grad_and_value
+            whole = _WholeLoss(net, self._loss)
+            fn = grad_and_value(lambda params, s, b: functional_call(whole, params, (s, b)), has_aux=True)
+            self._grads = torch.compile(fn, mode=mode, dynamic=False) if mode else fn
+            if ref is not None:
+                ref.requires_grad_(False)
+
+    def _backward(self, s: dict, b: dict | None) -> dict:
+        """The forward passes, the losses and the gradients into the weights' .grad: the statistics."""
+        if self._grads is None:
+            loss, out = self._losses(s, b)
+            loss.backward()
+            return out
+        grads, (_, out) = self._grads({n: p.detach() for n, p in self._named}, s, b)
+        for n, p in self._named:  # (as backward's: None for a weight the loss doesn't reach, which Adam then leaves
+            p.grad = None if n in self._unused else grads[n]  # alone; torch.func's zeros would move it by its momentum)
+        return out
+
+    def _find_unused(self, s: dict, b: dict | None) -> None:
+        """--update-grad-fuse: the weights this shape's loss doesn't reach (one eager pass before its capture)."""
+        if self._grads is not None:
+            loss, _ = self._loss(s, b)
+            got = torch.autograd.grad(loss, [p for _, p in self._named], allow_unused=True)
+            self._unused = {n for (n, _), g in zip(self._named, got) if g is None}
 
     def _step(self, s: dict, b: dict | None) -> dict:
         """One minibatch's step on the static inputs `s` (and the cloning batch `b`): no GPU syncs."""
-        loss, out = self._losses(s, b)
-        loss.backward()
+        out = self._backward(s, b)
         out["grad_norm"] = torch.nn.utils.clip_grad_norm_(self.net.parameters(), self.args.max_grad_norm, foreach=True)
         self.opt.step()
         return out
@@ -3657,7 +3740,7 @@ class GraphedUpdate:
     def _loss(self, s: dict, b: dict | None) -> tuple:
         """The step's forward passes and losses: (the loss, the statistics)."""
         net, ref, args = self.net, self.ref, self.args
-        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=bool(args.bf16), cache_enabled=False):
+        with torch.autocast(self.device.type, dtype=torch.bfloat16, enabled=bool(args.bf16), cache_enabled=False):
             seq = (s["B"], s["T"], s["h0"], None)
             ev = evaluate(net, s["ent"], s["type"], s["cur"], s["mask"], s["glob"], s["n_own"],
                           s["order"], s["tgt"], s["bx"], s["by"], s.get("avail"), seq=seq)
@@ -3739,6 +3822,7 @@ class GraphedUpdate:
         side = torch.cuda.Stream()
         side.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(side):
+            self._find_unused(s, sb)
             for _ in range(2):
                 self.opt.zero_grad(set_to_none=True)
                 self._step(s, sb)
@@ -3766,18 +3850,17 @@ class GraphedUpdate:
         side = torch.cuda.Stream()
         side.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(side):
+            self._find_unused(s, sb)
             for _ in range(2):
                 for p in params:
                     p.grad = None
-                loss, _ = self._losses(s, sb)
-                loss.backward()
+                self._backward(s, sb)
         torch.cuda.current_stream().wait_stream(side)
         for p in params:
             p.grad = None
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(graph, pool=self.mpool, capture_error_mode="thread_local"):
-            loss, _ = self._losses(s, sb)
-            loss.backward()
+            self._backward(s, sb)
         grads = [p.grad for p in params]
         for p in params:
             p.grad = None  # (the update's graphs have their own)
@@ -3831,12 +3914,12 @@ class GraphedUpdate:
         for _ in range(epochs):
             widths = np.array([max(s["n"] for s in q) for q in seqs])
             for idx in minibatches(widths, per_mb, args.pad_groups):
-                width = _width(int(widths[idx].max()))
+                width = _width(int(widths[idx].max()), self.widths)
                 mb = collate_seq([seqs[i] for i in idx], device, width=width, B=per_mb, T=args.seq_len, labels=labels)
                 b = None
                 if bc_iter is not None and args.bc_coef > 0:
                     b = dict(next(bc_iter))
-                    bw = _width(int(b["mask"].any(0).nonzero().max()) + 1)  # (on the CPU: no wait)
+                    bw = _width(int(b["mask"].any(0).nonzero().max()) + 1, self.widths)  # (on the CPU: no wait)
                     b = {k: (v[:, :bw] if v.dim() >= 2 and v.shape[1] == b["mask"].shape[1] else v) for k, v in b.items()}
                     if b["mask"].shape[1] < bw:  # (pad to the width)
                         b = {k: (torch.nn.functional.pad(v, (0, 0) * (v.dim() - 2) + (0, bw - v.shape[1]))
@@ -3923,6 +4006,7 @@ def load_optimizer(opt, checkpoint: Path, device, lr: float, net: FullGameNet | 
         print(f"note: no Adam state saved with {Path(checkpoint).name}: the nearest one's, {near[0].name}", flush=True)
         path = near[0]
     capturable = [g.get("capturable", False) for g in opt.param_groups]
+    fused = [g.get("fused") for g in opt.param_groups]  # (--adam-fused: this run's, whatever the saved state's run used)
     saved = torch.load(path, map_location=device, weights_only=False)
     try:
         opt.load_state_dict(saved)
@@ -3955,8 +4039,8 @@ def load_optimizer(opt, checkpoint: Path, device, lr: float, net: FullGameNet | 
                     pad = v.new_zeros(p.shape)
                     pad[tuple(slice(0, s) for s in v.shape)] = v
                     opt.state[p][k] = pad
-    for g, c in zip(opt.param_groups, capturable):
-        g["lr"], g["capturable"] = lr, c
+    for g, c, f in zip(opt.param_groups, capturable, fused):
+        g["lr"], g["capturable"], g["fused"] = lr, c, f
     print(f"Adam's state from {path}", flush=True)
     return True
 
@@ -4422,6 +4506,12 @@ def main(argv: list[str] | None = None) -> int:
                                                                      "about as long as it updates)")
     ap.add_argument("--update-fuse", default="", help="the update's forward passes and losses compiled before its CUDA "
                     "graphs are captured (torch.compile's mode: default, max-autotune-no-cudagraphs; empty: eager)")
+    ap.add_argument("--update-grad-fuse", type=int, default=0, help="with --update-fuse: the gradients computed inside "
+                    "the compiled function, as one program with the forward passes and the losses (torch.func.grad_and_value "
+                    "over the weights); else torch.compile compiles the backward apart and loss.backward() runs it")
+    ap.add_argument("--adam-fused", type=int, default=0, help="Adam's fused kernel instead of its foreach operations")
+    ap.add_argument("--update-widths", default="", help="the padded entity counts of the update's minibatches, comma-"
+                    "separated, each a CUDA graph per shape (up to 160 always; empty: 32,48,64,96,128,160)")
     ap.add_argument("--cuda-graphs", type=int, default=1, help="the update's minibatch steps as CUDA graphs (GraphedUpdate; "
                                                              "networks with memory)")
     ap.add_argument("--compile", type=int, default=1, help="the actors' network calls as CUDA graphs")
@@ -4455,6 +4545,9 @@ def main(argv: list[str] | None = None) -> int:
                                                                   "side by side, a CUDA stream each")
     ap.add_argument("--infer-past-slots", type=int, default=4, help="past snapshots a round runs side by side "
                                                                      "(a network copy each)")
+    ap.add_argument("--infer-past-period-ms", type=float, default=0.0, help="a past snapshot's calls at most this often per "
+                    "network, so that its rows batch up (a game against one waits at most this much longer, the current "
+                    "network's calls keep every round; 0: every round)")
     ap.add_argument("--remote-games", type=int, default=0, help="game slots for actors on other machines "
                                                                 "(fullgame/remoteactor.py there): their calls and steps come "
                                                                 "over TCP to a gateway here (fullgame/gateway.py)")
@@ -4653,14 +4746,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.rl_dropout >= 0:  # the updates' dropout (the actors act without: eval mode)
         set_dropout(net, args.rl_dropout)
     graphed = bool(args.cuda_graphs) and device.type == "cuda" and bool(net.memory)
-    opt = torch.optim.Adam(net.parameters(), lr=args.lr, eps=1e-5, capturable=graphed)
+    if args.update_grad_fuse and not (graphed and args.update_fuse):
+        raise SystemExit("--update-grad-fuse is GraphedUpdate's, and needs --update-fuse (eager it would be slower)")
+    update_widths(args.update_widths)  # (a mistake in them stops the run here)
+    # (--adam-fused: one kernel for all the weights where the foreach path launches one per operation; it reads the step
+    # count on the GPU and takes the addresses by value, so a CUDA graph replays it: ATen/native/cuda/fused_adam_utils.cuh)
+    adam_kw = {"fused": True} if args.adam_fused else {}
+    opt = torch.optim.Adam(net.parameters(), lr=args.lr, eps=1e-5, capturable=graphed, **adam_kw)
     if args.start_weights and not args.resume:
         load_optimizer(opt, args.start_weights, device, args.lr, net)
     # the main exploiter (--exploiter-share): a second network, from the run's starting weights
     # (as AlphaStar's from the supervised agent), trained on its games against the learner alone
     x_init = {k: v.detach().clone() for k, v in net.state_dict().items()} if args.exploiter_share > 0 else None
     xnet = copy.deepcopy(net) if x_init is not None else None
-    xopt = torch.optim.Adam(xnet.parameters(), lr=args.lr, eps=1e-5, capturable=graphed) if xnet is not None else None
+    xopt = torch.optim.Adam(xnet.parameters(), lr=args.lr, eps=1e-5, capturable=graphed, **adam_kw) if xnet is not None else None
     slot, slot_lock = claim_slot(args.runs)
     races = list(fx.RACES) if args.races == "all" else args.races.split(",")
     ai = [d for d in args.ai.split(",") if d]
@@ -4831,7 +4930,8 @@ def main(argv: list[str] | None = None) -> int:
            "map_geometry": [fx.STARTS, fx.BIN_RANGE],
            "infer_entities": [int(x) for x in args.infer_entities.split(",")],
            "infer_past_entities": [int(x) for x in args.infer_past_entities.split(",")],
-           "infer_past_slots": args.infer_past_slots, "game_nice": args.game_nice, "pairs": args.pairs,
+           "infer_past_slots": args.infer_past_slots, "infer_past_period": args.infer_past_period_ms / 1000.0,
+           "game_nice": args.game_nice, "pairs": args.pairs,
            "exploiter_share": args.exploiter_share, "float_penalty": args.float_penalty,
            "infer_period": args.infer_period_ms / 1000.0,
            "avail_mask": bool(args.avail_mask),
