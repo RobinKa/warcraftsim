@@ -6,7 +6,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
-COMMIT=$(git rev-parse --short=12 "${1:?the run's commit}")
+COMMIT=$(git rev-parse --short=12 "${1:?the commit of the run}")
 ACTORS=${2:-8} GAMES=${3:-8} BOX=${4:-tora-ms-a2@tora-ms-a2} LEARNER=${5:-10.77.0.1}
 CHECKOUT=$HOME/wc3/code/$COMMIT
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=15)
