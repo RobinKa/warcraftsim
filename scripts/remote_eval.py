@@ -428,7 +428,10 @@ class Manager:
             self._pull(st, mine)
 
     def _pull(self, st: dict, mine: Path) -> None:
-        have = sum(1 for _ in mine.open()) if mine.exists() else 0
+        # (this host's rows only: another host's in the file, as when the games box took over from the laptop mid-run,
+        # had held its rows back until its count passed theirs, and then lost that many)
+        mark = f'"host": "{self.a.name}"'
+        have = sum(mark in line for line in mine.open(errors="replace")) if mine.exists() else 0
         if st["lines"] < have:
             if st["lines"]:
                 log(f"the host's {EPISODES} has {st['lines']} rows, {have} here: not pulled")
@@ -445,7 +448,7 @@ class Manager:
                 e = json.loads(line)
             except ValueError:  # (kept as it is, the readers skip it: the counts here and there stay the same)
                 log("a damaged row from the host")
-                rows.append(line.decode(errors="replace") + "\n")
+                rows.append(f"{line.decode(errors='replace')} {mark}\n")  # (still counted as this host's)
                 continue
             if abs(st["clock"]) > 2.0:  # (the host's clock: its rows on this machine's time)
                 e["time"] = round(e["time"] - st["clock"], 3)
@@ -454,7 +457,7 @@ class Manager:
             with mine.open("a") as f:
                 f.writelines(rows)
             (mine.parent / "remote-eval.alive").touch()  # (the run's own evaluation games wait while it is fresh: --eval-fallback)
-            log(f"{len(rows)} games from {self.a.name} ({have + len(rows)} in all)")
+            log(f"{len(rows)} games from {self.a.name} ({have + len(rows)} in all from it)")
 
     def cycle(self) -> bool:
         """One look; False: done (--run's run ended)."""

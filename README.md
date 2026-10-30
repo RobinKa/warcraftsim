@@ -108,6 +108,7 @@ This repository contains no Blizzard game files: you need your own copy of Warcr
    sudo bash scripts/setup_system.sh     # Xvfb, mingw, 32-bit libraries, ...
    scripts/setup_ge_wine.sh              # GE-Proton's Wine with fsync (28% less CPU a step)
    ```
+   On Ubuntu 26.04 the first script's WineHQ repository and `libomp-14` don't exist: install `wine wine32:i386` and the rest of its list from Ubuntu's own archive, and make the template with GE's Wine (`WARCRAFTSIM_WINE=~/wc3/ge/GE-Proton10-34/files/bin python -m warcraftsim setup`; Ubuntu's 32-bit-only Wine refuses a win64 prefix).
 3. **Build and install:**
    ```bash
    git submodule update --init

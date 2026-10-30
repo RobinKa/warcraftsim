@@ -72,6 +72,7 @@ flowchart LR
 ```
 scripts/remote_eval.py --host robin@laptop-wsl [--run fgself-76] [--games 16]   # in the background
 scripts/remote_eval.py --host robin@laptop-wsl --status | --stop
+scripts/remote_eval.py --host tora-ms-a2@tora-ms-a2 --name tora-ms-a2 --games 32   # or the games box, CPU inference
 ```
 
 ## Remote actors

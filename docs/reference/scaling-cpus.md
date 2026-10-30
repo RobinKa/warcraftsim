@@ -9,6 +9,22 @@ Self-play is CPU-bound: the games and the actors' Python set the speed, and the 
 * **Inference.** Each step needs the policy's forward pass. Today the games of a run share the learner's machine and its GPU. A second machine works now for evaluation games, with inference on its own GPU (the laptop's 3050 Ti plays 16 games: [a remote evaluation worker](../architecture.md#a-remote-evaluation-worker)). Training games on another machine need more work first: the trajectories and weights sent over the network, and inference there (a small GPU, or the CPU) or sent to the 3090 over the LAN. None of this is built.
 * **No GPU for the games.** They draw nothing (Direct3D calls return at once).
 
+## The box we bought, measured (2026-10-30)
+
+A Minisforum MS-A2 with the Ryzen 9 8945HX (`tora-ms-a2`): 16 cores, 32 threads, **one** 32 GB module (single channel, 5200 MT/s, 28 GB visible). Games alone, built-in AI against built-in AI on `duelfast`, with no wait for orders (`scripts/wine_sync_ab.py --wait-ms 0`), both machines otherwise idle:
+
+| games | MS-A2: wall a step, game steps/s | 5950X: wall a step, game steps/s |
+|---|---|---|
+| 16 | 6.4 ms, ~2,500 | 6.4 ms, ~2,500 |
+| 32 | 7.3 ms, ~4,400 | 7.1 ms, ~4,500 |
+| 48 | 10.7 ms, ~4,500 | |
+
+CPU a step 6.4-6.6 ms on both, so the one memory channel costs nothing visible up to 32 games. The ceiling is about 32 games' worth, the same as the main machine's. Those are early-game steps with no actors, so a run's rates are lower. Memory ~375 MB a game: 28 GB holds ~65 games without actors.
+
+As an evaluation worker with inference on its CPU (32 games, 16 processes): 199 games in its first 11 minutes, ~1,085 an hour against the laptop's ~790 (the first minutes favour short games), 29% of the CPU idle, 20 GB used, Tctl ~90 °C at ~4.5 GHz (no throttling so far; the chip's limit is 100 °C).
+
+The link to the main machine, which is on Wi-Fi: 36 MB/s to the box, 62 MB/s from it, 3.8 ms idle; **33 ms on average and 69 ms at worst while the link is busy**. A step has 35-40 ms for its orders, so remote training games need a cable into the main machine.
+
 ## Electricity
 
 | | |
