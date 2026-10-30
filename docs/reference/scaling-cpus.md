@@ -25,6 +25,8 @@ As an evaluation worker with inference on its CPU (32 games, 16 processes): 199 
 
 The link to the main machine, which is on Wi-Fi: 36 MB/s to the box, 62 MB/s from it, 3.8 ms idle; **33 ms on average and 69 ms at worst while the link is busy**. A step has 35-40 ms for its orders, so remote training games need a cable into the main machine.
 
+With a direct cable between the main machine's `eno1` and the box's `enp4s0` (2.5 GbE, addresses 10.77.0.1 and 10.77.0.2, NetworkManager's `games-link`, no internet route over it): **281 MB/s each way, 0.56 ms idle, 0.87 ms on average and 1.4 ms at worst while busy**. Tailscale's traffic takes the cable by itself.
+
 ## Electricity
 
 | | |
