@@ -332,12 +332,13 @@ def plan_of(state: dict, side: int, log: list[tuple], at: int, steps: int, step_
     return {"t": t, "n": n, "held": sorted(held), "end": round(end, 1), "won": won}
 
 
-def plan_target(state: dict, side: int, items: list[str], drop=(), trainable=None) -> dict | None:
+def plan_target(state: dict, side: int, items: list[str], drop=(), trainable=None, won_only: bool = False) -> dict | None:
     """A side's plan in `state` (fit's) as its target strategy, or None (no plan, or nothing of it in this pool): the
     pool's `items` within the horizon but `drop` (--neutral 2's mercenaries), the army's mix of units a race's building
-    trains (`trainable`; strategy_pool's filters, as its strategies have them)."""
+    trains (`trainable`; strategy_pool's filters, as its strategies have them). `won_only` (--late-z 2): the plan of the
+    person who won that game, the other side none."""
     plan = state["sides"][side].get("plan")
-    if not plan:
+    if not plan or (won_only and not plan.get("won")):
         return None
     t = {c: v for c, v in plan["t"].items() if v <= strat.HORIZON and c in items and c not in drop}
     n = {c: v for c, v in plan["n"].items() if not strat.is_army(c) or trainable is None or c in trainable}

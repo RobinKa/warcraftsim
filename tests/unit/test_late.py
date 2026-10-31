@@ -1,6 +1,7 @@
 """Late-game starts (fullgame/late.py): a game's state captured, its sides swapped, the first step's commands that set
 it up, the step-1 harvest orders; the new harness ops' lengths alike in protocol.py, the harness and the shim."""
 
+import copy
 import json
 import random
 import re
@@ -403,6 +404,11 @@ def test_plan_as_a_target_no_windfall(plans):
     own = late.from_demo(arrays, meta, [4], [R, L])[0]
     assert late.plan_target(own, 0, items) is None  # (a state without plans: an own game's)
     assert late.plan_target(st, 0, ["hrif"]) is not None  # (its army's mix alone)
+    won = copy.deepcopy(st)
+    won["sides"][0]["plan"]["won"] = False
+    assert late.plan_target(won, 0, ["hrif"]) is not None and late.plan_target(won, 0, ["hrif"], won_only=True) is None
+    won["sides"][0]["plan"]["won"] = True
+    assert late.plan_target(won, 0, ["hrif"], won_only=True) is not None  # (--late-z 2: the winner's plan only)
 
 
 def test_late_z_keeps_defaults():

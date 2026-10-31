@@ -2248,7 +2248,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                     bot.view.z, bot.view.zmask, bot.view.forbid, bot.view.mix_target = None, None, None, {}
                 for s in trajs if pool is not None else ():
                     st = late_game.plan_target(late_start, s, pool["items"][races[s]],
-                                               _MERCENARIES if fx.NEUTRAL == 2 else (), trainable_units())
+                                               _MERCENARIES if fx.NEUTRAL == 2 else (), trainable_units(),
+                                               won_only=cfg.get("late_z") == 2)
                     if keys[s] == "current" and st is not None:  # (not the exploiter's sides, as any target)
                         zs[s] = target(cfg, bots[s].view, strat.scaled(st, cfg.get("z_time_scale", 1.0)), pool, races[s],
                                        vocab, {})
@@ -4168,7 +4169,7 @@ def main(argv: list[str] | None = None) -> int:
                     "a state of the game's map and races whose start locations are the game's. PATH:W: that file's "
                     "states are a share W of the late starts (e.g. people's, runs/fullgame/late-states-human-129.jsonl:0.5"
                     "; late.States), the files without a weight share the rest; without weights all states alike")
-    ap.add_argument("--late-z", type=int, default=0, help="1: in a late start from a state with plans (scripts/"
+    ap.add_argument("--late-z", type=int, default=0, help="2: as 1, only the winner's plan (the other side no target; fgself-169's 1 had the winners' and the losers': with a target 38%%, head to head 42%%). 1: in a late start from a state with plans (scripts/"
                     "late_from_demos.py --plans 1: people's games), each trained side's target is what that person went on "
                     "to make from then (late.plan_target, with --z-pool's slots); a state without plans: no target, no "
                     "input (0, as before: no target or reward in a late start, the input drawn before it stays)")
