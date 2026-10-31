@@ -703,3 +703,7 @@ An inference round with finer buckets: 5.27 to 5.28 ms (GPU 4.26 to 4.15), no ga
 `--infer-past-period-ms`, past snapshots' calls batched, in the run over four minutes each: off 4,480 steps/s, 576 calls a second, 4.12 ms of GPU a round, a step of a game against a past snapshot 33 ms; 33 ms 4,450, 376 calls, 3.66 ms, 42 ms; 50 ms 4,340, 342 calls, 3.83 ms, 56 ms. The GPU it frees is lost again in those games' wait, and it would change the training's mix: off.
 
 With those two kept, 64 games on the box again: 4,620 steps/s against 4,480 at 56 (within noise), the box down to 1.8 GB available and ksmd at 23% of a core: back to 56. The limit stays the GPU: the server busy 99% of the time, half its rounds beside an update. What's left is a smaller network, or a second GPU.
+
+### The GPU at 350 W, for the fan's noise (2026-10-31, in a live run, not kept)
+
+The GPU's fan is the machine's loudest. 350 W against 400 W in fgself-170: 4,099 steps/s against 4,272 (-4%, 9 checkpoints against 45), 67 °C against 70, 1,720 MHz against 1,860, fan 91-94% against 100%. The fan's own curve runs it near full even at 67 °C, well below the card's 83 °C target, so a lower limit buys little quiet. Back to 400 W. Not tried: setting the fan's speed directly and letting the GPU run warmer.
