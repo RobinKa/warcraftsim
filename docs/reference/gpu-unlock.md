@@ -1,6 +1,6 @@
 # GPU unlock and power limit
 
-Since 2026-10-24 the training machine's RTX 3090 runs with its BF16/FP16 tensor-core rate unlocked ([gpu-unlock](https://github.com/Zagitta/gpu-unlock)) and its power limit at 400 W. Both are setup of this machine, outside the repository. This page has what they do, what they gave, and how to set them up, check them and undo them.
+Since 2026-10-24 the training machine's RTX 3090 runs with its BF16/FP16 tensor-core rate unlocked ([gpu-unlock](https://github.com/Zagitta/gpu-unlock)) and its power limit at 350 W, the card's default (400 W from 2026-10-24 to 2026-10-31, given up because the fan was the machine's loudest, for about 4% of training speed: [the measurement](optimization-log.md#the-gpu-at-350-w-for-the-fans-noise-2026-10-31)). Both are setup of this machine, outside the repository. This page has what they do, what they gave, and how to set them up, check them and undo them.
 
 ## What it is
 
@@ -63,13 +63,13 @@ Ubuntu 26.04, kernel 7.0.0-38, NVIDIA driver 595.99, the card at PCI address `00
 
    ```
    [Unit]
-   Description=RTX 3090 power limit 400 W (its firmware's maximum; the default is 350 W)
+   Description=RTX 3090 power limit 350 W (the default; firmware maximum 400 W; quieter fan, about 4% fewer steps/s)
    After=nvidia-persistenced.service suspend.target hibernate.target hybrid-sleep.target suspend-then-hibernate.target
    Wants=nvidia-persistenced.service
 
    [Service]
    Type=oneshot
-   ExecStart=/usr/bin/nvidia-smi -i 0000:07:00.0 -pl 400
+   ExecStart=/usr/bin/nvidia-smi -i 0000:07:00.0 -pl 350
    RemainAfterExit=yes
 
    [Install]
@@ -80,7 +80,7 @@ Ubuntu 26.04, kernel 7.0.0-38, NVIDIA driver 595.99, the card at PCI address `00
    sudo systemctl daemon-reload && sudo systemctl enable --now nvidia-power-limit.service
    ```
 
-   Under training the card drew 260-340 W at ~60 °C before the unlock. With 400 W on the card, the power supply should be a good 850 W or more (an RTX 3090 draws short spikes well above its limit).
+   Under training the card drew 260-340 W at ~60 °C before the unlock. Even at 400 W on the card, the power supply should be a good 850 W or more (an RTX 3090 draws short spikes well above its limit).
 
 ## Checking it
 

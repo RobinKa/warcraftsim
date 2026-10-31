@@ -108,7 +108,7 @@ So a game would cost ~115 MB of its own plus a share of ~93 MB, and 55 games ~6.
 
 * **Memory**: DDR5 is ~£14-17 per GB, ~3.7 times a year ago (and +15% in the last 90 days). 32 GB is ~£440, 35-45% of a new machine. A board with a laptop chip takes SODIMM at about the same price.
 * **Electricity**: about +23-25% forecast for January 2027, and VAT back on 1 April 2027 (the 30p column). A fixed tariff at about the cap would hedge it.
-* **The 3090**: each 100 W off its limit saves ~£461 over two years, but only if the learner does not need the speed; it is at 400 W by choice ([GPU unlock](gpu-unlock.md)).
+* **The 3090**: each 100 W off its limit saves ~£461 over two years, but only if the learner does not need the speed; it is at 350 W since 2026-10-31, for the fan's noise ([GPU unlock](gpu-unlock.md)).
 
 ## Before buying
 

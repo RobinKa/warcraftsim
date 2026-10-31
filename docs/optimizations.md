@@ -2,7 +2,7 @@
 
 The game's CPU sets the speed. The [optimization log](reference/optimization-log.md) has every fix with its numbers; [speeding up the game itself](game-speedups.md) tells how the game's own code was made faster.
 
-Since 2026-10-24 the RTX 3090's BF16 rate is unlocked and its power limit is 400 W: matrix multiplies 1.4 to 1.8 times faster ([GPU unlock](reference/gpu-unlock.md)). More games need more CPU: [scaling up the CPUs](reference/scaling-cpus.md) has what to buy or rent, with UK prices and electricity.
+Since 2026-10-24 the RTX 3090's BF16 rate is unlocked and its power limit is 350 W (400 W until 2026-10-31): matrix multiplies 1.4 to 1.8 times faster ([GPU unlock](reference/gpu-unlock.md)). More games need more CPU: [scaling up the CPUs](reference/scaling-cpus.md) has what to buy or rent, with UK prices and electricity.
 
 ## Self-play throughput
 
