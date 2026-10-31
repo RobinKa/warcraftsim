@@ -1,6 +1,6 @@
 # GPU unlock and power limit
 
-Since 2026-10-24 the training machine's RTX 3090 runs with its BF16/FP16 tensor-core rate unlocked ([gpu-unlock](https://github.com/Zagitta/gpu-unlock)) and its power limit at 350 W, the card's default (400 W from 2026-10-24 to 2026-10-31, given up because the fan was the machine's loudest, for about 4% of training speed: [the measurement](optimization-log.md#the-gpu-at-350-w-for-the-fans-noise-2026-10-31)). Both are setup of this machine, outside the repository. This page has what they do, what they gave, and how to set them up, check them and undo them.
+Since 2026-10-24 the training machine's RTX 3090 runs with its BF16/FP16 tensor-core rate unlocked ([gpu-unlock](https://github.com/Zagitta/gpu-unlock)) and its power limit at 350 W, the card's default (400 W from 2026-10-24 to 2026-10-31, given up because the fan was the machine's loudest, for about 4% of training speed: [the measurement](optimization-log.md#the-gpu-at-350-w-for-the-fans-noise-2026-10-31-in-a-live-run-kept)). Both are setup of this machine, outside the repository. This page has what they do, what they gave, and how to set them up, check them and undo them.
 
 ## What it is
 
