@@ -237,6 +237,16 @@ def camp(rows: np.ndarray, start: tuple[float, float] | None, fresh: bool = Fals
     return mx, my
 
 
+def hall_spot(mx: float, my: float, sx: float, sy: float) -> tuple[float, float]:
+    """Where a hall goes for the natural's mine (mx, my) of the start (sx, sy): where people build it (EXPAND_SPOTS), on
+    another map 750 toward its start."""
+    ox, oy = EXPAND_SPOTS.get((int(round(mx)), int(round(my))), (None, None))
+    if ox is None:
+        n = max(float(np.hypot(sx - mx, sy - my)), 1.0)
+        ox, oy = 750.0 * (sx - mx) / n, 750.0 * (sy - my) / n
+    return mx + ox, my + oy
+
+
 def site(rows: np.ndarray, start: tuple[float, float] | None, fresh: bool = False) -> tuple[int, float, float, float, float] | None:
     """The player's natural expansion if it is free (rows: the step's units, start: its start location): (its mine's
     id, the mine's x and y, the hall's x and y), or None (no natural, taken, or its camp stands)."""
@@ -265,8 +275,4 @@ def site(rows: np.ndarray, start: tuple[float, float] | None, fresh: bool = Fals
         if (halls & (dist < TAKEN_NEAR)).any() or ((alive[:, fx.C_OWNER] == 12) & (dist < CAMP_NEAR)).any():
             return None
         nat_id = int(nat[fx.C_ID])
-    ox, oy = EXPAND_SPOTS.get((int(round(mx)), int(round(my))), (None, None))
-    if ox is None:  # (another map's: 750 toward its start)
-        n = max(float(np.hypot(sx - mx, sy - my)), 1.0)
-        ox, oy = 750.0 * (sx - mx) / n, 750.0 * (sy - my) / n
-    return nat_id, mx, my, mx + ox, my + oy
+    return (nat_id, mx, my, *hall_spot(mx, my, sx, sy))

@@ -2151,9 +2151,16 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     # reward for the items made by now, theirs against the strategy's (strategy.mismatch); none in evaluation
     zs: dict[int, dict] = {}
     zm: dict[int, dict] = {}  # (--z-modes: each side's modes, modes.draw; --z-comp: its composition kinds too)
+    # --scenarios: a share of the training games start in a situation the harness sets up (scenarios.py)
+    scenario = (random.choice(cfg["scenarios"]) if train and replay is None and cfg.get("scenarios")
+                and "(real)" not in str(opp.get("name")) and random.random() < cfg.get("scenario_share", 0.0) else None)
+    # (not the untaxed real-game launches: they are the training's yardstick; audit 6)
     def draw_modes(race: str) -> dict:  # (--econ-masks: a workers mode asks no more than the cap lets one base have; it
         # had asked 15-30 at 480 s against caps of 8-20: undead kept it 0 of 305 times; audit 15)
         m = zmodes.draw(random, cfg.get("z_modes", 0.0), cfg.get("z_comp", 0.0)) if cfg.get("z_modes") or cfg.get("z_comp") else {}
+        if scenario == "base2":  # (its second hall stands from the start: "expand" given, "no_expand" out of reach)
+            m.pop("expand", None)
+            m.pop("no_expand", None)
         if "workers" in m and fx.ECON_MASK:
             m["workers"] = float(min(m["workers"], fx.worker_cap(race, 1)))
         return m
@@ -2214,12 +2221,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     made = {s: {} for s in zs}  # each item's first game second, of the sides with a strategy
     made_ver: dict = {}  # (each side's production's key counts when its items were last timed)
     builders = {s: TargetBuilder(cfg, vocab, s, zs[s], random.Random()) for s in zs} if cfg.get("z_build") else {}
-    # --scenarios: a share of the training games start in a situation the harness sets up (scenarios.py)
-    scenario = (random.choice(cfg["scenarios"]) if train and replay is None and cfg.get("scenarios")
-                and "(real)" not in str(opp.get("name")) and random.random() < cfg.get("scenario_share", 0.0) else None)
-    # (not the untaxed real-game launches: they are the training's yardstick; audit 6)
-    scenario_cmds = (scenarios.commands(scenario, obs, side, races, random.Random()) if scenario and scenario != "late"
-                     else [])
+    scenario_cmds = (scenarios.commands(scenario, obs, side, races, random.Random())
+                     if scenario and scenario not in ("late", "base2") else [])
     # the scenario "late" (late.py, --late-states): the game starts from a captured mid-game state of its map and races
     # whose start locations are the game's (none fits: a game from the start). Only games between agents: the built-in
     # AI's script starts its build order and hero picks anew at minute 0, and from a placed base it floated 7,500 gold by
@@ -2257,6 +2260,18 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                         if cfg.get("z_build"):
                             builders[s] = TargetBuilder(cfg, vocab, s, zs[s], random.Random())
                 even_out()
+    # the scenario "base2" (scenarios.py): the agents' sides (bots: not the built-in AI's, not the hand-written player's)
+    # start with their naturals running. Its state, in late.py's form, goes the late start's way below: steps 0 to 2 set it
+    # up, no side acts before step 2, so the shaping's potential and Production start from it (no gift in the first reward,
+    # nothing placed counted as made), the workers get their jobs at step 2. Targets stay on: their expansion is done.
+    elif scenario == "base2":
+        got = scenarios.base2(obs, sorted(bots), races) if bots and grpo is None and not opp.get("advise") else None
+        if got is None:
+            scenario = None
+        else:
+            scenario_cmds, late_start = got
+            for s in zs:
+                made[s].update(scenarios.base2_made(zs[s]))
     # --late-capture: this share of the training games give their state at a game minute drawn in --late-minutes (late.py;
     # not a late start's: the research it set up gave no events)
     capture_at = (random.uniform(*cfg.get("late_minutes", late_game.MINUTES)[:2]) * 60.0
@@ -2622,8 +2637,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                                    key=lambda kv: -kv[1])[:12])}
            if side in bots and getattr(bots[side], "order_results", None) else {}),
         **({"scenario": scenario} if scenario else {}),
-        **({"late_minute": late_start["minute"]} if late_start is not None else {}),  # (the state's minute)
-        **({"late_replay": late_start["replay"]} if late_start is not None and late_start.get("replay") else {}),
+        **({"late_minute": late_start["minute"]} if scenario == "late" else {}),  # (the state's minute)
+        **({"late_replay": late_start["replay"]} if scenario == "late" and late_start.get("replay") else {}),
         # (a state of people's games, late.from_demo: its replay)
         **({"late_captured": captured["minute"]} if captured else {}),  # (--late-capture: this game's state at it)
         **({"spells": cast} if fx.SPELLS and side in bots and (cast := spells_cast(getattr(bots[side], "order_results", {})))
@@ -4156,9 +4171,10 @@ def main(argv: list[str] | None = None) -> int:
                     "unit, the opponent's resources: the network learns to use it); never in evaluation")
     ap.add_argument("--opsd-coef", type=float, default=0.0, help="the other games' steps: a KL from the same network's "
                     "orders given the privileged view (no gradient through it) to its orders given the player's")
-    ap.add_argument("--scenarios", default="", help="scenarios (scenarios.py: clash, raid, rich, natural; late.py: late; "
+    ap.add_argument("--scenarios", default="", help="scenarios (scenarios.py: clash, raid, rich, natural, base2; late.py: late; "
                     "comma-separated; one named twice is drawn twice as often) a share of the training games start in "
-                    "(late: games between agents only, else a game from the start)")
+                    "(late: games between agents only, else a game from the start; base2: the agents' sides with their "
+                    "naturals running, in a game against the built-in AI only the learner's)")
     ap.add_argument("--scenario-share", type=float, default=0.0, help="--scenarios: the share of the training games")
     ap.add_argument("--late-capture", type=float, default=0.0, help="late-game starts (late.py): this share of the "
                     "training games give their state at a game minute drawn in --late-minutes, a line of the run's "

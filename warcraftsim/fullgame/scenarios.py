@@ -1,7 +1,7 @@
 """Scenarios (the user's idea, 2026-10-20: the micro curriculum's way kept on): a share of the training games
 start with a situation the harness sets up at the first step (selfplay --scenarios, --scenario-share), so the
 policy meets what a game from scratch rarely brings it to. Both sides get the same value, so the material
-shaping starts even. Evaluation games never have one.
+shaping starts even (base2 against the built-in AI: only the learner, its own way, below). Evaluation games never have one.
 
     natural both natural expansions' camps removed (the gold mine nearest each start but its main): expanding needs
             no creeping first (the teacher's expansion lessons, --teach, then apply; fgself-123's army sent to clear
@@ -9,6 +9,19 @@ shaping starts even. Evaluation games never have one.
     clash   each side an army (its race's tier-1 and tier-2 units, ARMY gold) and a hero at level 3 between the bases
     raid    the opponent's army (ARMY gold) at the learner's base, the learner's as large at home
     rich    both sides 1,500 more gold and 700 more lumber: the tiers, the tech, the heroes early
+    base2   a two-base game: each agent's side has its natural running from the start (below)
+
+The two-base game (the first scenario given to one side only, against the built-in AI): against the insane AI's double
+income the policy's one mine caps it at ~500 gold a minute and it never expands; so it gets experience of what a second
+mine buys and of holding it. The natural's camp is cleared, its race's hall stands where people build it
+(macros.hall_spot; undead: the mine haunted, as the policy's expand order does, acolytes need no hall; a night elf's tree
+nearer its mine, as the melee script's start has it, and the mine entangled), and 5 workers of the race gather there. Only the agents' sides (selfplay.play_one's bots): against the
+built-in AI or the hand-written player only the learner's (the AI's script does badly from a placed base, and the second
+mine evens out its double income); between agents both. Set up by the late starts' machinery (late.py: the state base2
+returns, late.again and late.jobs at steps 1 and 2, no side acts before step 2), so the first reward holds no gift (the
+shaping's potential is the setup's from step 2), and neither does what the side made (Production starts at step 2). A
+target's expansion is done at its own time (base2_made: no reward either way, the builder builds no other), a mode about
+expanding is not drawn. Evaluation games never have it; neither does a game the built-in AI advises or GRPO's.
 
 Weight averaging of specialists (forks from one checkpoint, each on one scenario, merged): scripts/average_weights.py."""
 
@@ -17,9 +30,13 @@ from __future__ import annotations
 import math
 import random
 
-from ..protocol import ClearCreeps, SetResources, Spawn, SpawnHero
+from . import late, macros
+from ..protocol import ClearCreeps, Place, SetResources, Spawn, SpawnHero
 
-SCENARIOS = ("clash", "raid", "rich", "natural")
+SCENARIOS = ("clash", "raid", "rich", "natural", "base2")
+BASE2_WORKERS = 5
+TREE_FROM_MINE, TREE_BOX = 650.0, 448.0  # (a night elf's start: the melee script's tree from its mine, within a box)
+WORKERS = {"human": "hpea", "orc": "opeo", "undead": "uaco", "nightelf": "ewsp"}
 NATURAL_FROM_START, CAMP_RADIUS = 1500.0, 900
 ARMY = 1200  # gold an army is worth
 UNITS = {"human": ("hfoo", "hrif", "hkni", "hmpr", "hsor"), "orc": ("ogru", "ohun", "orai", "otau", "oshm"),
@@ -45,6 +62,49 @@ def _ring(x: float, y: float, k: int) -> tuple[float, float]:
     """The k-th spot around (x, y): units side by side, not on top of each other."""
     a, r = k * 2.39996, 60.0 * math.sqrt(k)
     return x + r * math.cos(a), y + r * math.sin(a)
+
+
+def base2(obs, sides, races: list[str]) -> tuple[list, dict] | None:
+    """The two-base start of `sides` (the module's docstring) in a game whose first observation is `obs`: its first step's
+    commands and its state in late.py's form for late.again and late.jobs (only what they read: every mine's gold as it
+    is, what the setup makes at each natural, the workers' jobs). None: a side has no natural (no free mine past its main)."""
+    if any(obs.players.get(s) is None for s in sides):
+        return None
+    mines = [[u.type, late._r(u.x), late._r(u.y), int(u.resource)] for u in obs.units if u.type in late.MINES and u.alive]
+    state: dict = {"mines": mines, "sides": [{"units": []}, {"units": []}]}
+    out: list = []
+    for s in sides:
+        sx, sy = obs.players[s].start_x, obs.players[s].start_y
+        far = sorted((math.hypot(m[1] - sx, m[2] - sy), k) for k, m in enumerate(mines)
+                     if m[0] == "ngol" and math.hypot(m[1] - sx, m[2] - sy) > NATURAL_FROM_START)
+        if not far:
+            return None
+        _, mx, my, gold = mines[far[0][1]]
+        hx, hy = macros.hall_spot(mx, my, sx, sy)
+        race, units = races[s], state["sides"][s]["units"]
+        if race == "nightelf":  # (its tree as the melee script's start: the instant entangle does nothing from ~780 or 650)
+            n = math.hypot(hx - mx, hy - my) or 1.0
+            hx = mx + max(-TREE_BOX, min(TREE_BOX, TREE_FROM_MINE * (hx - mx) / n))
+            hy = my + max(-TREE_BOX, min(TREE_BOX, TREE_FROM_MINE * (hy - my) / n))
+        out.append(ClearCreeps(mx, my, CAMP_RADIUS))
+        if race != "undead":
+            units.append([macros.HALLS[race], late._r(hx), late._r(hy), 1000, 1000, "s"])
+        if race in late.OWN_MINE:  # (its mine's gold on the map's scale: late.again's, at steps 1 and 2)
+            own = late.OWN_MINE[race]
+            mines.append([own, mx, my, gold])
+            units.append([own, mx, my, 1000, 1000, "s"])
+        at = (mx + hx) / 2.0, (my + hy) / 2.0  # (between the mine and the hall, clear of both)
+        for k in range(BASE2_WORKERS):
+            x, y = _ring(*at, k)
+            units.append([WORKERS[race], late._r(x), late._r(y), 1000, 1000, "g"])
+        out += [Place(s, u[0], u[1], u[2]) for u in units if u[0] != "egol"]  # (an entangled mine: at step 1, late.again)
+    return out, state
+
+
+def base2_made(target: dict) -> dict[str, float]:
+    """What a two-base start makes of a target strategy's items: an expansion it asks for, done at its own time (made and
+    due alike: no reward either way at any time; the builder takes it as made)."""
+    return {c: target["t"][c] for c in late.EXPANSION_ITEMS if c in target["t"]}
 
 
 def commands(name: str, obs, side: int, races: list[str], rng: random.Random) -> list:
