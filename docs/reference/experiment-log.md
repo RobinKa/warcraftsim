@@ -1946,6 +1946,20 @@ Replay data (2026-10-26): only 1.29 replays play back in our client (1.26/1.28 f
 
 **`fgself-171`, worse, not kept** (19:30, 49M steps, ~420 games a policy): 37% of 601 head to head with its start, falling by thirds (43%, 39%, 29%); against insane 58% to its start's 69% in the same windows (-10 points with the races weighed alike, 95% interval -17 to -4 from its second hour on). Human 67/68, night elf 94/97, orc 52/68, undead 25/46; with a target 26%. It also fell against the scripted orc: 69%, where `fgself-170` had 82%. From its second hour: income -21 gold and -16 lumber a minute, upgrades -0.21, anti-air 0.26 to 0.31, refused orders 4% to 2% (all significant). Its top unit fell, 0.90 to 0.94, orc most (0.72 to 0.86), and night elf went to 2.1 heroes, but expansions stayed at 1%. So the anchor is holding the macro up: without it the policy drifts faster (KL per update 0.0012 to 0.0008) and loses its economy before it gains any new plan. `--ref-kl 0.025` stays. The fork's dip does not explain this: unlike `fgself-170` it did not recover by 50M steps.
 
+**Why the long games are lost: income** (2026-10-31, 522 evaluation games without a target and 529 with one against insane on the real map, `fgself-168` and `fgself-170`). A mine takes five gatherers, so one mine caps income: the policy's gold a minute stays ~500 whatever its workers, while the AI gathers about twice that (its double income). Without a target it never expanded in these 522 games, so its gold stops at the mine's 13,500:
+
+| Game length | Games | Won | Its gold | Share at 11,000+ | AI's gold |
+|---|---|---|---|---|---|
+| under 12 min | 140 | 99% | 5,600 | 0% | 7,800 |
+| 12-15 | 144 | 92% | 7,400 | 0% | 11,400 |
+| 15-18 | 59 | 75% | 8,900 | 0% | 14,600 |
+| 18-21 | 60 | 38% | 10,200 | 22% | 18,600 |
+| 21-25 | 44 | 20% | 11,700 | 75% | 22,600 |
+| 25-30 | 37 | 5% | 13,100 | 97% | 25,300 |
+| 30+ | 38 | 3% | 13,100 | 97% | 30,400 |
+
+So its one way to win is to end the game by ~15 minutes, and massing one tier-1 unit is a fitting answer: tier 2 and tech spend half the AI's income and delay the attack. This would explain why many runs moved neither the top unit's share nor the wins past 18 minutes, and why with a target it wins about half as often (34% to 68%): those games have 16 workers to 9 and a tier-2 hall in nearly every game, yet run long (69% past 18 minutes, against 34%) on the same income. Expanding as played does not rescue it. With a target, on the real map, a first new hall at 10-16 minutes won 22% of 55, at 16-22 minutes 8% of 48, none 34% of 415; on `echofast2` by 10 minutes 18% of 2,535, none 48% of 10,404. These are correlations: losing sides also expand late, and the targets differ. On `echofast2` the main mine holds 6,750 and games past 12 minutes win 2-13%, against 81% before, the same wall at half the time. This puts anti-air second: 27% of training games already hold 4+ air, and air comes in the games already behind on income. The scripted air opponents drop down the list; two-base play is the thing to test.
+
 The queue:
 1. (done: in `fgself-155`) The audit-12 economy fixes: a training map whose mines and start scale with its costs (`echofast2`), workers labelled up to the target's count, masks against duplicate tech buildings and surplus workers, orc burrow and no-target lumber lessons.
 2. Cloning the scripted strategy family as anchor and teacher (AlphaStar's recipe with scripted data). First tune its weak plans, and add night elf and undead expansion plans. Then record thousands of echofast games (`scripts/heuristic_match.py --record`), train a cloning policy, and use it as the KL anchor and a distillation teacher.
