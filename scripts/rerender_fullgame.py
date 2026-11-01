@@ -25,6 +25,8 @@ def main() -> int:
     ap.add_argument("run")
     ap.add_argument("stem", help="the replay's stem, e.g. game-1792106881-a4")
     ap.add_argument("--out", type=Path)
+    ap.add_argument("--speed", type=float, default=1.0, help="game seconds a video second (1: real time; 2 or 4 records faster, "
+                    "with every 2nd or 4th frame, and the sound sped up)")
     a = ap.parse_args()
     run_dir = ROOT / "runs" / a.run
     argv = json.loads((run_dir / "run.json").read_text())["launch"]["argv"]
@@ -54,7 +56,7 @@ def main() -> int:
                       max_game_seconds=float(flag("--max-minutes", 4.0)) * 60, victory="decisive", window=(320, 240),
                       draw=False, d3d_thread=False, render_threads=0)
     out = a.out or run_dir / "videos" / f"{a.stem}.mp4"
-    render_replay(setup, replay, out, name="rerender", crf=28, overlay=FullGameOverlay(trace), fit_all=True,
+    render_replay(setup, replay, out, speed=a.speed, name="rerender", crf=28, overlay=FullGameOverlay(trace), fit_all=True,
                   max_steps=len(trace.get("steps") or []) + 40)
     print(out, flush=True)
     return 0
