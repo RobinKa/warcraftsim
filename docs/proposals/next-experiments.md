@@ -9,7 +9,6 @@
 | Run | Change | Why |
 |---|---|---|
 | `fgself-174` | The AI's training tax off (`--curriculum -1`), from `fgself-173` | Training hid the income gap that evaluation has |
-| Agent | Other maps measured, then a map pool behind a flag | Does rushing depend on the map? |
 
 ## Runs, in order
 
@@ -23,7 +22,7 @@
 | 6 | `--ai-share 0.5` | none | More self-play at a person's income; the last tests were at doubled income | Head to head and variety |
 | 7 | The value sees the tax, value only | small | Neither network reads it. The size of this depends on `fgself-174`: the AI's if it comes back, else the tax between agents | Value loss down, level or better |
 | 8 | `--minibatch 1024 --lr 6e-5 --pad-groups 2` | none | A minibatch carries ~1.4% of the policy's signal, and sorting by size makes it less mixed. Needs checks B and C | Faster, and level or better |
-| 9 | A map pool in training | agent | Only if the measurement says rushing depends on the map, or for the replays | Variety on Echo Isles, level or better |
+| 9 | A map pool in training (`--map-pool`, Echo Isles at half the weight) | merged | `fgself-168` wins 65% on Echo Isles, 60%, 40% and 38% on the others, all with the same one-unit play and income, so Echo Isles is not what makes it rush; the test separates the maps from the Echo-only training, and may add variety | Evaluated on all four real maps as well as `--eval-map`: gains elsewhere, Echo Isles level |
 
 ## If those do not move play
 
