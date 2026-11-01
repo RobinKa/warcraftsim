@@ -138,6 +138,8 @@ The built-in AI on insane gets double income from the engine; nothing in its scr
 
 **A computer slot's peons board its burrows by themselves** when enemies come near the base: every peon got the order `board` (852043) in the same half second, with no command from the agent (a command log of both sides, 2026-10-25). In a burrow they gather nothing; `standdown` (852113) on the burrows brings them out. The learner's raids had kept the hand-written player's peons inside for minutes; the learner's slot is the same kind, so its orc peons presumably do the same (not checked).
 
+**A computer slot's heroes use some items by themselves** (2026-11-01, `scripts/shop_items_probe.py`, no command from the agent): a lesser clarity potion, a mana potion and a scroll of regeneration left the inventory during a fight, a healing potion bought while hurt was drunk in the step of the sale, and a tiny great hall once left an unhurt hero's inventory. Held from full health, a healing potion stayed through a fight at 40% hit points. A hero has a town portal scroll in its first slot from the start. Answers to the item natives say little: `UnitUseItem` answers True for an item that needs a target and does nothing, `UnitUseItemPoint` answers False and acts (a town portal, an ivory tower, a sacrificial skull). A shop sells to a hero with no free slot: the gold goes and the item lands on the ground. A rod of necromancy raises nothing right after the kill, and 2 skeletons about 2 s on.
+
 ## Determinism (2026-10-19)
 
 Measured on `echofast` (`GameSetup.seed`: `SetRandomSeed` first thing in the map's `main`; games side by side, the units' types, owners, positions and hit points compared every step):

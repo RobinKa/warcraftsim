@@ -695,6 +695,7 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
     fx.set_neutral(cfg.get("neutral", 0))
     fx.set_macros(int(cfg.get("macros", 0) or 0))
     fx.set_spells(int(cfg.get("spells", 0) or 0))
+    fx.set_shop_items(int(cfg.get("shop_items", 0) or 0))
     fx.set_fine(int(cfg.get("fine_points", 0) or 0))  # (--fine-points: the point indices)
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     fx.set_econ_masks(cfg.get("econ_masks", 0))
@@ -2618,6 +2619,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"taught": teachers[side].taught, "taught_kept": getattr(teachers[side], "kept", 0)} if side in teachers else {}),
         **({"buy_orders": bots[side].bought, "buys": dict(getattr(bots[side], "buys", {}))}
            if side in bots and getattr(bots[side], "bought", 0) else {}),
+        **({k: dict(getattr(bots[side], k, {})) for k in ("shop_bought", "merchant_bought", "item_uses", "items_gone")}
+           if side in bots and fx.SHOP_ITEMS else {}),  # (--shop-items: BCAgent._count_items, accepted)
         **({"pickup_orders": getattr(bots[side], "pickup_orders", 0), "picked_up": getattr(bots[side], "picked_up", 0)}
            if side in bots and fx.MACROS >= 2 else {}),  # (--macros 2: items off the ground)
         **({"auto_skills": getattr(bots[side], "auto_skills", 0)} if side in bots and fx.MACROS >= 3 else {}),
@@ -2787,6 +2790,7 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
     fx.set_neutral(cfg.get("neutral", 0))
     fx.set_macros(int(cfg.get("macros", 0) or 0))
     fx.set_spells(int(cfg.get("spells", 0) or 0))
+    fx.set_shop_items(int(cfg.get("shop_items", 0) or 0))
     fx.set_fine(int(cfg.get("fine_points", 0) or 0))  # (--fine-points: the point indices)
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     fx.set_econ_masks(cfg.get("econ_masks", 0))
@@ -4160,6 +4164,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--spells", type=int, default=0, help="1: the melee heroes' spells the demonstrations never gave "
                     "(War Stomp, Hex, Banish, Far Sight, Scout; spells.py) as orders: every network loaded grows to "
                     "them, rare at first, only the hero with the ability may give one (needs --neutral)")
+    ap.add_argument("--shop-items", type=int, default=0, help="1: the race shops' items as orders (arcane vault, voodoo "
+                    "lounge, tomb of relics, ancient of wonders: potions, salves, rods, staffs, orbs; shopitems.py), and "
+                    "every item slot's use in the form the item takes (on itself, a unit, a point): every network loaded "
+                    "grows to them, rare at first; a hero buys at its side's finished shop, walking there, with a free "
+                    "slot and what the item needs (needs --neutral)")
     ap.add_argument("--memory-fade", type=int, default=0, help="inputs 3: the remembered enemies fade into the learner's "
                     "attention over this many updates (its bias on them from -8 to 0; older networks and the anchor "
                     "keep them hidden at -30); 0: as loaded")
@@ -4642,6 +4651,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.spells and not args.neutral:  # (model.load extends a vocabulary, and the actors put a network's orders in
         ap.error("--spells needs --neutral")  # the run's, in its --neutral path)
     fx.set_spells(args.spells)
+    if args.shop_items and not args.neutral:  # (as --spells: model.load's --neutral path grows a network to them)
+        ap.error("--shop-items needs --neutral")
+    fx.set_shop_items(args.shop_items)
     fx.set_fine(args.fine_points)  # (--fine-points; a policy with a fine head sets it again below, with its size)
     fx.set_macros_off(args.macros_off.split(","))
     fx.set_econ_masks(args.econ_masks)
@@ -4697,6 +4709,9 @@ def main(argv: list[str] | None = None) -> int:
             if weights_vocab is not None and fx.SPELLS:  # (--spells: and the heroes' spells after them, spells.py)
                 from .spells import extend as with_spells
                 weights_vocab = with_spells(weights_vocab)
+            if weights_vocab is not None and fx.SHOP_ITEMS:  # (--shop-items: and the shops' items after them)
+                from .shopitems import extend as with_shop_items
+                weights_vocab = with_shop_items(weights_vocab)
     net, ck = load(args.init, device, None if args.memory < 0 else bool(args.memory), vocab=weights_vocab)
     vocab = ck["vocab"]
     trained_for = ck.get("value_reward")  # the rewards BC's value head learned (fullgame/bc.py)
@@ -4867,6 +4882,9 @@ def main(argv: list[str] | None = None) -> int:
         if c.get("vocab") and (fx.SPELLS or vocab.get("spells")):  # (--spells: and the heroes' spells, as model.load)
             from .spells import extend as with_spells
             c["vocab"] = with_spells(c["vocab"])
+        if c.get("vocab") and (fx.SHOP_ITEMS or vocab.get("shop_items")):  # (--shop-items: and the shops' items)
+            from .shopitems import extend as with_shop_items
+            c["vocab"] = with_shop_items(c["vocab"])
         from .neutral import same_orders  # (--neutral: a reordering of the run's fits, Nets.get)
         return (c["config"].get("bins", 128) == fx.BINS and c.get("vocab") is not None
                 and (c["vocab"] == vocab or bool(fx.NEUTRAL) and same_orders(c["vocab"], vocab))
@@ -4938,7 +4956,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "late_capture": args.late_capture, "late_minutes": [float(x) for x in args.late_minutes.split(",")],

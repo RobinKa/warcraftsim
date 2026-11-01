@@ -67,6 +67,10 @@ def unit_rows(obs: Observation, t: int) -> np.ndarray:
 _LAZY: dict = {}  # (sibling modules imported on first use: an import statement in a function took ~5k instructions)
 
 
+def _shopitems():
+    return _lazy("shopitems")
+
+
 def _lazy(name: str):
     m = _LAZY.get(name)
     if m is None:
@@ -211,6 +215,14 @@ class BCAgent:
             for c, ok in zip(cmds, results):
                 if not ok and isinstance(c, TargetOrder) and c.order == fx.HARVEST:
                     full[c.target] = self.t
+        if fx.SHOP_ITEMS:
+            sent = self.__dict__.setdefault("use_sent", {})
+            uses = self.__dict__.setdefault("item_uses", {})
+            for c, ok in zip(cmds, results):  # (the policy's uses; the game answers False for a point's use, and acts)
+                if isinstance(c, UseItem) and (c.unit, c.slot) in sent:
+                    code, kind = sent.pop((c.unit, c.slot))
+                    if ok or kind == fx.POINT:
+                        uses[code] = uses.get(code, 0) + 1
         for c, ok in zip(cmds, results):  # (a revival the altar took: under way, View.tech_allowed)
             if ok and isinstance(c, TargetOrder) and c.order == REVIVE:
                 self.view.__dict__.setdefault("reviving", {})[c.target] = self.t
@@ -231,6 +243,8 @@ class BCAgent:
         picking = getattr(self, "picking_since", {})
         rows = unit_rows(obs, t) if rows is None else rows
         self.rows = rows
+        if fx.SHOP_ITEMS:
+            self._count_items(rows, obs.events)
         for e in obs.events:
             if int(e.kind) == int(EventKind.TREE_DEATH):
                 if self.trees.pop(e.a, None) is not None:
@@ -376,6 +390,14 @@ class BCAgent:
             if int(sel[i, fx.C_FLAGS]) & LOADED:  # (a peon in a burrow, a unit in a transport: the game refuses its orders,
                 self.loaded_orders = getattr(self, "loaded_orders", 0) + 1  # moves orc's most refused kind; audit 10)
                 continue
+            if fx.SHOP_ITEMS and fx.USESLOT <= oid < fx.USESLOT + 6:  # (--shop-items: as the item takes it, or not sent)
+                use = self._use_item(sel, i, oid, kind, int(tgt[i]), int(bx[i]), int(by[i]), st["n_own"])
+                if use is None:
+                    self.futile_orders = getattr(self, "futile_orders", 0) + 1
+                else:
+                    self.last_sent.append((oid, kind))
+                    out.append(use)
+                continue
             if fx.FUTILE_MASK and self._futile(sel, i, oid, kind, int(tgt[i])):  # (--econ-masks bit 64: one the game
                 self.futile_orders = getattr(self, "futile_orders", 0) + 1     # refuses; not sent, what it did)
                 continue
@@ -451,7 +473,16 @@ class BCAgent:
                     out.append(TargetOrder(altar, REVIVE, self.view.dead_heroes[oid]))
             elif kind == fx.UNIT and oid >= TYPE_CODE and is_ware(oid):  # bought at a neutral building (neutral.py):
                 shop = sel[int(tgt[i])]                    # the one pointed at, if it sells it, else the nearest that
-                if not sells(int(shop[fx.C_TYPE]), oid):   # does (a new order's pointer has no reason to pick the
+                if fx.SHOP_ITEMS and oid in _shopitems().ITEM_CODES:  # (--shop-items: the side's own race shop, or the
+                    # merchant; with a free slot and the money, the step's budget as for any paid order)
+                    si = _shopitems()
+                    shop = si.pick_shop(sel, oid, i, int(tgt[i]), st["n_own"], fx.RACES[self.view.races[self.player]],
+                                        self.t * self.view.step_seconds)
+                    if shop is not None and (si.full(sel[i]) or not pay(c)):
+                        shop = None
+                    if shop is None:
+                        self.futile_orders = getattr(self, "futile_orders", 0) + 1
+                elif not sells(int(shop[fx.C_TYPE]), oid):  # does (a new order's pointer has no reason to pick the
                     shop = nearest_shop(sel, oid, sel[i])  # tavern: no hire in thousands of games)
                 hero = fx.is_hero_code(fx.rawcode(oid))
                 hiring = self.__dict__.setdefault("hiring", {})
@@ -469,6 +500,8 @@ class BCAgent:
                     out.append(Buy(unit, int(shop[fx.C_ID]), oid))
                     self.__dict__.setdefault("buying_since", {})[unit] = (self.t, float(shop[fx.C_X]), float(shop[fx.C_Y]))
                     self.bought = getattr(self, "bought", 0) + 1
+                    if fx.SHOP_ITEMS:  # (which building: the sale's pick-up event, _count_items)
+                        self.__dict__.setdefault("buying_at", {})[unit] = (oid, fx.rawcode(int(shop[fx.C_TYPE])))
                     buys = self.__dict__.setdefault("buys", {})  # (the episode row: each ware by its buyers' type)
                     key = f"{fx.rawcode(oid)} by {fx.rawcode(int(sel[i, fx.C_TYPE]))}"
                     buys[key] = buys.get(key, 0) + 1
@@ -772,6 +805,60 @@ class BCAgent:
             return not fx.item_use_now(int(row[fx.C_ITEM0 + oid - fx.USESLOT]), row)
         return False
 
+    def _use_item(self, sel: np.ndarray, i: int, oid: int, kind: int, k: int, bx: int, by: int, n_own: int):
+        """--shop-items: unit row i's item slot order as the item takes it (protocol.UseItem; shopitems.USES), or None:
+        no item there that takes that form, or no target for it."""
+        si = _shopitems()
+        row = sel[i]
+        slot = oid - fx.USESLOT
+        item = int(row[fx.C_ITEM0 + slot]) if len(row) > fx.C_ITEM0 + 5 else 0
+        if not si.use_ok(item, kind, row):
+            return None
+        how = si.use_target(sel, item, kind, i, k, fx.bins_world(bx, by, self.view.sign) if kind == fx.POINT else (0.0, 0.0),
+                            n_own)
+        if how is None:
+            return None
+        unit = int(row[fx.C_ID])
+        self.__dict__.setdefault("use_sent", {})[(unit, slot)] = (fx.rawcode(item), fx.POINT if how[0] == "point" else kind)
+        if how[0] == "now":
+            return UseItem(unit, slot)
+        if how[0] == "unit":
+            return UseItem(unit, slot, target=how[1])
+        if item == si.code("stwp"):
+            self.__dict__.setdefault("casting_until", {})[unit] = self.t + si.PORTAL_STEPS
+        return UseItem(unit, slot, x=how[1], y=how[2])
+
+    def _count_items(self, rows: np.ndarray, events) -> None:
+        """--shop-items: the episode row's counts: `shop_bought` and `merchant_bought`, each item that reached a hero from
+        a purchase, by where it was ordered (protocol.EventKind.ITEM_PICKUP, not off the ground), and `items_gone`, each
+        item that left a living hero's inventory (its last charge used, by an order or by the engine: an agent's slot is a
+        computer slot, and its heroes use some items by themselves; dropped on no order of the policy's)."""
+        buying = self.__dict__.setdefault("buying_at", {})
+        for e in events:
+            if buying and int(e.kind) == int(EventKind.ITEM_PICKUP) and not e.c:  # (to the buyer, or a hero near the shop)
+                buyer = next((u for u, v in buying.items() if v[0] == e.b), None)
+                if buyer is not None and (rows[rows[:, fx.C_ID] == e.a, fx.C_OWNER] == self.player).any():
+                    _, where = buying.pop(buyer)
+                    self.__dict__.get("buying_since", {}).pop(buyer, None)  # (it has it: free at once, not after 3 s in
+                    self.__dict__.get("buy_near", {}).pop(buyer, None)      # reach, _release_buyers)
+                    name = "shop_bought" if where in _shopitems().RACE_SHOPS.values() else "merchant_bought"
+                    got = self.__dict__.setdefault(name, {})
+                    got[fx.rawcode(e.b)] = got.get(fx.rawcode(e.b), 0) + 1
+        fl = rows[:, fx.C_FLAGS]
+        heroes = rows[(rows[:, fx.C_OWNER] == self.player) & (fl & fx.HERO > 0) & (fl & fx.DEAD == 0)]
+        if rows.shape[1] <= fx.C_ITEM0 + 5:
+            return
+        held = self.__dict__.setdefault("held_items", {})
+        gone = self.__dict__.setdefault("items_gone", {})
+        for h in heroes.tolist():
+            now = tuple(h[fx.C_ITEM0:fx.C_ITEM0 + 6])
+            was = held.get(h[fx.C_ID])
+            if was is not None and was != now:
+                left = Counter(x for x in was if x) - Counter(x for x in now if x)
+                for x, n in left.items():
+                    gone[fx.rawcode(x)] = gone.get(fx.rawcode(x), 0) + n
+            held[h[fx.C_ID]] = now
+
     def _repairable(self, row: np.ndarray) -> bool:
         """A repair's target: a building or a machine of the player's that is damaged or unfinished (a frame: while the
         player has the lumber it costs, or the gold of one that costs none)."""
@@ -810,6 +897,8 @@ class BCAgent:
         since = self.building_since.get(unit)
         bought = getattr(self, "buying_since", {}).get(unit)
         picking = getattr(self, "picking_since", {}).get(unit)
+        if self.__dict__.get("casting_until", {}).get(unit, 0) > self.t:  # (--shop-items: a town portal's cast)
+            return True
         return ((since is not None and self.t - since < fx.BUILD_COMMIT_STEPS)
                 or (bought is not None and self.t - bought[0] < BUY_COMMIT_STEPS)
                 or (picking is not None and self.t - picking < PICKUP_COMMIT_STEPS))

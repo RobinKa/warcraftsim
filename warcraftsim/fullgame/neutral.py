@@ -204,8 +204,10 @@ def is_shop(type_id: int) -> bool:
 
 
 def is_ware(oid: int) -> bool:
-    """A neutral building's ware (a tavern hero, a mercenary, a goblin merchant's item): bought (protocol.Buy)."""
-    return int(oid).to_bytes(4, "big").decode("latin-1") in {*TAVERN_HEROES, *MERCENARIES, *MERCHANT_ITEMS}
+    """A neutral building's ware (a tavern hero, a mercenary, a goblin merchant's item), or a race shop's item (a
+    vocabulary has those with --shop-items only): bought (protocol.Buy)."""
+    from .shopitems import ITEM_NAMES
+    return int(oid).to_bytes(4, "big").decode("latin-1") in {*TAVERN_HEROES, *MERCENARIES, *MERCHANT_ITEMS, *ITEM_NAMES}
 
 
 def sells(type_id: int, ware: int) -> bool:

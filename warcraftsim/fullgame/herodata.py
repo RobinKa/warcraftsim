@@ -113,7 +113,8 @@ def order_needs(vocab: dict) -> dict[tuple[int, int], int]:
     0..3 the ability in that slot ready (learned, cooled down, the mana), 4..7 learned (its toggles),
     8..11 a skill point it may spend there (learning it), 12..17 a usable item in that inventory slot
     (useslot1..6, any unit type: index -1), 18 not hidden (a ware bought at a neutral building: not from inside a
-    gold mine)."""
+    gold mine), 19 a free inventory slot (--shop-items: an item bought: with none the sale goes through and the item
+    lands on the ground)."""
     from . import features as fx
     kinds = [0] + [int(k) for _, k in vocab["orders"]]
     names = {v: int(k) for k, v in (vocab.get("order_names") or {}).items()}  # (order string -> id)
@@ -140,6 +141,12 @@ def order_needs(vocab: dict) -> dict[tuple[int, int], int]:
             c = index.get((fourcc(w), fx.UNIT))
             if c is not None:
                 out[(-1, c)] = 18
+    if vocab.get("shop_items"):
+        from .shopitems import ITEM_NAMES
+        for w in ITEM_NAMES:
+            c = index.get((fourcc(w), fx.UNIT))
+            if c is not None:
+                out[(-1, c)] = 19
     for k in range(ITEM_SLOTS):
         for c in by_order.get(852008 + k, ()):
             out[(-1, c)] = 12 + k
