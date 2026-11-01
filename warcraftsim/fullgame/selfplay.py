@@ -2294,7 +2294,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                             saturation=bool(cfg.get("saturation_lesson", 0)), revive=bool(cfg.get("revive_lesson", 0)),
                             militia=bool(cfg.get("militia_lesson", 0)), army=bool(cfg.get("army_lesson", 0)),
                             upgrades=bool(cfg.get("upgrade_lesson", 0)), creep=int(cfg.get("creep_lesson", 0)),
-                            pace=cfg.get("lesson_time_scale") or teacher_pace(cfg["map"]))
+                            pace=cfg.get("lesson_time_scale") or teacher_pace(cfg["map"]), hunt=int(cfg.get("hunt_lesson", 0)))
                  for s in trajs if keys[s] == "current"}
                 if cfg.get("teach") and replay is None else {})
     # --teach-heuristic: a target drawn from the hand-written player's games (strategy.from_demos names the strategy) is
@@ -2617,6 +2617,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             "z_blocked": {c: dict(v) for c, v in builders[side].blocked.items()}} if side in builders else {}),
         **({"z_modes": trackers[side].report()} if side in trackers else {}),
         **({"taught": teachers[side].taught, "taught_kept": getattr(teachers[side], "kept", 0)} if side in teachers else {}),
+        **({"hunt_lessons": teachers[side].hunt_lessons, "hunt_found_at": teachers[side].hunt_found_at}
+           if side in teachers and cfg.get("hunt_lesson") else {}),  # (--hunt-lesson; found_at: game seconds, or None)
         **({"buy_orders": bots[side].bought, "buys": dict(getattr(bots[side], "buys", {}))}
            if side in bots and getattr(bots[side], "bought", 0) else {}),
         **({k: dict(getattr(bots[side], k, {})) for k in ("shop_bought", "merchant_bought", "item_uses", "items_gone")}
@@ -4218,6 +4220,10 @@ def main(argv: list[str] | None = None) -> int:
                     "creeps a game, the AI 13-20); 2: the heroes only")
     ap.add_argument("--lesson-time-scale", type=float, default=0.0, help="audit 16's lessons' game times scaled (0: "
                     "teacher.pace, 0.5 on faster rules such as echofast2, else 1)")
+    ap.add_argument("--hunt-lesson", type=int, default=0, help="1 (with --teach): the hunt lesson: no enemy building in "
+                    "view, no enemy army seen for 2 minutes, 3 or more of the buildings it saw gone and an army: half the "
+                    "army attack-moves to the nearest building it remembers, else to the nearest gold mine not in sight "
+                    "lately (teacher.py; ties at 40 minutes with the winner's army at a dead main: scripts/hunt_probe.py)")
     ap.add_argument("--militia-lesson", type=int, default=0, help="1 (with --teach): human's militia lesson: militia "
                     "and no enemy unit near them nor a hall, the hall ends the town bell (audit 16: militia idled, their "
                     "back to work refused, in 175 of 207 human games)")
@@ -4956,7 +4962,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "hunt_lesson": args.hunt_lesson, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "late_capture": args.late_capture, "late_minutes": [float(x) for x in args.late_minutes.split(",")],

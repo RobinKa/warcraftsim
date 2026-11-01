@@ -55,6 +55,11 @@ selfplay --teach 1 (needs --neutral 1: the orders it teaches are the neutral bui
                    army within ESCORT of them attack-move to the nearest creep camp within CREEP_REACH of its start
                    that they are CREEP_MARGIN times stronger than (Lanchester's hit points x damage a second; the
                    policy killed 0-2 creeps a game, the AI 13-20, its heroes stayed low)
+    the hunt:      (--hunt-lesson 1) the enemy looks beaten and its last base is out of sight: no enemy building in view,
+                   no enemy army seen for HUNT_QUIET, HUNT_CLEARED or more of the buildings it saw gone, HUNT_ARMY army units
+                   or more: the army nearest the target (half, HUNT_ARMY at least) attack-moves to the nearest building it
+                   remembers, else to the nearest gold mine it has not had in sight for HUNT_STALE (a mine's place is on
+                   the map: the only thing it uses that it did not see). scripts/hunt_probe.py has what it was measured on
     The policy's masks decide (`can`: the tech, the money; a lesson they drop teaches nothing), each lesson looked at
     every LOOK steps at most.
 
@@ -143,6 +148,9 @@ UPGRADE_FROM = 480.0
 CREEP_FROM, CREEP_HP, CREEP_ARMY = 210.0, 0.6, 6
 BASE_SAFE, ESCORT, CREEP_REACH, CREEP_MARGIN = 2500.0, 1200.0, 3600.0, 2.0
 CAMP_JOIN = 550.0  # (creeps this near each other: one camp, heuristic.CAMP_JOIN)
+# --hunt-lesson
+HUNT_QUIET, HUNT_CLEARED, HUNT_ARMY, HUNT_STALE = 120.0, 3, 6, 240.0  # (game seconds: walking is not sped up on faster rules)
+HUNT_GAP, HUNT_SAME_MINE, HUNT_FOUND_NEAR = 60, 400.0, 1500.0  # (GAP's steps: one attack-move lasts a long walk)
 
 
 class Teacher:
@@ -151,7 +159,7 @@ class Teacher:
     def __init__(self, side: int, race: str, rng: random.Random, target: dict | None = None, target_hero: bool = False,
                  lumber: bool = False, burrows: bool = False, main_low: float = 0.0, mine_full: float = 12500.0,
                  saturation: bool = False, revive: bool = False, militia: bool = False, army: bool = False,
-                 upgrades: bool = False, creep: int = 0, pace: float = 1.0):
+                 upgrades: bool = False, creep: int = 0, pace: float = 1.0, hunt: int = 0):
         """`target` (the side's target strategy, if it has one): its tavern hero is the one taught, and none when it
         has none (another hero would break a narrow target). `target_hero` (--teach 2): its first hero from the altar
         taught too, when that is its first hero (the builder taught it only once due: the policy had made another one
@@ -168,6 +176,15 @@ class Teacher:
         self.army_lesson, self.upgrade_lesson, self.creep_lesson = (army and race in ANTI_AIR, upgrades and race in SMITH,
                                                                     creep)
         self.pace, self.air = pace, 0  # (air: the most enemy air units seen at once)
+        # --hunt-lesson: its own record of what it saw (no hidden information; the network has only its memory)
+        self.hunt = hunt
+        self.hunt_known: dict = {}  # (an enemy building it saw and has not seen gone: id -> x, y)
+        self.hunt_gone = 0  # (how many of them it saw gone)
+        self.hunt_contact = 0.0  # (when it last saw an enemy army unit)
+        self.hunt_mines: dict | None = None  # (the map's gold mines' places, from the game's first look -> last in sight)
+        self.hunt_points: list = []  # (the points taught)
+        self.hunt_lessons, self.hunt_found_at = 0, None  # (the episode row: the lessons; a base in view near a taught
+        # point, when first)
         self.busy: set = set()  # (the side's buildings making something, and its research levels: View.busy and
         self.levels: dict = {}  # View.levels, play_one's of the step; read only)
         # the tavern hero taught, and the heroes the side has when it is hired: a target's, at its place among the
@@ -296,6 +313,8 @@ class Teacher:
         if (self.creep_lesson and n_live and n_army >= CREEP_ARMY and now >= CREEP_FROM * self.pace
                 and t - self.last.get("creep", -GAP) >= GAP and self._look("creep", t)):
             out += self._creep(rows, player, live, t)
+        if self.hunt and self._look("hunt", t):
+            out += self._hunt(rows, now, t)
         return out
 
     def _look(self, kind: str, t: int) -> bool:
@@ -414,6 +433,59 @@ class Teacher:
         k = int(np.flatnonzero(ok)[np.argmin(np.hypot(cx[ok] - hx, cy[ok] - hy))])
         ids = (heroes if self.creep_lesson >= 2 else group)[:, fx.C_ID].tolist()  # (--creep-lesson 2: the heroes only)
         return [PointOrder(int(u), ATTACK, float(cx[k]), float(cy[k])) for u in ids]
+
+    def _hunt(self, rows: np.ndarray, now: float, t: int) -> list:
+        """--hunt-lesson: its record of the enemy brought up to date from what it sees (the rows' visibility bits only);
+        then the lesson, if the enemy looks beaten and no enemy building is in view (the module's docstring)."""
+        side, fl = self.side, rows[:, fx.C_FLAGS]
+        seen = rows[(rows[:, fx.C_OWNER] == 1 - side) & ((rows[:, fx.C_VIS] >> side) & 1 == 1)]
+        sf = seen[:, fx.C_FLAGS]
+        now_b = seen[(sf & fx.STRUCTURE > 0) & (sf & fx.DEAD == 0)]
+        if ((sf & (fx.STRUCTURE | fx.WORKER | fx.DEAD)) == 0).any():
+            self.hunt_contact = now
+        for i in seen[(sf & fx.STRUCTURE > 0) & (sf & fx.DEAD > 0), fx.C_ID].tolist():
+            if self.hunt_known.pop(i, None) is not None:
+                self.hunt_gone += 1
+        in_view = set(now_b[:, fx.C_ID].tolist())
+        for i, x, y in now_b[:, [fx.C_ID, fx.C_X, fx.C_Y]].tolist():
+            self.hunt_known[i] = (x, y)
+        own = rows[(rows[:, fx.C_OWNER] == side) & (fl & fx.DEAD == 0)]
+        ox, oy = own[:, fx.C_X].astype(np.float64), own[:, fx.C_Y].astype(np.float64)
+
+        def in_sight(x: float, y: float) -> bool:
+            return bool((np.hypot(ox - x, oy - y) < fx.SIGHT).any())
+        for i in [i for i, (x, y) in self.hunt_known.items() if i not in in_view and in_sight(x, y)]:
+            del self.hunt_known[i]  # (its place in sight and nothing there: it died out of its view)
+            self.hunt_gone += 1
+        if self.hunt_mines is None:  # (the map's: their places at the game's first look, so nothing of what becomes of
+            self.hunt_mines = {}     # them; an entangled or haunted mine stands on one)
+            for x, y in rows[fx.isin(rows[:, fx.C_TYPE], MINE_CODES)][:, [fx.C_X, fx.C_Y]].tolist():
+                if not any(np.hypot(x - a, y - b) < HUNT_SAME_MINE for a, b in self.hunt_mines):
+                    self.hunt_mines[(x, y)] = -1e9
+        for p in self.hunt_mines:
+            if in_sight(*p):
+                self.hunt_mines[p] = now
+        if self.hunt_found_at is None and self.hunt_points and len(now_b):  # (the episode row: a base found by a lesson)
+            base = now_b[fx.isin(now_b[:, fx.C_TYPE], HALL_CODES) | fx.isin(now_b[:, fx.C_TYPE], OWN_MINE_CODES)]
+            if any(np.hypot(x - a, y - b) < HUNT_FOUND_NEAR for x, y in base[:, [fx.C_X, fx.C_Y]].tolist()
+                   for a, b in self.hunt_points):
+                self.hunt_found_at = round(now)
+        if (in_view or self.hunt_gone < HUNT_CLEARED or now - self.hunt_contact < HUNT_QUIET
+                or t - self.last.get("hunt", -HUNT_GAP) < HUNT_GAP):
+            return []
+        army = _army_of(fx.own_alive(rows, side))
+        if len(army) < HUNT_ARMY:
+            return []
+        ax, ay = float(army[:, fx.C_X].mean()), float(army[:, fx.C_Y].mean())
+        places = list(self.hunt_known.values()) or [p for p, at in self.hunt_mines.items() if now - at >= HUNT_STALE]
+        if not places or not self._due("hunt", t):
+            return []
+        px, py = min(places, key=lambda p: np.hypot(p[0] - ax, p[1] - ay))
+        d = np.hypot(army[:, fx.C_X] - px, army[:, fx.C_Y] - py)
+        party = army[np.argsort(d, kind="stable")[:max(HUNT_ARMY, (len(army) + 1) // 2)]]
+        self.hunt_lessons += 1
+        self.hunt_points.append((px, py))
+        return [PointOrder(int(u), ATTACK, float(px), float(py)) for u in party[:, fx.C_ID].tolist()]
 
     def _camps(self, creeps: np.ndarray) -> tuple:
         """The creep camps' centres and strengths (_camps, _power), kept while the creeps stand where they stood."""
