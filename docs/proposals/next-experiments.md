@@ -44,6 +44,6 @@
 | A | Blends of `fgself-100` and `fgself-173` at 25/50/75%: ~30 games each on the CPU, KL to both parents | Run 4 starts from `fgself-100` or needs the fallback |
 | B | How many games and game phases a minibatch holds at `--pad-groups` 8, 2, 1 (no GPU) | Whether sorting matters |
 | C | `scripts/bench_update.py` at minibatches 256 and 1024, between runs (needs the GPU) | Whether run 8 is faster |
-| D | Why `base2` games between agents tie at 40 minutes (73%): does the side ahead not find the other base? | A bug, or a scouting weakness to teach |
+| D | Why `base2` games between agents tie at 40 minutes (73%, 1,443 of 1,746 with the leader far ahead; the user saw undead leave human's natural alone after destroying its main): an agent is measuring it, and building a lesson behind a flag if the side ahead doesn't know where the base is | A bug, or a weakness to teach |
 
 Nothing gets deleted meanwhile ([simplify](simplify.md)).
