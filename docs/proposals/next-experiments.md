@@ -14,15 +14,16 @@
 
 | # | Change | Code | Why | What would count |
 |---|---|---|---|---|
-| 1 | `--ref-kl 0.01` | none | Between the kept 0.025 and the 0 that lost: keep the macro, free some of `fgself-171`'s variety | Level or better, more orc and night elf variety, income holds |
-| 2 | `fgself-171`'s last as a fixed league member (`--league-add`) | none | The league is one lineage; this shows the policy mixed orc armies and tier-3 night elves | Level or better, anti-air and army mix move |
-| 3 | A map pool in training (`--map-pool`, Echo Isles at half the weight) | merged | The only test of whether Echo Isles taught it to rush: `fgself-168`'s 65% on Echo Isles and 60%, 40%, 38% elsewhere, with the same play, only show an Echo-trained policy's habits carrying over. May also add variety | Evaluated on all four real maps as well as `--eval-map`: play changes, gains elsewhere, Echo Isles level |
-| 4 | `--shop-items 1` | merged | People buy items in 92-99% of games, the policy cannot buy from its shop | Items bought and used; if none, a lesson as its own run |
-| 5 | An EMA anchor from `fgself-100` (half-life ~6,000 updates) | small | The user's idea: stops sudden jumps without the permanent pull back. Needs check A | Variety rises by ~100M steps while income holds |
-| 6 | `--z-share 0.25` | none | 67% of training steps carry a target, which wins 30-38% to ~70% without. How much strength does it cost? | Strength up without losing with-target play |
-| 7 | `--ai-share 0.5` | none | More self-play at a person's income; the last tests were at doubled income | Head to head and variety |
-| 8 | The value sees the tax, value only | small | Neither network reads it. The size of this depends on `fgself-174`: the AI's if it comes back, else the tax between agents | Value loss down, level or better |
-| 9 | `--minibatch 1024 --lr 6e-5 --pad-groups 2` | none | A minibatch carries ~1.4% of the policy's signal, and sorting by size makes it less mixed. Needs checks B and C | Faster, and level or better |
+| 1 | `--hunt-lesson 1` | merged | The side ahead doesn't finish: 73% of `base2` games between agents tie, in 13 of 16 probed its army sits at the dead main and only 44 of 170,502 point orders name the natural. Those ties also spend steps | `base2` ties fall sharply, level or better against insane |
+| 2 | `--ref-kl 0.01` | none | Between the kept 0.025 and the 0 that lost: keep the macro, free some of `fgself-171`'s variety | Level or better, more orc and night elf variety, income holds |
+| 3 | `fgself-171`'s last as a fixed league member (`--league-add`) | none | The league is one lineage; this shows the policy mixed orc armies and tier-3 night elves | Level or better, anti-air and army mix move |
+| 4 | A map pool in training (`--map-pool`, Echo Isles at half the weight) | merged | The only test of whether Echo Isles taught it to rush: `fgself-168`'s 65% on Echo Isles and 60%, 40%, 38% elsewhere, with the same play, only show an Echo-trained policy's habits carrying over. May also add variety | Evaluated on all four real maps as well as `--eval-map`: play changes, gains elsewhere, Echo Isles level |
+| 5 | `--shop-items 1` | merged | People buy items in 92-99% of games, the policy cannot buy from its shop | Items bought and used; if none, a lesson as its own run |
+| 6 | An EMA anchor from `fgself-100` (half-life ~6,000 updates) | small | The user's idea: stops sudden jumps without the permanent pull back. Needs check A | Variety rises by ~100M steps while income holds |
+| 7 | `--z-share 0.25` | none | 67% of training steps carry a target, which wins 30-38% to ~70% without. How much strength does it cost? | Strength up without losing with-target play |
+| 8 | `--ai-share 0.5` | none | More self-play at a person's income; the last tests were at doubled income | Head to head and variety |
+| 9 | The value sees the tax, value only | small | Neither network reads it. The size of this depends on `fgself-174`: the AI's if it comes back, else the tax between agents | Value loss down, level or better |
+| 10 | `--minibatch 1024 --lr 6e-5 --pad-groups 2` | none | A minibatch carries ~1.4% of the policy's signal, and sorting by size makes it less mixed. Needs checks B and C | Faster, and level or better |
 
 ## If those do not move play
 
@@ -43,6 +44,6 @@
 | A | Blends of `fgself-100` and `fgself-173` at 25/50/75%: ~30 games each on the CPU, KL to both parents | Run 4 starts from `fgself-100` or needs the fallback |
 | B | How many games and game phases a minibatch holds at `--pad-groups` 8, 2, 1 (no GPU) | Whether sorting matters |
 | C | `scripts/bench_update.py` at minibatches 256 and 1024, between runs (needs the GPU) | Whether run 8 is faster |
-| D | Why `base2` games between agents tie at 40 minutes (73%, 1,443 of 1,746 with the leader far ahead; the user saw undead leave human's natural alone after destroying its main): an agent is measuring it, and building a lesson behind a flag if the side ahead doesn't know where the base is | A bug, or a weakness to teach |
+| D | Done: the side ahead camps at the dead main (`--hunt-lesson`, built; not yet trained) | Run 1 |
 
 Nothing gets deleted meanwhile ([simplify](simplify.md)).
