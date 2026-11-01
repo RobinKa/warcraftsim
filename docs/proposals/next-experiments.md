@@ -2,7 +2,7 @@
 
 **As of 2026-11-01.** The list from this week's findings: one mine caps income at half the insane AI's and ~79% of `fgself-168`'s losses come past 18 minutes ([the table](../reference/experiment-log.md)); the KL anchor holds the macro up but holds some variety back (`fgself-171`); and the policy cannot buy from its own shops. One change a run, ~3.5 hours each.
 
-**Judging.** At ~50M steps and ~250 games a policy, from a run's second hour on, against its start: head to head, against insane by race, wins past 18 minutes, expansions, gold a minute, the top unit's share, with a target. Stop sooner, past 35M steps, if head to head is under ~40% and falling by thirds. The evaluation set is the current policy, with a target, and the start.
+**Judging.** At ~50M steps and ~250 games a policy, from a run's second hour on, against its start: head to head, against insane by race, wins past 18 minutes, expansions, gold a minute, the top unit's share, with a target. Stop at ~30M steps if head to head with the small evaluation set is at or under ~45% and against insane is not above its start (`fgself-169` and `fgself-171` would have stopped, every kept run gone on; see [the log](../reference/experiment-log.md)); a variety run reads its behaviour from the second hour. The evaluation set is the current policy, with a target, and the start.
 
 ## Running
 

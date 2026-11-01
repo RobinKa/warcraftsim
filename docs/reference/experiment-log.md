@@ -1966,6 +1966,20 @@ So its one way to win is to end the game by ~15 minutes, and massing one tier-1 
 
 **`fgself-173`** (19:54 on 2026-10-31, from `fgself-168`'s 67203721 and its league, its recipe): **two-base starts**, `--scenarios natural,base2,base2,late,late,late` at a share of 0.8, so ~27% of the training games, with fewer late starts (40% of the training launches drawn, from 60%). It evaluates current, with a target and the start. Judged at ~50M steps and ~250 games from its second hour on: expansions and gold a minute in real games, wins past 18 minutes, the top unit's share, head to head, against insane by race, with a target. A win rate near 100% in `base2` games against the AI would mean they put on no pressure.
 
+**How early a verdict can be read** (2026-11-01, the last seven runs, each cumulative against its start at its own step counts, head to head and points against insane with the races weighed alike):
+
+| Run | 20M | 30M | 50M | End |
+|---|---|---|---|---|
+| `fgself-166` | 53%, +8 | 55%, +8 | 53%, +7 | 54%, +6 |
+| `fgself-167` | 52%, +2 | 52%, -3 | 49%, 0 | 46%, -3 |
+| `fgself-168` | 47%, +4 | 50%, +5 | 56%, +7 | 59%, +7 |
+| `fgself-169` | 40%, +4 | 39%, 0 | 43%, -1 | 42%, -2 |
+| `fgself-170` | 41%, -3 | 47%, 0 | 46%, +5 | 46%, +2 |
+| `fgself-171` | 43%, -7 | 41%, -8 | 37%, -11 | 37%, -11 |
+| `fgself-173` | 48%, 0 | 49%, +2 | 48%, +1 | 48%, +2 |
+
+At 30M the points against insane are within 5 of the end, and head to head within 9 (`fgself-168` rose after it, so a level reading at 30M must go on). Stopping at 30M at or under 45% with no gain against insane would have cut `fgself-169` and `fgself-171` and no kept run. This also corrects an earlier note: a fork's first hour does not always read low. At 10M `fgself-170` read -11, `fgself-171` -19, `fgself-174` -16, but `fgself-166`, `167`, `168`, `169` and `173` read +2 to +4, so the dip comes with the larger changes. Forks keep their Adam state, so that is not its cause.
+
 **Stopped for a shutdown** (22:50 on 2026-10-31): `fgself-173` at 41.5M steps (checkpoint 41524485, loads; its rows parse), under the 50M floor, so no verdict yet. Level so far at 384 games a policy: against insane 70% to its start's 69% (+0.5 points with the races weighed alike), 49% of 646 head to head, with a target 31%. From its second hour on (258 games to 265): 76% to 71% (+5 points, 95% interval -3 to +12), human 88/76, undead 65/45, night elf 83/94, orc 66/70; workers +1.9, gold a minute +21, lumber +9 (all significant). Play has not changed: expansions 0, the top unit 0.93, anti-air 0.40 to 0.43, wins past 18 minutes 37% to 33%.
 
 The `base2` games so far. Against the AI 86% won (of 1,506 at 22:07) at a median of 5.2 minutes: the second mine buys a faster rush, not a long game, so these games put on little pressure. Whether the AI's curriculum tax applies in them is not yet checked; without it they would be a fairer test. Between agents 81% tie at the 40-minute limit (1,199 of 1,488; median 40 minutes, against ~8 in other agent games), with ~26 workers and more tech; the side ahead seems unable to finish, perhaps not finding the other base, not confirmed. They cost steps: speed fell from ~4,400 to ~4,100 steps/s, and a tie reads -0.5 for both sides. Real-game ties have not risen as far as the wins and losses show. By the code the AI's curriculum tax does apply in these games: the draw of a launch's tax does not look at the scenario.
