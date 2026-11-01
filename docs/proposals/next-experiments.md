@@ -8,7 +8,7 @@
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-175` | The hunt lesson, from `fgself-173` | The side ahead camps at the dead main: 73% of `base2` games between agents tie |
+| `fgself-176` | `--ref-kl 0.01`, from `fgself-173` | Item 1 below. `fgself-175` (the hunt lesson) was not kept: ties down from 73% to 8%, but 63% to 72% against insane |
 
 ## Runs, in order
 
@@ -31,6 +31,7 @@
 
 ## Smaller tests, as a slot allows
 
+* The hunt lesson, gentler: firing less often, or only in games between agents. `fgself-175` ended the ties and lost strength against insane.
 * `--z-modes 0` (came in a bundle, never judged alone).
 * The scenario `natural` replaced by normal starts or `base2` (the lessons it served are off).
 * Uniform opponents in place of PFSP (near uniform already under `--win-balance`).
