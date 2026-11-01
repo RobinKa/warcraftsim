@@ -551,6 +551,8 @@ def duel_map_path(name: str, pairs: int = 1) -> Path:
 # plays it by FAST's (what the duelfast policy learned), "echoP" P% of the way from FAST to the game's own
 # (hit points, times and costs in between; "echo100" is the real game), to anneal a policy to the real rules.
 ECHO_ISLES = "(2)EchoIsles"
+# (other two-player stock maps with echofast2's rules, for --map-pool: "<key>fast2")
+FAST_MAPS = {"lastrefuge": "(2)LastRefuge-1.3", "amazonia": "(2)Amazonia", "terenaslv": "(2)TerenasStand_LV"}
 # "echofast2": echofast with its economy on the real game's schedule relative to the costs: the mines' gold
 # (13,500 and 12,500) and the starting gold and lumber (500 / 150) scaled like the costs. On echofast a mine
 # held twice the real game's worth of units and a game never mined one out (wins 5-6 min, losses 11-16): the
@@ -560,7 +562,10 @@ ECON_FAST = replace(FAST, start=FAST.cost, mine_gold=FAST.cost)
 
 def parse_echo_name(name: str) -> tuple[str, Rules] | None:
     """"echofast" -> (Echo Isles, FAST), "echofast2" -> (Echo Isles, ECON_FAST), "echoP" (P 0-100) -> (Echo
-    Isles, P% of the way from FAST to the game's rules); else None."""
+    Isles, P% of the way from FAST to the game's rules), "lastrefugefast2" and the others of FAST_MAPS -> (the map,
+    ECON_FAST); else None."""
+    if name.endswith("fast2") and name[:-5] in FAST_MAPS:
+        return FAST_MAPS[name[:-5]], ECON_FAST
     m = re.fullmatch(r"echo(fast2?|\d{1,3})", name)
     if not m:
         return None
@@ -590,7 +595,7 @@ def map_rules(name: str) -> Rules:
 
 
 def echo_map_path(name: str) -> Path:
-    """The cached Echo Isles variant for an "echo..." name (built on first use)."""
+    """The cached variant of a stock map for a name parse_echo_name reads (built on first use, on each machine)."""
     from .mapbuild import stock_map_path
 
     src_name, rules = parse_echo_name(name)
@@ -598,7 +603,8 @@ def echo_map_path(name: str) -> Path:
     if rules == Rules():
         return src
     version = "v2" + ("_t" if TABLES_IN_MAP else "")  # (v2: Echo Isles' creeps and the neutral buildings' units scaled)
-    out = paths.CACHE_DIR / "maps" / f"echo{rules.tag}_{version}.w3x"
+    base = "echo" if src_name == ECHO_ISLES else name[:-5]  # (FAST_MAPS' key)
+    out = paths.CACHE_DIR / "maps" / f"{base}{rules.tag}_{version}.w3x"
     with _lock:
         if not out.exists():
             make_rules_map(src, out, rules)

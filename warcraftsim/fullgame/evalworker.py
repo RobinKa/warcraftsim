@@ -271,6 +271,9 @@ def main(argv: list[str] | None = None) -> int:
                     "anew under today's rules (the user, 2026-10-25: a rating from old games, older rules and weaker "
                     "opponents, had topped the table)")
     ap.add_argument("--gauntlet-games", type=int, default=0, help="of --games, this many the gauntlet's")
+    ap.add_argument("--maps", default="", help="each launch on one of these maps (a --map-pool's form, mapframe.parse_pool; "
+                    "the rules of the run's evaluation map), its positions in that map's frame (mapframe.py), the rows' "
+                    "\"map\" says which; default: the run's evaluation map")
     a = ap.parse_args(argv)
     import multiprocessing as mp
 
@@ -312,6 +315,9 @@ def main(argv: list[str] | None = None) -> int:
         from ..data.mapbuild import stock_map_path
         fx.set_geometry(*fx.map_geometry(stock_map_path(cfg["map"])))
     cfg["map_geometry"] = [fx.STARTS, fx.BIN_RANGE]
+    if a.maps:  # (the frame stays the run's evaluation map's: the policy's)
+        from . import mapframe
+        cfg["eval_map_pool"] = mapframe.parse_pool(a.maps, cfg["map"])
     first = newest_checkpoint(run_dir)  # the run's networks' strategy block (selfplay: the rows' width)
     cfg["z_dim"] = torch.load(first, map_location="cpu", weights_only=False)["config"].get("z", 0) if first else 0
     fx.set_z(cfg["z_dim"])
