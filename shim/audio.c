@@ -209,7 +209,8 @@ static void frame_free(DWORD bytes, char *buf, DWORD align) {
         A.clock_on = 1;
         shim_log("audio: free-running: Miles's clock is the audio played");
     }
-    DWORD piece = (DWORD)(FREE_PIECE * A.fmt.nAvgBytesPerSec) / align * align, got = 0;
+    /* (rounded up: a 25 ms frame's 4408 or 4412 bytes are one piece, not a piece and a last few bytes) */
+    DWORD piece = ((DWORD)(FREE_PIECE * A.fmt.nAvgBytesPerSec) + align) / align * align, got = 0;
     int stuck = 0;
     if (!piece)
         piece = align;

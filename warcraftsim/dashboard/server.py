@@ -762,6 +762,8 @@ class Dashboard:
         self._pages: dict[str, tuple[tuple, dict]] = {}  # a run's page, until its files change (run_stamp)
         self._ratings = None  # (ratings.Ratings: made, and its scans started, on the first request)
         self._videos = None  # (videos.VideoIndex: made, and its thread started, on the first request)
+        self._replays = None  # (replays.ReplayIndex: likewise)
+        self.replay_cache = os.environ.get("WARCRAFTSIM_REPLAY_INDEX")  # (its file; else in the machine's cache)
 
     def ratings(self) -> dict:
         """The policies' skill ratings from every run's evaluation games (ratings.py), scanned every 5 minutes."""
@@ -784,6 +786,24 @@ class Dashboard:
 
     def videos(self) -> dict:
         return self.video_index().listing()
+
+    def replay_index(self):
+        """Every run's replays that can become a video (replays.py), filled in by a thread."""
+        from . import replays
+        if self._replays is None:
+            self._replays = replays.ReplayIndex(self.runs_dir, self.replay_cache)
+            replays.background(self._replays)
+        return self._replays
+
+    def replays(self, q: str = "", outcome: str = "all", race: str = "all", video: str = "all", offset: int = 0,
+                limit: int = 100) -> dict:
+        from ..fullgame import rerender
+        page = self.replay_index().listing(q, outcome, race, video, offset, limit)
+        for r in page["rows"]:  # (a page's rows only: a few stats and a file's first bytes each)
+            why = rerender.cannot_play(self.runs_dir / r["run"], r["stem"])
+            if why:
+                r["why"] = why
+        return page
 
     # ---- challenges: a person against a policy in the real game (fullgame/versus.py, the Challenge button) ----
     def challenge_dir(self) -> Path:
@@ -1796,7 +1816,7 @@ def make_handler(dash: Dashboard, docs: Docs | None = None):
 
         def do_GET(self):
             path = urllib.parse.unquote(urllib.parse.urlparse(self.path).path)
-            if path in ("/", "/index.html", "/doc", "/lineage", "/ratings", "/videos") or path.startswith(("/run/", "/sweep/", "/doc/")):
+            if path in ("/", "/index.html", "/doc", "/lineage", "/ratings", "/videos", "/replays") or path.startswith(("/run/", "/sweep/", "/doc/")):
                 return self._send(_page(), "text/html; charset=utf-8")  # (the page's own addresses: it routes)
             if path == "/api/runs":
                 return self._json(dash.run_list())
@@ -1813,6 +1833,17 @@ def make_handler(dash: Dashboard, docs: Docs | None = None):
                 return self._json(dash.ratings())
             if path == "/api/videos":
                 return self._json(dash.videos())
+            if path == "/api/replays":
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                one = lambda k, d: qs.get(k, [d])[0]  # noqa: E731
+
+                def num(k, d):
+                    try:
+                        return int(one(k, d))
+                    except ValueError:
+                        return d
+                return self._json(dash.replays(one("q", ""), one("outcome", "all"), one("race", "all"), one("video", "all"),
+                                               num("offset", 0), num("limit", 100)))
             if path == "/api/challenges":
                 return self._json(dash.challenges())
             if path == "/api/renders":

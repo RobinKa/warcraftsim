@@ -247,7 +247,7 @@ class VideoIndex:
 
     def listing(self) -> dict:
         with self.lock:
-            return {"videos": [{k: m.get(k) for k in ("run", "file", "title", "outcome", "sub", "time", "game_time", "opponent")}
+            return {"videos": [{k: m.get(k) for k in ("run", "file", "title", "outcome", "sub", "time", "game_time", "opponent", "recorded_speed")}
                                | {"info": self.info.get(f"{m['run']}/{m['file']}")} for m in self.videos],
                     "pending": self.pending, "updated": self.updated}
 
