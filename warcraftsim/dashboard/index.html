@@ -150,6 +150,8 @@ section > h3 { font-size:13px; margin:0 0 8px; color:var(--muted); text-transfor
 .viewer { background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
 .viewer video { display:block; width:100%; max-height:calc(100vh - 290px); background:#000; }
 .viewer iframe { display:block; width:100%; height:calc(100vh - 290px); min-height:380px; border:0; background:var(--bg); }
+.vspeed { display:flex; align-items:center; gap:8px; padding:6px 12px 0; color:var(--muted); font-size:12.5px; }
+.vspeed .seg button { min-width:44px; padding:6px 8px; }
 .viewer .cap { padding:8px 12px; display:flex; justify-content:space-between; gap:12px; color:var(--muted); font-size:12.5px; border-top:1px solid var(--line); }
 .viewer .cap a { color:var(--blue); text-decoration:none; }
 .viewer .none { padding:60px 20px; text-align:center; color:var(--muted); }
@@ -1587,11 +1589,28 @@ function renderReplays(d) {
   const src = `/files/${encodeURIComponent(run).replace(/%2F/g, "/")}/${cur.file}`;
   const cal = cur.value0 != null ? ` · predicted V(s₀) ${fmt(cur.value0, 2)}, discounted return ${fmt(cur.return0, 2)}` : "";
   viewer.innerHTML = (cur.kind === "video"
-      ? `<video src="${src}" controls muted loop playsinline preload="metadata"${matchMedia("(max-width: 760px)").matches ? "" : " autoplay"}></video>`
+      ? videoHtml(src)
       : `<iframe src="${src}#autoplay" title="trajectory"></iframe>`) +
     `<div class="cap"><span>${cur.title ? esc(cur.title) : `episode ${cur.episode}`} · <span class="${cur.result ? "" : cur.outcome > 0 ? "win" : cur.outcome < 0 ? "loss" : ""}">${cur.result ? esc(cur.result) : outcomeText(cur.outcome)}</span> · ${cur.sub ? esc(cur.sub) : `return ${fmt(cur.return, 2)}`}${cal}${cur.time ? ` · ${ago(cur.time)}` : ""}</span>
       <a href="${src}" target="_blank">open ↗</a></div>`;
 }
+
+// ---- a video and its speed buttons: the speed stays for the next video (the games are shown in real time, up to 40 minutes) ----
+const VIDEO_SPEEDS = [1, 2, 4, 8];
+try { ui.videoSpeed = +localStorage.getItem("videoSpeed") || 1; } catch (e) { ui.videoSpeed = 1; }
+function videoHtml(src) {
+  return `<video src="${src}" controls muted loop playsinline preload="metadata"${matchMedia("(max-width: 760px)").matches ? "" : " autoplay"}></video>
+    <div class="vspeed"><span>speed</span><span class="seg">${VIDEO_SPEEDS.map(v => `<button data-vspeed="${v}" class="${v === ui.videoSpeed ? "on" : ""}">${v}×</button>`).join("")}</span></div>`;
+}
+document.addEventListener("loadedmetadata", ev => { if (ev.target.tagName === "VIDEO") ev.target.playbackRate = ui.videoSpeed; }, true);  // (a new source resets it)
+document.addEventListener("click", ev => {
+  const b = ev.target.closest && ev.target.closest("[data-vspeed]");
+  if (!b) return;
+  ui.videoSpeed = +b.dataset.vspeed;
+  try { localStorage.setItem("videoSpeed", String(ui.videoSpeed)); } catch (e) {}
+  document.querySelectorAll("video").forEach(v => { v.playbackRate = ui.videoSpeed; });
+  document.querySelectorAll("[data-vspeed]").forEach(x => x.classList.toggle("on", +x.dataset.vspeed === ui.videoSpeed));
+});
 
 // ---- observation and action spaces ----------------------------------------------------------------
 function spacesHtml(sp) {
@@ -2493,7 +2512,7 @@ function renderVideos() {
   if (m.dataset.viewer === key(cur)) return;  // playing: left alone
   m.dataset.viewer = key(cur); V.file = key(cur);
   const src = `/files/${encPath(cur.run)}/${cur.file}`;
-  viewer.innerHTML = `<video src="${src}" controls muted loop playsinline preload="metadata"${matchMedia("(max-width: 760px)").matches ? "" : " autoplay"}></video>
+  viewer.innerHTML = `${videoHtml(src)}
     <div class="cap"><span>${esc(cur.title || "")} · <span class="${cur.outcome > 0 ? "win" : cur.outcome < 0 ? "loss" : ""}">${outcomeText(cur.outcome)}</span> · ${esc(cur.sub || "")} · <a href="/run/${encPath(cur.run)}?tab=replays">${esc(cur.run)}</a></span>
     <a href="${src}" target="_blank">open ↗</a></div>`;
 }
