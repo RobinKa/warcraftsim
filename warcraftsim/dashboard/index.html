@@ -2005,25 +2005,30 @@ function drawStack(box, opts) {
   out.push(`<text transform="translate(12 ${T + ph / 2}) rotate(-90)" text-anchor="middle" font-size="11.5" fill="var(--text)">${esc(opts.yLabel)}</text>`);
   out.push(`<line class="cur" x1="0" x2="0" y1="${T}" y2="${T + ph}" stroke="var(--text)" stroke-width="1" stroke-dasharray="3 3" visibility="hidden"/>`);
   box.innerHTML = `<svg width="${W}" height="${H}" style="display:block;touch-action:pan-y">${out.join("")}</svg>`;
-  const svg = box.firstChild, cur = svg.querySelector(".cur");
-  let tip = document.getElementById("ctip");
-  if (!tip) { tip = document.createElement("div"); tip.id = "ctip"; tip.className = "ctip"; document.body.appendChild(tip); }
-  const at = ev => {  // the sample under the pointer
-    const r = svg.getBoundingClientRect(), px = ev.clientX - r.left;
+  svgHover(box, px => {  // the sample under the pointer
     if (opts.kind === "bars") return Math.max(0, Math.min(n - 1, Math.floor((px - L) / bw)));
     let best = 0, dist = Infinity;
     for (let i = 0; i < n; i++) { const dd = Math.abs(X(i) - px); if (dd < dist) { dist = dd; best = i; } }
     return best;
-  };
-  svg.onpointermove = ev => {
-    const i = at(ev);
+  }, X, opts.tip);
+}
+// an SVG chart's cursor (its ".cur" line) and tooltip, for a mouse or a finger; `at`: the x in the chart -> a sample. A
+// refresh redraws the chart under a still pointer: the cursor comes back where it was
+function svgHover(box, at, X, tipOf) {
+  const svg = box.firstChild, cur = svg.querySelector(".cur");
+  let tip = document.getElementById("ctip");
+  if (!tip) { tip = document.createElement("div"); tip.id = "ctip"; tip.className = "ctip"; document.body.appendChild(tip); }
+  const show = (cx, cy) => {
+    const i = at(cx - svg.getBoundingClientRect().left);
     cur.setAttribute("x1", X(i)); cur.setAttribute("x2", X(i)); cur.setAttribute("visibility", "visible");
-    tip.innerHTML = opts.tip(i); tip.style.display = "block";
+    tip.innerHTML = tipOf(i); tip.style.display = "block";
     const tw = tip.offsetWidth;
-    tip.style.left = (ev.clientX + 14 + tw > window.innerWidth ? ev.clientX - 14 - tw : ev.clientX + 14) + "px";
-    tip.style.top = (ev.clientY + 12) + "px";
+    tip.style.left = Math.max(4, cx + 14 + tw > window.innerWidth ? cx - 14 - tw : cx + 14) + "px";
+    tip.style.top = (cy + 12) + "px";
   };
-  svg.onpointerleave = () => { cur.setAttribute("visibility", "hidden"); tip.style.display = "none"; };
+  svg.onpointermove = svg.onpointerdown = ev => { ui.svgHover = { id: box.id, x: ev.clientX, y: ev.clientY }; show(ev.clientX, ev.clientY); };
+  svg.onpointerleave = svg.onpointercancel = () => { ui.svgHover = null; cur.setAttribute("visibility", "hidden"); tip.style.display = "none"; };
+  if (ui.svgHover && ui.svgHover.id === box.id) show(ui.svgHover.x, ui.svgHover.y);
 }
 
 // ---- the machines of the run (GET /api/runs/<run>: "machines", scripts/host_stats.py; "split", server.py _machine_split) ----
@@ -2045,7 +2050,19 @@ function drawLines(box, opts) {  // opts: { series: [[label, color, [[t, v]]]], 
     for (const [t, v] of pts) { if (v == null) { pen = false; continue; } path += `${pen ? "L" : "M"}${X(t).toFixed(1)},${Y(v).toFixed(1)}`; pen = true; }
     out.push(`<path d="${path}" fill="none" stroke="${color}" stroke-width="1.6"><title>${esc(label)}</title></path>`);
   }
-  box.innerHTML = `<svg width="${W}" height="${H}" style="display:block">${out.join("")}</svg>`;
+  out.push(`<line class="cur" x1="0" x2="0" y1="${T}" y2="${T + ph}" stroke="var(--text)" stroke-width="1" stroke-dasharray="3 3" visibility="hidden"/>`);
+  box.innerHTML = `<svg width="${W}" height="${H}" style="display:block;touch-action:pan-y">${out.join("")}</svg>`;
+  const times = [...new Set(all.map(p => p[0]))].sort((a, b) => a - b), near = (t1 - t0) / 40;
+  const fmtv = v => (Number.isInteger(opts.digits) ? v.toFixed(opts.digits) : v.toFixed(v < 10 ? 1 : 0)) + (opts.unit || "");
+  svgHover(box, px => {
+    let best = 0, dist = Infinity;
+    times.forEach((t, i) => { const dd = Math.abs(X(t) - px); if (dd < dist) { dist = dd; best = i; } });
+    return best;
+  }, i => X(times[i]), i => { const t = times[i];
+    return `<b>${when(t)}</b><br>` + opts.series.map(([label, color, pts]) => {
+      let p = null;  // (each machine's own nearest reading; none near: it was not answering)
+      for (const q of pts) if (q[1] != null && Math.abs(q[0] - t) <= near && (!p || Math.abs(q[0] - t) < Math.abs(p[0] - t))) p = q;
+      return `<i style="background:${color}"></i>${esc(label)} <b>${p ? fmtv(p[1]) : "–"}</b>`; }).join("<br>"); });
 }
 // redrawn on every refresh: their charts read their width while still empty, the page is shorter for that moment, and
 // the browser moves a scrolled page up to fit; so the old height stays until the new content is in
@@ -2085,9 +2102,9 @@ function renderMachines(d) {
     ${S.length ? `<div class="panel"><h3>Games by machine <span>training games' side-steps a second</span></h3><div class="scroll"><table>
       <tr><th>machine</th><th>training 30 min</th><th>evaluation 30 min</th><th>steps/s 30 min</th><th>training run</th><th>evaluation run</th><th>steps/s run</th></tr>
       ${S.map(row).join("")}</table></div></div>` : ""}</div>`;
-  drawLines(document.getElementById("mc-temp"), { series: line(p => p.temp), mark: 90 });
-  drawLines(document.getElementById("mc-cpu"), { series: line(p => p.cpu), ymax: 100 });
-  drawLines(document.getElementById("mc-mem"), { series: line(p => p.mem) });
+  drawLines(document.getElementById("mc-temp"), { series: line(p => p.temp), mark: 90, unit: " °C", digits: 0 });
+  drawLines(document.getElementById("mc-cpu"), { series: line(p => p.cpu), ymax: 100, unit: " %", digits: 0 });
+  drawLines(document.getElementById("mc-mem"), { series: line(p => p.mem), unit: " GB", digits: 1 });
 }
 
 function renderBottleneck(d) {
