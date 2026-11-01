@@ -1360,8 +1360,8 @@ function renderMain() {
   renderLineage(d);
   renderCheckpoints(d);
   renderProduction(d);
-  renderMachines(d);
-  renderBottleneck(d);
+  holdHeight("machines", () => renderMachines(d));
+  holdHeight("bottleneck", () => renderBottleneck(d));
   renderMatchups(d);
   chartVisibility(d);
   const match = info.kind === "match";
@@ -2046,6 +2046,14 @@ function drawLines(box, opts) {  // opts: { series: [[label, color, [[t, v]]]], 
     out.push(`<path d="${path}" fill="none" stroke="${color}" stroke-width="1.6"><title>${esc(label)}</title></path>`);
   }
   box.innerHTML = `<svg width="${W}" height="${H}" style="display:block">${out.join("")}</svg>`;
+}
+// redrawn on every refresh: their charts read their width while still empty, the page is shorter for that moment, and
+// the browser moves a scrolled page up to fit; so the old height stays until the new content is in
+function holdHeight(id, draw) {
+  const el = document.getElementById(id);
+  if (!el) return draw();
+  el.style.minHeight = el.offsetHeight + "px";
+  try { draw(); } finally { el.style.minHeight = ""; }
 }
 function renderMachines(d) {
   const el = document.getElementById("machines");
