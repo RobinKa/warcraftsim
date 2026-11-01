@@ -30,6 +30,8 @@ def _order_temp_default(state, prefix, *_):
 
 
 class FullGameNet(nn.Module):
+    valid_bits = 19  # (unit_valid's bits; set_valid: more when valid_need asks for them)
+
     def __init__(self, n_types: int, n_cur: int, n_orders: int, G: int, d: int = 192, heads: int = 4,
                  layers: int = 3, dropout: float = 0.0, memory: bool = False, target_temperature: float = 1.0,
                  priv: int = 0, order_temperature: float = 1.0, bins: int = 128, z: int = 0, gx: int = 0,
@@ -131,6 +133,7 @@ class FullGameNet(nn.Module):
         self.valid_need.copy_(need)
         self.valid_cols, self.valid_need = self.valid_cols.to(dev), self.valid_need.to(dev)
         self.config["valid"] = need.shape[1]
+        self.valid_bits = max(19, int(need.max()) + 1)  # (20: --shop-items' free inventory slot too)
 
     def unit_valid(self, ent, typ):
         """[N, O, K] bool: whether each of the first O units can carry out each of the order classes that need
@@ -142,6 +145,8 @@ class FullGameNet(nn.Module):
         bits = torch.cat([e[..., h + 1:h + 4 * af:af] > 0.5, e[..., h:h + 4 * af:af] > 0.1,
                           e[..., h + 3:h + 4 * af:af] > 0.5, e[..., it + 1:it + 6 * fx.HERO_ITEM_F:fx.HERO_ITEM_F] > 0.5,
                           e[..., hidden:hidden + 1] < 0.5], -1)
+        if self.valid_bits > 19:
+            bits = torch.cat([bits, (e[..., it:it + 6 * fx.HERO_ITEM_F:fx.HERO_ITEM_F] < 0.5).any(-1, keepdim=True)], -1)
         need = self.valid_need[typ.long()]
         ok = torch.ones(need.shape, dtype=torch.bool, device=need.device)
         for j in range(bits.shape[-1]):
@@ -466,6 +471,7 @@ def configure_for(path) -> None:
     fx.set_neutral(neutral)
     fx.set_macros(int(vocab.get("macros") or 0))
     fx.set_spells(int(vocab.get("spells") or 0))
+    fx.set_shop_items(int(vocab.get("shop_items") or 0))
     fx.set_z(c.get("z", 0))
     fx.set_fine(c.get("fine", 0))  # (--fine-points: the sub-cells its fine head picks)
     if c.get("gx", 0) >= 3:  # (the unit channels it reads: all of them, a run's --features zeros only its weights)
@@ -540,11 +546,18 @@ def load(path, device="cpu", memory: bool | None = None, vocab: dict | None = No
             ck = {**ck, "vocab": new}
         if ck["vocab"].get("spells"):
             spells.allow(net, ck["vocab"])
+        from . import shopitems  # (--shop-items, or a run whose vocabulary has them: after the spells, shopitems.py)
+        if (fx.SHOP_ITEMS or vocab is not None and vocab.get("shop_items")) and not shopitems.extended(ck["vocab"]):
+            new = shopitems.extend(ck["vocab"])
+            net = shopitems.grow(net, ck["vocab"], new)
+            ck = {**ck, "vocab": new}
         if vocab is not None and ck["vocab"]["orders"] != vocab["orders"]:
             if neutral.reorder(net, ck["vocab"], vocab) is None:
                 raise RuntimeError(f"{path}: its vocabulary has other orders than the run's")
             ck = {**ck, "vocab": vocab}
         neutral.who_buys(net, ck["vocab"])  # (and its tables as they are now: networks grown before them too)
+        if ck["vocab"].get("shop_items"):
+            shopitems.allow(net, ck["vocab"])
         if net.config.get("valid"):
             net.set_valid(ck["vocab"])
     if "vocab" in ck and "allowed" in dict(net.named_buffers()):

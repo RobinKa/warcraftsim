@@ -388,6 +388,16 @@ def set_neutral(v: int) -> None:
     os.environ["WARCRAFTSIM_NEUTRAL"] = str(NEUTRAL)
 
 
+# selfplay --shop-items: the race shops' items and the item slots' uses as orders (fullgame/shopitems.py)
+SHOP_ITEMS = int(os.environ.get("WARCRAFTSIM_SHOP_ITEMS", "0") or 0)
+
+
+def set_shop_items(v: int) -> None:
+    global SHOP_ITEMS
+    SHOP_ITEMS = int(v)
+    os.environ["WARCRAFTSIM_SHOP_ITEMS"] = str(SHOP_ITEMS)
+
+
 def set_masks(tech: bool, valid: bool) -> None:
     global TECH_MASK, VALID_MASK
     TECH_MASK, VALID_MASK = bool(tech), bool(valid)
@@ -494,7 +504,9 @@ TARGETED_ITEMS = frozenset(int.from_bytes(c.encode(), "big") for c in (
 def item_use_now(item: int, hero: np.ndarray) -> bool:
     """FUTILE_MASK: whether the item (its type id: 0 none) in a hero's slot has a use the game takes now without a
     target (play.BCAgent sends it as the item's use, protocol.UseItem): usable (herodata.item_table), not one of
-    TARGETED_ITEMS."""
+    TARGETED_ITEMS. (--shop-items: as shopitems.use_ok, which knows what each of its items takes.)"""
+    if SHOP_ITEMS:
+        return _mod("shopitems").use_ok(item, IMMEDIATE, hero)
     if not item or item in TARGETED_ITEMS:
         return False
     return bool(_mod("herodata").item_table().get(item, (0, 0, 0, 0))[0])
@@ -1223,6 +1235,11 @@ class TechMask:
         if self.wares:  # (in stock from this game second on: neutral.stock_times)
             from .neutral import stock_times
             self.stock = stock_times()
+        self.shop_items = None  # (--shop-items: the items sold at a race shop, at the merchant too: shopitems.sold)
+        if vocab.get("shop_items"):
+            shops = _mod("shopitems")
+            self.shop_items = {c for c, code in self.items if c in self.wares and code in shops.ITEM_NAMES}
+            self.sold = shops.sold
         self.n = len(vocab["orders"]) + 1
         self._key: tuple | None = None
         self._ok = np.ones(self.n, bool)
@@ -1259,7 +1276,9 @@ class TechMask:
             return False
         ok = np.ones(self.n, bool)
         for c, code in self.items:
-            if c in self.wares and self.stock.get(code, 0.0) > now:  # (not in stock yet)
+            if self.shop_items is not None and c in self.shop_items:
+                ok[c] = self.sold(code, self.race, have, now, self.stock)
+            elif c in self.wares and self.stock.get(code, 0.0) > now:  # (not in stock yet)
                 ok[c] = False
             elif code[0] == "R":  # research: its next level
                 lvl = levels.get(code, 0)
@@ -1596,6 +1615,19 @@ class View:
             if c is not None and avail[c] and not any(item_use_now(int(h[C_ITEM0 + k]), h) for h in heroes):
                 avail[c] = False
 
+    def item_slots(self, rows: np.ndarray, avail: np.ndarray) -> None:
+        """--shop-items: each slot's use (immediate, on a unit, on a point) out of `avail` (in place) while no hero of the
+        player's holds an item in that slot that takes it (shopitems.use_ok; the per-hero check: play.BCAgent)."""
+        own = own_alive(rows, self.player)
+        heroes = own[own[:, C_FLAGS] & HERO > 0] if own.shape[1] > C_ITEM0 + 5 else own[:0]
+        use_ok = _mod("shopitems").use_ok
+        oix = self.enc.order_index
+        for k in range(6):
+            for kind in (IMMEDIATE, UNIT, POINT):
+                c = oix.get((USESLOT + k, kind))
+                if c is not None and avail[c] and not any(use_ok(int(h[C_ITEM0 + k]), kind, h) for h in heroes):
+                    avail[c] = False
+
     def tech_allowed(self, rows: np.ndarray, built: np.ndarray | None = None, own_hero: np.ndarray | None = None,
                      dead_rows: np.ndarray | None = None, done_types: list | None = None, hero_types: list | None = None,
                      dead_pairs: list | None = None) -> np.ndarray:
@@ -1835,6 +1867,8 @@ class View:
             self.chores(rows, avail)
         if avail is not None and FUTILE_MASK:  # (--econ-masks bit 64: orders the game refuses)
             self.futile(rows, avail, t)
+        if avail is not None and SHOP_ITEMS:  # (--shop-items: a slot's use only in a form an item held there takes)
+            self.item_slots(rows, avail)
         if avail is not None and enc.expand_class is not None:  # (--macros: expand, while the natural is free and
             site = _mod("macros").site                            # its hall affordable; night elves' tree of life
             race = RACES[self.races[player]]                      # entangles its mine, play.BCAgent._entangle)

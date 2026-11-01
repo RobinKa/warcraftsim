@@ -303,6 +303,7 @@ def play(a) -> int:
     fx.set_neutral(cfg["neutral"])
     fx.set_macros(int(cfg.get("macros", 0) or 0))
     fx.set_spells(int(cfg.get("spells", 0) or 0))
+    fx.set_shop_items(int(cfg.get("shop_items", 0) or 0))
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     fx.set_econ_masks(cfg.get("econ_masks", 0))
     fx.set_geometry(*fx.map_geometry(stock_map_path(cfg["map"])))

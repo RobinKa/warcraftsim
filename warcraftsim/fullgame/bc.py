@@ -744,6 +744,7 @@ def apply_run(cfg: dict) -> None:
     fx.set_neutral(_int(cfg.get("neutral")))
     fx.set_macros(_int(cfg.get("macros")))
     fx.set_spells(_int(cfg.get("spells")))
+    fx.set_shop_items(_int(cfg.get("shop_items")))
     fx.set_fine(_int(cfg.get("fine_points")))
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     fx.set_econ_masks(_int(cfg.get("econ_masks")))

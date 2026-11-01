@@ -50,6 +50,11 @@ def measures(r: dict) -> dict[str, float]:
         "heroes": float(p.get("heroes") or 0),
         "refused share": float(r.get("refused_share") or 0.0),
         "orders to loaded units": float(r.get("loaded_orders") or 0),
+        # (--shop-items: a game without them has no such fields, and no line here. Used: the policy's orders; gone: the last
+        # charges used, by those or by the engine, which has an agent's heroes use some items by themselves in a fight)
+        "race-shop items bought": float(sum(r["shop_bought"].values())) if "shop_bought" in r else None,
+        "items used (orders)": float(sum(r["item_uses"].values())) if "item_uses" in r else None,
+        "items gone (used up)": float(sum(r["items_gone"].values())) if "items_gone" in r else None,
     }
     return out
 
