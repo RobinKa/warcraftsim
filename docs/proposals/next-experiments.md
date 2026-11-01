@@ -8,7 +8,9 @@
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-176` | `--ref-kl 0.01`, from `fgself-173` | Item 1 below. `fgself-175` (the hunt lesson) was not kept: ties down from 73% to 8%, but 63% to 72% against insane |
+| `fgself-177` | `fgself-171`'s last as a fixed league member, from `fgself-176` | Item 2 below |
+
+Done: item 1, `fgself-176` (`--ref-kl 0.01`), kept, level and slightly more varied. `fgself-175` (the hunt lesson) was not kept: ties down from 73% to 8%, but 63% to 72% against insane.
 
 ## Runs, in order
 
