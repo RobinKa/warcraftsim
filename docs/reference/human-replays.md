@@ -148,6 +148,55 @@ Surveyed 2026-10-26 (`runs/fullgame/replay-survey/`: `w3info-index.jsonl`, warcr
 
 A pilot of 54 1.29 games on Last Refuge (28), Amazonia (23) and Terenas Stand LV (3) converted (2026-10-26, `runs/fullgame/demos-human-129-maps`): **none out of step**: 5,760 of 5,760 subgroup units, 1,795 of 1,834 buildings (98%); one playback timed out (`--retry-failed`). 14.1 hours of play, 202,756 side-steps, each game read through `bc.py`'s encoder in its own map's frame. 82 s a game per playback slot (two at a time beside the training, load ~90 on 32 threads): the other ~460 convertible 1.29 games take about 5 hours at two at a time (~10 slot-hours).
 
+### The policy on other maps (2026-11-01)
+
+The question: does Echo Isles itself favour rushing? `fgself-168`'s last checkpoint (67203721), trained only on Echo Isles' rules and terrain, played the insane AI on the real maps, its slot at a person's income, without a target, on the CPU, on the games box (482 games; `fullgame/evalworker.py --maps`, each launch drawing its map; each game's positions through `fullgame/mapframe.py`). Nothing was trained. The frame was checked in the real game first: on every map a player's own start reads (-0.749, 0) and the enemy's (0.749, 0), as on Echo Isles (`scripts/map_probe.py`).
+
+| map | games | won (95%) | races weighed alike | as human | as orc | as undead | as night elf | median minutes |
+|---|---|---|---|---|---|---|---|---|
+| Echo Isles | 127 | 65% (57-73) | 71% ±8 | 59% of 22 | 61% of 46 | 48% of 31 | 96% of 28 | 14.8 |
+| Last Refuge | 119 | 60% (51-68) | 53% ±9 | 54% of 24 | 35% of 26 | 39% of 18 | 82% of 51 | 15.2 |
+| Amazonia | 113 | 40% (31-49) | 40% ±9 | 46% of 24 | 27% of 22 | 13% of 31 | 67% of 36 | 17.8 |
+| Terenas Stand LV | 123 | 38% (30-47) | 38% ±9 | 41% of 27 | 40% of 25 | 13% of 30 | 54% of 41 | 18.7 |
+
+The Echo Isles control through the same harness matches the known ~65-70%. "Races weighed alike" is the mean over the race-against-race cells (Terenas Stand has 15 of 16; a launch's two games share a matchup, so the draws are lumpy).
+
+Share of games by length, and how many of them it won (95%):
+
+| map | under 12 min | 12-18 | 18-25 | 25+ |
+|---|---|---|---|---|
+| Echo Isles | 33%, won 100% (92-100) | 28%, won 83% (67-92) | 24%, won 39% (24-56) | 15%, won 0% (0-17) |
+| Last Refuge | 33%, won 92% (80-97) | 33%, won 77% (62-87) | 17%, won 25% (11-47) | 18%, won 0% (0-15) |
+| Amazonia | 24%, won 78% (59-89) | 28%, won 66% (48-80) | 30%, won 9% (3-23) | 18%, won 0% (0-16) |
+| Terenas Stand LV | 13%, won 94% (72-99) | 33%, won 61% (46-74) | 27%, won 18% (9-34) | 27%, won 3% (1-15) |
+
+What it played and what the maps do:
+
+| map | walk between the bases (straight) | expanded | gold a minute (the AI's) | top unit's share | orders refused | building orders refused a game | AI expanded | AI's largest army (food) |
+|---|---|---|---|---|---|---|---|---|
+| Echo Isles | 9,909 (9,856) | 0 of 127 | 521 (860) | 0.93 | 1.91% | 2.5 | 20% | 49 |
+| Last Refuge | 10,901 (10,549) | 0 of 119 | 498 (892) | 0.94 | 1.67% | 1.4 | 29% | 50 |
+| Amazonia | 9,589 (9,458) | 0 of 113 | 482 (973) | 0.95 | 1.82% | 1.8 | 39% | 58 |
+| Terenas Stand LV | 14,031 (11,860) | 0 of 123 | 492 (929) | 0.95 | 1.81% | 4.4 | 41% | 64 |
+
+The walk is the shortest path over the map's pathing grid with its trees standing. It does not count buildings or creeps.
+
+People on the same maps (the converted 1.29 replays, median minutes; share under 12 minutes): Echo Isles 13.9 (38% of 178), Last Refuge 13.3 (37% of 155), Amazonia 12.8 (46% of 124), Terenas Stand LV 15.0 (33% of 61).
+
+What this says:
+
+* **Nothing singles Echo Isles out as a rusher's map.** People's games there are no shorter than on the others, and Amazonia, whose walk is the shortest and whose games with people are the shortest, is among the policy's worst.
+* **The way it wins and loses does not depend on the map.** On all four it masses one unit (0.93-0.95), never expands, gathers ~500 gold a minute, wins most short games and almost no long ones. The long-game wall (0-3% past 25 minutes) stands on every map.
+* **How often it gets to win early does depend on the map.** Terenas Stand's walk is 42% longer than Echo Isles' and 13% of its games end before 12 minutes, against 33%. This fits distance. Amazonia does not fit it: its short walk gives no early wins (78% under 12 minutes, 24% of games). Why is not known.
+* **Undead suffers most**, from 48% on Echo Isles to 13% on Amazonia and Terenas Stand, where the AI also expands more and fields larger armies. Night elf holds up best (54-82%). Why was not measured.
+
+The doubts:
+
+* The policy trained only on Echo Isles. So its weaker results elsewhere mix what the map does with what it never learned, and they don't measure the maps by themselves. A policy trained on the pool would answer that better.
+* It does not see terrain. Its building spots are points relative to its start. Orders refused did not rise (1.67-1.91%), though building orders refused did on Terenas Stand (4.4 a game against 2.5). Refusals only count what the game refused at the order, not buildings put somewhere poor. (The rows list a game's 12 most refused kinds, so the per-kind counts are lower bounds.)
+* The map's middle is scaled to Echo Isles' length (Last Refuge 0.85, Amazonia 1.12, Terenas Stand 0.66) and the bases' surroundings are not. On these half-turn maps the right base's view is the left's upside down, which the policy never saw on Echo Isles (a mirror map). By the base it started from (303 games): Amazonia left 28% of 32, right 46% of 39; Terenas Stand left 31% of 29, right 46% of 41; Last Refuge left 63% of 35, right 55% of 42; Echo Isles left 59% of 49, right 67% of 36. Too few games to tell.
+* The worker was stopped hard twice by a memory guard on the box (the live run's restart; 8 games at a time ran it too close), which lost 14 games in flight. Games in flight lean long, so the win rates may read a point or two high, on all maps alike. The other stops drained. 14 of the 482 were ties at the time limit.
+
 ## Cloning people (the anchor to be)
 
 `bc.py --like-run runs/<run>` clones these games into a policy a self-play run can take as `--init` (its KL anchor; [five changes](../proposals/five-changes.md), 1) and later as a teacher (2026-10-27):

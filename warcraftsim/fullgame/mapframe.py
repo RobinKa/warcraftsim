@@ -29,7 +29,14 @@ from functools import lru_cache
 
 import numpy as np
 
-RIGID = 3000.0  # (world units from a base along the line where a map keeps its own distances; naturals lie within it)
+RIGID = 3000.0  # (world units from a base along the line where a map keeps its own distances: the base and its surroundings)
+# where people built their halls at each map's expansions (the converted 1.29 replays, demos-human-129-maps: the human and orc halls' medians): the mine in the
+# world -> the hall's offset, as macros.EXPAND_SPOTS has Echo Isles'; put in home coordinates by a frame's first use
+EXPANSIONS = {"(2)LastRefuge-1.3": {(1728, -4224): (-768, 128), (-2432, 3712): (704, -320),
+                                    (-4672, 1856): (544, -576), (4544, -2432): (-768, 256)},
+              "(2)Amazonia": {(640, -4800): (-384, 736), (-704, 4288): (192, -768)},
+              "(2)TerenasStand_LV": {(512, 2048): (-704, 384), (-768, -2944): (544, -576),
+                                     (-4544, -4864): (-192, 768), (4416, 4352): (-576, -512)}}
 # (native.py's unit_array columns)
 UA_X, UA_Y, UA_FACING = 3, 4, 5
 
@@ -172,7 +179,22 @@ def _frame(map_name: str, home: tuple) -> MapFrame | None:
         raise ValueError(f"{map_name}: {len(starts)} start locations; a framed game needs a two-player map")
     if tuple(sorted(starts)) == tuple(sorted(home)):
         return None
-    return MapFrame(starts, home)
+    frame = MapFrame(starts, home)
+    register_expansions(map_name, frame)
+    return frame
+
+
+def register_expansions(map_name: str, frame: MapFrame) -> None:
+    """The map's halls' places (EXPANSIONS) in the tables the macros, the two-base start and the teacher read, keyed by
+    the mine's home position (no other map's mine stands there)."""
+    from ..data.duelmap import parse_echo_name
+    from . import macros, teacher
+    got = parse_echo_name(map_name)
+    for (mx, my), (ox, oy) in EXPANSIONS.get(got[0] if got else map_name, {}).items():
+        hx, hy = frame.to_home1(mx, my)
+        sx, sy = frame.to_home1(mx + ox, my + oy)
+        for table in (macros.EXPAND_SPOTS, teacher.EXPAND_SPOTS):
+            table[(hx, hy)] = (sx - hx, sy - hy)
 
 
 def frame_for(map_name: str) -> MapFrame | None:

@@ -2644,7 +2644,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             "refused": dict(sorted(((k, r) for k, (n, r) in bots[side].order_results.items() if r),
                                    key=lambda kv: -kv[1])[:12])}
            if side in bots and getattr(bots[side], "order_results", None) else {}),
-        **({"map": cfg["map"]} if cfg.get("map_pool") or cfg.get("eval_map_pool") else {}),
+        **({"map": cfg["map"], "base": "left" if obs.players[side].start_x < fx.MAP_CX else "right"}
+           if (cfg.get("map_pool") or cfg.get("eval_map_pool")) and obs.players.get(side) is not None else {}),
         **({"scenario": scenario} if scenario else {}),
         **({"late_minute": late_start["minute"]} if scenario == "late" else {}),  # (the state's minute)
         **({"late_replay": late_start["replay"]} if scenario == "late" and late_start.get("replay") else {}),
@@ -4316,6 +4317,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="games without the built-in AI: this many times as many per launch (--ai-share is a share of "
                          "launches; with 0.75 and 4, 43%% of the games are against the AI)")
     ap.add_argument("--map", default="duelrush")
+    ap.add_argument("--map-pool", default="", help="training games on these maps, each launch drawing one: "
+                    "\"echofast2,lastrefugefast2:0.25,amazoniafast2:0.25\" (a map without a weight: 1). They must play by "
+                    "--map's rules; each game's positions in --map's frame (fullgame/mapframe.py). Evaluation games stay as "
+                    "--eval-map says. Default: every game on --map")
     ap.add_argument("--races", default="all")
     ap.add_argument("--learner-races", default="", help="the learner's race in training games, weighted (e.g. "
                                                         "human:2,undead:2,orc:1,nightelf:1; evaluation games stay "
@@ -4666,6 +4671,13 @@ def main(argv: list[str] | None = None) -> int:
         from ..data.mapbuild import stock_map_path    # and point targets (features.set_geometry; the actors
         fx.set_geometry(*fx.map_geometry(stock_map_path(args.map)))  # inherit it through the environment)
         print(f"map frame: starts {fx.STARTS}, point bins over +-{fx.BIN_RANGE:g} ({fx.BINS})", flush=True)
+    map_pool = None
+    if args.map_pool:  # (--map-pool: checked here, drawn by each launch, game_loop)
+        from . import mapframe
+        map_pool = [list(p) for p in mapframe.parse_pool(args.map_pool, args.map)]
+        if args.grpo_share > 0 or args.teach_heuristic:
+            raise SystemExit("--map-pool: not with GRPO's replayed launches or --teach-heuristic's shadow player")
+        print(f"map pool: {map_pool}; frames {[(m, 'turned %.1f' % f.deg if (f := mapframe.frame_for(m)) else 'home') for m, _ in map_pool]}", flush=True)
     if args.eval_games:  # (in all: each actor's pipes and rows for the most any actor gets)
         args.eval_games_per_actor = -(-args.eval_games // args.actors)
     args.device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -4931,7 +4943,8 @@ def main(argv: list[str] | None = None) -> int:
         publish_exploiter(xnet, x_update, run_dir, vocab)
     cfg = {"run_dir": str(run_dir), "device": str(device), "vocab": str(run_dir / "vocab.json"), "races": races,
            "learner_races": {k: float(v) for k, v in (kv.split(":") for kv in args.learner_races.split(",") if kv)},
-           "map": args.map, "handicap": args.handicap, "step_seconds": args.step_seconds,
+           "map": args.map, **({"map_pool": map_pool} if map_pool else {}),
+           "handicap": args.handicap, "step_seconds": args.step_seconds,
            "max_minutes": args.max_minutes, "max_steps": int(args.max_minutes * 60 / args.step_seconds) + 20,
            "wait_floor_ms": args.wait_floor_ms, "games_per_actor": args.games_per_actor,
            "eval_games_per_actor": args.eval_games_per_actor, "eval_games": args.eval_games,

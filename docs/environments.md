@@ -20,12 +20,29 @@ flowchart LR
 | `duelfast` | 48 tiles | hit points and costs ÷2, production ÷3 | ~6 min |
 | `echofast` | Echo Isles | duelfast's rules in the real map | ~10 min |
 | `echofast2` | Echo Isles | echofast with the mines' gold and the starting gold and lumber ÷2 too | — |
+| `lastrefugefast2`, `amazoniafast2`, `terenaslvfast2` | Last Refuge, Amazonia, Terenas Stand LV | `echofast2`'s rules | — |
 | `echoP` | Echo Isles | P% of the way to the game's rules | — |
 | `echo100` | Echo Isles | the game's rules (the real game) | wins ~9 min, losses ~28 |
 
 * The duel maps have two bases like Echo Isles' main bases, a gold mine each and creep camps. They have no expansions, items or shops.
 * `echofast` and `echoP` put the rules' tables into a copy of Echo Isles. The terrain, creeps, mines and expansions are the real map's.
 * `echofast2` scales the economy like the costs: each mine holds half its gold (main mines 6,750, the expansions' 6,250) and players start with 250 gold and 75 lumber. On `echofast` a mine held twice the real game's worth of units, so a training game never mined one out and expanding never paid (audit 12: 0 expansions in 286 real games, the main mine dry ~22 min in). The map script does it (the mines' `SetResourceAmount`, the starting resources after melee initialization); a real-game check read 6,750 / 6,250 in the mines and 250 / 75 at the first step. Trees keep their lumber. The agent's mine feature stays gold / 12,500, so a fresh mine reads 0.5 there and 1.0 in the real game.
+
+## Several maps (`--map-pool`, off by default)
+
+`--map-pool "echofast2,lastrefugefast2:0.25,amazoniafast2:0.25"` draws each training launch's map (a map without a weight: 1). Evaluation games stay as `--eval-map` says. Every game in the pool must play by `--map`'s rules, so the run's one table each of costs, research steps, mine scale and teacher pace serve all of them. The fast copies are made on first use on each machine, from its stock maps. No file needs mirroring to the games box.
+
+* **The frame** (`fullgame/mapframe.py`). The features' frame is process-wide and several games share a process, so a game on another map is not given its own frame. A `FramedGame` between `GameInstance` and `play_one` shows every position (the units, start locations, trees, items on the ground) as if the map's bases stood where `--map`'s do, and turns the positions in the commands back. The bases' line is turned level, each base lands exactly on the home map's base, the first 3,000 units along the line from a base keep their distances, and the stretch between is scaled so the bases end as far apart as at home. So the features, masks, teachers, macros and trackers all read one frame, the learner's stored steps carry the features as they were made, and the point bins mean "towards the enemy base" on every map. A game on the home map has no `FramedGame`.
+* **Expansions.** Where people built their halls at each of these maps' expansions (`mapframe.EXPANSIONS`, from the 1.29 replays) goes into the macros' and the teacher's tables in home coordinates. `macros.natural` still takes the mine nearest by straight line, which on Last Refuge gives the right base a 12,500-gold mine where people built 13 of that side's 65 halls (the other, 52, is a 10,000-gold mine farther off in a straight line).
+* **Starting from a state.** Late starts are keyed by map and starts, so a game on a map with no states starts from the beginning (the scenario is dropped). States captured on a pool map are in home coordinates and come back only on that map. Two-base starts (`base2`) and `natural` work on every map in the pool.
+* **One strategy pool serves all maps.** Its times are the fast rules' pace of making things, and all these maps share those rules. Its expansion times come from Echo Isles' games.
+* **Shared rows.** The curriculum's levels and the win balance are by races, not by map, so a harder map raises the AI's tax for all. Each training row has `"map"`, so the outcomes can be split.
+* **Left out.** Four-player maps (`mapframe` refuses them: which two starts a game uses is not known before it starts), GRPO's replays and `--teach-heuristic` (refused with the pool), and the hand-written player's games, which stay on `--map` because its building spots read the map's own positions.
+* **The policy does not see terrain.** It places buildings by points relative to its start, and on another map those spots may be cliffs or trees. Nothing tells it which map it is on but the mines and camps it sees.
+
+Probes: `scripts/map_probe.py` (where a map's bases, mines and halls land in the frame; walking distance), `scripts/map_pool_probe.py` (training games on a mix of maps in one process). `fullgame/evalworker.py --maps` plays evaluation games on a list of maps. Don't smoke-test the pool with a real learner on a machine with a live run: `scripts/remote_eval.py` follows the newest `python -m warcraftsim.fullgame.selfplay` process it finds there, whatever its `--runs`.
+
+Measured so far, without training on the pool: [the policy on other maps](reference/human-replays.md#the-policy-on-other-maps-2026-11-01).
 
 ## What the agent sees and does
 
