@@ -1656,7 +1656,7 @@ function videoHtml(src) {
 // again at real time, on the host chosen; the old video stays until the new one is whole). The hosts: asked for once.
 function recText(speed) {
   const v = +speed || 1;
-  return v > 1 ? `recorded at ${v}× (every ${v === 2 ? "2nd" : v + "th"} frame): ${1 / v}× shows the game's speed` : "recorded at real time";
+  return v > 1 ? `recorded at ${v}× (every ${v === 2 ? "2nd" : v + "th"} frame): ${v > 4 ? `0.25× shows ${v / 4} times the game's speed` : `${1 / v}× shows the game's speed`}` : "recorded at real time";
 }
 const recBadge = speed => `recorded ${+speed || 1}×`;
 const videoStem = file => (String(file || "").match(/^videos\/(game-\d+-a\d+)\.mp4$/) || [])[1];

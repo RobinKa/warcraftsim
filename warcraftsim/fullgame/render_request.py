@@ -467,7 +467,7 @@ def record_replay(r: dict, runs: Path, update) -> dict:
             os.environ["CUDA_VISIBLE_DEVICES"] = ""  # (the run owns the GPU; the game: display.SOFTWARE_GL)
             from ..runtime import reaper
             try:
-                rerender.render(run_dir, stem, part, q["speed"], name=f"fgrp{r['id']}")
+                rerender.render(run_dir, stem, part, q["speed"], name="fgreplay")  # (one at a time: the runner's)
             except Exception as e:  # noqa: BLE001 (a replay the current code cannot play back: the run's own commit)
                 print(f"request {r['id']}: not with this code: {e}", flush=True)
                 part.unlink(missing_ok=True)

@@ -4620,8 +4620,8 @@ def main(argv: list[str] | None = None) -> int:
                                                             "(from the state the actor had at its first)")
     ap.add_argument("--checkpoint-every", type=int, default=20)
     ap.add_argument("--video-every", type=float, default=10.0,
-                    help="minutes between game videos (0: none; the actors take turns). Rendering one takes ~6 minutes of "
-                         "3.4 cores (the game at 960x540 on a software renderer, in real time)")
+                    help="minutes between game videos (0: none; the actors take turns). Rendering one takes 3.4 cores for "
+                         "about its game's length (the game on a software renderer; see --video-host, --video-speed)")
     ap.add_argument("--video-host", default="", help="record the run's videos on this machine over ssh (e.g. "
                     "tora-ms-a2@tora-ms-a2: fullgame/video_host.py; one at a time there, a failure skips the video). "
                     "Default: here")
