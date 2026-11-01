@@ -103,3 +103,20 @@ def test_machines_shown_with_a_recent_row_only(tmp_path):
     assert [x["name"] for x in m] == ["box"]
     assert m[0]["last"]["up"] is False and m[0]["reading"]["time"] == 4904.0  # (down now; the last answer kept)
     assert m[0]["series"][0] == {"time": 4900.0, "temp": None, "cpu": 50.0, "mem": 20.0}
+
+
+def test_host_status_for_the_header(tmp_path):
+    from warcraftsim.dashboard.server import HOST_FRESH, _host_status
+    d = tmp_path / "hosts"
+    assert _host_status(d, _JsonlCache(), 5000.0) == []  # (no directory)
+    d.mkdir()
+    now = 5000.0
+    def write(name, *rows):
+        (d / f"{name}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    write("up", {"time": now - 10, "up": True, "games": 56, "temp": 79.0})
+    write("off", {"time": now - 600, "up": True, "games": 56}, {"time": now - 10, "up": False})
+    write("stale", {"time": now - HOST_FRESH - 1, "up": True, "games": 56})
+    by = {h["name"]: h for h in _host_status(d, _JsonlCache(), now)}
+    assert by["up"]["state"] == "up" and by["up"]["games"] == 56 and by["up"]["temp"] == 79.0
+    assert by["off"]["state"] == "down" and by["off"]["last_up"] == now - 600 and "games" not in by["off"]
+    assert by["stale"]["state"] == "unknown" and "games" not in by["stale"]  # (nothing is known now)

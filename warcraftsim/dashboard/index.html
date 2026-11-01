@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>warcraftsim training</title>
 <style>
-:root { --bg:#0f1318; --panel:#171d24; --panel2:#1d252e; --line:#2a3440; --text:#d7dee6; --muted:#8795a3;
+:root { color-scheme:dark; --bg:#0f1318; --panel:#171d24; --panel2:#1d252e; --line:#2a3440; --text:#d7dee6; --muted:#8795a3;
         --accent:#e0a33a; --good:#4cc38a; --bad:#e5534b; --blue:#539bf5; }
 * { box-sizing:border-box; }
 /* the page fills the window: the run list and the run's page scroll on their own */
@@ -274,6 +274,15 @@ a.go:hover { text-decoration:underline; }
 .kv span.def { border-style:dashed; }
 /* the Docs view: docs/*.md, listed, rendered, edited in place */
 .topnav { margin-left:8px; }
+/* the other machines in the header: every page, and readable without hovering (a phone has none) */
+.hosts { display:inline-flex; flex:none; gap:6px; align-items:center; font-size:12px; }
+.host { display:inline-flex; align-items:center; gap:5px; padding:2px 8px; border:1px solid var(--line); border-radius:10px; color:var(--text); white-space:nowrap; }
+.host i { width:8px; height:8px; border-radius:50%; background:var(--muted); flex:none; }
+.host.up i { background:var(--good); }
+.host.down { border-color:var(--bad); }
+.host.down i { background:var(--bad); }
+.host.unknown { color:var(--muted); }
+.host small { font-size:11px; color:var(--muted); }
 .topnav button { padding:5px 18px; font-size:13px; }
 body.page-view .layout { grid-template-columns:1fr; }
 /* the Challenge window: a game against a policy on this machine's desktop */
@@ -389,10 +398,14 @@ body.page-view main { padding:18px 28px 40px; }
   header h1 { font-size:15px; }
   #menu { display:inline-block; }
   body.page-view #menu { display:none; }
-  .topnav { margin-left:0; }
-  .topnav button { padding:5px 10px; }
-  header .right { margin-left:0; width:100%; justify-content:space-between; font-size:12px; gap:8px; }
-  header .right .smooth input { width:72px; }
+  .hosts { order:1; margin-left:auto; }
+  .topnav { order:2; margin-left:0; display:flex; width:100%; }
+  .topnav button { padding:9px 4px; flex:1 1 0; min-height:38px; }  /* (a finger's size, the row's width) */
+  #nav-challenge { order:3; }
+  header .right { order:4; }
+  header .right { margin-left:0; flex:1 1 0; min-width:0; justify-content:flex-end; font-size:12px; gap:8px; }  /* (beside Challenge) */
+  header .right .smooth input { width:56px; }
+  #smoothv { display:none; }
   header .right > * { white-space:nowrap; }
   header .right .lbl { display:none; }
   header .right label { gap:4px; }
@@ -434,6 +447,7 @@ body.page-view main { padding:18px 28px 40px; }
   <h1>warcraft<span>sim</span></h1>
   <span class="seg topnav"><button id="nav-runs" class="on">Runs</button><button id="nav-lineage">Lineage</button><button id="nav-ratings">Ratings</button><button id="nav-videos">Videos</button><button id="nav-docs">Docs</button></span>
   <button id="nav-challenge" class="challenge-btn" title="play against a policy in the game">⚔ Challenge</button>
+  <span id="hosts" class="hosts" aria-label="the other machines"></span>
   <div class="right"><label class="smooth" title="exponential moving average over the points of every chart"><span class="lbl">smoothing</span>
     <input type="range" id="smooth" min="0" max="0.99" step="0.01"><span id="smoothv"></span></label>
     <span id="clock"></span><label><input type="checkbox" id="auto" checked> auto-refresh</label></div>
@@ -2288,7 +2302,8 @@ async function renderMermaid(root) {
     const s = document.createElement("script");
     s.src = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js";
     s.onload = () => { window.mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict",
-                                                   themeVariables: { fontSize: "15px" } }); ok(window.mermaid); };
+                                                   themeVariables: { fontSize: "15px" },
+                                                   maxTextSize: 2000000, maxEdges: 5000 }); ok(window.mermaid); };  // (the whole-game lineage passed the defaults, 50,000 and 500)
     s.onerror = fail; document.head.appendChild(s);
   });
   try { await (await mermaidLoad).run({ nodes }); } catch (e) { console.warn("mermaid:", e); }
@@ -2299,10 +2314,12 @@ async function openDocs(name) {
   name = name || (ui.docs.doc && ui.docs.doc.name) || (ui.docs.list[0] || {}).name;
   ui.docs.editing = false;
   ui.docs.doc = name ? await getJSON("/api/docs/" + encodeURIComponent(name)).catch(() => null) : null;
+  if (state.view !== "docs") return;  // (left while it loaded: not over the page it went to)
   saveUrl(true);
   renderDocs();
 }
 function renderDocs() {
+  if (state.view !== "docs") return;  // (an answer that came after leaving the page)
   const m = document.getElementById("main"); m.dataset.run = "";
   const D = ui.docs, doc = D.doc;
   const item = d => `<a href="/doc/${encPath(d.name)}" data-doc="${esc(d.name)}" class="${doc && doc.name === d.name ? "on" : ""}">${esc(d.title)}<small>${esc(d.name)}.md · ${ago(d.updated)}</small></a>`;
@@ -2389,7 +2406,7 @@ async function openVideos(q) {
   state.view = "videos"; if (q !== undefined) ui.videos.q = q; setNav(); saveUrl(true);
   const m = document.getElementById("main"); m.dataset.run = ""; m.dataset.vframe = "";
   if (!ui.videos.data) m.innerHTML = `<div class="empty">listing every run's videos…</div>`;
-  try { ui.videos.data = await getJSON("/api/videos"); } catch (e) { m.innerHTML = `<div class="empty">no videos: ${esc(e)}</div>`; return; }
+  try { ui.videos.data = await getJSON("/api/videos"); } catch (e) { if (state.view === "videos") m.innerHTML = `<div class="empty">no videos: ${esc(e)}</div>`; return; }
   renderVideos();
 }
 function videoHay(v) {  // what a search matches: the run, the title, both sides' heroes and races, the target's items, tags
@@ -2502,7 +2519,7 @@ async function openRatings() {
   state.view = "ratings"; setNav(); saveUrl(true);
   const m = document.getElementById("main"); m.dataset.run = "";
   if (!ui.ratings.data) m.innerHTML = `<div class="empty">rating the policies… (the first time: a scan of every run's games)</div>`;
-  try { ui.ratings.data = await getJSON(ratingsUrl()); ui.ratings.fetched = Date.now(); } catch (e) { m.innerHTML = `<div class="empty">no ratings: ${esc(e)}</div>`; return; }
+  try { ui.ratings.data = await getJSON(ratingsUrl()); ui.ratings.fetched = Date.now(); } catch (e) { if (state.view === "ratings") m.innerHTML = `<div class="empty">no ratings: ${esc(e)}</div>`; return; }
   renderRatings();
 }
 function renderRatings() {
@@ -2742,10 +2759,11 @@ async function openLineage(track) {
   saveUrl(true);
   const m = document.getElementById("main"); m.dataset.run = "";
   if (!ui.lineage.data) m.innerHTML = `<div class="empty">loading the lineage…</div>`;
-  try { ui.lineage.data = await getJSON("/api/lineage"); } catch (e) { m.innerHTML = `<div class="empty">no lineage: ${esc(e)}</div>`; return; }
+  try { ui.lineage.data = await getJSON("/api/lineage"); } catch (e) { if (state.view === "lineage") m.innerHTML = `<div class="empty">no lineage: ${esc(e)}</div>`; return; }
   renderLineageGraph();
 }
 function renderLineageGraph() {
+  if (state.view !== "lineage") return;  // (an answer that came after leaving the page)
   const m = document.getElementById("main"), L = ui.lineage.data, track = ui.lineage.track;
   const nodes = L.nodes.filter(n => n.track === track), keep = new Set(nodes.map(n => n.name));
   const edges = L.edges.filter(e => keep.has(e.from) && keep.has(e.to));
@@ -3054,10 +3072,16 @@ setupRunTools();
 document.getElementById("nav-docs").onclick = () => openDocs(state.view === "docs" ? null : undefined);
 document.getElementById("nav-runs").onclick = async () => {
   if (!["docs", "lineage", "ratings", "videos"].includes(state.view)) return;
+  if (state.view === "docs" && ui.docs.editing && !confirm("Leave the document without saving?")) return;
+  ui.docs.editing = false;
   if (!state.selected && !state.runs.length) {  // (a page opened first, as a phone reopens it: the run list never
-    try { state.runs = await getJSON("/api/runs"); } catch (e) { /* (none) */ }  // loaded, so there was no run to open)
+    state.view = "run"; setNav();               // loaded, so there is no run to open yet: the tap shows at once)
+    const m = document.getElementById("main"); m.dataset.run = ""; m.innerHTML = `<div class="empty">loading the runs…</div>`;
+    try { state.runs = await getJSON("/api/runs"); } catch (e) { /* (none: the next refresh) */ }
+    if (state.view !== "run") return;  // (another tab tapped meanwhile)
   }
-  openRun(state.selected || (state.runs[0] || {}).name);
+  const name = state.selected || (state.runs[0] || {}).name;
+  if (name) openRun(name); else refresh();
 };
 document.getElementById("nav-videos").onclick = () => openVideos();
 document.getElementById("nav-lineage").onclick = () => openLineage();
@@ -3095,6 +3119,22 @@ refresh().then(showSelectedRun);
 // a phone's run list: ☰ opens it, a tap beside it closes it
 document.getElementById("menu").onclick = () => document.body.classList.toggle("drawer");
 document.body.addEventListener("click", ev => { if (ev.target === document.body) document.body.classList.remove("drawer"); });
+// the other machines (GET /api/hosts, scripts/host_stats.py's readings), in the header on every page
+const HOST_LABELS = { "tora-ms-a2": "box", "laptop-wsl": "laptop" };
+async function refreshHosts() {
+  const el = document.getElementById("hosts");
+  let H;
+  try { H = await getJSON("/api/hosts"); } catch (e) { el.querySelectorAll(".host").forEach(h => h.className = "host unknown"); return; }
+  el.innerHTML = H.map(h => {
+    const note = h.state === "up" ? "" : h.state === "down" ? `off${h.last_up ? " · " + ago(h.last_up) : ""}` : "?";
+    const facts = [h.name, h.state === "up" ? "online" : h.state === "down" ? "not answering" : "no recent reading (is host_stats.py running?)",
+                   h.games != null ? `${h.games} games` : "", h.temp != null ? `${Math.round(h.temp)} °C` : "", `read ${ago(h.time)}`].filter(Boolean).join(" · ");
+    return `<span class="host ${h.state}" title="${esc(facts)}"><i></i>${esc(HOST_LABELS[h.name] || h.name)}${note ? ` <small>${esc(note)}</small>` : ""}</span>`;
+  }).join("");
+}
+refreshHosts();
+setInterval(() => { if (!document.hidden) refreshHosts(); }, 15000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshHosts(); });
 // every 5 s while the page is looked at (a phone's hidden tab asks nothing); at once when it is again
 setInterval(() => { if (document.getElementById("auto").checked && !document.hidden) refresh(); }, 5000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden && document.getElementById("auto").checked) refresh(); });

@@ -1556,6 +1556,9 @@ class Dashboard:
         self._pages[name] = (stamp, page)
         return self._with_machines(self._with_video_info(name, page))
 
+    def hosts(self) -> list[dict]:
+        return _host_status(self.runs_dir / "hosts", self.cache, time.time())
+
     def _with_machines(self, page: dict) -> dict:
         """The page with the machines' readings (host_stats.py writes them on its own: not cached with the page)."""
         if page.get("info", {}).get("trainer") != "fullgame":
@@ -1644,6 +1647,7 @@ class Dashboard:
 SPLIT_WINDOW = 1800.0  # seconds: the "last 30 minutes" of the per-machine split
 HOST_SHOW = 3600.0  # a machine with a row this recent is shown
 HOST_SPAN = 86400.0  # the charts' time range
+HOST_FRESH = 120.0  # seconds: a reading older than this says nothing about a machine now (host_stats.py looks every 30)
 
 
 def _machine_split(episodes: list[dict], now: float, window: float = SPLIT_WINDOW) -> list[dict]:
@@ -1689,6 +1693,23 @@ def _machines(hosts_dir: Path, cache: "_JsonlCache", now: float) -> list[dict]:
                    "mem": None if r.get("mem_total") is None or r.get("mem_avail") is None else r["mem_total"] - r["mem_avail"]}
                   for r in _downsample(recent, 200)]
         out.append({"name": f.stem, "last": rows[-1], "reading": up[-1] if up else None, "series": series})
+    return out
+
+
+def _host_status(hosts_dir: Path, cache: "_JsonlCache", now: float) -> list[dict]:
+    """Every machine scripts/host_stats.py has looked at, for the header on every page: "up" (answered at the last look),
+    "down" (did not), "unknown" (no recent look: host_stats.py is not running, so nothing is known)."""
+    out = []
+    for f in sorted(hosts_dir.glob("*.jsonl")) if hosts_dir.is_dir() else []:
+        rows = cache.read(f)
+        if not rows:
+            continue
+        last = rows[-1]
+        fresh = now - last.get("time", 0) <= HOST_FRESH
+        seen = next((r for r in reversed(rows[-3000:]) if r.get("up")), None)
+        out.append({"name": f.stem, "state": ("up" if last.get("up") else "down") if fresh else "unknown",
+                    "time": last.get("time"), "last_up": seen.get("time") if seen else None,
+                    **({"games": last.get("games"), "temp": last.get("temp")} if last.get("up") and fresh else {})})
     return out
 
 
@@ -1784,6 +1805,8 @@ def make_handler(dash: Dashboard, docs: Docs | None = None):
             if path.startswith("/api/runs/"):
                 data = dash.run(path[len("/api/runs/"):])
                 return self._json(data) if data else self._json({"error": "no such run"}, 404)
+            if path == "/api/hosts":
+                return self._json(dash.hosts())
             if path == "/api/lineage":
                 return self._json(dash.lineage())
             if path == "/api/ratings":

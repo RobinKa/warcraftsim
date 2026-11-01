@@ -118,6 +118,8 @@ setsid nohup .venv/bin/python scripts/host_stats.py --host robin@laptop-wsl --ho
 .venv/bin/python scripts/host_stats.py --host robin@laptop-wsl --once    # one look, printed, nothing written
 ```
 
+The dashboard's header shows each of these machines on every page (`GET /api/hosts`): online, off with when it last answered, or `?` when no reading is under two minutes old, which means `host_stats.py` isn't running rather than the machine being down.
+
 The dashboard's System tab shows the machines with a row in the last hour (cards, and charts of the last day's temperature, CPU and memory; the temperature is red from 90 C) and the run's games by machine (`split` of `GET /api/runs/<run>`: training and evaluation games and the training games' side-steps a second, over the last 30 minutes and over the run; a row without `host` is this machine's).
 
 ## One step

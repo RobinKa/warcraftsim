@@ -423,6 +423,8 @@ class Manager:
         """The host's new rows, appended here (by count: complete lines only; one manager at a time, as --stop
         pulls too)."""
         mine = RUNS / self.run / EPISODES
+        if not mine.parent.is_dir():  # (a test's run, gone again: it had taken the worker, then crashed the manager)
+            return
         with open(mine.with_suffix(".lock"), "w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             self._pull(st, mine)
