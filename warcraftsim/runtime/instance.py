@@ -188,6 +188,9 @@ class GameSetup:
     # A virtual sound card (w3shim) instead of none: the game's audio, in step with the virtual
     # clock, delivered with captured video frames (set_frame_capture). Off for training.
     audio: bool = False
+    # With audio: the sound card follows the frames instead of real time (shim/audio.c W3SIM_AUDIO_FREE: videos
+    # record as fast as the machine can)
+    audio_free: bool = False
     music_volume: int = 50  # with audio: 0-100 (0: no music); sound effects play at full volume
     health_bars: bool = False  # the game's own health bars over every unit (Gameplay option; videos)
     mouse_scroll: bool = True  # the camera scrolls with the pointer at a screen edge (off for videos)
@@ -628,6 +631,7 @@ class GameInstance:
                             W3SIM_SPEED=str(self.setup.launch_speed), W3SIM_TURBO_MS=str(self.setup.turbo_ms),
                             W3SIM_WAIT_FLOOR=str(self.setup.wait_floor_ms),
                             W3SIM_AUDIO="1" if self.setup.audio else "0",
+                            W3SIM_AUDIO_FREE="1" if self.setup.audio and self.setup.audio_free else "0",
                             W3SIM_DRAW="1" if self.setup.draw else "0",
                             W3SIM_LOG=_winpath(log_path))
         if self._userver is not None:

@@ -12,6 +12,10 @@ none runs (runner.lock); it plays each queued request in a process of its own (a
 settings) and exits when none is left. Inference on the CPU by default (the run owns the GPU), all of it niced like
 the run's renderer.
 
+Two kinds of request: a game to play and render (above), and a game already played (kind "replay": the Re-render button
+and the Replays page): any run's replay recorded into that run's videos/, at the speed and on the machine asked for,
+replacing the old video only when done (rerender.py, video_host.py).
+
     python -m warcraftsim.fullgame.render_request              # the runner: the queued requests, oldest first
     python -m warcraftsim.fullgame.render_request --one 3      # request 3 alone (what the runner starts)
 """
@@ -38,8 +42,42 @@ DIFFICULTIES = ("easy", "normal", "insane")
 MAX_MINUTES = 40.0
 ACTIVE = ("queued", "playing", "rendering")
 THREADS = 4  # (the CPU inference's: a game's one or two sides a step)
+NICE = 10  # (selfplay.RENDER_NICE; not imported from there: a replay's video needs no torch in its process)
 _NAMES: dict[str, str] | None = None
 _SUBMIT = threading.Lock()
+# The machines a replay may be recorded on, besides this one (ssh destinations; the requests name them, so only these)
+VIDEO_HOSTS = [h for h in os.environ.get("WARCRAFTSIM_VIDEO_HOSTS", "tora-ms-a2@tora-ms-a2").split(",") if h]
+
+
+def video_hosts() -> list[dict]:
+    """The hosts a replay's video can be recorded on: the first offered first."""
+    return [*[{"value": h, "label": f"{h.split('@')[-1]}, the games box"} for h in VIDEO_HOSTS],
+            {"value": "local", "label": "this machine"}]
+
+
+def validate_replay(req: dict, runs: Path) -> tuple[dict | None, str]:
+    """A replay to record: run, stem (its replay), speed (1, 2, 4 or 8), host ("local" or one of VIDEO_HOSTS)."""
+    from . import rerender
+    run, stem = str(req.get("run", "")), str(req.get("stem", ""))
+    if not run or "/" in run or run.startswith(".") or not (runs / run).is_dir():
+        return None, f"no run {run!r}"
+    if not rerender.STEM.fullmatch(stem):
+        return None, f"not a game's replay: {stem!r}"
+    if not (runs / run / "replays" / f"{stem}.w3g").exists():
+        return None, f"no replay {stem} in {run}"
+    why = rerender.cannot_play(runs / run, stem)
+    if why:
+        return None, f"{stem} cannot be played back: {why}"
+    try:
+        speed = float(req.get("speed", 1))
+    except (TypeError, ValueError):
+        return None, "speed: 1, 2, 4 or 8"
+    if speed not in rerender.SPEEDS:
+        return None, "speed: 1, 2, 4 or 8"
+    host = str(req.get("host") or "local")
+    if host != "local" and host not in VIDEO_HOSTS:
+        return None, f"no host {host!r}"
+    return {"kind": "replay", "run": run, "stem": stem, "speed": speed, "host": host}, ""
 
 
 def renders(runs: Path | None = None) -> Path:
@@ -83,6 +121,8 @@ def validate(req: dict, runs: Path | None = None) -> tuple[dict | None, str]:
     runs = Path(runs or RUNS)
     if not isinstance(req, dict):
         return None, "a request is a JSON object"
+    if req.get("kind") == "replay":
+        return validate_replay(req, runs)
     run = str(req.get("run", ""))
     if not run or "/" in run or run.startswith(".") or not (runs / run / "run.json").exists() \
             or not (runs / run / "vocab.json").exists():
@@ -197,7 +237,7 @@ def listing(runs: Path | None = None, n: int = 30) -> dict:
         if r["state"] in ACTIVE[1:] and not alive:
             r = {**r, "state": "failed", "error": r.get("error") or "the runner stopped"}
         out.append(r)
-    return {"requests": out, "queued": sum(r["state"] == "queued" for r in rs), "runner": alive}
+    return {"requests": out, "queued": sum(r["state"] == "queued" for r in rs), "runner": alive, "hosts": video_hosts()}
 
 
 # ---- what the form offers ---------------------------------------------------------------------------------------
@@ -297,6 +337,7 @@ def play_and_render(r: dict, runs: Path, update) -> dict:
         c = json.loads((run_dir / "run.json").read_text())["config"]
         cfg["map"], cfg["z_pool"] = c["map"], c.get("z_pool") or ""
     cfg["run_dir"] = str(out_dir)  # (Nets' current.pt, the replays and the video: here, never in the run)
+    cfg["video_host"], cfg["video_speed"] = "", 1.0  # (a game played here is recorded here, at real time, as asked)
     cfg["max_minutes"] = q["minutes"]
     cfg["max_steps"] = int(q["minutes"] * 60 / cfg["step_seconds"]) + 20
     cfg["eval_checkpoints"] = []
@@ -412,17 +453,51 @@ def play_and_render(r: dict, runs: Path, update) -> dict:
         reaper.reap()
 
 
+def record_replay(r: dict, runs: Path, update) -> dict:
+    """A request of kind "replay": record its video apart, and only when it is whole put it in the old one's place."""
+    from . import rerender
+    q = r["request"]
+    run_dir, stem = runs / q["run"], q["stem"]
+    part = run_dir / "videos" / f"{stem}.part.mp4"
+    part.parent.mkdir(parents=True, exist_ok=True)
+    update("playing")  # (its clock starts)
+    update("rendering")
+    try:
+        if q["host"] == "local":
+            os.environ["CUDA_VISIBLE_DEVICES"] = ""  # (the run owns the GPU; the game: display.SOFTWARE_GL)
+            from ..runtime import reaper
+            try:
+                rerender.render(run_dir, stem, part, q["speed"], name="fgreplay")  # (one at a time: the runner's)
+            except Exception as e:  # noqa: BLE001 (a replay the current code cannot play back: the run's own commit)
+                print(f"request {r['id']}: not with this code: {e}", flush=True)
+                part.unlink(missing_ok=True)
+                reaper.reap()
+                try:
+                    rerender.render_pinned(run_dir, stem, part, q["speed"])
+                except Exception as e2:  # noqa: BLE001
+                    raise RuntimeError(f"with this code: {e}; with the run's: {e2}") from None
+            finally:
+                reaper.reap()
+        else:
+            from .video_host import render_on_host
+            render_on_host(q["host"], run_dir, stem, part, speed=q["speed"])
+        row = rerender.install(run_dir, stem, part, q["speed"], q["host"])
+    finally:
+        part.unlink(missing_ok=True)
+    return {"video": f"{q['run']}/{row['file']}", "outcome": row.get("outcome"), "game_time": row.get("game_time")}
+
+
 def run_one(rid: int, runs: Path) -> int:
     """One request, in this process (the runner's child): its state kept in its file."""
-    from .selfplay import RENDER_NICE
-    os.nice(RENDER_NICE)  # (the game and the renderer inherit it: the run's games' and renderer's level)
+    os.nice(NICE)  # (the game and the renderer inherit it: the run's games' and renderer's level)
     r = next(x for x in requests(runs) if x["id"] == rid)
 
     def update(state):
         r.update(state=state, **({"started": time.time()} if state == "playing" else {}))
         save(r, runs)
     try:
-        r.update(play_and_render(r, runs, update), state="done", finished=time.time())
+        job = record_replay if r["request"].get("kind") == "replay" else play_and_render
+        r.update(job(r, runs, update), state="done", finished=time.time())
         print(f"request {rid}: done in {r['finished'] - r['started']:.0f} s: {r['video']}", flush=True)
     except Exception:  # noqa: BLE001 (the request failed: its error's last lines)
         tb = traceback.format_exc()

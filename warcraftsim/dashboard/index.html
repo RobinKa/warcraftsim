@@ -152,6 +152,44 @@ section > h3 { font-size:13px; margin:0 0 8px; color:var(--muted); text-transfor
 .viewer iframe { display:block; width:100%; height:calc(100vh - 290px); min-height:380px; border:0; background:var(--bg); }
 .vspeed { display:flex; align-items:center; gap:8px; padding:6px 12px 0; color:var(--muted); font-size:12.5px; }
 .vspeed .seg button { min-width:44px; padding:6px 8px; }
+.vspeed { flex-wrap:wrap; }
+.rec-note { color:var(--muted); font-size:12px; }
+.rr { display:inline-flex; flex-wrap:wrap; align-items:center; gap:6px; }
+.rr select, .rl-choose select { background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:5px; padding:3px 6px; font:inherit; font-size:12px; max-width:100%; }
+.rr-msg { color:var(--muted); }
+.rr-msg a { cursor:pointer; }
+.viewer .cap { flex-wrap:wrap; }
+.rl-choose { display:flex; flex-wrap:wrap; gap:8px 10px; align-items:center; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 12px; margin-bottom:10px; color:var(--muted); font-size:12px; }
+.rl-queue { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:6px 12px; margin-bottom:10px; font-size:12px; }
+.rl-queue:empty { display:none; }
+.rl-queue > div { display:flex; flex-wrap:wrap; gap:2px 10px; padding:3px 0; color:var(--muted); }
+.rl-queue .state { color:var(--accent); }
+.rl-queue a { color:var(--blue); cursor:pointer; text-decoration:none; }
+.rl-queue pre { width:100%; margin:2px 0 0; white-space:pre-wrap; overflow-wrap:anywhere; color:var(--bad); font-size:11.5px; }
+.rl-list { background:var(--panel); border:1px solid var(--line); border-radius:8px; }
+.rl-row { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:2px 14px; padding:8px 12px; border-bottom:1px solid var(--line); align-items:center; font-size:12.5px; }
+.rl-row:last-child { border-bottom:0; }
+.rl-row .ep { font-weight:600; }
+.rl-row .sub { color:var(--muted); font-size:12px; overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }
+.rl-row .vid { color:var(--muted); font-size:12px; white-space:nowrap; }
+.rl-row .vid a { color:var(--blue); cursor:pointer; text-decoration:none; }
+.rl-row .why { grid-column:1 / -1; color:var(--bad); font-size:11.5px; overflow-wrap:anywhere; }
+.rl-row .state { color:var(--accent); font-size:12px; }
+.rl-go { background:var(--panel2); color:var(--accent); border:1px solid var(--line); border-radius:6px; padding:5px 12px; font:inherit; font-size:12px; cursor:pointer; }
+.rl-go:disabled { opacity:.45; cursor:default; }
+.rl-more { display:block; width:100%; background:none; border:0; border-top:1px solid var(--line); color:var(--muted); padding:10px; font:inherit; font-size:12px; cursor:pointer; }
+@media (max-width: 760px) {
+  .vspeed { padding:6px 8px 0; }
+  .vspeed .seg button { min-width:0; padding:9px 8px; min-height:38px; }
+  .vbar .seg button, .rl-choose .seg button { min-height:38px; padding:6px 10px; }
+  .vbar .seg { flex-wrap:wrap; }
+  .vbar input[type=search] { min-height:38px; }
+  .rr-btn, .rl-go { min-height:38px; }
+  .rr select, .rl-choose select { min-height:38px; }
+  .rl-row { grid-template-columns:minmax(0,1fr) auto; }
+  .rl-row .vid { grid-column:1; grid-row:2; white-space:normal; }
+  .rl-row .rl-go, .rl-row > .state { grid-column:2; grid-row:1 / span 2; }
+}
 .viewer .cap { padding:8px 12px; display:flex; justify-content:space-between; gap:12px; color:var(--muted); font-size:12.5px; border-top:1px solid var(--line); }
 .viewer .cap a { color:var(--blue); text-decoration:none; }
 .viewer .none { padding:60px 20px; text-align:center; color:var(--muted); }
@@ -309,6 +347,7 @@ body.page-view .layout { grid-template-columns:1fr; }
 .modal .pair { display:flex; gap:6px; flex-wrap:wrap; align-items:center; min-width:0; }
 #render .form { grid-template-columns:auto minmax(0, 1fr); } #render select { min-width:0; }
 .modal input[type=number] { background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:5px; padding:4px 6px; font:inherit; width:64px; }
+.render-btn.rr-btn { padding:3px 10px; }
 .modal .hist pre { width:100%; margin:2px 0 0; white-space:pre-wrap; color:var(--bad); font-size:11.5px; }
 /* the Ratings view */
 .ratings h2 { margin:0 0 6px; font-size:18px; } .ratings .sub { color:var(--muted); max-width:860px; margin:0 0 12px; }
@@ -447,7 +486,7 @@ body.page-view main { padding:18px 28px 40px; }
 <header>
   <button id="menu" title="the runs">☰</button>
   <h1>warcraft<span>sim</span></h1>
-  <span class="seg topnav"><button id="nav-runs" class="on">Runs</button><button id="nav-lineage">Lineage</button><button id="nav-ratings">Ratings</button><button id="nav-videos">Videos</button><button id="nav-docs">Docs</button></span>
+  <span class="seg topnav"><button id="nav-runs" class="on">Runs</button><button id="nav-lineage">Lineage</button><button id="nav-ratings">Ratings</button><button id="nav-videos">Videos</button><button id="nav-replays">Replays</button><button id="nav-docs">Docs</button></span>
   <button id="nav-challenge" class="challenge-btn" title="play against a policy in the game">⚔ Challenge</button>
   <span id="hosts" class="hosts" aria-label="the other machines"></span>
   <div class="right"><label class="smooth" title="exponential moving average over the points of every chart"><span class="lbl">smoothing</span>
@@ -488,6 +527,7 @@ function parseUrl() {
   else if (parts[0] === "lineage") out.view = "lineage";
   else if (parts[0] === "ratings") out.view = "ratings";
   else if (parts[0] === "videos") out.view = "videos";
+  else if (parts[0] === "replays") out.view = "replays";
   if (!out.view && location.hash.length > 1) {
     const h = new URLSearchParams(location.hash.slice(1));
     if (h.get("run")) { out.view = "run"; out.name = h.get("run"); }
@@ -508,6 +548,7 @@ function urlFor() {
   else if (state.view === "lineage") return "/lineage" + (ui.lineage && ui.lineage.track === "micro" ? "?track=micro" : "");
   else if (state.view === "ratings") return "/ratings";
   else if (state.view === "videos") return "/videos" + (ui.videos && ui.videos.q ? "?q=" + encodeURIComponent(ui.videos.q) : "");
+  else if (state.view === "replays") return "/replays" + (ui.replays && ui.replays.q ? "?q=" + encodeURIComponent(ui.replays.q) : "");
   else if (state.view === "sweep" && state.sweep) path = "/sweep/" + encPath(state.sweep);
   else if (state.selected) path = "/run/" + encPath(state.selected);
   const q = new URLSearchParams();
@@ -532,6 +573,7 @@ function saveUrl(push = false) {
   if (u.view === "lineage") state.view = "lineage";
   if (u.view === "ratings") state.view = "ratings";
   if (u.view === "videos") state.view = "videos";
+  if (u.view === "replays") state.view = "replays";
   if (h.get("compare")) h.get("compare").split(",").filter(Boolean).forEach(n => state.compare.add(n));
   if (h.get("smooth") !== null && !Number.isNaN(parseFloat(h.get("smooth")))) ui.smooth = parseFloat(h.get("smooth"));
   if (h.get("hover")) ui.hoverX = parseFloat(h.get("hover"));  // a cursor position (screenshots)
@@ -825,6 +867,11 @@ async function refreshOnce() {
       const V = await getJSON("/api/videos");
       if (V.updated !== (ui.videos.data || {}).updated || V.pending !== (ui.videos.data || {}).pending) { ui.videos.data = V; renderVideos(); }
     } catch (e) { console.error(e); }
+    setClock();
+    return;
+  }
+  if (state.view === "replays") {  // the queue's states, new replays and new videos
+    await rlRefresh();
     setClock();
     return;
   }
@@ -1561,13 +1608,13 @@ function renderReplays(d) {
     ? `game footage of game 0, every ${d.info.args?.video_every || "N"} episodes: the policy's view beside it`
     : `the units' positions and hit points, every ${d.info.args?.record_every || "N"} episodes of game 0`;
   const cur = list.find(m => m.file === ui.replay.file) || list[0];
-  const listKey = list.map(m => m.file + (m.info ? "+" : "")).join("|");
+  const listKey = list.map(m => m.file + (m.info ? "+" : "") + (m.recorded_speed || "")).join("|");
   const box = document.getElementById("rp-list");
   if (el.dataset.list !== listKey) {  // rebuilt only when the episodes change (keeps the scroll)
     el.dataset.list = listKey;
     box.innerHTML = list.map(m => `<div class="it" data-file="${esc(m.file)}">
         <span class="ep">${m.title ? esc(m.title) : `episode ${m.episode}`}</span><span class="${m.result ? "" : m.outcome > 0 ? "win" : m.outcome < 0 ? "loss" : ""}">${m.result ? esc(m.result) : outcomeText(m.outcome)}</span>
-        <span class="sub">${m.sub ? esc(m.sub) : `return ${fmt(m.return, 2)}${m.value0 != null ? ` · V(s₀) ${fmt(m.value0, 2)}` : ""}`}</span><span class="sub">${m.time ? ago(m.time) : ""}</span>${videoTags(m.info)}</div>`).join("")
+        <span class="sub">${m.sub ? esc(m.sub) : `return ${fmt(m.return, 2)}${m.value0 != null ? ` · V(s₀) ${fmt(m.value0, 2)}` : ""}`}</span><span class="sub">${m.time ? ago(m.time) : ""}${m.kind === "video" ? " · " + recBadge(m.recorded_speed) : ""}</span>${videoTags(m.info)}</div>`).join("")
       || `<div class="none" style="padding:20px;color:var(--muted)">none${ui.replay.outcome !== "all" ? " with this outcome" : ""}</div>`;
     box.querySelectorAll(".it").forEach(it => it.onclick = () => { ui.replay.file = it.dataset.file; renderReplays(d); });
   }
@@ -1587,21 +1634,67 @@ function renderReplays(d) {
   if (el.offsetParent === null) return;
   el.dataset.viewer = cur.file; ui.replay.file = cur.file;
   const src = `/files/${encodeURIComponent(run).replace(/%2F/g, "/")}/${cur.file}`;
+  const vsrc = cur.time ? `${src}?v=${Math.floor(cur.time)}` : src;  // (a video recorded again is a new file: not the browser's old one)
   const cal = cur.value0 != null ? ` · predicted V(s₀) ${fmt(cur.value0, 2)}, discounted return ${fmt(cur.return0, 2)}` : "";
   viewer.innerHTML = (cur.kind === "video"
-      ? videoHtml(src)
+      ? videoHtml(vsrc)
       : `<iframe src="${src}#autoplay" title="trajectory"></iframe>`) +
-    `<div class="cap"><span>${cur.title ? esc(cur.title) : `episode ${cur.episode}`} · <span class="${cur.result ? "" : cur.outcome > 0 ? "win" : cur.outcome < 0 ? "loss" : ""}">${cur.result ? esc(cur.result) : outcomeText(cur.outcome)}</span> · ${cur.sub ? esc(cur.sub) : `return ${fmt(cur.return, 2)}`}${cal}${cur.time ? ` · ${ago(cur.time)}` : ""}</span>
-      <a href="${src}" target="_blank">open ↗</a></div>`;
+    `<div class="cap"><span>${cur.title ? esc(cur.title) : `episode ${cur.episode}`} · <span class="${cur.result ? "" : cur.outcome > 0 ? "win" : cur.outcome < 0 ? "loss" : ""}">${cur.result ? esc(cur.result) : outcomeText(cur.outcome)}</span> · ${cur.sub ? esc(cur.sub) : `return ${fmt(cur.return, 2)}`}${cal}${cur.time ? ` · ${ago(cur.time)}` : ""}${cur.kind === "video" ? ` · ${recText(cur.recorded_speed)}` : ""}</span>
+      ${cur.kind === "video" ? rerenderHtml(run, cur.file) : ""}<a href="${src}" target="_blank">open ↗</a></div>`;
+  fillHosts();
 }
 
-// ---- a video and its speed buttons: the speed stays for the next video (the games are shown in real time, up to 40 minutes) ----
-const VIDEO_SPEEDS = [1, 2, 4, 8];
+// ---- a video and its speed buttons: the speed stays for the next video (the games are shown in real time, up to 40 minutes;
+// a video recorded at 4x plays at the game's speed at 0.25x) ----
+const VIDEO_SPEEDS = [0.25, 0.5, 1, 2, 4, 8];
 try { ui.videoSpeed = +localStorage.getItem("videoSpeed") || 1; } catch (e) { ui.videoSpeed = 1; }
 function videoHtml(src) {
   return `<video src="${src}" controls muted loop playsinline preload="metadata"${matchMedia("(max-width: 760px)").matches ? "" : " autoplay"}></video>
     <div class="vspeed"><span>speed</span><span class="seg">${VIDEO_SPEEDS.map(v => `<button data-vspeed="${v}" class="${v === ui.videoSpeed ? "on" : ""}">${v}×</button>`).join("")}</span></div>`;
 }
+// what a video's caption says of its recording, and the Re-render button beside it (a game's video: its replay recorded
+// again at real time, on the host chosen; the old video stays until the new one is whole). The hosts: asked for once.
+function recText(speed) {
+  const v = +speed || 1;
+  return v > 1 ? `recorded at ${v}× (every ${v === 2 ? "2nd" : v + "th"} frame): ${v > 4 ? `0.25× shows ${v / 4} times the game's speed` : `${1 / v}× shows the game's speed`}` : "recorded at real time";
+}
+const recBadge = speed => `recorded ${+speed || 1}×`;
+const videoStem = file => (String(file || "").match(/^videos\/(game-\d+-a\d+)\.mp4$/) || [])[1];
+ui.hosts = null;
+ui.hostsLoading = null;
+function loadHosts() {
+  if (ui.hosts) return Promise.resolve(ui.hosts);
+  return ui.hostsLoading || (ui.hostsLoading = getJSON("/api/renders").then(L => { ui.hosts = L.hosts || []; fillHosts(); return ui.hosts; })
+    .catch(() => { ui.hostsLoading = null; return []; }));
+}
+const hostChoice = () => (ui.renderHost && (ui.hosts || []).some(h => h.value === ui.renderHost)) ? ui.renderHost : ((ui.hosts || [])[0] || {}).value || "local";
+try { ui.renderHost = localStorage.getItem("renderHost") || ""; } catch (e) { ui.renderHost = ""; }
+function setRenderHost(v) { ui.renderHost = v; try { localStorage.setItem("renderHost", v); } catch (e) {} fillHosts(); }
+function fillHosts() {
+  const opts = (ui.hosts || [{ value: "local", label: "this machine" }]).map(h => `<option value="${esc(h.value)}">${esc(h.label)}</option>`).join("");
+  document.querySelectorAll("select[data-rr-host]").forEach(sel => { if (sel.dataset.filled !== opts) { sel.innerHTML = opts; sel.dataset.filled = opts; } sel.value = hostChoice(); });
+}
+function rerenderHtml(run, file) {
+  const stem = videoStem(file);
+  if (!stem) return "";
+  loadHosts();
+  return `<span class="rr" data-run="${esc(run)}" data-stem="${esc(stem)}"><button class="render-btn rr-btn" data-rerender title="record this video again from its replay, at real time; the old one stays until the new one is whole">Re-render</button><select data-rr-host title="the machine that records it"></select><span class="rr-msg"></span></span>`;
+}
+async function postReplayRender(run, stem, speed, host) {
+  const r = await fetch("/api/render", { method: "POST", body: JSON.stringify({ kind: "replay", run, stem, speed, host }) });
+  const j = await r.json().catch(() => ({}));
+  return j.ok ? { ok: true, id: j.message } : { ok: false, message: j.message || j.error || "not queued" };
+}
+document.addEventListener("change", ev => { if (ev.target.matches && ev.target.matches("select[data-rr-host]")) setRenderHost(ev.target.value); });
+document.addEventListener("click", async ev => {
+  const b = ev.target.closest && ev.target.closest("[data-rerender]");
+  if (!b) return;
+  const box = b.closest(".rr"), msg = box.querySelector(".rr-msg");
+  b.disabled = true; msg.textContent = "…";
+  const r = await postReplayRender(box.dataset.run, box.dataset.stem, 1, box.querySelector("select").value || hostChoice()).catch(e => ({ ok: false, message: String(e) }));
+  b.disabled = false;
+  if (r.ok) { msg.innerHTML = `queued as request ${esc(r.id)}: <a onclick="openRender()">the queue</a>`; } else msg.textContent = r.message;
+});
 document.addEventListener("loadedmetadata", ev => { if (ev.target.tagName === "VIDEO") ev.target.playbackRate = ui.videoSpeed; }, true);  // (a new source resets it)
 document.addEventListener("click", ev => {
   const b = ev.target.closest && ev.target.closest("[data-vspeed]");
@@ -2331,8 +2424,9 @@ function setNav() {
   document.getElementById("nav-lineage").classList.toggle("on", state.view === "lineage");
   document.getElementById("nav-ratings").classList.toggle("on", state.view === "ratings");
   document.getElementById("nav-videos").classList.toggle("on", state.view === "videos");
-  document.getElementById("nav-runs").classList.toggle("on", !["docs", "lineage", "ratings", "videos"].includes(state.view));
-  const page = ["docs", "lineage", "ratings", "videos"].includes(state.view);
+  document.getElementById("nav-replays").classList.toggle("on", state.view === "replays");
+  document.getElementById("nav-runs").classList.toggle("on", !["docs", "lineage", "ratings", "videos", "replays"].includes(state.view));
+  const page = ["docs", "lineage", "ratings", "videos", "replays"].includes(state.view);
   document.body.classList.toggle("page-view", page);  // (no run list, no chart controls)
   if (!page) for (const id in ui.charts) drawChart(id);  // (sized while hidden)
 }
@@ -2456,7 +2550,7 @@ async function openVideos(q) {
 function videoHay(v) {  // what a search matches: the run, the title, both sides' heroes and races, the target's items, tags
   const i = v.info || {};
   const side = s => s ? (s.heroes || []).map(h => h[0] + " " + h[1]).join(" ") + " " + (s.race || "") + " " + Object.keys(s.bought || {}).join(" ") : "";
-  return [v.run, v.title, v.opponent, side(i.me), side(i.opp), (i.tags || []).join(" "),
+  return [v.run, v.file, v.title, v.opponent, side(i.me), side(i.opp), (i.tags || []).join(" "),
           i.target ? i.target.items.map(x => x[0] + " " + x[1]).join(" ") : ""].join(" ").toLowerCase();
 }
 function renderVideos() {
@@ -2495,12 +2589,12 @@ function renderVideos() {
   document.getElementById("v-count").textContent = `${list.length} of ${D.videos.length}${D.pending ? ` (${D.pending} still being summed up)` : ""}`;
   const key = v => v.run + "/" + v.file, shown = list.slice(0, 300);
   const cur = shown.find(v => key(v) === V.file) || shown[0];
-  const box = document.getElementById("v-list"), listKey = shown.map(v => key(v) + (v.info ? "+" : "")).join("|");
+  const box = document.getElementById("v-list"), listKey = shown.map(v => key(v) + (v.info ? "+" : "") + (v.recorded_speed || "")).join("|");
   if (m.dataset.list !== listKey) {  // rebuilt only when the list changes (keeps the scroll)
     m.dataset.list = listKey;
     box.innerHTML = shown.map(v => `<div class="it" data-k="${esc(key(v))}">
         <span class="ep">${esc(v.title || v.file)}</span><span class="${v.outcome > 0 ? "win" : v.outcome < 0 ? "loss" : ""}">${outcomeText(v.outcome)}</span>
-        <span class="sub">${esc(v.run)}${v.game_time ? " · " + (v.game_time / 60).toFixed(1) + " game min" : ""}</span><span class="sub">${v.time ? ago(v.time) : ""}</span>${videoTags(v.info)}</div>`).join("")
+        <span class="sub">${esc(v.run)}${v.game_time ? " · " + (v.game_time / 60).toFixed(1) + " game min" : ""}</span><span class="sub">${v.time ? ago(v.time) : ""} · ${recBadge(v.recorded_speed)}</span>${videoTags(v.info)}</div>`).join("")
       + (list.length > shown.length ? `<div style="padding:10px 12px;color:var(--muted)">and ${list.length - shown.length} more: narrow the search</div>` : "")
       || `<div style="padding:20px;color:var(--muted)">no video matches</div>`;
     box.querySelectorAll(".it").forEach(it => it.onclick = () => { V.file = it.dataset.k; renderVideos(); });
@@ -2512,9 +2606,149 @@ function renderVideos() {
   if (m.dataset.viewer === key(cur)) return;  // playing: left alone
   m.dataset.viewer = key(cur); V.file = key(cur);
   const src = `/files/${encPath(cur.run)}/${cur.file}`;
-  viewer.innerHTML = `${videoHtml(src)}
-    <div class="cap"><span>${esc(cur.title || "")} · <span class="${cur.outcome > 0 ? "win" : cur.outcome < 0 ? "loss" : ""}">${outcomeText(cur.outcome)}</span> · ${esc(cur.sub || "")} · <a href="/run/${encPath(cur.run)}?tab=replays">${esc(cur.run)}</a></span>
-    <a href="${src}" target="_blank">open ↗</a></div>`;
+  viewer.innerHTML = `${videoHtml(cur.time ? `${src}?v=${Math.floor(cur.time)}` : src)}
+    <div class="cap"><span>${esc(cur.title || "")} · <span class="${cur.outcome > 0 ? "win" : cur.outcome < 0 ? "loss" : ""}">${outcomeText(cur.outcome)}</span> · ${esc(cur.sub || "")} · <a href="/run/${encPath(cur.run)}?tab=replays">${esc(cur.run)}</a> · ${recText(cur.recorded_speed)}</span>
+    ${rerenderHtml(cur.run, cur.file)}<a href="${src}" target="_blank">open ↗</a></div>`;
+  fillHosts();
+}
+
+// ---- the Replays view: every run's replays that can become a video, a page at a time (GET /api/replays, dashboard/replays.py),
+// each one to record at the speed and on the machine chosen (POST /api/render, kind "replay": fullgame/render_request.py) ------
+ui.replays = { rows: [], total: 0, matched: 0, pending: 0, q: "", outcome: "all", race: "all", video: "all", speed: 1, token: 0,
+               loading: false, done: false, queue: [], msgs: {}, error: "" };
+try { ui.replays.speed = +localStorage.getItem("replaySpeed") || 1; } catch (e) { /* (the default) */ }
+const RL_PAGE = 60, RL_SPEEDS = [1, 2, 4, 8], rlActive = ["queued", "playing", "rendering"];
+const rlParams = (offset, limit) => { const R = ui.replays; return new URLSearchParams({ q: R.q, outcome: R.outcome, race: R.race, video: R.video, offset, limit }).toString(); };
+async function openReplayList(q) {
+  state.view = "replays"; if (q !== undefined) ui.replays.q = q; setNav(); saveUrl(true);
+  const m = document.getElementById("main"); m.dataset.run = ""; m.dataset.vframe = ""; m.dataset.rlframe = "";
+  m.innerHTML = `<div class="empty">listing every run's replays…</div>`;
+  loadHosts().then(() => { if (state.view === "replays") rlFrame(); });
+  await rlLoad(true);
+  rlQueue();
+}
+function rlFrame() {  // the page's frame, once: its filters keep their focus while the list comes and goes
+  const R = ui.replays, m = document.getElementById("main");
+  if (state.view !== "replays") return;
+  if (m.dataset.rlframe !== "1") {
+    m.dataset.rlframe = "1";
+    m.innerHTML = `<div class="videos"><h2>Replays</h2>
+      <div class="sub">Every run's replays that still have what a video needs, newest first. Render one and it appears on the Videos page. A speed above 1× records every 2nd, 4th or 8th frame, that much faster; play it back at 0.5× or 0.25× for the game's speed. Search by a run, a race or a player: every word must match.</div>
+      <div class="vbar"><input type="search" id="rl-q" placeholder="search: fgself-174, undead, past:…" autocomplete="off">
+        <div class="seg" id="rl-out"><button data-o="all">all</button><button data-o="win">wins</button><button data-o="loss">losses</button><button data-o="tie">ties</button></div>
+        <div class="seg" id="rl-race"><button data-r="all">any race</button><button data-r="human">human</button><button data-r="orc">orc</button><button data-r="undead">undead</button><button data-r="nightelf">night elf</button></div>
+        <div class="seg" id="rl-vid"><button data-v="all">with or without video</button><button data-v="yes">has video</button><button data-v="no">no video</button></div>
+        <span id="rl-count"></span></div>
+      <div class="rl-choose"><span>render at</span><span class="seg" id="rl-speed">${RL_SPEEDS.map(v => `<button data-s="${v}">${v}×</button>`).join("")}</span>
+        <span>on</span><select id="rl-host" data-rr-host title="the machine that records it"></select></div>
+      <div class="rl-queue" id="rl-queue"></div>
+      <div class="rl-list" id="rl-list"></div></div>`;
+    const q = document.getElementById("rl-q"); q.value = R.q;
+    q.oninput = () => { R.q = q.value; saveUrl(false); clearTimeout(R.typing); R.typing = setTimeout(() => rlLoad(true), 200); };
+    const seg = (id, key, attr) => m.querySelectorAll(`#${id} button`).forEach(b => b.onclick = () => { R[key] = b.dataset[attr]; rlLoad(true); rlFrame(); });
+    seg("rl-out", "outcome", "o"); seg("rl-race", "race", "r"); seg("rl-vid", "video", "v");
+    m.querySelectorAll("#rl-speed button").forEach(b => b.onclick = () => { R.speed = +b.dataset.s; try { localStorage.setItem("replaySpeed", String(R.speed)); } catch (e) {} rlFrame(); });
+    document.getElementById("rl-list").onclick = rlClick;
+    fillHosts();
+  }
+  m.querySelectorAll("#rl-out button").forEach(b => b.classList.toggle("on", b.dataset.o === R.outcome));
+  m.querySelectorAll("#rl-race button").forEach(b => b.classList.toggle("on", b.dataset.r === R.race));
+  m.querySelectorAll("#rl-vid button").forEach(b => b.classList.toggle("on", b.dataset.v === R.video));
+  m.querySelectorAll("#rl-speed button").forEach(b => b.classList.toggle("on", +b.dataset.s === R.speed));
+  fillHosts();
+}
+async function rlLoad(reset) {  // the list's first page, or the next one; only the newest question's answer counts
+  const R = ui.replays, t = ++R.token, offset = reset ? 0 : R.rows.length;
+  R.loading = true;
+  let d;
+  try { d = await getJSON(`/api/replays?${rlParams(offset, RL_PAGE)}`); }
+  catch (e) { if (t === R.token && state.view === "replays") { R.loading = false; R.error = String(e); rlFrame(); rlDraw(); } return; }
+  if (t !== R.token || state.view !== "replays") return;
+  R.loading = false; R.error = "";
+  R.rows = reset ? d.rows : R.rows.concat(d.rows);
+  R.total = d.total; R.matched = d.matched; R.pending = d.pending; R.updated = d.updated; R.done = R.rows.length >= d.matched;
+  rlFrame(); rlDraw();
+}
+async function rlRefresh() {  // (the page's timer) the rows shown, again, when the index changed; the queue's states
+  const R = ui.replays;
+  rlQueue();
+  if (R.loading) return;
+  const t = ++R.token, n = Math.max(R.rows.length, RL_PAGE);
+  try {
+    const d = await getJSON(`/api/replays?${rlParams(0, Math.min(n, 500))}`);
+    if (t !== R.token || state.view !== "replays") return;
+    if (JSON.stringify(d.rows) !== JSON.stringify(R.rows) || d.total !== R.total || d.pending !== R.pending) {  // (rebuilt only then: keeps the scroll)
+      R.rows = d.rows; R.total = d.total; R.matched = d.matched; R.pending = d.pending; R.updated = d.updated; R.done = R.rows.length >= d.matched;
+      rlFrame(); rlDraw();
+    }
+  } catch (e) { console.error(e); }
+}
+function rlStates() {  // run/stem -> its newest request while it is under way, or its last answer
+  const out = {};
+  for (const r of [...ui.replays.queue].reverse()) if (r.request.kind === "replay") out[r.request.run + "/" + r.request.stem] = r;
+  return out;
+}
+function rlDraw() {
+  const R = ui.replays, box = document.getElementById("rl-list");
+  if (!box || state.view !== "replays") return;
+  document.getElementById("rl-count").textContent = `${R.matched} of ${R.total}${R.pending ? ` (${R.pending} still being read)` : ""}`;
+  const states = rlStates(), when = t => new Date(t * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  const rows = R.rows.map(r => {
+    const k = r.run + "/" + r.stem, a = states[k], busy = a && rlActive.includes(a.state), msg = R.msgs[k];
+    const races = (r.races || []).map(x => RACE_TITLES[x] || x || "?").join(" vs ");
+    const who = (r.names || []).length > 1 ? ` · ${esc(String(r.names[0]))} vs ${esc(String(r.names[1]))}` : "";
+    const vid = r.video ? `<a data-open="${esc(r.stem)}">video</a> · ${recBadge(r.speed)}` : "no video";
+    return `<div class="rl-row" data-k="${esc(k)}" data-run="${esc(r.run)}" data-stem="${esc(r.stem)}">
+      <div><span class="ep">${esc(races)}</span> <span class="${r.outcome > 0 ? "win" : r.outcome < 0 ? "loss" : ""}">${outcomeText(r.outcome)}</span>
+        <div class="sub">${esc(r.run)} · ${when(r.time)} · ${(r.game_time / 60).toFixed(1)} game min${who}</div></div>
+      <div class="vid">${vid}</div>
+      ${busy ? `<span class="state">${esc(a.state)}…</span>` : `<button class="rl-go" ${r.why ? "disabled" : ""} title="${r.why ? esc(r.why) : `record it at ${R.speed}×`}">Render</button>`}
+      ${r.why ? `<div class="why">cannot be played back: ${esc(r.why)}</div>` : msg ? `<div class="why">${esc(msg)}</div>` : ""}</div>`;
+  }).join("");
+  const more = R.done ? "" : `<button class="rl-more" id="rl-more">${R.loading ? "loading…" : `${R.matched - R.rows.length} more`}</button>`;
+  box.innerHTML = R.error ? `<div style="padding:20px;color:var(--bad)">${esc(R.error)}</div>`
+    : (rows + more) || `<div style="padding:20px;color:var(--muted)">${R.total ? "no replay matches" : R.pending ? "reading the replays…" : "no replays"}</div>`;
+  const moreBtn = document.getElementById("rl-more");
+  if (moreBtn) {  // the next page when its button comes near the screen
+    if (R.observer) R.observer.disconnect();
+    R.observer = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting) && !R.loading && !R.done) rlLoad(false); }, { rootMargin: "400px" });
+    R.observer.observe(moreBtn);
+  }
+}
+async function rlClick(ev) {
+  const R = ui.replays, open = ev.target.closest("[data-open]");
+  if (open) return openVideos(open.dataset.open);
+  if (ev.target.closest("#rl-more")) return rlLoad(false);
+  const b = ev.target.closest(".rl-go"), row = ev.target.closest(".rl-row");
+  if (!b || !row) return;
+  b.disabled = true;
+  const host = document.getElementById("rl-host").value || hostChoice();
+  const r = await postReplayRender(row.dataset.run, row.dataset.stem, R.speed, host).catch(e => ({ ok: false, message: String(e) }));
+  if (r.ok) { delete R.msgs[row.dataset.k]; } else { R.msgs[row.dataset.k] = r.message; }
+  await rlQueue();
+  rlDraw();
+}
+async function rlQueue() {  // the replays being recorded and the last few recorded (the render window has all the requests)
+  const R = ui.replays;
+  let L;
+  try { L = await getJSON("/api/renders"); } catch (e) { return; }
+  if (state.view !== "replays") return;
+  if (L.hosts && !ui.hosts) { ui.hosts = L.hosts; fillHosts(); }
+  const before = JSON.stringify(R.queue.map(r => [r.id, r.state]));
+  R.queue = (L.requests || []).filter(r => r.request.kind === "replay");
+  const box = document.getElementById("rl-queue");
+  if (box) {
+    const active = R.queue.filter(r => rlActive.includes(r.state)), recent = R.queue.filter(r => !rlActive.includes(r.state)).slice(0, 3);
+    box.innerHTML = [...active, ...recent].map(rlQueueRow).join("");
+  }
+  if (before !== JSON.stringify(R.queue.map(r => [r.id, r.state]))) rlDraw();
+}
+function rlQueueRow(r) {
+  const q = r.request, mins = (a, b) => `${((b - a) / 60).toFixed(1)} min`;
+  const st = r.state === "done" ? `<span>done in ${mins(r.started, r.finished)}</span><a onclick="openVideos('${esc(q.stem)}')">in Videos</a>`
+    : r.state === "failed" ? `<span style="color:var(--bad)">failed</span>`
+    : `<span class="state">${esc(r.state)}…${r.started ? " " + mins(r.started, Date.now() / 1000) : ""}</span>`;
+  return `<div><span>#${r.id}</span><span>${esc(q.run)} · ${esc(q.stem)}</span><span>${q.speed}× · ${esc(q.host === "local" ? "this machine" : q.host.split("@").pop())}</span>${st}${r.error ? `<pre>${esc(r.error)}</pre>` : ""}</div>`;
 }
 
 // ---- the Ratings view: skill ratings from every run's evaluation games (GET /api/ratings, dashboard/ratings.py) ----
@@ -2776,7 +3010,14 @@ function rdListHtml() {  // the requests, newest first: their state, the video w
   const when = t => new Date(t * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
   const mins = (a, b) => `${((b - a) / 60).toFixed(1)} min`;
   box.innerHTML = L.error ? `<div style="color:var(--bad)">${esc(L.error)}</div>` : (L.requests || []).length ? L.requests.map(r => {
-    const q = r.request, rc = r.races || q.races, tg = r.targets || q.targets;
+    const q = r.request;
+    if (q.kind === "replay") {  // (a game already played, recorded again: the Re-render button, the Replays page)
+      const st = r.state === "done" ? `<span>${mins(r.started, r.finished)}</span><a href="/files/${encPath(r.video)}" target="_blank">video ↗</a><a href="/videos" onclick="closeRender(); openVideos('${esc(q.stem)}'); return false">in Videos</a>`
+        : r.state === "failed" ? `<span style="color:var(--bad)">failed</span>`
+        : `<span class="state">${r.state}…${r.started ? " " + mins(r.started, Date.now() / 1000) : ""}</span>`;
+      return `<div><span>#${r.id} ${when(r.time)}</span><span>${esc(q.run)} · ${esc(q.stem)}</span><span>${q.speed}× · ${esc(q.host === "local" ? "this machine" : q.host.split("@").pop())}</span>${st}${r.error ? `<pre>${esc(r.error)}</pre>` : ""}</div>`;
+    }
+    const rc = r.races || q.races, tg = r.targets || q.targets;
     const vs = q.b.kind === "ai" ? `${q.b.difficulty} AI` : rdPolicy(q.b.policy, q.run);
     const tgt = tg.some(t => t !== "none") ? `<span title="targets">${tg.map(t => esc(t.replace(/^sig:/, ""))).join(" / ")}</span>` : "";
     const st = r.state === "done" ? `<span class="r">${outcomeText(r.outcome)}</span><span>${mins(r.started, r.finished)}</span>
@@ -3115,7 +3356,7 @@ slider.addEventListener("input", () => {
 setupRunTools();
 document.getElementById("nav-docs").onclick = () => openDocs(state.view === "docs" ? null : undefined);
 document.getElementById("nav-runs").onclick = async () => {
-  if (!["docs", "lineage", "ratings", "videos"].includes(state.view)) return;
+  if (!["docs", "lineage", "ratings", "videos", "replays"].includes(state.view)) return;
   if (state.view === "docs" && ui.docs.editing && !confirm("Leave the document without saving?")) return;
   ui.docs.editing = false;
   if (!state.selected && !state.runs.length) {  // (a page opened first, as a phone reopens it: the run list never
@@ -3128,12 +3369,14 @@ document.getElementById("nav-runs").onclick = async () => {
   if (name) openRun(name); else refresh();
 };
 document.getElementById("nav-videos").onclick = () => openVideos();
+document.getElementById("nav-replays").onclick = () => openReplayList();
 document.getElementById("nav-lineage").onclick = () => openLineage();
 document.getElementById("nav-ratings").onclick = () => openRatings();
 document.getElementById("nav-challenge").onclick = () => openChallenge();
 if (state.view === "docs") openDocs(parseUrl().name || undefined);
 else if (state.view === "ratings") openRatings();
 else if (state.view === "videos") openVideos(parseUrl().q.get("q") || undefined);
+else if (state.view === "replays") openReplayList(parseUrl().q.get("q") || undefined);
 else if (state.view === "lineage") openLineage(parseUrl().q.get("track") === "micro" ? "micro" : "whole game");
 else saveUrl(false);  // (an old #… link: its address in the new form)
 // back and forward: show the page of that history entry
@@ -3145,6 +3388,7 @@ window.addEventListener("popstate", async () => {
     else if (u.view === "lineage") await openLineage(u.q.get("track") === "micro" ? "micro" : "whole game");
     else if (u.view === "ratings") await openRatings();
     else if (u.view === "videos") await openVideos(u.q.get("q") || "");
+    else if (u.view === "replays") await openReplayList(u.q.get("q") || "");
     else {
       const t = u.q.get("tab");
       if (t) ui.tabs.run = ui.tabs.bc = ui.tabs.collect = ui.tabs.fullbc = t; else ui.tabs.run = ui.tabs.bc = ui.tabs.collect = ui.tabs.fullbc = "overview";

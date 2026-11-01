@@ -38,6 +38,8 @@ def _hero_abilities() -> dict[str, tuple[str, ...]]:
 class FullGameOverlay:
     PANEL_W = 420
     END_SECONDS = 2.5
+    compose_apart = True  # (video.render_replay: render_step may run beside the game; markers are none)
+    pix_fmt = "bgr0"  # (render_step's and render_end's frames)
     _chart = EpisodeOverlay._chart  # (uses self.f_small only)
 
     def __init__(self, trace: dict):
@@ -82,7 +84,10 @@ class FullGameOverlay:
     # ---- the renderer's interface (video.render_replay) ------------------------------------------
     def begin(self, setup, orders: dict, w: int, h: int) -> None:
         self.w, self.h = w, h
-        self.canvas = Image.new("RGB", (w + self.PANEL_W, h), BG)
+        # (the frames as the game's X window has them, BGRX, with the panel beside them: no conversion per frame, the
+        # encoder's pipe writes it straight out; the game waited for ~10 ms of Python's time a frame without this)
+        self.canvas = np.full((h, w + self.PANEL_W, 4), 0, np.uint8)
+        self.canvas[..., :3] = BG[::-1]
         self._last_panel = None
 
     @property
@@ -95,13 +100,19 @@ class FullGameOverlay:
     def render_step(self, frames: list[bytes], t: int, obs_a: Observation, obs_b: Observation | None,
                     commands: Sequence[Command], camera=None) -> list[bytes]:
         panel = self._panel(min(t, self.T - 1), obs_a)
-        self.canvas.paste(panel, (self.w, 0))
+        self._put_panel(panel)
         self._last_panel = panel
-        out = []
+        return self._frames(frames)
+
+    def _frames(self, frames: list[bytes]):
+        """Each frame beside the panel: one buffer, overwritten (write it before asking for the next)."""
+        view = memoryview(self.canvas)
         for raw in frames:
-            self.canvas.paste(Image.frombytes("RGB", (self.w, self.h), raw, "raw", "BGRX"), (0, 0))
-            out.append(self.canvas.tobytes())
-        return out
+            self.canvas[:, :self.w] = np.frombuffer(raw, np.uint8).reshape(self.h, self.w, 4)
+            yield view
+
+    def _put_panel(self, panel: Image.Image) -> None:
+        self.canvas[:, self.w:, :3] = np.asarray(panel)[..., ::-1]
 
     def render_end(self, last_frame: bytes, fps: int) -> list[bytes]:
         img = Image.frombytes("RGB", (self.w, self.h), last_frame, "raw", "BGRX")
@@ -119,9 +130,9 @@ class FullGameOverlay:
             rets = [f"{s['name'][:12]} return {self.cum[-1, i]:+.2f}" for i, s in enumerate(self.sides)
                     if np.isfinite(self.reward[:, i]).any()]
             d.text((self.w // 2, self.h // 2 + 12), " · ".join([sub, *rets]), font=self.f, fill=FG, anchor="mm")
-        self.canvas.paste(img, (0, 0))
+        self.canvas[:, :self.w, :3] = np.asarray(img)[..., ::-1]
         if self._last_panel is not None:
-            self.canvas.paste(self._last_panel, (self.w, 0))
+            self._put_panel(self._last_panel)
         return [self.canvas.tobytes()] * int(self.END_SECONDS * fps)
 
     # ---- the panel ----------------------------------------------------------------------------

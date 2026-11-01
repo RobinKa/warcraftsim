@@ -14,7 +14,9 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import os
+import queue
 import subprocess
+import threading
 from pathlib import Path
 
 from .protocol import Camera, CameraZoom, Observation, decode_commands
@@ -220,10 +222,45 @@ class _ReplayStalled(Exception):
     """The game presents frames but no longer steps (the replay's recorded game has ended)."""
 
 
+class _Writer:
+    """Composes and encodes in a thread of its own, so the game goes on with its next frames meanwhile: drawing the
+    panel, compositing and the pipe into ffmpeg were a third of the time a frame took the game (it waited for them at
+    every step). Bounded, so a slow encoder holds the game up rather than filling the memory (a step's frames at 1x
+    are ~60 MB); a failure comes back in the next `put` or in `close`."""
+
+    def __init__(self, sink, depth: int = 6):
+        self._sink = sink  # (a job) -> None, in this thread
+        self._q: queue.Queue = queue.Queue(maxsize=depth)
+        self._error: BaseException | None = None
+        self._thread = threading.Thread(target=self._run, name="video-writer", daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        while (job := self._q.get()) is not None:
+            if self._error is None:  # (after a failure: only draining, so that `put` cannot block for ever)
+                try:
+                    self._sink(job)
+                except BaseException as e:  # noqa: BLE001 (raised in the game's thread)
+                    self._error = e
+
+    def put(self, job) -> None:
+        if self._error is not None:
+            raise self._error
+        self._q.put(job)
+
+    def close(self) -> None:
+        self._q.put(None)
+        self._thread.join()
+
+    def check(self) -> None:
+        if self._error is not None:
+            raise self._error
+
+
 def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.PathLike, fps: int = 40,
                   speed: float = 1.0, width: int | None = None, follow_player: int | None = None,
                   max_steps: int = 20000, name: str = "render", crf: int = 23, overlay=None, audio: bool = True,
-                  music_volume: int = 40, fit_all: bool = False, nice: int = 0) -> Path:
+                  music_volume: int = 40, fit_all: bool = False, nice: int = 0, free_audio: bool = True) -> Path:
     """Play `replay` (saved by GameInstance.save_replay with the same setup) and write an MP4 at
     `fps`, `speed` times real time. Each frame advances the game by exactly 1000*speed/fps ms,
     ideally a multiple of the engine's 25 ms turn (40 fps at 1x, 40 fps at 2x, 60 fps at 1.5x).
@@ -233,7 +270,10 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
     Scenarios (and with `fit_all`, whole games): the camera follows the fight, zooming out to keep
     every unit in view.
     With `audio`, the game's sound comes from the w3shim virtual sound card, one frame's worth per
-    frame; the render then runs at no more than real time (the game's mixer needs that)."""
+    frame. `free_audio`: its mixer follows the frames, on a clock of played audio (shim/audio.c), and the render runs
+    as fast as the machine draws; otherwise at no more than real time (what a shim from before W3SIM_AUDIO_FREE does
+    in any case). A speed above 1 draws fewer frames, the same game time and all of its sound; the sound's tempo goes
+    up with it, its pitch stays (_atempo)."""
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
     # a real-time clock while the map loads: a fast one leaves a backlog that the engine simulates
@@ -244,7 +284,7 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
     script = replay_script(setup, replay)
     in_game = overlay is not None and "function W3S_VisClear" in script
     zoom = "call SetCameraField(CAMERA_FIELD_FARZ, 10000.0" in script  # the camera can zoom out (op 84)
-    setup = GameSetup(**{**setup.__dict__, "warm_spare": False, "speed": 1.0, "launch_speed": 0.03, "nice": nice, "d3d_thread": True, "render_threads": None, "draw": True,
+    setup = GameSetup(**{**setup.__dict__, "warm_spare": False, "speed": 1.0, "launch_speed": 0.03, "nice": nice, "audio_free": free_audio, "d3d_thread": True, "render_threads": None, "draw": True,
                          "launch_timeout": 600.0,  # loading on the slow clock
                          "window": (1024, 768), "audio": audio, "music_volume": music_volume,
                          "health_bars": in_game or setup.health_bars, "mouse_scroll": False})
@@ -252,7 +292,7 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
     xvfb = Xvfb(*setup.window)
     _park_pointer(xvfb.display)
     inst = GameInstance(setup, name=name, timeout=60, display=xvfb.display)
-    ffmpeg = grabber = None
+    ffmpeg = grabber = writer = None
     frames = 0
     silent = out.with_name(out.stem + ".video.mp4") if audio else out
     pcm_path = out.with_name(out.stem + ".pcm")
@@ -268,7 +308,7 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
         if overlay is not None:
             overlay.begin(setup, obs.orders or {}, geo[2], geo[3])
             overlay.in_game = in_game
-            size, pix = overlay.size, "rgb24"
+            size, pix = overlay.size, getattr(overlay, "pix_fmt", "rgb24")
         scale = f"scale={width}:-2" if width else "scale=trunc(iw/2)*2:trunc(ih/2)*2"
         ffmpeg = subprocess.Popen(
             ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", pix, "-s", f"{size[0]}x{size[1]}",
@@ -277,11 +317,19 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
             stdin=subprocess.PIPE)
         pending: list[bytes] = []
 
-        def write(batch: list[bytes]) -> None:
+        def write(batch) -> None:
             nonlocal frames
             for f in batch:
                 ffmpeg.stdin.write(f)
-            frames += len(batch)
+                frames += 1
+
+        def compose(job: tuple) -> None:  # (in the writer's thread when the overlay allows, see below)
+            batch, step, before_obs, after_obs, cmds, cams = job
+            write(overlay.render_step(batch, step, before_obs, after_obs, cmds, camera=cams)
+                  if overlay is not None else batch)
+
+        # (an overlay that keeps nothing the markers use from one step to the next, FullGameOverlay's `compose_apart`)
+        writer = _Writer(compose) if overlay is None or getattr(overlay, "compose_apart", False) else None
 
         # A step should bring step_seconds * fps / speed frames. Far more means the game draws on without
         # stepping (the replay ran out before the episode's end): stop, or the frames would pile up
@@ -355,13 +403,22 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
                 # where the camera really was (the game stops it at the map's camera bounds, short of
                 # the target): the harness reports it; else assume it reached the target
                 cams = (before.camera or cam_from, (obs.camera if obs is not None else None) or cam)
-                write(overlay.render_step(batch, t, before, obs, commands, camera=cams if follow_fight else None)
-                      if overlay is not None else batch)
+                job = (batch, t, before, obs, commands, cams if follow_fight else None)
+                if writer is not None:
+                    writer.put(job)
+                else:
+                    compose(job)
             if obs is None:
                 break
+        if writer is not None:
+            writer.close()
+            writer.check()
+            writer = None
         if overlay is not None and last is not None:
             write(overlay.render_end(last, fps))
     finally:
+        if writer is not None:
+            writer.close()
         if ffmpeg:
             ffmpeg.stdin.close()
             ffmpeg.wait()
@@ -378,6 +435,21 @@ def render_replay(setup: GameSetup, replay: str | os.PathLike, out: str | os.Pat
     return out
 
 
+def _atempo(speed: float) -> str:
+    """The filters for a sound `speed` times as fast, same pitch: a chain of steps of at most 2, as ffmpeg's atempo
+    above 2 drops samples instead of blending them (and before ffmpeg 4.3 refuses them)."""
+    out = ""
+    while speed > 2.0:
+        out += ",atempo=2"
+        speed /= 2.0
+    while speed < 0.5:
+        out += ",atempo=0.5"
+        speed /= 0.5
+    if speed != 1.0:
+        out += f",atempo={speed:g}"
+    return out
+
+
 def _mux_audio(video: Path, pcm: Path, fmt: list, out: Path, speed: float, duration: float) -> None:
     """Add the captured game audio to `video`. The game's mixer queues its output ahead, so a sound
     starting at a frame is `latency` bytes later in the stream: shift the stream earlier by that."""
@@ -391,8 +463,7 @@ def _mux_audio(video: Path, pcm: Path, fmt: list, out: Path, speed: float, durat
         skip = latencies[len(latencies) // 2] // block * block
         codec = {8: "u8", 16: "s16le"}[bits]
         af = f"atrim=start_sample={skip // block},asetpts=N/SR/TB"
-        if speed != 1.0:
-            af += f",atempo={speed}"
+        af += _atempo(speed)
         af += f",apad=whole_dur={duration:.3f}"  # silence under the end card
         subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(video), "-f", codec, "-ar", str(rate),
                         "-ac", str(channels), "-i", str(pcm), "-af", af, "-map", "0:v", "-map", "1:a",

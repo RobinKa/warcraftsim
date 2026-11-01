@@ -2730,7 +2730,7 @@ def film_game(g, ep: dict, cfg: dict, wid: int, render_q) -> None:
 
 
 def render_main(cfg: dict, render_q, stop) -> None:
-    """The run's video renderer: one game at a time, real time (the game's own renderer and sound);
+    """The run's video renderer: one game at a time (the game's own renderer and sound), here or on --video-host;
     listed in media.jsonl for the dashboard. When it falls behind, the older games are skipped."""
     import signal
 
@@ -2764,9 +2764,19 @@ def render_video(cfg: dict, job: tuple, nice: int = RENDER_NICE) -> Path:
     from .overlay import FullGameOverlay
     run_dir = Path(cfg["run_dir"])
     setup, replay, stem, trace, row, t = job
-    out = render_replay(setup, Path(replay), run_dir / "videos" / f"{stem}.mp4", name=f"fgvid{cfg['slot']}",
-                        crf=28, overlay=FullGameOverlay(trace) if trace else None, fit_all=True,
-                        max_steps=cfg["max_steps"] + 40, nice=nice)
+    host, speed = cfg.get("video_host") or "", float(cfg.get("video_speed") or 1.0)
+    if host or speed != 1.0:  # (--video-host, --video-speed; without them the row stays as it was: real time, here)
+        row = {**row, "recorded_speed": speed, "recorded_on": host or "local"}
+    out = run_dir / "videos" / f"{stem}.mp4"
+    if host:  # (video_host.py: a failure skips this video, render_main says why)
+        from .video_host import render_on_host
+        part = out.with_name(f"{stem}.part.mp4")
+        render_on_host(host, run_dir, stem, part, speed=speed, game_seconds=float(row.get("game_time") or 2400.0))
+        part.replace(out)
+    else:
+        out = render_replay(setup, Path(replay), out, name=f"fgvid{cfg['slot']}", speed=speed,
+                            crf=28, overlay=FullGameOverlay(trace) if trace else None, fit_all=True,
+                            max_steps=cfg["max_steps"] + 40, nice=nice)
     with open(run_dir / "media.jsonl", "a") as f:
         f.write(json.dumps({"time": time.time(), "kind": "video", "file": str(out.relative_to(run_dir)), **row}) + "\n")
     return out
@@ -4616,8 +4626,15 @@ def main(argv: list[str] | None = None) -> int:
                                                             "(from the state the actor had at its first)")
     ap.add_argument("--checkpoint-every", type=int, default=20)
     ap.add_argument("--video-every", type=float, default=10.0,
-                    help="minutes between game videos (0: none; the actors take turns). Rendering one takes ~6 minutes of "
-                         "3.4 cores (the game at 960x540 on a software renderer, in real time)")
+                    help="minutes between game videos (0: none; the actors take turns). Rendering one takes 3.4 cores for "
+                         "about its game's length (the game on a software renderer; see --video-host, --video-speed)")
+    ap.add_argument("--video-host", default="", help="record the run's videos on this machine over ssh (e.g. "
+                    "tora-ms-a2@tora-ms-a2: fullgame/video_host.py; one at a time there, a failure skips the video). "
+                    "Default: here")
+    ap.add_argument("--video-speed", type=float, default=1.0, choices=(1.0, 2.0, 4.0, 8.0),
+                    help="game seconds a video second of the run's videos (above 1: every 2nd, 4th or 8th frame, recorded "
+                         "that much faster; the sound sped up, at its pitch; the dashboard's 0.5x and 0.25x play them back at "
+                         "the game's speed)")
     ap.add_argument("--shaping", type=float, default=1.0, help="weight of the material-lead reward shaping (0: none)")
     ap.add_argument("--shaping-decay", type=float, default=0.0, help="every reward but the outcome (the shaping, the "
                     "strategy's) times this ^ (game minutes / 10) (OpenAI Five: 0.6; 0: none)")
@@ -4974,7 +4991,8 @@ def main(argv: list[str] | None = None) -> int:
            "eval_games_per_actor": args.eval_games_per_actor, "eval_games": args.eval_games,
            "games_per_process": args.games_per_process, "chunk": args.chunk, "gamma": args.gamma, "lam": args.lam,
            "seed": args.seed, "start_update": resumed["update"] if resumed else 0, "slot": slot,
-           "video_every": args.video_every, "scripted_reset": bool(args.scripted_reset),
+           "video_every": args.video_every, "video_host": args.video_host, "video_speed": args.video_speed,
+           "scripted_reset": bool(args.scripted_reset),
            "agent_games_factor": args.agent_games_factor, "mirror": bool(args.mirror), "learner_pid": os.getpid(),
            "actors": args.actors, "values": unit_values(), "shaping": args.shaping, "shaping_scale": args.shaping_scale,
            "shaping_decay": args.shaping_decay,

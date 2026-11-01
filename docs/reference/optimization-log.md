@@ -712,3 +712,25 @@ The GPU's fan is the machine's loudest. 350 W against 400 W in fgself-170: 4,099
 
 It is not a leak: the game's own part stays ~6.4 ms a step and only the wait for orders rises, and a run's rise levels off. `fgself-170` over 6 hours: 35 ms in its first half hour, ~38 from its second hour, up to 39 late; inference rounds 17 ms to ~20-21 ms; entities flat at ~40; training steps/s flat at ~4,400 (+-3%). The GPU is at 100% throughout, so a game step waits for its share of a saturated GPU, and the wait follows how much it has to serve. What grows is the past snapshots' traffic: 714 rows/s to ~900, in ~550 calls/s of ~700 (1.6 rows a call). `fgself-168` shows the same step: past calls 351/s to 570/s with rounds 13.8 ms to 18.9 ms. The first figures also read low because long games have not ended yet. `fgself-174`'s larger rise (rounds 17.6 to 27.9 ms in an hour) is not clean: it starts from fewer past games, and an agent's probes and browser tests were running beside it (load 40-58): re-read once they end. Possible gain, not built: past snapshots' inference on the box's CPU, where it has spare cores (80% of the GPU's calls for ~17% of its rows; `--infer-past-period-ms` batching them gave no net gain).
 
+### Recording videos faster than real time (2026-11-01, the user's question)
+
+A 40-minute game took ~48 minutes on the main machine, and a quarter of the frames (`--speed 4`) saved nothing: the game side cost ~0.8 wall seconds per game second whatever the frame count. What paced it, all of it in the virtual sound card and in Python, none in the game's clock:
+
+| what | how it paced | now |
+|---|---|---|
+| `audio_frame` slept until real time caught up with the audio played | one game second per real second, at any frame rate | `W3SIM_AUDIO_FREE=1` (videos only): no such sleep |
+| Miles's mixer is a timer on its own real-time clock (its timer thread wakes every 5 ms, mixes every 50 ms of it, Mss32 imports QueryPerformanceCounter and timeGetTime itself), and the frame waited for it in 1 ms sleeps, up to 50 | at 4x most frames stalled ~55 ms with the sleep above gone, and the audio came out with silence in it | Miles's imports hooked: its clock is the audio played, each 25 ms piece wakes its timer and stream threads and waits for the timer's pass (0.15 ms) |
+| the panel, the composition (BGRX to RGB per frame) and the pipe into ffmpeg ran between the game's steps | ~6 ms a frame at 1x, the game waiting | a bounded thread beside the game (`video._Writer`), and frames composed in the X window's own format (`FullGameOverlay.pix_fmt`) |
+
+Measured with `scripts/rerender_fullgame.py` on real replays, wall time including the ~20 s load; the box at load 10-28 (its 56 training games), the main machine at load 50-77 (the run), both niced 10:
+
+| game, machine | before 1x | before 4x | now 1x | 2x | now 4x | 8x |
+|---|---|---|---|---|---|---|
+| 78 s, box | 101 s | 100 s | 77 s | 49 s | 36 s | 30 s |
+| 78 s, main | 137 s | 105 s | 132 s | | 53 s | |
+| 40 min, box | | | 25 m 32 s (1.57x) | | 8 m 57 s (4.5x; 9 m 0 s with the copies there and back, as a `render_on_host`) | |
+| 40 min, main | ~48 m | | 40 m 11 s (1.0x; its rate went from ~0.3x to ~2x with the run's load) | | 13 m 19 s (3.0x) | |
+
+What is left is the game's own frame: ~14 ms of its main thread (47% the executable, spread thin, 12% wined3d, the rest system calls), per frame rather than per game second, and the grab ~1.8 ms. Tried and not kept: `LP_NUM_THREADS` 4 and 8 (21 and 16.5 ms a frame against 15), Direct3D's thread off (22.7 ms), XShmGetImage (0.3 ms less a frame, not worth its code), the exact game cuts (about 3%; they are in the run's flags, so a replay gets them anyway). The load's ~20 s: ~16 s of it comes with the music (4.7 s to the first frame with music off: half a game second of something at the load's 0.03x clock). A clock of 0.1x brings it to 9 s on the box but loses the game's first 0.4 s on the main machine under load (876 frames instead of 880), so it stays.
+
+The output: the same frames (3,220 against 3,220 at 1x, 880 against 880 at 4x; ±1 or 2 between any two recordings, the old way too), PSNR 30.8 dB against an older recording where two older recordings differ by 29.0 dB (water and particles), the same units at all 157 steps of the 78 s game in every mode (a hash of each unit's position and hit points, old sound card against new, 1x against 4x). The sound: loudness over time correlates 0.955 with an older recording where two older ones reach 0.905; music off, sounds land 28 ms later than the old way (median of 5 s windows, p10 -67 to p90 +26 ms; two old recordings differ by 28 ms, 0 to 38), no silence added (the shim logged no padding in these recordings). At 2x, 4x and 8x the sound is the 1x sound sped up by atempo, in steps of 2 so that no samples are dropped: its loudness correlates 0.88, 0.90 and 0.85 with the 1x recording at the same tempo, at lag 0 within 20 ms. Not compared: a 40-minute recording the old way on the same machine (against the run's video from the main machine under load the new sound is ~70 ms later on average; that recording's own wander is not known).

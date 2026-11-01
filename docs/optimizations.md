@@ -64,6 +64,6 @@ flowchart LR
 * The games: pathing (~45% of the main thread after round 7: the searches, path following, sensors and events, mostly memory-bound or game logic; approximations listed in [the log](reference/optimization-log.md)), the unit, ability and buff timers (~12%), target acquisition (~7%), fog (~3.5%), the units pass (~4-5%).
 * The actors' Python (2026-10-25: ~0.4 ms of CPU a side-step on the recorded games, ~1.2 M instructions; ~2.2 ms in the run before): what is left is spread thin (the view's C calls and their ctypes arguments, the target builder, the policy's commands, the tech mask); the live actors' shared rows (~60k instructions a side-step) are outside the bench.
 * More machines: training games on a second machine with the 3090 doing their inference ([scaling up the CPUs](reference/scaling-cpus.md)); then the learner's update (~2.9 s per 8,192 steps) becomes the limit.
-* The video renderer: 3.4 cores while it renders.
+* The video renderer: 3.4 cores while it renders. Since 2026-11-01 it can run on the games box (`--video-host`) and records faster than real time there, 1.6x with every frame and 4.5x with `--video-speed 4` ([the log](reference/optimization-log.md)).
 * Other work on the machine: a headless Chrome from another project takes ~10 cores in bursts.
 * Longer steps on long games: about 1.4× more game time per CPU, at the cost of half the decisions.
