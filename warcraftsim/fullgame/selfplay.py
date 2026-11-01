@@ -1363,6 +1363,7 @@ def release_group(games: list[tuple[dict, dict, bool]], coef: float) -> None:
 
 def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render_q) -> None:
     from ..runtime.instance import Agent, BuiltinAI, GameInstance, GameSetup, exact_cuts
+    from . import mapframe
     from .play import BCAgent
 
     rng = game_rng(cfg, wid, k)
@@ -1384,7 +1385,10 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
     mirrored: list[tuple] = []  # (--eval-vs) the next launch against a checkpoint: the last one's races swapped
     alive = Path(cfg["run_dir"]) / "remote-eval.alive"  # (scripts/remote_eval.py: its games still arrive)
     began = time.time()
+    home_cfg, map_pool = cfg, cfg.get("eval_map_pool" if evaluating else "map_pool")  # (--map-pool: each launch its map)
     while not stop.is_set() and os.getppid() == cfg["learner_pid"]:
+        if map_pool:
+            cfg = {**home_cfg, "map": mapframe.draw(rng, map_pool)}
         if evaluating and cfg.get("eval_fallback", 0) > 0:  # --eval-fallback: another machine plays them while
             try:                                            # its games keep coming; these only when they stop
                 fresh = time.time() - alive.stat().st_mtime < cfg["eval_fallback"]
@@ -1419,6 +1423,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
         if heur:
             ai = {"kind": "agents"}
             races[1 - side] = cfg.get("heuristic_race") or "orc"
+            if map_pool:  # (its building spots read the map's own world positions)
+                cfg = home_cfg
         elif mirrored or (evaluating and cfg.get("eval_vs", 0.0) > 0 and cfg.get("eval_checkpoints")
                         and rng.random() < cfg["eval_vs"]):
             # each matchup both ways round (the current policy with either race; drawn alone, the races decided:
@@ -1481,6 +1487,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
             per_launch = min(per_launch, EVAL_PER_LAUNCH)  # to head were one matchup; evaluation's verdicts need many)
         try:
             with GameInstance(setup, name=name, timeout=120) as g:
+                if map_pool:  # (another map's positions as the process's frame reads them)
+                    g = mapframe.framed(g, cfg["map"])
                 obs = g.start()
                 fresh = True
                 for n in range(per_launch):
@@ -2636,6 +2644,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             "refused": dict(sorted(((k, r) for k, (n, r) in bots[side].order_results.items() if r),
                                    key=lambda kv: -kv[1])[:12])}
            if side in bots and getattr(bots[side], "order_results", None) else {}),
+        **({"map": cfg["map"]} if cfg.get("map_pool") or cfg.get("eval_map_pool") else {}),
         **({"scenario": scenario} if scenario else {}),
         **({"late_minute": late_start["minute"]} if scenario == "late" else {}),  # (the state's minute)
         **({"late_replay": late_start["replay"]} if scenario == "late" and late_start.get("replay") else {}),
