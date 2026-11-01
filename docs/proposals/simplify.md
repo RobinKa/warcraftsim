@@ -2,7 +2,9 @@
 
 **Question** (the user, 2026-11-01). Is there anything in the system we can simplify or remove that likely doesn't help?
 
-**Answer.** Two lists. Features that are on but have no solid evidence get tested one at a time, because those could change results. Features that are off, with a negative or level verdict, can be deleted: that saves little at run time, and leaves less to audit. Nothing is deleted yet: two branches (shop items, map pool) are open on `selfplay.py`, and deleting first would make them conflict.
+**Answer.** Two lists. Features that are on but have no solid evidence get tested one at a time, because those could change results. Features that are off, with a negative or level verdict, could be deleted, which would save little at run time and leave less to audit.
+
+**Decision** (the user, 2026-11-01): nothing gets deleted; the off list stays as a record. Test turning the tax off, next.
 
 `fullgame/selfplay.py` has 5,255 lines and 206 flags; `fgself-173` runs with 53 of them at zero or empty.
 
@@ -16,7 +18,7 @@
 | The scenario `natural` | Clears the natural's camp so the expansion lessons apply, but the expand lesson and the expand order are both off now | Replace it with normal starts or `base2` |
 | PFSP (`--pfsp hard`) | Near uniform under `--win-balance`: results are kept from ~6% of the past snapshots' games (2026-10-24) | Uniform draws, if the code gets simpler |
 
-## Off, to delete
+## Off (not to be deleted, as decided)
 
 Each has a verdict in the [experiment log](../reference/experiment-log.md) or the [optimization log](../reference/optimization-log.md), or was declined:
 
@@ -26,7 +28,7 @@ Each has a verdict in the [experiment log](../reference/experiment-log.md) or th
 * **Approximations:** `shim/approx.c` (278 lines), declined by the user.
 * **Worktrees:** about 25 agent worktrees (1.1 GB) with no unmerged commits, once the two open agents are done.
 
-To check before deleting, since they may still be in use:
+Not checked, since they may still be in use:
 
 * The old micro track: `env.py` (990 lines), `puffer/`, `agents/micro.py`, `match.py`. So far only they and their tests were seen importing `env.py`; `overlay.py` also imports it, and the video code uses `overlay.py`.
 * Scripts no doc or code names: `sweep_summary.py`, `episode_stats.py`, `rerender_video.py`, `rerender_fullgame.py`, `dashboard_shot.py`; and other scripts from September's micro work.
@@ -39,7 +41,4 @@ Tested and earned: the KL anchor (`fgself-171` worse without it), shaping (81), 
 
 ## Order
 
-1. Merge the shop and map branches.
-2. Delete the "off" list in one commit, after the checks above, with the tests passing and a run of the new code level with its start.
-3. Run the tests above as one change a run: shop items first, then the tax, then the share of targets, then `--ai-share 0.5`, then `--lr 6e-5`.
-4. Recipe files instead of 200 flags (roadmap item 5 of [five changes](five-changes.md)), once the list is shorter.
+One change a run: the tax off first (`--curriculum -1`), then shop items, then the share of targets, then `--ai-share 0.5`, then `--lr 6e-5`. Recipe files instead of 200 flags (roadmap item 5 of [five changes](five-changes.md)) remain a separate idea.
