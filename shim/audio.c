@@ -8,6 +8,13 @@
  * one frame's worth of audio and sends it to the controller with the frame (sync.c), so sound
  * and picture stay in step however fast or slow the render runs. Otherwise played audio is
  * dropped. Without W3SIM_AUDIO the game has no audio device and stays silent (training).
+ *
+ * W3SIM_AUDIO_FREE=1 (videos): the sound card no longer holds the render to real time. Miles runs on its own
+ * clock (QueryPerformanceCounter and timeGetTime, real time) and its own threads' timed waits: a timer thread
+ * every 5 ms that mixes every 50 ms of that clock, and a thread every 15 ms that services streams. So its
+ * imports are hooked as well, once capture starts: its clock becomes the audio played so far (game time), and
+ * each piece of audio played wakes those two threads at once and waits for the timer thread's pass to finish.
+ * Miles then sees what it sees at real time, in step with the game whatever the render's speed.
  */
 #include "w3shim.h"
 
@@ -37,6 +44,16 @@ static struct {
     WAVEHDR *done[MAX_QUEUE]; /* finished buffers, handed back to Miles by the device thread */
     int ndone;
     HANDLE wake;
+    /* W3SIM_AUDIO_FREE */
+    int free_run;
+    volatile LONG clock_on;       /* capture has started: Miles's clock is the audio played */
+    volatile LONGLONG clock_ticks; /* the audio played so far (QPC ticks) */
+    LONGLONG qpc_base;
+    DWORD tgt_base;
+    HANDLE timer_wake, stream_wake, pass_event;
+    volatile LONG pass_req, pass_sent, pass_seen, pass_done; /* each piece's pass of Miles's timer thread */
+    int passes_lost;              /* in a row without an answer; many: Miles's threads are not hooked, stop waiting */
+    LONG pass_timeouts;
 } A;
 
 static FARPROC(WINAPI *GetProcAddress_orig)(HMODULE, LPCSTR);
@@ -113,9 +130,152 @@ static DWORD owed_bytes(double seconds) {
     return n;
 }
 
+/* W3SIM_AUDIO_FREE: Miles's clock and its threads' waits. Its threads as of Mss32.dll 6.1d (the game's copy), by
+ * the return addresses of their timed waits: the timer thread's and the stream service thread's. */
+#define RVA_TIMER_WAIT1 0x15ba
+#define RVA_TIMER_WAIT2 0x1634
+#define RVA_STREAM_WAIT1 0x1c6a1
+#define RVA_STREAM_WAIT2 0x1c705
+#define FREE_IDLE_MS 50 /* (nothing to do while no piece comes: these threads' timed waits at their longest) */
+#define FREE_PIECE 0.025 /* seconds: Miles's output pieces (4416 bytes): what its timers see at a time */
+#define FREE_NUDGE 0.005 /* seconds of its clock when it has nothing queued, at most FREE_STUCK times a frame */
+#define FREE_STUCK 40
+static BYTE *g_mss;
+static BOOL(WINAPI *MssQpc_orig)(LARGE_INTEGER *);
+static DWORD(WINAPI *MssTgt_orig)(void);
+static DWORD(WINAPI *MssWfso_orig)(HANDLE, DWORD);
+
+static LONGLONG clock_ticks_read(void) {
+    return __sync_val_compare_and_swap(&A.clock_ticks, 0, 0);
+}
+
+static BOOL WINAPI mss_Qpc(LARGE_INTEGER *out) {
+    if (!A.clock_on)
+        return MssQpc_orig(out);
+    out->QuadPart = A.qpc_base + clock_ticks_read();
+    return TRUE;
+}
+
+static DWORD WINAPI mss_Tgt(void) {
+    if (!A.clock_on)
+        return MssTgt_orig();
+    return A.tgt_base + (DWORD)(clock_ticks_read() * 1000 / real_qpc_freq());
+}
+
+static DWORD WINAPI mss_Wfso(HANDLE h, DWORD ms) {
+    DWORD site = (DWORD)((BYTE *)__builtin_return_address(0) - g_mss);
+    int timer = site == RVA_TIMER_WAIT1 || site == RVA_TIMER_WAIT2;
+    if (!A.clock_on || !(timer || site == RVA_STREAM_WAIT1 || site == RVA_STREAM_WAIT2))
+        return MssWfso_orig(h, ms);
+    if (timer) { /* the pass that began at the last wake has ended */
+        A.pass_done = A.pass_seen;
+        SetEvent(A.pass_event);
+    }
+    HANDLE both[2] = {h, timer ? A.timer_wake : A.stream_wake};
+    DWORD r = WaitForMultipleObjects(2, both, FALSE, FREE_IDLE_MS);
+    if (timer)
+        A.pass_seen = A.pass_sent;
+    return r == WAIT_OBJECT_0 + 1 ? WAIT_TIMEOUT : r;
+}
+
+/* Hand back what was played and let Miles's clock run on by `seconds`; back when its timer thread has seen it. */
+static void miles_pass(double seconds) {
+    __sync_add_and_fetch(&A.clock_ticks, (LONGLONG)(seconds * real_qpc_freq() + 0.5));
+    LONG want = InterlockedIncrement(&A.pass_req);
+    SetEvent(A.wake);
+    if (A.passes_lost >= 20)
+        return;
+    for (int tries = 0; A.pass_done - want < 0; tries++) {
+        if (tries == 4) { /* (200 ms, loaded machines) */
+            A.pass_timeouts++;
+            if (++A.passes_lost == 20)
+                shim_log("audio: Miles's timer thread does not answer: no longer waiting for it");
+            return;
+        }
+        WaitForSingleObject(A.pass_event, FREE_IDLE_MS);
+    }
+    A.passes_lost = 0;
+}
+
+/* One frame's audio, a piece at a time: no real-time pacing, and as many passes of Miles as a real sound card's
+ * time would have brought. */
+static void frame_free(DWORD bytes, char *buf, DWORD align) {
+    if (!A.clock_on) {
+        LARGE_INTEGER q;
+        MssQpc_orig(&q);
+        A.qpc_base = q.QuadPart;
+        A.tgt_base = MssTgt_orig();
+        MemoryBarrier();
+        A.clock_on = 1;
+        shim_log("audio: free-running: Miles's clock is the audio played");
+    }
+    DWORD piece = (DWORD)(FREE_PIECE * A.fmt.nAvgBytesPerSec) / align * align, got = 0;
+    int stuck = 0;
+    if (!piece)
+        piece = align;
+    while (got < bytes) {
+        EnterCriticalSection(&A.lock);
+        DWORD q = queued_bytes() / align * align;
+        if (A.debt && q > bytes - got) { /* (silence stood in for it: drop it, or everything after would lag) */
+            DWORD drop = q - (bytes - got) < A.debt ? q - (bytes - got) : A.debt;
+            drop = drop / align * align;
+            consume(NULL, drop);
+            A.debt -= drop;
+            q -= drop;
+        }
+        DWORD n = bytes - got < piece ? bytes - got : piece;
+        if (n > q)
+            n = q;
+        if (n)
+            consume(buf + got, n);
+        A.last_virt = 0;
+        LeaveCriticalSection(&A.lock);
+        got += n;
+        if (n) {
+            stuck = 0;
+            miles_pass((double)n / A.fmt.nAvgBytesPerSec);
+        } else if (++stuck <= FREE_STUCK) { /* Miles mixes on its clock's time: nothing queued, let that run on */
+            miles_pass(FREE_NUDGE);
+        } else { /* (its device closing, say) */
+            DWORD rest = bytes - got;
+            memset(buf + got, A.fmt.wBitsPerSample == 8 ? 0x80 : 0, rest);
+            EnterCriticalSection(&A.lock);
+            A.underflow += rest;
+            A.debt += rest;
+            LeaveCriticalSection(&A.lock);
+            break;
+        }
+    }
+}
+
 int audio_frame(double seconds, char **data, int *len, char *fmt, int fmt_cap) {
     if (!A.enabled || !A.open)
         return 0;
+    if (A.free_run) {
+        static char *fbuf;
+        static DWORD fcap;
+        EnterCriticalSection(&A.lock);
+        DWORD fbytes = owed_bytes(seconds), falign = A.fmt.nBlockAlign ? A.fmt.nBlockAlign : 1;
+        DWORD flatency = A.write_latency_n ? (DWORD)(A.write_latency_sum / A.write_latency_n) / falign * falign : 0;
+        LeaveCriticalSection(&A.lock);
+        if (fbytes > fcap) {
+            fcap = fbytes * 2;
+            fbuf = realloc(fbuf, fcap);
+        }
+        frame_free(fbytes, fbuf, falign);
+        static int freported;
+        static LONGLONG flast;
+        if (A.underflow != flast && freported < 20) {
+            flast = A.underflow;
+            freported++;
+            shim_log("audio: %lld bytes padded with silence so far (Miles was late), %ld passes lost", A.underflow,
+                     A.pass_timeouts);
+        }
+        *data = fbuf;
+        *len = (int)fbytes;
+        _snprintf(fmt, fmt_cap, "%lu %u %u %lu", A.fmt.nSamplesPerSec, A.fmt.nChannels, A.fmt.wBitsPerSample, flatency);
+        return 1;
+    }
     /* Real-time pacing: Miles mixes on its own thread, woken by real time. Played faster than
      * real time, each wake would have to cover more game time and new sounds would wait longer
      * before they are mixed. At real-time pace Miles behaves as with a real sound card and the
@@ -210,6 +370,11 @@ static DWORD WINAPI device_thread(LPVOID arg) {
         LeaveCriticalSection(&A.lock);
         for (int i = 0; i < n; i++)
             notify(WOM_DONE, (DWORD_PTR)done[i]);
+        if (A.free_run && A.pass_sent != A.pass_req) { /* (the buffers are back: now Miles's turn) */
+            A.pass_sent = A.pass_req;
+            SetEvent(A.timer_wake);
+            SetEvent(A.stream_wake);
+        }
     }
     return 0;
 }
@@ -435,6 +600,18 @@ void audio_install(void) {
         shim_log("audio: AIL_open_digital_driver import not found; Miles keeps its buffering");
     if (A.trace)
         iat_hook((HMODULE)g_base, "mss32.dll", "_AIL_start_sample@4", start_sample_hook, (void **)&start_sample_orig);
+    if (GetEnvironmentVariableA("W3SIM_AUDIO_FREE", buf, sizeof buf) && buf[0] == '1') {
+        g_mss = (BYTE *)mss;
+        A.timer_wake = CreateEventA(NULL, FALSE, FALSE, NULL);
+        A.stream_wake = CreateEventA(NULL, FALSE, FALSE, NULL);
+        A.pass_event = CreateEventA(NULL, FALSE, FALSE, NULL);
+        if (iat_hook(mss, "KERNEL32.dll", "QueryPerformanceCounter", mss_Qpc, (void **)&MssQpc_orig) &&
+            iat_hook(mss, "WINMM.dll", "timeGetTime", mss_Tgt, (void **)&MssTgt_orig) &&
+            iat_hook(mss, "KERNEL32.dll", "WaitForSingleObject", mss_Wfso, (void **)&MssWfso_orig))
+            A.free_run = 1;
+        else
+            shim_log("audio: Miles's clock not hooked: real-time pacing");
+    }
     A.wake = CreateEventA(NULL, FALSE, FALSE, NULL);
     CreateThread(NULL, 0, device_thread, NULL, 0, NULL);
     A.enabled = 1;

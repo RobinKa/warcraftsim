@@ -4,7 +4,7 @@
 
 Uses runs/RUN/replays/STEM.w3g (with its .commands.json: the map it was recorded on, and .trace.json: the
 panel and the players), the run's launch flags (map, step, handicap, game length) and the run's GE Wine.
-Default output: the run's videos/STEM.mp4 (replacing it). Renders in real time, with sound.
+Default output: the run's videos/STEM.mp4 (replacing it). Renders with sound, as fast as the machine draws.
 """
 
 from __future__ import annotations
