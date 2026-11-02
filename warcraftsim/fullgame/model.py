@@ -35,16 +35,20 @@ class FullGameNet(nn.Module):
     def __init__(self, n_types: int, n_cur: int, n_orders: int, G: int, d: int = 192, heads: int = 4,
                  layers: int = 3, dropout: float = 0.0, memory: bool = False, target_temperature: float = 1.0,
                  priv: int = 0, order_temperature: float = 1.0, bins: int = 128, z: int = 0, gx: int = 0,
-                 valid: int = 0, vparts: int = 0, ghost: bool = False, privileged: bool = False, fine: int = 0):
+                 valid: int = 0, vparts: int = 0, ghost: bool = False, privileged: bool = False, fine: int = 0,
+                 vtax: int = 0):
         super().__init__()
         self.config = dict(n_types=n_types, n_cur=n_cur, n_orders=n_orders, G=G, d=d, heads=heads, layers=layers,
                            dropout=dropout, memory=memory, target_temperature=target_temperature, priv=priv,
                            order_temperature=order_temperature, bins=bins, **({"z": z} if z else {}),
                            **({"gx": gx} if gx else {}), **({"valid": valid} if valid else {}),
                            **({"vparts": vparts} if vparts else {}), **({"ghost": True} if ghost else {}),
-                           **({"privileged": True} if privileged else {}), **({"fine": int(fine)} if fine > 1 else {}))
-        # the global vector's last `priv` numbers: the whole game (features.View.priv), for the value alone
+                           **({"privileged": True} if privileged else {}), **({"fine": int(fine)} if fine > 1 else {}),
+                           **({"vtax": int(vtax)} if vtax else {}))
+        # the global vector's last `priv` numbers: the whole game (features.View.priv), for the value alone; with
+        # --value-tax its last `vtax` of them the game's taxes (features.View.tax), read by tax_proj alone
         self.priv = int(priv)
+        self.vtax = int(vtax)
         # the target heads' logits (unit, x, y) divided by it, acting and training alike: < 1 samples a unit's
         # target closer to its most likely one (AlphaStar samples at 0.8; a clone of a deterministic script
         # spreads its targets from uncertainty, and a group's points scattered)
@@ -83,11 +87,11 @@ class FullGameNet(nn.Module):
         self.value_head = nn.Sequential(nn.Linear(d, d), nn.ReLU(), nn.Linear(d, max(1, int(vparts))))
         if privileged:  # (a privileged view, the global vector's last flag: the policy reads the privileged block too;
             # zero at first)
-            self.priv_pol = nn.Sequential(nn.Linear(self.priv, d), nn.ReLU(), nn.Linear(d, d))
+            self.priv_pol = nn.Sequential(nn.Linear(self.priv - self.vtax, d), nn.ReLU(), nn.Linear(d, d))
             nn.init.zeros_(self.priv_pol[2].weight)
             nn.init.zeros_(self.priv_pol[2].bias)
         if self.priv:  # (added to the value head's input; zero at first: the value as before)
-            self.priv_proj = nn.Sequential(nn.Linear(self.priv, d), nn.ReLU(), nn.Linear(d, d))
+            self.priv_proj = nn.Sequential(nn.Linear(self.priv - self.vtax, d), nn.ReLU(), nn.Linear(d, d))
             nn.init.zeros_(self.priv_proj[2].weight)
             nn.init.zeros_(self.priv_proj[2].bias)
         # each order class's kind (features.IMMEDIATE, POINT, ...: which target it takes)
@@ -108,6 +112,10 @@ class FullGameNet(nn.Module):
             self.point_f = nn.Sequential(nn.Linear(d, d), nn.ReLU(), nn.Linear(d, self.fine * self.fine))
             nn.init.zeros_(self.point_f[2].weight)
             nn.init.zeros_(self.point_f[2].bias)
+        if self.vtax:  # (--value-tax: the game's taxes into the value head's input, never the policy's; zero at first,
+            self.tax_proj = nn.Linear(self.vtax, d)  # the value as before. Registered last, as the fine head)
+            nn.init.zeros_(self.tax_proj.weight)
+            nn.init.zeros_(self.tax_proj.bias)
 
     def _valid_buffers(self, n_types: int, k: int) -> None:
         self.register_buffer("valid_cols", torch.zeros(k, dtype=torch.long))  # the order classes that need something
@@ -161,7 +169,8 @@ class FullGameNet(nn.Module):
         g0 = self.glob(glob[..., :self.config["G"] - self.priv])
         if self.config.get("privileged"):  # (the flag: the last number before the privileged block)
             at = self.config["G"] - self.priv
-            g0 = g0 + glob[..., at - 1:at].to(g0.dtype) * self.priv_pol(glob[..., at:].to(g0.dtype))
+            p = glob[..., at:at + self.priv - self.vtax]  # (not the taxes: the value's alone)
+            g0 = g0 + glob[..., at - 1:at].to(g0.dtype) * self.priv_pol(p.to(g0.dtype))
         tok = torch.cat([g0.unsqueeze(1), x], 1)
         pad = torch.cat([torch.zeros_like(mask[:, :1]), ~mask], 1)
         if self.config.get("ghost") and ent.shape[-1] > fx.A_MEM:  # (the remembered enemies: their attention bias)
@@ -244,7 +253,10 @@ class FullGameNet(nn.Module):
     def value_parts(self, g, glob=None):
         """[N, parts] (one: the value)."""
         if self.priv and glob is not None:  # (the privileged block: what the player does not see)
-            g = g + self.priv_proj(glob[..., -self.priv:].to(g.dtype))
+            p = glob[..., -self.priv:].to(g.dtype)
+            g = g + self.priv_proj(p[..., :self.priv - self.vtax])
+            if self.vtax:  # (--value-tax: and the game's taxes)
+                g = g + self.tax_proj(p[..., self.priv - self.vtax:])
         return self.value_head(g)
 
     def value(self, g, glob=None):
@@ -432,7 +444,10 @@ def trained(state: dict, net: FullGameNet) -> dict:
     data (the orders each type may give, neutral.who_buys; the hero orders' needs, set_valid) the network's
     own, as load gives them now, not the checkpoint's."""
     own = net.state_dict()
-    return {**state, **{k: own[k] for k in DERIVED if k in own}}
+    out = {**state, **{k: own[k] for k in DERIVED if k in own}}
+    # (--value-tax turned on or off at a restart: the taxes' projection as the network has it, zero at first, or none)
+    out = {k: v for k, v in out.items() if not k.startswith("tax_proj.") or k in own}
+    return {**{k: v for k, v in own.items() if k.startswith("tax_proj.") and k not in out}, **out}
 
 
 def adapt_config(config: dict) -> dict:
@@ -451,6 +466,13 @@ def adapt_config(config: dict) -> dict:
     if z and fx.ZDIM > z:  # (--z-modes: the strategy block's modes after its build target's)
         config["G"] += fx.ZDIM - z
         config["z"] = fx.ZDIM
+    vt = config.get("vtax", 0)
+    if config.get("priv") and fx.VTAX != vt:  # (--value-tax: the game's taxes at the privileged block's end, the
+        config["G"] += fx.VTAX - vt           # value's alone: tax_proj, zero at first; a run without them drops it)
+        config["priv"] += fx.VTAX - vt
+        config.pop("vtax", None)
+        if fx.VTAX:
+            config["vtax"] = fx.VTAX
     return config
 
 
@@ -474,6 +496,7 @@ def configure_for(path) -> None:
     fx.set_shop_items(int(vocab.get("shop_items") or 0))
     fx.set_z(c.get("z", 0))
     fx.set_fine(c.get("fine", 0))  # (--fine-points: the sub-cells its fine head picks)
+    fx.set_value_tax(c.get("vtax", 0))  # (--value-tax: the taxes it reads, zeros here)
     if c.get("gx", 0) >= 3:  # (the unit channels it reads: all of them, a run's --features zeros only its weights)
         fx.ACTIVE_F = fx.F
 
@@ -482,7 +505,7 @@ def glob_layout(ck: dict) -> tuple[dict, int, int, int]:
     """A checkpoint's config (the privileged block it lacks added) and what its policy read: (config, gx, z, G)."""
     config = dict(ck["config"])
     if "vocab" in ck:  # global features added since (the privileged block at the end): the value's, zero at first
-        G_now = fx.Encoder(ck["vocab"]).G - fx.GX + config.get("gx", 0)
+        G_now = fx.Encoder(ck["vocab"]).G - fx.GX - fx.VTAX + config.get("gx", 0)
         if config["G"] < G_now and not config.get("priv"):
             config["priv"], config["G"] = G_now - config["G"], G_now
     return config, config.get("gx", 0), config.get("z", 0), config["G"]
@@ -490,8 +513,9 @@ def glob_layout(ck: dict) -> tuple[dict, int, int, int]:
 
 def grow_glob(w: torch.Tensor, config: dict, gx_old: int, z_old: int, G_old: int) -> torch.Tensor:
     """glob.0.weight (or Adam's state of it) read as [known | strategy block | clock] by a network of G_old inputs,
-    for `config`'s: the grown parts zeros, where they are (the strategy block's end, and the end)."""
-    at = G_old - config.get("priv", 0) - gx_old  # (the strategy block's end)
+    for `config`'s: the grown parts zeros, where they are (the strategy block's end, and the end). (Its width tells
+    where the old privileged block began: --value-tax may have grown that block too.)"""
+    at = w.shape[1] - gx_old  # (the strategy block's end)
     dz, dg = config.get("z", 0) - z_old, config.get("gx", 0) - gx_old
     return torch.cat([w[:, :at], w.new_zeros(w.shape[0], dz), w[:, at:], w.new_zeros(w.shape[0], dg)], 1)
 
@@ -516,10 +540,14 @@ def load(path, device="cpu", memory: bool | None = None, vocab: dict | None = No
     elif w is not None and w.shape[1] > fx.F:  # (a run with fewer inputs: those it has)
         state = {**state, "ent.weight": w[:, :fx.F]}
     w = state.get("glob.0.weight")
-    if w is not None and config["G"] > G_old:  # what the policy reads, [known | strategy block | clock]: grown parts zeros
+    if w is not None and w.shape[1] < config["G"] - config.get("priv", 0):  # what the policy reads, [known | strategy
+        # block | clock]: grown parts zeros
         state = {**state, "glob.0.weight": grow_glob(w, config, gx_old, z_old, G_old)}
+    if not net.vtax:  # (a network trained with --value-tax, in a run without: its value without the taxes)
+        state = {k: v for k, v in state.items() if not k.startswith("tax_proj.")}
     missing, unexpected = net.load_state_dict(state, strict=False)
-    if unexpected or any(not (k.startswith(("value_head.", "mem_", "priv_proj.", "priv_pol.")) or k in ("order_kind", "target_temp", "ghost_bias"))
+    if unexpected or any(not (k.startswith(("value_head.", "mem_", "priv_proj.", "priv_pol.", "tax_proj."))
+                              or k in ("order_kind", "target_temp", "ghost_bias"))
                          for k in missing):
         raise RuntimeError(f"{path}: missing {missing}, unexpected {unexpected}")
     if "order_kind" in missing and "vocab" in ck:  # fits from before it: from the vocabulary

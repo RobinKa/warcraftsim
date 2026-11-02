@@ -134,6 +134,7 @@ def run_config(run_dir: Path, host: str, games: int, start_update) -> tuple[dict
            "tech_mask": num("tech_mask", 0, int), "valid_mask": num("valid_mask", 0, int), "neutral": num("neutral", 0, int), "macros": num("macros", 0, int), "spells": num("spells", 0, int), "shop_items": num("shop_items", 0, int), "fine_points": num("fine_points", 0, int),
            "macros_off": "" if c.get("macros_off") in (None, "None") else str(c.get("macros_off")),
            "econ_masks": num("econ_masks", 0, int),
+           "value_tax": num("value_tax", 0, int),  # (--value-tax: the rows' width; the taxes zeros in evaluation games)
            "eval_human": num("eval_human", 0, int),
            "privileged": num("opsd_share", 0.0) > 0 or num("opsd_coef", 0.0) > 0,  # (the networks' channels only)
            "scenarios": [], "scenario_share": 0.0,  # (training games only)
@@ -208,6 +209,7 @@ def worker_main(wid: int, cfg: dict, games: int, keys: dict, host: str, q, stop)
     fx.set_fine(int(cfg.get("fine_points", 0) or 0))  # (--fine-points: the point indices)
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     fx.set_econ_masks(cfg.get("econ_masks", 0))
+    fx.set_value_tax(cfg.get("value_tax", 0))
     torch.set_num_threads(1)
     sys.setswitchinterval(0.001)  # (a game thread woken by its answer waits for the GIL: 5 ms by default)
     try:
@@ -310,6 +312,7 @@ def main(argv: list[str] | None = None) -> int:
     fx.set_fine(int(cfg.get("fine_points", 0) or 0))  # (--fine-points: the point indices)
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     fx.set_econ_masks(cfg.get("econ_masks", 0))
+    fx.set_value_tax(cfg.get("value_tax", 0))  # (before the networks: the run's checkpoints read the taxes)
     from ..data.duelmap import parse_duel_name
     if parse_duel_name(cfg["map"]) is None:  # (as selfplay.main: another map's frame; set_geometry exports it)
         from ..data.mapbuild import stock_map_path
