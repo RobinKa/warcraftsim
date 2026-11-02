@@ -708,6 +708,22 @@ With those two kept, 64 games on the box again: 4,620 steps/s against 4,480 at 5
 
 The GPU's fan is the machine's loudest. 350 W against 400 W in fgself-170: 4,099 steps/s against 4,272 (-4%, 9 checkpoints against 45), 67 °C against 70, 1,720 MHz against 1,860, fan 91-94% against 100%. The fan's own curve runs it near full even at 67 °C, well below the card's 83 °C target, so the fan does not slow much, yet the difference can be heard: kept at 350 W, on startup too (`nvidia-power-limit.service`). Not tried: setting the fan's speed directly and letting the GPU run warmer.
 
+### An undervolt (2026-11-02, the user's question; not kept, it crashed a run)
+
+NVIDIA's Linux driver has no voltage control. What it has is a clock offset that shifts the voltage/frequency curve (NVML's `nvmlDeviceSetGpcClkVfOffset`), together with a locked top clock (`nvmlDeviceSetGpuLockedClocks`), so the card holds a clock at the voltage it used to need for a lower one. `scripts/gpu_undervolt.py` does this (`status`, `apply`, `reset`, and `test`, which runs a bf16 GEMM load with an fp32 GEMM checked bit for bit against its first result every ~0.5 s, and watches the kernel log for Xid lines).
+
+The test, the GPU alone at 350 W, the top clock locked at 1,725 MHz (training's clock at the limit):
+
+| Load | Stock | +100 | +150 | +200 | +250 |
+|---|---|---|---|---|---|
+| bf16 8192³ (power-limited) | 112.2 TFLOPS, 1,412 MHz | 115.1, 1,448 | 117.8, 1,486 | 119.8, 1,514 | |
+| bf16 65536×256×1024 (power-limited) | 85.6, 1,432 MHz | 87.6, 1,475 | 89.7, 1,504 | 91.3, 1,534 | 92.6, 1,558 |
+| bf16 16384×256×256 (reaches 1,725) | 61.0, 1,646 MHz, 345 W | | 62.9, 1,725, 345 W | 63.0, 1,725, 338 W | 62.9, 1,725, 327 W |
+
+No mismatches and no Xid lines up to +250. Under a heavy load the offset buys speed at the same 350 W (+7% at +200); at training's clock it saves little power (-7 W at +200, -18 W at +250).
+
+Then `fgself-178` at 1,725 MHz +200: the learner died within the minute with `CUDA error: unspecified launch failure`, and the kernel logged `NVRM: Xid 109 ... CTX SWITCH TIMEOUT` (12:26:44). Training mixes the learner's and the inference processes' contexts and CUDA graphs, which the GEMM test does not. Whether the offset itself or changing the clocks under live contexts caused it is not known. The card went back to stock (`reset`), ran a GEMM correctly, and the run resumed from its checkpoint at 328,833 steps (~3 minutes lost). For a few percent of power, not worth another crash: **the GPU stays at stock with the 350 W limit**.
+
 ### Why a game step's wall time rises in a run (2026-11-01, the user's question)
 
 It is not a leak: the game's own part stays ~6.4 ms a step and only the wait for orders rises, and a run's rise levels off. `fgself-170` over 6 hours: 35 ms in its first half hour, ~38 from its second hour, up to 39 late; inference rounds 17 ms to ~20-21 ms; entities flat at ~40; training steps/s flat at ~4,400 (+-3%). The GPU is at 100% throughout, so a game step waits for its share of a saturated GPU, and the wait follows how much it has to serve. What grows is the past snapshots' traffic: 714 rows/s to ~900, in ~550 calls/s of ~700 (1.6 rows a call). `fgself-168` shows the same step: past calls 351/s to 570/s with rounds 13.8 ms to 18.9 ms. The first figures also read low because long games have not ended yet. `fgself-174`'s larger rise (rounds 17.6 to 27.9 ms in an hour) is not clean: it starts from fewer past games, and an agent's probes and browser tests were running beside it (load 40-58): re-read once they end. Possible gain, not built: past snapshots' inference on the box's CPU, where it has spare cores (80% of the GPU's calls for ~17% of its rows; `--infer-past-period-ms` batching them gave no net gain).

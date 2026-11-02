@@ -8,9 +8,9 @@
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-177` | `fgself-171`'s last as a fixed league member, from `fgself-176` | Item 2 below |
+| `fgself-178` | The map pool (item 3), from `fgself-177` | Echo Isles half the launches; judged on Echo Isles, then on all four real maps |
 
-Done: item 1, `fgself-176` (`--ref-kl 0.01`), kept, level and slightly more varied. `fgself-175` (the hunt lesson) was not kept: ties down from 73% to 8%, but 63% to 72% against insane.
+Done: item 2, `fgself-177` (`fgself-171` in the league), kept: 58% head to head, insane level, its army mix not taken up. Item 1, `fgself-176` (`--ref-kl 0.01`), kept, level and slightly more varied. `fgself-175` (the hunt lesson) was not kept: ties down from 73% to 8%, but 63% to 72% against insane.
 
 ## Runs, in order
 
