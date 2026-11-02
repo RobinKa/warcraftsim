@@ -8,7 +8,8 @@
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-179` | `--shop-items 1` (item 4), from `fgself-177` | People buy items in 92-99% of games |
+| `fgself-180` | `--z-share 0.25` (item 6), from `fgself-179` | 67% of training steps carry a target |
+| `fgself-179` (kept) | `--shop-items 1` (item 4) | Against insane 77% to 66% (and to `fgself-177`'s 67% elsewhere); buys 0.06 items a game; narrower play |
 | `fgself-178` (not kept) | The map pool (item 3) | Off Echo Isles 46% against 46%; on Echo Isles longer games, 58% against 73%: it rushed less there and lost the long games |
 
 Done: item 2, `fgself-177` (`fgself-171` in the league), kept: 58% head to head, insane level, its army mix not taken up. Item 1, `fgself-176` (`--ref-kl 0.01`), kept, level and slightly more varied. `fgself-175` (the hunt lesson) was not kept: ties down from 73% to 8%, but 63% to 72% against insane.
