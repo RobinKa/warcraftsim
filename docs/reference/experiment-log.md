@@ -2026,6 +2026,8 @@ The `base2` games so far. Against the AI 86% won (of 1,506 at 22:07) at a median
 
 **`fgself-181`** (21:11, from `fgself-179`/50301674, its league): **`--ai-share 0.5`**, item 7 of the queue: half the training games between agents (from 20%), at a person's income. `fgself-180` was still running when it started (the fork stops only a live parent) and was stopped ~30 s later.
 
+**`fgself-181` at 30M** (23:13, paused for the night at 30.2M steps): over the stop line, it goes on to ~50M tomorrow. Head to head 55% of 353; against insane 69% to 72% (-3.9 points with the races weighed alike, not significant; undead 55/68, human 58/71, orc 60/51); from its second hour anti-air against 4+ air 36% to 21% and creeps 1.47 to 0.95 (both significant), orc's top unit 71% against the start's 55% (more one-unit), orders to loaded units 6 to 14. Merged meanwhile, both off by default: `--value-tax` (the value reads each game's tax) and `--z-shop` (race-shop items' first purchases as targets, the user's idea).
+
 The queue:
 1. (done: in `fgself-155`) The audit-12 economy fixes: a training map whose mines and start scale with its costs (`echofast2`), workers labelled up to the target's count, masks against duplicate tech buildings and surplus workers, orc burrow and no-target lumber lessons.
 2. Cloning the scripted strategy family as anchor and teacher (AlphaStar's recipe with scripted data). First tune its weak plans, and add night elf and undead expansion plans. Then record thousands of echofast games (`scripts/heuristic_match.py --record`), train a cloning policy, and use it as the KL anchor and a distillation teacher.
