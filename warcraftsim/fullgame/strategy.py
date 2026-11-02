@@ -21,6 +21,13 @@ game's own heroes and main army (the unit types with FOOD_SHARE of its army's fo
 need (techtree.closure), nothing else; their buildings and research outside it are free (mismatch, allowed),
 heroes and army units outside it are not. Drawn evenly over their signatures (heroes, main army: "sig"), not
 over games, so a rare build comes up as often as a common one.
+
+Items bought (--z-shop K; the user's idea, 2026-11-02: people buy items in 92-99% of their games, the policy hardly
+ever): per race the K race-shop items people buy in most games (shop_choice; its orb in the last place when enough of
+them buy one), the pool's "shop_items". A strategy's "t" also holds each one's first purchase (people's: the replay's
+click, a sale is at once; "shop" set: it tells its purchases; the built-in AI's demonstrations hold none, no "shop":
+their item inputs are zeros and their reward leaves the items out). The items' inputs come at the strategy block's end
+(shop_vector); the reward counts them as other items (scored); a narrow strategy keeps them.
 """
 
 from __future__ import annotations
@@ -150,11 +157,12 @@ def research_time_steps() -> dict[str, float]:
     return out
 
 
-def from_replays(stats: Path, lag: str = "build", patches: set[str] | None = None) -> list[dict]:
+def from_replays(stats: Path, lag: str = "build", patches: set[str] | None = None,
+                 shop: dict[str, list[str]] | None = None) -> list[dict]:
     """Every 1v1 player's strategy in replay_stats.py's rows (people's replays). `lag`: an item's time is its click's
     plus its build time ("build"), or plus CLICK_LAG ("fixed": the pools before 2026-10-25). `patches`: only replays
     of these game versions ("1.29", "1.30", ...; build times are 1.29's, and other versions' balance differs:
-    docs/reference/human-replays.md)."""
+    docs/reference/human-replays.md). `shop` (--z-shop: race -> items): their first purchases too, "shop" set."""
     out = []
     bt = build_seconds() if lag == "build" else {}
     more = research_time_steps() if lag == "build" else {}
@@ -180,11 +188,117 @@ def from_replays(stats: Path, lag: str = "build", patches: set[str] | None = Non
                     clicks[code] += code[:1] == "R"
                     pairs.append((code, done(t_ms, kind, code, max(clicks[code], 1))))
             n = Counter(code for t_ms, kind, code, *_ in b["build"] if kind == "train")
+            t = _first_times(pairs)
+            if shop is not None:  # (--z-shop: the items' first purchases, at their clicks)
+                got = first_bought(b["build"])
+                t.update({c: got[c] for c in shop[races[i]] if c in got})
             out.append({"race": races[i], "opp": races[1 - i], "src": "human", "won": bool(b.get("won")),
-                        "t": _first_times(pairs), "n": dict(n), "replay": r.get("file"), "slot": b.get("slot"),
+                        "t": t, "n": dict(n), "replay": r.get("file"), "slot": b.get("slot"),
                         **({"patch": r["patch"]} if r.get("patch") and r["patch"] != "1.29" else {}),
-                        "end": round(r.get("length_ms", HORIZON * 1000) / 1000.0, 1)})
+                        "end": round(r.get("length_ms", HORIZON * 1000) / 1000.0, 1),
+                        **({"shop": True} if shop is not None else {})})
     return out
+
+
+# --z-shop: a town portal is no plan (every hero has one from the start; one bought replaces it, a reaction)
+SHOP_EXCLUDE = frozenset({"stwp"})
+ORBS = {"human": "ofir", "orc": "oli2", "undead": "ocor", "nightelf": "oven"}
+ORB_SHARE = 0.2  # (the race's orb takes the last item slot when this share of its people buy one)
+
+
+def first_bought(build) -> dict[str, float]:
+    """A replay player's first purchase of each item (w3g.summarize's "item" rows: the click; game seconds)."""
+    out: dict[str, float] = {}
+    for t_ms, kind, code, *_ in build:
+        if kind == "item" and (code not in out or t_ms / 1000.0 < out[code]):
+            out[code] = t_ms / 1000.0
+    return out
+
+
+def shop_table(stats: list[Path], patches: set[str] | None = None) -> dict:
+    """People's purchases of their race shop's items (shopitems.STOCK) in the 1v1s of replay_stats.py's rows (both
+    players of a known race, as from_replays): per map ("all"; "echo": Echo Isles) and race, its players ("games") and
+    per item the share of them that bought one and the median first purchase (game seconds)."""
+    from .shopitems import RACE_SHOPS, STOCK
+    games = {m: Counter() for m in ("all", "echo")}
+    first: dict[str, dict] = {m: {} for m in games}
+    for f in stats:
+        for line in Path(f).open():
+            r = json.loads(line)
+            if r.get("type") != "1v1" or (patches and r.get("patch") not in patches):
+                continue
+            bos = r.get("build_orders") or []
+            if len(bos) != 2 or any(b.get("race_played") not in RACES for b in bos):
+                continue
+            maps = ("all", "echo") if "echoisles" in str(r.get("map") or "").lower().replace(" ", "") else ("all",)
+            for b in bos:
+                race = b["race_played"]
+                got = first_bought(b["build"])
+                for m in maps:
+                    games[m][race] += 1
+                    for c in STOCK[RACE_SHOPS[race]]:
+                        if c in got:
+                            first[m].setdefault((race, c), []).append(got[c])
+    return {m: {race: {"games": games[m][race],
+                       "items": {c: (len(v) / games[m][race], float(np.median(v)))
+                                 for (r_, c), v in sorted(first[m].items()) if r_ == race}}
+                for race in RACES} for m in games}
+
+
+def shop_choice(table: dict, k: int) -> dict[str, list[str]]:
+    """--z-shop: per race the `k` items of its shop people buy in most games (all 1v1s; SHOP_EXCLUDE left out), the
+    race's orb (ORBS) in the last place when none of them is one and at least ORB_SHARE of its people buy it."""
+    out = {}
+    for race in RACES:
+        got = table["all"][race]["items"]
+        pick = sorted((c for c in got if c not in SHOP_EXCLUDE), key=lambda c: (-got[c][0], c))[:k]
+        orb = ORBS[race]
+        if k and orb not in pick and got.get(orb, (0.0,))[0] >= ORB_SHARE:
+            pick = pick[:k - 1] + [orb]
+        out[race] = pick
+    return out
+
+
+def print_shop(table: dict, chosen: dict[str, list[str]]) -> None:
+    """shop_table's purchases, the items chosen marked, as a Markdown table."""
+    from .shopitems import RACE_SHOPS, STOCK
+    print("| race (players: all, Echo Isles) | item | all 1v1s: bought, median first | Echo Isles: bought, median first |")
+    print("|---|---|---|---|")
+    for race in RACES:
+        a, e = table["all"][race], table["echo"][race]
+        for i, c in enumerate(sorted(STOCK[RACE_SHOPS[race]], key=lambda c: -a["items"].get(c, (0.0,))[0])):
+            cell = lambda d: f"{d['items'][c][0]:.0%}, {d['items'][c][1]:.0f} s" if c in d["items"] else "-"  # noqa: E731
+            who = f"{race} ({a['games']:,}, {e['games']})" if i == 0 else ""
+            print(f"| {who} | {c}{' (chosen)' if c in chosen[race] else ''} | {cell(a)} | {cell(e)} |")
+
+
+def add_shop(pool: dict, stats: list[Path], shop: dict[str, list[str]]) -> dict[str, float]:
+    """--z-shop into an existing pool: its people's strategies (each matched to its replay's row by file and slot) get
+    the items' first purchases, at the pool's own pace for people (its "end" against the replay's length: rescale_people's
+    factor; 1 for times as recorded), within HORIZON, "shop" set; the pool's "shop_items" the lists. A strategy whose
+    replay the rows lack stays without (its items unknown). In place; -> the factor per race."""
+    want = {s.get("replay") for s in pool["strategies"] if s.get("src") == "human"}
+    rows = {}
+    for f in stats:
+        for line in Path(f).open():
+            r = json.loads(line)
+            if r.get("file") in want and r.get("type") == "1v1":
+                rows[r["file"]] = ({b.get("slot"): first_bought(b["build"]) for b in r.get("build_orders") or []},
+                                   round(r.get("length_ms", HORIZON * 1000) / 1000.0, 1))
+    ratios: dict[str, list] = {}
+    for s in pool["strategies"]:
+        if s.get("src") == "human" and s.get("replay") in rows and rows[s["replay"]][1] > 0:
+            ratios.setdefault(s["race"], []).append(s.get("end", rows[s["replay"]][1]) / rows[s["replay"]][1])
+    factor = {race: float(np.median(v)) for race, v in ratios.items()}
+    for s in pool["strategies"]:
+        got = rows.get(s.get("replay"), ({}, 0))[0].get(s.get("slot")) if s.get("src") == "human" else None
+        if got is None:
+            continue
+        f = factor[s["race"]]
+        s["t"].update({c: round(got[c] * f, 1) for c in shop[s["race"]] if c in got and got[c] * f <= HORIZON})
+        s["shop"] = True
+    pool["shop_items"] = shop
+    return {race: round(f, 3) for race, f in factor.items()}
 
 
 def orderable(vocab: dict) -> set[str]:
@@ -246,22 +360,26 @@ def rescale_people(strategies: list[dict], quantile: float = 0.1) -> dict[str, f
 
 
 def build_pool(strategies: list[dict], min_items: int = 5, keep: set[str] | None = None,
-               items: dict[str, list[str]] | None = None) -> dict:
+               items: dict[str, list[str]] | None = None, shop: dict[str, list[str]] | None = None) -> dict:
     """The pool: each race's item list (its SLOTS items most strategies make within HORIZON; or `items`,
     another pool's: the slots a policy learned) and the strategies, their times cut to the horizon and the
-    lists."""
+    lists. `shop` (--z-shop): the items bought kept too (a strategy with "shop"), not among the lists nor counted
+    toward `min_items`; the pool's "shop_items"."""
     items = dict(items or {})
+    bought = {c for v in (shop or {}).values() for c in v}
     for race in [r for r in RACES if r not in items]:
         n = Counter(code for s in strategies if s["race"] == race for code, t in s["t"].items()
-                    if t <= HORIZON and (keep is None or code in keep) and of_race(code, race))
+                    if t <= HORIZON and (keep is None or code in keep) and of_race(code, race) and code not in bought)
         items[race] = [code for code, _ in n.most_common(SLOTS)]
     kept = []
     for s in strategies:
+        mine = (shop or {}).get(s["race"], ()) if s.get("shop") else ()
         t = {code: round(v, 1) for code, v in s["t"].items()
-             if v <= HORIZON and code in items[s["race"]] and of_race(code, s["race"])}
-        if len(t) >= min_items:
+             if v <= HORIZON and ((code in items[s["race"]] and of_race(code, s["race"])) or code in mine)}
+        if len(t) - sum(c in mine for c in t) >= min_items:
             kept.append({**s, "t": t})
-    return {"slots": SLOTS, "horizon": HORIZON, "items": items, "strategies": kept}
+    return {"slots": SLOTS, "horizon": HORIZON, "items": items, "strategies": kept,
+            **({"shop_items": shop} if shop else {})}
 
 
 def hindsight(pool: dict, path: Path, meta: dict) -> dict[int, dict]:
@@ -315,6 +433,9 @@ def narrow(strategy: dict, tree=None) -> dict | None:
     if not heroes:  # (a player whose heroes were the tavern's, not orderable: its target would forbid any)
         return None
     keep = closure(set(core) | set(heroes), strategy["race"], tree)
+    if strategy.get("shop"):  # (--z-shop: its items bought stay)
+        from .shopitems import ITEM_NAMES
+        keep |= {c for c in t if c in ITEM_NAMES}
     return {**strategy, "t": {c: v for c, v in t.items() if c in keep}, "narrow": True,
             "sig": f"{'+'.join(heroes) or '-'}|{'+'.join(sorted(core))}"}
 
@@ -335,6 +456,46 @@ def vector(strategy: dict | None, items: list[str]) -> np.ndarray:
         elif code in held:
             z[k], z[SLOTS + k] = 1.0, 0.0
     return z
+
+
+def shop_vector(strategy: dict | None, shop: list[str]) -> np.ndarray:
+    """--z-shop: the policy's input for a strategy's items bought (the strategy block's end, 2 per item): per item,
+    bought (1) and its first purchase's time / HORIZON (1: never) in the second half; zeros when the strategy does not
+    tell its purchases (none; the built-in AI's)."""
+    k = len(shop)
+    z = np.zeros(2 * k, np.float32)
+    if strategy is None or not strategy.get("shop"):
+        return z
+    z[k:] = 1.0
+    for i, code in enumerate(shop):
+        t = strategy["t"].get(code)
+        if t is not None and t <= HORIZON:
+            z[i], z[k + i] = 1.0, t / HORIZON
+    return z
+
+
+def block_width(z_modes: float = 0.0, z_mix: int = 0, z_comp: float = 0.0, z_shop: int = 0) -> int:
+    """The strategy block's width a run's flags ask for (selfplay's, bc's), its parts in this order: the build target
+    (ZDIM), the modes' (--z-modes; --z-comp too), the army mix (--z-mix), the composition kinds (--z-comp), the items
+    bought (--z-shop: 2 per item); 0 with none of them (the network's own block then)."""
+    from .modes import CDIM, MDIM
+    modes_part = z_modes > 0 or z_comp > 0
+    if not (modes_part or z_mix or z_shop):
+        return 0
+    return ZDIM + (MDIM if modes_part else 0) + (SLOTS if z_mix else 0) + (CDIM if z_comp > 0 else 0) + 2 * z_shop
+
+
+def scored(pool: dict, race: str, strategy: dict) -> list[str]:
+    """The items the strategy reward counts for `strategy` (mismatch's `items`): the race's list, then with --z-shop
+    (the pool's "shop_items") its items bought, when the strategy tells its purchases. One list per pool and race (the
+    reward's answers are kept per list)."""
+    items = pool["items"][race]
+    if not pool.get("shop_items") or not strategy.get("shop"):
+        return items
+    per = pool.setdefault("_scored", {})
+    if race not in per:
+        per[race] = list(items) + list(pool["shop_items"][race])
+    return per[race]
 
 
 # made whatever the target: each race's workers and supply (a target without farms would block itself)
@@ -495,7 +656,35 @@ def main(argv: list[str] | None = None) -> int:
                     "(e.g. 1.29 1.30; default: all; their strategies carry \"patch\" when not 1.29)")
     ap.add_argument("--rescale-people", type=float, default=0.0, help="people's times onto the demonstrations' rules, "
                     "no item earlier than this quantile of the AI's (strategy.rescale_people; 0: as recorded)")
+    ap.add_argument("--z-shop", type=int, default=0, help="K: each race's K race-shop items people buy most (from "
+                    "--replays: shop_choice, its table printed) as item slots, people's first purchases in their "
+                    "strategies (selfplay --z-shop K reads them); 0: none, the pool as before")
+    ap.add_argument("--shop-into", type=Path, help="with --z-shop: no new pool from demonstrations, this pool's "
+                    "strategies with the item slots added (people's matched by replay and slot, at the pool's own pace: "
+                    "add_shop), written to --out")
     a = ap.parse_args(argv)
+    shop = None
+    if a.z_shop:
+        if not a.replays:
+            ap.error("--z-shop needs --replays (people's purchases)")
+        table = shop_table(a.replays, set(a.replay_patches) or None)
+        shop = shop_choice(table, a.z_shop)
+        print_shop(table, shop)
+        print(f"items per race: {shop}")
+    if a.shop_into:
+        if shop is None or a.shop_into.resolve() == a.out.resolve():
+            ap.error("--shop-into needs --z-shop and another --out")
+        pool = json.loads(a.shop_into.read_text())
+        print("people's pace in the pool, factor per race:", add_shop(pool, a.replays, shop))
+        a.out.parent.mkdir(parents=True, exist_ok=True)
+        a.out.write_text(json.dumps(pool))
+        for race in RACES:
+            mine = [s for s in pool["strategies"] if s["race"] == race]
+            told = [s for s in mine if s.get("shop")]
+            print(f"  {race}: {len(told)} of {len(mine)} strategies tell their purchases; "
+                  + ", ".join(f"{c} {sum(c in s['t'] for s in told) / max(len(told), 1):.0%} (median "
+                              f"{np.median([s['t'][c] for s in told if c in s['t']] or [0]):.0f} s)" for c in shop[race]))
+        return 0
     strategies = []
     for d in a.demos:
         for f in sorted(d.glob("game*.npz")):
@@ -504,12 +693,13 @@ def main(argv: list[str] | None = None) -> int:
     if a.difficulty:
         strategies = [s for s in strategies if s.get("difficulty") == a.difficulty]
     for f in a.replays:
-        strategies += from_replays(f, a.click_lag, set(a.replay_patches) or None)
+        strategies += from_replays(f, a.click_lag, set(a.replay_patches) or None, shop)
     if a.rescale_people > 0:
         print("people's times, factor per race:", rescale_people(strategies, a.rescale_people))
     keep = orderable(json.loads(a.vocab.read_text())) if a.vocab else None
     if keep is not None:
-        strategies = [{**s, "t": {c: t for c, t in s["t"].items() if c in keep}} for s in strategies]
+        keep_t = keep | {c for v in (shop or {}).values() for c in v}  # (--z-shop: the items bought, as orders or not)
+        strategies = [{**s, "t": {c: t for c, t in s["t"].items() if c in keep_t}} for s in strategies]
     items = json.loads(a.items_from.read_text())["items"] if a.items_from else None
     if a.tavern and items is not None:  # (the slots: the old ones, the rarest swapped for the race's tavern picks)
         from .techtree import is_hero
@@ -521,7 +711,7 @@ def main(argv: list[str] | None = None) -> int:
             if new:
                 items[race] = items[race][:len(items[race]) - len(new)] + new
                 print(f"  {race}: tavern heroes in the last slots: {new}")
-    pool = build_pool(strategies, keep=keep, items=items)
+    pool = build_pool(strategies, keep=keep, items=items, shop=shop)
     if a.narrow:
         from .techtree import tree
         pool["strategies"] = [n for n in (narrow(s, tree()) for s in pool["strategies"]) if n is not None]

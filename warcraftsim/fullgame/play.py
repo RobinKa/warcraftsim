@@ -244,7 +244,7 @@ class BCAgent:
         rows = unit_rows(obs, t) if rows is None else rows
         self.rows = rows
         if fx.SHOP_ITEMS:
-            self._count_items(rows, obs.events)
+            self._count_items(rows, obs.events, obs.game_time)
         for e in obs.events:
             if int(e.kind) == int(EventKind.TREE_DEATH):
                 if self.trees.pop(e.a, None) is not None:
@@ -828,11 +828,12 @@ class BCAgent:
             self.__dict__.setdefault("casting_until", {})[unit] = self.t + si.PORTAL_STEPS
         return UseItem(unit, slot, x=how[1], y=how[2])
 
-    def _count_items(self, rows: np.ndarray, events) -> None:
+    def _count_items(self, rows: np.ndarray, events, now: float = 0.0) -> None:
         """--shop-items: the episode row's counts: `shop_bought` and `merchant_bought`, each item that reached a hero from
         a purchase, by where it was ordered (protocol.EventKind.ITEM_PICKUP, not off the ground), and `items_gone`, each
         item that left a living hero's inventory (its last charge used, by an order or by the engine: an agent's slot is a
-        computer slot, and its heroes use some items by themselves; dropped on no order of the policy's)."""
+        computer slot, and its heroes use some items by themselves; dropped on no order of the policy's). `first_bought`:
+        each item's first purchase, at game second `now` (selfplay --z-shop: the target's item made)."""
         buying = self.__dict__.setdefault("buying_at", {})
         for e in events:
             if buying and int(e.kind) == int(EventKind.ITEM_PICKUP) and not e.c:  # (to the buyer, or a hero near the shop)
@@ -844,6 +845,7 @@ class BCAgent:
                     name = "shop_bought" if where in _shopitems().RACE_SHOPS.values() else "merchant_bought"
                     got = self.__dict__.setdefault(name, {})
                     got[fx.rawcode(e.b)] = got.get(fx.rawcode(e.b), 0) + 1
+                    self.__dict__.setdefault("first_bought", {}).setdefault(fx.rawcode(e.b), now)
         fl = rows[:, fx.C_FLAGS]
         heroes = rows[(rows[:, fx.C_OWNER] == self.player) & (fl & fx.HERO > 0) & (fl & fx.DEAD == 0)]
         if rows.shape[1] <= fx.C_ITEM0 + 5:
