@@ -237,6 +237,21 @@ So the points stay in range and mean "this far towards the enemy base, this far 
 
 **Risks.** The targets' times are people's real-game times, the training map's (echofast2) are faster: the anchor reads an echofast2 target as a slower schedule than the run's policy does. The forward KL over points (`--ref-kl-mode forward-all`) pulls towards people's places, learned on six maps turned level (Echo Isles is a fifth of the games). The anchor gives the macros (expand, creep, mix, pickup) almost no weight (people never use them): the forward KL does not pull the policy off them. A tenth of people's clicks are left out (above), so the anchor's order rates are off where those were (rallies, following own units). People's micro (many orders a second) is in the labels: the clone may give more weight to orders than the run's policy, which the KL then pulls towards.
 
+
+#### After training on the four maps (`fgself-178`, 2026-11-02)
+
+`fgself-178` trained 30M steps with half its training games on Echo Isles and half on Last Refuge, Amazonia and Terenas Stand LV (`--map-pool`), from `fgself-177`. Both played the insane AI on the four real maps on the laptop (`evalworker --maps`, 14:30-16:00, rows in `runs/fgself-178/episodes-maps.jsonl`), without a target:
+
+| map | `fgself-178` won (95%) | races weighed alike | median minutes | `fgself-177` won (95%) | races weighed alike | median minutes | head to head, 178 vs 177 |
+|---|---|---|---|---|---|---|---|
+| Echo Isles | 58% of 52 (44-70) | 54% | 18.6 | 73% of 62 (60-82) | 68% | 13.5 | 48% of 87 |
+| Last Refuge | 58% of 44 (43-71) | 61% | 16.9 | 55% of 55 (42-68) | 49% | 16.8 | 47% of 99 |
+| Amazonia | 44% of 62 (33-57) | 43% | 17.0 | 42% of 33 (27-59) | 38% | 16.4 | 41% of 91 |
+| Terenas Stand LV | 39% of 55 (27-52) | 39% | 20.5 | 39% of 57 (27-52) | 41% | 17.3 | 52% of 90 |
+| Off Echo Isles | 46% of 161 (39-54) | 46% | | 46% of 145 (38-54) | 47% | | |
+
+Off Echo Isles the pool changed nothing in 30M steps. On Echo Isles its games got longer: 21% ended under 12 minutes (won 100%) against `fgself-177`'s 42%, and 37% went 18-25 minutes (won 32%) against 10%. So it rushed less on Echo Isles, and lost more, because the long games are still lost on income (one mine, no expansions).
+
 ### What people order, not when (`--acting-only`, `--ref-kl-mode forward-acting`; 2026-10-27)
 
 The clones of people barely play (`human-anchor-2` and `human-ft-1`: 0 of ~55 real games against insane each; 5 workers, no army, 157 orders a game), and as the anchor `human-anchor-2` pulled `fgself-161` down. The likely cause is *when* to act: people command groups with sparse clicks, a unit getting an order in ~5% of its steps (the clone's rate 0.049), while the run's policy decides per unit every 0.5 s and gives one in ~93% of them (`fgself-158`'s validation rate on people's games, below). Cloning the "none" class teaches passivity; what people order when they act is what is wanted. Two switches keep the act/no-act tendency the RL policy's:
