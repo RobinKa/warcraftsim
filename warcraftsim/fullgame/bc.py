@@ -734,9 +734,8 @@ def _float(v) -> float:
 def apply_run(cfg: dict) -> None:
     """The features' settings of a self-play run as its learner sets them (selfplay.main, before it loads --init):
     the unit channels in use, the inputs, the masks, the neutral wares, macros and spells, the strategy block's size
-    (its modes' and mix parts), the run's map's frame."""
+    (its modes', mix and items bought parts), the run's map's frame."""
     import os
-    from . import modes as zmodes
     fx.ACTIVE_F = _int(cfg.get("features")) or fx.F
     os.environ["WARCRAFTSIM_FEATURES"] = str(fx.ACTIVE_F)
     fx.set_inputs(_int(cfg.get("inputs")) or 1, _float(cfg.get("opsd_share")) > 0 or _float(cfg.get("opsd_coef")) > 0)
@@ -748,14 +747,10 @@ def apply_run(cfg: dict) -> None:
     fx.set_fine(_int(cfg.get("fine_points")))
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     fx.set_econ_masks(_int(cfg.get("econ_masks")))
-    z_modes, z_comp, z_mix = _float(cfg.get("z_modes")), _float(cfg.get("z_comp")), _int(cfg.get("z_mix"))
-    modes_part = z_modes > 0 or z_comp > 0
-    if modes_part:
-        fx.set_z(strategy.ZDIM + zmodes.MDIM)
-    if z_mix:
-        fx.set_z(strategy.ZDIM + (zmodes.MDIM if modes_part else 0) + strategy.SLOTS)
-    if z_comp > 0:
-        fx.set_z(strategy.ZDIM + zmodes.MDIM + (strategy.SLOTS if z_mix else 0) + zmodes.CDIM)
+    # (the run's strategy block: its modes', mix, composition kinds' and items bought parts zeros here)
+    if (width := strategy.block_width(_float(cfg.get("z_modes")), _int(cfg.get("z_mix")), _float(cfg.get("z_comp")),
+                                      _int(cfg.get("z_shop")))):
+        fx.set_z(width)
     from ..data.duelmap import parse_duel_name
     if parse_duel_name(cfg["map"]) is None:
         from ..data.mapbuild import stock_map_path

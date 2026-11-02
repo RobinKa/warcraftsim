@@ -57,6 +57,33 @@ python -m warcraftsim.fullgame.bc --data runs/fullgame/demos-human-129 ...
 | 1v1 length | median 15 min (10-90%: 9-24) |
 | 1v1 APM | median 260 (10-90%: 188-331) |
 
+## Items people buy
+
+`strategy.shop_table` (2026-11-02): per race, the share of people who bought each item of their race's shop in the 1.29 1v1s, and the median first purchase. Times are game seconds under the real rules, at the click (a sale is at once). Echo Isles in brackets.
+
+`strategy.py --z-shop 3` takes each race's 3 most bought items as strategy targets (`selfplay --z-shop`). Two rules change the plain ranking:
+
+* The town portal is left out: every hero starts with one, so buying one is a replacement, not a plan.
+* The race's orb takes the last place when at least 20% of its players buy one. For orc, the orb of lightning (22%) replaced lesser clarity (84%).
+
+| race (players) | chosen: bought, median first purchase | next most bought |
+|---|---|---|
+| human (1,277; Echo Isles 181) | lesser clarity potion `plcl` 71%, 463 s (74%, 459 s); scroll of regeneration `sreg` 67%, 435 s (69%, 444 s); potion of healing `phea` 32%, 639 s (39%, 658 s) | town portal 34% (left out), ivory tower 18%, staff of sanctuary 17%, mana potion 15%, orb of fire 2% |
+| orc (1,550; 219) | healing salve `hslv` 99%, 178 s (98%, 164 s); scroll of speed `shas` 97%, 225 s (96%, 170 s); orb of lightning `oli2` 22%, 566 s (26%, 636 s) | lesser clarity 84%, mana potion 39%, potion of healing 28%, town portal 21% |
+| undead (1,073; 150) | rod of necromancy `rnec` 99%, 129 s (97%, 128 s); orb of corruption `ocor` 84%, 536 s (79%, 556 s); dust of appearance `dust` 42%, 257 s (43%, 258 s) | town portal 34%, mana potion 30%, potion of healing 27%, scroll of healing 25%, sacrificial skull 12% |
+| night elf (1,186; 150) | staff of preservation `spre` 62%, 541 s (63%, 554 s); orb of venom `oven` 60%, 589 s (57%, 591 s); lesser clarity potion `plcl` 53%, 595 s (53%, 598 s) | potion of healing 42%, moonstone 38%, town portal 30%, dust 30%, mana potion 13%, anti-magic potion 12% |
+
+Purchases from the goblin merchant (people's potions of speed, invulnerability and others) are not counted. The replay does not say which shop sold an item, so a race-shop item counts wherever it was bought.
+
+The `echofast` pool keeps its own pace for people: ×0.69 human, ×0.73 orc, ×0.53 undead, ×0.71 night elf. Its people's medians are:
+
+| race | item medians in the `echofast` pool |
+|---|---|
+| human | clarity 318 s, regeneration 299 s, healing potion 432 s |
+| orc | salve 131 s, speed 154 s, orb 401 s |
+| undead | rod 69 s, orb 284 s, dust 137 s |
+| night elf | preservation 380 s, orb 413 s, clarity 418 s |
+
 ## Playing a replay back
 
 A replay holds only the players' actions. The game re-simulates it from the map, so the map must be the one the game was played on, and nothing may change the simulation.

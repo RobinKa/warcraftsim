@@ -1592,6 +1592,10 @@ def strategy_pool(cfg: dict) -> dict | None:
         return None
     if path not in _POOLS:
         pool = json.loads(Path(path).read_text())
+        if pool.get("shop_items") and not cfg.get("z_shop"):  # (a pool with items bought, a run without --z-shop: as
+            bought = {c for v in pool.pop("shop_items").values() for c in v}  # the pool without them)
+            pool["strategies"] = [{**s, "t": {c: v for c, v in s["t"].items() if c not in bought}}
+                                  for s in pool["strategies"]]
         if fx.NEUTRAL == 2:  # (--neutral 2: no mercenaries to buy, none in the targets)
             from .neutral import MERCENARIES
             pool["strategies"] = [{**s, "t": {c: v for c, v in s["t"].items() if c not in MERCENARIES}}
@@ -1626,6 +1630,7 @@ def unit_food() -> dict[int, int]:
         _FOOD.update({int.from_bytes(c.encode(), "big"): u.food for c, u in unit_table().items()})
     return _FOOD
 SUPPLY_TYPES = {"human": "hhou", "orc": "otrb", "undead": "uzig", "nightelf": "emow"}
+ITEM_NEAR = 1000.0  # (--z-shop: the target builder buys a due item with a hero this near the shop, at home; none from afar)
 CANCEL = 851976  # a building's queue: its last unit
 
 
@@ -1711,6 +1716,10 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         held = st.get("held") or ()  # (--late-z: what a placed base holds and no game event told: a hero's place among
         self.placed_research = {c for c in held if c[:1] == "R"}  # the side's, what its research leads to)
         self.placed_heroes = sum(1 for c in held if techtree.is_hero(c))
+        self.shop_items = frozenset()  # (--z-shop: the target's items bought, _buy)
+        if cfg.get("z_shop"):
+            from .shopitems import ITEM_NAMES
+            self.shop_items = frozenset(c for c in st["t"] if c in ITEM_NAMES)
 
     def observe(self, obs) -> None:
         """The items the side started, finished or cancelled in the step just taken (its events)."""
@@ -1969,7 +1978,12 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             return None  # (under way, just tried, or refused three times: tech or a spot the game won't take)
         if c in AT_MINES and types & {h for tiers in techtree.TIERS.values() for h in tiers}:
             return None  # an expansion: the agent's (its gold mine is guarded by creeps)
-        miss = techtree.missing(c, self.race, have, heroes if techtree.is_hero(c) else 0, self.tree)
+        if c in self.shop_items:  # (--z-shop: an item needs the race's shop, finished, and what the shop asks for it)
+            from .shopitems import ITEM_NEEDS, RACE_SHOPS
+            need = techtree.resolve(ITEM_NEEDS[c], self.race) if c in ITEM_NEEDS else None
+            miss = [m for m in (RACE_SHOPS[self.race], need) if m is not None and m not in have]
+        else:
+            miss = techtree.missing(c, self.race, have, heroes if techtree.is_hero(c) else 0, self.tree)
         makers = self.tree.makers.get(c)
         if makers and not types & set(makers) and (int.from_bytes(c.encode(), "big"), fx.POINT) not in self.cls:
             miss.append(makers[0])  # (nothing that makes it: the first type that does)
@@ -1990,6 +2004,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         hall's decision to learn)."""
         Build, Buy, ImmediateOrder = _Build, _Buy, _ImmediateOrder
         code = int.from_bytes(c.encode(), "big")
+        if c in self.shop_items:
+            return self._buy(c, code, obs, done, p)
         if (k := self.cls.get((code, fx.UNIT))) is not None:  # (--neutral: a tavern hero, a mercenary: bought by the
             MERCENARIES = _MERCENARIES  # worker nearest its building, the tavern or a camp)
             if c in MERCENARIES and fx.NEUTRAL == 2:  # (--neutral 2: none to buy)
@@ -2047,6 +2063,33 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             self.why_not = self.why_not or ("busy" if at else "no maker")
         return None
 
+    def _buy(self, c: str, code: int, obs, done: list, p) -> list | None:
+        """--z-shop: item `c` bought at the side's finished race shop by its living hero nearest one, if that hero is
+        within ITEM_NEAR of it (a purchase never calls a hero home from the field) and has a free slot (the step's rows
+        tell: a full one's sale lands on the ground), and the side can pay -> [Buy], else None (why_not)."""
+        from .shopitems import RACE_SHOPS, full
+        k = self.cls.get((code, fx.UNIT))
+        shop = int.from_bytes(RACE_SHOPS[self.race].encode(), "big")
+        shops = [u for u in done if u.type_id == shop]
+        if k is None or not shops:
+            self.why_not = "no shop" if k is not None else "off"
+            return None
+        rows = getattr(self, "_step_rows", None)
+        if rows is not None and rows[1] is obs:  # (features' columns: the heroes' items too)
+            own = fx.own_alive(rows[0], self.side)
+            heroes = [(int(h[fx.C_ID]), float(h[fx.C_X]), float(h[fx.C_Y])) for h in own[own[:, fx.C_FLAGS] & fx.HERO > 0]
+                      if not full(h)]
+        else:
+            heroes = [(u.id, u.x, u.y) for u in obs.units if u.owner == self.side and u.alive and getattr(u, "is_hero", False)]
+        near = min((((hx - s.x) ** 2 + (hy - s.y) ** 2, h, s.id) for h, hx, hy in heroes for s in shops), default=None)
+        if near is None or near[0] > ITEM_NEAR ** 2:
+            self.why_not = "no hero near"
+            return None
+        if not self._affords(k, p):
+            return None
+        self.ctx = [c, p.gold, p.lumber, p.food_used, p.food_cap, RACE_SHOPS[self.race], ""]
+        return [_Buy(near[1], near[2], code)]
+
     def _order_id(self, k: int) -> int:
         if not hasattr(self, "_oids"):
             self._oids = {c: o for (o, _), c in self.cls.items()}
@@ -2095,11 +2138,14 @@ def target(cfg: dict, view, st: dict, pool: dict, race: str, vocab: dict, modes:
     (strategy.allowed) -> `st`."""
     st = zmodes.adapt(st, modes, race)  # (--z-comp: the target agrees with its composition kinds)
     z = strat.vector(st, pool["items"][race])
-    view.z = np.concatenate([z, zmodes.vector(modes)]) if fx.ZDIM > strat.ZDIM else z
+    shop_w = 2 * cfg.get("z_shop", 0)  # (--z-shop: the items bought, at the block's very end)
+    view.z = np.concatenate([z, zmodes.vector(modes)]) if fx.ZDIM - shop_w > strat.ZDIM else z
     if cfg.get("z_mix"):  # (--z-mix: the target army's mix after them)
         view.z = np.concatenate([view.z, strat.mix(st, pool["items"][race])])
-    if fx.ZDIM == len(view.z) + zmodes.CDIM:  # (--z-comp: the composition kinds' block at the end; zeros: none)
+    if fx.ZDIM - shop_w == len(view.z) + zmodes.CDIM:  # (--z-comp: the composition kinds' block at the end; zeros: none)
         view.z = np.concatenate([view.z, zmodes.comp_vector(modes)])
+    if shop_w:
+        view.z = np.concatenate([view.z, strat.shop_vector(st, pool["shop_items"][race])])
     u = zmodes.forbidden(modes, race) if cfg.get("z_forbid_mask") else None
     if u is not None:  # (--z-forbid-mask: its train order masked while as many as allowed live, features.View)
         k = {tuple(o): i for i, o in enumerate(vocab["orders"], start=1)}.get((int.from_bytes(u.encode(), "big"),
@@ -2405,7 +2451,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             for s, h in replay["h"].items():
                 bots[s].h = h
             for s in zs:
-                zphi[s] = -cfg.get("z_reward", 0.0) * strat.mismatch(made[s], zs[s], pool["items"][races[s]], obs.game_time)
+                zphi[s] = -cfg.get("z_reward", 0.0) * strat.mismatch(made[s], zs[s], strat.scored(pool, races[s], zs[s]), obs.game_time)
         if rec is not None and t == rec["t"]:
             rec["h"], rec["print"] = {s: bots[s].h for s in bots}, state_print(obs)
         live = [s for s in bots if sts[s] is not None]
@@ -2486,6 +2532,10 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                             np.asarray([t, s, q.gold, q.lumber, q.food_used, q.food_cap, q.upkeep]))
             if cfg.get("z_build", 0) != 2:  # (--z-build 2: a teacher only, its orders labels and never carried out)
                 cmds += c
+                for x in c if b.shop_items else ():  # (--z-shop: its purchase of an item counted as the side's own,
+                    if isinstance(x, _Buy):           # play.BCAgent._count_items: made, not bought again)
+                        from .shopitems import RACE_SHOPS
+                        bots[s].__dict__.setdefault("buying_at", {})[x.unit] = (x.item, RACE_SHOPS[b.race])
         hspan = None
         if heur is not None:  # (the hand-written player's orders: after the policy's, no trajectory)
             heur.observe(obs, t)
@@ -2553,6 +2603,11 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             if prod.expansions[s]:  # (an expansion made the target's hall whatever it took: undead's targets name a
                 for code in EXPANSION_ITEMS & set(zs[s].get("t") or {}):  # necropolis, the expand order haunts the
                     made[s].setdefault(code, obs.game_time)              # mine; 40 of 123 such games read missed)
+            if cfg.get("z_shop"):  # (--z-shop: an item made at the side's first purchase of it, play.BCAgent._count_items)
+                got = getattr(bots[s], "first_bought", None)
+                for code in pool["shop_items"][races[s]] if got else ():
+                    if code in got:
+                        ms.setdefault(code, got[code])
         rows_next = unit_rows(obs, t) if trackers else None
         for s, tk in trackers.items():  # (--z-modes: evaluation games too, their rows' report)
             p_ = obs.players.get(s)
@@ -2569,7 +2624,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                 r = fade * shaping * (cfg["gamma"] * (pot[s] - pot[1 - s]) / scale - phi[s])
                 r_z = 0.0
                 if s in zs:  # the strategy's potential (not returned at the end: following it pays)
-                    z_new = -cfg.get("z_reward", 0.0) * strat.mismatch(made[s], zs[s], pool["items"][races[s]], obs.game_time)
+                    z_new = -cfg.get("z_reward", 0.0) * strat.mismatch(made[s], zs[s], strat.scored(pool, races[s], zs[s]), obs.game_time)
                     z_new -= cfg.get("z_mode_reward", 0.0) * viol.get(s, 0.0)
                     if cfg.get("z_mix"):  # (--z-mix: the army trained so far against the target's mix)
                         z_new -= cfg.get("z_mix_reward", 0.0) * strat.mix_gap(prod.trained[s], zs[s])
@@ -2675,10 +2730,10 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"z_mix_gap": round(strat.mix_gap(prod.trained[side], zs[side]), 3),
             "z_n": {c: v for c, v in zs[side]["n"].items() if strat.is_army(c)}} if side in zs and zs[side].get("n") else {}),
         **({"z": zs[side]["src"] + (" won" if zs[side]["won"] else ""), "z_items": len(zs[side]["t"]),
-            "z_miss": strat.mismatch(made[side], zs[side], pool["items"][races[side]], obs.game_time),
+            "z_miss": strat.mismatch(made[side], zs[side], strat.scored(pool, races[side], zs[side]), obs.game_time),
             # (which: the strategy's items due by now and not made; made and not in it)
             "z_missed": sorted(c for c, t0 in zs[side]["t"].items() if t0 <= min(obs.game_time, strat.horizon(zs[side])) and made[side].get(c, 1e9) > min(obs.game_time, strat.horizon(zs[side]))),
-            "z_extra": sorted(c for c, t0 in made[side].items() if t0 <= min(obs.game_time, strat.horizon(zs[side])) and zs[side]["t"].get(c, 1e9) > min(obs.game_time, strat.horizon(zs[side])) and c in pool["items"][races[side]] and c not in (zs[side].get("held") or ()))} if side in zs else {}),
+            "z_extra": sorted(c for c, t0 in made[side].items() if t0 <= min(obs.game_time, strat.horizon(zs[side])) and zs[side]["t"].get(c, 1e9) > min(obs.game_time, strat.horizon(zs[side])) and c in strat.scored(pool, races[side], zs[side]) and c not in (zs[side].get("held") or ()))} if side in zs else {}),
         **({"branch": round(replay["t"] * cfg["step_seconds"]), "branch_same": same} if replay is not None else {}),
         "slot_difficulty": g.setup.slots[side].difficulty,  # (its income: insane's doubles it; agent_difficulty)
         **({} if train else {"eval": True, "eval_key": opp.get("eval_tag") or opp.get("eval_key") or "current"})}
@@ -4205,6 +4260,10 @@ def main(argv: list[str] | None = None) -> int:
                     "every item slot's use in the form the item takes (on itself, a unit, a point): every network loaded "
                     "grows to them, rare at first; a hero buys at its side's finished shop, walking there, with a free "
                     "slot and what the item needs (needs --neutral)")
+    ap.add_argument("--z-shop", type=int, default=0, help="K: the targets' items bought (the pool's K race-shop items "
+                    "per race, strategy.py --z-shop): their first purchases in the strategy block's end (2 K inputs, "
+                    "older networks grow them with zero weights) and in the strategy reward as other items; the target "
+                    "builder buys a due one with a hero near the shop (needs --shop-items and a pool with them)")
     ap.add_argument("--memory-fade", type=int, default=0, help="inputs 3: the remembered enemies fade into the learner's "
                     "attention over this many updates (its bias on them from -8 to 0; older networks and the anchor "
                     "keep them hidden at -30); 0: as loaded")
@@ -4710,17 +4769,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.shop_items and not args.neutral:  # (as --spells: model.load's --neutral path grows a network to them)
         ap.error("--shop-items needs --neutral")
     fx.set_shop_items(args.shop_items)
+    if args.z_shop:  # (the items as orders, and pools whose strategies hold them)
+        if not args.shop_items or not args.z_pool:
+            ap.error("--z-shop needs --shop-items and --z-pool")
+        for p_ in (args.z_pool, args.eval_z_pool):
+            got = json.loads(Path(p_).read_text()).get("shop_items") or {} if p_ else None
+            if got is not None and any(len(got.get(r, ())) != args.z_shop for r in strat.RACES):
+                ap.error(f"--z-shop {args.z_shop}: {p_} has no {args.z_shop} items bought per race (strategy.py --z-shop)")
     fx.set_fine(args.fine_points)  # (--fine-points; a policy with a fine head sets it again below, with its size)
     fx.set_macros_off(args.macros_off.split(","))
     fx.set_econ_masks(args.econ_masks)
     fx.set_value_tax(args.value_tax)  # (--value-tax: model.load gives every network the taxes' inputs, zero at first)
-    modes_part = args.z_modes > 0 or args.z_comp > 0  # (--z-comp: the modes' part too, its kinds off)
-    if modes_part:  # (the strategy block with the modes' part: model.load grows older networks')
-        fx.set_z(strat.ZDIM + zmodes.MDIM)
-    if args.z_mix:  # (and the target army's mix after it)
-        fx.set_z(strat.ZDIM + (zmodes.MDIM if modes_part else 0) + strat.SLOTS)
-    if args.z_comp > 0:  # (and the composition kinds' block at the end)
-        fx.set_z(strat.ZDIM + zmodes.MDIM + (strat.SLOTS if args.z_mix else 0) + zmodes.CDIM)
+    # the strategy block with the modes' part (--z-comp: it too, its kinds off), the target army's mix, the composition
+    # kinds and the items bought, as asked: model.load grows older networks' (zero weights)
+    if (width := strat.block_width(args.z_modes, args.z_mix, args.z_comp, args.z_shop)):
+        fx.set_z(width)
     from ..data.duelmap import parse_duel_name
     if parse_duel_name(args.map) is None:  # another map than the duel maps: its own frame for the positions
         from ..data.mapbuild import stock_map_path    # and point targets (features.set_geometry; the actors
@@ -5039,7 +5102,7 @@ def main(argv: list[str] | None = None) -> int:
            "opd_share": args.opd_share, "opd_difficulty": args.opd_difficulty,
            "costs": order_costs(vocab, args.map).tolist() if args.avail_mask else None, "max_past": args.max_past,
            "eval_fallback": args.eval_fallback, "worker_cap": args.worker_cap, "z_dim": fx.ZDIM, "z_pool": str(args.z_pool) if args.z_pool else "", "z_share": args.z_share, "win_balance": args.win_balance,
-           "z_reward": args.z_reward, "z_mix": args.z_mix, "z_mix_reward": args.z_mix_reward, "reward_parts": args.reward_parts, "z_modes": args.z_modes, "z_mode_reward": args.z_mode_reward, "z_comp": args.z_comp, "z_forbid_mask": args.z_forbid_mask, "z_winners": args.z_winners, "z_src": args.z_src, "eval_z": args.eval_z,
+           "z_reward": args.z_reward, **({"z_shop": args.z_shop} if args.z_shop else {}), "z_mix": args.z_mix, "z_mix_reward": args.z_mix_reward, "reward_parts": args.reward_parts, "z_modes": args.z_modes, "z_mode_reward": args.z_mode_reward, "z_comp": args.z_comp, "z_forbid_mask": args.z_forbid_mask, "z_winners": args.z_winners, "z_src": args.z_src, "eval_z": args.eval_z,
            "z_enforce": args.z_enforce, "z_time_scale": args.z_time_scale, "z_build": args.z_build, "z_build_labels": args.z_build_labels, "z_workers": args.z_workers,
            "grpo_share": args.grpo_share, "grpo_group": args.grpo_group, "grpo_coef": args.grpo_coef,
            "grpo_seeds": args.grpo_seeds, "grpo_branch": [float(x) for x in args.grpo_branch.split("-")],
