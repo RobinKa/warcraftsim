@@ -699,6 +699,7 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
     fx.set_fine(int(cfg.get("fine_points", 0) or 0))  # (--fine-points: the point indices)
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     fx.set_econ_masks(cfg.get("econ_masks", 0))
+    fx.set_value_tax(cfg.get("value_tax", 0))  # (--value-tax: the rows' width)
     nets = Nets(cfg, device)
     while nets.current is None and not stop.is_set() and alive():
         time.sleep(1)
@@ -1304,6 +1305,14 @@ def balance_tax(spec: dict, races: list[str]) -> tuple[int, float]:
     if t is None:
         t = -spec.get("balance", {}).get(f"{b}/{a}", 0.0)
     return (0 if t > 0 else 1), abs(t)
+
+
+def value_tax(opp: dict, taxed: int | None, side: int, train: bool = True) -> np.ndarray:
+    """--value-tax: a game's taxes as player `side` sees them, for its value alone: [the share of its income the
+    opponent loses, the share it loses itself] (opp["tax"] taken from the side `taxed`, play_one's; < 0 a bonus).
+    Zeros untaxed and in evaluation games (`train` False)."""
+    t = float(opp.get("tax") or 0.0) if taxed is not None and train else 0.0
+    return np.array([t if taxed == 1 - side else 0.0, t if taxed == side else 0.0], np.float32)
 
 
 _BRANCHES: list[dict] = []  # GRPO (--grpo-share): this actor's open groups (its game slots are threads)
@@ -2323,6 +2332,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     advised = [s for s in trajs if keys[s] == "current"] if opp.get("advise") else []
     for s in advised:
         bots[s].repair_builds = True  # (a builder the advisor pulled away resumes with "repair")
+    if fx.VTAX:  # (--value-tax: each agent side's value reads the game's taxes, as they stand now)
+        for s, bot in bots.items():
+            bot.view.tax = value_tax(opp, taxed, s, train)
     t, t0 = 0, time.time()
     gw0 = getattr(g, "game_wall_total", 0.0)  # (the game's own share of the wall time: the System tab)
     own_rows: dict[int, np.ndarray] = {}  # each trained side's own units at its last recorded step (--unit-credit)
@@ -2816,6 +2828,7 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
     fx.set_fine(int(cfg.get("fine_points", 0) or 0))  # (--fine-points: the point indices)
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     fx.set_econ_masks(cfg.get("econ_masks", 0))
+    fx.set_value_tax(cfg.get("value_tax", 0))  # (--value-tax: the rows' width)
     if cfg.get("remote"):  # (fullgame/remoteactor.py: the calls and the steps over TCP to the learner's gateway)
         from .remoteactor import NetInference
         out_q = NetInference(cfg["remote"])  # (its request() and the learner's queue's put() both)
@@ -3340,7 +3353,8 @@ def _masked_ce(logits: torch.Tensor, y: torch.Tensor, weight: torch.Tensor) -> t
 
 
 # the network's parts for their own noise scales (NoiseMeter): parameter name prefixes
-NOISE_GROUPS = (("input", ("ent.", "type_emb.", "cur_emb.", "glob.", "priv_proj.")), ("memory", ("mem_",)),
+NOISE_GROUPS = (("input", ("ent.", "type_emb.", "cur_emb.", "glob.", "priv_proj.", "tax_proj.")),
+                ("memory", ("mem_",)),
                 *((f"layer {i}", (f"transformer.layers.{i}.",)) for i in range(16)),
                 ("order head", ("order.", "order_emb.")),
                 ("target heads", ("cond.", "query.", "key.", "point_x.", "x_emb.", "point_y.", "fine_x.", "fine_y.", "point_f.")),
@@ -4453,6 +4467,11 @@ def main(argv: list[str] | None = None) -> int:
                     "taxed by who is expected to win: a logistic model of the outcome from both sides' races, targets "
                     "and the tax (balance.py), the favoured side's income taxed by the share that evens it out, at most "
                     "this; 0: the races' balance only (--balance-step)")
+    ap.add_argument("--value-tax", type=int, default=0,
+                    help="1: the value (never the policy) reads each training game's tax, the share of its income the "
+                         "opponent loses and the share it loses itself (the AI's by the curriculum, an agent's by "
+                         "--win-balance; 0 untaxed and in evaluation games): two numbers after the privileged block, "
+                         "their weights zero at first (model.FullGameNet.tax_proj)")
     ap.add_argument("--handicap", type=int, default=50)
     ap.add_argument("--step-seconds", type=float, default=0.5)
     ap.add_argument("--max-minutes", type=float, default=4.0)
@@ -4694,6 +4713,7 @@ def main(argv: list[str] | None = None) -> int:
     fx.set_fine(args.fine_points)  # (--fine-points; a policy with a fine head sets it again below, with its size)
     fx.set_macros_off(args.macros_off.split(","))
     fx.set_econ_masks(args.econ_masks)
+    fx.set_value_tax(args.value_tax)  # (--value-tax: model.load gives every network the taxes' inputs, zero at first)
     modes_part = args.z_modes > 0 or args.z_comp > 0  # (--z-comp: the modes' part too, its kinds off)
     if modes_part:  # (the strategy block with the modes' part: model.load grows older networks')
         fx.set_z(strat.ZDIM + zmodes.MDIM)
@@ -5002,7 +5022,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "hunt_lesson": args.hunt_lesson, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "hunt_lesson": args.hunt_lesson, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "late_capture": args.late_capture, "late_minutes": [float(x) for x in args.late_minutes.split(",")],

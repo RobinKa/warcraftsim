@@ -586,6 +586,17 @@ def set_z(n: int) -> None:
 # lumber, food used and cap, upkeep; then for each side (own, enemy), all its units seen or not: workers,
 # army units, buildings, heroes, the heroes' levels, the army's hit points and maximum, its centre (x mirrored, y)
 PRIV = 5 + 2 * 9
+# (selfplay --value-tax) and after it the game's taxes, for the value alone: the share of its income the opponent loses
+# and the share it loses itself (View.tax; < 0 a bonus, 0 untaxed and in evaluation games); 0: none
+VTAX = int(os.environ.get("WARCRAFTSIM_VALUE_TAX", 0))
+
+
+def set_value_tax(mode: int) -> None:
+    global VTAX
+    VTAX = 2 if int(mode or 0) else 0
+    os.environ["WARCRAFTSIM_VALUE_TAX"] = str(VTAX)  # (processes started anew)
+
+
 HERO = 1
 TYPE_CODE = 0x1000000  # order ids at or above this are unit / building / upgrade codes
 # events: a building's production (a = the building)
@@ -785,7 +796,8 @@ def describe_spaces(vocab: dict, order_names: dict[int, str] | None = None, agen
                                                                    "food cap / 100", "upkeep / 2")]
             + [f"privileged (value only): {side} {k}" for side in ("own", "enemy")
                for k in ("workers / 20", "army units / 30", "buildings / 30", "heroes / 3", "hero levels / 20",
-                         "army hp / 3000", "army max hp / 3000", "army centre x", "army centre y")])
+                         "army hp / 3000", "army max hp / 3000", "army centre x", "army centre y")]
+            + [f"privileged (value only): tax on {who} income" for who in ("the opponent's", "its own")][:VTAX])
     orders = ["none"] + [order_label(int(o), int(k), names) for o, k in vocab["orders"]]
     return {"observation": {"size": f"{enc.G} + up to {MAX_ENT} × {F}", "blocks": [
                 {"name": "global token", "rows": 1, "features": glob},
@@ -910,7 +922,9 @@ class Encoder:
         self.G0 = 6 + 2 * len(RACES) + len(self.upgrade_index)  # what the player knows
         self.ZD = ZDIM  # the target strategy (strategy.vector; none: zeros)
         self.GX = GX  # the clock (inputs 2)
-        self.G = self.G0 + self.ZD + self.GX + PRIV  # and what only the value reads (privileged: the whole game, View.priv)
+        self.VT = VTAX  # (--value-tax: the game's taxes at the end, View.tax)
+        # and what only the value reads (privileged: the whole game, View.priv; the taxes)
+        self.G = self.G0 + self.ZD + self.GX + PRIV + self.VT
         self.tech = TECH_MASK
         # the lookups as sorted arrays (vectorized; per-entity dict lookups were most of a step's cost)
         self._type_keys, self._type_vals = _sorted_map(self.type_index)
@@ -1326,6 +1340,7 @@ class View:
         self.enc, self.player, self.sign, self.races = enc, player, sign, races
         self.active_f = ACTIVE_F  # (an evaluation game sets F: every checkpoint has zero weights past its own)
         self.z: np.ndarray | None = None  # the target strategy (strategy.vector; the encoder's ZD numbers)
+        self.tax = None  # (--value-tax: the game's taxes, the opponent's and its own; None: zeros. selfplay.play_one)
         self.zmask: np.ndarray | None = None  # --z-enforce: the orders the target allows (strategy.allowed)
         self.zmask_until = 0  # ... until this step (the strategies' horizon)
         self.forbid: tuple | None = None  # --z-forbid-mask: (the forbidden unit's train order class, its type code,
@@ -1825,13 +1840,16 @@ class View:
             ang = 2.0 * math.pi * hour / 24.0
             x = enc.G0 + enc.ZD
             g[x:x + 3] = math.sin(ang), math.cos(ang), float(hour < DAWN or hour >= DUSK)
+        at = enc.G0 + enc.ZD + enc.GX
         if fast:  # (View.priv's numbers: the per-side block made by view_step)
             if opp is not None:
                 _, _, o_gold, o_lumber, o_fu, o_fc, o_upkeep = opp[:7].tolist()
                 pv[:5] = o_gold / 1000.0, o_lumber / 1000.0, o_fu / 100.0, o_fc / 100.0, o_upkeep / 2.0
-            g[enc.G0 + enc.ZD + enc.GX:] = pv
+            g[at:at + PRIV] = pv
         else:
-            g[enc.G0 + enc.ZD + enc.GX:] = self.priv(rows, opp)
+            g[at:at + PRIV] = self.priv(rows, opp)
+        if enc.VT and self.tax is not None:  # (--value-tax: the game's taxes, the value's alone)
+            g[at + PRIV:] = self.tax
         avail = self.costs_now = None
         free = enc.costs is not None and not (self.has_hero(rows, hero_types=hero_types) if fast
                                               else self.has_hero(rows, own_hero))

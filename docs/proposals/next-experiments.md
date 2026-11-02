@@ -26,7 +26,7 @@ Done: item 2, `fgself-177` (`fgself-171` in the league), kept: 58% head to head,
 | 5 | An EMA anchor from `fgself-100` (half-life ~6,000 updates) | small | The user's idea: stops sudden jumps without the permanent pull back. Needs check A | Variety rises by ~100M steps while income holds |
 | 6 | `--z-share 0.25` | none | 67% of training steps carry a target, which wins 30-38% to ~70% without. How much strength does it cost? | Strength up without losing with-target play |
 | 7 | `--ai-share 0.5` | none | More self-play at a person's income; the last tests were at doubled income | Head to head and variety |
-| 8 | The value sees the tax, value only | small | Neither network reads it, and `fgself-174` showed the tax has to stay (training at full income: 14% won, undead 3%) | Value loss down, level or better |
+| 8 | The value sees the tax, value only | built (`--value-tax 1`) | Neither network reads it, and `fgself-174` showed the tax has to stay (training at full income: 14% won, undead 3%) | Value loss down, level or better |
 | 9 | `--minibatch 1024 --lr 6e-5 --pad-groups 2` | none | A minibatch carries ~1.4% of the policy's signal, and sorting by size makes it less mixed. Needs checks B and C | Faster, and level or better |
 
 ## If those do not move play

@@ -115,7 +115,7 @@ The **player token** has 80 numbers of what the player knows, then the target st
 | (+6) | with `--z-comp`: per army composition kind (cap, forbid, variety), on, and its parameter (C; 0 the spam unit, 1 the other basic unit; N / 5) |
 | (+3) | with `--inputs 2` or `3`: the time of day (sine, cosine) and whether it is night |
 
-The **value head** also reads 23 numbers of the whole game that the player does not see: the enemy's gold, lumber and supply, and for both players their workers, army, buildings, heroes, hero levels, army hit points and where the army is. The policy never sees them.
+The **value head** also reads 23 numbers of the whole game that the player does not see: the enemy's gold, lumber and supply, and for both players their workers, army, buildings, heroes, hero levels, army hit points and where the army is. The policy never sees them. With `--value-tax 1` two more follow: the share of its income the opponent loses to the training game's tax, and the share it loses itself (negative: a bonus; zeros untaxed and in evaluation games). They enter through a projection of their own, zero at first, so a network from before plays and values as it did.
 
 **How players differ:** only by the side channels. The view is always from "my" side, so "own" means this player. The two races sit in the player token. Position is the x, y numbers, not a token index. The transformer treats the units as a set, so their order does not matter.
 
