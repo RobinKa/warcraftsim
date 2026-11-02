@@ -2022,6 +2022,10 @@ The `base2` games so far. Against the AI 86% won (of 1,506 at 22:07) at a median
 
 **`fgself-180`** (17:58, from `fgself-179`'s last, its league): **`--z-share 0.25`**, item 6 of the queue: training games with a target from 75% to 25%. How much strength does the target play cost, and does with-target play hold?
 
+**`fgself-180`'s verdict** (21:10, 50M steps, ~400 games a policy): **not kept**. Strength level: head to head 53% of 564, against insane 68% to 70% (-2 points with the races weighed alike; from its second hour -1, interval -9 to +6). With a target it fell to 20% of 400 against insane (`fgself-179`'s run read 32%), and play narrowed: weapon and armour levels 0.60 to 0.90 (orc 1.85/3.18), the top unit 91% to 85%, heroes 1.06 to 1.16, workers -1, all significant. Fewer games with a target bought no strength and cost the variety the targets give. `--z-share` stays 0.75. `fgself-179` read 70% of 402 against insane here, against 77% in its own run: its gain over `fgself-177` (~67%) is probably ~3-5 points, not ~10.
+
+**`fgself-181`** (21:11, from `fgself-179`/50301674, its league): **`--ai-share 0.5`**, item 7 of the queue: half the training games between agents (from 20%), at a person's income. `fgself-180` was still running when it started (the fork stops only a live parent) and was stopped ~30 s later.
+
 The queue:
 1. (done: in `fgself-155`) The audit-12 economy fixes: a training map whose mines and start scale with its costs (`echofast2`), workers labelled up to the target's count, masks against duplicate tech buildings and surplus workers, orc burrow and no-target lumber lessons.
 2. Cloning the scripted strategy family as anchor and teacher (AlphaStar's recipe with scripted data). First tune its weak plans, and add night elf and undead expansion plans. Then record thousands of echofast games (`scripts/heuristic_match.py --record`), train a cloning policy, and use it as the KL anchor and a distillation teacher.

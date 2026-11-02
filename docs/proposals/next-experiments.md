@@ -8,7 +8,8 @@
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-180` | `--z-share 0.25` (item 6), from `fgself-179` | 67% of training steps carry a target |
+| `fgself-181` | `--ai-share 0.5` (item 7), from `fgself-179` | More self-play at a person's income |
+| `fgself-180` (not kept) | `--z-share 0.25` (item 6) | Level; with a target 20% from 32%, narrower play |
 | `fgself-179` (kept) | `--shop-items 1` (item 4) | Against insane 77% to 66% (and to `fgself-177`'s 67% elsewhere); buys 0.06 items a game; narrower play |
 | `fgself-178` (not kept) | The map pool (item 3) | Off Echo Isles 46% against 46%; on Echo Isles longer games, 58% against 73%: it rushed less there and lost the long games |
 
