@@ -2040,6 +2040,12 @@ The `base2` games so far. Against the AI 86% won (of 1,506 at 22:07) at a median
 
 **`fgself-184`** (15:45, from `fgself-182`/50150172, its league, code e76af70): **`--value-tax 1`**: the value (never the policy) reads the game's tax. Untaxed launches won 17%, taxed ones 43-64%: does a value that knows the tax give cleaner advantages, and does it show in strength?
 
+**`fgself-184` stopped at 30M** (17:45): **not kept, under the stop line**. Head to head 41% of 299; against insane 66% to 70% (-4 points with the races weighed alike; from its second hour +3, not significant). The value's loss was ~13% lower in its first 4M steps (0.00117 against `fgself-182`'s 0.00134 at the same steps), 5% lower to 8M, and level after. Creeps 0.86 to 1.53 (down, significant). Knowing the tax helped the value a little early and the policy not at all. `--value-tax` stays off.
+
+**`fgself-185`** (17:48): `--z-modes 0` could not start: turning the modes off shrinks the strategy block, the networks' input width (the anchor reads 298 numbers, the run 318). Not a flag-only test; dropped.
+
+**`fgself-186`** (17:51, from `fgself-182`/50150172, its league): **no `natural` scenario**: it cleared the natural's camp for the expansion lessons, which are off. Its share of launches goes to normal starts (`--scenarios base2,base2,late,late,late --scenario-share 0.667`, so `base2` and the late starts keep their shares). A simplification if level.
+
 The queue:
 1. (done: in `fgself-155`) The audit-12 economy fixes: a training map whose mines and start scale with its costs (`echofast2`), workers labelled up to the target's count, masks against duplicate tech buildings and surplus workers, orc burrow and no-target lumber lessons.
 2. Cloning the scripted strategy family as anchor and teacher (AlphaStar's recipe with scripted data). First tune its weak plans, and add night elf and undead expansion plans. Then record thousands of echofast games (`scripts/heuristic_match.py --record`), train a cloning policy, and use it as the KL anchor and a distillation teacher.

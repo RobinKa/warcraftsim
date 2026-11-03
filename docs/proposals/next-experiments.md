@@ -8,7 +8,8 @@
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-184` | `--value-tax 1` (item 8), from `fgself-182` | The value cannot tell a taxed game from an untaxed one |
+| `fgself-186` | No `natural` scenario (normal starts instead), from `fgself-182` | Its lessons are off; a simplification if level |
+| `fgself-184` (stopped at 30M) | `--value-tax 1` (item 8) | 41% head to head; the value's loss ~13% lower early, then level |
 | `fgself-183` (stopped at 30M) | `--z-shop 3` | It buys 3.2 items a game and lost 22 points against insane: too much, the wrong items early. A gentler form later (one item a race, reward only, or from tier 2) |
 | `fgself-182` (kept, level) | The guard-post fix | Games a little longer; creeps and anti-air up; the base trained under the fixed harness |
 | `fgself-181` (not kept) | `--ai-share 0.5` (item 7) | Level; anti-air up, undead down |
@@ -45,7 +46,7 @@ Done: item 2, `fgself-177` (`fgself-171` in the league), kept: 58% head to head,
 ## Smaller tests, as a slot allows
 
 * The hunt lesson, gentler: firing less often, or only in games between agents. `fgself-175` ended the ties and lost strength against insane.
-* `--z-modes 0` (came in a bundle, never judged alone).
+* `--z-modes 0` (came in a bundle, never judged alone): needs code, it shrinks the input width (`fgself-185` could not start).
 * The scenario `natural` replaced by normal starts or `base2` (the lessons it served are off).
 * Uniform opponents in place of PFSP (near uniform already under `--win-balance`).
 * `--lr 6e-5` alone: at a minibatch of 256 it mostly doubles the noise, and it has lost before, so last.
