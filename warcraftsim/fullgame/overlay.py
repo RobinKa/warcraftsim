@@ -5,7 +5,11 @@ The data is a trace the game's player wrote while it played (fullgame/selfplay.p
 collect.py: trace_step), one row per step:
     {"t", "game_time", "material": {p: value}, "res": {p: [gold, lumber, food used, food cap (farms past the game's 100 counted: shown at 100)]},
      "orders": {p: {label: count}}, and for policies "value", "reward", "entropy": {p: float}}
-and a header: {"sides": [{"player", "name", "kind"}], "title", "gamma", "outcome": {p: +1/0/-1}}.
+and a header: {"sides": [{"player", "name", "kind"}], "title", "gamma", "outcome": {p: +1/0/-1}, and if the game
+was taxed "tax": {"player", "share"}}.
+
+The frame: the game's picture at the top left, the panel on the right (the full height), and below the picture a
+strip (STRIP_H) with A's target build and the orders: in one column they ran off the bottom in long games.
 Player keys are strings (JSON).
 """
 
@@ -37,6 +41,7 @@ def _hero_abilities() -> dict[str, tuple[str, ...]]:
 
 class FullGameOverlay:
     PANEL_W = 420
+    STRIP_H = 180  # (below the game's picture: 540 + 180 = 720)
     END_SECONDS = 2.5
     compose_apart = True  # (video.render_replay: render_step may run beside the game; markers are none)
     pix_fmt = "bgr0"  # (render_step's and render_end's frames)
@@ -49,6 +54,8 @@ class FullGameOverlay:
         self.title = trace.get("title", "")
         self.outcome = {int(k): v for k, v in (trace.get("outcome") or {}).items()}
         self.target = trace.get("target")  # the learner's target strategy (its items' times, and when each was made)
+        self.target_b = trace.get("target_b")  # the other side's, if it had one (an agent in self-play)
+        self.tax = trace.get("tax")  # {"player", "share"}: the side losing that share of its income (< 0: a bonus)
         gamma = trace.get("gamma", 0.997)
         keys = [str(s["player"]) for s in self.sides]
         col = lambda name: np.array([[r.get(name, {}).get(k, np.nan) for k in keys] for r in self.steps],  # noqa: E731
@@ -86,20 +93,20 @@ class FullGameOverlay:
         self.w, self.h = w, h
         # (the frames as the game's X window has them, BGRX, with the panel beside them: no conversion per frame, the
         # encoder's pipe writes it straight out; the game waited for ~10 ms of Python's time a frame without this)
-        self.canvas = np.full((h, w + self.PANEL_W, 4), 0, np.uint8)
+        self.canvas = np.full((h + self.STRIP_H, w + self.PANEL_W, 4), 0, np.uint8)
         self.canvas[..., :3] = BG[::-1]
         self._last_panel = None
 
     @property
     def size(self) -> tuple[int, int]:
-        return self.w + self.PANEL_W, self.h
+        return self.w + self.PANEL_W, self.h + self.STRIP_H
 
     def markers(self, obs: Observation, commands: Sequence[Command]) -> list[Command]:
         return []  # whole games: too many units for marks; the game's health bars show
 
     def render_step(self, frames: list[bytes], t: int, obs_a: Observation, obs_b: Observation | None,
                     commands: Sequence[Command], camera=None) -> list[bytes]:
-        panel = self._panel(min(t, self.T - 1), obs_a)
+        panel = self._panel(min(t, self.T - 1), obs_a), self._strip(min(t, self.T - 1), obs_a)
         self._put_panel(panel)
         self._last_panel = panel
         return self._frames(frames)
@@ -108,11 +115,12 @@ class FullGameOverlay:
         """Each frame beside the panel: one buffer, overwritten (write it before asking for the next)."""
         view = memoryview(self.canvas)
         for raw in frames:
-            self.canvas[:, :self.w] = np.frombuffer(raw, np.uint8).reshape(self.h, self.w, 4)
+            self.canvas[:self.h, :self.w] = np.frombuffer(raw, np.uint8).reshape(self.h, self.w, 4)
             yield view
 
-    def _put_panel(self, panel: Image.Image) -> None:
-        self.canvas[:, self.w:, :3] = np.asarray(panel)[..., ::-1]
+    def _put_panel(self, panel: tuple[Image.Image, Image.Image]) -> None:
+        self.canvas[:, self.w:, :3] = np.asarray(panel[0])[..., ::-1]
+        self.canvas[self.h:, :self.w, :3] = np.asarray(panel[1])[..., ::-1]
 
     def render_end(self, last_frame: bytes, fps: int) -> list[bytes]:
         img = Image.frombytes("RGB", (self.w, self.h), last_frame, "raw", "BGRX")
@@ -130,14 +138,15 @@ class FullGameOverlay:
             rets = [f"{s['name'][:12]} return {self.cum[-1, i]:+.2f}" for i, s in enumerate(self.sides)
                     if np.isfinite(self.reward[:, i]).any()]
             d.text((self.w // 2, self.h // 2 + 12), " · ".join([sub, *rets]), font=self.f, fill=FG, anchor="mm")
-        self.canvas[:, :self.w, :3] = np.asarray(img)[..., ::-1]
+        self.canvas[:self.h, :self.w, :3] = np.asarray(img)[..., ::-1]
         if self._last_panel is not None:
             self._put_panel(self._last_panel)
         return [self.canvas.tobytes()] * int(self.END_SECONDS * fps)
 
     # ---- the panel ----------------------------------------------------------------------------
     def _panel(self, t: int, obs: Observation) -> Image.Image:
-        img = Image.new("RGB", (self.PANEL_W, self.h), BG)
+        H = self.h + self.STRIP_H
+        img = Image.new("RGB", (self.PANEL_W, H), BG)
         d = ImageDraw.Draw(img)
         x0, x1 = 12, self.PANEL_W - 12
         y = 8
@@ -166,7 +175,7 @@ class FullGameOverlay:
             vt = " / ".join(f"{self.win[t, i]:+.2f}" for i in range(len(self.sides)) if self.has_policy[i])
             shaped = self.win is not self.value
             self._chart(d, (x0, y, x1, y + 78), series, t,
-                        ("win estimate (V + shaping × lead) · dashed: what followed" if shaped
+                        ("win estimate · dashed: what followed" if shaped
                          else "value V(s) · dashed: discounted return that followed"), vt)
             y += 86
             if np.isfinite(self.reward[:, 0]).any():
@@ -181,7 +190,7 @@ class FullGameOverlay:
             self._chart(d, (x0, y, x1, y + 64), mat, t, "material: units and buildings (cost × hp left)",
                         " vs ".join(f"{self.material[t, i]:.0f}" for i in range(len(self.sides))))
             y += 72
-        # economy now
+        # economy now, and the game's tax beside the side that pays it
         res = row.get("res", {})
         for i, s in enumerate(self.sides):
             r = res.get(str(s["player"]))
@@ -189,6 +198,18 @@ class FullGameOverlay:
                 d.text((x0, y), f"{'AB'[i]}  gold {r[0]:>5}   lumber {r[1]:>5}   food {r[2]}/{min(r[3], 100)}",
                        font=self.f, fill=SIDE_COLORS[i])
                 y += 16
+        tax = self.tax
+        if tax and tax.get("share"):
+            i = next((k for k, s in enumerate(self.sides) if s["player"] == tax["player"]), None)
+            if i is not None:
+                share = float(tax["share"])
+                what = (f"taxed {share:.0%} of what it gathers" if share > 0
+                        else f"gathers {-share:.0%} more (a bonus)")
+                d.text((x0, y), f"{'AB'[i]}  {what}", font=self.f, fill=SIDE_COLORS[i])
+                y += 16
+        else:
+            d.text((x0, y), "no tax (both sides gather in full)", font=self.f_small, fill=DIM)
+            y += 15
         y += 6
         # the heroes: level, the abilities learned (a dead one dimmed)
         hs = row.get("heroes")
@@ -206,38 +227,57 @@ class FullGameOverlay:
                     y = self._wrapped(d, f"{'AB'[i]}: {_name(code)} {level}{'' if alive else ' (dead)'}: {learned}",
                                       x0, x1, y, color) + 2
             y += 4
-        if self.target:  # A's target: each item made (by when), due and missing, or still to come
-            y = self._target(d, x0, x1, y, row.get("game_time", obs.game_time)) + 4
-        # this step's orders (and the last second's, so they stay readable)
-        d.text((x0, y), "orders (this step and the one before)", font=self.f_small, fill=DIM)
-        y += 15
-        for i, s in enumerate(self.sides):
-            c: Counter = Counter()
-            for k in (t - 1, t):
-                if 0 <= k < len(self.steps):
-                    c.update(self.steps[k].get("orders", {}).get(str(s["player"]), {}))
-            text = ", ".join(f"{name} ×{n}" if n > 1 else name for name, n in c.most_common(6)) or "–"
-            y = self._wrapped(d, f"{'AB'[i]}: {text}", x0, x1, y, SIDE_COLORS[i]) + 4
-        if len(self.steps) and np.isfinite(self.entropy).any() and y + 50 < self.h:
+        if len(self.steps) and np.isfinite(self.entropy).any() and y + 50 < H:
             ent = [(self.entropy[:, i], SIDE_COLORS[i], False) for i in range(len(self.sides))
                    if np.isfinite(self.entropy[:, i]).any()]
-            self._chart(d, (x0, self.h - 46, x1, self.h - 8), ent, t, "policy entropy (per unit, mean)",
+            self._chart(d, (x0, H - 46, x1, H - 8), ent, t, "policy entropy (per unit, mean)",
                         " / ".join(f"{self.entropy[t, i]:.2f}" for i in range(len(self.sides))
                                    if np.isfinite(self.entropy[t, i])))
         return img
 
-    def _target(self, d: ImageDraw.ImageDraw, x0: int, x1: int, y: int, now: float) -> int:
-        """A's target build order at game second `now`: made (bright, ✓), due and missing (red, ✗), to come (dim)."""
-        tg = self.target
+    def _strip(self, t: int, obs: Observation) -> Image.Image:
+        """Below the game's picture: A's target build (left) and this step's orders (right)."""
+        img = Image.new("RGB", (self.w, self.STRIP_H), BG)
+        d = ImageDraw.Draw(img)
+        row = self.steps[t] if self.steps else {}
+        half, now = self.w // 2, row.get("game_time", obs.game_time)
+        split = 104  # (the targets above, the orders below)
+        for i, tg in enumerate((self.target, self.target_b)):  # each side's target build, A left and B right
+            x0, x1 = (12, half - 12) if i == 0 else (half + 12, self.w - 12)
+            if tg:
+                self._target(d, x0, x1, 6, now, tg, "AB"[i], split - 4)
+            else:
+                kind = self.sides[i]["kind"] if i < len(self.sides) else ""
+                d.text((x0, 6), f"{'AB'[i]}: no target build this game" + (" (the built-in AI's own plan)" if kind == "ai" else ""),
+                       font=self.f_small, fill=DIM)
+        d.line([(12, split), (self.w - 12, split)], fill=(48, 52, 60))
+        # this step's orders (and the last second's, so they stay readable)
+        d.text((12, split + 4), "orders (this step and the one before)", font=self.f_small, fill=DIM)
+        for i, s in enumerate(self.sides):
+            x0, x1 = (12, half - 12) if i == 0 else (half + 12, self.w - 12)
+            c: Counter = Counter()
+            for k in (t - 1, t):
+                if 0 <= k < len(self.steps):
+                    c.update(self.steps[k].get("orders", {}).get(str(s["player"]), {}))
+            text = ", ".join(f"{name} ×{n}" if n > 1 else name for name, n in c.most_common(8)) or "–"
+            self._wrapped(d, f"{'AB'[i]}: {text}", x0, x1, split + 19, SIDE_COLORS[i], self.STRIP_H - 4)
+        return img
+
+    def _target(self, d: ImageDraw.ImageDraw, x0: int, x1: int, y: int, now: float, tg: dict | None = None,
+                who: str = "A", y_max: int = 10 ** 6) -> int:
+        """A side's target build order at game second `now`: made (bright, ✓), due and missing (red, ✗), to come
+        (dim); nothing drawn past `y_max` (a "…" instead)."""
+        tg = tg if tg is not None else self.target
+        mine = SIDE_COLORS["AB".index(who)]
         src = {"human": "a person's game", "ai": "the AI's game"}.get(tg.get("src", ""), "a game")
-        d.text((x0, y), f"A's target build ({src}): ✓ made · ✗ due, missing · later", font=self.f_small, fill=DIM)
+        d.text((x0, y), f"{who}'s target build ({src}): ✓ made · ✗ due · later", font=self.f_small, fill=DIM)
         y += 15
         made = tg.get("made") or {}
         x = x0
         for code, due in sorted(tg["t"].items(), key=lambda kv: kv[1]):
             m = made.get(code)
             if m is not None and m <= now:
-                text, color = f"{_name(code)} ✓", SIDE_COLORS[0]
+                text, color = f"{_name(code)} ✓", mine
             elif due <= now:
                 text, color = f"{_name(code)} ✗", (232, 96, 80)
             else:
@@ -245,15 +285,21 @@ class FullGameOverlay:
             w = d.textlength(text + "  ", font=self.f_small)
             if x + w > x1 and x > x0:
                 x, y = x0, y + 14
+            if y + 14 > y_max:
+                d.text((x, y - 14 if x == x0 else y), "…", font=self.f_small, fill=DIM)
+                break
             d.text((x, y), text, font=self.f_small, fill=color)
             x += w
         return y + 14
 
-    def _wrapped(self, d: ImageDraw.ImageDraw, text: str, x0: int, x1: int, y: int, color) -> int:
+    def _wrapped(self, d: ImageDraw.ImageDraw, text: str, x0: int, x1: int, y: int, color, y_max: int = 10 ** 6) -> int:
         words, line = text.split(" "), ""
         for w in words:
             trial = (line + " " + w).strip()
             if d.textlength(trial, font=self.f) > x1 - x0 and line:
+                if y + 30 > y_max:  # (no room for another line: what is left as "…")
+                    line += " …"
+                    break
                 d.text((x0, y), line, font=self.f, fill=color)
                 y += 15
                 line = "   " + w

@@ -2756,9 +2756,15 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                        # (the video's panel: the value without the shaping's potential, overlay.FullGameOverlay)
                        "shaping": {"weight": shaping, "scale": scale, "penalty": cfg.get("float_penalty", 0.0)},
                        "title": f"{Path(cfg['run_dir']).name} · policy v{infer.nets.version} · vs {who}",
+                       # (the game's tax: the side losing that share of what it gathers, the AI's curriculum or an
+                       # agent's balance; < 0 a bonus. The panel shows it beside that side's economy)
+                       **({"tax": {"player": int(taxed), "share": float(opp["tax"])}} if taxed is not None and opp.get("tax") else {}),
                        # (the learner's target strategy, if it had one: the panel shows it, made and due)
                        **({"target": {"t": dict(zs[side]["t"]), "made": dict(made[side]), "src": zs[side].get("src", ""),
                                       "enforced": bool(cfg.get("z_enforce"))}} if side in zs else {}),
+                       # (and the other side's, an agent's in self-play: the panel's strip shows both)
+                       **({"target_b": {"t": dict(zs[1 - side]["t"]), "made": dict(made[1 - side]),
+                                        "src": zs[1 - side].get("src", "")}} if (1 - side) in zs else {}),
                        "sides": [{"player": side, "name": f"learner ({races[side]})", "kind": "agent"},
                                  {"player": 1 - side, "name": f"{other} ({races[1 - side]})",
                                   "kind": "ai" if opp["kind"] == "ai" else "agent"}]}
