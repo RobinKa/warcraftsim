@@ -2046,6 +2046,10 @@ The `base2` games so far. Against the AI 86% won (of 1,506 at 22:07) at a median
 
 **`fgself-186`** (17:51, from `fgself-182`/50150172, its league): **no `natural` scenario**: it cleared the natural's camp for the expansion lessons, which are off. Its share of launches goes to normal starts (`--scenarios base2,base2,late,late,late --scenario-share 0.667`, so `base2` and the late starts keep their shares). A simplification if level.
 
+**`fgself-186`'s verdict** (21:00, 50M steps, ~370 games a policy): **not kept**. Head to head 44% of 546; against insane 67% to 72% (-3.6 points with the races weighed alike; from its second hour -7, interval -15 to +2), orc 45/57 and undead 62/76 down, human 75/59 up; play level. The `natural` scenario earns its place even with its lessons off: it stays.
+
+**`fgself-187`** (21:01, from `fgself-182`/50150172, its league): **`--pfsp uniform`**: every past snapshot drawn alike instead of by `(1-p)²`. Under `--win-balance` the draws are near uniform already; a simplification if level.
+
 The queue:
 1. (done: in `fgself-155`) The audit-12 economy fixes: a training map whose mines and start scale with its costs (`echofast2`), workers labelled up to the target's count, masks against duplicate tech buildings and surplus workers, orc burrow and no-target lumber lessons.
 2. Cloning the scripted strategy family as anchor and teacher (AlphaStar's recipe with scripted data). First tune its weak plans, and add night elf and undead expansion plans. Then record thousands of echofast games (`scripts/heuristic_match.py --record`), train a cloning policy, and use it as the KL anchor and a distillation teacher.
