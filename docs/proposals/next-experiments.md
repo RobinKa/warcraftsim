@@ -20,10 +20,18 @@
 
 Done: item 2, `fgself-177` (`fgself-171` in the league), kept: 58% head to head, insane level, its army mix not taken up. Item 1, `fgself-176` (`--ref-kl 0.01`), kept, level and slightly more varied. `fgself-175` (the hunt lesson) was not kept: ties down from 73% to 8%, but 63% to 72% against insane.
 
-## Next, ahead of the queue
+## Next (2026-11-03, after `fgself-187`)
 
-* **The guard-post fix** (2026-11-03, a bug): a computer slot's trained units were attack-moved back to where they were made, 1,209 times in 18 games, also mid-attack ([engine notes](../reference/engine-notes.md)). The harness now removes the post. One run, from the base, to measure what it changes.
-* Then `--z-shop 3` (the user's idea: shop items' first purchases as targets) and `--value-tax 1`, one run each.
+Done since the list was made: items 1-4 and 6-8, the guard-post fix, `--z-shop 3`, no `natural`, uniform opponents (running). Left, in order:
+
+1. **Bigger minibatch** (item 9: `--minibatch 1024 --lr 6e-5 --pad-groups 2`). Checks B (CPU) and C (`scripts/bench_update.py`, the GPU between runs) first. Could also speed up every later run.
+2. **EMA anchor** (item 5, the user's idea). Needs check A and a small change to the anchor code.
+3. **Shop targets, gentler** (the user's idea, after `fgself-183`): one item per race (salve, rod of necromancy, clarity), the reward only without the teacher's buy labels, or only from tier 2. Small code.
+4. **The hunt lesson, gentler** (after `fgself-175`): only in games between agents, or less often. Small code.
+5. **Expansions**: still none in real games, and the long games are lost on income. The expansion lesson (`fgself-156/157`) hurt; a new form is needed (for example a reward for a second mine's income, or `base2` starts at a higher share). Design first.
+6. If play still does not move: league members that play differently (exploiters, members locked to one target).
+
+Last: `--lr 6e-5` alone; `--z-modes 0` (needs code).
 
 ## Runs, in order
 
