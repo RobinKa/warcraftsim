@@ -8,7 +8,8 @@
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-182` | The guard-post fix, from `fgself-179` | The engine sent trained units home 67 times a game |
+| `fgself-183` | `--z-shop 3` (the user's idea), from `fgself-182` | Shop items' first purchases in people's targets |
+| `fgself-182` (kept, level) | The guard-post fix | Games a little longer; creeps and anti-air up; the base trained under the fixed harness |
 | `fgself-181` (not kept) | `--ai-share 0.5` (item 7) | Level; anti-air up, undead down |
 | `fgself-180` (not kept) | `--z-share 0.25` (item 6) | Level; with a target 20% from 32%, narrower play |
 | `fgself-179` (kept) | `--shop-items 1` (item 4) | Against insane 77% to 66% (and to `fgself-177`'s 67% elsewhere); buys 0.06 items a game; narrower play |
