@@ -8,7 +8,8 @@
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-183` | `--z-shop 3` (the user's idea), from `fgself-182` | Shop items' first purchases in people's targets |
+| `fgself-184` | `--value-tax 1` (item 8), from `fgself-182` | The value cannot tell a taxed game from an untaxed one |
+| `fgself-183` (stopped at 30M) | `--z-shop 3` | It buys 3.2 items a game and lost 22 points against insane: too much, the wrong items early. A gentler form later (one item a race, reward only, or from tier 2) |
 | `fgself-182` (kept, level) | The guard-post fix | Games a little longer; creeps and anti-air up; the base trained under the fixed harness |
 | `fgself-181` (not kept) | `--ai-share 0.5` (item 7) | Level; anti-air up, undead down |
 | `fgself-180` (not kept) | `--z-share 0.25` (item 6) | Level; with a target 20% from 32%, narrower play |
