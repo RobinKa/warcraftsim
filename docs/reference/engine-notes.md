@@ -165,9 +165,9 @@ So the computer slot plays some of the game for us: auto-gathering, spells, hero
 
 Playing a person: in `fullgame/versus.py` the person is the user and the agent keeps its computer slot, so it keeps all of this. Wherever the agent must be a user (a second client, Battle.net), it loses it.
 
-Not done (training code untouched):
+What follows:
 
-* A harness `RemoveGuardPosition` on each agent unit trained would remove the send-back alone. The units games show it leaves the casting.
+* **Done (2026-11-03):** the harness removes the guard post from each agent's (and scripted side's) trained and summoned unit (`W3S_OnTrainFinish`, `W3S_OnSummon`). Measured with the probe, 4 games of `fgself-179` on a computer slot: 10 send-back orders (2.5 a game) against 1,209 in 18 games (67 a game) before. The casting stays. The first run with it is the next experiment.
 * The rest goes with the computer controller, and no native turns it off.
 * Evaluation without it needs `agent_is_user=True`. It allows one user slot per game: an agent against the AI works, but self-play between two agents cannot have both as users.
 * The probe sees only orders with an order event. The engine's own target acquisition and movement without an order are not in these counts.

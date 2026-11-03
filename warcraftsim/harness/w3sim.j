@@ -2728,6 +2728,10 @@ endfunction
 
 function W3S_OnTrainFinish takes nothing returns boolean
     call W3S_Track(GetTrainedUnit())
+    if w3s_agent[GetPlayerId(GetOwningPlayer(GetTrainedUnit()))] or w3s_scripted[GetPlayerId(GetOwningPlayer(GetTrainedUnit()))] then
+        call RemoveGuardPosition(GetTrainedUnit())  // (a computer slot's new unit gets an AI guard post where it was
+        // made, and the engine attack-moves it back there from anywhere: 1,209 times in 18 games, engine notes)
+    endif
     if w3s_shadow[GetPlayerId(GetOwningPlayer(GetTrainedUnit()))] then
         call SaveReal(w3s_lo, GetHandleId(GetTrainedUnit()), 9, TimerGetElapsed(w3s_clock))
     endif
@@ -2785,6 +2789,9 @@ endfunction
 
 function W3S_OnSummon takes nothing returns boolean
     call W3S_Track(GetSummonedUnit())
+    if w3s_agent[GetPlayerId(GetOwningPlayer(GetSummonedUnit()))] or w3s_scripted[GetPlayerId(GetOwningPlayer(GetSummonedUnit()))] then
+        call RemoveGuardPosition(GetSummonedUnit())  // (as a trained unit's)
+    endif
     call W3S_Ev(17, GetHandleId(GetSummoningUnit()), GetHandleId(GetSummonedUnit()), GetUnitTypeId(GetSummonedUnit()))
     return false
 endfunction

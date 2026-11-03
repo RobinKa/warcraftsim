@@ -15,6 +15,11 @@
 
 Done: item 2, `fgself-177` (`fgself-171` in the league), kept: 58% head to head, insane level, its army mix not taken up. Item 1, `fgself-176` (`--ref-kl 0.01`), kept, level and slightly more varied. `fgself-175` (the hunt lesson) was not kept: ties down from 73% to 8%, but 63% to 72% against insane.
 
+## Next, ahead of the queue
+
+* **The guard-post fix** (2026-11-03, a bug): a computer slot's trained units were attack-moved back to where they were made, 1,209 times in 18 games, also mid-attack ([engine notes](../reference/engine-notes.md)). The harness now removes the post. One run, from the base, to measure what it changes.
+* Then `--z-shop 3` (the user's idea: shop items' first purchases as targets) and `--value-tax 1`, one run each.
+
 ## Runs, in order
 
 | # | Change | Code | Why | What would count |
