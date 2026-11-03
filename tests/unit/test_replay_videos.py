@@ -481,16 +481,21 @@ def test_overlay_composes_bgrx_frames_beside_its_panel(monkeypatch):
              "outcome": {"0": 1.0, "1": -1.0}, "shaping": {}, "title": "t"}
     ov = FullGameOverlay(trace)
     ov.begin(None, {}, 8, 4)
-    assert ov.size == (8 + ov.PANEL_W, 4) and ov.pix_fmt == "bgr0"
-    panel = np.zeros((4, ov.PANEL_W, 3), np.uint8)
+    H = 4 + ov.STRIP_H  # (the game's picture, the strip below it; the panel the full height)
+    assert ov.size == (8 + ov.PANEL_W, H) and ov.pix_fmt == "bgr0"
+    panel = np.zeros((H, ov.PANEL_W, 3), np.uint8)
     panel[..., 0] = 200  # (red, in the panel's RGB)
+    strip = np.zeros((ov.STRIP_H, 8, 3), np.uint8)
+    strip[..., 1] = 150  # (green)
     from PIL import Image
     monkeypatch.setattr(ov, "_panel", lambda t, obs: Image.fromarray(panel))
+    monkeypatch.setattr(ov, "_strip", lambda t, obs: Image.fromarray(strip))
     a, b = bytes([1, 2, 3, 0]) * 32, bytes([4, 5, 6, 0]) * 32
     frames = [bytes(f) for f in ov.render_step([a, b], 0, Observation.__new__(Observation), None, [])]
-    assert len(frames) == 2 and all(len(f) == 4 * 4 * (8 + ov.PANEL_W) for f in frames)
-    img = np.frombuffer(frames[1], np.uint8).reshape(4, 8 + ov.PANEL_W, 4)
+    assert len(frames) == 2 and all(len(f) == H * 4 * (8 + ov.PANEL_W) for f in frames)
+    img = np.frombuffer(frames[1], np.uint8).reshape(H, 8 + ov.PANEL_W, 4)
     assert img[0, 0, :3].tolist() == [4, 5, 6]  # (the game's frame as it came)
     assert img[0, 8, :3].tolist() == [0, 0, 200]  # (the panel's red, in BGR)
+    assert img[4, 0, :3].tolist() == [0, 150, 0]  # (the strip below the picture)
     end = ov.render_end(a, 40)
     assert len(end) == int(ov.END_SECONDS * 40) and len(end[0]) == len(frames[0])
