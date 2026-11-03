@@ -140,6 +140,38 @@ The built-in AI on insane gets double income from the engine; nothing in its scr
 
 **A computer slot's heroes use some items by themselves** (2026-11-01, `scripts/shop_items_probe.py`, no command from the agent): a lesser clarity potion, a mana potion and a scroll of regeneration left the inventory during a fight, a healing potion bought while hurt was drunk in the step of the sale, and a tiny great hall once left an unhurt hero's inventory. Held from full health, a healing potion stayed through a fight at 40% hit points. A hero has a town portal scroll in its first slot from the start. Answers to the item natives say little: `UnitUseItem` answers True for an item that needs a target and does nothing, `UnitUseItemPoint` answers False and acts (a town portal, an ivory tower, a sacrificial skull). A shop sells to a hero with no free slot: the gold goes and the item lands on the ground. A rod of necromancy raises nothing right after the kill, and 2 skeletons about 2 s on.
 
+## What a computer slot does by itself (2026-11-03)
+
+Our agent slots are computer slots without an AI script, and the engine still orders their units. `scripts/computer_slot_probe.py` measures it. In its own process only, it patches the harness so that every order an agent's unit gets outside the harness's command window is recorded: the agent did not give it, and neither did the harness (83 of ~83,000 such orders matched the agent's command of that step). Each order is logged with its context. Our side played each game once as a computer slot and once as the user slot (`GameSetup.agent_is_user`, which worked without changes):
+
+* **play**: 18 games per slot kind, the same 8 matchups in both, of `fgself-179`/50301674 on the CPU against the untaxed insane AI on (2)EchoIsles, about 315 game minutes per slot kind.
+* **units**: a scripted 3-minute game per race and slot kind. Both sides get the same group (casters with their adept training, footmen, grunts, 4 heroes at level 3 with items), and player 1, always a computer slot, attacks. Then 8 raiders hit player 0's mine. The start workers and 2 workers spawned at 30 s are never given an order.
+
+| behaviour | computer slot | user slot | how often (computer slot) | for us now (training and evaluation) | for playing a person later |
+|---|---|---|---|---|---|
+| idle workers are put to work: start workers, every new worker at once (wisps to trees) | yes (not acolytes) | no, they stay idle | play: 92 new workers sent to the mine at once, 58 later, none ever ordered by the policy (about 8 a game, human, orc and night elf); idle worker-steps 0.27% (user slot 2.4%, the last 10 games of each) | a little free macro; gold by 10 min was the same (5,559 against 5,512) | lost in a user slot; small |
+| units are sent back where they were trained (the AI guard post): an attack-move to that point, from up to 8,500 away | yes | no | play: 1,209 orders in 16 of 18 games, 69 units, median 2,524 away (user slot: 17 single orders, summons) | **bad**: pulls the army home mid-push unless the policy orders it again. The harness removes guard posts of start units (`RemoveAllGuardPositions`) and placed ones (late starts, `RemoveGuardPosition`), not of trained ones. Placed groups in the units games got no such orders | gone in a user slot |
+| casters cast non-autocast spells: necromancer raise dead and unholy frenzy, shaman purge and lightning shield, priest dispel, footman defend on and off, ghoul cannibalize, raider ensnare, huntress sentinel | yes, also with the guard post removed | no | units: raise dead 14, frenzy 6, purge 8, dispel 2, defend 25 in 10 min; play: defend 388, cannibalize 256, ensnare 17 | free micro the policy neither chooses nor learns | lost in a user slot |
+| heroes cast by themselves: lich frost nova, frost armor and dark ritual, demon hunter mana burn and immolation, blademaster mirror image when hurt, paladin holy light on hurt units, archmage water elemental and blizzard, far seer wolves, keeper entangle and force of nature | yes (trained heroes; heroes placed in the units games cast nothing) | 2 holy lights in 315 min | play: ~116 casts, about as many as the policy's own (~110) | free hero micro | lost in a user slot |
+| heroes use items: a potion of lesser invulnerability, a scroll | yes (also salves and potions, see above) | no (all 8 by command) | play: 2 of the 10 items used | small (the policy rarely buys) | lost |
+| workers defend themselves: orc peons board burrows (the burrow's battle stations), the human hall rings the town bell (militia, then back to work) | yes | no | units: every orc and human raid; play: 105 battle stations and 327 boards (user slot: 9 boards after the policy's own battle stations) | free worker defence (and gathering lost inside, see above) | lost |
+| hurt night elf units walk to a moon well (order 852460 on it); moon wells recharge by themselves | yes | not seen (4 night elf games) | play: 161 walks (78% of the archers under half hit points), 248 recharges | free sustain | lost |
+| default autocasts: priest heal, sorceress slow, druid of the talon faerie fire, banshee curse, spell breaker spell steal | yes | yes | units: heal 294 and 204 in 10 min | none: the same for a person | the same |
+| attacked workers run from the attacker (a move about 250 away) | acolytes | peons, peasants, acolytes | units: 7 (user slot: 31) | none | the same |
+| the harvest cycle, a rally point's order, peasant repair, illusions' and summons' first orders, immolation off without mana, a mountain giant's taunt | yes | yes | - | none | the same |
+| idle peons re-sent to a busy or blocked mine several times a step | yes | no | 1 of 18 games (~12,000 orders in minutes 8-17) | engine time only | - |
+
+So the computer slot plays some of the game for us: auto-gathering, spells, hero spells, worker defence, and moon wells. It also works against us in one way, by sending the army home. All of it is in training and in evaluation alike, so the yardstick (the insane AI, against a person's income) flatters the policy. On the same 18 matchups, the policy won 11 of 18 as a computer slot and 7 of 18 as the user slot (one tie each). That is suggestive, not significant (about 1.3 standard errors). The insane AI's units get the same help, since it is a computer slot too.
+
+Playing a person: in `fullgame/versus.py` the person is the user and the agent keeps its computer slot, so it keeps all of this. Wherever the agent must be a user (a second client, Battle.net), it loses it.
+
+Not done (training code untouched):
+
+* A harness `RemoveGuardPosition` on each agent unit trained would remove the send-back alone. The units games show it leaves the casting.
+* The rest goes with the computer controller, and no native turns it off.
+* Evaluation without it needs `agent_is_user=True`. It allows one user slot per game: an agent against the AI works, but self-play between two agents cannot have both as users.
+* The probe sees only orders with an order event. The engine's own target acquisition and movement without an order are not in these counts.
+
 ## Determinism (2026-10-19)
 
 Measured on `echofast` (`GameSetup.seed`: `SetRandomSeed` first thing in the map's `main`; games side by side, the units' types, owners, positions and hit points compared every step):
