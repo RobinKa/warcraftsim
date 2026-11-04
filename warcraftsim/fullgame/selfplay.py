@@ -4087,13 +4087,78 @@ def set_dropout(net: torch.nn.Module, p: float) -> None:
         net.config["dropout"] = p
 
 
-def save_checkpoint(path: Path, net: FullGameNet, opt, vocab: dict, agent_steps: int, update: int, keep_opt: int = 3) -> None:
+class EmaAnchor:
+    """--ref-ema: the KL anchor follows the policy slowly. After each update every weight of the anchor moves `tau` of
+    the way to the policy's (p_ref += tau * (p_net - p_ref)): a half-life of ln 2 / tau updates. The KL still stops
+    sudden jumps, without --init's pull back for good (a rolling anchor, --ref-update, jumped and was worse: fgself-82).
+    Only the weights both have with the same shape and type follow (a grown policy's others stay --init's); the buffers
+    (the vocabulary's tables, the temperatures) stay as they are. In place, in the weights' own fp32 (--bf16 casts only
+    the matmuls), so the CUDA graphs go on reading the same tensors."""
+
+    def __init__(self, ref: FullGameNet, net: FullGameNet, tau: float, init: str = ""):
+        own = dict(net.named_parameters())
+        pairs = [(n, p, own[n]) for n, p in ref.named_parameters()
+                 if n in own and p.is_floating_point() and own[n].shape == p.shape and own[n].dtype == p.dtype]
+        self.tau, self.init_path = tau, init
+        self.names = [n for n, _, _ in pairs]
+        self.refs = [p for _, p, _ in pairs]
+        self.nets = [q for _, _, q in pairs]
+        self.left = sum(1 for _ in ref.parameters()) - len(pairs)  # (the anchor's weights that stay --init's)
+        self.init = [p.detach().clone() for p in self.refs]  # (--init's: how far the anchor has moved)
+        self.init_norm = torch.stack(torch._foreach_norm(self.init)).norm() if self.init else None
+
+    @torch.no_grad()
+    def step(self) -> None:
+        if self.refs:
+            torch._foreach_lerp_(self.refs, self.nets, self.tau)
+
+    @torch.no_grad()
+    def distances(self) -> dict:
+        """The anchor's distance from --init and from the policy, each over --init's norm (L2 over all its weights)."""
+        if not self.refs:
+            return {}
+        moved = torch.stack(torch._foreach_norm(torch._foreach_sub(self.refs, self.init))).norm()
+        gap = torch.stack(torch._foreach_norm(torch._foreach_sub(self.nets, self.refs))).norm()
+        a, b = (torch.stack([moved, gap]) / self.init_norm.clamp_min(1e-12)).tolist()
+        return {"ref_ema/from_init": a, "ref_ema/to_policy": b}
+
+    def state(self) -> dict:
+        return {"weights": {n: p.detach().cpu() for n, p in zip(self.names, self.refs)}, "tau": self.tau,
+                "init": self.init_path}
+
+    @torch.no_grad()
+    def resume(self, checkpoint: Path) -> str | None:
+        """The anchor saved with `checkpoint` (<steps>.ref, save_checkpoint), else the newest saved before it -> its
+        file's name; None (none saved, or another --init's): the anchor stays --init, as at a run's start."""
+        ck = Path(checkpoint)
+        path = ck.with_suffix(".ref")
+        if not path.exists():
+            older = [p for p in ck.parent.glob("[0-9]*.ref")
+                     if p.stem.isdigit() and ck.stem.isdigit() and int(p.stem) <= int(ck.stem)]
+            path = max(older, key=lambda p: int(p.stem), default=None)
+        if path is None:
+            return None
+        saved = torch.load(path, map_location="cpu", weights_only=False)
+        if saved.get("init") != self.init_path:
+            print(f"note: {path.name} moved from {saved.get('init')}, not this run's --init: the anchor from --init", flush=True)
+            return None
+        own = dict(zip(self.names, self.refs))
+        for k, v in saved["weights"].items():
+            if k in own and own[k].shape == v.shape:
+                own[k].copy_(v)
+        return path.name
+
+
+def save_checkpoint(path: Path, net: FullGameNet, opt, vocab: dict, agent_steps: int, update: int, keep_opt: int = 3,
+                    ema: EmaAnchor | None = None) -> None:
     """A checkpoint, and Adam's state next to it (<steps>.adam; the newest `keep_opt` kept): a fork or a
     resume from it goes on with the optimizer's moments instead of fresh ones (a fresh Adam's first steps
     are ~lr per weight whatever the gradient: forks lost ~10 points of the AI's record in their first
-    20 minutes)."""
+    20 minutes). With `ema` (--ref-ema) also the moving anchor's weights (<steps>.ref, all kept: a resume from
+    any checkpoint goes on with its anchor; not "<steps>.ref.pt", which the checkpoints' "[0-9]*.pt" globs would take)."""
     for obj, dest in (({"model": net.state_dict(), "config": net.config, "vocab": vocab, "agent_steps": agent_steps,
-                        "update": update}, path), (opt.state_dict(), path.with_suffix(".adam"))):
+                        "update": update}, path), (opt.state_dict(), path.with_suffix(".adam")),
+                      *(((ema.state(), path.with_suffix(".ref")),) if ema is not None else ())):
         tmp = dest.with_name(dest.name + ".tmp")  # (whole or not at all: a learner stopped while saving left a
         with open(tmp, "wb") as fh:                # truncated checkpoint, and the resume failed on it)
             torch.save(obj, fh)
@@ -4725,6 +4790,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--ref-update", type=int, default=0, help="every this many updates the KL anchor becomes the current "
                     "policy (a rolling anchor: the KL still stops sudden jumps, but no longer pulls back to the start's "
                     "habits; 0: the anchor stays --init)")
+    ap.add_argument("--ref-ema", type=float, default=0.0, help="after each update every weight of the KL anchor moves "
+                    "this share of the way to the policy's (an anchor from --init that follows slowly: a half-life of "
+                    "ln 2 / this updates, 0.000115 ~6,000; EmaAnchor). Saved with each checkpoint (<steps>.ref) and taken "
+                    "up again on a resume; a fork (a new run) starts it from --init again. 0: the anchor stays --init")
     ap.add_argument("--worker-cap", type=int, default=0, help="the shaping's material counts a player's workers only as "
                     "much as this many (0: all; trace.material)")
     ap.add_argument("--shaping-anneal", type=int, default=0, help="updates over which the shaping's weight falls to 0 "
@@ -4893,6 +4962,8 @@ def main(argv: list[str] | None = None) -> int:
                              f"{fx.ZDIM}): scripts/grow_strategy.py")
     if args.ref_update > 0 and ref is not None and arch_key(ref.config) != arch_key(net.config):
         raise SystemExit("--ref-update copies the policy into the anchor: --init must have the starting weights' architecture")
+    if args.ref_ema > 0 and (ref is None or args.ref_update > 0):
+        raise SystemExit("--ref-ema moves the KL anchor: it needs --ref-kl above 0, and not --ref-update")
     if args.z_pool and not fx.ZDIM:
         raise SystemExit("--z-pool needs a network with a strategy block: scripts/grow_strategy.py")
     if args.reward_parts:  # (a value per reward: the old value is the first, the others start at zero)
@@ -4918,6 +4989,11 @@ def main(argv: list[str] | None = None) -> int:
     # count on the GPU and takes the addresses by value, so a CUDA graph replays it: ATen/native/cuda/fused_adam_utils.cuh)
     adam_kw = {"fused": True} if args.adam_fused else {}
     opt = torch.optim.Adam(net.parameters(), lr=args.lr, eps=1e-5, capturable=graphed, **adam_kw)
+    ema = None  # --ref-ema: the anchor follows the policy (from --init: the anchor as it is here; a resume's below)
+    if args.ref_ema > 0:
+        ema = EmaAnchor(ref, net, args.ref_ema, str(Path(args.init).resolve()))
+        print(f"--ref-ema {args.ref_ema}: the anchor follows {len(ema.refs)} of the policy's weights (half-life "
+              f"{math.log(2) / args.ref_ema:,.0f} updates; {ema.left} of the anchor's stay --init's)", flush=True)
     if args.start_weights and not args.resume:
         load_optimizer(opt, args.start_weights, device, args.lr, net)
     # the main exploiter (--exploiter-share): a second network, from the run's starting weights
@@ -4956,6 +5032,9 @@ def main(argv: list[str] | None = None) -> int:
         if src:
             last = torch.load(src, map_location=device, weights_only=False)
             net.load_state_dict(trained(last["model"], net))
+            if ema is not None:  # (--ref-ema: the anchor as it was at that checkpoint)
+                got = ema.resume(src)
+                print(f"--ref-ema: the anchor {'from ' + got if got else 'from --init (none saved)'}", flush=True)
             if (not load_optimizer(opt, src, device, args.lr, net) and args.start_weights
                     and Path(src).stem == f"{0:016d}"):  # (a resume before the first checkpoint: the fork's start's
                 load_optimizer(opt, args.start_weights, device, args.lr, net)  # state, as the fork had; audit 13)
@@ -5346,6 +5425,9 @@ def main(argv: list[str] | None = None) -> int:
                     updater = None
             if stats is None:
                 stats = ppo_update(net, ref, opt, steps, args, warmup, device, batch_chunks, bc_iter)
+            if ema is not None:  # --ref-ema: the anchor a step towards the updated policy (outside the graphs)
+                ema.step()
+                stats.update(ema.distances())
             stats.update(measured)
             stats.update(part_stats)
             if net.config.get("ghost"):
@@ -5357,10 +5439,10 @@ def main(argv: list[str] | None = None) -> int:
                 native.loop.learner_busy = 0
             if update % args.snapshot_every == 0:
                 path = run_dir / "checkpoints" / f"{agent_steps:016d}.pt"
-                save_checkpoint(path, net, opt, vocab, agent_steps, update)
+                save_checkpoint(path, net, opt, vocab, agent_steps, update, ema=ema)
                 league.add_snapshot(path, agent_steps)
             elif update % args.checkpoint_every == 0:
-                save_checkpoint(run_dir / "checkpoints" / f"{agent_steps:016d}.pt", net, opt, vocab, agent_steps, update)
+                save_checkpoint(run_dir / "checkpoints" / f"{agent_steps:016d}.pt", net, opt, vocab, agent_steps, update, ema=ema)
             if args.ref_update > 0 and ref is not None and update % args.ref_update == 0:  # --ref-update: a rolling
                 ref.load_state_dict(net.state_dict())  # anchor (in place: the CUDA graphs keep their weights' addresses)
                 print(f"the anchor moved to update {update}", flush=True)
@@ -5391,7 +5473,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         info["finished"] = time.time()
         save_info()
-        save_checkpoint(run_dir / "checkpoints" / f"{agent_steps:016d}.pt", net, opt, vocab, agent_steps, update)
+        save_checkpoint(run_dir / "checkpoints" / f"{agent_steps:016d}.pt", net, opt, vocab, agent_steps, update, ema=ema)
         stop.set()
         for p in actors:
             p.join(timeout=60)

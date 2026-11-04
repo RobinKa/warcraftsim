@@ -38,7 +38,7 @@ flowchart LR
 ```
 
 * A clone of the built-in AI is the start. Reinforcement learning then improves on it.
-* The KL term keeps the policy near an anchor. The anchor moves to a recent best checkpoint as the policy improves.
+* The KL term keeps the policy near an anchor. The anchor moves to a recent best checkpoint as the policy improves. `--ref-ema` (built 2026-11-04, not yet trained) lets the anchor follow the policy slowly instead.
 * Target strategies (AlphaStar's z): in most training games a side plays toward a build order from the AI's games or people's replays, rewarded for following it; a builder's orders teach it (labels only, never carried out).
 * Each experiment is a new run, forked from the best checkpoint. It starts with its parent's league.
 
