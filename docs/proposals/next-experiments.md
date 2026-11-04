@@ -8,7 +8,8 @@
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-190` | More `base2` starts (half the scenarios), from `fgself-182` | Expansions: never taken; long games lost on income |
+| `fgself-191` | `--ref-ema 0.000115` (item 5, the user's idea), from `fgself-182` | The anchor follows the policy slowly |
+| `fgself-190` (not kept) | More `base2` starts | Level (47% head to head, insane +0.8); still no expansions |
 | `fgself-189` (stopped at 30M) | `--minibatch 512 --lr 4.2e-5 --pad-groups 2` (item 9) | 42% head to head, and slower in a run (the games' inference waited): minibatch 256 stays |
 | `fgself-187` (not kept) | `--pfsp uniform` | Level, but narrower play (upgrades, anti-air down): PFSP stays |
 | `fgself-186` (not kept) | No `natural` scenario | 44% head to head, insane -3.6: the scenario stays |
