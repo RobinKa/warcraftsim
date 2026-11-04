@@ -8,7 +8,7 @@
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-187` | `--pfsp uniform`, from `fgself-182` | Near uniform already; a simplification if level |
+| `fgself-187` (not kept) | `--pfsp uniform` | Level, but narrower play (upgrades, anti-air down): PFSP stays |
 | `fgself-186` (not kept) | No `natural` scenario | 44% head to head, insane -3.6: the scenario stays |
 | `fgself-184` (stopped at 30M) | `--value-tax 1` (item 8) | 41% head to head; the value's loss ~13% lower early, then level |
 | `fgself-183` (stopped at 30M) | `--z-shop 3` | It buys 3.2 items a game and lost 22 points against insane: too much, the wrong items early. A gentler form later (one item a race, reward only, or from tier 2) |

@@ -2050,6 +2050,8 @@ The `base2` games so far. Against the AI 86% won (of 1,506 at 22:07) at a median
 
 **`fgself-187`** (21:01, from `fgself-182`/50150172, its league): **`--pfsp uniform`**: every past snapshot drawn alike instead of by `(1-p)²`. Under `--win-balance` the draws are near uniform already; a simplification if level.
 
+**`fgself-187`'s verdict** (2026-11-04 00:14, 50M steps, ~365 games a policy): **not kept**. Strength level: head to head 47% of 620, against insane 67% to 67% (-0.7 points with the races weighed alike; from its second hour -5, interval -13 to +3). Play narrowed: weapon and armour levels 0.38 to 0.58, the top unit 93% to 90%, anti-air against 4+ air 29% to 43% (orc 17/70), all significant; wins past 18 minutes 24% to 36% (not significant). Drawing the past snapshots by how hard they are keeps the play wider: `--pfsp hard` stays. The base stays `fgself-182`/50150172. No run overnight (the user's rule): the next one starts in the morning, from the queue.
+
 The queue:
 1. (done: in `fgself-155`) The audit-12 economy fixes: a training map whose mines and start scale with its costs (`echofast2`), workers labelled up to the target's count, masks against duplicate tech buildings and surplus workers, orc burrow and no-target lumber lessons.
 2. Cloning the scripted strategy family as anchor and teacher (AlphaStar's recipe with scripted data). First tune its weak plans, and add night elf and undead expansion plans. Then record thousands of echofast games (`scripts/heuristic_match.py --record`), train a cloning policy, and use it as the KL anchor and a distillation teacher.
