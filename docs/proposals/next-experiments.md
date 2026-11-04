@@ -8,7 +8,8 @@
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-189` | `--minibatch 512 --lr 4.2e-5 --pad-groups 2` (item 9), from `fgself-182` | Updates ~30% faster at 1024 in the bench; 1024 ran out of GPU memory in the run (`fgself-188`) |
+| `fgself-190` | More `base2` starts (half the scenarios), from `fgself-182` | Expansions: never taken; long games lost on income |
+| `fgself-189` (stopped at 30M) | `--minibatch 512 --lr 4.2e-5 --pad-groups 2` (item 9) | 42% head to head, and slower in a run (the games' inference waited): minibatch 256 stays |
 | `fgself-187` (not kept) | `--pfsp uniform` | Level, but narrower play (upgrades, anti-air down): PFSP stays |
 | `fgself-186` (not kept) | No `natural` scenario | 44% head to head, insane -3.6: the scenario stays |
 | `fgself-184` (stopped at 30M) | `--value-tax 1` (item 8) | 41% head to head; the value's loss ~13% lower early, then level |

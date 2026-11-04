@@ -2058,6 +2058,10 @@ The `base2` games so far. Against the AI 86% won (of 1,506 at 22:07) at a median
 
 **`fgself-189`** (10:06, from `fgself-182`/50150172, its league): **`--minibatch 512 --lr 4.2e-5 --pad-groups 2`**: half the step, the learning rate by the square root, less sorting by size. It fits (11.4 GB on the GPU at 10:14) and its first 0.9M steps are stable (gradient norm 0.13 against 0.17, anchor KL 0.10 against 0.11). Faster updates, and level or better?
 
+**`fgself-189` stopped at 30M** (12:14): **not kept**. Head to head 42% of 353; against insane 65% to 68% (-4.4 points with the races weighed alike, from its second hour +3, not significant); the top unit 92% to 88% (narrower), lumber -9 a minute. And slower, not faster: 4,064 steps a second from 3M on against `fgself-182`'s 4,348 over the same steps. The update was 7% shorter (1.25 s against 1.34 s a cycle), but collecting the next batch took 0.79 s against 0.54 s, and the GPU held 20.5 GB against 12.6: the bigger update slowed the games' inference. Minibatch 256 stays; item 9 is done.
+
+**`fgself-190`** (12:14, from `fgself-182`/50150172, its league): **more two-base starts**: `base2` from 2 of 6 scenario draws to 4 of 8 (`natural` 1 of 8, late 3 of 8, `--scenario-share` 0.8 as before). The policy never expands and loses the long games on one mine's income; `base2` starts it with its natural running (`fgself-173`, kept). Does more of it teach it to use, defend and take a second base? Meanwhile an agent builds the EMA anchor (`--ref-ema`, item 5) and its check A.
+
 The queue:
 1. (done: in `fgself-155`) The audit-12 economy fixes: a training map whose mines and start scale with its costs (`echofast2`), workers labelled up to the target's count, masks against duplicate tech buildings and surplus workers, orc burrow and no-target lumber lessons.
 2. Cloning the scripted strategy family as anchor and teacher (AlphaStar's recipe with scripted data). First tune its weak plans, and add night elf and undead expansion plans. Then record thousands of echofast games (`scripts/heuristic_match.py --record`), train a cloning policy, and use it as the KL anchor and a distillation teacher.
