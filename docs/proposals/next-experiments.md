@@ -27,7 +27,7 @@ Done: item 2, `fgself-177` (`fgself-171` in the league), kept: 58% head to head,
 Done since the list was made: items 1-4 and 6-8, the guard-post fix, `--z-shop 3`, no `natural`, uniform opponents (running). Left, in order:
 
 1. **Bigger minibatch** (item 9: `--minibatch 1024 --lr 6e-5 --pad-groups 2`). Checks B (CPU) and C (`scripts/bench_update.py`, the GPU between runs) first. Could also speed up every later run.
-2. **EMA anchor** (item 5, the user's idea). Needs check A and a small change to the anchor code.
+2. **EMA anchor** (item 5, the user's idea). Built: `--ref-ema TAU` moves the anchor `TAU` of the way to the policy after each update (0.000115: a half-life of ~6,000 updates, ~50M steps at 8,192 a batch), saved with each checkpoint (`<steps>.ref`) and taken up on a resume; a fork starts it from `--init` again. Check A done: it can start from `fgself-100` (below).
 3. **Shop targets, gentler** (the user's idea, after `fgself-183`): one item per race (salve, rod of necromancy, clarity), the reward only without the teacher's buy labels, or only from tier 2. Small code.
 4. **The hunt lesson, gentler** (after `fgself-175`): only in games between agents, or less often. Small code.
 5. **Expansions**: still none in real games, and the long games are lost on income. The expansion lesson (`fgself-156/157`) hurt; a new form is needed (for example a reward for a second mine's income, or `base2` starts at a higher share). Design first.
@@ -43,7 +43,7 @@ Last: `--lr 6e-5` alone; `--z-modes 0` (needs code).
 | 2 | `fgself-171`'s last as a fixed league member (`--league-add`) | none | The league is one lineage; this shows the policy mixed orc armies and tier-3 night elves | Level or better, anti-air and army mix move |
 | 3 | A map pool in training (`--map-pool`, Echo Isles at half the weight) | merged | The only test of whether Echo Isles taught it to rush: `fgself-168`'s 65% on Echo Isles and 60%, 40%, 38% elsewhere, with the same play, only show an Echo-trained policy's habits carrying over. May also add variety | Evaluated on all four real maps as well as `--eval-map`: play changes, gains elsewhere, Echo Isles level |
 | 4 | `--shop-items 1` | merged | People buy items in 92-99% of games, the policy cannot buy from its shop | Items bought and used; if none, a lesson as its own run |
-| 5 | An EMA anchor from `fgself-100` (half-life ~6,000 updates) | small | The user's idea: stops sudden jumps without the permanent pull back. Needs check A | Variety rises by ~100M steps while income holds |
+| 5 | An EMA anchor from `fgself-100` (half-life ~6,000 updates) | built (`--ref-ema 0.000115`) | The user's idea: stops sudden jumps without the permanent pull back. Needs check A | Variety rises by ~100M steps while income holds |
 | 6 | `--z-share 0.25` | none | 67% of training steps carry a target, which wins 30-38% to ~70% without. How much strength does it cost? | Strength up without losing with-target play |
 | 7 | `--ai-share 0.5` | none | More self-play at a person's income; the last tests were at doubled income | Head to head and variety |
 | 8 | The value sees the tax, value only | built (`--value-tax 1`) | Neither network reads it, and `fgself-174` showed the tax has to stay (training at full income: 14% won, undead 3%) | Value loss down, level or better |
@@ -66,7 +66,7 @@ Last: `--lr 6e-5` alone; `--z-modes 0` (needs code).
 
 | | Check | Decides |
 |---|---|---|
-| A | Blends of `fgself-100` and `fgself-173` at 25/50/75%: ~30 games each on the CPU, KL to both parents | Run 4 starts from `fgself-100` or needs the fallback |
+| A | Done (2026-11-04, `scripts/blend_check.py`): blends of `fgself-100` and `fgself-182`'s last at 0-100%, 12 games each against insane on the CPU: none broken, 1, 3, 6, 9, 10 of 12 won, the KL to both parents smooth ([the log](../reference/experiment-log.md)) | Run 5 starts from `fgself-100`, no fallback |
 | B | How many games and game phases a minibatch holds at `--pad-groups` 8, 2, 1 (no GPU) | Whether sorting matters |
 | C | `scripts/bench_update.py` at minibatches 256 and 1024, between runs (needs the GPU) | Whether run 8 is faster |
 | D | Done: the side ahead camps at the dead main (`--hunt-lesson`, built; not yet trained) | Run 1 |

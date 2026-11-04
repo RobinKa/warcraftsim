@@ -1,7 +1,8 @@
 """Start a new self-play run from another run's latest checkpoint (an experiment: the dashboard's lineage
 shows it as the parent's child): stop the parent, take the flags of its last launch (run.json), some
 changed, and launch the new run with the parent's checkpoint as its starting weights (--start-weights;
---init stays the KL anchor). The new run takes over the parent's league (--league-from: its past snapshots
+--init stays the KL anchor; with --ref-ema the anchor moves from --init again, the parent's moved one, <steps>.ref, is
+not taken). The new run takes over the parent's league (--league-from: its past snapshots
 with their records, its curriculum levels and balance; --league none: a league of its own from scratch)
 and counts its steps from 0. It runs from a checkout of its commit (HEAD; --commit), made and built before the
 parent stops (selfplay_restart.pinned; --dry-run: only that, and the command printed).

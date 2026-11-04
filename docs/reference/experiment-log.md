@@ -2062,6 +2062,18 @@ The `base2` games so far. Against the AI 86% won (of 1,506 at 22:07) at a median
 
 **`fgself-190`** (12:14, from `fgself-182`/50150172, its league): **more two-base starts**: `base2` from 2 of 6 scenario draws to 4 of 8 (`natural` 1 of 8, late 3 of 8, `--scenario-share` 0.8 as before). The policy never expands and loses the long games on one mine's income; `base2` starts it with its natural running (`fgself-173`, kept). Does more of it teach it to use, defend and take a second base? Meanwhile an agent builds the EMA anchor (`--ref-ema`, item 5) and its check A.
 
+**Check A** (2026-11-04 13:22, `scripts/blend_check.py`, CPU, for item 5: an EMA anchor, `--ref-ema`): blends of the anchor `fgself-100` (grown to `fgself-182`'s vocabulary and inputs, as a run grows it) and `fgself-182`/50150172, the anchor's weights moved 0-100% of the way (the EMA's own step at that share; the two are 0.12 apart, relative L2). The KL per own unit is the run's term (forward-all, KL(parent || blend); the orders' alone in brackets) on 18,433 steps of these games. 12 games each against the untaxed insane AI on (2)EchoIsles, real rules, a person's income, every blend on the same 12 matchups:
+
+| Blend | KL to `fgself-100` | KL to `fgself-182` | Won | Minutes | Supply at 5 / 10 min | Workers | Army | Gold |
+|---|---|---|---|---|---|---|---|---|
+| 0% | 0 | 0.091 (0.068) | 1 of 12 | 21.7 | 31 / 42 | 13.0 | 54.5 | 10,758 |
+| 25% | 0.014 (0.010) | 0.063 (0.048) | 3 of 12 | 23.9 | 33 / 44 | 10.9 | 55.7 | 11,590 |
+| 50% | 0.037 (0.029) | 0.035 (0.028) | 6 of 12, 3 ties | 24.4 | 32 / 43 | 11.7 | 43.0 | 10,485 |
+| 75% | 0.064 (0.049) | 0.012 (0.010) | 9 of 12 | 16.2 | 33 / 46 | 10.6 | 36.1 | 8,310 |
+| 100% | 0.088 (0.067) | 0 | 10 of 12 | 13.9 | 35 / 46 | 11.2 | 30.6 | 7,367 |
+
+No blend is broken: each builds up supply, workers and a hero as its parents do, and the KL grows smoothly with the share, with no bump between. Strength rises with the share; `fgself-100` itself wins 1 of 12 at a person's income (it was trained when the agent slots had the AI's double income). So an EMA anchor from `fgself-100` passes through working policies: item 5 starts from it, no fallback needed. At a half-life of ~6,000 updates (~50M steps at 8,192 a batch) it is near the 50% blend at the end of a run, and the KL term then reads ~0.035 instead of ~0.09: a weaker pull at the same `--ref-kl`.
+
 The queue:
 1. (done: in `fgself-155`) The audit-12 economy fixes: a training map whose mines and start scale with its costs (`echofast2`), workers labelled up to the target's count, masks against duplicate tech buildings and surplus workers, orc burrow and no-target lumber lessons.
 2. Cloning the scripted strategy family as anchor and teacher (AlphaStar's recipe with scripted data). First tune its weak plans, and add night elf and undead expansion plans. Then record thousands of echofast games (`scripts/heuristic_match.py --record`), train a cloning policy, and use it as the KL anchor and a distillation teacher.
