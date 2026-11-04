@@ -8,7 +8,8 @@
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-191` | `--ref-ema 0.000115` (item 5, the user's idea), from `fgself-182` | The anchor follows the policy slowly |
+| `fgself-192` | `--ref-ema 0.00046` (4× faster), from `fgself-182` | `fgself-191`'s slow anchor freed nothing visible |
+| `fgself-191` (stopped at 75M) | `--ref-ema 0.000115` (item 5) | Level throughout, play no wider |
 | `fgself-190` (not kept) | More `base2` starts | Level (47% head to head, insane +0.8); still no expansions |
 | `fgself-189` (stopped at 30M) | `--minibatch 512 --lr 4.2e-5 --pad-groups 2` (item 9) | 42% head to head, and slower in a run (the games' inference waited): minibatch 256 stays |
 | `fgself-187` (not kept) | `--pfsp uniform` | Level, but narrower play (upgrades, anti-air down): PFSP stays |
