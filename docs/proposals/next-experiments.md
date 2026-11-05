@@ -8,6 +8,7 @@
 
 | Run | Change | Why |
 |---|---|---|
+| `fgself-193` (running) | `--exploiter-share 0.2` (item 6, brought forward) | A main exploiter looks for what beats the policy; a league member that plays differently |
 | `fgself-192` (not kept) | `--ref-ema 0.00046` (4× faster) | Level, play no wider: the anchor is not what holds variety back now |
 | `fgself-191` (stopped at 75M) | `--ref-ema 0.000115` (item 5) | Level throughout, play no wider |
 | `fgself-190` (not kept) | More `base2` starts | Level (47% head to head, insane +0.8); still no expansions |
@@ -34,6 +35,8 @@ Done since the list was made: items 1-4 and 6-8, the guard-post fix, `--z-shop 3
 4. **The hunt lesson, gentler** (after `fgself-175`): only in games between agents, or less often. Small code.
 5. **Expansions**: still none in real games, and the long games are lost on income. The expansion lesson (`fgself-156/157`) hurt; a new form is needed (for example a reward for a second mine's income, or `base2` starts at a higher share). Design first.
 6. If play still does not move: league members that play differently (exploiters, members locked to one target).
+
+Built 2026-11-05 (commit 69cb560): item 3's one-item pools (`*-shop1.json`: human clarity, orc salve, undead rod of necromancy, night elf staff of preservation; with K=1 the orb no longer takes the slot) and item 4's `--hunt-lesson 2` (the lesson only in games between agents). Item 6's exploiter runs first (`fgself-193`, no code).
 
 Last: `--lr 6e-5` alone; `--z-modes 0` (needs code).
 
