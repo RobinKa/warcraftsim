@@ -8,7 +8,7 @@
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-193` (running) | `--exploiter-share 0.2` (item 6, brought forward) | A main exploiter looks for what beats the policy; a league member that plays differently |
+| `fgself-193` (invalid, stopped at 5.9M) | `--exploiter-share 0.2` (item 6, brought forward) | The exploiter path was broken (fixed in 8f57073): run again as `fgself-194` with `--exploiter-share 0.1` |
 | `fgself-192` (not kept) | `--ref-ema 0.00046` (4× faster) | Level, play no wider: the anchor is not what holds variety back now |
 | `fgself-191` (stopped at 75M) | `--ref-ema 0.000115` (item 5) | Level throughout, play no wider |
 | `fgself-190` (not kept) | More `base2` starts | Level (47% head to head, insane +0.8); still no expansions |
