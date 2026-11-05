@@ -1522,6 +1522,12 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                         taxed, share = balance_tax(spec, races)
                         if cfg.get("win_balance"):  # (the model's cap: the races' balance until it is fitted)
                             share = min(share, cfg.get("win_balance", 0.0))
+                            if opp.get("kind") == "exploiter":  # (--win-balance leaves the races' balance where a fork
+                                # found it, and only self and past games get the model's tax: the exploiter's games had
+                                # the frozen levels for good, 199 of fgself-193's first 239 taxed, most at the cap of 0.5,
+                                # the learner winning 18% when it paid and 75% when the exploiter did; untaxed, as
+                                # AlphaStar's, its score and reward are its play's)
+                                share = 0.0
                         if share > 0:
                             opp["tax"], opp["tax_side"] = share, taxed
                         if spec.get("win_balance") and opp.get("kind") in ("self", "past"):  # (--win-balance: by who
