@@ -4269,11 +4269,55 @@ def _by_name(saved: dict, checkpoint: Path, net: FullGameNet) -> dict | None:
     return {"state": state, "param_groups": [{**saved["param_groups"][0], "params": list(range(len(list(net.parameters()))))}]}
 
 
-def publish(net: FullGameNet, version: int, run_dir: Path, name: str = "current.pt") -> None:
+def publish(net: FullGameNet, version: int, run_dir: Path, name: str = "current.pt", **extra) -> None:
+    """The weights as the actors reload them (current.pt; exploiter.pt with `extra` since: a resume reads it)."""
     tmp = run_dir / f"{name}.tmp"
     torch.save({"model": {k: v.detach().cpu() for k, v in net.state_dict().items()}, "config": net.config,
-                "version": version}, tmp)
+                "version": version, **extra}, tmp)
     tmp.replace(run_dir / name)
+
+
+def run_start_state(run_dir: Path, net: FullGameNet, device) -> dict | None:
+    """A resumed run's starting weights as `net`'s state (its first checkpoint, checkpoints/0...0.pt, saved at its first
+    launch: a fork's --start-weights), on `device`; None without one or when it no longer fits `net`. The exploiter
+    starts over from them (on a resume `net` holds --init's, the anchor's, until the run's checkpoint is loaded)."""
+    first = run_dir / "checkpoints" / f"{0:016d}.pt"
+    if not first.exists():
+        return None
+    state = trained(torch.load(first, map_location=device, weights_only=False)["model"], net)
+    own = net.state_dict()
+    if set(state) != set(own) or any(tuple(state[k].shape) != tuple(own[k].shape) for k in own):
+        return None
+    return {k: v.detach().to(device=own[k].device, dtype=own[k].dtype).clone() for k, v in state.items()}
+
+
+def save_exploiter_opt(xopt, run_dir: Path, version: int, since: int) -> None:
+    """The exploiter's Adam state (exploiter.adam, with its weights' version and its updates since its restart): written
+    with the run's checkpoints and at its stop; a resume takes it back when it is of exploiter.pt's life
+    (load_exploiter_opt). exploiter.pt is written every exploiter update; its Adam state, 2x the size, not."""
+    tmp = run_dir / "exploiter.adam.tmp"
+    torch.save({"version": int(version), "since": int(since), "state": xopt.state_dict()}, tmp)
+    tmp.replace(run_dir / "exploiter.adam")
+
+
+def load_exploiter_opt(xopt, run_dir: Path, version: int, since: int, device, lr: float) -> bool:
+    """exploiter.adam into `xopt` if it was saved in the life of the weights resumed (`version` - `since`: the version
+    at its last restart) and not after them; this run's lr and its optimizer's flags (as load_optimizer)."""
+    path = run_dir / "exploiter.adam"
+    if not path.exists():
+        return False
+    saved = torch.load(path, map_location=device, weights_only=False)
+    v, n = int(saved.get("version", -1)), int(saved.get("since", -1))
+    if v - n != version - since or v > version:  # (another life: its moments were zeroed at the restart since)
+        return False
+    flags = [(g.get("capturable", False), g.get("fused")) for g in xopt.param_groups]
+    try:
+        xopt.load_state_dict(saved["state"])
+    except (ValueError, RuntimeError, KeyError):
+        return False
+    for g, (c, f) in zip(xopt.param_groups, flags):
+        g["lr"], g["capturable"], g["fused"] = lr, c, f
+    return True
 
 
 def shaping_now(args, update: int) -> float:
@@ -5183,11 +5227,21 @@ def main(argv: list[str] | None = None) -> int:
     publish(net, resumed["update"] if resumed else 0, run_dir)
     x_update = x_since = 0  # the exploiter's updates (its weights' version), and since its last restart
     if xnet is not None:
+        if resumed is not None:  # (its restarts from the run's starting weights: on a resume `net` held --init's when
+            got = run_start_state(run_dir, xnet, device)  # x_init was taken, and the exploiter had started over from
+            if got is not None:                           # the anchor's, fgself-100's for fgself-193)
+                x_init = got
+            else:
+                print("note: no starting weights in checkpoints/: the exploiter starts over from --init's", flush=True)
+            if not (run_dir / "exploiter.pt").exists():  # (an exploiter new at this resume: from them too)
+                xnet.load_state_dict(x_init)
         if resumed is not None and (run_dir / "exploiter.pt").exists():  # (it goes on too)
             xck = torch.load(run_dir / "exploiter.pt", map_location=device, weights_only=False)
             xnet.load_state_dict(trained(xck["model"], xnet))
             x_update, x_since = xck["version"], xck.get("since", 0)
-        publish(xnet, x_update, run_dir, "exploiter.pt")
+            if load_exploiter_opt(xopt, run_dir, x_update, x_since, device, args.lr):
+                print(f"the exploiter's Adam state from exploiter.adam (version {x_update})", flush=True)
+        publish(xnet, x_update, run_dir, "exploiter.pt", since=x_since)  # (its "since" kept: a second resume reads it)
         league.exploiter_path = publish_exploiter(xnet, x_update, run_dir, vocab)
         league.write()  # (the spec names it before any game starts, the remote machines' too)
     cfg = {"run_dir": str(run_dir), "device": str(device), "vocab": str(run_dir / "vocab.json"), "races": races,
@@ -5480,6 +5534,8 @@ def main(argv: list[str] | None = None) -> int:
                 league.add_snapshot(path, agent_steps)
             elif update % args.checkpoint_every == 0:
                 save_checkpoint(run_dir / "checkpoints" / f"{agent_steps:016d}.pt", net, opt, vocab, agent_steps, update, ema=ema)
+            if xopt is not None and (update % args.snapshot_every == 0 or update % args.checkpoint_every == 0):
+                save_exploiter_opt(xopt, run_dir, x_update, x_since)  # (a resume's exploiter goes on with its moments)
             if args.ref_update > 0 and ref is not None and update % args.ref_update == 0:  # --ref-update: a rolling
                 ref.load_state_dict(net.state_dict())  # anchor (in place: the CUDA graphs keep their weights' addresses)
                 print(f"the anchor moved to update {update}", flush=True)
@@ -5511,6 +5567,11 @@ def main(argv: list[str] | None = None) -> int:
         info["finished"] = time.time()
         save_info()
         save_checkpoint(run_dir / "checkpoints" / f"{agent_steps:016d}.pt", net, opt, vocab, agent_steps, update, ema=ema)
+        if xopt is not None:
+            try:
+                save_exploiter_opt(xopt, run_dir, x_update, x_since)
+            except Exception as e:  # noqa: BLE001 (the stop goes on: the actors still to end)
+                print(f"the exploiter's Adam state not saved: {type(e).__name__}: {e}", flush=True)
         stop.set()
         for p in actors:
             p.join(timeout=60)
