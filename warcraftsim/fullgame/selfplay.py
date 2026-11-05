@@ -1513,7 +1513,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                            {"name": f"heuristic:{races[1 - side]}", "kind": "heuristic",
                             **({"eval_tag": f"vs heuristic:{races[1 - side]}"} if evaluating else
                                {"strategy": heuristic_strategy(cfg, races[1 - side], rng)})} if heur
-                           else {"name": "exploiter", "kind": "exploiter"} if ai["kind"] == "exploit"
+                           else {"name": "exploiter", "kind": "exploiter",  # (its newest weights, as the spec names them)
+                                 **({"path": spec["exploiter"]} if spec.get("exploiter") else {})} if ai["kind"] == "exploit"
                            else {"name": f"eval-vs:{versus}", "kind": "past", "path": versus,
                                  "eval_tag": "vs " + "/".join(Path(versus).parts[-3::2])} if versus
                            else dict(_choose(rng, spec["agents"])))
@@ -2201,8 +2202,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         bot.enc.mine_full = 12500.0 * mine_scale(cfg["map"])
         bot.begin(obs, race_ix)
         bots[s] = bot
-        keys[s] = ("current" if s == side or opp["kind"] == "self" else exploiter_key(cfg) if opp["kind"] == "exploiter"
-                   else opp["path"])
+        keys[s] = policy_key(cfg, opp, s, side)
         if s == side and opp.get("eval_key"):  # (an evaluation game of a listed checkpoint: --eval-checkpoints)
             keys[s] = "current" if opp["eval_key"] in ("current+z", "current+zg", "current+human") else opp["eval_key"]
             bot.view.active_f = fx.F  # (all features: a checkpoint's weights past its own are zeros)
@@ -2988,6 +2988,10 @@ class League:
         self.exploiter_share = exploiter_share
         self.exploiter = Member("exploiter") if exploiter_share > 0 else None
         self.exploiter_resets = 0
+        # (the exploiter's newest published weights, publish_exploiter: the spec names them, so the remote machines' games
+        # play them too; they had read exploiter.json, which is only here, and every exploiter launch there died at its
+        # first game: none of fgself-193's 705 games on the box was one)
+        self.exploiter_path: str | None = None
         self.shaping: float | None = None  # (--shaping-anneal: the shaping's weight now, in the spec)
         self.past_recent: deque = deque(maxlen=300)  # (the learner's newest results against past snapshots)
         # --win-balance: games between agents taxed by who is expected to win (balance.py; the races' balance until fitted)
@@ -3139,6 +3143,7 @@ class League:
                        for m, x in zip(rest, w)]
         model = self.win_balance.coef() if self.win_balance is not None else None
         return {"launch": launch, "agents": agents, **({"balance": self.balance_taxes()} if self.balance else {}),
+                **({"exploiter": self.exploiter_path} if self.exploiter is not None and self.exploiter_path else {}),
                 **({"win_balance": model} if model else {}),
                 **({"shaping": self.shaping} if self.shaping is not None else {})}
 
@@ -4259,13 +4264,14 @@ def shaping_now(args, update: int) -> float:
     return round(args.shaping * max(0.0, 1.0 - update / args.shaping_anneal), 4)
 
 
-def publish_exploiter(xnet: FullGameNet, version: int, run_dir: Path, vocab: dict, keep: int = 40) -> None:
+def publish_exploiter(xnet: FullGameNet, version: int, run_dir: Path, vocab: dict, keep: int = 40) -> str:
     """The exploiter's weights as a numbered file (exploiter/<version>.pt, the newest `keep` kept) and
     exploiter.json naming the newest: an exploiter game plays the version named at its start, served
     like a past snapshot (by path: the native inference loop serves the current network and
     snapshots; a new path is loaded once). `keep` covers the longest game (40 game minutes, ~3 wall
     minutes) many times over: the loop copies a snapshot's weights from the learner's copy, which
-    NativeServer drops for versions past the newest `keep`."""
+    NativeServer drops for versions past the newest `keep`. Returns the file's path (League.exploiter_path:
+    the league's spec names it for every machine's games)."""
     xdir = run_dir / "exploiter"
     xdir.mkdir(exist_ok=True)
     path = xdir / f"{version:08d}.pt"
@@ -4278,11 +4284,23 @@ def publish_exploiter(xnet: FullGameNet, version: int, run_dir: Path, vocab: dic
     tmp.replace(run_dir / "exploiter.json")
     for old in sorted(xdir.glob("[0-9]*.pt"))[:-keep]:
         old.unlink(missing_ok=True)
+    return str(path)
 
 
 def exploiter_key(cfg: dict) -> str:
     """The exploiter's newest weights (publish_exploiter): an exploiter game's key for its whole length."""
     return json.loads((Path(cfg["run_dir"]) / "exploiter.json").read_text())["path"]
+
+
+def policy_key(cfg: dict, opp: dict, s: int, side: int) -> str:
+    """The network that plays player `s` of a game between agents (the learner's `side`, against `opp`): the learner's
+    current weights, else the opponent's by path. The exploiter's: the version the league's spec named at the game's
+    start (opp["path"], game_loop: every machine's games read the spec), else exploiter.json (this machine's only)."""
+    if s == side or opp["kind"] == "self":
+        return "current"
+    if opp["kind"] == "exploiter":
+        return opp.get("path") or exploiter_key(cfg)
+    return opp["path"]
 
 
 def git_info() -> dict:
@@ -5153,7 +5171,8 @@ def main(argv: list[str] | None = None) -> int:
             xnet.load_state_dict(trained(xck["model"], xnet))
             x_update, x_since = xck["version"], xck.get("since", 0)
         publish(xnet, x_update, run_dir, "exploiter.pt")
-        publish_exploiter(xnet, x_update, run_dir, vocab)
+        league.exploiter_path = publish_exploiter(xnet, x_update, run_dir, vocab)
+        league.write()  # (the spec names it before any game starts, the remote machines' too)
     cfg = {"run_dir": str(run_dir), "device": str(device), "vocab": str(run_dir / "vocab.json"), "races": races,
            "learner_races": {k: float(v) for k, v in (kv.split(":") for kv in args.learner_races.split(",") if kv)},
            "map": args.map, **({"map_pool": map_pool} if map_pool else {}),
@@ -5347,7 +5366,7 @@ def main(argv: list[str] | None = None) -> int:
                     "version": x_update, "since": x_since}, run_dir / "exploiter.pt.tmp")
         (run_dir / "exploiter.pt.tmp").replace(run_dir / "exploiter.pt")
         if x_since == 0 or x_update % args.exploiter_publish == 0:  # (a version for new games: see the flag)
-            publish_exploiter(xnet, x_update, run_dir, vocab)
+            league.exploiter_path = publish_exploiter(xnet, x_update, run_dir, vocab)
         league.write()
 
     try:
