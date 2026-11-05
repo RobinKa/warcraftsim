@@ -3040,6 +3040,23 @@ class League:
             return self.exploiter
         return self.scripts.get(name) or self.real.get(name) or next((m for m in self.past if m.name == name), None)
 
+    def recorded(self, e: dict) -> Member | None:
+        """The member whose record a game's episode row `e` goes into (PFSP's weights, the exploiter's score), or None.
+        Not an evaluation game (no league game); with --win-balance not a taxed one, which tells nothing of the
+        opponent's strength (8-33% won untaxed, 42-100% taxed; audit 4), nor a past snapshot's where the learner played
+        a target (35% won with one, 54% without; audit 5); not a scenario's (another game: 0.37-0.69 won where the
+        normal ones 0.49-0.80; audit 6), except for the exploiter's own record: in its games both networks start from
+        the same situation, the sides drawn, and without them its score had counted 4 of its 218 games in fgself-193
+        (4 in 5 started in a scenario, the races apart taxed): ~26 in its 300 updates, short of the 50 its score
+        needs, so it could never join the league."""
+        m = self.member(e["opponent"])
+        if m is None or e.get("eval"):
+            return None
+        taxed = self.win_balance is not None and bool(e.get("balance_tax"))
+        pulled = self.win_balance is not None and bool(e.get("z_t")) and m in self.past
+        scen = bool(e.get("scenario")) and m is not self.exploiter
+        return None if taxed or pulled or scen else m
+
     def add_snapshot(self, path: Path, steps: int, name: str | None = None) -> None:
         self.past.append(Member(name or f"past:{steps}", path=str(path), steps=steps))
         movable = [i for i, m in enumerate(self.past) if not m.name.startswith("fixed:")]  # (--league-add's: for good)
@@ -5383,15 +5400,12 @@ def main(argv: list[str] | None = None) -> int:
                     e = msg["episode"]
                     episodes += 1
                     e["episode"] = episodes
-                    m = league.member(e["opponent"])
                     scen = bool(e.get("scenario"))  # (a scenario's game is another game: 0.37-0.69 won where the
-                    # normal ones 0.49-0.80; out of the league's records, the curriculum and the win balance; audit 6)
-                    taxed = league.win_balance is not None and bool(e.get("balance_tax"))
-                    pulled = league.win_balance is not None and bool(e.get("z_t")) and m in league.past  # (a target
-                    # costs the learner: 35% won against past snapshots with one, 54% without; audit 5)
-                    if m is not None and not e.get("eval") and not taxed and not pulled and not scen:  # (an evaluation game is no
-                        m.record(e["outcome"])  # league game; a taxed one tells nothing of the opponent's strength
-                        if m in league.past:     # for PFSP: 8-33% won untaxed, 42-100% taxed; audit 4)
+                    # normal ones 0.49-0.80; out of the curriculum and the win balance; audit 6)
+                    m = league.recorded(e)  # (the member whose record it goes into, if any)
+                    if m is not None:
+                        m.record(e["outcome"])
+                        if m in league.past:
                             league.past_recent.append(1.0 if e["outcome"] > 0.5 else 0.0 if e["outcome"] < -0.5 else 0.5)
                     if "curriculum" in e and not scen:
                         league.curriculum(e["opponent"], e["outcome"], league.matchup(e["race"], e["opponent_race"]))
