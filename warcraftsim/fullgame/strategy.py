@@ -247,13 +247,14 @@ def shop_table(stats: list[Path], patches: set[str] | None = None) -> dict:
 
 def shop_choice(table: dict, k: int) -> dict[str, list[str]]:
     """--z-shop: per race the `k` items of its shop people buy in most games (all 1v1s; SHOP_EXCLUDE left out), the
-    race's orb (ORBS) in the last place when none of them is one and at least ORB_SHARE of its people buy it."""
+    race's orb (ORBS) in the last place when none of them is one and at least ORB_SHARE of its people buy it (with K 2
+    or more: with one item, the race's most bought, the gentle form after fgself-183's three: salve, rod, clarity)."""
     out = {}
     for race in RACES:
         got = table["all"][race]["items"]
         pick = sorted((c for c in got if c not in SHOP_EXCLUDE), key=lambda c: (-got[c][0], c))[:k]
         orb = ORBS[race]
-        if k and orb not in pick and got.get(orb, (0.0,))[0] >= ORB_SHARE:
+        if k > 1 and orb not in pick and got.get(orb, (0.0,))[0] >= ORB_SHARE:
             pick = pick[:k - 1] + [orb]
         out[race] = pick
     return out

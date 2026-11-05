@@ -2357,7 +2357,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                             saturation=bool(cfg.get("saturation_lesson", 0)), revive=bool(cfg.get("revive_lesson", 0)),
                             militia=bool(cfg.get("militia_lesson", 0)), army=bool(cfg.get("army_lesson", 0)),
                             upgrades=bool(cfg.get("upgrade_lesson", 0)), creep=int(cfg.get("creep_lesson", 0)),
-                            pace=cfg.get("lesson_time_scale") or teacher_pace(cfg["map"]), hunt=int(cfg.get("hunt_lesson", 0)))
+                            pace=cfg.get("lesson_time_scale") or teacher_pace(cfg["map"]),
+                            hunt=int(cfg.get("hunt_lesson", 0) == 1 or (cfg.get("hunt_lesson", 0) == 2
+                                     and opp.get("kind") in ("self", "past", "exploiter"))))
                  for s in trajs if keys[s] == "current"}
                 if cfg.get("teach") and replay is None else {})
     # --teach-heuristic: a target drawn from the hand-written player's games (strategy.from_demos names the strategy) is
@@ -4387,7 +4389,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--hunt-lesson", type=int, default=0, help="1 (with --teach): the hunt lesson: no enemy building in "
                     "view, no enemy army seen for 2 minutes, 3 or more of the buildings it saw gone and an army: half the "
                     "army attack-moves to the nearest building it remembers, else to the nearest gold mine not in sight "
-                    "lately (teacher.py; ties at 40 minutes with the winner's army at a dead main: scripts/hunt_probe.py)")
+                    "lately (teacher.py; ties at 40 minutes with the winner's army at a dead main: scripts/hunt_probe.py); 2: only "
+                    "in games between agents (the ties are there; fgself-175's lesson in every game cost ~9 points "
+                    "against insane)")
     ap.add_argument("--militia-lesson", type=int, default=0, help="1 (with --teach): human's militia lesson: militia "
                     "and no enemy unit near them nor a hall, the hall ends the town bell (audit 16: militia idled, their "
                     "back to work refused, in 175 of 207 human games)")
