@@ -155,13 +155,49 @@ class Nets:
         return net
 
 
+INFER_ROWS = (8, 24, 64)  # the rows the current network's calls pad to (--infer-rows; a CUDA graph per entity count each)
+INFER_PRECISIONS = ("fp32", "tf32", "bf16")  # --infer-precision
+
+
+def infer_rows(rows, top: int) -> tuple[int, ...]:
+    """--infer-rows: the row counts the current network's calls pad to (the smallest that fits), sorted, each from 1 to
+    `top` and `top` always (the inference loop cuts a network's rows into calls of at most `top`). `rows`: the flag's
+    text, a list of numbers, or empty (INFER_ROWS)."""
+    if isinstance(rows, str):
+        rows = [int(x) for x in rows.split(",") if x.strip()]
+    given = {int(x) for x in rows or ()}
+    if any(b < 1 or b > top for b in given):
+        raise ValueError(f"--infer-rows {sorted(given)}: each from 1 to {top}")
+    return tuple(sorted(given | {top})) if given else tuple(b for b in INFER_ROWS if b <= top) or (top,)
+
+
+@contextlib.contextmanager
+def matmul_precision(tf32: bool):
+    """float32 matrix multiplies on the TF32 tensor cores inside (--infer-precision tf32): the inference calls are
+    compiled and their CUDA graphs captured in it, and a graph keeps the cuBLAS kernels it was captured with. Outside,
+    the process's setting as it was (the learner's update: bf16 autocast, its fp32 matmuls IEEE as before). Set
+    through torch.set_float32_matmul_precision, whose legacy and per-backend flags agree (setting only
+    torch.backends.cuda.matmul.fp32_precision made torch's own reads of allow_tf32 raise), and put back exactly."""
+    if not tf32:
+        yield
+        return
+    b = torch.backends
+    old = (torch.get_float32_matmul_precision(), b.cuda.matmul.fp32_precision, b.mkldnn.matmul.fp32_precision)
+    torch.set_float32_matmul_precision("high")
+    try:
+        yield
+    finally:
+        torch.set_float32_matmul_precision(old[0])
+        b.cuda.matmul.fp32_precision, b.mkldnn.matmul.fp32_precision = old[1], old[2]
+
+
 class Inference:
     """Batches the network calls of an actor's agents (one per game side) on the GPU."""
 
     def __init__(self, nets: Nets, device, max_batch: int, compile_: bool = True, buckets: tuple[int, ...] | None = None,
                  thread: bool = True, entities: tuple[int, ...] = (fx.MAX_ENT,), shared: "SharedRows | None" = None,
                  fuse: bool = False, bf16: bool = False, generator: torch.Generator | None = None,
-                 capture_mode: str = "global", guide: bool = False):
+                 capture_mode: str = "global", guide: bool = False, tf32: bool = False):
         """`buckets`: the batch sizes its compiled calls pad to (the smallest that fits; default: just
         max_batch); `entities`: likewise the entity counts (a call padded 4 rows of ~47 entities to
         16 x 160: ~50 times the attention). `thread` False: no batching thread of its own (the
@@ -174,10 +210,16 @@ class Inference:
         # fuse: the call compiled (torch.compile, inductor: fused kernels) before its CUDA graph is captured.
         # A call was ~150 small kernels on ~10 rows: the GPU waited between them more than it computed.
         self.fuse = fuse and device.type == "cuda"
-        if self.fuse:  # (one compile per network object and shape, of the same function: past 8 the rest ran unfused)
-            torch._dynamo.config.recompile_limit = max(torch._dynamo.config.recompile_limit, 128)
+        if self.fuse:  # (one compile per network object and shape, of the same function: past 8 the rest ran unfused;
+            # and the code object's total, which more row and entity buckets reach: per network rows x entities, and
+            # 2 x 5 per past slot and architecture)
+            torch._dynamo.config.recompile_limit = max(torch._dynamo.config.recompile_limit, 256)
+            torch._dynamo.config.accumulated_recompile_limit = max(torch._dynamo.config.accumulated_recompile_limit, 1024)
         # bf16: the network's matmuls in bfloat16 (tensor cores); the sampling and log-probabilities stay fp32
         self.bf16 = bf16 and device.type == "cuda"
+        # tf32: the float32 matmuls on TF32 tensor cores (inputs rounded to 10 bits of mantissa, fp32 sums), set while a
+        # call is compiled and captured (matmul_precision); the rest of the call in fp32 as before
+        self.tf32 = tf32 and device.type == "cuda" and not self.bf16
         # generator: the sampling's random numbers (an inference thread in the learner's process: the learner's
         # dropout uses the default one, and a capture in one thread must not see the other's draws);
         # capture_mode "thread_local": the other thread's CUDA calls go on while a graph is captured
@@ -288,16 +330,17 @@ class Inference:
         if host.shape not in per:
             fn = self._fn(net)
             x = host.to(self.device)
-            for _ in range(2):  # (outside the capture: what the first calls set up)
-                fn(x)
-            torch.cuda.synchronize()
-            graph = torch.cuda.CUDAGraph()
-            if self.generator is not None:
-                graph.register_generator_state(self.generator)
-            if net not in self._capture:
-                self._capture[net] = torch.cuda.Stream(device=self.device)
-            with torch.cuda.graph(graph, stream=self._capture[net], capture_error_mode=self.capture_mode):
-                out = fn(x)
+            with matmul_precision(self.tf32):  # (--infer-precision tf32: compiled and captured with it)
+                for _ in range(2):  # (outside the capture: what the first calls set up)
+                    fn(x)
+                torch.cuda.synchronize()
+                graph = torch.cuda.CUDAGraph()
+                if self.generator is not None:
+                    graph.register_generator_state(self.generator)
+                if net not in self._capture:
+                    self._capture[net] = torch.cuda.Stream(device=self.device)
+                with torch.cuda.graph(graph, stream=self._capture[net], capture_error_mode=self.capture_mode):
+                    out = fn(x)
             per[host.shape] = (x, graph, out)
         return per[host.shape]
 
@@ -367,7 +410,8 @@ class Inference:
             out = self._hosts[key]
             out.copy_(packed, non_blocking=True)
         else:
-            out = self._fn(net)(host.to(self.device))
+            with matmul_precision(self.tf32):
+                out = self._fn(net)(host.to(self.device))
         return out, own, min(fx.MAX_OWN, E), bool(d)
 
     def begin(self, bank: int) -> None:
@@ -707,12 +751,14 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
     top = cfg["infer_batch"]
     shared = SharedRows(*cfg["shared_rows"]) if cfg.get("shared_rows") else None
     fuse = bool(cfg.get("infer_fuse", 0))
-    infer = Inference(nets, device, top, cfg["compile"], buckets=tuple(b for b in (8, 24, 64) if b <= top) or (top,),
+    prec = cfg.get("infer_precision") or "fp32"  # (--infer-precision)
+    infer = Inference(nets, device, top, cfg["compile"], buckets=infer_rows(cfg.get("infer_rows"), top),
                       thread=False, entities=tuple(cfg.get("infer_entities", (48, 96))), shared=shared, fuse=fuse,
-                      generator=generator, capture_mode=mode)
+                      generator=generator, capture_mode=mode, bf16=prec == "bf16", tf32=prec == "tf32")
     past = Inference(nets, device, 16, cfg["compile"], buckets=(4, 16), thread=False,
                      entities=tuple(cfg.get("infer_past_entities", (64,))),
-                     shared=shared, fuse=fuse, generator=generator, capture_mode=mode)  # past snapshots: few calls
+                     shared=shared, fuse=fuse, generator=generator, capture_mode=mode,
+                     bf16=prec == "bf16", tf32=prec == "tf32")  # past snapshots: few calls
     swap = PastNet(device, slots=cfg.get("infer_past_slots", 1))
     streams = {} if cfg.get("infer_streams", 0) else None
     if in_thread and device.type == "cuda" and cfg.get("compile", True):
@@ -4739,6 +4785,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--infer-entities", default="48,96", help="the entity counts the current network's calls are "
                                                                "padded to (each a CUDA graph per batch bucket; up to 160 always)")
     ap.add_argument("--infer-past-entities", default="64", help="the same for the past snapshots' calls")
+    ap.add_argument("--infer-rows", default="", help="the row counts the current network's calls are padded to, comma-"
+                    "separated (each a CUDA graph per entity count; 64 always; empty: 8,24,64). A row's answer does not "
+                    "depend on the others: finer steps pad less, at the cost of more graphs at the start")
+    ap.add_argument("--infer-precision", default="fp32", choices=INFER_PRECISIONS,
+                    help="the inference calls' matrix multiplies: fp32 (as before), tf32 (TF32 tensor cores: inputs "
+                         "rounded to 10 bits of mantissa, sums in fp32) or bf16 (autocast, as the learner's update); the "
+                         "sampling, log-probabilities and values in fp32 either way. Not the same numbers: the games' "
+                         "orders and values change by the rounding (docs/reference/optimization-log.md)")
     ap.add_argument("--gpu-split", type=int, default=0, help="with --infer-native: this many of the GPU's SMs the "
                                                             "inference loop's alone, the rest the learner's (CUDA green "
                                                             "contexts, gpu_split.py); 0: both on all")
@@ -4985,6 +5039,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.update_grad_fuse and not (graphed and args.update_fuse):
         raise SystemExit("--update-grad-fuse is GraphedUpdate's, and needs --update-fuse (eager it would be slower)")
     update_widths(args.update_widths)  # (a mistake in them stops the run here)
+    infer_rows(args.infer_rows, 64)  # (likewise: before the games start)
     # (--adam-fused: one kernel for all the weights where the foreach path launches one per operation; it reads the step
     # count on the GPU and takes the addresses by value, so a CUDA graph replays it: ATen/native/cuda/fused_adam_utils.cuh)
     adam_kw = {"fused": True} if args.adam_fused else {}
@@ -5179,6 +5234,7 @@ def main(argv: list[str] | None = None) -> int:
            "map_geometry": [fx.STARTS, fx.BIN_RANGE],
            "infer_entities": [int(x) for x in args.infer_entities.split(",")],
            "infer_past_entities": [int(x) for x in args.infer_past_entities.split(",")],
+           "infer_rows": list(infer_rows(args.infer_rows, 64)), "infer_precision": args.infer_precision,
            "infer_past_slots": args.infer_past_slots, "infer_past_period": args.infer_past_period_ms / 1000.0,
            "game_nice": args.game_nice, "pairs": args.pairs,
            "exploiter_share": args.exploiter_share, "float_penalty": args.float_penalty,
