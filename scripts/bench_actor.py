@@ -142,7 +142,8 @@ def record(a) -> int:
     setup = GameSetup(map=cfg["map"], slots=slots,
                       step_seconds=cfg["step_seconds"], max_game_seconds=cfg["max_minutes"] * 60, victory="decisive",
                       window=(320, 240), draw=False, wait_floor_ms=cfg["wait_floor_ms"], native_obs=True, d3d_thread=False,
-                      render_threads=0, pairs=1, cuts=cfg.get("game_cuts") or None, nice=int(os.environ.get("BENCH_NICE", 0)))
+                      render_threads=0, pairs=1, cuts=cfg.get("game_cuts") or None, nice=int(os.environ.get("BENCH_NICE", 0)),
+                      obs_full=bool(cfg.get("obs_full")))  # (--obs-full: the harness's events 101-109, as the actors')
     groups: list[list[bytes]] = []  # the payloads each step parsed (a repeat or another episode's is parsed, then skipped)
     random.seed(a.seed)
     random.Random = _Seeded
