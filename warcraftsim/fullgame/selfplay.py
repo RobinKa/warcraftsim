@@ -1559,7 +1559,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                            {"name": f"heuristic:{races[1 - side]}", "kind": "heuristic",
                             **({"eval_tag": f"vs heuristic:{races[1 - side]}"} if evaluating else
                                {"strategy": heuristic_strategy(cfg, races[1 - side], rng)})} if heur
-                           else {"name": "exploiter", "kind": "exploiter"} if ai["kind"] == "exploit"
+                           else {"name": "exploiter", "kind": "exploiter",  # (its newest weights, as the spec names them)
+                                 **({"path": spec["exploiter"]} if spec.get("exploiter") else {})} if ai["kind"] == "exploit"
                            else {"name": f"eval-vs:{versus}", "kind": "past", "path": versus,
                                  "eval_tag": "vs " + "/".join(Path(versus).parts[-3::2])} if versus
                            else dict(_choose(rng, spec["agents"])))
@@ -1567,6 +1568,12 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                         taxed, share = balance_tax(spec, races)
                         if cfg.get("win_balance"):  # (the model's cap: the races' balance until it is fitted)
                             share = min(share, cfg.get("win_balance", 0.0))
+                            if opp.get("kind") == "exploiter":  # (--win-balance leaves the races' balance where a fork
+                                # found it, and only self and past games get the model's tax: the exploiter's games had
+                                # the frozen levels for good, 199 of fgself-193's first 239 taxed, most at the cap of 0.5,
+                                # the learner winning 18% when it paid and 75% when the exploiter did; untaxed, as
+                                # AlphaStar's, its score and reward are its play's)
+                                share = 0.0
                         if share > 0:
                             opp["tax"], opp["tax_side"] = share, taxed
                         if spec.get("win_balance") and opp.get("kind") in ("self", "past"):  # (--win-balance: by who
@@ -2247,15 +2254,15 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         bot.enc.mine_full = 12500.0 * mine_scale(cfg["map"])
         bot.begin(obs, race_ix)
         bots[s] = bot
-        keys[s] = ("current" if s == side or opp["kind"] == "self" else exploiter_key(cfg) if opp["kind"] == "exploiter"
-                   else opp["path"])
+        keys[s] = policy_key(cfg, opp, s, side)
         if s == side and opp.get("eval_key"):  # (an evaluation game of a listed checkpoint: --eval-checkpoints)
             keys[s] = "current" if opp["eval_key"] in ("current+z", "current+zg", "current+human") else opp["eval_key"]
             bot.view.active_f = fx.F  # (all features: a checkpoint's weights past its own are zeros)
         if keys[s] == "current" and train:  # (an evaluation game: no steps to train on)
             trajs[s] = Trajectory(cfg, out_q, {"worker": wid, "opponent": opp["name"]}, hold=replay is not None)
         elif opp["kind"] == "exploiter" and s != side:  # (its steps train the exploiter: League, --exploiter-share)
-            trajs[s] = Trajectory(cfg, out_q, {"worker": wid, "opponent": "main", "learner": "exploiter"})
+            trajs[s] = Trajectory(cfg, out_q, {"worker": wid, "opponent": "main", "learner": "exploiter",
+                                               **({"version": xv} if (xv := exploiter_version(keys[s])) is not None else {})})
     # strategy conditioning (--z-pool): --z-share of the learner's trained sides play toward a strategy drawn for
     # their race (and their opponent's, when the pool has some): the global vector's strategy block, and a
     # reward for the items made by now, theirs against the strategy's (strategy.mismatch); none in evaluation
@@ -2403,7 +2410,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                             saturation=bool(cfg.get("saturation_lesson", 0)), revive=bool(cfg.get("revive_lesson", 0)),
                             militia=bool(cfg.get("militia_lesson", 0)), army=bool(cfg.get("army_lesson", 0)),
                             upgrades=bool(cfg.get("upgrade_lesson", 0)), creep=int(cfg.get("creep_lesson", 0)),
-                            pace=cfg.get("lesson_time_scale") or teacher_pace(cfg["map"]), hunt=int(cfg.get("hunt_lesson", 0)))
+                            pace=cfg.get("lesson_time_scale") or teacher_pace(cfg["map"]),
+                            hunt=int(cfg.get("hunt_lesson", 0) == 1 or (cfg.get("hunt_lesson", 0) == 2
+                                     and opp.get("kind") in ("self", "past", "exploiter"))))
                  for s in trajs if keys[s] == "current"}
                 if cfg.get("teach") and replay is None else {})
     # --teach-heuristic: a target drawn from the hand-written player's games (strategy.from_demos names the strategy) is
@@ -2782,6 +2791,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             "z_extra": sorted(c for c, t0 in made[side].items() if t0 <= min(obs.game_time, strat.horizon(zs[side])) and zs[side]["t"].get(c, 1e9) > min(obs.game_time, strat.horizon(zs[side])) and c in strat.scored(pool, races[side], zs[side]) and c not in (zs[side].get("held") or ()))} if side in zs else {}),
         **({"branch": round(replay["t"] * cfg["step_seconds"]), "branch_same": same} if replay is not None else {}),
         "slot_difficulty": g.setup.slots[side].difficulty,  # (its income: insane's doubles it; agent_difficulty)
+        # (the exploiter's version that played: a game begun before its restart is not the new one's, League.recorded)
+        **({"exploiter_version": xv} if opp.get("kind") == "exploiter" and (xv := exploiter_version(keys.get(1 - side)))
+           is not None else {}),
         **({} if train else {"eval": True, "eval_key": opp.get("eval_tag") or opp.get("eval_key") or "current"})}
     if captured:  # (--late-capture: the state with how its game ended, the learner's line of late-states.jsonl)
         captured.update(winner=next((s for s in (0, 1) if outcome[s] > 0), None), end_minute=round(obs.game_time / 60.0, 2),
@@ -3032,6 +3044,11 @@ class League:
         self.exploiter_share = exploiter_share
         self.exploiter = Member("exploiter") if exploiter_share > 0 else None
         self.exploiter_resets = 0
+        # (the exploiter's newest published weights, publish_exploiter: the spec names them, so the remote machines' games
+        # play them too; they had read exploiter.json, which is only here, and every exploiter launch there died at its
+        # first game: none of fgself-193's 705 games on the box was one)
+        self.exploiter_path: str | None = None
+        self.exploiter_life = 0  # (the version its current life began with: games of an earlier one count for none)
         self.shaping: float | None = None  # (--shaping-anneal: the shaping's weight now, in the spec)
         self.past_recent: deque = deque(maxlen=300)  # (the learner's newest results against past snapshots)
         # --win-balance: games between agents taxed by who is expected to win (balance.py; the races' balance until fitted)
@@ -3079,6 +3096,26 @@ class League:
         if name == "exploiter":
             return self.exploiter
         return self.scripts.get(name) or self.real.get(name) or next((m for m in self.past if m.name == name), None)
+
+    def recorded(self, e: dict) -> Member | None:
+        """The member whose record a game's episode row `e` goes into (PFSP's weights, the exploiter's score), or None.
+        Not an evaluation game (no league game); with --win-balance not a taxed one, which tells nothing of the
+        opponent's strength (8-33% won untaxed, 42-100% taxed; audit 4), nor a past snapshot's where the learner played
+        a target (35% won with one, 54% without; audit 5); not a scenario's (another game: 0.37-0.69 won where the
+        normal ones 0.49-0.80; audit 6), except for the exploiter's own record: in its games both networks start from
+        the same situation, the sides drawn, and without them its score had counted 4 of its 218 games in fgself-193
+        (4 in 5 started in a scenario, the races apart taxed): ~26 in its 300 updates, short of the 50 its score
+        needs, so it could never join the league."""
+        m = self.member(e["opponent"])
+        if m is None or e.get("eval"):
+            return None
+        taxed = self.win_balance is not None and bool(e.get("balance_tax"))
+        pulled = self.win_balance is not None and bool(e.get("z_t")) and m in self.past
+        scen = bool(e.get("scenario")) and m is not self.exploiter
+        # (a game the exploiter's earlier life played, begun before its restart and ended after: not the new one's. With
+        # its games counted, a restart at 70% would fill the fresh one's 50 games with its predecessor's within minutes)
+        old = m is self.exploiter and e.get("exploiter_version", self.exploiter_life) < self.exploiter_life
+        return None if taxed or pulled or scen or old else m
 
     def add_snapshot(self, path: Path, steps: int, name: str | None = None) -> None:
         self.past.append(Member(name or f"past:{steps}", path=str(path), steps=steps))
@@ -3183,6 +3220,7 @@ class League:
                        for m, x in zip(rest, w)]
         model = self.win_balance.coef() if self.win_balance is not None else None
         return {"launch": launch, "agents": agents, **({"balance": self.balance_taxes()} if self.balance else {}),
+                **({"exploiter": self.exploiter_path} if self.exploiter is not None and self.exploiter_path else {}),
                 **({"win_balance": model} if model else {}),
                 **({"shaping": self.shaping} if self.shaping is not None else {})}
 
@@ -4291,11 +4329,55 @@ def _by_name(saved: dict, checkpoint: Path, net: FullGameNet) -> dict | None:
     return {"state": state, "param_groups": [{**saved["param_groups"][0], "params": list(range(len(list(net.parameters()))))}]}
 
 
-def publish(net: FullGameNet, version: int, run_dir: Path, name: str = "current.pt") -> None:
+def publish(net: FullGameNet, version: int, run_dir: Path, name: str = "current.pt", **extra) -> None:
+    """The weights as the actors reload them (current.pt; exploiter.pt with `extra` since: a resume reads it)."""
     tmp = run_dir / f"{name}.tmp"
     torch.save({"model": {k: v.detach().cpu() for k, v in net.state_dict().items()}, "config": net.config,
-                "version": version}, tmp)
+                "version": version, **extra}, tmp)
     tmp.replace(run_dir / name)
+
+
+def run_start_state(run_dir: Path, net: FullGameNet, device) -> dict | None:
+    """A resumed run's starting weights as `net`'s state (its first checkpoint, checkpoints/0...0.pt, saved at its first
+    launch: a fork's --start-weights), on `device`; None without one or when it no longer fits `net`. The exploiter
+    starts over from them (on a resume `net` holds --init's, the anchor's, until the run's checkpoint is loaded)."""
+    first = run_dir / "checkpoints" / f"{0:016d}.pt"
+    if not first.exists():
+        return None
+    state = trained(torch.load(first, map_location=device, weights_only=False)["model"], net)
+    own = net.state_dict()
+    if set(state) != set(own) or any(tuple(state[k].shape) != tuple(own[k].shape) for k in own):
+        return None
+    return {k: v.detach().to(device=own[k].device, dtype=own[k].dtype).clone() for k, v in state.items()}
+
+
+def save_exploiter_opt(xopt, run_dir: Path, version: int, since: int) -> None:
+    """The exploiter's Adam state (exploiter.adam, with its weights' version and its updates since its restart): written
+    with the run's checkpoints and at its stop; a resume takes it back when it is of exploiter.pt's life
+    (load_exploiter_opt). exploiter.pt is written every exploiter update; its Adam state, 2x the size, not."""
+    tmp = run_dir / "exploiter.adam.tmp"
+    torch.save({"version": int(version), "since": int(since), "state": xopt.state_dict()}, tmp)
+    tmp.replace(run_dir / "exploiter.adam")
+
+
+def load_exploiter_opt(xopt, run_dir: Path, version: int, since: int, device, lr: float) -> bool:
+    """exploiter.adam into `xopt` if it was saved in the life of the weights resumed (`version` - `since`: the version
+    at its last restart) and not after them; this run's lr and its optimizer's flags (as load_optimizer)."""
+    path = run_dir / "exploiter.adam"
+    if not path.exists():
+        return False
+    saved = torch.load(path, map_location=device, weights_only=False)
+    v, n = int(saved.get("version", -1)), int(saved.get("since", -1))
+    if v - n != version - since or v > version:  # (another life: its moments were zeroed at the restart since)
+        return False
+    flags = [(g.get("capturable", False), g.get("fused")) for g in xopt.param_groups]
+    try:
+        xopt.load_state_dict(saved["state"])
+    except (ValueError, RuntimeError, KeyError):
+        return False
+    for g, (c, f) in zip(xopt.param_groups, flags):
+        g["lr"], g["capturable"], g["fused"] = lr, c, f
+    return True
 
 
 def shaping_now(args, update: int) -> float:
@@ -4303,13 +4385,14 @@ def shaping_now(args, update: int) -> float:
     return round(args.shaping * max(0.0, 1.0 - update / args.shaping_anneal), 4)
 
 
-def publish_exploiter(xnet: FullGameNet, version: int, run_dir: Path, vocab: dict, keep: int = 40) -> None:
+def publish_exploiter(xnet: FullGameNet, version: int, run_dir: Path, vocab: dict, keep: int = 40) -> str:
     """The exploiter's weights as a numbered file (exploiter/<version>.pt, the newest `keep` kept) and
     exploiter.json naming the newest: an exploiter game plays the version named at its start, served
     like a past snapshot (by path: the native inference loop serves the current network and
     snapshots; a new path is loaded once). `keep` covers the longest game (40 game minutes, ~3 wall
     minutes) many times over: the loop copies a snapshot's weights from the learner's copy, which
-    NativeServer drops for versions past the newest `keep`."""
+    NativeServer drops for versions past the newest `keep`. Returns the file's path (League.exploiter_path:
+    the league's spec names it for every machine's games)."""
     xdir = run_dir / "exploiter"
     xdir.mkdir(exist_ok=True)
     path = xdir / f"{version:08d}.pt"
@@ -4322,11 +4405,29 @@ def publish_exploiter(xnet: FullGameNet, version: int, run_dir: Path, vocab: dic
     tmp.replace(run_dir / "exploiter.json")
     for old in sorted(xdir.glob("[0-9]*.pt"))[:-keep]:
         old.unlink(missing_ok=True)
+    return str(path)
 
 
 def exploiter_key(cfg: dict) -> str:
     """The exploiter's newest weights (publish_exploiter): an exploiter game's key for its whole length."""
     return json.loads((Path(cfg["run_dir"]) / "exploiter.json").read_text())["path"]
+
+
+def exploiter_version(key: str | None) -> int | None:
+    """The version of the exploiter's weights a game's key names (publish_exploiter's exploiter/<version>.pt), else None."""
+    stem = Path(key).stem if key else ""
+    return int(stem) if stem.isdigit() else None
+
+
+def policy_key(cfg: dict, opp: dict, s: int, side: int) -> str:
+    """The network that plays player `s` of a game between agents (the learner's `side`, against `opp`): the learner's
+    current weights, else the opponent's by path. The exploiter's: the version the league's spec named at the game's
+    start (opp["path"], game_loop: every machine's games read the spec), else exploiter.json (this machine's only)."""
+    if s == side or opp["kind"] == "self":
+        return "current"
+    if opp["kind"] == "exploiter":
+        return opp.get("path") or exploiter_key(cfg)
+    return opp["path"]
 
 
 def git_info() -> dict:
@@ -4433,7 +4534,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--hunt-lesson", type=int, default=0, help="1 (with --teach): the hunt lesson: no enemy building in "
                     "view, no enemy army seen for 2 minutes, 3 or more of the buildings it saw gone and an army: half the "
                     "army attack-moves to the nearest building it remembers, else to the nearest gold mine not in sight "
-                    "lately (teacher.py; ties at 40 minutes with the winner's army at a dead main: scripts/hunt_probe.py)")
+                    "lately (teacher.py; ties at 40 minutes with the winner's army at a dead main: scripts/hunt_probe.py); 2: only "
+                    "in games between agents (the ties are there; fgself-175's lesson in every game cost ~9 points "
+                    "against insane)")
     ap.add_argument("--militia-lesson", type=int, default=0, help="1 (with --teach): human's militia lesson: militia "
                     "and no enemy unit near them nor a hall, the hall ends the town bell (audit 16: militia idled, their "
                     "back to work refused, in 175 of 207 human games)")
@@ -5199,12 +5302,24 @@ def main(argv: list[str] | None = None) -> int:
     publish(net, resumed["update"] if resumed else 0, run_dir)
     x_update = x_since = 0  # the exploiter's updates (its weights' version), and since its last restart
     if xnet is not None:
+        if resumed is not None:  # (its restarts from the run's starting weights: on a resume `net` held --init's when
+            got = run_start_state(run_dir, xnet, device)  # x_init was taken, and the exploiter had started over from
+            if got is not None:                           # the anchor's, fgself-100's for fgself-193)
+                x_init = got
+            else:
+                print("note: no starting weights in checkpoints/: the exploiter starts over from --init's", flush=True)
+            if not (run_dir / "exploiter.pt").exists():  # (an exploiter new at this resume: from them too)
+                xnet.load_state_dict(x_init)
         if resumed is not None and (run_dir / "exploiter.pt").exists():  # (it goes on too)
             xck = torch.load(run_dir / "exploiter.pt", map_location=device, weights_only=False)
             xnet.load_state_dict(trained(xck["model"], xnet))
             x_update, x_since = xck["version"], xck.get("since", 0)
-        publish(xnet, x_update, run_dir, "exploiter.pt")
-        publish_exploiter(xnet, x_update, run_dir, vocab)
+            if load_exploiter_opt(xopt, run_dir, x_update, x_since, device, args.lr):
+                print(f"the exploiter's Adam state from exploiter.adam (version {x_update})", flush=True)
+        publish(xnet, x_update, run_dir, "exploiter.pt", since=x_since)  # (its "since" kept: a second resume reads it)
+        league.exploiter_path = publish_exploiter(xnet, x_update, run_dir, vocab)
+        league.exploiter_life = x_update - x_since
+        league.write()  # (the spec names it before any game starts, the remote machines' too)
     cfg = {"run_dir": str(run_dir), "device": str(device), "vocab": str(run_dir / "vocab.json"), "races": races,
            "learner_races": {k: float(v) for k, v in (kv.split(":") for kv in args.learner_races.split(",") if kv)},
            "map": args.map, **({"map_pool": map_pool} if map_pool else {}),
@@ -5395,11 +5510,12 @@ def main(argv: list[str] | None = None) -> int:
             xm.recent = []
             league.exploiter_resets += 1
             x_since = 0
+            league.exploiter_life = x_update  # (its first version, published below)
         torch.save({"model": {k: v.detach().cpu() for k, v in xnet.state_dict().items()}, "config": xnet.config,
                     "version": x_update, "since": x_since}, run_dir / "exploiter.pt.tmp")
         (run_dir / "exploiter.pt.tmp").replace(run_dir / "exploiter.pt")
         if x_since == 0 or x_update % args.exploiter_publish == 0:  # (a version for new games: see the flag)
-            publish_exploiter(xnet, x_update, run_dir, vocab)
+            league.exploiter_path = publish_exploiter(xnet, x_update, run_dir, vocab)
         league.write()
 
     try:
@@ -5416,15 +5532,12 @@ def main(argv: list[str] | None = None) -> int:
                     e = msg["episode"]
                     episodes += 1
                     e["episode"] = episodes
-                    m = league.member(e["opponent"])
                     scen = bool(e.get("scenario"))  # (a scenario's game is another game: 0.37-0.69 won where the
-                    # normal ones 0.49-0.80; out of the league's records, the curriculum and the win balance; audit 6)
-                    taxed = league.win_balance is not None and bool(e.get("balance_tax"))
-                    pulled = league.win_balance is not None and bool(e.get("z_t")) and m in league.past  # (a target
-                    # costs the learner: 35% won against past snapshots with one, 54% without; audit 5)
-                    if m is not None and not e.get("eval") and not taxed and not pulled and not scen:  # (an evaluation game is no
-                        m.record(e["outcome"])  # league game; a taxed one tells nothing of the opponent's strength
-                        if m in league.past:     # for PFSP: 8-33% won untaxed, 42-100% taxed; audit 4)
+                    # normal ones 0.49-0.80; out of the curriculum and the win balance; audit 6)
+                    m = league.recorded(e)  # (the member whose record it goes into, if any)
+                    if m is not None:
+                        m.record(e["outcome"])
+                        if m in league.past:
                             league.past_recent.append(1.0 if e["outcome"] > 0.5 else 0.0 if e["outcome"] < -0.5 else 0.5)
                     if "curriculum" in e and not scen:
                         league.curriculum(e["opponent"], e["outcome"], league.matchup(e["race"], e["opponent_race"]))
@@ -5439,6 +5552,8 @@ def main(argv: list[str] | None = None) -> int:
                         late_game.append(run_dir / "late-states.jsonl", msg["late_state"])
                     continue
                 if (msg.get("info") or {}).get("learner") == "exploiter":
+                    if msg["info"].get("version", league.exploiter_life) < league.exploiter_life:
+                        continue  # (an earlier life's game, ended after its restart: not the fresh network's to learn)
                     xbuf += msg["steps"]
                     xchunks.append(msg["steps"])
                     if len(xbuf) >= args.exploiter_batch:
@@ -5499,6 +5614,8 @@ def main(argv: list[str] | None = None) -> int:
                 league.add_snapshot(path, agent_steps)
             elif update % args.checkpoint_every == 0:
                 save_checkpoint(run_dir / "checkpoints" / f"{agent_steps:016d}.pt", net, opt, vocab, agent_steps, update, ema=ema)
+            if xopt is not None and (update % args.snapshot_every == 0 or update % args.checkpoint_every == 0):
+                save_exploiter_opt(xopt, run_dir, x_update, x_since)  # (a resume's exploiter goes on with its moments)
             if args.ref_update > 0 and ref is not None and update % args.ref_update == 0:  # --ref-update: a rolling
                 ref.load_state_dict(net.state_dict())  # anchor (in place: the CUDA graphs keep their weights' addresses)
                 print(f"the anchor moved to update {update}", flush=True)
@@ -5530,6 +5647,11 @@ def main(argv: list[str] | None = None) -> int:
         info["finished"] = time.time()
         save_info()
         save_checkpoint(run_dir / "checkpoints" / f"{agent_steps:016d}.pt", net, opt, vocab, agent_steps, update, ema=ema)
+        if xopt is not None:
+            try:
+                save_exploiter_opt(xopt, run_dir, x_update, x_since)
+            except Exception as e:  # noqa: BLE001 (the stop goes on: the actors still to end)
+                print(f"the exploiter's Adam state not saved: {type(e).__name__}: {e}", flush=True)
         stop.set()
         for p in actors:
             p.join(timeout=60)
