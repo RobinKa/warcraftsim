@@ -255,3 +255,48 @@ def test_corpse_forgotten_after_its_decay(obs_on):
     assert 6 not in view.obs.corpses and (st["ent"][:, fx.A_OBS] < 0.5).all()  # (decayed by ~92 s: never a 107)
     assert of.CORPSE_SECONDS < 100
 
+
+def test_remembered_enemies_show_no_state_now():
+    """(inputs 3) An enemy the player saw and no longer sees is a row as it was then: not its state now (the shim
+    writes a unit's state while any seer sees it, its owner always), its owner's upgrade levels now or its building's
+    progress now."""
+    try:
+        from warcraftsim.fullgame import obsfull as of
+        of.tables()
+    except Exception as e:  # noqa: BLE001
+        pytest.skip(f"no game data: {e}")
+    fx.set_inputs(3)
+    fx.set_obs_full(1)
+    try:
+        enc = fx.Encoder(VOCAB)
+        view = enc.view(0, 1.0, [0, 1])
+        foot = _row(1, "hfoo", 0, -4000, 2900)
+        grunt = _row(4, "ogru", 1, -1000, 2900, vis=3)  # (seen by player 0)
+        bar = _row(5, "obar", 1, -1200, 2500, flags=fx.STRUCTURE | fx.CONSTRUCTING, vis=3)
+        ev = [(0, of.EV_STATE, 4, 0, (270 << 12) | 2048), (0, 2, 5, code("obar"), 0)]
+        st = view.step(np.stack([foot, grunt, bar]), None, np.asarray(ev, np.int64), 0)
+        A = fx.A_OBS
+        at = {int(u): k for k, u in enumerate(st["sel"][:, fx.C_ID].tolist())}
+        assert st["ent"][at[4], A + of.K_HAVE] == 1 and st["ent"][at[4], A + of.K_CLASS] == 0
+        # out of sight now: the enemy's own view of its grunt says it is stunned, its weapons reach level 2
+        grunt2, bar2 = grunt.copy(), bar.copy()
+        grunt2[fx.C_VIS], bar2[fx.C_VIS] = 2, 2
+        ev = [(40, of.EV_STATE, 4, 1, (270 << 12) | 2048), (40, fx.RESEARCH_FINISH, 9, code("Rome"), 2)]
+        st = view.step(np.stack([foot, grunt2, bar2]), None, np.asarray(ev, np.int64), 40)
+        at = {int(u): k for k, u in enumerate(st["sel"][:, fx.C_ID].tolist())}
+        g0 = st["ghost0"]
+        assert at[4] >= g0 and at[5] >= g0  # (remembered)
+        ghost, gb = st["ent"][at[4]], st["ent"][at[5]]
+        assert ghost[A + of.K_CLASS] == 0 and ghost[A + of.K_HAVE] == 0  # (not stunned: the player can't see it)
+        assert ghost[A + of.K_UPG] == 0  # (its owner's level now: not on a unit out of sight)
+        assert gb[A + of.K_PROD + 2] == 0  # (the building's progress now: not out of sight)
+        # in sight again: its state and its owner's levels as the game shows them
+        st = view.step(np.stack([foot, grunt, bar]), None, np.zeros((0, 5), np.int64), 41)
+        at = {int(u): k for k, u in enumerate(st["sel"][:, fx.C_ID].tolist())}
+        assert at[4] < st["ghost0"] and st["ent"][at[4], A + of.K_CLASS] == 1
+        assert st["ent"][at[4], A + of.K_UPG] == pytest.approx(2 / 3)
+        assert st["ent"][at[5], A + of.K_PROD + 2] > 0
+    finally:
+        fx.set_obs_full(0)
+        fx.set_inputs(1)
+

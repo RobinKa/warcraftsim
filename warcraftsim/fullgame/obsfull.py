@@ -397,12 +397,15 @@ def apply(view, rows: np.ndarray, events, t: int, sel: np.ndarray, n_own: int, f
     A = fx.A_OBS
     tb = tables()
     n = len(sel)
+    # (the entities in sight: inputs 3's remembered enemies after them are rows as last seen, and their state now, their
+    # owner's upgrade levels now and their construction's progress now are what the player does not see)
+    seen = n if getattr(view, "privileged_act", False) else max(0, min(int(getattr(view.enc, "ghost0", n)), n))
     if n:  # (Python's lists: the arrays are ~50 rows, numpy's calls on them had cost more than the loops)
         idl, tyl, owl = sel[:, fx.C_ID].tolist(), sel[:, fx.C_TYPE].tolist(), sel[:, fx.C_OWNER].tolist()
         if st.extras:  # (the units' extras: each unit's block row, kept until an event changes it)
             hit, got, spd = [], [], []
             sp = tb["speed"]
-            for k, uid in enumerate(idl):
+            for k, uid in enumerate(idl[:seen]):
                 r = st.row(uid)
                 if r is not None:
                     hit.append(k)
@@ -415,7 +418,7 @@ def apply(view, rows: np.ndarray, events, t: int, sel: np.ndarray, n_own: int, f
         own = view.player
         memo: dict = {}
         ups, upk = [], []
-        for k in range(n):  # (the upgrade levels: per type and owner of the players' units in view)
+        for k in range(seen):  # (the upgrade levels: per type and owner of the players' units in view)
             o = owl[k]
             if o != own and o != 1 - own:
                 continue
@@ -442,7 +445,7 @@ def apply(view, rows: np.ndarray, events, t: int, sel: np.ndarray, n_own: int, f
             for d, col, mine in ((st.since, K_PROD, True), (st.built, K_PROD + 2, False)):
                 for uid, (t0, secs) in d.items():
                     k = where.get(uid)
-                    if k is None or secs <= 0 or (mine and k >= n_own):
+                    if k is None or secs <= 0 or k >= seen or (mine and k >= n_own):
                         continue
                     if not mine and not sel[k, fx.C_FLAGS] & fx.CONSTRUCTING:
                         continue
