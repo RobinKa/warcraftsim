@@ -408,3 +408,45 @@ def test_burrows_stand_down_as_before():
             assert got_a == got_b, (trial, step)
             assert {k: v for k, v in vars(a).items() if k != "view"} == {k: v for k, v in vars(b).items() if k != "view"}
 
+
+@pytest.mark.parametrize("codecs", [None, ()])
+def test_chunks_through_a_gateway(tmp_path, codecs):
+    """A remote actor's PackedSteps through a real gateway (zstd, or --remote-codec none: frames uncompressed) into the
+    learner's queue: a PackedChunk there, the learner's steps those a local actor's chunk gives."""
+    import multiprocessing
+    import pickle
+    import queue
+    import threading
+    from multiprocessing.reduction import ForkingPickler
+
+    from warcraftsim.fullgame import wire
+    from warcraftsim.fullgame.gateway import Gateway
+    from warcraftsim.fullgame.remoteactor import NetInference
+    from warcraftsim.fullgame.selfplay import PackedSteps, SharedRows
+    sh = SharedRows(str(tmp_path / "rows"), 4, 40, 203, 16, create=True)
+    key, out_q, stop = bytes(range(32)), queue.Queue(), threading.Event()
+    slot, _ = multiprocessing.Pipe()  # (a game slot: no calls here)
+    gw = Gateway({"run_dir": str(tmp_path)}, [slot], 2, out_q, stop, 0, "127.0.0.1", key, {"run": "test"}, shared=sh,
+                 codecs=codecs)
+    th = threading.Thread(target=gw.serve_forever, daemon=True)
+    th.start()
+    try:
+        net = NetInference({"host": "127.0.0.1", "port": gw.port, "key": key.hex(), "name": "box", "wait": 5.0})
+        rng = np.random.default_rng(9)
+        for m in _chunks(rng, 4):
+            ps = m["steps"]
+            local = PackedSteps([dict(x) for x in list.__iter__(ps)], raw=ps.raw)
+            net.put(m)
+            got = out_q.get(timeout=5)
+            assert isinstance(got["steps"], wire.PackedChunk) and got["info"] == m["info"]
+            assert (net.local.codec is None) == (codecs == ())
+            a = pickle.loads(bytes(ForkingPickler.dumps({"steps": local})))["steps"]
+            b = pickle.loads(bytes(ForkingPickler.dumps(got)))["steps"]
+            assert len(a) == len(b) and all(
+                list(x) == list(y) and all(np.array_equal(x[k], y[k]) and x[k].dtype == y[k].dtype
+                                           if isinstance(x[k], np.ndarray) else x[k] == y[k] for k in x)
+                for x, y in zip(a, b))
+    finally:
+        stop.set()
+        th.join(5)
+

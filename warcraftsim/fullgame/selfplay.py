@@ -5473,6 +5473,11 @@ def main(argv: list[str] | None = None) -> int:
                                                              "Tailscale address only)")
     ap.add_argument("--remote-key", default="", help="the key file remote actors must have (default: wire.KEY_PATH, "
                                                      "made at the gateway's first start)")
+    ap.add_argument("--remote-codec", default="zstd", choices=("zstd", "zlib", "none"),
+                    help="the remote games' frames' compression (none: uncompressed, ~80 MB/s at 64 games, and neither "
+                         "side spends its CPU on it: zstd took ~0.4M instructions a remote game's step on the remote "
+                         "machine, ~0.15M at its gateway; the same messages either way). zstd falls back to zlib where "
+                         "a side has no zstd")
     ap.add_argument("--wine", default="", help="another Wine's bin folder (e.g. GE-Proton's files/bin; "
                                               "runtime.wine.use_wine): its own prefixes")
     ap.add_argument("--fsync", type=int, default=0, help="with --wine (a Proton build): Wine's synchronization "
@@ -6002,7 +6007,9 @@ def main(argv: list[str] | None = None) -> int:
                                                                  local_rows + 2 * a0, out_q, stop,
                                                                  {"port": args.remote_port, "bind": args.remote_bind,
                                                                   "key": args.remote_key or None, "hello": hello,
-                                                                  "index": g if n_gw > 1 else None}),
+                                                                  "index": g if n_gw > 1 else None,
+                                                                  "codecs": {"zstd": ("zstd", "zlib"), "zlib": ("zlib",),
+                                                                             "none": ()}[args.remote_codec]}),
                                       daemon=True))
     server_conns = [b for ps in pipes for _, b in ps] + [b for _, b in remote_pipes] if args.central_inference else []
     infer_thread = native = None

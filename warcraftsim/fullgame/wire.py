@@ -152,9 +152,11 @@ def code_version(root: Path | None = None) -> str:
     return _CODE[str(root)]
 
 
-def server_handshake(sock: socket.socket, key: bytes, hello: dict | None = None, code: str | None = None) -> dict:
+def server_handshake(sock: socket.socket, key: bytes, hello: dict | None = None, code: str | None = None,
+                     codecs: tuple = CODECS) -> dict:
     """The gateway's side: -> the client's hello (WireError: not a client with the key; with `code`, the
-    learner's code_version, one with other code is told so and refused)."""
+    learner's code_version, one with other code is told so and refused). `codecs`: the compressions it may pick, the
+    client's first it has (none: frames uncompressed, selfplay --remote-codec none)."""
     nonce = secrets.token_bytes(32)
     sock.sendall(MAGIC + nonce)
     mac = _recv_exact(sock, 32)
@@ -170,7 +172,7 @@ def server_handshake(sock: socket.socket, key: bytes, hello: dict | None = None,
         send_frame(sock, HELLO, json.dumps({"refused": why}).encode())
         raise Refused(why)
     mine = dict(hello or {})
-    mine["codec"] = next((c for c in theirs.get("codecs", ["zlib"]) if c in CODECS), None)
+    mine["codec"] = next((c for c in theirs.get("codecs", ["zlib"]) if c in CODECS and c in codecs), None)
     send_frame(sock, HELLO, json.dumps(mine).encode())
     return {**theirs, "codec": mine["codec"]}
 
