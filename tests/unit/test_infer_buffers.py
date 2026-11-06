@@ -91,3 +91,45 @@ def test_every_call_of_a_round_has_its_own_buffers(monkeypatch):
         inf.wait()
         for h, w in zip(handles, want):
             assert [x["value"] for x in inf._finish(h)] == pytest.approx(w)
+
+
+def _full_net(seed: int, n_orders: int = 31):
+    from warcraftsim.fullgame.model import FullGameNet
+    torch.manual_seed(seed)
+    net = FullGameNet(n_types=20, n_cur=10, n_orders=n_orders, G=30, d=32, layers=1, memory=True).eval()
+    for q in net.parameters():  # (none zero: a misplaced view would show)
+        torch.nn.init.normal_(q, std=0.1)
+    return net
+
+
+def test_past_slots_weights_at_aligned_offsets():
+    """A slot's parameters are views of one flat tensor: packed end to end, every one after an odd-sized bias (the order
+    head's: 519 classes in fgself-194) sat 4 or 12 bytes off a 16-byte boundary, a fifth of them, and with
+    --infer-precision tf32 the slots' warm-up failed ("misaligned address"). Each at a 512-byte boundary now, and a
+    snapshot's packed weights (PastNet's, NativeServer's for the C++ loop's copy) laid out the same."""
+    a, b = _full_net(0), _full_net(1)
+    assert any(q.numel() % 4 for q in a.parameters())  # (odd sizes: packed end to end, the rest misaligned)
+    swap = selfplay.PastNet(torch.device("cpu"), slots=2)
+    net = swap.get("a", a, 0)
+    net_, mine, _, _ = swap.hosts[next(iter(swap.hosts))]
+    assert net_ is net
+    base = mine.data_ptr()
+    for q in net.parameters():
+        assert (q.data_ptr() - base) % 512 == 0 and q.data_ptr() + q.numel() * 4 <= base + mine.numel() * 4
+    assert all(torch.equal(x, y) for x, y in zip(net.state_dict().values(), a.state_dict().values()))
+    # another snapshot into the slot: one copy of its packed weights, the same layout
+    flat_b = selfplay.pack_flat(b.parameters())
+    assert flat_b.numel() == mine.numel()
+    assert swap.get("b", b, 0) is net
+    assert all(torch.equal(x, y) for x, y in zip(net.parameters(), b.parameters()))
+    # (the C++ loop's copy: the snapshot's packed weights byte for byte into the slot's)
+    mine.zero_()
+    mine.copy_(flat_b)
+    assert all(torch.equal(x, y) for x, y in zip(net.parameters(), b.parameters()))
+    offsets, total = selfplay.flat_layout(list(b.parameters()))
+    assert total == mine.numel() and all(o % selfplay.FLAT_ALIGN == 0 for o in offsets)
+
+
+def test_native_server_packs_snapshots_as_the_slots():
+    src = open(selfplay.__file__.replace("selfplay.py", "native_infer.py")).read()
+    assert "flat = pack_flat(src.parameters())" in src and "torch.cat([p.data.reshape(-1)" not in src
