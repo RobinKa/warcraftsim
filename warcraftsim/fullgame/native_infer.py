@@ -22,6 +22,21 @@ from . import features as fx
 from .model import arch_key
 
 _EXT = None
+KEEP_VERSIONS = 40  # (publish_exploiter's `keep`: an exploiter's versions the files and the loop's copies keep)
+
+
+def stale_versions(keys, run_dir: str | Path, keep: int = KEEP_VERSIONS) -> list[str]:
+    """Of the snapshots the loop keeps (their keys, paths), the exploiters' versions past each one's newest `keep`
+    (selfplay.publish_exploiter's exploiter/<version>.pt, publish_league_exploiter's league-exploiters/<i>/<version>.pt):
+    no game plays them now, and each holds ~13 MB of the GPU's (one every 8 updates of each exploiter, for good)."""
+    run_dir = Path(run_dir)
+    dirs = (run_dir / "exploiter", run_dir / "league-exploiters")
+    groups: dict[Path, list[str]] = {}
+    for k in keys:
+        p = Path(k)
+        if p.stem.isdigit() and (p.parent == dirs[0] or p.parent.parent == dirs[1]):
+            groups.setdefault(p.parent, []).append(k)
+    return [k for ks in groups.values() for k in sorted(ks)[:-keep]]
 
 
 def build_source(src: Path) -> tuple[Path, str | None]:
@@ -165,10 +180,8 @@ class NativeServer:
         buffers = list(src.buffers())
         torch.cuda.current_stream().synchronize()  # (made before the loop's streams copy from them)
         self.kept[key] = (flat, buffers)
-        xdir = str(Path(self.cfg["run_dir"]) / "exploiter")
-        old = sorted(k for k in self.kept if k.startswith(xdir))[:-40]  # (the exploiter's versions past the
-        for k in old:                                                    # newest 40: no game plays them now)
-            del self.kept[k]
+        for k in stale_versions(list(self.kept), self.cfg["run_dir"]):  # (the exploiters' versions past the newest
+            del self.kept[k]                                             # 40: no game plays them now)
         if arch not in self.arch_ids:
             raise RuntimeError(f"a past snapshot of an architecture without slots: {key}")
         return self.arch_ids[arch], [(flat.data_ptr(), flat.numel() * flat.element_size())] + \
