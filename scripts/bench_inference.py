@@ -127,7 +127,10 @@ def main() -> int:
     if a.compare_rows:  # fused, side by side: the given row counts against these
         base, t_base = run(True, fuse=True)
         out, t = run(True, fuse=True, rows=a.compare_rows)
-        worst = max(abs(x[0] - y[0]) + abs(x[1] - y[1]) for rs, rp in zip(base, out) for x, y in zip(sorted(rs), sorted(rp)))
+        # (values and entropies each sorted on their own: other row counts split a round into other calls, and two rows
+        # whose values agree to ~1e-6 can swap places when sorted as pairs, which "differed" by a whole entropy, 0.63)
+        worst = max(max(abs(x - y) for x, y in zip(sorted(v[k] for v in rs), sorted(v[k] for v in rp)))
+                    for rs, rp in zip(base, out) for k in (0, 1))
         for name, tt in ((a.rows, t_base), (a.compare_rows, t)):
             print(f"rows {name}: {tt.sum():.2f} ms a round (launching {tt[0]:.2f}, GPU {tt[1]:.2f}, answers {tt[2]:.2f})")
         print(f"largest difference in value + entropy {worst:.2e}; GPU memory reserved {torch.cuda.max_memory_reserved() / 2 ** 30:.1f} GB")
