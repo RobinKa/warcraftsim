@@ -201,6 +201,8 @@ def _opponent_kind(o: str) -> str | None:
         return "past snapshots"
     if o.startswith("fixed:"):
         return "fixed opponents"
+    if o.startswith("lexploiter:"):  # (--league-exploiters' snapshots in the league)
+        return "league exploiters"
     return "exploiter" if o.startswith("exploiter") else None
 
 

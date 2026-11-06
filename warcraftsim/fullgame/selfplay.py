@@ -1478,7 +1478,7 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                 slots[side] = Agent(races[side], handicap=int(ai.get("handicap", cfg["handicap"])), difficulty=adv)
         agents_only = ai["kind"] != "ai"
         # GRPO's sources: games between agents with a seed (the built-in AI's games do not replay)
-        seeded = agents_only and not evaluating and cfg.get("grpo_share", 0.0) > 0 and not heur
+        seeded = agents_only and not evaluating and cfg.get("grpo_share", 0.0) > 0 and not heur and ai["kind"] != "lexploit"
         # a restart goes on to the next pair of players (--pairs), or reloads the map (1 s).
         # (--scripted-reset: games without the built-in AI reset by script for the same players instead,
         # 0.1 s, but not to a new game: see GameSetup.melee_reset)
@@ -1515,6 +1515,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                                {"strategy": heuristic_strategy(cfg, races[1 - side], rng)})} if heur
                            else {"name": "exploiter", "kind": "exploiter",  # (its newest weights, as the spec names them)
                                  **({"path": spec["exploiter"]} if spec.get("exploiter") else {})} if ai["kind"] == "exploit"
+                           else (lx_game(spec, ai["index"], rng) or dict(_choose(rng, spec["agents"])))
+                           if ai["kind"] == "lexploit"  # (--league-exploiters: its opponent from the league, by PFSP)
                            else {"name": f"eval-vs:{versus}", "kind": "past", "path": versus,
                                  "eval_tag": "vs " + "/".join(Path(versus).parts[-3::2])} if versus
                            else dict(_choose(rng, spec["agents"])))
@@ -1522,7 +1524,7 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                         taxed, share = balance_tax(spec, races)
                         if cfg.get("win_balance"):  # (the model's cap: the races' balance until it is fitted)
                             share = min(share, cfg.get("win_balance", 0.0))
-                            if opp.get("kind") == "exploiter":  # (--win-balance leaves the races' balance where a fork
+                            if opp.get("kind") in ("exploiter", "lexploit"):  # (--win-balance leaves the races' balance where a fork
                                 # found it, and only self and past games get the model's tax: the exploiter's games had
                                 # the frozen levels for good, 199 of fgself-193's first 239 taxed, most at the cap of 0.5,
                                 # the learner winning 18% when it paid and 75% when the exploiter did; untaxed, as
@@ -1547,7 +1549,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                         if now.get("tax", 0.0) != 0:  # (< 0: a bonus, --curriculum-floor)
                             opp["tax"] = now["tax"]
                     # a video: the first game of a launch (its replay then holds just this game)
-                    film = films and fresh and time.time() >= next_video
+                    film = films and fresh and time.time() >= next_video and ai["kind"] != "lexploit"  # (a league
+                    # exploiter's game: no video of the learner's)
                     # GRPO: the first game of a launch (a fresh start, as the branches' launches) may be a source
                     grpo = ({"source": int(rng.uniform(*cfg["grpo_branch"]) / cfg["step_seconds"])}
                             if seeded and n == 0 and not film and rng.random() < cfg["grpo_share"] else None)
@@ -1563,12 +1566,24 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                         next_video = time.time() + period
                         film_game(g, ep, cfg, wid, render_q)
                     if n + 1 < per_launch:
-                        due = films and time.time() >= next_video
+                        due = films and time.time() >= next_video and ai["kind"] != "lexploit"
                         fresh = due or g._ended  # (a filmed game ended its process: the restart relaunches)
                         obs = g.restart(relaunch=due)
         except Exception as e:  # noqa: BLE001 (a new launch)
             print(f"actor {wid}/{k}: {type(e).__name__}: {e}", flush=True)
             time.sleep(2)
+
+
+def lx_game(spec: dict, index: int, rng: random.Random) -> dict | None:
+    """A league exploiter's launch's next game (--league-exploiters): its opponent drawn from the league's spec (PFSP,
+    League.lx_opponents) -> play_one's `opp` ("name" the opponent's: "main", "exploiter" or a member's; the league
+    exploiter plays the learner's side `side` and trains alone); None while the spec has no weights of it published."""
+    lx = next((x for x in spec.get("league_exploiters") or () if x.get("index") == index), None)
+    if lx is None or not lx.get("path") or not lx.get("opponents"):
+        return None
+    o = _choose(rng, lx["opponents"])
+    return {"name": o["name"], "kind": "lexploit", "lx": index, "lx_path": lx["path"], "vs_kind": o["kind"],
+            **({"vs_path": o["path"]} if o.get("path") else {})}
 
 
 def heuristic_strategy(cfg: dict, race: str, rng: random.Random) -> str:
@@ -2212,10 +2227,15 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         if s == side and opp.get("eval_key"):  # (an evaluation game of a listed checkpoint: --eval-checkpoints)
             keys[s] = "current" if opp["eval_key"] in ("current+z", "current+zg", "current+human") else opp["eval_key"]
             bot.view.active_f = fx.F  # (all features: a checkpoint's weights past its own are zeros)
-        if keys[s] == "current" and train:  # (an evaluation game: no steps to train on)
+        if keys[s] == "current" and train and opp["kind"] != "lexploit":  # (an evaluation game: no steps to train on;
+            # a league exploiter's: only it trains)
             trajs[s] = Trajectory(cfg, out_q, {"worker": wid, "opponent": opp["name"]}, hold=replay is not None)
         elif opp["kind"] == "exploiter" and s != side:  # (its steps train the exploiter: League, --exploiter-share)
             trajs[s] = Trajectory(cfg, out_q, {"worker": wid, "opponent": "main", "learner": "exploiter",
+                                               **({"version": xv} if (xv := exploiter_version(keys[s])) is not None else {})})
+        elif opp["kind"] == "lexploit" and s == side and train:  # (--league-exploiters: its steps train it alone)
+            trajs[s] = Trajectory(cfg, out_q, {"worker": wid, "opponent": opp["name"], "learner": "league-exploiter",
+                                               "lx": opp["lx"],
                                                **({"version": xv} if (xv := exploiter_version(keys[s])) is not None else {})})
     # strategy conditioning (--z-pool): --z-share of the learner's trained sides play toward a strategy drawn for
     # their race (and their opponent's, when the pool has some): the global vector's strategy block, and a
@@ -2349,6 +2369,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     # not a late start's: the research it set up gave no events; not a two-base start's: the pool stays games' own)
     capture_at = (random.uniform(*cfg.get("late_minutes", late_game.MINUTES)[:2]) * 60.0
                   if cfg.get("late_capture", 0.0) > 0 and train and replay is None and scenario not in ("late", "base2")
+                  and opp.get("kind") != "lexploit"  # (the learner's games' states only)
                   and random.random() < cfg.get("late_capture", 0.0) else None)
     research_seen = {0: {}, 1: {}}  # (each side's research levels, from the game's events: the capture's)
     captured = None
@@ -2750,6 +2771,10 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         # (the exploiter's version that played: a game begun before its restart is not the new one's, League.recorded)
         **({"exploiter_version": xv} if opp.get("kind") == "exploiter" and (xv := exploiter_version(keys.get(1 - side)))
            is not None else {}),
+        # (--league-exploiters: the row is the league exploiter's, at `side`; its version, and what it played)
+        **({"league_exploiter": opp["lx"], "opponent_kind": opp.get("vs_kind"),
+            **({"exploiter_version": xv} if (xv := exploiter_version(keys.get(side))) is not None else {})}
+           if opp.get("kind") == "lexploit" else {}),
         **({} if train else {"eval": True, "eval_key": opp.get("eval_tag") or opp.get("eval_key") or "current"})}
     if captured:  # (--late-capture: the state with how its game ended, the learner's line of late-states.jsonl)
         captured.update(winner=next((s for s in (0, 1) if outcome[s] > 0), None), end_minute=round(obs.game_time / 60.0, 2),
@@ -2941,11 +2966,38 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
 
 # ---- the league -----------------------------------------------------------------------------------
 
+LX_PREFIX = "lexploiter:"  # (--league-exploiters: a league exploiter's snapshot in the league, "lexploiter:<i>-<steps>")
+LX_MIN_GAMES = 50  # (its games since it last joined or restarted before its score counts, as the main exploiter's 50)
+LX_KEEP = 8  # (its snapshots kept in the league at most, all of them together: the oldest goes; each is a network the
+# inference loop keeps, ~13 MB)
+
+
+def kept_for_good(name: str) -> bool:
+    """A league member the past snapshots' rotation (--max-past) never takes out: --league-add's ("fixed:"), and the
+    league exploiters' snapshots (they would last ~8 minutes among the learner's own, one every 40 updates)."""
+    return name.startswith(("fixed:", LX_PREFIX))
+
+
+class LeagueExploiterRecord:
+    """A league exploiter's side of the league (--league-exploiters): its newest published weights, the version its
+    current weights' life began with (an earlier life's games count for none), its results against each opponent (its
+    own wins: 1), its recorded games since it last joined or restarted, and how often it joined and restarted."""
+
+    def __init__(self, index: int):
+        self.index = index
+        self.path: str | None = None
+        self.life = 0
+        self.records: dict[str, Member] = {}
+        self.games = 0
+        self.joins = self.resets = 0
+
+
 class League:
     def __init__(self, run_dir: Path, ai: list[str], shares: dict, max_past: int, pfsp: str,
                  curriculum: tuple[float, float, float, int] | None = None, mode: str = "hp",
                  races: tuple[str, ...] = ("",), mirror: bool = True, balance: tuple[float, float] | None = None,
-                 exploiter_share: float = 0.0, tie: float = 0.0, floor: float = 0.0, win_balance: float = 0.0):
+                 exploiter_share: float = 0.0, tie: float = 0.0, floor: float = 0.0, win_balance: float = 0.0,
+                 league_exploiters: int = 0, league_exploiter_share: float = 0.0):
         """`curriculum`: (start level, step, the knob at level 1, base handicap): games against the
         built-in AI get easier or harder towards a 50% score, a level per difficulty in [0, 1] that
         a loss raises by `step`, a win lowers (a tie leaves it). At 0 the game is the real one; None:
@@ -2981,7 +3033,13 @@ class League:
         `exploiter_share` (AlphaStar's main exploiter): that share of launches are games between the
         learner and its exploiter, a second network that trains only against it (both sides train,
         each its own network). "exploiter" (a member) holds the learner's results against the
-        current exploiter; the exploiter's snapshots that beat it join the league ("exploiter:N")."""
+        current exploiter; the exploiter's snapshots that beat it join the league ("exploiter:N").
+
+        `league_exploiters` (AlphaStar's league exploiters): that many more networks, each in `league_exploiter_share`
+        of the launches against an opponent PFSP (hard, by its own results) draws from the whole league: the past
+        snapshots, the fixed members, the current learner ("main") and the main exploiter. Only it trains in those
+        games. It joins the league for good ("lexploiter:<i>-<steps>") when its PFSP-weighted score reaches the
+        threshold or after a timeout (the learner: lx_after_update)."""
         self.run_dir, self.shares, self.max_past, self.pfsp = run_dir, shares, max_past, pfsp
         self.scripts = {f"script:ai-{d}": Member(f"script:ai-{d}") for d in ai}
         self.rule, self.mode, self.races, self.tie = curriculum, mode, tuple(races), tie
@@ -3005,6 +3063,8 @@ class League:
         # first game: none of fgself-193's 705 games on the box was one)
         self.exploiter_path: str | None = None
         self.exploiter_life = 0  # (the version its current life began with: games of an earlier one count for none)
+        self.lx = [LeagueExploiterRecord(i) for i in range(league_exploiters)]  # (--league-exploiters)
+        self.lx_share = league_exploiter_share if league_exploiters > 0 else 0.0
         self.shaping: float | None = None  # (--shaping-anneal: the shaping's weight now, in the spec)
         self.past_recent: deque = deque(maxlen=300)  # (the learner's newest results against past snapshots)
         # --win-balance: games between agents taxed by who is expected to win (balance.py; the races' balance until fitted)
@@ -3063,7 +3123,7 @@ class League:
         (4 in 5 started in a scenario, the races apart taxed): ~26 in its 300 updates, short of the 50 its score
         needs, so it could never join the league."""
         m = self.member(e["opponent"])
-        if m is None or e.get("eval"):
+        if m is None or e.get("eval") or e.get("league_exploiter") is not None:  # (a league exploiter's: lx_record)
             return None
         taxed = self.win_balance is not None and bool(e.get("balance_tax"))
         pulled = self.win_balance is not None and bool(e.get("z_t")) and m in self.past
@@ -3075,9 +3135,16 @@ class League:
 
     def add_snapshot(self, path: Path, steps: int, name: str | None = None) -> None:
         self.past.append(Member(name or f"past:{steps}", path=str(path), steps=steps))
-        movable = [i for i, m in enumerate(self.past) if not m.name.startswith("fixed:")]  # (--league-add's: for good)
+        movable = [i for i, m in enumerate(self.past) if not kept_for_good(m.name)]  # (--league-add's: for good)
         if len(movable) > self.max_past:  # keep the first (the clone) and the newest
             del self.past[movable[1]]
+        self._trim_lx()
+
+    def _trim_lx(self) -> None:
+        """The league exploiters' snapshots: LX_KEEP at most, the oldest out first."""
+        lxs = [i for i, m in enumerate(self.past) if m.name.startswith(LX_PREFIX)]
+        for i in reversed(lxs[:max(0, len(lxs) - LX_KEEP)]):
+            del self.past[i]
 
     def restore(self, summary: dict) -> None:
         """Members and records from a league.json (resuming a run)."""
@@ -3097,6 +3164,15 @@ class League:
             self.exploiter.wins, self.exploiter.losses, self.exploiter.draws = x.get("wins", 0.0), x.get("losses", 0.0), x.get("draws", 0.0)
             self.exploiter.recent = list(x.get("recent") or [])
             self.exploiter_resets = summary.get("exploiter_resets", 0)
+        for row in summary.get("league_exploiters") or []:  # (--league-exploiters: their records and counts)
+            if 0 <= row.get("index", -1) < len(self.lx):
+                x = self.lx[row["index"]]
+                x.path, x.life, x.games = row.get("path"), row.get("life", 0), row.get("games", 0)
+                x.joins, x.resets = row.get("joins", 0), row.get("resets", 0)
+                for r in row.get("records") or []:
+                    m = x.records[r["name"]] = Member(r["name"])
+                    m.wins, m.losses, m.draws = r.get("wins", 0.0), r.get("losses", 0.0), r.get("draws", 0.0)
+                    m.recent = list(r.get("recent") or [])
         me = summary.get("self") or {}
         self.self_member.wins, self.self_member.losses = me.get("wins", 0.0), me.get("losses", 0.0)
         self.self_member.draws, self.self_member.recent = me.get("draws", 0.0), list(me.get("recent") or [])
@@ -3121,10 +3197,11 @@ class League:
             m.recent = list(row.get("recent") or [])
             self.past.append(m)
             taken.append(m.name)
-        movable = [i for i, m in enumerate(self.past) if not m.name.startswith("fixed:")]
+        movable = [i for i, m in enumerate(self.past) if not kept_for_good(m.name)]
         extra = len(movable) - (self.max_past - 1)  # (room for the new run's own first snapshot; the first kept, and
         for i in reversed(movable[1:1 + extra] if extra > 0 else []):  # fixed members: audit 7)
             del self.past[i]
+        self._trim_lx()
         self._restore_levels(summary)
         return [m.name for m in self.past]
 
@@ -3149,10 +3226,12 @@ class League:
         kind; an extra draw after the races' made night elf rare: 1 of 38 real launches)."""
         ai_share = self.shares["ai"] if self.scripts else 0.0
         launch = [{"kind": "agents", "p": 1.0 - ai_share}]
-        if self.exploiter is not None:  # (out of every other kind's share alike)
-            launch = [{"kind": "agents", "p": (1.0 - ai_share) * (1 - self.exploiter_share)},
-                      {"kind": "exploit", "p": self.exploiter_share}]
-            ai_share *= 1 - self.exploiter_share
+        if self.exploiter is not None or self.lx:  # (out of every other kind's share alike)
+            took = (self.exploiter_share if self.exploiter is not None else 0.0) + self.lx_share * len(self.lx)
+            launch = [{"kind": "agents", "p": (1.0 - ai_share) * (1 - took)}]
+            launch += [{"kind": "exploit", "p": self.exploiter_share}] if self.exploiter is not None else []
+            launch += [{"kind": "lexploit", "index": x.index, "p": self.lx_share} for x in self.lx]
+            ai_share *= 1 - took
         if self.level and real_share > 0:
             launch += [{"kind": "ai", "difficulty": n.split("-", 1)[1], "real": True,
                         "p": ai_share * real_share / len(self.scripts)} for n in self.scripts]
@@ -3177,8 +3256,48 @@ class League:
         model = self.win_balance.coef() if self.win_balance is not None else None
         return {"launch": launch, "agents": agents, **({"balance": self.balance_taxes()} if self.balance else {}),
                 **({"exploiter": self.exploiter_path} if self.exploiter is not None and self.exploiter_path else {}),
+                **({"league_exploiters": [{"index": x.index, "path": x.path, "opponents": self.lx_opponents(x.index)}
+                                          for x in self.lx]} if self.lx else {}),
                 **({"win_balance": model} if model else {}),
                 **({"shaping": self.shaping} if self.shaping is not None else {})}
+
+    def lx_opponents(self, i: int) -> list[dict]:
+        """League exploiter `i`'s opponents and their chances (PFSP, hard, by its own smoothed score against each, an
+        unplayed one at a half; at least 0.05 of the weight's scale): the current learner ("main"), the main exploiter's
+        newest weights, and every league member. Each with its "rate", the score used."""
+        rec = self.lx[i].records
+        cands = [{"name": "main", "kind": "main"}]
+        if self.exploiter is not None and self.exploiter_path:
+            cands.append({"name": "exploiter", "kind": "exploiter", "path": self.exploiter_path})
+        cands += [{"name": m.name, "kind": "past", "path": m.path} for m in self.past]
+        played = [smoothed_rate(rec[c["name"]]) if c["name"] in rec else None for c in cands]
+        rates = [0.5 if r is None else r for r in played]
+        w = [max(pfsp_weight(r, "hard"), 0.05) for r in rates]
+        total = sum(w)
+        return [{**c, "p": x / total, "rate": r} for c, r, x in zip(cands, rates, w)]
+
+    def lx_score(self, i: int) -> float | None:
+        """League exploiter `i`'s score against the league: its smoothed score against each opponent, weighted as PFSP
+        draws them (the opponents it does worst against count most, unplayed ones at a half: it must beat them all);
+        None before LX_MIN_GAMES games since it last joined or restarted."""
+        if self.lx[i].games < LX_MIN_GAMES:
+            return None
+        return sum(o["p"] * o["rate"] for o in self.lx_opponents(i))
+
+    def lx_record(self, e: dict) -> bool:
+        """A league exploiter's game (its episode row: "league_exploiter", its outcome, "opponent" the one it played)
+        into its records, unless an evaluation game, an earlier life's, or taxed (--win-balance: none are)."""
+        i = e.get("league_exploiter")
+        if i is None or not 0 <= i < len(self.lx) or e.get("eval"):
+            return False
+        x = self.lx[i]
+        if e.get("exploiter_version", x.life) < x.life:
+            return False
+        if self.win_balance is not None and e.get("balance_tax"):
+            return False
+        x.records.setdefault(e["opponent"], Member(e["opponent"])).record(e["outcome"])
+        x.games += 1
+        return True
 
     def write(self) -> None:
         spec = self.run_dir / "league_spec.json"
@@ -3196,6 +3315,13 @@ class League:
                    "balance": self.balance,
                    **({"win_balance": self.win_balance.summary()} if self.win_balance is not None else {}),
                    **({"exploiter": row(self.exploiter), "exploiter_resets": self.exploiter_resets} if self.exploiter else {})}
+        if self.lx:  # (their records against members still in the league only)
+            here = {"main", "exploiter", *(m.name for m in self.past)}
+            for x in self.lx:
+                x.records = {k: v for k, v in x.records.items() if k in here}
+            summary["league_exploiters"] = [{"index": x.index, "path": x.path, "life": x.life, "games": x.games,
+                                             "joins": x.joins, "resets": x.resets, "score": self.lx_score(x.index),
+                                             "records": [row(m) for m in x.records.values()]} for x in self.lx]
         tmp = self.run_dir / "league.json.tmp"
         tmp.write_text(json.dumps(summary))
         tmp.replace(self.run_dir / "league.json")
@@ -3221,6 +3347,15 @@ class League:
             if self.exploiter.win_rate() is not None:
                 out["league/exploiter_vs_main"] = 1.0 - self.exploiter.win_rate()  # (the exploiter's score)
             out["league/exploiter_resets"] = self.exploiter_resets
+        for x in self.lx:  # (--league-exploiters)
+            if (sc := self.lx_score(x.index)) is not None:
+                out[f"league/lexploiter{x.index}_score"] = sc
+            if "main" in x.records and x.records["main"].win_rate() is not None:
+                out[f"league/lexploiter{x.index}_vs_main"] = x.records["main"].win_rate()
+            out[f"league/lexploiter{x.index}_joins"] = x.joins
+            out[f"league/lexploiter{x.index}_resets"] = x.resets
+        if self.lx:
+            out["league/lexploiter_members"] = sum(1 for m in self.past if m.name.startswith(LX_PREFIX))
         return out
 
 
@@ -4369,6 +4504,195 @@ def exploiter_key(cfg: dict) -> str:
     return json.loads((Path(cfg["run_dir"]) / "exploiter.json").read_text())["path"]
 
 
+def _tensor_copy(d: dict) -> dict:
+    return {k: (v.detach().clone() if isinstance(v, torch.Tensor) else v) for k, v in d.items()}
+
+
+class LeagueExploiters:
+    """--league-exploiters N (AlphaStar's league exploiters): N networks trained in turn in one slot, a network with its
+    Adam and its update's CUDA graphs (GraphedUpdate, `updater`). Before an exploiter's update its weights and Adam's
+    moments are copied into the slot's own tensors (in place: the captured graphs keep reading the same addresses), and
+    after it back out: one set of graphs (~3.5 GB on the GPU) whatever N, each exploiter adding only its weights and
+    moments (~40 MB). Each one's entry in `nets`: "state" (its weights and buffers), "adam" (its moments by the slot's
+    parameter index; None: fresh), "buf"/"chunks" (its steps), "version" (its updates), "since" (its updates since it
+    last joined the league or restarted: the timeout's), "age" (since its weights restarted: the value's warm-up),
+    "life" (the version its weights' life began with), "stats" (its last update's).
+    Files, run_dir/league-exploiters/<i>/: <version>.pt each version games play (publish, the newest 40), state.pt its
+    weights and counts after every update (a resume's), adam.pt its moments with the run's checkpoints."""
+
+    def __init__(self, n: int, slot: FullGameNet, opt, start: dict, run_dir: Path, vocab: dict, updater=None):
+        self.slot, self.opt, self.updater = slot, opt, updater
+        self.start, self.run_dir, self.vocab = start, Path(run_dir), vocab
+        self.params = list(slot.parameters())
+        self.nets = [{"state": _tensor_copy(start), "adam": None, "buf": [], "chunks": [], "version": 0, "since": 0,
+                      "age": 0, "life": 0, "stats": {}} for _ in range(n)]
+
+    def dir(self, i: int) -> Path:
+        d = self.run_dir / "league-exploiters" / str(i)
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    @torch.no_grad()
+    def swap_in(self, i: int) -> None:
+        """Exploiter `i`'s weights and Adam's moments into the slot (a fresh one's moments zeroed in place)."""
+        x = self.nets[i]
+        self.slot.load_state_dict(x["state"])  # (copied in place)
+        for k, p in enumerate(self.params):
+            st = self.opt.state.get(p)
+            saved = (x["adam"] or {}).get(k)
+            if saved is None:
+                for v in (st or {}).values():
+                    if isinstance(v, torch.Tensor):
+                        v.zero_()  # (step 0: Adam's next step counts from 1, as a fresh optimizer's)
+            elif st and set(st) == set(saved) and all(
+                    not isinstance(v, torch.Tensor) or st[n].shape == v.shape for n, v in saved.items()):
+                for n, v in saved.items():
+                    if isinstance(v, torch.Tensor):
+                        st[n].copy_(v)
+                    else:
+                        st[n] = v
+            else:  # (none yet: eager, or before the graphs' capture, which then keeps these tensors)
+                self.opt.state[p] = _tensor_copy(saved)
+
+    @torch.no_grad()
+    def swap_out(self, i: int) -> None:
+        """The slot's weights and Adam's moments back into exploiter `i`'s."""
+        x = self.nets[i]
+        for k, v in self.slot.state_dict().items():
+            x["state"][k].copy_(v)
+        adam = x["adam"] if x["adam"] is not None else {}
+        for k, p in enumerate(self.params):
+            st = self.opt.state.get(p)
+            if not st:
+                continue
+            cur = adam.get(k)
+            if cur is None or set(cur) != set(st):
+                adam[k] = _tensor_copy(st)
+            else:
+                for n, v in st.items():
+                    if isinstance(v, torch.Tensor):
+                        cur[n].copy_(v)
+                    else:
+                        cur[n] = v
+        x["adam"] = adam
+
+    def update(self, i: int, ref, args, device) -> dict:
+        """A PPO update of exploiter `i` on its steps (no cloning loss), in the slot."""
+        x = self.nets[i]
+        warmup = x["age"] < args.value_warmup
+        self.swap_in(i)
+        stats = None
+        if self.updater is not None:
+            try:
+                stats = self.updater.update(x["buf"], x["chunks"], warmup, None)
+            except Exception:  # noqa: BLE001 (the eager update from here on)
+                traceback.print_exc()
+                print("the league exploiters' CUDA-graph update failed: the eager one from now on", flush=True)
+                self.updater = None
+        if stats is None:
+            stats = ppo_update(self.slot, ref, self.opt, x["buf"], args, warmup, device, x["chunks"], None)
+        self.swap_out(i)
+        x["buf"], x["chunks"] = [], []
+        x["version"] += 1
+        x["since"] += 1
+        x["age"] += 1
+        x["stats"] = stats
+        return stats
+
+    @torch.no_grad()
+    def restart(self, i: int) -> None:
+        """Exploiter `i` from the run's starting weights, its moments fresh; a new life from its next version on."""
+        x = self.nets[i]
+        for k, v in self.start.items():
+            x["state"][k].copy_(v)
+        x["adam"], x["age"], x["since"], x["life"] = None, 0, 0, x["version"]
+
+    def _model(self, i: int) -> dict:
+        return {k: v.detach().cpu() for k, v in self.nets[i]["state"].items()}
+
+    def publish(self, i: int, keep: int = 40) -> str:
+        """Exploiter `i`'s weights as the version games play (league-exploiters/<i>/<version>.pt; the newest `keep`
+        kept, as publish_exploiter's) -> its path, which the league's spec names (League.lx[i].path)."""
+        d = self.dir(i)
+        path = d / f"{self.nets[i]['version']:08d}.pt"
+        tmp = path.with_suffix(".tmp")
+        torch.save({"model": self._model(i), "config": self.slot.config, "vocab": self.vocab,
+                    "version": self.nets[i]["version"]}, tmp)
+        tmp.replace(path)
+        for old in sorted(d.glob("[0-9]*.pt"))[:-keep]:
+            old.unlink(missing_ok=True)
+        return str(path)
+
+    def snapshot(self, i: int, path: Path, agent_steps: int) -> None:
+        """Exploiter `i`'s weights as a league member's checkpoint (it joins the league for good)."""
+        torch.save({"model": self._model(i), "config": self.slot.config, "vocab": self.vocab,
+                    "agent_steps": agent_steps, "version": self.nets[i]["version"]}, path)
+
+    def save_state(self, i: int) -> None:
+        x = self.nets[i]
+        tmp = self.dir(i) / "state.pt.tmp"
+        torch.save({"model": self._model(i), "config": self.slot.config,
+                    **{k: x[k] for k in ("version", "since", "age", "life")}}, tmp)
+        tmp.replace(self.dir(i) / "state.pt")
+
+    def save_adams(self) -> None:
+        """Every exploiter's moments (adam.pt, with its version and life): with the run's checkpoints and at its stop."""
+        for i, x in enumerate(self.nets):
+            if x["adam"] is None:
+                continue
+            tmp = self.dir(i) / "adam.pt.tmp"
+            torch.save({"version": x["version"], "life": x["life"], "adam": x["adam"]}, tmp)
+            tmp.replace(self.dir(i) / "adam.pt")
+
+    def load(self, i: int, device) -> bool:
+        """A resume: exploiter `i`'s weights and counts from its state.pt, and its moments from adam.pt when they are of
+        the same life and not newer. False: none saved (it goes on from the starting weights)."""
+        d = self.run_dir / "league-exploiters" / str(i)
+        if not (d / "state.pt").exists():
+            return False
+        ck = torch.load(d / "state.pt", map_location=device, weights_only=False)
+        x = self.nets[i]
+        got = trained(ck["model"], self.slot)
+        for k, v in got.items():
+            if k in x["state"] and x["state"][k].shape == v.shape:
+                x["state"][k].copy_(v)
+        for k in ("version", "since", "age", "life"):
+            x[k] = int(ck.get(k, 0))
+        if (d / "adam.pt").exists():
+            a = torch.load(d / "adam.pt", map_location=device, weights_only=False)
+            if a.get("life") == x["life"] and a.get("version", 1 << 62) <= x["version"]:
+                x["adam"] = {int(k): v for k, v in a["adam"].items()}
+        return True
+
+
+def lx_after_update(league: "League", lxs: LeagueExploiters, i: int, args, agent_steps: int, rng: random.Random,
+                    run_dir: Path) -> str | None:
+    """After league exploiter `i`'s update (AlphaStar's rule): it joins the league for good ("lexploiter:<i>-<steps>")
+    when its score against the league (League.lx_score) reaches --league-exploiter-reset, or after
+    --league-exploiter-timeout updates since it last joined; then with --league-exploiter-restart's chance it starts over
+    from the run's starting weights (its records cleared: a new life), else it goes on with its weights and records (its
+    new snapshot, unplayed, now weighs in its score: it must beat itself too). -> "joined", "restarted" or None."""
+    x, rec = lxs.nets[i], league.lx[i]
+    score = league.lx_score(i)
+    if not ((score is not None and score >= args.league_exploiter_reset) or x["since"] >= args.league_exploiter_timeout):
+        return None
+    path = Path(run_dir) / "checkpoints" / f"lexploiter{i}-{agent_steps:016d}.pt"
+    lxs.snapshot(i, path, agent_steps)
+    league.add_snapshot(path, agent_steps, name=f"{LX_PREFIX}{i}-{agent_steps}")
+    rec.joins += 1
+    rec.games = 0
+    x["since"] = 0
+    restart = rng.random() < args.league_exploiter_restart
+    print(f"league exploiter {i} joins the league after {x['version'] - x['life']} updates of its life "
+          f"(score {'-' if score is None else f'{score:.2f}'}){': it starts over' if restart else ''}", flush=True)
+    if not restart:
+        return "joined"
+    lxs.restart(i)
+    rec.life, rec.records = x["life"], {}
+    rec.resets += 1
+    return "restarted"
+
+
 def exploiter_version(key: str | None) -> int | None:
     """The version of the exploiter's weights a game's key names (publish_exploiter's exploiter/<version>.pt), else None."""
     stem = Path(key).stem if key else ""
@@ -4379,6 +4703,8 @@ def policy_key(cfg: dict, opp: dict, s: int, side: int) -> str:
     """The network that plays player `s` of a game between agents (the learner's `side`, against `opp`): the learner's
     current weights, else the opponent's by path. The exploiter's: the version the league's spec named at the game's
     start (opp["path"], game_loop: every machine's games read the spec), else exploiter.json (this machine's only)."""
+    if opp["kind"] == "lexploit":  # (--league-exploiters: it plays `side`; its opponent the learner or a member)
+        return opp["lx_path"] if s == side else "current" if opp.get("vs_kind") == "main" else opp["vs_path"]
     if s == side or opp["kind"] == "self":
         return "current"
     if opp["kind"] == "exploiter":
@@ -4695,6 +5021,25 @@ def main(argv: list[str] | None = None) -> int:
                     help="the exploiter's updates between the versions new games play (and at a restart): a version a "
                          "game is each another network for the inference loop to run; one every update (~18 s) "
                          "kept ~10 in play and saturated the loop (the main policy's steps 1,600 -> 750 a second)")
+    ap.add_argument("--league-exploiters", type=int, default=0,
+                    help="AlphaStar's league exploiters: this many more networks, each from the run's starting weights, "
+                         "each in --league-exploiter-share of the launches against an opponent drawn from the whole "
+                         "league by PFSP (hard, its own results): past snapshots, --league-add's, the current learner, "
+                         "the main exploiter; only it trains there. It joins the league for good at "
+                         "--league-exploiter-reset or after --league-exploiter-timeout updates, then restarts with "
+                         "--league-exploiter-restart's chance. All train in one slot (one set of update graphs, "
+                         "~3.5 GB; each adds ~40 MB). Their steps per update and versions: --exploiter-batch, "
+                         "--exploiter-publish. 0: none")
+    ap.add_argument("--league-exploiter-share", type=float, default=0.05,
+                    help="each league exploiter's share of the launches (a launch between agents plays "
+                         "--agent-games-factor times a built-in AI launch's games)")
+    ap.add_argument("--league-exploiter-reset", type=float, default=0.7,
+                    help="its score against the league (each opponent's smoothed score weighted as PFSP draws them, "
+                         "after 50 games since it last joined) at which it joins the league")
+    ap.add_argument("--league-exploiter-timeout", type=int, default=300,
+                    help="its updates since it last joined after which it joins anyway (AlphaStar: either way)")
+    ap.add_argument("--league-exploiter-restart", type=float, default=0.25,
+                    help="the chance it starts over from the run's starting weights on joining (else it goes on)")
     ap.add_argument("--balance-step", type=float, default=0.02,
                     help="without --mirror: how far a game of the learner against itself moves the tax between "
                          "its two races (League: the winner's income taxed more, towards a 50%% score; 0: no tax)")
@@ -4947,6 +5292,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.spells and not args.neutral:  # (model.load extends a vocabulary, and the actors put a network's orders in
         ap.error("--spells needs --neutral")  # the run's, in its --neutral path)
     fx.set_spells(args.spells)
+    if args.league_exploiters > 0 and not args.league_exploiter_share > 0:
+        ap.error("--league-exploiters needs --league-exploiter-share above 0")
     if args.shop_items and not args.neutral:  # (as --spells: model.load's --neutral path grows a network to them)
         ap.error("--shop-items needs --neutral")
     fx.set_shop_items(args.shop_items)
@@ -5104,8 +5451,9 @@ def main(argv: list[str] | None = None) -> int:
         load_optimizer(opt, args.start_weights, device, args.lr, net)
     # the main exploiter (--exploiter-share): a second network, from the run's starting weights
     # (as AlphaStar's from the supervised agent), trained on its games against the learner alone
-    x_init = {k: v.detach().clone() for k, v in net.state_dict().items()} if args.exploiter_share > 0 else None
-    xnet = copy.deepcopy(net) if x_init is not None else None
+    x_init = ({k: v.detach().clone() for k, v in net.state_dict().items()}
+              if args.exploiter_share > 0 or args.league_exploiters > 0 else None)  # (--league-exploiters' too)
+    xnet = copy.deepcopy(net) if args.exploiter_share > 0 else None
     xopt = torch.optim.Adam(xnet.parameters(), lr=args.lr, eps=1e-5, capturable=graphed, **adam_kw) if xnet is not None else None
     slot, slot_lock = claim_slot(args.runs)
     races = list(fx.RACES) if args.races == "all" else args.races.split(",")
@@ -5183,7 +5531,8 @@ def main(argv: list[str] | None = None) -> int:
                     mirror=bool(args.mirror),
                     balance=(args.balance_step, args.balance_max) if args.balance_step > 0 else None,
                     exploiter_share=args.exploiter_share, tie=args.curriculum_tie, floor=args.curriculum_floor,
-                    win_balance=args.win_balance)
+                    win_balance=args.win_balance, league_exploiters=args.league_exploiters,
+                    league_exploiter_share=args.league_exploiter_share)
     league.real_share = args.real_share
     if args.shaping_anneal > 0:  # (the games from the start: the weight at this run's update)
         league.shaping = shaping_now(args, resumed["update"] if resumed else 0)
@@ -5249,15 +5598,15 @@ def main(argv: list[str] | None = None) -> int:
     league.write()
     publish(net, resumed["update"] if resumed else 0, run_dir)
     x_update = x_since = 0  # the exploiter's updates (its weights' version), and since its last restart
+    if x_init is not None and resumed is not None:  # (the exploiters' restarts from the run's starting weights: on a
+        got = run_start_state(run_dir, net, device)    # resume `net` held --init's when x_init was taken, and the
+        if got is not None:                            # exploiter had started over from the anchor's, fgself-100's
+            x_init = got                               # for fgself-193)
+        else:
+            print("note: no starting weights in checkpoints/: the exploiters start over from --init's", flush=True)
     if xnet is not None:
-        if resumed is not None:  # (its restarts from the run's starting weights: on a resume `net` held --init's when
-            got = run_start_state(run_dir, xnet, device)  # x_init was taken, and the exploiter had started over from
-            if got is not None:                           # the anchor's, fgself-100's for fgself-193)
-                x_init = got
-            else:
-                print("note: no starting weights in checkpoints/: the exploiter starts over from --init's", flush=True)
-            if not (run_dir / "exploiter.pt").exists():  # (an exploiter new at this resume: from them too)
-                xnet.load_state_dict(x_init)
+        if resumed is not None and not (run_dir / "exploiter.pt").exists():  # (an exploiter new at this resume: from
+            xnet.load_state_dict(x_init)                                    # them too)
         if resumed is not None and (run_dir / "exploiter.pt").exists():  # (it goes on too)
             xck = torch.load(run_dir / "exploiter.pt", map_location=device, weights_only=False)
             xnet.load_state_dict(trained(xck["model"], xnet))
@@ -5268,6 +5617,18 @@ def main(argv: list[str] | None = None) -> int:
         league.exploiter_path = publish_exploiter(xnet, x_update, run_dir, vocab)
         league.exploiter_life = x_update - x_since
         league.write()  # (the spec names it before any game starts, the remote machines' too)
+    lxs = None  # --league-exploiters: their networks, trained in turn in one slot (LeagueExploiters)
+    if args.league_exploiters > 0:  # (not `slot`: the run's own, claim_slot's, goes to the actors)
+        lx_net = copy.deepcopy(net)
+        lx_opt = torch.optim.Adam(lx_net.parameters(), lr=args.lr, eps=1e-5, capturable=graphed, **adam_kw)
+        lxs = LeagueExploiters(args.league_exploiters, lx_net, lx_opt, x_init, run_dir, vocab)
+        for li, lxn in enumerate(lxs.nets):
+            if resumed is not None and lxs.load(li, device):
+                print(f"league exploiter {li}: version {lxn['version']} ({lxn['since']} updates since it joined, "
+                      f"{'its Adam state' if lxn['adam'] is not None else 'a fresh Adam'})", flush=True)
+            league.lx[li].life = lxn["life"]
+            league.lx[li].path = lxs.publish(li)
+        league.write()  # (the spec names them before any game starts)
     cfg = {"run_dir": str(run_dir), "device": str(device), "vocab": str(run_dir / "vocab.json"), "races": races,
            "learner_races": {k: float(v) for k, v in (kv.split(":") for kv in args.learner_races.split(",") if kv)},
            "map": args.map, **({"map_pool": map_pool} if map_pool else {}),
@@ -5393,6 +5754,9 @@ def main(argv: list[str] | None = None) -> int:
     # the exploiter's updates as CUDA graphs too (eager, an update of 4,096 steps took the learner ~3-5 s
     # every ~15 s: a quarter of its time)
     x_updater = GraphedUpdate(xnet, ref, xopt, args, device) if graphed and xnet is not None else None
+    if lxs is not None and graphed:  # (one set of graphs for all the league exploiters)
+        lxs.updater = GraphedUpdate(lxs.slot, ref, lxs.opt, args, device)
+    lx_rng = random.Random(f"{args.seed}/league-exploiters")  # (their restarts' draws)
     if args.bc_data:  # demonstrations for the auxiliary cloning loss, encoded by loader workers, epoch after epoch
         from .bc import Steps, as_is
         bc_paths = sorted(p for d in args.bc_data for p in d.glob("game*.npz") if ".tmp" not in p.name)
@@ -5465,6 +5829,17 @@ def main(argv: list[str] | None = None) -> int:
             league.exploiter_path = publish_exploiter(xnet, x_update, run_dir, vocab)
         league.write()
 
+    def league_exploiter_update(i: int) -> None:
+        """League exploiter `i`'s update, then whether it joins the league (lx_after_update), its state saved and, at
+        --exploiter-publish's beat or after it joined, a version for new games."""
+        lxs.update(i, ref, args, device)
+        lx_after_update(league, lxs, i, args, agent_steps, lx_rng, run_dir)
+        lxn = lxs.nets[i]
+        lxs.save_state(i)
+        if lxn["since"] == 0 or lxn["version"] % args.exploiter_publish == 0:
+            league.lx[i].path = lxs.publish(i)
+        league.write()
+
     try:
         while agent_steps < args.timesteps:
             if native is not None and native.failed():
@@ -5477,6 +5852,11 @@ def main(argv: list[str] | None = None) -> int:
                     raise RuntimeError("no trajectories from the actors for 10 minutes")
                 if "episode" in msg:
                     e = msg["episode"]
+                    if e.get("league_exploiter") is not None:  # (--league-exploiters: its game, its row and records,
+                        league.lx_record(e)                      # apart from the learner's games)
+                        with open(run_dir / "league-exploiters.jsonl", "a") as f:
+                            f.write(json.dumps(e) + "\n")
+                        continue
                     episodes += 1
                     e["episode"] = episodes
                     scen = bool(e.get("scenario"))  # (a scenario's game is another game: 0.37-0.69 won where the
@@ -5497,6 +5877,15 @@ def main(argv: list[str] | None = None) -> int:
                         f.write(json.dumps(e) + "\n")
                     if msg.get("late_state"):  # (--late-capture: the game's state at its minute, late.py)
                         late_game.append(run_dir / "late-states.jsonl", msg["late_state"])
+                    continue
+                if (msg.get("info") or {}).get("learner") == "league-exploiter":  # (--league-exploiters)
+                    li = msg["info"].get("lx", -1)
+                    if lxs is not None and 0 <= li < len(lxs.nets) and msg["info"].get("version", 1 << 62) >= league.lx[li].life:
+                        lxn = lxs.nets[li]  # (an earlier life's game, ended after its restart: not the fresh one's)
+                        lxn["buf"] += msg["steps"]
+                        lxn["chunks"].append(msg["steps"])
+                        if len(lxn["buf"]) >= args.exploiter_batch:
+                            league_exploiter_update(li)
                     continue
                 if (msg.get("info") or {}).get("learner") == "exploiter":
                     if msg["info"].get("version", league.exploiter_life) < league.exploiter_life:
@@ -5563,6 +5952,8 @@ def main(argv: list[str] | None = None) -> int:
                 save_checkpoint(run_dir / "checkpoints" / f"{agent_steps:016d}.pt", net, opt, vocab, agent_steps, update, ema=ema)
             if xopt is not None and (update % args.snapshot_every == 0 or update % args.checkpoint_every == 0):
                 save_exploiter_opt(xopt, run_dir, x_update, x_since)  # (a resume's exploiter goes on with its moments)
+            if lxs is not None and (update % args.snapshot_every == 0 or update % args.checkpoint_every == 0):
+                lxs.save_adams()
             if args.ref_update > 0 and ref is not None and update % args.ref_update == 0:  # --ref-update: a rolling
                 ref.load_state_dict(net.state_dict())  # anchor (in place: the CUDA graphs keep their weights' addresses)
                 print(f"the anchor moved to update {update}", flush=True)
@@ -5573,6 +5964,9 @@ def main(argv: list[str] | None = None) -> int:
             if x_stats:  # the exploiter's last update
                 stats.update({f"exploiter/{k.split('/')[-1]}": v for k, v in x_stats.items()})
                 stats["exploiter/updates"] = x_update
+            for li, lxn in enumerate(lxs.nets if lxs is not None else ()):  # (--league-exploiters: each one's last update)
+                stats.update({f"lexploiter{li}/{k.split('/')[-1]}": v for k, v in lxn["stats"].items()})
+                stats[f"lexploiter{li}/updates"] = lxn["version"]
             row = {"agent_steps": agent_steps, "epoch": update, "time": now, "uptime": now - t0,
                    "SPS": len(steps) / max(now - t_collect, 1e-9), "lr": args.lr, "value_warmup": warmup,
                    "perf/rollout": t_train - t_collect, "perf/train": now - t_train,
@@ -5599,6 +5993,11 @@ def main(argv: list[str] | None = None) -> int:
                 save_exploiter_opt(xopt, run_dir, x_update, x_since)
             except Exception as e:  # noqa: BLE001 (the stop goes on: the actors still to end)
                 print(f"the exploiter's Adam state not saved: {type(e).__name__}: {e}", flush=True)
+        if lxs is not None:
+            try:
+                lxs.save_adams()
+            except Exception as e:  # noqa: BLE001
+                print(f"the league exploiters' Adam states not saved: {type(e).__name__}: {e}", flush=True)
         stop.set()
         for p in actors:
             p.join(timeout=60)
