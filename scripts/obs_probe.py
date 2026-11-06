@@ -68,6 +68,7 @@ os.environ.pop("WAYLAND_DISPLAY", None)  # (games get Xvfbs of their own)
 os.environ["DISPLAY"] = ":65535"
 
 ROOT = Path(__file__).resolve().parents[1]
+RUN_CUTS = 17592186041849  # (fgself-194's --game-cuts: the shim reads the units' objects, which the buff list needs)
 
 # the buffs the probe asks each unit for: the melee races', their heroes', the tavern's, creeps' and items' (a subset of
 # scripts/observation_coverage.py's universe; 93 at most: 3 words of 31 bits)
@@ -243,6 +244,9 @@ class Probe:
         self.tod = None
         self.dead_seen: dict[int, list[int]] = defaultdict(list)  # corpse -> steps it was enumerated
         self.died_at: dict[int, int] = {}
+        self.full_seen: dict[int, dict] = {}  # (--obs-full: the last event 101 of each unit, its buffs, the others)
+        self.full_buffs: dict[int, dict] = {}
+        self.full_events: list = []
         self.take(self.obs)
 
     def take(self, obs) -> None:
@@ -252,7 +256,7 @@ class Probe:
             k = int(e.kind)
             if k == 1:
                 self.died_at.setdefault(e.a, self.t)
-            if k < 900:
+            if k < 100:
                 continue
             if k == 900:
                 rec[e.a].update(type=raw(e.b), state=[n for i, n in enumerate(STATE_BITS) if e.c >> i & 1])
@@ -288,6 +292,22 @@ class Probe:
                 self.sees[(e.a, e.b)] = [n for i, n in enumerate(("visible", "fogged", "masked")) if e.c >> i & 1]
             elif k == 918:
                 self.tod = e.a / 100.0
+            elif k == 101:  # (--obs-full's own events: the harness and the shim as a run has them)
+                self.full_buffs.pop(e.a, None)
+                speed, armor = e.c >> 12, ((e.c & 4095) - 2048) / 10.0
+                rec[e.a].update(full={"class": [n for i, n in enumerate(("stunned", "snared", "poisoned", "polymorphed",
+                                                                        "sleeping", "ethereal", "magic_immune",
+                                                                        "plagued")) if e.b >> i & 1],
+                                      "pos_magic": e.b >> 8 & 15, "neg_magic": e.b >> 12 & 15, "nbuffs": e.b >> 16 & 15,
+                                      "listed": bool(e.b >> 20 & 1), "speed": speed, "armor": armor})
+                self.full_seen[e.a] = rec[e.a]["full"]
+            elif k == 102:
+                rec[e.a].setdefault("full_buffs", []).append(raw(e.b))
+                self.full_buffs.setdefault(e.a, {})[e.c] = raw(e.b)
+            elif k == 105:
+                rec[e.a].update(charges=[(e.b if i < 3 else e.c) >> (10 * (i % 3)) & 1023 for i in range(6)])
+            elif k in (104, 106, 107, 108, 109):
+                self.full_events.append((self.t, k, e.a, raw(e.b) if k == 109 else e.b, e.c))
         self.rec = rec
 
     def step(self, cmds=()):
@@ -313,7 +333,10 @@ class Probe:
     def show(self, label: str, uids: dict) -> None:
         print(f"== {label} (step {self.t})", flush=True)
         for name, uid in uids.items():
-            u, r = self.unit(uid), self.rec.get(uid, {})
+            u, r = self.unit(uid), dict(self.rec.get(uid, {}))
+            if uid in self.full_seen:  # (--obs-full's events come when they change: the last ones)
+                r["full"] = self.full_seen[uid]
+                r["full_buffs"] = [b for _, b in sorted(self.full_buffs.get(uid, {}).items())][:r["full"]["nbuffs"]]
             agent = None if u is None else {"type": u.type, "x": u.x, "y": u.y, "hp": u.hp, "mana": u.mana, "order": u.order,
                                             "flags": int(u.flags), "visible_to": u.visible_to}
             print("RESULT " + json.dumps({"unit": name, "agent's record": agent, "probe": r}), flush=True)
@@ -370,12 +393,15 @@ def buffs(a) -> int:
     from warcraftsim.fullgame import fullvocab as fv
     from warcraftsim.protocol import ImmediateOrder, PointOrder, SetResources, TargetOrder
     from warcraftsim.runtime.instance import Agent, GameInstance, GameSetup
-    patch_harness()
+    if a.what == "full":  # (the real --obs-full: the harness's W3S_CFG_OBS_FULL and the shim's extras, checked)
+        os.environ["W3SIM_OBS_CHECK"] = "1"
+    else:
+        patch_harness()
     ids = fv.order_ids()
     slots = [Agent(a.race), Agent(a.foe)]
-    gs = GameSetup(map=a.map, slots=slots, step_seconds=0.5, draw=False, native_obs=False, d3d_thread=False,
+    gs = GameSetup(map=a.map, slots=slots, step_seconds=0.5, draw=False, native_obs=a.native, d3d_thread=False,
                    render_threads=0, nice=19, warm_spare=False, window=(320, 240), max_game_seconds=0, victory="none",
-                   shim_dir=a.shim)
+                   shim_dir=a.shim, obs_full=a.what == "full", cuts=RUN_CUTS if a.what == "full" else None)
     with GameInstance(gs, name=f"obsprobe{a.name}", timeout=900) as g:
         p = Probe(g)
         me, foe = p.obs.players[0], p.obs.players[1]
@@ -473,6 +499,14 @@ def buffs(a) -> int:
         print("fog (player, point 0 own start / 1 other start / 2 centre): " + json.dumps(
             {f"{k[0]}:{k[1]}": v for k, v in sorted(p.sees.items())}), flush=True)
         print(f"time of day: {p.tod} at step {p.t}", flush=True)
+        if a.what == "full":
+            print("obs-full events 104-109 (step, kind, a, b, c): " + json.dumps(p.full_events[:80]), flush=True)
+            print("obs-full buffs seen per unit: " + json.dumps({u: sorted(set(b.values())) for u, b in p.full_buffs.items()}),
+                  flush=True)
+            log = g.inst_dir / "shim.log"
+            if log.exists():
+                print("shim log (obs-full): " + json.dumps([ln for ln in log.read_text(errors="replace").splitlines()
+                                                             if "obs-full" in ln][-12:]), flush=True)
         from collections import Counter
         print("destructables in the first observation (type: count, life values): " + json.dumps(
             {t: (n, sorted({d.life for d in p.dests if d.type == t})[:6])
@@ -480,9 +514,103 @@ def buffs(a) -> int:
     return 0
 
 
+def cost(a) -> int:
+    """The game's own time a step with --obs-full off and on: two built-in AIs (insane, both seers: record_ai_orders) on
+    the map for --steps steps each, one game at a time; the game thread's wall time inside the game per step
+    (GameInstance.game_wall_total) and the observation's tokens."""
+    from warcraftsim.runtime.instance import BuiltinAI, GameInstance, GameSetup
+    import pickle
+    out = {}
+    for full in (False, True, False, True):
+        gs = GameSetup(map=a.map, slots=[BuiltinAI(a.race, "insane"), BuiltinAI(a.foe, "insane")], step_seconds=0.5,
+                       draw=False, native_obs=bool(a.native), d3d_thread=False, render_threads=0, nice=0, warm_spare=False,
+                       window=(320, 240), max_game_seconds=0, victory="decisive", shim_dir=a.shim, obs_full=full,
+                       record_ai_orders=True, cuts=a.cuts if a.cuts else None)
+        with GameInstance(gs, name=f"obsprobe{a.name}", timeout=900) as g:
+            obs = g.start()
+            w0, n_ev, keep = g.game_wall_total, 0, []
+            for t in range(a.steps):
+                obs = g.step([])
+                n_ev += sum(1 for e in obs.events if int(e.kind) >= 100)
+                if full and a.save and t < a.steps:
+                    keep.append(obs)
+                if obs.game_over:
+                    break
+            per = (g.game_wall_total - w0) / max(t + 1, 1) * 1000.0
+            out.setdefault(full, []).append(per)
+            print(f"RESULT obs_full={full}: {per:.2f} ms of game time a step over {t + 1} steps; events 100+: "
+                  f"{n_ev / max(t + 1, 1):.1f} a step", flush=True)
+            if keep and a.save:
+                with open(a.save, "wb") as f:
+                    pickle.dump(keep, f)
+                print(f"saved {len(keep)} observations to {a.save}", flush=True)
+    print("RESULT mean ms a step: " + json.dumps({str(k): sum(v) / len(v) for k, v in out.items()}), flush=True)
+    return 0
+
+
+def play(a) -> int:
+    """A network (--ckpt, fgself-182's by default) loaded with --obs-full plays a real game on the CPU through the
+    actors' path (play.BCAgent: the view, its masks, the network, the commands) against the built-in AI (insane) on the
+    map, the harness and the shim with W3S_CFG_OBS_FULL: the entity kinds a step, the block's parts, refused orders."""
+    import time
+    import numpy as np
+    import torch
+    from warcraftsim.data.mapbuild import stock_map_path
+    from warcraftsim.fullgame import features as fx
+    from warcraftsim.fullgame import model
+    from warcraftsim.fullgame.costs import order_costs, research_steps
+    from warcraftsim.fullgame.play import BCAgent
+    from warcraftsim.runtime.instance import Agent, BuiltinAI, GameInstance, GameSetup
+    model.configure_for(a.ckpt)  # (its inputs, masks, strategy block, wares: as it was trained)
+    fx.set_econ_masks(255)
+    fx.set_obs_full(a.obs)
+    fx.ACTIVE_F = 29
+    fx.set_geometry(*fx.map_geometry(stock_map_path("(2)EchoIsles")))
+    torch.set_num_threads(2)
+    net, ck = model.load(a.ckpt, "cpu")
+    vocab = ck["vocab"]
+    print(f"net: obsfull {net.config.get('obsfull')}, types {net.config['n_types']}, F {fx.F}", flush=True)
+    gs = GameSetup(map=a.map, slots=[Agent(a.race), BuiltinAI(a.foe, "insane")], step_seconds=0.5, draw=False,
+                   native_obs=True, d3d_thread=False, render_threads=0, nice=19, warm_spare=False, window=(320, 240),
+                   max_game_seconds=0, victory="decisive", shim_dir=a.shim, obs_full=bool(a.obs), cuts=RUN_CUTS)
+    bot = BCAgent(net, vocab, 0, torch.device("cpu"), costs=order_costs(vocab, a.map), steps=research_steps(vocab, a.map))
+    kinds, n_ent, n_res, refused, t_obs = np.zeros(3), [], [0, 0], 0, 0.0
+    with GameInstance(gs, name=f"obsprobe{a.name}", timeout=900) as g:
+        obs = g.start()
+        bot.begin(obs, [fx.RACES.index(a.race), fx.RACES.index(a.foe)])
+        for t in range(a.steps):
+            t0 = time.perf_counter()
+            cmds = bot.act(obs, t)
+            t_obs += time.perf_counter() - t0
+            st = getattr(bot, "_last_st", None)
+            obs = g.step(cmds)
+            res = list(obs.command_results)
+            bot.accepted(cmds, res)
+            n_res[0] += sum(res)
+            n_res[1] += len(res)
+            refused += len(res) - sum(res)
+            v = bot.view
+            if a.obs and getattr(v, "obs", None) is not None:
+                kinds += [sum(1 for c in v.obs.corpses.values() if c[5] & 1), len(getattr(v, "ground", ()) or ()),
+                          len(v.obs.areas)]
+            if obs.game_over:
+                break
+    print("RESULT " + json.dumps({"steps": t + 1, "result": str(obs.players[0].result), "orders taken": n_res,
+                                  "act ms a step (view, masks, network on the CPU)": round(t_obs / (t + 1) * 1000, 2),
+                                  "corpses, ground items, areas seen a step": (kinds / (t + 1)).round(2).tolist()}),
+          flush=True)
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("what", choices=("buffs", "jass"))
+    ap.add_argument("what", choices=("buffs", "full", "cost", "play", "jass"))
+    ap.add_argument("--ckpt", default="/home/tora/warcraftsim/runs/fgself-182/checkpoints/0000000050150172.pt")
+    ap.add_argument("--obs", type=int, default=1, help="play: --obs-full")
+    ap.add_argument("--native", type=int, default=0, help="the observation parsed in C (native_obs)")
+    ap.add_argument("--steps", type=int, default=600, help="cost: steps a game")
+    ap.add_argument("--cuts", type=int, default=0, help="cost: W3SIM_CUTS (0: the environment's)")
+    ap.add_argument("--save", default="", help="cost: pickle the --obs-full game's observations here")
     ap.add_argument("--race", default="human")
     ap.add_argument("--foe", default="orc")
     ap.add_argument("--map", default="echofast2")
@@ -497,7 +625,7 @@ def main() -> int:
     from warcraftsim.runtime import wine
     wine.use_wine(a.wine, True)
     wine.ensure_template()
-    return buffs(a)
+    return cost(a) if a.what == "cost" else play(a) if a.what == "play" else buffs(a)
 
 
 if __name__ == "__main__":

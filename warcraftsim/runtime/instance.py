@@ -211,6 +211,9 @@ class GameSetup:
     # melee: the game's random seed (SetRandomSeed first thing in main; 0: the game's own, a new one each
     # game). Two games with one seed and the same orders play alike (GRPO from mid-game branches)
     seed: int = 0
+    # --obs-full: the harness's events 101-109 (W3S_CFG_OBS_FULL): a unit's state beyond its record, corpses, the spells'
+    # points (fullgame/obsfull.py). Off: the harness as before
+    obs_full: bool = False
     # melee: restarts reload the map in the running game (the engine's RestartGame, as the menu's
     # Restart: the loading screen and everything anew, built-in AI included; duelrush and duel 1 s
     # (3 and 1.9 s with "Allow Local Files", duelrush 5 s with its rules as object data), instead of
@@ -275,7 +278,8 @@ class GameSetup:
                 raise ValueError("pairs needs a duel map, two slots and at most 6 pairs")
             agents = tuple(i for i in range(2 * self.pairs) if self.slots[i % 2].kind == "agent")
             return HarnessConfig(self.step_seconds, agents, self.max_game_seconds, victory=self.victory,
-                                 record_orders=self.record_ai_orders, melee_reset="W3S_DuelCreeps", pairs=self.pairs)
+                                 record_orders=self.record_ai_orders, melee_reset="W3S_DuelCreeps", pairs=self.pairs,
+                                 obs_full=self.obs_full)
         if self.scenario is None:
             reset = ""
             if self.melee_reset:
@@ -290,7 +294,7 @@ class GameSetup:
                 reset = "W3S_DuelCreeps"
             return HarnessConfig(self.step_seconds, self.agent_players, self.max_game_seconds,
                                  victory=self.victory, record_orders=self.record_ai_orders, melee_reset=reset,
-                                 seed=self.seed)
+                                 seed=self.seed, obs_full=self.obs_full)
         sc = self.scenario
         cx, cy = sc.resolved_center()
         return HarnessConfig(
@@ -304,6 +308,7 @@ class GameSetup:
             spawn=sc.absolute_units(),
             resources=sc.resources,
             clear_area=(cx, cy, sc.clear_radius),
+            obs_full=self.obs_full,
         )
 
     def wgc(self, map_path: str) -> Wgc:
@@ -332,7 +337,7 @@ class GameSetup:
         # the tables generated from game data are part of the built script too
         tables = json.dumps([cfg.resolved_order_names(), cfg.resolved_hero_abilities()], sort_keys=True)
         harness = asdict(cfg)
-        for k_, default in (("record_orders", False), ("melee_reset", ""), ("pairs", 1), ("seed", 0)):  # keys from before them stay the same
+        for k_, default in (("record_orders", False), ("melee_reset", ""), ("pairs", 1), ("seed", 0), ("obs_full", False)):  # keys from before them stay the same
             if harness[k_] == default:
                 del harness[k_]
         key = {"map": self.map, "harness": harness,

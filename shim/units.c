@@ -43,6 +43,7 @@ typedef int(__cdecl *N1)(int);
 typedef int(__cdecl *N2)(int, int);
 typedef int(__cdecl *N3)(int, int, int);
 typedef int(__cdecl *N4)(int, int, int, int);
+typedef int(__cdecl *N8)(int, int, int, int, int, int, int, int);
 
 enum {
     GetUnitTypeId, GetOwningPlayer, GetPlayerId, GetUnitX, GetUnitY, GetUnitFacing, GetWidgetLife, GetUnitState,
@@ -51,7 +52,8 @@ enum {
     GetUnitAbilityLevel, BlzGetUnitAbilityCooldownRemaining, LoadBoolean, LoadInteger, SaveInteger, SaveBoolean,
     HaveSavedInteger, Player, GroupRemoveUnit, FlushChildHashtable, ForGroup,
     GetPlayerSlotState, IsPlayerObserver, GetPlayerRace, GetPlayerState, GetPlayerStructureCount, GetPlayerStartLocation,
-    GetStartLocationX, GetStartLocationY, GetPlayerAlliance, RemoveSavedBoolean, FlushParentHashtable, N_NATIVES
+    GetStartLocationX, GetStartLocationY, GetPlayerAlliance, RemoveSavedBoolean, FlushParentHashtable,
+    UnitCountBuffsEx, BlzGetUnitArmor, GetUnitMoveSpeed, GetItemCharges, N_NATIVES
 };
 static const struct {
     const char *name, *sig;
@@ -74,6 +76,8 @@ static const struct {
     {"GetStartLocationX", "(I)R"}, {"GetStartLocationY", "(I)R"},
     {"GetPlayerAlliance", "(Hplayer;Hplayer;Halliancetype;)B"},
     {"RemoveSavedBoolean", "(Hhashtable;II)V"}, {"FlushParentHashtable", "(Hhashtable;)V"},
+    {"UnitCountBuffsEx", "(Hunit;BBBBBBB)I"}, {"BlzGetUnitArmor", "(Hunit;)R"}, {"GetUnitMoveSpeed", "(Hunit;)R"},
+    {"GetItemCharges", "(Hitem;)I"},
 };
 static void *g_fn[N_NATIVES];
 static int g_ok; /* every native found: 1, or 2 to check the records against the harness's (W3SIM_UNITS=2) */
@@ -81,6 +85,9 @@ static int g_ok; /* every native found: 1, or 2 to check the records against the
 /* common.j: ConvertUnitState / ConvertUnitType values (these "handles" are the integers themselves) */
 enum { STATE_MAX_LIFE = 1, STATE_MANA = 2, STATE_MAX_MANA = 3 };
 enum { TYPE_HERO = 0, TYPE_DEAD = 1, TYPE_STRUCTURE = 2, TYPE_FLYING = 3, TYPE_SUMMONED = 10, TYPE_PEON = 16, TYPE_TOWNHALL = 18 };
+/* (--obs-full) the classifications a unit's state sets: stunned, snared, poisoned, polymorphed, sleeping, ethereal, magic
+ * immune, plagued (the bits of event 101) */
+static const int g_ex_class[8] = {11, 13, 21, 22, 23, 25, 26, 12};
 #define ABIL_SLOTS 4 /* W3S_ABIL_SLOTS */
 #define MAX_PLAYERS 28
 
@@ -562,6 +569,9 @@ static void install_kt(void) {
 }
 
 /* W3S_SerUnit: the unit's record, if it changed since it was last written (or on a full snapshot) */
+static int g_obs_full; /* (--obs-full: unit_extras, below) */
+static void unit_extras(int u, BYTE *o, int hero);
+
 static void unit_record(int u) {
     /* (the order of the calls is W3S_SerUnit's: some of them make handles) */
     int flags = 0;
@@ -662,6 +672,8 @@ static void unit_record(int u) {
             h = (h * 31 + (uint32_t)alevel[i]) * 31 + (uint32_t)acool[i];
         }
     }
+    if (g_obs_full && g_ok == 1 && !dead && vis) /* (--obs-full: events 101, 102, 105, before the record) */
+        unit_extras(u, o, hero);
     if (g_ok == 2) { /* the harness decides and stores; this record is only compared */
         g_v_unit = u;
         g_v_hash = h;
@@ -749,6 +761,138 @@ static int push_int(int **v, int *n, int *cap, int x) {
     }
     (*v)[(*n)++] = x;
     return 0;
+}
+
+/* --obs-full (the harness's W3S_CFG_OBS_FULL asks for it, MBOX - 46; fullgame/obsfull.py reads them): for each living unit
+ * a seer sees, what a player sees on it beyond its record, as events written with the pass's records when they changed:
+ *   101  the unit; bits 0-7 its classifications (g_ex_class), its positive and negative magic buffs (no auras) x 256 and
+ *        x 4096 (UnitCountBuffsEx), its buffs' count x 65536, bit 20 the buff list read; its move speed now x 4096
+ *        plus its armor now x 10 + 2048 (GetUnitMoveSpeed, BlzGetUnitArmor)
+ *   102  the unit, a buff on it (its raw code as the ability's BuffID spells it: Unholy Frenzy's BUhf), its index
+ *   105  a hero, its items' charges, slots 0-2 and 3-5, 10 bits each
+ * The buffs are the entries of the unit's ability list whose code starts with 'B' (the list 0x6d6570 walks: its head an
+ * agent id pair at the unit's +0x3e8, each entry's next pair at +0x24, its code at +0x34; 0x7fc7e0 turns a pair into
+ * the object). W3SIM_OBS_CHECK=1: each buff found checked with GetUnitAbilityLevel, and a list of common buffs the
+ * other way round (mismatches logged). */
+#define EX_BUFFS 8
+static int g_obs_full, g_obs_check;
+static uint32_t *g_ex; /* per handle (as met_slot): the hash of the extras last written | 1, 0: none */
+static int g_ex_cap;
+static long g_ex_units, g_ex_buffs, g_ex_bad, g_ex_checked;
+/* (W3SIM_OBS_CHECK) Bblo Binf Bslo BUfa Bcrs Bfae BEer Beng Bply Binv BOwk Broa BHab BEah Bams Bam2 BUhf Bprg Bcri BUsl BSTN Bfro BHds BHbn */
+static const int g_ex_common[] = {0x42626c6f, 0x42696e66, 0x42736c6f, 0x42556661, 0x42637273, 0x42666165, 0x42456572, 0x42656e67, 0x42706c79, 0x42696e76, 0x424f776b, 0x42726f61, 0x42486162, 0x42456168, 0x42616d73, 0x42616d32, 0x42556866, 0x42707267, 0x42637269, 0x4255736c, 0x4253544e, 0x4266726f, 0x42486473, 0x4248626e};
+
+static uint32_t *ex_slot(int u) {
+    unsigned k = (unsigned)u - 0x100000u;
+    if (k >= (1u << 22))
+        return NULL;
+    if ((int)k >= g_ex_cap) {
+        int cap = g_ex_cap ? g_ex_cap : 4096;
+        while (cap <= (int)k)
+            cap *= 2;
+        uint32_t *b = realloc(g_ex, cap * sizeof *b);
+        if (!b)
+            return NULL;
+        memset(b + g_ex_cap, 0, (cap - g_ex_cap) * sizeof *b);
+        g_ex = b;
+        g_ex_cap = cap;
+    }
+    return g_ex + k;
+}
+
+static void ex_forget(int u) {
+    uint32_t *e = g_ex ? ex_slot(u) : NULL;
+    if (e)
+        *e = 0;
+}
+
+/* the buffs on a unit (its object): their codes, at most `cap`; the count, or -1 when the list can't be read */
+static int o_buffs(BYTE *o, int *out, int cap) {
+    if (!o)
+        return -1;
+    if ((*(DWORD *)(o + 0x3e8) & *(DWORD *)(o + 0x3ec)) == 0xffffffffu)
+        return 0;
+    BYTE *e = ((LinkFn)UVA(0x7fc7e0))(o + 0x3e8);
+    int n = 0;
+    for (int guard = 0; e && guard < 256; guard++) {
+        int id = *(int *)(e + 0x34);
+        BYTE *next = (*(DWORD *)(e + 0x24) & *(DWORD *)(e + 0x28)) == 0xffffffffu ? NULL : ((LinkFn)UVA(0x7fc7e0))(e + 0x24);
+        if (((unsigned)id >> 24) == 'B' && n < cap)
+            out[n++] = id;
+        e = next;
+    }
+    return n;
+}
+
+static void ex_rec(int kind, int u, int b, int c) {
+    rec_bytes("E", 1);
+    g_sum = 0;
+    tok(kind);
+    tok(u);
+    tok(b);
+    tok(c);
+    uint32_t sum = g_sum;
+    tok((int)sum);
+}
+
+static void unit_extras(int u, BYTE *o, int hero) {
+    int b = 0;
+    for (int i = 0; i < 8; i++)
+        if (n2(IsUnitType, u, g_ex_class[i]))
+            b |= 1 << i;
+    int pm = ((N8)g_fn[UnitCountBuffsEx])(u, 1, 0, 1, 0, 0, 0, 0);
+    int nm = ((N8)g_fn[UnitCountBuffsEx])(u, 0, 1, 1, 0, 0, 0, 0);
+    int buffs[EX_BUFFS];
+    int nb = o_buffs(o, buffs, EX_BUFFS);
+    b |= (pm > 15 ? 15 : pm < 0 ? 0 : pm) << 8 | (nm > 15 ? 15 : nm < 0 ? 0 : nm) << 12;
+    if (nb >= 0)
+        b |= (nb > 15 ? 15 : nb) << 16 | 1 << 20;
+    int a = (int)(r1(BlzGetUnitArmor, u) * 10.0f) + 2048;
+    a = a < 0 ? 0 : a > 4095 ? 4095 : a;
+    int sp = (int)(r1(GetUnitMoveSpeed, u) + 0.5f);
+    sp = sp < 0 ? 0 : sp > 4095 ? 4095 : sp;
+    int c = sp << 12 | a;
+    int ch[2] = {0, 0};
+    uint32_t h = (uint32_t)b * 31 + (uint32_t)c;
+    for (int i = 0; i < nb && i < EX_BUFFS; i++)
+        h = h * 31 + (uint32_t)buffs[i];
+    if (hero) {
+        for (int i = 0; i < 6; i++) {
+            int it = n2(UnitItemInSlot, u, i);
+            int v = it ? n1(GetItemCharges, it) : 0;
+            v = v < 0 ? 0 : v > 1023 ? 1023 : v;
+            ch[i / 3] |= v << (10 * (i % 3));
+        }
+        h = (h * 31 + (uint32_t)ch[0]) * 31 + (uint32_t)ch[1] + 1;
+    }
+    if (g_obs_check && nb >= 0) {  /* (W3SIM_OBS_CHECK=1) the list's buffs against GetUnitAbilityLevel, both ways */
+        g_ex_checked++;
+        for (int i = 0; i < nb && i < EX_BUFFS; i++)
+            if (n2(GetUnitAbilityLevel, u, buffs[i]) <= 0 && g_ex_bad++ < 60)
+                shim_log("obs-full: MISMATCH unit %d: buff 0x%08x in its list, GetUnitAbilityLevel 0", u, buffs[i]);
+        for (unsigned k = 0; k < sizeof g_ex_common / sizeof *g_ex_common; k++) {
+            int id = g_ex_common[k], in = 0;
+            for (int i = 0; i < nb && i < EX_BUFFS; i++)
+                in |= buffs[i] == id;
+            if (!in && nb < EX_BUFFS && n2(GetUnitAbilityLevel, u, id) > 0 && g_ex_bad++ < 60)
+                shim_log("obs-full: MISMATCH unit %d: buff 0x%08x on it (GetUnitAbilityLevel), not in its list", u, id);
+        }
+        if (g_ex_checked % 20000 == 0)
+            shim_log("obs-full: %ld units checked, %ld buffs seen, %ld mismatches", g_ex_checked, g_ex_buffs, g_ex_bad);
+    }
+    uint32_t *slot = ex_slot(u);
+    if (slot && !g_full && *slot == (h | 1))
+        return;
+    if (slot)
+        *slot = h | 1;
+    g_ex_units++;
+    ex_rec(101, u, b, c);
+    for (int i = 0; i < nb && i < EX_BUFFS; i++) {
+        ex_rec(102, u, buffs[i], i);
+        g_ex_buffs++;
+    }
+    if (hero)
+        ex_rec(105, u, ch[0], ch[1]);
 }
 
 /* (W3SIM_UOBJ_CHECK=1) the object's fields against the natives' */
@@ -870,6 +1014,7 @@ static void drop(int u) { /* out of the group of all units, its table entries wi
     cuts_unit_begin(0);
     n2(GroupRemoveUnit, g_all, u);
     n2(FlushChildHashtable, g_ht, u);
+    ex_forget(u);
     if (g_nremoved == g_removed_cap) {
         int cap = g_removed_cap ? g_removed_cap * 2 : 1024;
         int *b = realloc(g_removed, cap * sizeof *b);
@@ -942,6 +1087,7 @@ static void pass_vanished(void) {
         if (at && *at != g_passno) {
             n2(FlushChildHashtable, g_ht, u);
             push_int(&g_removed, &g_nremoved, &g_removed_cap, u);
+            ex_forget(u);
             *at = 0;
         }
     }
@@ -1611,6 +1757,12 @@ int units_call(int key, int mbox, int *result) {
         g_nmet = g_nlast = 0;  /* (the last game's units: not this one's) */
         if (g_met_at)
             memset(g_met_at, 0, g_met_at_cap * sizeof *g_met_at);
+        if (g_ex)
+            memset(g_ex, 0, g_ex_cap * sizeof *g_ex);
+        if (g_obs_full && (g_ex_units || g_ex_bad))
+            shim_log("obs-full: %ld extras written, %ld buffs, %ld units checked, %ld mismatches", g_ex_units, g_ex_buffs,
+                     g_ex_checked, g_ex_bad);
+        g_obs_full = 0;
         g_npid = 0;
         g_cur.u = 0;
         g_cobs = g_cobs_over = g_jres_n = 0;
@@ -1824,6 +1976,15 @@ int units_call(int key, int mbox, int *result) {
         int mine;
         *result = cmd_need(&mine);
         g_ca_declined++;
+        return 1;
+    }
+    if (key == mbox - 46) { /* (--obs-full) the units' extras with the pass's records: 1 if they are written here */
+        g_obs_full = g_ok == 1;
+        *result = g_obs_full;
+        char buf[8];
+        g_obs_check = GetEnvironmentVariableA("W3SIM_OBS_CHECK", buf, sizeof buf) && buf[0] == '1';
+        shim_log("obs-full: the units' extras (events 101, 102, 105) %s%s", g_obs_full ? "written by the shim" : "off",
+                 g_obs_full && g_obs_check ? " (the buff lists checked)" : "");
         return 1;
     }
     if (key == mbox - 43) { /* (W3SIM_CUTS & 8589934592) the items on the ground here */

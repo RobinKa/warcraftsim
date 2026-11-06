@@ -39,15 +39,18 @@ class FullGameNet(nn.Module):
                  layers: int = 3, dropout: float = 0.0, memory: bool = False, target_temperature: float = 1.0,
                  priv: int = 0, order_temperature: float = 1.0, bins: int = 128, z: int = 0, gx: int = 0,
                  valid: int = 0, vparts: int = 0, ghost: bool = False, privileged: bool = False, fine: int = 0,
-                 vtax: int = 0, vmana: int = 0):
+                 vtax: int = 0, vmana: int = 0, obsfull: int = 0):
         super().__init__()
+        if obsfull and fx.OBS_FULL != int(obsfull):  # (--obs-full: its block travels in the config, so the features'
+            fx.set_obs_full(int(obsfull))             # width is the network's in any process that builds it)
         self.config = dict(n_types=n_types, n_cur=n_cur, n_orders=n_orders, G=G, d=d, heads=heads, layers=layers,
                            dropout=dropout, memory=memory, target_temperature=target_temperature, priv=priv,
                            order_temperature=order_temperature, bins=bins, **({"z": z} if z else {}),
                            **({"gx": gx} if gx else {}), **({"valid": valid} if valid else {}),
                            **({"vparts": vparts} if vparts else {}), **({"ghost": True} if ghost else {}),
                            **({"privileged": True} if privileged else {}), **({"fine": int(fine)} if fine > 1 else {}),
-                           **({"vtax": int(vtax)} if vtax else {}), **({"vmana": 1} if vmana else {}))
+                           **({"vtax": int(vtax)} if vtax else {}), **({"vmana": 1} if vmana else {}),
+                           **({"obsfull": int(obsfull)} if obsfull else {}))
         if vmana:  # (--full-vocab's mask bits travel in the config: the actors' networks are built from it and a state
             # dict, never by set_valid, and a bit only the learner checks is a -1e9 log-probability in the update)
             from .fullvocab import mana_steps
@@ -107,6 +110,12 @@ class FullGameNet(nn.Module):
         # before them plays as it did); --memory-fade raises the learner's to 0 over its first updates
         if ghost:
             self.register_buffer("ghost_bias", torch.tensor(-30.0))
+        # (--obs-full) the attention's bias on each new entity kind (obsfull.KINDS: corpses, items on the ground, area
+        # spells): -30 hides them (a network from before them plays as it did); --obs-fade raises the learner's to 0 over
+        # its first updates. A buffer: the actors' networks (FullGameNet(**config) and a state dict) get it with the weights
+        self.obsfull = int(obsfull)
+        if self.obsfull:
+            self.register_buffer("kind_bias", torch.full((3,), -30.0))
         if valid:  # (--valid-mask) what each order needs of the unit (herodata.order_needs; set_valid fills them):
             self._valid_buffers(n_types, valid)  # `valid` the number of order classes that need something
         # (--fine-points S: the point's sub-cell within its x and y bins, one of S x S, given both bins: hierarchical
@@ -200,6 +209,13 @@ class FullGameNet(nn.Module):
             zero = torch.zeros((), dtype=x.dtype, device=x.device)
             pad = torch.where(pad, torch.full_like(zero, float("-inf")),
                               torch.where(ghost, self.ghost_bias.to(x.dtype), zero))
+        if self.obsfull:  # (--obs-full: each new entity kind's attention bias, kind_bias)
+            kb = (ent[..., fx.A_OBS:fx.A_OBS + 3].to(x.dtype) * self.kind_bias.to(x.dtype)).sum(-1)
+            kb = torch.cat([torch.zeros_like(kb[:, :1]), kb], 1)
+            if pad.dtype == torch.bool:
+                pad = torch.where(pad, torch.full_like(kb, float("-inf")), kb)
+            else:
+                pad = pad + kb
         out = self.transformer(tok, src_key_padding_mask=pad)
         return out[:, 0], out[:, 1:]
 
@@ -251,9 +267,14 @@ class FullGameNet(nn.Module):
         allowed[..., 0] = True  # no order: always
         return logits.masked_fill(~allowed, NEG)
 
-    def target_logits(self, g, u, mask, order):
+    def target_logits(self, g, u, mask, order, ent=None):
         """Given each own unit's order [N, O]: pointer logits [N, O, E], the point's x logits
-        [N, O, BINS], and z (for y_logits)."""
+        [N, O, BINS], and z (for y_logits). `ent` (a network with --obs-full: its entities' features): the new entity
+        kinds are no targets (no order of the vocabulary takes a corpse, an item lying or an area)."""
+        if self.obsfull:
+            if ent is None:
+                raise ValueError("target_logits: a network with obsfull needs the entities' features (ent)")
+            mask = mask & (ent[..., fx.A_OBS:fx.A_OBS + 3].sum(-1) < 0.5)
         O = order.shape[1]
         own = u[:, :O]
         z = self.cond(torch.cat([own + self.order_emb(order.long()), g.unsqueeze(1).expand_as(own)], -1))
@@ -406,7 +427,7 @@ def act(net: FullGameNet, ent, typ, cur, mask, glob, n_own, avail=None, h=None, 
     # (the order itself with a draw of its own per unit: one draw for all made a side's similar units take a rare
     # order together or not at all: every worker builds a farm, or none does; the A/B of 2026-10-12)
     order = _gumbel_argmax(logits, generator)
-    ptr, xl, z = _in_fp32(heads32, net.target_logits, g, u, mask, order)
+    ptr, xl, z = _in_fp32(heads32, net.target_logits, g, u, mask, order, ent)
     tgt = sample(ptr)
     bx, by, lp_pt = _in_fp32(heads32, sample_points, net, z, xl, sample)  # (with --fine-points: point indices, the
     uses_ptr, uses_pt = net.uses(order)                                       # sub-cell too)
@@ -429,7 +450,7 @@ def evaluate(net: FullGameNet, ent, typ, cur, mask, glob, n_own, order, tgt, bx,
         g = net.context_seq(g.view(B, T, -1), h0, starts)[0].reshape(B * T, -1)
     O = order.shape[1]
     logits = net.order_logits(g, u[:, :O], typ, n_own, avail=avail, ent=ent)
-    ptr, xl, z = net.target_logits(g, u, mask, order)
+    ptr, xl, z = net.target_logits(g, u, mask, order, ent)
     cx, cy, f = point_parts(bx, by)  # (--fine-points: the bins, and the sub-cell)
     yl = net.y_logits(z, cx)
     uses_ptr, uses_pt = net.uses(order)
@@ -497,6 +518,8 @@ def adapt_config(config: dict) -> dict:
         config["ghost"] = True                                            # a network before them)
     if fx.PRIVILEGED and not config.get("privileged"):  # (the privileged path, zero at first)
         config["privileged"] = True
+    if fx.OBS_FULL and not config.get("obsfull"):  # (--obs-full: its block's weights zero, its new kinds hidden: -30)
+        config["obsfull"] = fx.OBS_FULL
     gx = config.get("gx", 0)
     if fx.GX > gx:
         config["G"] += fx.GX - gx
@@ -537,6 +560,7 @@ def configure_for(path) -> None:
     fx.set_z(c.get("z", 0))
     fx.set_fine(c.get("fine", 0))  # (--fine-points: the sub-cells its fine head picks)
     fx.set_value_tax(c.get("vtax", 0))  # (--value-tax: the taxes it reads, zeros here)
+    fx.set_obs_full(c.get("obsfull", 0))  # (--obs-full: its block and entity kinds)
     if c.get("gx", 0) >= 3:  # (the unit channels it reads: all of them, a run's --features zeros only its weights)
         fx.ACTIVE_F = fx.F
 
@@ -587,7 +611,7 @@ def load(path, device="cpu", memory: bool | None = None, vocab: dict | None = No
         state = {k: v for k, v in state.items() if not k.startswith("tax_proj.")}
     missing, unexpected = net.load_state_dict(state, strict=False)
     if unexpected or any(not (k.startswith(("value_head.", "mem_", "priv_proj.", "priv_pol.", "tax_proj."))
-                              or k in ("order_kind", "target_temp", "ghost_bias"))
+                              or k in ("order_kind", "target_temp", "ghost_bias", "kind_bias"))
                          for k in missing):
         raise RuntimeError(f"{path}: missing {missing}, unexpected {unexpected}")
     if "order_kind" in missing and "vocab" in ck:  # fits from before it: from the vocabulary
@@ -623,6 +647,11 @@ def load(path, device="cpu", memory: bool | None = None, vocab: dict | None = No
         if (fx.FULL_VOCAB or vocab is not None and vocab.get("full_vocab")) and not fullvocab.extended(ck["vocab"]):
             new = fullvocab.extend(ck["vocab"])
             net = fullvocab.grow(net, ck["vocab"], new)
+            ck = {**ck, "vocab": new}
+        from . import obsfull  # (--obs-full, or a run whose vocabulary has them: the maps' creep types it lacked, each
+        if (fx.OBS_FULL or vocab is not None and vocab.get("obs_full")) and not obsfull.extended(ck["vocab"]):
+            new = obsfull.extend(ck["vocab"])  # embedding unknown's: every token as before)
+            net = obsfull.grow(net, ck["vocab"], new)
             ck = {**ck, "vocab": new}
         if vocab is not None and ck["vocab"]["orders"] != vocab["orders"]:
             if neutral.reorder(net, ck["vocab"], vocab) is None:
