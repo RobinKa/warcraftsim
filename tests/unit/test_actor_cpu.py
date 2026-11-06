@@ -378,3 +378,33 @@ def test_float16_both_ways_as_numpy():
     got = wire.unpack_request(wire.pack_request([("current", st)]))[0][1]["ent"]
     assert np.array_equal(got.view(np.uint16), st["ent"][:37].astype(np.float16).view(np.uint16))
 
+
+REF_STAND_DOWN = 'def _stand_down(self, rows: np.ndarray) -> list:\n    """--econ-masks bit 128: each finished burrow of the player\'s holding peons (the burrow nearest a loaded peon)\n    that no enemy unit it sees has come within fx.MILITIA_NEAR of for fx.BURROW_SAFE_STEPS steps stands down (its\n    peons back to work; View.chores keeps the safe ones, burrows_safe)."""\n    safe = getattr(self.view, "burrows_safe", set())\n    since = self.__dict__.setdefault("burrow_safe_since", {})\n    for b in list(since):\n        if b not in safe:\n            del since[b]\n    for b in safe:\n        since.setdefault(b, self.t)\n    own = rows[(rows[:, fx.C_OWNER] == self.player) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0)]\n    loaded = own[(own[:, fx.C_TYPE] == fx.PEON_T) & (own[:, fx.C_FLAGS] & fx.LOADED_FLAG > 0)]\n    burrows = own[np.isin(own[:, fx.C_ID], list(safe))]\n    if not len(loaded) or not len(burrows):\n        return []\n    bx, by = burrows[:, fx.C_X].astype(np.float64), burrows[:, fx.C_Y].astype(np.float64)\n    full = {int(burrows[int(np.argmin((bx - x) ** 2 + (by - y) ** 2)), fx.C_ID])\n            for x, y in loaded[:, [fx.C_X, fx.C_Y]].tolist()}\n    last = self.__dict__.setdefault("stood_down", {})\n    out = []\n    for b in sorted(full):\n        if self.t - since.get(b, self.t) >= fx.BURROW_SAFE_STEPS and self.t - last.get(b, -10 ** 9) >= fx.BURROW_SAFE_STEPS:\n            last[b] = self.t\n            out.append(ImmediateOrder(b, fx.STANDDOWN))\n    self.stood_down_n = getattr(self, "stood_down_n", 0) + len(out)\n    return out\n'
+
+
+def test_burrows_stand_down_as_before():
+    """play.BCAgent._stand_down over own_list's rows (the burrow nearest each loaded peon, the first of the nearest):
+    the same orders and bookkeeping as numpy's masks and argmin, on random orc sides over a few steps."""
+    from warcraftsim.fullgame import play
+    ref = _ref(REF_STAND_DOWN, play)
+    rng = np.random.default_rng(12)
+    for trial in range(300):
+        player = int(rng.integers(2))
+        n = int(rng.integers(1, 80))
+        rows = np.zeros((n, fx.ROW_COLS), np.int64)
+        rows[:, fx.C_ID] = rng.permutation(np.arange(1, 3 * n + 1))[:n]
+        rows[:, fx.C_TYPE] = rng.choice([fx.PEON_T, fx.BURROW_T, code("ogre"), code("ogru")], n)
+        rows[:, fx.C_OWNER] = rng.choice([player, player, 1 - player], n)
+        rows[:, fx.C_FLAGS] = (np.where(rng.random(n) < 0.4, fx.LOADED_FLAG, 0) | np.where(rng.random(n) < 0.1, fx.DEAD, 0))
+        rows[:, fx.C_X], rows[:, fx.C_Y] = rng.integers(-600, 600, n) * 4, rng.integers(-600, 600, n) * 4  # (ties too)
+        a, b = (type("Bot", (), {})() for _ in range(2))
+        for bot in (a, b):
+            bot.player, bot.view = player, type("View", (), {})()
+        for step in range(4):
+            safe = set(rng.choice(rows[:, fx.C_ID], int(rng.integers(0, n + 1))).tolist())
+            for bot in (a, b):
+                bot.t, bot.view.burrows_safe = 30 * step, set(safe)
+            got_a, got_b = ref["_stand_down"](a, rows), play.BCAgent._stand_down(b, rows)
+            assert got_a == got_b, (trial, step)
+            assert {k: v for k, v in vars(a).items() if k != "view"} == {k: v for k, v in vars(b).items() if k != "view"}
+

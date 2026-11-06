@@ -1743,6 +1743,7 @@ HALLS = {int.from_bytes(c.encode(), "big") for c in
          ("htow", "hkee", "hcas", "ogre", "ostr", "ofrt", "unpl", "unp1", "unp2", "etol", "etoa", "etoe")}
 AT_MINES = {"htow", "ogre", "unpl", "etol", "ugol", "egol"}  # (with a hall already: an expansion)
 WORKER_TYPES = {"human": "hpea", "orc": "opeo", "undead": "uaco", "nightelf": "ewsp"}
+_MINE_CODES: dict = {}  # (race -> its worked mines' types, features.ECON_WORKERS', as features.isin's sorted codes)
 # a target's hall or haunted gold mine is its expansion (the starting hall is no item): made only by one far from home
 # at a gold mine (trace.Production); a second hall at home had counted (16% of fgself-122's games built one)
 EXPANSION_ITEMS = {"htow", "ogre", "unpl", "etol", "ugol"}
@@ -2009,11 +2010,14 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             return 0, 0
         c = self._cols
         wc = int.from_bytes(w.encode(), "big")
-        mines = [int.from_bytes(m.encode(), "big") for m in fx.ECON_WORKERS[self.race][1]]
-        have = int((own[:, c[1]] == wc).sum()) + sum(1 for made in self.busy.values() if w in made)
+        mines = _MINE_CODES.get(self.race)  # (features.isin's sorted codes: np.isin's general path took ~60-100 us)
+        if mines is None:
+            mines = _MINE_CODES[self.race] = fx.codes(int.from_bytes(m.encode(), "big") for m in fx.ECON_WORKERS[self.race][1])
+        types = own[:, c[1]]
+        have = int((types == wc).sum()) + sum(1 for made in self.busy.values() if w in made)
         start = 3 if self.race == "undead" else 5
         goal = min(start + int((self.st.get("n") or {}).get(w, 0)),
-                   fx.worker_cap(self.race, int(np.isin(own[:, c[1]], mines).sum())))
+                   fx.worker_cap(self.race, int(fx.isin(types, mines).sum())))
         return have, goal
 
     def workers(self, obs, p, t: int) -> list:
