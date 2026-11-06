@@ -241,3 +241,137 @@ def test_full_vocab_mask_as_before(game_tables):
         ref["mask"](ch, view, rows, a, t)
         ch.mask(view, rows, b, t)
         assert np.array_equal(a, b), trial
+
+
+# ---- the remote games' wire: trajectories as pack_steps' arrays, float16 by F16C ----------------------------------------
+
+
+def _chunks(rng, n_chunks: int = 6) -> list:
+    """Trajectory's chunks as play_one makes them (raw arrays as the view and the network gave them, a memory state or
+    none, labels on some steps, a game's end), through a fake queue."""
+    from warcraftsim.fullgame.selfplay import Trajectory
+
+    class Q:
+        def __init__(self):
+            self.got = []
+
+        def put(self, msg):
+            self.got.append(msg)
+
+    q = Q()
+    cfg = {"chunk": 64, "gamma": 0.9997, "lam": 0.95, "upgo": 1.0}
+    G, NO, d, F = 40, 203, 16, fx.F
+    for game in range(n_chunks // 2):
+        tr = Trajectory(cfg, q, {"worker": 3, "opponent": "self"})
+        h = None
+        for t in range(int(rng.integers(70, 160))):
+            n = int(rng.integers(5, 90))
+            n_own = int(rng.integers(1, n + 1))
+            o = min(n_own, fx.MAX_OWN)
+            st = {"n": n, "n_own": n_own, "ent": rng.standard_normal((n, F)).astype(np.float32),
+                  "type": rng.integers(0, 300, n), "cur": rng.integers(0, 400, n),
+                  "glob": rng.standard_normal(G).astype(np.float32), "avail": rng.random(NO) < 0.5, "h": h}
+            mem = np.asarray(rng.standard_normal(d), np.dtype("float32").newbyteorder("="))
+            res = {"order": rng.integers(0, NO, o), "tgt": rng.integers(0, n, o), "bx": rng.integers(0, 22, o),
+                   "by": rng.integers(0, 22, o), "logp": -rng.random(o).astype(np.float32), "value": float(rng.random()),
+                   "version": int(rng.integers(0, 9)), "h": mem}
+            tr.add(st, res)
+            h = mem
+            tr.steps[-1]["reward"] += float(rng.standard_normal())
+            if rng.random() < 0.1:  # (a lesson's labels on the step: more keys, another layout)
+                tr.steps[-1].update(y_order=rng.integers(0, NO, o), y_w=np.float32(0.5))
+        tr.end(1.0)
+    return [m for m in q.got if "steps" in m]
+
+
+def _same(a, b, path="") -> list:
+    """Where two learner-side values differ: types, dtypes, shapes, bytes, writability and order as well."""
+    if type(a) is not type(b):
+        return [f"{path}: {type(a).__name__} vs {type(b).__name__}"]
+    if isinstance(a, np.ndarray):
+        ok = (a.dtype == b.dtype and a.shape == b.shape and a.tobytes() == b.tobytes()
+              and a.flags.writeable == b.flags.writeable and a.flags.c_contiguous == b.flags.c_contiguous)
+        return [] if ok else [path]
+    if isinstance(a, dict):
+        if list(a) != list(b):
+            return [f"{path}: keys"]
+        return [x for k in a for x in _same(a[k], b[k], f"{path}.{k}")]
+    if isinstance(a, (list, tuple)):
+        if len(a) != len(b):
+            return [f"{path}: length"]
+        return [x for i, (u, v) in enumerate(zip(a, b)) for x in _same(u, v, f"{path}[{i}]")]
+    return [] if (a == b or (a != a and b != b)) else [f"{path}: {a!r} vs {b!r}"]
+
+
+def test_wire_chunks_reach_the_learner_the_same():
+    """A remote actor's chunk on the wire as pack_steps' arrays (wire.PackedChunk at the gateway, pickled on as
+    PackedSteps pickles): the learner gets the same steps as the step-by-step encoding gave it (and a local actor's)."""
+    import pickle
+    from multiprocessing.reduction import ForkingPickler
+
+    from warcraftsim.fullgame import wire
+    from warcraftsim.fullgame.selfplay import PackedSteps
+    rng = np.random.default_rng(5)
+    for m in _chunks(rng):
+        ps = m["steps"]
+        old = PackedSteps([dict(s) for s in list.__iter__(ps)], raw=ps.raw)
+        local = PackedSteps([dict(s) for s in list.__iter__(ps)], raw=ps.raw)
+        got = wire.unpack_value(wire.pack_value({"steps": ps, "info": m["info"]}))
+        assert isinstance(got["steps"], wire.PackedChunk) and len(got["steps"]) == len(ps)
+        new = pickle.loads(bytes(ForkingPickler.dumps(got)))
+        before = pickle.loads(bytes(ForkingPickler.dumps(wire.unpack_value(wire.pack_value({"steps": list(old),
+                                                                                           "info": m["info"]})))))
+        assert type(new["steps"]) is list and not _same(before, new), _same(before, new)[:5]
+        mine = pickle.loads(bytes(ForkingPickler.dumps({"steps": local})))["steps"]  # (a local actor's: dtypes alike)
+        assert len(mine) == len(new["steps"]) and all(
+            list(a) == list(b) and all(np.array_equal(a[k], b[k]) if isinstance(a[k], np.ndarray) else a[k] == b[k]
+                                       for k in a) for a, b in zip(mine, new["steps"]))
+
+
+def test_wire_chunk_refuses_what_does_not_add_up():
+    from warcraftsim.fullgame import wire
+    from warcraftsim.fullgame.selfplay import pack_steps
+    rng = np.random.default_rng(6)
+    m = _chunks(rng, 2)[0]
+    layouts, which, cols = m["steps"].wire_packed()
+    wire.PackedChunk((layouts, which, cols))
+    bad = dict(cols)
+    blob, lens, dt, tr = bad["ent"]
+    bad["ent"] = (blob[:-2], lens, dt, tr)
+    with pytest.raises(wire.WireError):
+        wire.PackedChunk((layouts, which, bad))
+    bad = dict(cols)
+    bad["type"] = (bad["type"][0], bad["type"][1], "O", bad["type"][3])
+    with pytest.raises(wire.WireError):
+        wire.PackedChunk((layouts, which, bad))
+    bad = dict(cols)
+    del bad["n"]
+    with pytest.raises(wire.WireError):
+        wire.PackedChunk((layouts, which, bad))
+    with pytest.raises(wire.WireError):
+        wire.PackedChunk((layouts, bytes([len(layouts)]) + which[1:], cols))
+    assert pack_steps  # (the packer the chunk came from)
+
+
+def test_float16_both_ways_as_numpy():
+    """featnative.to_f32_into (the gateway's shared rows) on every float16, and wire.pack_request's F16C float16: numpy's
+    bits."""
+    from warcraftsim.fullgame import wire
+    if featnative.lib() is None:
+        pytest.skip("no C library")
+    h = np.arange(65536, dtype=np.uint32).astype(np.uint16).view(np.float16)
+    out = np.empty(65536, np.float32)
+    assert featnative.to_f32_into(h, out)
+    assert np.array_equal(out.view(np.uint32), h.astype(np.float32).view(np.uint32))
+    for n in (1, 7, 9, 23):
+        o = np.empty((n, 1), np.float32)
+        assert featnative.to_f32_into(h[3000:3000 + n].reshape(n, 1).copy(), o)
+        assert np.array_equal(o.view(np.uint32), h[3000:3000 + n].reshape(n, 1).astype(np.float32).view(np.uint32))
+    rng = np.random.default_rng(8)
+    st = {"n": 37, "n_own": 9, "ent": (rng.standard_normal((40, fx.F)) * 300).astype(np.float32),
+          "type": rng.integers(0, 150, 40), "cur": rng.integers(0, 400, 40), "glob": rng.standard_normal(30).astype(np.float32),
+          "avail": rng.random(99) < 0.5, "h": rng.standard_normal(16).astype(np.float32)}
+    st["ent"][0, :4] = [np.inf, -np.inf, np.nan, 1e6]
+    got = wire.unpack_request(wire.pack_request([("current", st)]))[0][1]["ent"]
+    assert np.array_equal(got.view(np.uint16), st["ent"][:37].astype(np.float16).view(np.uint16))
+

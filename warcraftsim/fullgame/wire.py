@@ -194,7 +194,67 @@ def client_handshake(sock: socket.socket, key: bytes, hello: dict) -> dict:
 
 # ---- values: JSON and their arrays' bytes (never pickled) -----------------------------------------
 
-_TAGS = ("__a", "__s", "__t", "__d", "__b")
+_TAGS = ("__a", "__s", "__t", "__d", "__b", "__k")
+
+
+class PackedChunk:
+    """A trajectory's chunk as selfplay.pack_steps packed it (a remote actor's PackedSteps, its "__k" value): from the
+    wire into the learner's queue as it came, pickled as PackedSteps pickles (selfplay.unpack_steps of it), never
+    unpacked here. Checked whole first (dtypes without objects, each column's bytes, lengths and count as its steps
+    ask), so the learner unpacks it as a local actor's; its arrays' bytes as bytearrays, as pack_steps makes them."""
+
+    def __init__(self, packed):
+        try:
+            layouts, which, cols = packed
+            layouts = [tuple(lay) for lay in layouts]
+            if not all(isinstance(k, str) for lay in layouts for k in lay) or not isinstance(cols, dict):
+                raise WireError("a chunk's layouts")
+            which = bytes(which) if isinstance(which, (bytes, bytearray)) else [int(w) for w in which]
+            if any(not 0 <= w < len(layouts) for w in which):
+                raise WireError("a chunk's step layouts")
+            per = [0] * len(layouts)
+            for w in which:
+                per[w] += 1
+            need: dict[str, int] = {}
+            for lay, m in zip(layouts, per):
+                for k in lay:
+                    need[k] = need.get(k, 0) + m
+            if set(need) != set(cols):
+                raise WireError("a chunk's columns")
+            out = {}
+            for k, col in cols.items():
+                if col[0] is None:
+                    vals = list(col[1])
+                    if len(vals) != need[k]:
+                        raise WireError(f"a chunk's column {k}")
+                    out[k] = (None, vals)
+                    continue
+                blob, lens, dt, trailing = col
+                d = np.dtype(dt) if type(dt) is str else None
+                if d is None or d.hasobject or not d.itemsize:
+                    raise WireError(f"a chunk's column {k}: dtype {dt!r}")
+                if type(lens) is tuple:
+                    count, total = int(lens[1]), int(lens[0]) * int(lens[1])
+                    lens = (int(lens[0]), count)
+                else:
+                    lens = [int(x) for x in lens]
+                    count, total = len(lens), sum(lens)
+                trailing = tuple(int(x) for x in trailing)
+                if count != need[k] or min(lens if type(lens) is list else lens[:1], default=0) < 0 \
+                        or total * int(np.prod(trailing, dtype=np.int64)) * d.itemsize != len(blob):
+                    raise WireError(f"a chunk's column {k}: its bytes")
+                out[k] = (bytearray(blob), lens, dt, trailing)
+        except (TypeError, ValueError, IndexError) as e:
+            raise WireError(f"a chunk: {type(e).__name__}: {e}") from None
+        self.packed = (layouts, which, out)
+        self.n = len(which)
+
+    def __len__(self) -> int:
+        return self.n
+
+    def __reduce__(self):
+        from .selfplay import unpack_steps
+        return unpack_steps, (self.packed,)
 
 
 def _enc(x, bufs: list):
@@ -212,6 +272,11 @@ def _enc(x, bufs: list):
             return {k: _enc(v, bufs) for k, v in x.items()}
         return {"__d": [[_enc(k, bufs), _enc(v, bufs)] for k, v in x.items()]}
     if isinstance(x, list):
+        pk = getattr(x, "wire_packed", None)  # (selfplay.PackedSteps: its packed arrays, PackedChunk at the other end)
+        if pk is not None:
+            packed = pk()
+            if packed is not None:
+                return {"__k": _enc(packed, bufs)}
         return [_enc(v, bufs) for v in x]
     if isinstance(x, tuple):
         return {"__t": [_enc(v, bufs) for v in x]}
@@ -247,6 +312,8 @@ def _dec(x, bufs: list):
             return {_dec(k, bufs): _dec(e, bufs) for k, e in v}
         if tag == "__b":
             return bufs[v]
+        if tag == "__k":
+            return PackedChunk(_dec(v, bufs))
     return {k: _dec(v, bufs) for k, v in x.items()}
 
 
@@ -281,6 +348,15 @@ def unpack_value(data: bytes):
 
 # ---- network calls --------------------------------------------------------------------------------
 
+def _f16(a: np.ndarray) -> np.ndarray:
+    """An array as float16 (featnative.to_f16: the CPU's F16C, numpy's values; numpy's conversion took ~27 us a view
+    step's ~60 entities)."""
+    if a.dtype == np.float16:
+        return np.ascontiguousarray(a)
+    from .featnative import to_f16
+    return to_f16(a)
+
+
 _ITEM = struct.Struct("<HHHHHBf")  # key length, n, n_own, F, G, flags, guide
 _SHARED_NOISE, _AVAIL, _H = 1, 2, 4
 
@@ -297,7 +373,7 @@ def pack_request(items: list[tuple[str, dict]]) -> bytes:
         flags = (_SHARED_NOISE if st.get("shared_noise") else 0) | (_AVAIL if avail is not None else 0) | \
             (_H if h is not None else 0)
         out.append(_ITEM.pack(len(kb), n, int(st["n_own"]), ent.shape[1], len(glob), flags, float(st.get("guide") or 0.0)))
-        out += [kb, np.ascontiguousarray(ent[:n], np.float16).tobytes(), np.ascontiguousarray(st["type"][:n], np.int16).tobytes(),
+        out += [kb, _f16(ent[:n]).tobytes(), np.ascontiguousarray(st["type"][:n], np.int16).tobytes(),
                 np.ascontiguousarray(st["cur"][:n], np.int16).tobytes(), glob.tobytes()]
         if avail is not None:
             a = np.asarray(avail).astype(bool, copy=False)

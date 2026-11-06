@@ -41,6 +41,8 @@ def lib():
         L.w3f_priv.argtypes = [P, I, I, I, D, P, P]
         L.w3f_to_f16.restype = I
         L.w3f_to_f16.argtypes = [P, P, I]
+        L.w3f_to_f32.restype = I
+        L.w3f_to_f32.argtypes = [P, P, I]
         L.w3f_view.restype = I
         L.w3f_view.argtypes = [P, I, I, I, D, P, P, I, I, I, I, P, P, I, I, P, P, P, P]
         L.w3f_side.restype = I
@@ -442,3 +444,15 @@ def mine_counts(rows: np.ndarray, player: int, mine_type: int, mining: np.ndarra
     n = L.w3f_mine_counts_a(buf[1])
     flat = out[:2 * n].tolist()
     return list(zip(flat[0::2], flat[1::2]))
+
+
+def to_f32_into(src: np.ndarray, dst: np.ndarray) -> bool:
+    """A float16 array into a float32 one of its shape (C-contiguous, writable) by the CPU's F16C instruction, the same
+    values as numpy's (a NaN's bits too); False without the library, the instruction or such arrays (the caller's
+    numpy then)."""
+    L = lib()
+    if (L is None or src.dtype != np.float16 or dst.dtype != np.float32 or src.shape != dst.shape or not src.size
+            or not src.flags.c_contiguous or not dst.flags.c_contiguous or not dst.flags.writeable):
+        return False
+    return bool(L.w3f_to_f32(src.ctypes.data, addr(dst), src.size))
+

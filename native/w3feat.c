@@ -569,3 +569,36 @@ int w3f_mine_counts_a(const int64_t *a) {
     }
     return n;
 }
+
+/* float16 -> float32 with the CPU's F16C instruction (exact, as numpy's astype; a NaN's bits as numpy keeps them: F16C
+ * would set its quiet bit): the gateway's remote view steps into the shared rows (selfplay.SharedRows.write). Returns 0
+ * without F16C (the caller converts with numpy then). */
+__attribute__((target("avx,f16c"))) static void to_f32_vec(const uint16_t *src, float *dst, int n) {
+    int i = 0;
+    for (; i + 8 <= n; i += 8)
+        _mm256_storeu_ps(dst + i, _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(src + i))));
+    if (i < n) {
+        uint16_t h8[8] = {0};
+        float f8[8];
+        memcpy(h8, src + i, sizeof(uint16_t) * (n - i));
+        _mm256_storeu_ps(f8, _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)h8)));
+        memcpy(dst + i, f8, sizeof(float) * (n - i));
+    }
+    for (i = 0; i < n; i++) {
+        uint16_t h = src[i];
+        if ((h & 0x7c00u) == 0x7c00u && (h & 0x03ffu)) {  /* (a NaN: numpy's npy_halfbits_to_floatbits) */
+            uint32_t b = ((uint32_t)(h & 0x8000u) << 16) | 0x7f800000u | ((uint32_t)(h & 0x03ffu) << 13);
+            memcpy(dst + i, &b, sizeof b);
+        }
+    }
+}
+
+int w3f_to_f32(const uint16_t *src, float *dst, int n) {
+    static int ok = -1;
+    if (ok < 0)
+        ok = __builtin_cpu_supports("f16c") && __builtin_cpu_supports("avx");
+    if (!ok)
+        return 0;
+    to_f32_vec(src, dst, n);
+    return 1;
+}
