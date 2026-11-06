@@ -62,9 +62,12 @@ def main(argv: list[str] | None = None) -> int:
                 f = [o for t, rr, o in ref if (h is None or int((t - t0) // 3600) == h) and (r is None or rr == r)]
                 cell.append(f"{(r or 'all')[:5]} {sc(c):.2f}/{sc(f):.2f} ({len(c)}/{len(f)})")
             print(f"  {'all' if h is None else f'h{h}':4}", "  ".join(cell))
-        # the races weighed alike (a window with many games of one race reads that race's level, not the policy's)
-        d = [sc([o for _, rr, o in cur if rr == r]) - sc([o for _, rr, o in ref if rr == r]) for r in races]
-        print(f"  races weighed alike: current minus {other.split('/')[-1][:20]} = {sum(d) / max(len(d), 1):+.3f}")
+        # the races weighed alike (a window with many games of one race reads that race's level, not the policy's); only
+        # the races both played: one without games had scored 0 (sc of nothing), its whole score read as a difference
+        both = [r for r in races if any(rr == r for _, rr, _ in cur) and any(rr == r for _, rr, _ in ref)]
+        d = [sc([o for _, rr, o in cur if rr == r]) - sc([o for _, rr, o in ref if rr == r]) for r in both]
+        left = f" (left out, one side without games: {', '.join(sorted(set(races) - set(both)))})" if len(both) < len(races) else ""
+        print(f"  races weighed alike: current minus {other.split('/')[-1][:20]} = {sum(d) / max(len(d), 1):+.3f}{left}")
     return 0
 
 
