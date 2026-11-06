@@ -16,11 +16,222 @@ def code(s: str) -> int:
     return int.from_bytes(s.encode(), "big")
 
 
-REF_FEATURES = 'def econ_allowed(self, rows: np.ndarray) -> np.ndarray:\n    """--econ-masks: the order classes ECON_MASK leaves the player: a tech building\'s build order while a copy it has\n    is idle (finished and making nothing: View.busy; under construction; or a worker on its way to build one),\n    and its worker\'s train order once its workers, alive and in training, reach worker_cap for its mines."""\n    enc = self.enc\n    race = RACES[self.races[self.player]]\n    cls = self.__dict__.get("_econ_cls")\n    if cls is None or cls[0] is not enc:  # (the race\'s classes, once: [(type code, build class)], worker, mines)\n        w, mines, _, _ = ECON_WORKERS[race]\n        codes = [int.from_bytes(x.encode(), "big") for x in ECON_TECH[race]]\n        tech = [(c, enc.order_index[(c, POINT)]) for c in codes if (c, POINT) in enc.order_index]\n        wc = int.from_bytes(w.encode(), "big")\n        cls = self._econ_cls = (enc, tech, wc, enc.order_index.get((wc, IMMEDIATE)),\n                                np.array([int.from_bytes(m.encode(), "big") for m in mines], np.int64))\n    _, tech, wc, wk, mines = cls\n    ok = np.ones(enc.n_orders, bool)\n    r = rows[(rows[:, C_OWNER] == self.player) & (rows[:, C_FLAGS] & DEAD == 0)]\n    types, fl = r[:, C_TYPE], r[:, C_FLAGS]\n    built = fl & STRUCTURE > 0\n    coming = set(r[(fl & WORKER > 0) & (r[:, C_ORDER] >= TYPE_CODE), C_ORDER].tolist())  # (on their way to build)\n    for c, k in tech:\n        copies = r[built & (types == c)][:, [C_ID, C_FLAGS]].tolist()\n        if c in coming or any(i not in self.busy or f & CONSTRUCTING for i, f in copies):  # (a copy idle or building)\n            ok[k] = False\n    if wk is not None:\n        n = int((types == wc).sum()) + sum(1 for m in self.making.values() if m[0] == 0 and m[1] == wc)\n        if n >= worker_cap(race, int((built & np.isin(types, mines)).sum())):\n            ok[wk] = False\n    return ok\n\ndef chores(self, rows: np.ndarray, avail: np.ndarray) -> None:\n    """--econ-masks bits 8, 16, 32 (DETONATE_MASK, REPAIR_MASK, MILITIA_MASK): the orders that can do nothing now out\n    of `avail` (in place), from the player\'s units and the enemy units it sees; REPAIR_MASK also sets repair_ids,\n    the ids of the buildings and machines worth a repair (play.BCAgent sends repairs to those only)."""\n    oix = self.enc.order_index\n    race = RACES[self.races[self.player]]\n    p = self.player\n    fl = rows[:, C_FLAGS]\n    live = fl & DEAD == 0\n    own = rows[live & (rows[:, C_OWNER] == p)]\n    seen = live & (rows[:, C_OWNER] == 1 - p) & ((rows[:, C_VIS] >> p) & 1 == 1)\n    enemy = rows[seen & (fl & STRUCTURE == 0)]\n    ex, ey = enemy[:, C_X].astype(np.float64), enemy[:, C_Y].astype(np.float64)\n\n    def near(units: np.ndarray, d: float, among=None) -> np.ndarray:\n        """Per unit row: an enemy unit (of `among`\'s, else any it sees) within d of it."""\n        ax, ay = (ex, ey) if among is None else (among[:, C_X].astype(np.float64), among[:, C_Y].astype(np.float64))\n        if not len(units) or not len(ax):\n            return np.zeros(len(units), bool)\n        ux, uy = units[:, C_X].astype(np.float64), units[:, C_Y].astype(np.float64)\n        return ((ux[:, None] - ax[None]) ** 2 + (uy[:, None] - ay[None]) ** 2 < d * d).any(1)\n\n    def mask(keys, ok: bool) -> None:\n        if not ok:\n            for k in keys:\n                c = oix.get(k)\n                if c is not None:\n                    avail[c] = False\n    if DETONATE_MASK and race == "nightelf":\n        summons = enemy[enemy[:, C_FLAGS] & SUMMONED > 0]\n        wisps = own[own[:, C_TYPE] == WISP_T]\n        mask(((DETONATE, POINT), (DETONATE, UNIT)), bool(near(wisps, DETONATE_NEAR, summons).any()))\n    if REPAIR_MASK:\n        of = own[:, C_FLAGS]\n        cand = own[((of & STRUCTURE > 0) | np.isin(own[:, C_TYPE], list(REPAIR_MACHINES))) & (of & CONSTRUCTING == 0)\n                   & (own[:, C_HP] < own[:, C_MAXHP])]\n        low = cand[:, C_HP] < REPAIR_BELOW * cand[:, C_MAXHP]\n        need = cand[low | near(cand, UNDER_ATTACK_NEAR)]\n        self.repair_ids = set(need[:, C_ID].tolist())\n        mask(((REPAIR, UNIT), (REPAIR, POINT)), len(need) > 0)\n    if MILITIA_MASK and race == "human":\n        halls = own[np.isin(own[:, C_TYPE], HUMAN_HALLS) & (own[:, C_FLAGS] & CONSTRUCTING == 0)]\n        militia = bool((own[:, C_TYPE] == MILITIA_T).any())\n        mask(((TOWNBELL_ON, IMMEDIATE), (MILITIA_CONVERT, UNIT), (MILITIA_CALL, IMMEDIATE)),\n             bool(near(halls, MILITIA_NEAR).any()))\n        mask(((TOWNBELL_OFF, IMMEDIATE), (MILITIA_UNCONVERT, UNIT), (MILITIA_OFF, IMMEDIATE)), militia)\n    if BURROW_MASK and race == "orc":\n        of = own[:, C_FLAGS]\n        burrows = own[(own[:, C_TYPE] == BURROW_T) & (of & CONSTRUCTING == 0)]\n        halls = own[np.isin(own[:, C_TYPE], ORC_HALLS) & (of & CONSTRUCTING == 0)]\n        mask(((BATTLESTATIONS, IMMEDIATE), (BOARD, UNIT)),\n             bool(near(np.concatenate([burrows, halls]), MILITIA_NEAR).any()))\n        self.burrows_safe = set(burrows[~near(burrows, MILITIA_NEAR), C_ID].tolist())  # (play.BCAgent\'s stand-down)\n\ndef futile(self, rows: np.ndarray, avail: np.ndarray, t: int) -> None:\n    """--econ-masks bit 64 (FUTILE_MASK): the orders no unit of the player\'s can give now with the game taking it,\n    out of `avail` (in place) at step t: a harvest while its haunted or entangled mines are full, Death Coil and Holy\n    Light with no unit it sees to take them, an item slot\'s immediate use with no hero holding an item there that it\n    can use so (the per-unit and per-target checks: play.BCAgent)."""\n    oix = self.enc.order_index\n    race = RACES[self.races[self.player]]\n    p = self.player\n    own = own_alive(rows, p)\n\n    def off(keys) -> None:\n        for k in keys:\n            c = oix.get(k)\n            if c is not None:\n                avail[c] = False\n    mined = MINED_MINES.get(race)\n    if mined is not None and avail[oix.get((HARVEST, UNIT), 0)]:\n        mines = own[(own[:, C_TYPE] == mined) & (own[:, C_FLAGS] & CONSTRUCTING == 0)]\n        full = self.__dict__.get("full_mines") or {}  # (play.BCAgent.accepted: a mine\'s refused harvest, its step)\n        if not any(len(mine_workers(own, m)) < MINE_WORKERS and not 0 <= t - full.get(int(m[C_ID]), -MINE_FULL_STEPS)\n                   < MINE_FULL_STEPS for m in mines):\n            off(((HARVEST, UNIT),))\n    for o in FUTILE_SPELLS:\n        c = oix.get((o, UNIT))\n        if c is not None and avail[c] and not (spell_targets(o, rows, p) & ~((rows[:, C_TYPE] == SPELL_CASTERS[o])\n                                                                           & (rows[:, C_OWNER] == p))).any():\n            avail[c] = False  # (the caster itself no target: its kind\'s units of the player\'s left out)\n    heroes = own[own[:, C_FLAGS] & HERO > 0] if own.shape[1] > C_ITEM0 + 5 else own[:0]\n    for k in range(6):\n        c = oix.get((USESLOT + k, IMMEDIATE))\n        if c is not None and avail[c] and not any(item_use_now(int(h[C_ITEM0 + k]), h) for h in heroes):\n            avail[c] = False\n\ndef item_slots(self, rows: np.ndarray, avail: np.ndarray) -> None:\n    """--shop-items: each slot\'s use (immediate, on a unit, on a point) out of `avail` (in place) while no hero of the\n    player\'s holds an item in that slot that takes it (shopitems.use_ok; the per-hero check: play.BCAgent)."""\n    own = own_alive(rows, self.player)\n    heroes = own[own[:, C_FLAGS] & HERO > 0] if own.shape[1] > C_ITEM0 + 5 else own[:0]\n    use_ok = _mod("shopitems").use_ok\n    oix = self.enc.order_index\n    for k in range(6):\n        for kind in (IMMEDIATE, UNIT, POINT):\n            c = oix.get((USESLOT + k, kind))\n            if c is not None and avail[c] and not any(use_ok(int(h[C_ITEM0 + k]), kind, h) for h in heroes):\n                avail[c] = False\n\n'
+REF_FEATURES = r'''
+def econ_allowed(self, rows: np.ndarray) -> np.ndarray:
+    """--econ-masks: the order classes ECON_MASK leaves the player: a tech building's build order while a copy it has
+    is idle (finished and making nothing: View.busy; under construction; or a worker on its way to build one),
+    and its worker's train order once its workers, alive and in training, reach worker_cap for its mines."""
+    enc = self.enc
+    race = RACES[self.races[self.player]]
+    cls = self.__dict__.get("_econ_cls")
+    if cls is None or cls[0] is not enc:  # (the race's classes, once: [(type code, build class)], worker, mines)
+        w, mines, _, _ = ECON_WORKERS[race]
+        codes = [int.from_bytes(x.encode(), "big") for x in ECON_TECH[race]]
+        tech = [(c, enc.order_index[(c, POINT)]) for c in codes if (c, POINT) in enc.order_index]
+        wc = int.from_bytes(w.encode(), "big")
+        cls = self._econ_cls = (enc, tech, wc, enc.order_index.get((wc, IMMEDIATE)),
+                                np.array([int.from_bytes(m.encode(), "big") for m in mines], np.int64))
+    _, tech, wc, wk, mines = cls
+    ok = np.ones(enc.n_orders, bool)
+    r = rows[(rows[:, C_OWNER] == self.player) & (rows[:, C_FLAGS] & DEAD == 0)]
+    types, fl = r[:, C_TYPE], r[:, C_FLAGS]
+    built = fl & STRUCTURE > 0
+    coming = set(r[(fl & WORKER > 0) & (r[:, C_ORDER] >= TYPE_CODE), C_ORDER].tolist())  # (on their way to build)
+    for c, k in tech:
+        copies = r[built & (types == c)][:, [C_ID, C_FLAGS]].tolist()
+        if c in coming or any(i not in self.busy or f & CONSTRUCTING for i, f in copies):  # (a copy idle or building)
+            ok[k] = False
+    if wk is not None:
+        n = int((types == wc).sum()) + sum(1 for m in self.making.values() if m[0] == 0 and m[1] == wc)
+        if n >= worker_cap(race, int((built & np.isin(types, mines)).sum())):
+            ok[wk] = False
+    return ok
 
-REF_MASK = 'def mask(self, view, rows, avail, t: int) -> None:\n    """`avail` (in place) without extend\'s orders no unit of the view\'s player can give now."""\n    own = fx.own_alive(rows, view.player)\n    cooling = getattr(view, "cooling", {})\n    states = getattr(view, "autocast", {})\n    types = own[:, fx.C_TYPE]\n    # (the unit types the player has: most classes are another race\'s, no giver of theirs here, and one np.isin per\n    # class had been ~0.7 ms a side-step, more than all the rest of the actor\'s Python per step)\n    present = set(types.tolist())\n    for c, need in self.timed.items():\n        if c >= len(avail) or not avail[c]:\n            continue\n        if present.isdisjoint(need):\n            avail[c] = False\n            continue\n        rows_c = own[np.isin(types, list(need))]\n        avail[c] = any(self.unit_ok(c, r, t, cooling, states) for r in rows_c)\n    for c, (ability, on, givers) in self.toggle.items():  # (a toggle while a giver is in the other state)\n        if c >= len(avail) or not avail[c] or c in self.timed:\n            continue\n        if present.isdisjoint(givers):\n            avail[c] = False\n            continue\n        ids = own[np.isin(types, list(givers)), fx.C_ID].tolist()\n        avail[c] = any(self.state(states, int(u), ability) != on for u in ids)\n    if self.night and not self.is_night(t, getattr(view, "step_seconds", 0.5)):\n        for c in self.night:\n            if c < len(avail):\n                avail[c] = False\n    for c, pairs in self.partner.items():\n        if c >= len(avail) or not avail[c]:\n            continue\n        ok = False\n        for g, p in pairs.items():\n            if not (types == g).any():\n                continue\n            if p == GOLD_MINE:  # (a gold mine anyone may entangle: one not entangled yet, on the map)\n                ok = ok or bool((rows[:, fx.C_TYPE] == GOLD_MINE).any())\n            elif p == code("otau"):  # (a dead tauren of the player\'s lying there)\n                ok = ok or bool(((rows[:, fx.C_OWNER] == view.player) & (rows[:, fx.C_TYPE] == p)\n                                 & (rows[:, fx.C_FLAGS] & fx.DEAD > 0)).any())\n            else:\n                ok = ok or bool(((types == p) & (own[:, fx.C_FLAGS] & fx.CONSTRUCTING == 0)).any())\n        avail[c] = ok\n    heroes = own[own[:, fx.C_FLAGS] & fx.HERO > 0] if own.shape[1] > fx.C_ITEM0 + 5 else own[:0]\n    if self.item:\n        shop = bool(np.isin(rows[:, fx.C_TYPE], PAWN_SHOPS).any()) or bool(\n            (np.isin(types, RACE_SHOP_CODES) & (own[:, fx.C_FLAGS] & fx.CONSTRUCTING == 0)).any())\n        for c, (verb, k) in self.item.items():\n            if c >= len(avail) or not avail[c]:\n                continue\n            held = bool((heroes[:, fx.C_ITEM0 + k] != 0).any()) if len(heroes) else False\n            avail[c] = held and (verb != "give" or len(heroes) > 1) and (verb != "sell" or shop)\n    if self.pickup is not None and self.pickup < len(avail) and avail[self.pickup]:\n        bit = 1 << view.player\n        seen = any(vis & bit for _, _, _, vis, _ in (getattr(view, "ground", ()) or ()))\n        avail[self.pickup] = seen and len(heroes) > 0 and bool((heroes[:, fx.C_ITEM0:fx.C_ITEM0 + 6] == 0).any())\n    lab = bool((rows[:, fx.C_TYPE] == LAB).any())\n    for c in self.lab + ([self.reveal] if self.reveal is not None else []):\n        if c < len(avail):\n            avail[c] = avail[c] and lab\n'
+def chores(self, rows: np.ndarray, avail: np.ndarray) -> None:
+    """--econ-masks bits 8, 16, 32 (DETONATE_MASK, REPAIR_MASK, MILITIA_MASK): the orders that can do nothing now out
+    of `avail` (in place), from the player's units and the enemy units it sees; REPAIR_MASK also sets repair_ids,
+    the ids of the buildings and machines worth a repair (play.BCAgent sends repairs to those only)."""
+    oix = self.enc.order_index
+    race = RACES[self.races[self.player]]
+    p = self.player
+    fl = rows[:, C_FLAGS]
+    live = fl & DEAD == 0
+    own = rows[live & (rows[:, C_OWNER] == p)]
+    seen = live & (rows[:, C_OWNER] == 1 - p) & ((rows[:, C_VIS] >> p) & 1 == 1)
+    enemy = rows[seen & (fl & STRUCTURE == 0)]
+    ex, ey = enemy[:, C_X].astype(np.float64), enemy[:, C_Y].astype(np.float64)
 
-REF_LAST = 'def last_loop(self, f, sel, ids, n_own, t):\n    """View.step\'s last-order loop as it was (a unit at a time, numpy\'s scalars and np.clip)."""\n    index = {u: k for k, u in enumerate(ids)} if self.active_f > A_LAST else {}\n    if self.active_f > A_LAST:  # (a per-unit loop: skipped when the run does not use them, --features)\n        f[:n_own, A_LAST + 4] = 1.0  # (never ordered: long ago)\n    for k in range(n_own if self.active_f > A_LAST else 0):\n        lo = self.last_order.get(ids[k])\n        if lo is None:\n            continue\n        kind, x, y, target, t0 = lo\n        f[k, A_LAST + 4] = min(1.0, (t - t0) / LAST_AGE)\n        if kind == 2 and target in index:  # (a target out of sight: its kind only)\n            x, y = float(sel[index[target], C_X]), float(sel[index[target], C_Y])\n        if kind == 1 or (kind == 2 and target in index):\n            f[k, A_LAST] = np.clip(self.sign * (x - sel[k, C_X]) / LAST_SCALE, -2.0, 2.0)\n            f[k, A_LAST + 1] = np.clip((y - sel[k, C_Y]) / LAST_SCALE, -2.0, 2.0)\n        if kind:\n            f[k, A_LAST + 1 + kind] = 1.0\n'
+    def near(units: np.ndarray, d: float, among=None) -> np.ndarray:
+        """Per unit row: an enemy unit (of `among`'s, else any it sees) within d of it."""
+        ax, ay = (ex, ey) if among is None else (among[:, C_X].astype(np.float64), among[:, C_Y].astype(np.float64))
+        if not len(units) or not len(ax):
+            return np.zeros(len(units), bool)
+        ux, uy = units[:, C_X].astype(np.float64), units[:, C_Y].astype(np.float64)
+        return ((ux[:, None] - ax[None]) ** 2 + (uy[:, None] - ay[None]) ** 2 < d * d).any(1)
+
+    def mask(keys, ok: bool) -> None:
+        if not ok:
+            for k in keys:
+                c = oix.get(k)
+                if c is not None:
+                    avail[c] = False
+    if DETONATE_MASK and race == "nightelf":
+        summons = enemy[enemy[:, C_FLAGS] & SUMMONED > 0]
+        wisps = own[own[:, C_TYPE] == WISP_T]
+        mask(((DETONATE, POINT), (DETONATE, UNIT)), bool(near(wisps, DETONATE_NEAR, summons).any()))
+    if REPAIR_MASK:
+        of = own[:, C_FLAGS]
+        cand = own[((of & STRUCTURE > 0) | np.isin(own[:, C_TYPE], list(REPAIR_MACHINES))) & (of & CONSTRUCTING == 0)
+                   & (own[:, C_HP] < own[:, C_MAXHP])]
+        low = cand[:, C_HP] < REPAIR_BELOW * cand[:, C_MAXHP]
+        need = cand[low | near(cand, UNDER_ATTACK_NEAR)]
+        self.repair_ids = set(need[:, C_ID].tolist())
+        mask(((REPAIR, UNIT), (REPAIR, POINT)), len(need) > 0)
+    if MILITIA_MASK and race == "human":
+        halls = own[np.isin(own[:, C_TYPE], HUMAN_HALLS) & (own[:, C_FLAGS] & CONSTRUCTING == 0)]
+        militia = bool((own[:, C_TYPE] == MILITIA_T).any())
+        mask(((TOWNBELL_ON, IMMEDIATE), (MILITIA_CONVERT, UNIT), (MILITIA_CALL, IMMEDIATE)),
+             bool(near(halls, MILITIA_NEAR).any()))
+        mask(((TOWNBELL_OFF, IMMEDIATE), (MILITIA_UNCONVERT, UNIT), (MILITIA_OFF, IMMEDIATE)), militia)
+    if BURROW_MASK and race == "orc":
+        of = own[:, C_FLAGS]
+        burrows = own[(own[:, C_TYPE] == BURROW_T) & (of & CONSTRUCTING == 0)]
+        halls = own[np.isin(own[:, C_TYPE], ORC_HALLS) & (of & CONSTRUCTING == 0)]
+        mask(((BATTLESTATIONS, IMMEDIATE), (BOARD, UNIT)),
+             bool(near(np.concatenate([burrows, halls]), MILITIA_NEAR).any()))
+        self.burrows_safe = set(burrows[~near(burrows, MILITIA_NEAR), C_ID].tolist())  # (play.BCAgent's stand-down)
+
+def futile(self, rows: np.ndarray, avail: np.ndarray, t: int) -> None:
+    """--econ-masks bit 64 (FUTILE_MASK): the orders no unit of the player's can give now with the game taking it,
+    out of `avail` (in place) at step t: a harvest while its haunted or entangled mines are full, Death Coil and Holy
+    Light with no unit it sees to take them, an item slot's immediate use with no hero holding an item there that it
+    can use so (the per-unit and per-target checks: play.BCAgent)."""
+    oix = self.enc.order_index
+    race = RACES[self.races[self.player]]
+    p = self.player
+    own = own_alive(rows, p)
+
+    def off(keys) -> None:
+        for k in keys:
+            c = oix.get(k)
+            if c is not None:
+                avail[c] = False
+    mined = MINED_MINES.get(race)
+    if mined is not None and avail[oix.get((HARVEST, UNIT), 0)]:
+        mines = own[(own[:, C_TYPE] == mined) & (own[:, C_FLAGS] & CONSTRUCTING == 0)]
+        full = self.__dict__.get("full_mines") or {}  # (play.BCAgent.accepted: a mine's refused harvest, its step)
+        if not any(len(mine_workers(own, m)) < MINE_WORKERS and not 0 <= t - full.get(int(m[C_ID]), -MINE_FULL_STEPS)
+                   < MINE_FULL_STEPS for m in mines):
+            off(((HARVEST, UNIT),))
+    for o in FUTILE_SPELLS:
+        c = oix.get((o, UNIT))
+        if c is not None and avail[c] and not (spell_targets(o, rows, p) & ~((rows[:, C_TYPE] == SPELL_CASTERS[o])
+                                                                           & (rows[:, C_OWNER] == p))).any():
+            avail[c] = False  # (the caster itself no target: its kind's units of the player's left out)
+    heroes = own[own[:, C_FLAGS] & HERO > 0] if own.shape[1] > C_ITEM0 + 5 else own[:0]
+    for k in range(6):
+        c = oix.get((USESLOT + k, IMMEDIATE))
+        if c is not None and avail[c] and not any(item_use_now(int(h[C_ITEM0 + k]), h) for h in heroes):
+            avail[c] = False
+
+def item_slots(self, rows: np.ndarray, avail: np.ndarray) -> None:
+    """--shop-items: each slot's use (immediate, on a unit, on a point) out of `avail` (in place) while no hero of the
+    player's holds an item in that slot that takes it (shopitems.use_ok; the per-hero check: play.BCAgent)."""
+    own = own_alive(rows, self.player)
+    heroes = own[own[:, C_FLAGS] & HERO > 0] if own.shape[1] > C_ITEM0 + 5 else own[:0]
+    use_ok = _mod("shopitems").use_ok
+    oix = self.enc.order_index
+    for k in range(6):
+        for kind in (IMMEDIATE, UNIT, POINT):
+            c = oix.get((USESLOT + k, kind))
+            if c is not None and avail[c] and not any(use_ok(int(h[C_ITEM0 + k]), kind, h) for h in heroes):
+                avail[c] = False
+'''
+
+REF_MASK = r'''
+def mask(self, view, rows, avail, t: int) -> None:
+    """`avail` (in place) without extend's orders no unit of the view's player can give now."""
+    own = fx.own_alive(rows, view.player)
+    cooling = getattr(view, "cooling", {})
+    states = getattr(view, "autocast", {})
+    types = own[:, fx.C_TYPE]
+    # (the unit types the player has: most classes are another race's, no giver of theirs here, and one np.isin per
+    # class had been ~0.7 ms a side-step, more than all the rest of the actor's Python per step)
+    present = set(types.tolist())
+    for c, need in self.timed.items():
+        if c >= len(avail) or not avail[c]:
+            continue
+        if present.isdisjoint(need):
+            avail[c] = False
+            continue
+        rows_c = own[np.isin(types, list(need))]
+        avail[c] = any(self.unit_ok(c, r, t, cooling, states) for r in rows_c)
+    for c, (ability, on, givers) in self.toggle.items():  # (a toggle while a giver is in the other state)
+        if c >= len(avail) or not avail[c] or c in self.timed:
+            continue
+        if present.isdisjoint(givers):
+            avail[c] = False
+            continue
+        ids = own[np.isin(types, list(givers)), fx.C_ID].tolist()
+        avail[c] = any(self.state(states, int(u), ability) != on for u in ids)
+    if self.night and not self.is_night(t, getattr(view, "step_seconds", 0.5)):
+        for c in self.night:
+            if c < len(avail):
+                avail[c] = False
+    for c, pairs in self.partner.items():
+        if c >= len(avail) or not avail[c]:
+            continue
+        ok = False
+        for g, p in pairs.items():
+            if not (types == g).any():
+                continue
+            if p == GOLD_MINE:  # (a gold mine anyone may entangle: one not entangled yet, on the map)
+                ok = ok or bool((rows[:, fx.C_TYPE] == GOLD_MINE).any())
+            elif p == code("otau"):  # (a dead tauren of the player's lying there)
+                ok = ok or bool(((rows[:, fx.C_OWNER] == view.player) & (rows[:, fx.C_TYPE] == p)
+                                 & (rows[:, fx.C_FLAGS] & fx.DEAD > 0)).any())
+            else:
+                ok = ok or bool(((types == p) & (own[:, fx.C_FLAGS] & fx.CONSTRUCTING == 0)).any())
+        avail[c] = ok
+    heroes = own[own[:, fx.C_FLAGS] & fx.HERO > 0] if own.shape[1] > fx.C_ITEM0 + 5 else own[:0]
+    if self.item:
+        shop = bool(np.isin(rows[:, fx.C_TYPE], PAWN_SHOPS).any()) or bool(
+            (np.isin(types, RACE_SHOP_CODES) & (own[:, fx.C_FLAGS] & fx.CONSTRUCTING == 0)).any())
+        for c, (verb, k) in self.item.items():
+            if c >= len(avail) or not avail[c]:
+                continue
+            held = bool((heroes[:, fx.C_ITEM0 + k] != 0).any()) if len(heroes) else False
+            avail[c] = held and (verb != "give" or len(heroes) > 1) and (verb != "sell" or shop)
+    if self.pickup is not None and self.pickup < len(avail) and avail[self.pickup]:
+        bit = 1 << view.player
+        seen = any(vis & bit for _, _, _, vis, _ in (getattr(view, "ground", ()) or ()))
+        avail[self.pickup] = seen and len(heroes) > 0 and bool((heroes[:, fx.C_ITEM0:fx.C_ITEM0 + 6] == 0).any())
+    lab = bool((rows[:, fx.C_TYPE] == LAB).any())
+    for c in self.lab + ([self.reveal] if self.reveal is not None else []):
+        if c < len(avail):
+            avail[c] = avail[c] and lab
+'''
+
+REF_LAST = r'''
+def last_loop(self, f, sel, ids, n_own, t):
+    """View.step's last-order loop as it was (a unit at a time, numpy's scalars and np.clip)."""
+    index = {u: k for k, u in enumerate(ids)} if self.active_f > A_LAST else {}
+    if self.active_f > A_LAST:  # (a per-unit loop: skipped when the run does not use them, --features)
+        f[:n_own, A_LAST + 4] = 1.0  # (never ordered: long ago)
+    for k in range(n_own if self.active_f > A_LAST else 0):
+        lo = self.last_order.get(ids[k])
+        if lo is None:
+            continue
+        kind, x, y, target, t0 = lo
+        f[k, A_LAST + 4] = min(1.0, (t - t0) / LAST_AGE)
+        if kind == 2 and target in index:  # (a target out of sight: its kind only)
+            x, y = float(sel[index[target], C_X]), float(sel[index[target], C_Y])
+        if kind == 1 or (kind == 2 and target in index):
+            f[k, A_LAST] = np.clip(self.sign * (x - sel[k, C_X]) / LAST_SCALE, -2.0, 2.0)
+            f[k, A_LAST + 1] = np.clip((y - sel[k, C_Y]) / LAST_SCALE, -2.0, 2.0)
+        if kind:
+            f[k, A_LAST + 1 + kind] = 1.0
+'''
 
 
 def _ref(src: str, module) -> dict:
@@ -379,7 +590,35 @@ def test_float16_both_ways_as_numpy():
     assert np.array_equal(got.view(np.uint16), st["ent"][:37].astype(np.float16).view(np.uint16))
 
 
-REF_STAND_DOWN = 'def _stand_down(self, rows: np.ndarray) -> list:\n    """--econ-masks bit 128: each finished burrow of the player\'s holding peons (the burrow nearest a loaded peon)\n    that no enemy unit it sees has come within fx.MILITIA_NEAR of for fx.BURROW_SAFE_STEPS steps stands down (its\n    peons back to work; View.chores keeps the safe ones, burrows_safe)."""\n    safe = getattr(self.view, "burrows_safe", set())\n    since = self.__dict__.setdefault("burrow_safe_since", {})\n    for b in list(since):\n        if b not in safe:\n            del since[b]\n    for b in safe:\n        since.setdefault(b, self.t)\n    own = rows[(rows[:, fx.C_OWNER] == self.player) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0)]\n    loaded = own[(own[:, fx.C_TYPE] == fx.PEON_T) & (own[:, fx.C_FLAGS] & fx.LOADED_FLAG > 0)]\n    burrows = own[np.isin(own[:, fx.C_ID], list(safe))]\n    if not len(loaded) or not len(burrows):\n        return []\n    bx, by = burrows[:, fx.C_X].astype(np.float64), burrows[:, fx.C_Y].astype(np.float64)\n    full = {int(burrows[int(np.argmin((bx - x) ** 2 + (by - y) ** 2)), fx.C_ID])\n            for x, y in loaded[:, [fx.C_X, fx.C_Y]].tolist()}\n    last = self.__dict__.setdefault("stood_down", {})\n    out = []\n    for b in sorted(full):\n        if self.t - since.get(b, self.t) >= fx.BURROW_SAFE_STEPS and self.t - last.get(b, -10 ** 9) >= fx.BURROW_SAFE_STEPS:\n            last[b] = self.t\n            out.append(ImmediateOrder(b, fx.STANDDOWN))\n    self.stood_down_n = getattr(self, "stood_down_n", 0) + len(out)\n    return out\n'
+REF_STAND_DOWN = r'''
+def _stand_down(self, rows: np.ndarray) -> list:
+    """--econ-masks bit 128: each finished burrow of the player's holding peons (the burrow nearest a loaded peon)
+    that no enemy unit it sees has come within fx.MILITIA_NEAR of for fx.BURROW_SAFE_STEPS steps stands down (its
+    peons back to work; View.chores keeps the safe ones, burrows_safe)."""
+    safe = getattr(self.view, "burrows_safe", set())
+    since = self.__dict__.setdefault("burrow_safe_since", {})
+    for b in list(since):
+        if b not in safe:
+            del since[b]
+    for b in safe:
+        since.setdefault(b, self.t)
+    own = rows[(rows[:, fx.C_OWNER] == self.player) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0)]
+    loaded = own[(own[:, fx.C_TYPE] == fx.PEON_T) & (own[:, fx.C_FLAGS] & fx.LOADED_FLAG > 0)]
+    burrows = own[np.isin(own[:, fx.C_ID], list(safe))]
+    if not len(loaded) or not len(burrows):
+        return []
+    bx, by = burrows[:, fx.C_X].astype(np.float64), burrows[:, fx.C_Y].astype(np.float64)
+    full = {int(burrows[int(np.argmin((bx - x) ** 2 + (by - y) ** 2)), fx.C_ID])
+            for x, y in loaded[:, [fx.C_X, fx.C_Y]].tolist()}
+    last = self.__dict__.setdefault("stood_down", {})
+    out = []
+    for b in sorted(full):
+        if self.t - since.get(b, self.t) >= fx.BURROW_SAFE_STEPS and self.t - last.get(b, -10 ** 9) >= fx.BURROW_SAFE_STEPS:
+            last[b] = self.t
+            out.append(ImmediateOrder(b, fx.STANDDOWN))
+    self.stood_down_n = getattr(self, "stood_down_n", 0) + len(out)
+    return out
+'''
 
 
 def test_burrows_stand_down_as_before():
