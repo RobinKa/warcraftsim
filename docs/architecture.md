@@ -101,10 +101,11 @@ flowchart LR
 * At its start the remote side gets the actors' settings (the learner's own), vocab.json, the strategy pool and Wine's settings; the league's launches every 5 s. It plays no evaluation games and films no videos; its draws are seeded with its name.
 * Only a machine with the shared key (`~/.config/warcraftsim/remote.key`, made by the gateway's first start) and the learner's code (a hash of the package's actor code, the native sources and the built shim) gets in. Nothing it sends is unpickled.
 * A connection closed frees its slot; a machine gone without a word frees its slots in ~2 minutes (TCP keepalive). The learner gone, the remote games wait for it 10 minutes, then end as a local actor's would.
-* A side-step on recorded Echo Isles games (56 entities): ~3.8 KB up for the call, ~2.2 KB for the trajectory, ~1.4 KB down (zstd; zlib on Python before 3.14 is ~15% more). ~1,900 side-steps a second are ~11 MB/s up: a wired link.
+* A side-step on recorded Echo Isles games (56 entities): ~3.8 KB up for the call, ~2.2 KB for the trajectory, ~1.4 KB down (zstd; zlib on Python before 3.14 is ~15% more). ~1,900 side-steps a second are ~11 MB/s up: a wired link. `--remote-codec none` sends the frames uncompressed (~6x the bytes, none of either side's CPU on zstd).
+* A trajectory's chunk goes as the arrays a local actor's queue pickles (`selfplay.pack_steps`' columns; `wire.PackedChunk` at the gateway, checked whole, pickled on as it came): the learner gets the same steps as from a local actor.
 
 ```
-python -m warcraftsim.fullgame.selfplay ... --remote-games 56 [--remote-gateways 4] [--remote-port 8770] [--remote-bind <this machine's address>]
+python -m warcraftsim.fullgame.selfplay ... --remote-games 56 [--remote-gateways 4] [--remote-port 8770] [--remote-bind <this machine's address>] [--remote-codec none]
 python -m warcraftsim.fullgame.remoteactor --host <the run's machine> --actors 8 --games-per-actor 7 [--ksm 1]   # there
 scripts/box_games.sh <the run's commit> [actors] [games a actor]   # or from here: mirrors the code, checks it, starts them
 ```

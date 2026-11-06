@@ -858,6 +858,7 @@ def lab_stock() -> dict[str, float]:
 
 RACE_SHOP_CODES = tuple(code(c) for c in ("hvlt", "ovln", "utom", "eden"))
 PAWN_SHOPS = tuple(code(c) for c in ("ngme", "nmrk"))  # (the neutral shops that buy items: Apit)
+_PAWN_SORTED = np.asarray(sorted(PAWN_SHOPS), np.int64)  # (features.isin's)
 LAB = code("ngad")
 GOLD_MINE = code("ngol")
 # a partner the order needs, by order string: (who gives it, whom it takes): a hippogryph rider's two halves, an acolyte
@@ -948,41 +949,80 @@ class Checks:
         hour = (fx.START_HOUR + t * step_s / fx.DAY_SECONDS * 24.0) % 24.0
         return hour >= fx.DUSK or hour < fx.DAWN
 
+    def _plan(self, n_av: int, present) -> tuple:
+        """mask's classes below n_av by the unit types the player has (kept per set of types: it changes when a type
+        comes or goes): (the timed and toggle classes no unit of those types gives: an index array, set False), the
+        timed classes some do, the toggle classes some do (not timed), the item classes (an index array) and their
+        (verb, slot)s."""
+        plans = self.__dict__.setdefault("_plans", {})
+        key = (n_av, frozenset(present))
+        got = plans.get(key)
+        if got is None:
+            if len(plans) > 512:
+                plans.clear()
+            off = [c for c, need in self.timed.items() if c < n_av and present.isdisjoint(need)]
+            live_timed = [c for c, need in self.timed.items() if c < n_av and not present.isdisjoint(need)]
+            toggles = [c for c in self.toggle if c < n_av and c not in self.timed]
+            off += [c for c in toggles if present.isdisjoint(self.toggle[c][2])]
+            live_toggle = [c for c in toggles if not present.isdisjoint(self.toggle[c][2])]
+            items = [c for c in self.item if c < n_av]
+            got = plans[key] = (np.asarray(off, np.int64), live_timed, live_toggle, np.asarray(items, np.int64),
+                                [self.item[c] for c in items])
+        return got
+
     def mask(self, view, rows, avail, t: int) -> None:
-        """`avail` (in place) without extend's orders no unit of the view's player can give now."""
-        own = fx.own_alive(rows, view.player)
+        """`avail` (in place) without extend's orders no unit of the view's player can give now. (The player's units
+        by type from features.own_list, Python's numbers; the classes none of its types gives set at once (_plan),
+        the rest checked one by one; its heroes' items from own_heroes, the item classes read and written at once.
+        One np.isin per class, numpy's scalars and a row's check at a time had been ~1M instructions a side-step; each
+        class is set from the values the sections before left, as before: the same answers.)"""
         cooling = getattr(view, "cooling", {})
         states = getattr(view, "autocast", {})
-        types = own[:, fx.C_TYPE]
-        # (the unit types the player has: most classes are another race's, no giver of theirs here, and one np.isin per
-        # class had been ~0.7 ms a side-step, more than all the rest of the actor's Python per step)
-        present = set(types.tolist())
-        for c, need in self.timed.items():
-            if c >= len(avail) or not avail[c]:
+        n_av = len(avail)
+        # (the unit types the player has, each its units' (id, mana): most classes are another race's, no giver of
+        # theirs here)
+        by_type: dict[int, list] = {}
+        for u in fx.own_list(rows, view.player):
+            got = by_type.get(u[fx.O_TYPE])
+            if got is None:
+                by_type[u[fx.O_TYPE]] = [(u[fx.O_ID], u[fx.O_MANA])]
+            else:
+                got.append((u[fx.O_ID], u[fx.O_MANA]))
+        present = by_type.keys()
+        off, live_timed, live_toggle, item_idx, item_vk = self._plan(n_av, present)
+        if len(off):  # (a timed or toggle class with no giver here: False, as each loop set it)
+            avail[off] = False
+        toggle, state, timed = self.toggle, self.state, self.timed
+        for c in live_timed:
+            if not avail[c]:
                 continue
-            if present.isdisjoint(need):
-                avail[c] = False
+            tg = toggle.get(c)  # (unit_ok's: a toggle already in the state it asks for, then mana and cooldown)
+            ok = False
+            for ty, (mana, _) in timed[c].items():
+                for i, m in by_type.get(ty, ()):
+                    if tg is not None and states is not None and state(states, i, tg[0]) == tg[1]:
+                        continue
+                    if m >= mana and cooling.get((i, c), -1) <= t:
+                        ok = True
+                        break
+                if ok:
+                    break
+            avail[c] = ok
+        for c in live_toggle:  # (a toggle while a giver is in the other state)
+            if not avail[c]:
                 continue
-            rows_c = own[np.isin(types, list(need))]
-            avail[c] = any(self.unit_ok(c, r, t, cooling, states) for r in rows_c)
-        for c, (ability, on, givers) in self.toggle.items():  # (a toggle while a giver is in the other state)
-            if c >= len(avail) or not avail[c] or c in self.timed:
-                continue
-            if present.isdisjoint(givers):
-                avail[c] = False
-                continue
-            ids = own[np.isin(types, list(givers)), fx.C_ID].tolist()
-            avail[c] = any(self.state(states, int(u), ability) != on for u in ids)
+            ability, on, givers = toggle[c]
+            avail[c] = any(state(states, i, ability) != on for g in givers for i, _ in by_type.get(g, ()))
         if self.night and not self.is_night(t, getattr(view, "step_seconds", 0.5)):
             for c in self.night:
-                if c < len(avail):
+                if c < n_av:
                     avail[c] = False
         for c, pairs in self.partner.items():
-            if c >= len(avail) or not avail[c]:
+            if c >= n_av or not avail[c]:
                 continue
             ok = False
             for g, p in pairs.items():
-                if not (types == g).any():
+                if g not in present:
                     continue
                 if p == GOLD_MINE:  # (a gold mine anyone may entangle: one not entangled yet, on the map)
                     ok = ok or bool((rows[:, fx.C_TYPE] == GOLD_MINE).any())
@@ -990,22 +1030,32 @@ class Checks:
                     ok = ok or bool(((rows[:, fx.C_OWNER] == view.player) & (rows[:, fx.C_TYPE] == p)
                                      & (rows[:, fx.C_FLAGS] & fx.DEAD > 0)).any())
                 else:
-                    ok = ok or bool(((types == p) & (own[:, fx.C_FLAGS] & fx.CONSTRUCTING == 0)).any())
+                    ok = ok or any(u[fx.O_TYPE] == p and not u[fx.O_FL] & fx.CONSTRUCTING
+                                   for u in fx.own_list(rows, view.player))
             avail[c] = ok
-        heroes = own[own[:, fx.C_FLAGS] & fx.HERO > 0] if own.shape[1] > fx.C_ITEM0 + 5 else own[:0]
-        if self.item:
-            shop = bool(np.isin(rows[:, fx.C_TYPE], PAWN_SHOPS).any()) or bool(
-                (np.isin(types, RACE_SHOP_CODES) & (own[:, fx.C_FLAGS] & fx.CONSTRUCTING == 0)).any())
-            for c, (verb, k) in self.item.items():
-                if c >= len(avail) or not avail[c]:
+        items = None  # (the heroes' 6 slots' item types: when an item or pick-up class asks)
+        if len(item_idx) or (self.pickup is not None and self.pickup < n_av and avail[self.pickup]):
+            items = [h[fx.C_ITEM0:fx.C_ITEM0 + 6] for h in fx.own_heroes(rows, view.player)]
+        if len(item_idx):
+            held = [any(h[k] != 0 for h in items) for k in range(6)]
+            shop = None
+            vals = avail[item_idx].tolist()
+            for j, (verb, k) in enumerate(item_vk):
+                if not vals[j]:
                     continue
-                held = bool((heroes[:, fx.C_ITEM0 + k] != 0).any()) if len(heroes) else False
-                avail[c] = held and (verb != "give" or len(heroes) > 1) and (verb != "sell" or shop)
-        if self.pickup is not None and self.pickup < len(avail) and avail[self.pickup]:
+                if held[k] and verb == "sell" and shop is None:  # (a shop that buys: a neutral one, or the race's own)
+                    shop = bool(fx.isin(rows[:, fx.C_TYPE], _PAWN_SORTED).any()) or any(
+                        u[fx.O_TYPE] in RACE_SHOP_CODES and not u[fx.O_FL] & fx.CONSTRUCTING
+                        for u in fx.own_list(rows, view.player))
+                vals[j] = held[k] and (verb != "give" or len(items) > 1) and (verb != "sell" or shop)
+            avail[item_idx] = vals
+        if self.pickup is not None and self.pickup < n_av and avail[self.pickup]:
             bit = 1 << view.player
             seen = any(vis & bit for _, _, _, vis, _ in (getattr(view, "ground", ()) or ()))
-            avail[self.pickup] = seen and len(heroes) > 0 and bool((heroes[:, fx.C_ITEM0:fx.C_ITEM0 + 6] == 0).any())
-        lab = bool((rows[:, fx.C_TYPE] == LAB).any())
+            avail[self.pickup] = seen and len(items) > 0 and any(v == 0 for h in items for v in h)
+        lab = None
         for c in self.lab + ([self.reveal] if self.reveal is not None else []):
-            if c < len(avail):
+            if c < n_av:
+                if lab is None and avail[c]:
+                    lab = bool((rows[:, fx.C_TYPE] == LAB).any())
                 avail[c] = avail[c] and lab

@@ -67,7 +67,7 @@ from .costs import order_costs, research_steps
 from . import featnative
 from . import macros
 from . import techtree
-from .featnative import addr as _faddr, lib as _featlib, to_f16
+from .featnative import addr as _faddr, lib as _featlib, to_f16, to_f32_into as _to_f32_into
 from .trace import DEAD_FLAG, Production, material, trace_step, unit_values  # noqa: F401
 from .play import unit_rows
 from .model import FullGameNet, act, adapt_config, anchor_kl, arch_key, evaluate, fine_head, load, point_parts, trained
@@ -501,9 +501,13 @@ class SharedRows:
         self.spec = (path, rows, G, NO, d)
 
     def write(self, r: int, st: dict) -> None:
-        """A view step into row r (an actor's game)."""
+        """A view step into row r (an actor's game; a remote one's entities in float16: F16C's conversion, numpy's
+        values)."""
         n = st["n"]
-        self.ent[r, :n], self.typ[r, :n], self.cur[r, :n] = st["ent"], st["type"], st["cur"]
+        ent = st["ent"]
+        if not (ent.dtype == np.float16 and _to_f32_into(ent, self.ent[r, :n])):
+            self.ent[r, :n] = ent
+        self.typ[r, :n], self.cur[r, :n] = st["type"], st["cur"]
         self.glob[r], self.n_own[r] = st["glob"], st["n_own"]
         self.avail[r] = st["avail"] if st.get("avail") is not None else 1.0
         if st.get("shared_noise"):  # (class 0 is always available: 2 marks the row, see packed_act)
@@ -1121,9 +1125,10 @@ def unpack_steps(packed: tuple) -> list[dict]:
 
 class PackedSteps(list):
     """A chunk's steps for the learner's queue: pickled as pack_steps' arrays, out of the queue a plain list
-    (unpack_steps). The remote games' wire encodes it as the list it is. `raw` (Trajectory's chunks): its steps hold
-    the arrays of RAW_STEP_KEYS as Trajectory.add was given them, converted when pickled (a key's at once) or when its
-    items are first read (each step's, as add had converted them)."""
+    (unpack_steps). The remote games' wire carries the same arrays (wire_packed; the gateway's wire.PackedChunk pickles
+    them on as this does). `raw` (Trajectory's chunks): its steps hold the arrays of RAW_STEP_KEYS as Trajectory.add was
+    given them, converted when pickled (a key's at once) or when its items are first read (each step's, as add had
+    converted them)."""
 
     def __init__(self, steps=(), raw: bool = False):
         super().__init__(steps)
@@ -1146,6 +1151,21 @@ class PackedSteps(list):
 
     def __reduce__(self):
         return unpack_steps, (pack_steps(list.copy(self), self.raw),)
+
+    def wire_packed(self):
+        """pack_steps' form for the remote games' wire (wire.pack_value): each column's dtype by its name, as the wire
+        carries a step's arrays (an array's dtype another object of a builtin one: its name, the same dtype); None
+        when one has no such name (the steps then go as the list they are). (Encoded step by step, ~20 small arrays
+        each, a chunk had cost a remote actor ~23M instructions, its gateway ~28M and the learner ~7M; the same steps
+        reach the learner either way.)"""
+        layouts, which, cols = pack_steps(list.copy(self), self.raw)
+        for k, col in cols.items():
+            if col[0] is not None and type(col[2]) is not str:
+                dt = col[2]
+                if dt.hasobject or np.dtype(dt.str) != dt:
+                    return None
+                cols[k] = (col[0], col[1], dt.str, col[3])
+        return layouts, which, cols
 
 
 class Trajectory:
@@ -1723,6 +1743,7 @@ HALLS = {int.from_bytes(c.encode(), "big") for c in
          ("htow", "hkee", "hcas", "ogre", "ostr", "ofrt", "unpl", "unp1", "unp2", "etol", "etoa", "etoe")}
 AT_MINES = {"htow", "ogre", "unpl", "etol", "ugol", "egol"}  # (with a hall already: an expansion)
 WORKER_TYPES = {"human": "hpea", "orc": "opeo", "undead": "uaco", "nightelf": "ewsp"}
+_MINE_CODES: dict = {}  # (race -> its worked mines' types, features.ECON_WORKERS', as features.isin's sorted codes)
 # a target's hall or haunted gold mine is its expansion (the starting hall is no item): made only by one far from home
 # at a gold mine (trace.Production); a second hall at home had counted (16% of fgself-122's games built one)
 EXPANSION_ITEMS = {"htow", "ogre", "unpl", "etol", "ugol"}
@@ -1989,11 +2010,14 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             return 0, 0
         c = self._cols
         wc = int.from_bytes(w.encode(), "big")
-        mines = [int.from_bytes(m.encode(), "big") for m in fx.ECON_WORKERS[self.race][1]]
-        have = int((own[:, c[1]] == wc).sum()) + sum(1 for made in self.busy.values() if w in made)
+        mines = _MINE_CODES.get(self.race)  # (features.isin's sorted codes: np.isin's general path took ~60-100 us)
+        if mines is None:
+            mines = _MINE_CODES[self.race] = fx.codes(int.from_bytes(m.encode(), "big") for m in fx.ECON_WORKERS[self.race][1])
+        types = own[:, c[1]]
+        have = int((types == wc).sum()) + sum(1 for made in self.busy.values() if w in made)
         start = 3 if self.race == "undead" else 5
         goal = min(start + int((self.st.get("n") or {}).get(w, 0)),
-                   fx.worker_cap(self.race, int(np.isin(own[:, c[1]], mines).sum())))
+                   fx.worker_cap(self.race, int(fx.isin(types, mines).sum())))
         return have, goal
 
     def workers(self, obs, p, t: int) -> list:
@@ -5449,6 +5473,11 @@ def main(argv: list[str] | None = None) -> int:
                                                              "Tailscale address only)")
     ap.add_argument("--remote-key", default="", help="the key file remote actors must have (default: wire.KEY_PATH, "
                                                      "made at the gateway's first start)")
+    ap.add_argument("--remote-codec", default="zstd", choices=("zstd", "zlib", "none"),
+                    help="the remote games' frames' compression (none: uncompressed, ~80 MB/s at 64 games, and neither "
+                         "side spends its CPU on it: zstd took ~0.4M instructions a remote game's step on the remote "
+                         "machine, ~0.15M at its gateway; the same messages either way). zstd falls back to zlib where "
+                         "a side has no zstd")
     ap.add_argument("--wine", default="", help="another Wine's bin folder (e.g. GE-Proton's files/bin; "
                                               "runtime.wine.use_wine): its own prefixes")
     ap.add_argument("--fsync", type=int, default=0, help="with --wine (a Proton build): Wine's synchronization "
@@ -5978,7 +6007,9 @@ def main(argv: list[str] | None = None) -> int:
                                                                  local_rows + 2 * a0, out_q, stop,
                                                                  {"port": args.remote_port, "bind": args.remote_bind,
                                                                   "key": args.remote_key or None, "hello": hello,
-                                                                  "index": g if n_gw > 1 else None}),
+                                                                  "index": g if n_gw > 1 else None,
+                                                                  "codecs": {"zstd": ("zstd", "zlib"), "zlib": ("zlib",),
+                                                                             "none": ()}[args.remote_codec]}),
                                       daemon=True))
     server_conns = [b for ps in pipes for _, b in ps] + [b for _, b in remote_pipes] if args.central_inference else []
     infer_thread = native = None

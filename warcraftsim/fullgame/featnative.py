@@ -41,6 +41,10 @@ def lib():
         L.w3f_priv.argtypes = [P, I, I, I, D, P, P]
         L.w3f_to_f16.restype = I
         L.w3f_to_f16.argtypes = [P, P, I]
+        L.w3f_to_f32.restype = I
+        L.w3f_to_f32.argtypes = [P, P, I]
+        L.w3f_last_a.restype = None
+        L.w3f_last_a.argtypes = [P]
         L.w3f_view.restype = I
         L.w3f_view.argtypes = [P, I, I, I, D, P, P, I, I, I, I, P, P, I, I, P, P, P, P]
         L.w3f_side.restype = I
@@ -57,6 +61,10 @@ def lib():
         L.w3f_view_a.argtypes = [P, D]
         L.w3f_afford_a.restype = None
         L.w3f_afford_a.argtypes = [P]
+        L.w3f_spell_any_a.restype = None
+        L.w3f_spell_any_a.argtypes = [P]
+        L.w3f_mine_counts_a.restype = I
+        L.w3f_mine_counts_a.argtypes = [P]
         _lib = L
     return _lib or None
 
@@ -378,3 +386,116 @@ def to_f16(a: np.ndarray) -> np.ndarray:
     if L is None or not a.size or not L.w3f_to_f16(a.ctypes.data, out.ctypes.data, a.size):
         return a.astype(np.float16)
     return out
+
+
+_SPELL_TABLES: list = [None, None]  # spell_any's sorted type lists and spells: [what they were made from, (arrays, head)]
+
+
+def spell_any(fx, rows: np.ndarray, player: int, owner) -> dict | None:
+    """features.spell_any in C (w3f_spell_any_a): {spell order: whether a row is its target}, or None without the
+    library. `owner`: an object to keep the call's argument and output arrays on (a view: one thread's)."""
+    L = lib()
+    if L is None:
+        return None
+    spells, k = tuple(fx.FUTILE_SPELLS), fx._kinds()
+    key = (spells, k)
+    if _SPELL_TABLES[0] is None or _SPELL_TABLES[0][0] != spells or _SPELL_TABLES[0][1] is not k:  # (once: the kinds'
+        arrs = [np.ascontiguousarray(k[n], np.int64) for n in ("undead", "mechanical", "ancient", "immune")]
+        sp = np.asarray([v for o in spells for v in (int(fx.FUTILE_SPELLS[o] == "undead"), fx.SPELL_CASTERS[o])] or [0],
+                        np.int64)
+        head = _array("q", [x for a in arrs for x in (a.ctypes.data, len(a))] + [len(spells), sp.ctypes.data])
+        _SPELL_TABLES[:] = [key, (arrs, sp, head)]
+    rows = np.ascontiguousarray(rows, np.int64)
+    buf = owner.__dict__.get("_spell_buf")  # (codes are fixed, but a test may swap them)
+    if buf is None or buf[4] is not _SPELL_TABLES[0]:
+        a = _array("q", bytes(8 * 15))
+        found = np.zeros(max(len(spells), 1), np.int64)
+        a[4:14] = _SPELL_TABLES[1][2]
+        a[14] = found.ctypes.data
+        buf = owner._spell_buf = (a, a.buffer_info()[0], found, spells, _SPELL_TABLES[0], _SPELL_TABLES[1])  # (its tables kept alive)
+    a, found = buf[0], buf[2]
+    a[0], a[1], a[2], a[3] = _rows_addr(rows), len(rows), rows.shape[1], int(player)
+    L.w3f_spell_any_a(buf[1])
+    return dict(zip(spells, map(bool, found[:len(spells)].tolist())))
+
+
+_MINING: list = [None, None]  # mine_counts' mining orders: [the array given, (the sorted array, its pointer)]
+
+
+def mine_counts(rows: np.ndarray, player: int, mine_type: int, mining: np.ndarray, near: float, owner) -> list | None:
+    """View.futile's mines in C (w3f_mine_counts_a): [(id, workers working it)] of the player's living finished units
+    of `mine_type`, in their order (features.mine_workers' count), or None without the library. `mining`: the mining
+    orders, sorted (features._MINING). `owner`: an object to keep the call's arrays on (a view: one thread's)."""
+    L = lib()
+    if L is None:
+        return None
+    if _MINING[0] is not mining:
+        m = np.ascontiguousarray(mining, np.int64)
+        _MINING[:] = [mining, (m, m.ctypes.data)]
+    rows = np.ascontiguousarray(rows, np.int64)
+    buf = owner.__dict__.get("_mine_buf")
+    if buf is None or len(buf[2]) < 2 * len(rows) or buf[4] != near:
+        a = _array("q", bytes(8 * 9))
+        a[7] = _array("q", _array("d", [float(near)]).tobytes())[0]  # (the double's bits)
+        out = np.empty(max(2 * len(rows), 256), np.int64)
+        a[8] = out.ctypes.data
+        buf = owner._mine_buf = (a, a.buffer_info()[0], out, None, near)
+    a, out = buf[0], buf[2]
+    m, mp = _MINING[1]
+    a[0], a[1], a[2], a[3], a[4], a[5], a[6] = _rows_addr(rows), len(rows), rows.shape[1], int(player), int(mine_type), mp, len(m)
+    n = L.w3f_mine_counts_a(buf[1])
+    flat = out[:2 * n].tolist()
+    return list(zip(flat[0::2], flat[1::2]))
+
+
+def to_f32_into(src: np.ndarray, dst: np.ndarray) -> bool:
+    """A float16 array into a float32 one of its shape (C-contiguous, writable) by the CPU's F16C instruction, the same
+    values as numpy's (a NaN's bits too); False without the library, the instruction or such arrays (the caller's
+    numpy then)."""
+    L = lib()
+    if (L is None or src.dtype != np.float16 or dst.dtype != np.float32 or src.shape != dst.shape or not src.size
+            or not src.flags.c_contiguous or not dst.flags.c_contiguous or not dst.flags.writeable):
+        return False
+    return bool(L.w3f_to_f32(src.ctypes.data, addr(dst), src.size))
+
+
+_D = _array("d", [0.0])
+
+
+def _bits(x: float) -> int:
+    """A double's bits as an int64 (an argument array's)."""
+    _D[0] = x
+    return _array("q", _D.tobytes())[0]
+
+
+LAST_RECORD = 48  # (features.LAST_PACK's size: w3f_last_a's LastOrder)
+
+
+def last_features(f: np.ndarray, sel: np.ndarray, n_own: int, packed: dict, t: int, sign: float, a_last: int,
+                  scale: float, age: float, owner) -> bool:
+    """View.last_features' numbers in C (w3f_last_a): `packed` the view's last orders as records (View.last_packed:
+    joined whole, no Python per unit); False when it can't (no library, other arrays: the Python then). `owner`: an
+    object to keep the call's argument array on."""
+    L = lib()
+    if (L is None or f.dtype != np.float32 or not f.flags.c_contiguous or not f.flags.writeable or f.ndim != 2
+            or sel.dtype != np.int64 or not sel.flags.c_contiguous or len(f) < len(sel) or a_last + 5 > f.shape[1]):
+        return False
+    recs = b"".join(packed.values())
+    if len(recs) != LAST_RECORD * len(packed):
+        return False
+    buf = owner.__dict__.get("_last_buf")
+    if buf is None or buf[2] != (sign, scale, age):
+        a = _array("q", bytes(8 * 13))
+        a[10], a[11], a[12] = _bits(sign), _bits(scale), _bits(age)
+        buf = owner._last_buf = (a, a.buffer_info()[0], (sign, scale, age))
+    a = buf[0]
+    a[0], a[1], a[2], a[3] = sel.ctypes.data if not len(sel) else addr(sel), len(sel), sel.shape[1], n_own
+    a[4], a[5], a[6], a[7], a[8], a[9] = addr(f), f.shape[1], a_last, _rec_addr(recs), len(packed), t
+    L.w3f_last_a(buf[1])
+    return True
+
+
+def _rec_addr(b: bytes) -> int:
+    """A bytes object's data address (read only: C reads it while the caller holds it)."""
+    return ctypes.cast(ctypes.c_char_p(b), ctypes.c_void_p).value or 0
+

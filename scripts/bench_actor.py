@@ -68,6 +68,9 @@ def settings(run: str) -> tuple[dict, dict]:
     fx.set_fine(int(cfg.get("fine_points", 0) or 0))  # (--fine-points: the point indices)
     if hasattr(fx, "set_macros_off"):  # (--macros-off, as the actors set it; a tree from before it has none)
         fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
+    for name in ("shop_items", "full_vocab", "obs_full", "econ_masks", "value_tax"):  # (as actor_main sets them; a tree
+        if hasattr(fx, f"set_{name}"):                                     # from before one has none)
+            getattr(fx, f"set_{name}")(int(cfg.get(name, 0) or 0))
     from warcraftsim.data.duelmap import parse_duel_name
     if parse_duel_name(cfg["map"]) is None:
         from warcraftsim.data.mapbuild import stock_map_path
@@ -82,6 +85,17 @@ def settings(run: str) -> tuple[dict, dict]:
     cfg["device"] = "cpu"
     cfg["_wine"] = w
     return cfg, vocab
+
+
+def with_scenario(cfg: dict, run: str, scenario: str) -> None:
+    """--scenario: every game starts in this situation (selfplay --scenarios: "late", "base2", ...), the run's late
+    states for a late start; the recording keeps it and its replay sets it alike (play_one draws with the seeded
+    random)."""
+    if not scenario:
+        return
+    c = json.loads((RUNS / run / "run.json").read_text())["config"]
+    cfg.update(scenarios=[scenario], scenario_share=1.0,
+               late_states=[x for x in str(c.get("late_states") or "").split(",") if x])
 
 
 class Queue:
@@ -105,11 +119,12 @@ def record(a) -> int:
     from warcraftsim.runtime import wine
     from warcraftsim.runtime.instance import Agent, BuiltinAI, GameInstance, GameSetup
     cfg, vocab = settings(a.run)
+    with_scenario(cfg, a.run, a.scenario)
     w = cfg.pop("_wine")
     if w.get("wine"):
         wine.use_wine(w["wine"], w["fsync"], w["ntsync"])
     wine.ensure_template()
-    torch.set_num_threads(4)
+    torch.set_num_threads(int(os.environ.get("BENCH_THREADS", 4)))
     nets = selfplay.Nets(cfg, torch.device("cpu"))
     infer = selfplay.Inference(nets, torch.device("cpu"), 2, compile_=False, entities=tuple(cfg["infer_entities"]))
     answers: list = []
@@ -127,7 +142,7 @@ def record(a) -> int:
     setup = GameSetup(map=cfg["map"], slots=slots,
                       step_seconds=cfg["step_seconds"], max_game_seconds=cfg["max_minutes"] * 60, victory="decisive",
                       window=(320, 240), draw=False, wait_floor_ms=cfg["wait_floor_ms"], native_obs=True, d3d_thread=False,
-                      render_threads=0, pairs=1, cuts=cfg.get("game_cuts") or None)
+                      render_threads=0, pairs=1, cuts=cfg.get("game_cuts") or None, nice=int(os.environ.get("BENCH_NICE", 0)))
     groups: list[list[bytes]] = []  # the payloads each step parsed (a repeat or another episode's is parsed, then skipped)
     random.seed(a.seed)
     random.Random = _Seeded
@@ -158,7 +173,7 @@ def record(a) -> int:
     a.out.parent.mkdir(parents=True, exist_ok=True)
     with open(a.out, "wb") as f:
         pickle.dump({"run": a.run, "races": races, "side": side, "seed": a.seed, "groups": groups, "answers": answers,
-                     "order_names": order_names, "setup": setup, "opp": opp}, f)
+                     "order_names": order_names, "setup": setup, "opp": opp, "scenario": a.scenario}, f)
     print("saved", a.out)
     return 0
 
@@ -192,13 +207,33 @@ class Game:
 class Answers:
     """The inference's answers, in the order they were asked."""
 
-    def __init__(self, answers: list):
-        self.answers, self.k = answers, 0
+    def __init__(self, answers: list, views: list | None = None):
+        self.answers, self.k, self.views = answers, 0, views
 
     def request(self, items):
+        if self.views is not None:  # (each view step as the inference server reads it: its digest)
+            self.views.append([view_digest(st) for _, st in items])
         out = self.answers[self.k]
         self.k += 1
         return out
+
+
+VIEW_KEYS = ("n", "n_own", "ent", "type", "cur", "glob", "avail", "sel", "h", "first_free", "ghost0")
+
+
+def view_digest(st: dict) -> str:
+    """A view step's arrays and numbers as the inference server and the commands read them (float32 entities, not the
+    learner's float16): a digest of their dtypes, shapes and bytes."""
+    import hashlib
+    h = hashlib.blake2b(digest_size=16)
+    for k in VIEW_KEYS:
+        v = st.get(k)
+        if isinstance(v, np.ndarray):
+            h.update(f"{k}:{v.dtype.str}:{v.shape}:".encode())
+            h.update(np.ascontiguousarray(v).tobytes())
+        else:
+            h.update(f"{k}={v!r};".encode())
+    return h.hexdigest()
 
 
 class PerfControl:
@@ -216,6 +251,7 @@ class PerfControl:
 
 
 PERF: PerfControl | None = None
+VIEWS = os.environ.get("BENCH_VIEWS", "1") == "1"  # (replay: every view step's digest kept and compared too)
 
 
 def replay_once(rec: dict, cfg: dict, vocab: dict, prof=None, count: bool = False) -> tuple[float, dict]:
@@ -223,8 +259,15 @@ def replay_once(rec: dict, cfg: dict, vocab: dict, prof=None, count: bool = Fals
     random.seed(rec["seed"])
     random.Random = _Seeded
     g, q = Game(rec), Queue()
-    answers = Answers(copy.deepcopy(rec["answers"]))
+    views: list = []
+    answers = Answers(copy.deepcopy(rec["answers"]), views if VIEWS else None)
     obs = g.start()
+    if os.environ.get("BENCH_GC") == "off":  # (the cyclic collector's share: BENCH_GC=off, or freeze as an actor may)
+        import gc
+        gc.disable()
+    elif os.environ.get("BENCH_GC") == "freeze":
+        import gc
+        gc.freeze()
     if count:
         PERF("enable")
     t0 = time.process_time()  # (this process's CPU: the machine is busy with a run, wall time is noisy)
@@ -238,7 +281,7 @@ def replay_once(rec: dict, cfg: dict, vocab: dict, prof=None, count: bool = Fals
     dt = time.process_time() - t0
     if count:
         PERF("disable")
-    return dt, {"cmds": g.sent, "puts": q.items, "episode": ep}
+    return dt, {"cmds": g.sent, "puts": q.items, "episode": ep, **({"views": views} if VIEWS else {})}
 
 
 def same(a, b, path="") -> list[str]:
@@ -276,6 +319,12 @@ FUNCTIONS = {
     "mix_gap": "strategy:mix_gap", "add": "selfplay:Trajectory.add", "flush": "selfplay:Trajectory.flush",
     "put": "bench:Queue.put", "parse": "native:NativeObs.parse", "merge": "native:NativeObs.merge",
     "unit_rows": "selfplay:unit_rows", "site": "macros:site", "camp": "macros:camp",
+    "full_mask": "fullvocab:Checks.mask", "econ": "features:View.econ_allowed", "chores": "features:View.chores",
+    "futile": "features:View.futile", "item_slots": "features:View.item_slots", "spell_targets": "features:spell_targets",
+    "spell_any": "features:spell_any", "own_list": "features:own_list", "own_heroes": "features:own_heroes",
+    "own_alive": "features:own_alive", "last": "features:View.last_features",
+    "obsfull": "obsfull:apply", "priv": "features:View.priv", "revive": "features:View.revive_reserve",
+    "pickable": "macros:pickable", "trackers": "modes:Tracker.step", "label": "features:Encoder.step_labels",
 }
 
 
@@ -334,6 +383,7 @@ def functions(rec: dict, cfg: dict, vocab: dict, names: list[str]) -> None:
 def replay(a) -> int:
     rec = pickle.loads(a.record.read_bytes())
     cfg, vocab = settings(a.settings or rec["run"])  # (--settings: another run's (the same vocabulary): its recipe)
+    with_scenario(cfg, rec["run"], rec.get("scenario") or "")
     cfg.pop("_wine")
     if a.functions:  # (a warm replay first, then the counted one)
         replay_once(rec, cfg, vocab)
@@ -365,8 +415,10 @@ def replay(a) -> int:
     if a.compare:
         ref = pickle.loads(a.compare.read_bytes())
         diff = same(ref["cmds"], out["cmds"], "cmds") + same(ref["puts"], out["puts"], "puts") \
-            + same(ref["episode"], out["episode"], "episode")
-        print(f"compared {len(out['cmds'])} steps' commands, {len(out['puts'])} puts, the episode row: "
+            + same(ref["episode"], out["episode"], "episode") \
+            + (same(ref["views"], out["views"], "views") if "views" in ref and "views" in out else [])
+        print(f"compared {len(out['cmds'])} steps' commands, {len(out['puts'])} puts, the episode row"
+              f"{', ' + str(sum(map(len, out['views']))) + ' view steps' if 'views' in ref and 'views' in out else ''}: "
               f"{len(diff)} differences" + "".join(f"\n  {d}" for d in diff[:int(os.environ.get("BENCH_DIFFS", 12))]))
     return 0
 
@@ -415,6 +467,7 @@ def main() -> int:
                    "agents' balance tax: longer games)")
     r.add_argument("--tax-side", type=int, default=0)
     r.add_argument("--ai", default="", help="the second race's player the built-in AI of this difficulty (insane, ...)")
+    r.add_argument("--scenario", default="", help="the game's start (selfplay --scenarios: late, base2, ...)")
     p = sub.add_parser("replay")
     p.add_argument("record", type=Path)
     p.add_argument("--reps", type=int, default=3)

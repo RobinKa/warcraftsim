@@ -94,7 +94,7 @@ def call(conn, shared, row: int, rid: int, items: list[tuple[str, dict]], timeou
 class Gateway:
     def __init__(self, cfg: dict, conns: list, first_row: int, out_q, stop, port: int, bind: str = "0.0.0.0",
                  key: bytes | None = None, hello: dict | None = None, shared=None, code: str | None = "here",
-                 index: int | None = None):
+                 index: int | None = None, codecs: tuple | None = None):
         """`hello`: what a remote machine's control connection is sent (selfplay.main: the actors' settings and
         files); `shared`: the SharedRows (default: cfg's); `code`: the code_version remote machines must run (here:
         this tree's, as the learner started; None: any); `index`: this gateway's number of several sharing the port
@@ -110,6 +110,7 @@ class Gateway:
         self.stats = Stats()
         self.run_dir = Path(cfg["run_dir"])
         self.index = index
+        self.codecs = wire.CODECS if codecs is None else tuple(codecs)  # (--remote-codec: the frames' compressions)
         self.server = socket.create_server((bind, port), reuse_port=index is not None)
         self.server.settimeout(1.0)
         self.port = self.server.getsockname()[1]
@@ -136,7 +137,7 @@ class Gateway:
                 sock.setsockopt(socket.IPPROTO_TCP, getattr(socket, opt), v)
         sock.settimeout(60.0)  # (the handshake's)
         try:
-            peer = wire.server_handshake(sock, self.key, {"run": self.run_dir.name}, self.code)
+            peer = wire.server_handshake(sock, self.key, {"run": self.run_dir.name}, self.code, self.codecs)
         except (OSError, ValueError, wire.WireError) as e:
             print(f"gateway: {addr[0]} refused: {e}", flush=True)
             sock.close()
@@ -234,6 +235,6 @@ def gateway_main(cfg: dict, conns: list, first_row: int, out_q, stop, opts: dict
     out_q.cancel_join_thread()
     key = wire.load_key(opts.get("key"), create=True)
     gw = Gateway(cfg, conns, first_row, out_q, stop, opts["port"], opts.get("bind", "0.0.0.0"), key, opts.get("hello"),
-                 index=opts.get("index"))
+                 index=opts.get("index"), codecs=opts.get("codecs"))
     print(f"gateway: {len(conns)} remote game slots on port {gw.port} (key {opts.get('key') or wire.KEY_PATH})", flush=True)
     gw.serve_forever(lambda: os.getppid() == cfg["learner_pid"])

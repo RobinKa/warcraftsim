@@ -502,3 +502,157 @@ void w3f_natural(const int64_t *rows, int nrows, int ncols, double sx, double sy
         else if (r[C_OWNER] <= 1 && d < taken_near) out[4] = 1;
     }
 }
+
+/* features.spell_any (FUTILE_MASK) with its arguments in one int64 array: rows, nrows, ncols, player, the sorted
+ * undead, mechanical, ancient and spell immune types (a pointer and a count each), n_sp, the spells (per spell: 1 if it
+ * heals the undead, its caster's type), found (out: int64 [n_sp]). Per spell, whether a row is its target other than one
+ * of the player's units of its caster's type: living and no building, neither mechanical nor ancient; one of the
+ * player's of the kind it heals below full health, or another player's of the other kind that the player sees, not
+ * spell immune (features.spell_targets' masks). */
+void w3f_spell_any_a(const int64_t *a) {
+    const int64_t *rows = (const int64_t *)a[0];
+    int nrows = (int)a[1], ncols = (int)a[2];
+    int64_t player = a[3];
+    const int64_t *und = (const int64_t *)a[4], *mech = (const int64_t *)a[6], *anc = (const int64_t *)a[8],
+                  *imm = (const int64_t *)a[10], *sp = (const int64_t *)a[13];
+    int nu = (int)a[5], nm = (int)a[7], na = (int)a[9], ni = (int)a[11], n_sp = (int)a[12];
+    int64_t *found = (int64_t *)a[14];
+    int left = n_sp;
+    for (int s = 0; s < n_sp; s++) found[s] = 0;
+    for (int i = 0; i < nrows && left; i++) {
+        const int64_t *r = rows + (size_t)i * ncols;
+        int64_t fl = r[C_FLAGS], ty = r[C_TYPE];
+        if ((fl & (DEAD | STRUCTURE)) || in_sorted(mech, nm, ty, NULL, NULL) || in_sorted(anc, na, ty, NULL, NULL))
+            continue;
+        int64_t u = in_sorted(und, nu, ty, NULL, NULL);
+        if (r[C_OWNER] == player) {
+            if (r[C_HP] < r[C_MAXHP])
+                for (int s = 0; s < n_sp; s++)
+                    if (!found[s] && u == sp[2 * s] && ty != sp[2 * s + 1]) { found[s] = 1; left--; }
+        } else if (((r[C_VIS] >> player) & 1) == 1 && !in_sorted(imm, ni, ty, NULL, NULL)) {
+            for (int s = 0; s < n_sp; s++)
+                if (!found[s] && u != sp[2 * s]) { found[s] = 1; left--; }
+        }
+    }
+}
+
+/* View.futile's mines (features.mine_workers) with its arguments in one int64 array: rows, nrows, ncols, player, the
+ * mine's type, the sorted mining orders (a pointer and a count), near (a double's bits), out. Of the player's living
+ * finished units of the mine's type, in their order, each one's id and how many of the player's living workers work it:
+ * within `near` of it (numpy's hypot is libm's, of the int64 differences) and on a mining order or inside it (hidden).
+ * Returns the number of mines. */
+#define HIDDEN 16
+int w3f_mine_counts_a(const int64_t *a) {
+    const int64_t *rows = (const int64_t *)a[0];
+    int nrows = (int)a[1], ncols = (int)a[2];
+    int64_t player = a[3], mtype = a[4];
+    const int64_t *mining = (const int64_t *)a[5];
+    int nmining = (int)a[6];
+    double near;
+    memcpy(&near, &a[7], sizeof near);
+    int64_t *out = (int64_t *)a[8];
+    int n = 0;
+    for (int i = 0; i < nrows; i++) {
+        const int64_t *m = rows + (size_t)i * ncols;
+        if (m[C_OWNER] != player || (m[C_FLAGS] & (DEAD | CONSTRUCTING)) || m[C_TYPE] != mtype) continue;
+        int64_t k = 0;
+        for (int j = 0; j < nrows; j++) {
+            const int64_t *w = rows + (size_t)j * ncols;
+            int64_t fl = w[C_FLAGS];
+            if (w[C_OWNER] != player || (fl & DEAD) || !(fl & WORKER)) continue;
+            if (!(fl & HIDDEN) && !in_sorted(mining, nmining, w[C_ORDER], NULL, NULL)) continue;
+            if (hypot((double)(w[C_X] - m[C_X]), (double)(w[C_Y] - m[C_Y])) < near) k++;
+        }
+        out[2 * n] = m[C_ID];
+        out[2 * n + 1] = k;
+        n++;
+    }
+    return n;
+}
+
+/* float16 -> float32 with the CPU's F16C instruction (exact, as numpy's astype; a NaN's bits as numpy keeps them: F16C
+ * would set its quiet bit): the gateway's remote view steps into the shared rows (selfplay.SharedRows.write). Returns 0
+ * without F16C (the caller converts with numpy then). */
+__attribute__((target("avx,f16c"))) static void to_f32_vec(const uint16_t *src, float *dst, int n) {
+    int i = 0;
+    for (; i + 8 <= n; i += 8)
+        _mm256_storeu_ps(dst + i, _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(src + i))));
+    if (i < n) {
+        uint16_t h8[8] = {0};
+        float f8[8];
+        memcpy(h8, src + i, sizeof(uint16_t) * (n - i));
+        _mm256_storeu_ps(f8, _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)h8)));
+        memcpy(dst + i, f8, sizeof(float) * (n - i));
+    }
+    for (i = 0; i < n; i++) {
+        uint16_t h = src[i];
+        if ((h & 0x7c00u) == 0x7c00u && (h & 0x03ffu)) {  /* (a NaN: numpy's npy_halfbits_to_floatbits) */
+            uint32_t b = ((uint32_t)(h & 0x8000u) << 16) | 0x7f800000u | ((uint32_t)(h & 0x03ffu) << 13);
+            memcpy(dst + i, &b, sizeof b);
+        }
+    }
+}
+
+int w3f_to_f32(const uint16_t *src, float *dst, int n) {
+    static int ok = -1;
+    if (ok < 0)
+        ok = __builtin_cpu_supports("f16c") && __builtin_cpu_supports("avx");
+    if (!ok)
+        return 0;
+    to_f32_vec(src, dst, n);
+    return 1;
+}
+
+/* features.View.last_features with its arguments in one int64 array: sel (int64 [n][ncols]), n, ncols, n_own, f (float32
+ * [n][F]), F, a_last, the view's last orders (records of View.last_packed: unit id, kind, x, y, target id, the order's
+ * step t0; int64, int64, double, double, int64, int64), their count, t, sign, scale, age (the doubles' bits).
+ * f[k][a_last + 4] = 1 for every own row k; an own row's unit with a last order: its age (t - t0) / age (at most 1), the
+ * point it was sent to (kind 1) or its target's place (kind 2, the target among sel's rows: its last), relative to it (x
+ * mirrored by sign) / scale clipped to [-2, 2], and its kind's flag: View.step's numbers in double, stored as float
+ * (numpy's float64 into the float32 features). */
+typedef struct { int64_t id, kind; double x, y; int64_t target, t0; } LastOrder;
+
+void w3f_last_a(const int64_t *a) {
+    const int64_t *sel = (const int64_t *)a[0];
+    int n = (int)a[1], ncols = (int)a[2], n_own = (int)a[3];
+    float *f = (float *)a[4];
+    int F = (int)a[5], al = (int)a[6];
+    const char *recs = (const char *)a[7];
+    int m = (int)a[8];
+    int64_t t = a[9];
+    double sign, scale, age;
+    memcpy(&sign, &a[10], sizeof sign);
+    memcpy(&scale, &a[11], sizeof scale);
+    memcpy(&age, &a[12], sizeof age);
+    for (int k = 0; k < n_own; k++) {
+        float *fk = f + (size_t)k * F;
+        fk[al + 4] = 1.0f;
+        int64_t id = sel[(size_t)k * ncols + C_ID];
+        LastOrder v;
+        int found = 0;
+        for (int q = 0; q < m && !found; q++) {
+            memcpy(&v, recs + q * sizeof(LastOrder), sizeof v);
+            found = v.id == id;
+        }
+        if (!found) continue;
+        int kind = (int)v.kind;
+        double x = v.x, y = v.y;
+        double g = (double)(t - v.t0) / age;
+        fk[al + 4] = (float)(g < 1.0 ? g : 1.0);
+        int j = -1;
+        if (kind == 2)
+            for (int i = n - 1; i >= 0; i--)
+                if (sel[(size_t)i * ncols + C_ID] == v.target) { j = i; break; }
+        if (j >= 0) {
+            x = (double)sel[(size_t)j * ncols + C_X];
+            y = (double)sel[(size_t)j * ncols + C_Y];
+        }
+        if (kind == 1 || j >= 0) {
+            double vx = sign * (x - (double)sel[(size_t)k * ncols + C_X]) / scale;
+            double vy = (y - (double)sel[(size_t)k * ncols + C_Y]) / scale;
+            fk[al] = (float)(vx < -2.0 ? -2.0 : vx > 2.0 ? 2.0 : vx);
+            fk[al + 1] = (float)(vy < -2.0 ? -2.0 : vy > 2.0 ? 2.0 : vy);
+        }
+        if (kind) fk[al + 1 + kind] = 1.0f;
+    }
+}

@@ -865,14 +865,20 @@ class BCAgent:
                 del since[b]
         for b in safe:
             since.setdefault(b, self.t)
-        own = rows[(rows[:, fx.C_OWNER] == self.player) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0)]
-        loaded = own[(own[:, fx.C_TYPE] == fx.PEON_T) & (own[:, fx.C_FLAGS] & fx.LOADED_FLAG > 0)]
-        burrows = own[np.isin(own[:, fx.C_ID], list(safe))]
-        if not len(loaded) or not len(burrows):
+        own = fx.own_list(rows, self.player)  # (Python's numbers: numpy's masks on a step's rows had been ~70k a step)
+        loaded = [u for u in own if u[fx.O_TYPE] == fx.PEON_T and u[fx.O_FL] & fx.LOADED_FLAG]
+        burrows = [u for u in own if u[fx.O_ID] in safe] if loaded else []
+        if not loaded or not burrows:
             return []
-        bx, by = burrows[:, fx.C_X].astype(np.float64), burrows[:, fx.C_Y].astype(np.float64)
-        full = {int(burrows[int(np.argmin((bx - x) ** 2 + (by - y) ** 2)), fx.C_ID])
-                for x, y in loaded[:, [fx.C_X, fx.C_Y]].tolist()}
+        bxy = [(float(u[fx.O_X]), float(u[fx.O_Y]), u[fx.O_ID]) for u in burrows]
+        full = set()
+        for u in loaded:  # (the burrow nearest each loaded peon, the first of the nearest: numpy's argmin of the same
+            x, y, best, bd = u[fx.O_X], u[fx.O_Y], None, 0.0  # doubles' squares)
+            for bx, by, b in bxy:
+                d = (bx - x) * (bx - x) + (by - y) * (by - y)
+                if best is None or d < bd:
+                    best, bd = b, d
+            full.add(best)
         last = self.__dict__.setdefault("stood_down", {})
         out = []
         for b in sorted(full):
