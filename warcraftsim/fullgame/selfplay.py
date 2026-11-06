@@ -2972,10 +2972,15 @@ LX_KEEP = 8  # (its snapshots kept in the league at most, all of them together: 
 # inference loop keeps, ~13 MB)
 
 
+EXPLOITER_PREFIXES = ("exploiter:", LX_PREFIX)  # (the main exploiter's snapshots that beat the learner; the league
+# exploiters')
+
+
 def kept_for_good(name: str) -> bool:
     """A league member the past snapshots' rotation (--max-past) never takes out: --league-add's ("fixed:"), and the
-    league exploiters' snapshots (they would last ~8 minutes among the learner's own, one every 40 updates)."""
-    return name.startswith(("fixed:", LX_PREFIX))
+    exploiters' snapshots, the main exploiter's and the league exploiters' (among the learner's own, one every 40
+    updates, ~83 s in fgself-193, a snapshot joined as the newest was gone after 5 more: ~7 minutes in the league)."""
+    return name.startswith(("fixed:", *EXPLOITER_PREFIXES))
 
 
 class LeagueExploiterRecord:
@@ -3141,10 +3146,12 @@ class League:
         self._trim_lx()
 
     def _trim_lx(self) -> None:
-        """The league exploiters' snapshots: LX_KEEP at most, the oldest out first."""
-        lxs = [i for i, m in enumerate(self.past) if m.name.startswith(LX_PREFIX)]
-        for i in reversed(lxs[:max(0, len(lxs) - LX_KEEP)]):
-            del self.past[i]
+        """The exploiters' snapshots: LX_KEEP at most of the main exploiter's and of the league exploiters' each, the
+        oldest out first."""
+        for prefix in EXPLOITER_PREFIXES:
+            got = [i for i, m in enumerate(self.past) if m.name.startswith(prefix)]
+            for i in reversed(got[:max(0, len(got) - LX_KEEP)]):
+                del self.past[i]
 
     def restore(self, summary: dict) -> None:
         """Members and records from a league.json (resuming a run)."""
