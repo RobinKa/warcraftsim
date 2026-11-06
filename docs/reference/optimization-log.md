@@ -831,3 +831,16 @@ To measure on the GPU (between runs, the GPU free), from the main tree:
 
 
 **Confirmed on the GPU after the fixes (2026-11-06 14:55, between `fgself-194` and `fgself-195`; rows 8,16,24,32,48,64):** fused fp32 6.10 ms a round, TF32 3.97 (value difference p99 1.5e-4, max 2.4e-4: the outliers are gone), bf16 3.37 (p99 1.6e-2), **bf16-mixed 3.41** (p99 3.9e-3, max 7.1e-3, entropy p99 9.8e-4). `scripts/check_native_infer.py --precision tf32` and `--precision bf16-mixed` both pass in the C++ loop with the past-snapshot slots (no capture error, no Xid). `fgself-195` runs with `--infer-precision bf16-mixed --infer-rows 8,16,24,32,48,64`.
+
+## After bf16-mixed: the learner's Python is the limit (2026-11-06, `fgself-195`)
+
+`--infer-precision bf16-mixed` with `--infer-rows 8,16,24,32,48,64` took the run from ~4,300 to ~5,300 agent steps/s. Then, 15-minute windows each:
+
+| change | steps/s | inference rounds/s | staleness |
+|---|---|---|---|
+| bf16-mixed, finer rows (box 56 games) | 5,309 | 215 | 3.28-3.57 |
+| box 64 games (+~10% games from the box) | 5,263 | 216 | 3.59 |
+| `--infer-past-slots 10` (swaps 615/s → 0), `--infer-past-period-ms 4` | 5,345 | 216 | 3.63 |
+| `--update-pause-ms 8`, `--infer-period-ms 3` | 5,236 | 278 | 3.71 |
+
+More games and a faster inference loop gave nothing while staleness rose: data waits for the learner. The learner works in turns, collecting 8,192 steps (~0.43 s, `perf/rollout`) and then updating (~1.1 s). In 8 py-spy dumps of its main thread, 3 were in `collate`/`to_device` (building minibatches on the CPU inside the update), 2 in the queue's `get`/`recv` (unpickling the games' steps), and 3 waiting on the GPU. The next gain is overlapping that Python with the GPU's work: intake in a thread or process, the next minibatch collated while the current one runs. Past-snapshot batching (~620 calls/s of 1.3 rows) stays a smaller, later gain. The pause and period changes go back to 4 and 4 at the next launch.
