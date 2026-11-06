@@ -13,6 +13,7 @@ The user: "lets make bold meaningful changes instead of small ones". Every one-f
 3. **Train on the game we are judged on**. The real Echo Isles rules (the evaluation's) as a share of the training games beside `echofast2`. Real-rules training pulled down at `fgself-98/99`, but that was before the late starts, scenarios, masks and audit fixes, and the long games it loses are real-rules games.
 4. **League exploiters** (code). Exploiters that train against the whole league and join it, as AlphaStar's do, so the league holds members that play differently.
 5. If 1 holds against insane: no built-in AI games in training at all, with insane only as the yardstick.
+6. **PFSP with data** (found 2026-11-06). Only ~1% of the games against past snapshots enter PFSP's records: the win-balance tax, scenarios and targets each take a game out (audits 4-6), so the league is drawn evenly. Both the tax and PFSP aim at even games, and they pull against each other. Options: count target and scenario games (their bias is the same for every opponent), or no win-balance tax in games against past snapshots. Needed before the league plan can mean what it says.
 
 ## Running
 
