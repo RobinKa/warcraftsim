@@ -54,13 +54,15 @@ UNNAMED_IDS = {"cancel": 851976, **{f"useslot{k}": 852007 + k for k in range(1, 
 BASE_ORDERS = {
     "Acri": {"Order": "cripple"}, "Afae": {"Order": "faeriefire", "Orderon": "faeriefireon", "Orderoff": "faeriefireoff"},
     "Acyc": {"Order": "cyclone"}, "Arej": {"Order": "rejuvination"}, "Aast": {"Order": "ancestralspirittarget"},
-    "Adcn": {"Order": "disenchant"}, "Advm": {"Order": "devourmagic"}, "Andt": {"Order": "neutraldetectaoe"},
-    "AIta": {"Order": "detectaoe"}, "Acoi": {"Order": "coupletarget"},
+    "Adcn": {"Order": "dispel"}, "Advm": {"Order": "devourmagic"}, "Andt": {"Order": "neutraldetectaoe"},
+    "Acoi": {"Order": "coupletarget"}, "Alam": {"Order": "requestsacrifice"},
     "Aave": {"Order": "avengerform", "Unorder": "unavengerform"}, "Aabs": {"Order": "absorb"},
-    "Amed": {"Order": "unloadallcorpses"}, "AUin": {"Order": "dreadlordinferno"},
+    "Amed": {"Order": "unloadallcorpses"}, "AUin": {"Order": "dreadlordinferno"}, "AIta": {"Order": "detectaoe"},
     "AHfa": {"Order": "flamingarrowstarg", "Orderon": "flamingarrows", "Orderoff": "unflamingarrows", "Unorder": None},
     "ANfa": {"Order": "coldarrowstarg", "Orderon": "coldarrows", "Orderoff": "uncoldarrows"},
     "Ambt": {"Orderon": "rechargeon", "Orderoff": "rechargeoff"},
+    # (a zeppelin's unload at a point: unloadall taken, unload refused; the entangled mine's at once likewise)
+    "Adro": {"Order": "unloadall"}, "Adri": {"Order": "unloadall"},
 }
 # orders a vocabulary gives in another form the agent turns into this one (play.BCAgent._militia: a peasant's call to arms
 # from militiaconvert on a hall, a militia's back to work from militiaunconvert)
@@ -102,6 +104,15 @@ MADE = {"Asac": ("ushd",), "Alam": ("ushd",)}
 # mine or a tree), returning is the engine's (features.DROPPED_ORDERS), a shop's selection and sale are protocol.Buy's
 SKIP = frozenset({"Argl", "Arlm", "Artn", "Apit", "Aneu", "Ane2", "Asid", "Asud", "Abds", "Abdl", "Abgs", "Abgl", "Aall",
                   "Avul", "Aawa"})
+# abilities (or their base) and order strings left out on purpose: EXCLUDED's reason (in the universe, never extended)
+EXCLUDED_ABILITIES = {"Afrz": "passive breaths", "Acor": "passive breaths", "AHta": "arcane reveal", "AIta": "arcane reveal",
+                      "Aroo": "uproot", "Aro1": "uproot", "Aro2": "uproot", "Aeat": "uproot", "Amel": "corpses",
+                      "Aast": "corpses"}
+EXCLUDED_NAMES = {"undivineshield": "undivineshield", "unavengerform": "undestroyer", "returnresources": "returnresources",
+                  "buy tgrh": "tiny great hall"}
+# a morph the game charges for (scripts/vocab_probe.py: an obsidian statue into a destroyer took the units' difference in
+# gold, lumber and food): its order's cost, costs.order_costs
+MORPH_COSTS = {"avengerform": ("uobs", "ubsp")}
 # the item orders the game has no order id of its own for (this module's ids, as macros' are the agent's own): drop the item
 # of slot k at a point, give it to a unit of the player's, sell it to a shop (the race's own shop or a neutral one that buys:
 # the goblin merchant, the marketplace), and pick up the item lying nearest a point
@@ -123,6 +134,22 @@ EXCLUDED = {
     "backpack": "a unit's backpack (Rhpm, Ropm, Rupm, Repm research): the harness reports inventories of heroes only",
     "awaken": "a tavern's instant revival of a dead hero: an altar revives it (the hero's train order), and the tavern's "
               "button picks no hero the policy can point at (dead heroes are no entities)",
+    "passive breaths": "a frost wyrm's freezing breath and a chimaera's corrosive breath: their files give an order, the "
+                       "game refuses it on a visible enemy building (scripts/vocab_probe.py); they act through the "
+                       "attack once researched",
+    "arcane reveal": "the arcane tower's reveal (AHta): refused in every form tried (detectaoe and neutraldetectaoe at a "
+                     "point, detectaoe at once), its research done",
+    "undivineshield": "a paladin's divine shield cut short: refused before, during and after the shield",
+    "undestroyer": "a destroyer back to an obsidian statue: the files' unsphinxform is no order of the game's, its "
+                   "unavengerform refused",
+    "uproot": "an ancient's unroot, root and eat tree: the probe uprooted an ancient but could not root it again (at its "
+              "own place, on open ground 500 away, at once), and an uprooted ancient trains and researches nothing: left "
+              "out so that the policy can't strand its buildings",
+    "corpses": "a meat wagon's get corpse and a spirit walker's ancestral spirit: the harness reports a unit's death and "
+               "then drops it, so a corpse is no entity to point at, and a harness order on the nearest corpse was "
+               "refused for both (a necromancer's raise dead there too)",
+    "tiny great hall": "the orc shop's tiny great hall: sold, then gone from the buyer within 5 s (the engine uses it by "
+                       "itself for a computer slot; shopitems.py's probe saw it stand once, vanish, and be used unasked)",
 }
 # the category of each new order: its bias below "no order" (each new order exp(-bias) as likely as giving none, in any
 # state, before the order temperature). spells.py's NEW_BIAS 8 left its spells never sampled (9 casts in ~13,800 games);
@@ -181,7 +208,7 @@ def tables() -> dict:
     requires, amounts, targs, cost, cool, made (UnitID per level), data_a, data_c, hero}}, "funcs" {type: {Trains, Builds,
     Upgrade, Researches, Sellunits, Sellitems, Makeitems}}, "items" {item: {class, abil, gold, pawnable, droppable}}."""
     from .. import paths
-    path = paths.CACHE_DIR / "full_vocab-2.json"
+    path = paths.CACHE_DIR / "full_vocab-3.json"
     if path.exists():
         return json.loads(path.read_text())
     from ..data.mpq import GameArchives
@@ -229,7 +256,7 @@ def tables() -> dict:
                     "gold": int(num(b.get("goldcost"))), "lumber": int(num(b.get("lumbercost"))),
                     "food": int(num(b.get("fused"))), "building": str(b.get("isbldg") or "0").strip() == "1",
                     "weapon": str(w.get("weapTp1") or "").strip() if str(w.get("weapsOn") or "0").strip() not in ("0", "")
-                    else "", "speed": num(b.get("spd"))}
+                    else "", "speed": num(b.get("spd")), "range": num(w.get("rangeN1"))}
     abilities = {}
     for c, r in ad.items():
         if not c or len(c) != 4:
@@ -272,6 +299,7 @@ class Entry:
     needs: list | None = None
     mana: dict = field(default_factory=dict)
     cool: dict = field(default_factory=dict)
+    state: tuple | None = None  # (an autocast's on / off, a root and its undo: (ability, the state it sets))
 
 
 def _ability_orders(a: str) -> dict[str, str]:
@@ -319,12 +347,12 @@ def _universe(race: str) -> tuple[dict, frozenset]:
     ids = order_ids()
     out: dict[tuple[int, int], Entry] = {}
 
-    def add(oid, kind, name, what, giver, ability="", needs=None, mana=0.0, cool=0.0):
+    def add(oid, kind, name, what, giver, ability="", needs=None, mana=0.0, cool=0.0, state=None):
         if oid is None:
             return
         e = out.get((oid, kind))
         if e is None:
-            e = out[(oid, kind)] = Entry(int(oid), int(kind), name, what, ability=ability, needs=needs)
+            e = out[(oid, kind)] = Entry(int(oid), int(kind), name, what, ability=ability, needs=needs, state=state)
         elif e.needs != needs:  # (abilities with one order and other needs: none masked by tech)
             e.needs = None
         e.givers.add(giver)
@@ -376,7 +404,7 @@ def _universe(race: str) -> tuple[dict, frozenset]:
                 add(ids.get(main), kind, main, "spell", u, a)
             for fld, name in orders.items():
                 if fld != "Order" and name != main:
-                    add(ids.get(name), IMMEDIATE, name, "toggle", u, a)
+                    add(ids.get(name), IMMEDIATE, name, "toggle", u, a, state=(a, fld == "Orderon"))
         if u in MAP_SHOPS:  # (a neutral building's own: given by the player's units, below)
             continue
         for a in U[u]["abil"]:
@@ -398,12 +426,13 @@ def _universe(race: str) -> tuple[dict, frozenset]:
                 if fld == "Order":
                     if morph and u != src:
                         continue
-                    add(ids.get(name), kind, name, "morph" if morph else "ability", u, a, needs, mana, cool)
+                    pair = (base, True) if "Unorder" in orders and not morph else None  # (a root, its unroot)
+                    add(ids.get(name), kind, name, "morph" if morph else "ability", u, a, needs, mana, cool, pair)
                 elif fld == "Unorder" and morph:
                     if u == form:
                         add(ids.get(name), IMMEDIATE, name, "unmorph", u, a, None, 0.0, cool)
                 else:
-                    add(ids.get(name), IMMEDIATE, name, "toggle", u, a, needs)
+                    add(ids.get(name), IMMEDIATE, name, "toggle", u, a, needs, state=(base, fld == "Orderon"))
     # generic orders: a unit's moves and attacks, attack ground for artillery, a building's rally point and cancel
     g = ids
     for u in sorted(types):
@@ -472,13 +501,14 @@ BACKPACK = ("Rhpm", "Ropm", "Rupm", "Repm")
 
 def excluded(e: Entry) -> str | None:
     """Why an order of the universe is left out on purpose (EXCLUDED's key), or None."""
-    if e.name == "returnresources":
-        return "returnresources"
+    if e.name in EXCLUDED_NAMES:
+        return EXCLUDED_NAMES[e.name]
     if e.name.startswith("moveslot"):
         return "moveslot"
     if e.what == "research" and rawcode(e.oid) in BACKPACK:
         return "backpack"
-    return None
+    ab = tables()["abilities"].get(e.ability, {}) if e.ability else {}
+    return EXCLUDED_ABILITIES.get(e.ability) or EXCLUDED_ABILITIES.get(ab.get("base", ""))
 
 
 def covered(e: Entry, kinds: set) -> bool:
@@ -530,10 +560,14 @@ def coverage(vocab: dict) -> dict:
 # ---- the vocabulary and the network ----------------------------------------------------------------------------------
 
 LAB_UNITS = ("ngsp", "nzep", "ngir")  # (the goblin laboratory's: protocol.Buy at the "ngad" on the map)
+# the workshop's siege engine: hmtt before the barrage research, hrtt after it (each refused otherwise, scripts/vocab_probe.py;
+# "!": the player has not that research)
+SIEGE = {"hmtt": (("!Rhrt", 1),), "hrtt": (("Rhrt", 1),)}
 EXTRA_NEEDS = {"tgrh": "ofrt"}  # (Units\\ItemFunc.txt Requires of EXTRA_ITEMS)
 # how a hero uses EXTRA_ITEMS (shopitems.USES' forms): the critter at once, the tiny great hall at a point
 EXTRA_USES = {"mcri": (IMMEDIATE,), "tgrh": (POINT,)}
 FREE_BIT, HELD0, MANA0 = 19, 20, 26  # (model.FullGameNet.unit_valid's bits: a free slot, slot k holds an item, mana >= a step)
+PICKUP_RADIUS = 400  # (pick up: the item lying nearest the point within this, protocol.PickUpAt)
 
 
 def extended(vocab: dict) -> bool:
@@ -548,7 +582,8 @@ def merged() -> dict[tuple[int, int], Entry]:
         for k, e in universe(race).items():
             m = out.get(k)
             if m is None:
-                out[k] = Entry(e.oid, e.kind, e.name, e.what, set(e.givers), e.ability, e.needs, dict(e.mana), dict(e.cool))
+                out[k] = Entry(e.oid, e.kind, e.name, e.what, set(e.givers), e.ability, e.needs, dict(e.mana), dict(e.cool),
+                               e.state)
             else:
                 m.givers |= e.givers
                 m.mana.update(e.mana)
@@ -784,6 +819,8 @@ def tech_needs(vocab: dict, race: str) -> dict[int, list[tuple[str, int]]]:
         if e is not None and e.needs:
             out[c] = list(e.needs)
         r = rawcode(o) if int(o) >= fx.TYPE_CODE else ""
+        if r in SIEGE and int(k) == IMMEDIATE:
+            out[c] = list(SIEGE[r])
         for shop, items in EXTRA_ITEMS.items():
             if r in items and int(k) == UNIT:
                 out[c] = ([(shop, 0)] + ([(EXTRA_NEEDS[r], 0)] if r in EXTRA_NEEDS else [])
@@ -819,9 +856,13 @@ LAB = code("ngad")
 GOLD_MINE = code("ngol")
 # a partner the order needs, by order string: (who gives it, whom it takes): a hippogryph rider's two halves, an acolyte
 # and the sacrificial pit, a spirit walker and its dead tauren, a tree of life and a gold mine
-PARTNERS = {"coupletarget": {"earc": "ehip", "ehip": "earc"}, "sacrifice": {"uaco": "usap", "usap": "uaco"},
-            "ancestralspirittarget": {"ospm": "otau", "ospw": "otau"}, "entangle": {"etol": "ngol", "etoa": "ngol",
-                                                                                   "etoe": "ngol"}}
+PARTNERS = {"coupletarget": {"earc": "ehip", "ehip": "earc"}, "sacrifice": {"usap": "uaco"},
+            "requestsacrifice": {"uaco": "usap"}, "entangle": {"etol": "ngol", "etoa": "ngol", "etoe": "ngol"}}
+# the autocasts a computer player's units start with on (scripts/vocab_probe.py: "off" taken on a fresh unit), and the
+# rooted ancients; every other on / off pair starts off. A toggle the game refuses is in the state it asked for already
+DEFAULT_ON = frozenset({"Ahea", "Anhe", "Aslo", "Asps", "Acrs", "Aweb", "Afae", "Apsh", "Aadm", "Avng", "Aroo"})
+NIGHT_ONLY = ("ambush",)  # (shadow meld: refused by day)
+ATTACK_GROUND = 851984  # (refused beyond the unit's range: not sent then)
 
 
 class Checks:
@@ -838,6 +879,14 @@ class Checks:
         self.item: dict[int, tuple[str, int]] = {}  # class -> (drop / give / sell, slot)
         self.pickup = self.reveal = None
         self.lab: list[int] = []
+        self.toggle: dict[int, tuple[str, bool, frozenset]] = {}  # class -> (ability, the state it sets, giver type ids)
+        self.night: list[int] = []
+        self.ground = None  # (attack ground's class: its unit's range)
+        self.range = {code(u): float(x.get("range") or 0) for u, x in tables()["units"].items()}
+        self.extra_items = frozenset(c for items in EXTRA_ITEMS.values() for c in items)
+        names = {int(k): v for k, v in (vocab.get("order_names") or {}).items()}
+        self.names = {c: fx.order_label(int(o), int(k), names) for c, (o, k) in enumerate(vocab["orders"], start=1)
+                      if c >= O0}
         for c, (o, k) in enumerate(vocab["orders"], start=1):
             if c < O0:
                 continue
@@ -858,28 +907,61 @@ class Checks:
                 self.reveal = c
             if e.name in PARTNERS:
                 self.partner[c] = {code(g): code(p) for g, p in PARTNERS[e.name].items()}
+            if e.name in NIGHT_ONLY:
+                self.night.append(c)
+            if o == ATTACK_GROUND:
+                self.ground = c
+            if e.state is not None:
+                self.toggle[c] = (e.state[0], bool(e.state[1]), frozenset(code(g) for g in e.givers))
             if e.what in ("ability", "morph", "unmorph") and (e.mana or e.cool):
                 self.timed[c] = {code(g): (float(e.mana.get(g, 0.0)), float(e.cool.get(g, 0.0)))
                                  for g in set(e.mana) | set(e.cool)}
+        # every on / off order's (old ones too: a vocabulary's healon, immolation): the state it leaves its unit in
+        self.toggle_ids = {e.oid: (e.state[0], bool(e.state[1])) for e in merged().values() if e.state is not None}
 
-    def unit_ok(self, c: int, row, t: int, cooling: dict) -> bool:
+    def unit_ok(self, c: int, row, t: int, cooling: dict, states: dict | None = None) -> bool:
         """Whether the unit of `row` can give extend's order class `c` now: its mana and cooldown (`cooling`: (unit, class)
-        -> the step it is ready again)."""
+        -> the step it is ready again), a toggle not in the state it asks for already (`states`: (unit, ability) -> on)."""
+        tg = self.toggle.get(c)
+        if tg is not None and states is not None and self.state(states, int(row[fx.C_ID]), tg[0]) == tg[1]:
+            return False
         need = self.timed.get(c, {}).get(int(row[fx.C_TYPE]))
         if need is None:
             return True
         return row[fx.C_MANA] >= need[0] and cooling.get((int(row[fx.C_ID]), c), -1) <= t
 
+    @staticmethod
+    def state(states: dict, unit: int, ability: str) -> bool:
+        """A unit's autocast (or rooted) state: as the agent's last toggle set it, else DEFAULT_ON's."""
+        got = states.get((unit, ability))
+        return ability in DEFAULT_ON if got is None else got
+
+    @staticmethod
+    def is_night(t: int, step_s: float) -> bool:
+        """Night in the game at step t (features' clock: a day 480 s, dawn at 6, dusk at 18, the game at 8)."""
+        hour = (fx.START_HOUR + t * step_s / fx.DAY_SECONDS * 24.0) % 24.0
+        return hour >= fx.DUSK or hour < fx.DAWN
+
     def mask(self, view, rows, avail, t: int) -> None:
         """`avail` (in place) without extend's orders no unit of the view's player can give now."""
         own = fx.own_alive(rows, view.player)
         cooling = getattr(view, "cooling", {})
+        states = getattr(view, "autocast", {})
         types = own[:, fx.C_TYPE]
         for c, need in self.timed.items():
             if c >= len(avail) or not avail[c]:
                 continue
             rows_c = own[np.isin(types, list(need))]
-            avail[c] = any(self.unit_ok(c, r, t, cooling) for r in rows_c)
+            avail[c] = any(self.unit_ok(c, r, t, cooling, states) for r in rows_c)
+        for c, (ability, on, givers) in self.toggle.items():  # (a toggle while a giver is in the other state)
+            if c >= len(avail) or not avail[c] or c in self.timed:
+                continue
+            ids = own[np.isin(types, list(givers)), fx.C_ID].tolist()
+            avail[c] = any(self.state(states, int(u), ability) != on for u in ids)
+        if self.night and not self.is_night(t, getattr(view, "step_seconds", 0.5)):
+            for c in self.night:
+                if c < len(avail):
+                    avail[c] = False
         for c, pairs in self.partner.items():
             if c >= len(avail) or not avail[c]:
                 continue

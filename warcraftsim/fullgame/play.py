@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import queue
 import random
 from collections import Counter
@@ -26,8 +27,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from ..protocol import (Build, Buy, Command, EventKind, ImmediateOrder, LearnSkill, Observation, PickUp, PointOrder,
-                        TargetDestructable, TargetOrder, UseItem)
+from ..protocol import (Build, Buy, Command, DropItem, EventKind, ImmediateOrder, LearnSkill, NeutralPointOrder,
+                        Observation, PickUp, PickUpAt, PointOrder, TargetDestructable, TargetOrder, UseItem)
 from ..runtime.instance import Agent, BuiltinAI, GameInstance, GameSetup
 from . import features as fx
 from .collect import Films, series
@@ -155,6 +156,16 @@ class BCAgent:
         # builder the AI pulled away is sent back to its building with "repair", and the policy then
         # gave it another order (human buildings started by 2 minutes, finished: 1.2 a game, 4.2 without)
         self.repair_builds = False
+        self.full = None  # (--full-vocab: its orders' checks, fullvocab.Checks; the class its orders start at)
+        if vocab.get("full_vocab"):
+            from . import fullvocab
+            self.full = fullvocab.Checks(vocab)
+            self.full_from = int((vocab.get("full_vocab_from") or {}).get("orders", len(vocab["orders"]))) + 1
+            self.full_sent: dict[str, list[int]] = {}  # (order name -> [sent, accepted]: the episode row)
+            self.cooling: dict[tuple[int, int], int] = {}  # ((unit, class) -> the step its ability is ready again)
+            self.timed_sent: dict[int, tuple[int, int]] = {}  # (unit -> (class, steps of its cooldown) sent this step)
+            self.autocast: dict[tuple[int, str], bool] = {}  # ((unit, ability) -> on: its autocast, an ancient rooted)
+            self.toggles_sent: dict[int, tuple[str, bool]] = {}  # (unit -> (ability, the state asked) sent this step)
 
     def begin(self, obs: Observation, races: list[int]) -> None:
         rows = unit_rows(obs, 0)
@@ -167,6 +178,11 @@ class BCAgent:
         self.building_since: dict[int, int] = {}  # worker -> the step it started its building order
         self.buying_since: dict[int, int] = {}  # unit -> the step it was sent to buy (protocol.Buy: on its way)
         self.t = 0
+        if self.full is not None:  # (--full-vocab: the cooldowns and autocasts, a new game's; the view's mask reads them)
+            self.cooling.clear()
+            self.autocast.clear()
+            self.view.cooling = self.cooling
+            self.view.autocast = self.autocast
 
     def accepted(self, cmds: list[Command], results: list[bool]) -> None:
         """The game's answer to the last step's orders: accepted train / research orders queue, and
@@ -233,6 +249,21 @@ class BCAgent:
                 getattr(self, "hiring", {}).pop(c.unit, None)  # (its money no longer kept; audit 10)
             elif not ok and isinstance(c, PickUp):
                 picking.pop(c.unit, None)
+        if self.full is not None:  # (--full-vocab: a timed ability the game took cools down; its special orders' answers)
+            pending = self.__dict__.pop("full_pending", {})
+            for c, ok in zip(cmds, results):
+                unit = getattr(c, "unit", None)
+                got = self.timed_sent.get(unit) if unit is not None else None
+                if got is not None and ok:
+                    self.cooling[(unit, got[0])] = self.t + got[1]
+                tg = self.full.toggle_ids.get(getattr(c, "order", None)) if isinstance(c, (ImmediateOrder, PointOrder)) else None
+                if tg is not None:  # (an autocast on or off, a root or unroot, old orders too; taken: switched; refused: it
+                    self.autocast[(unit, tg[0])] = tg[1]  # was so already, scripts/vocab_probe.py)
+                name = pending.get(id(c))
+                if name is not None and ok:
+                    self.full_sent[name][1] += 1
+            self.timed_sent.clear()
+            self.toggles_sent.clear()
 
     def _sample(self, logits: torch.Tensor) -> torch.Tensor:
         return torch.distributions.Categorical(logits=logits / self.temperature).sample()
@@ -289,6 +320,9 @@ class BCAgent:
         sequences over the first min(n_own, MAX_OWN) units) as game commands."""
         out: list[Command] = []
         self._release_buyers(st["sel"][:st["n_own"]])
+        if self.full is not None:
+            self.timed_sent.clear()
+            self.toggles_sent.clear()
         expanded = False  # (--macros: one expand order a step)
         built: set[int] = set()  # (one building of a kind a step)
         queue: dict[int, int] = {}  # (this step's train and research orders a building)
@@ -390,6 +424,19 @@ class BCAgent:
             if int(sel[i, fx.C_FLAGS]) & LOADED:  # (a peon in a burrow, a unit in a transport: the game refuses its orders,
                 self.loaded_orders = getattr(self, "loaded_orders", 0) + 1  # moves orc's most refused kind; audit 10)
                 continue
+            if self.full is not None and c >= self.full_from:  # (--full-vocab: its orders in the form the game takes them,
+                got = self._full(sel, i, c, oid, kind, int(tgt[i]), int(bx[i]), int(by[i]), st["n_own"], pay)  # or none)
+                if got is not None:
+                    tally = self.full_sent.setdefault(self.full.names.get(c, str(c)), [0, 0, 0])
+                    if got is False:
+                        tally[2] += 1  # (not sent: the unit can't now)
+                        self.futile_orders = getattr(self, "futile_orders", 0) + 1
+                    else:
+                        tally[0] += 1
+                        self.last_sent.append((oid, kind))
+                        out.append(got)
+                        self.__dict__.setdefault("full_pending", {})[id(got)] = self.full.names.get(c, str(c))
+                    continue
             if fx.SHOP_ITEMS and fx.USESLOT <= oid < fx.USESLOT + 6:  # (--shop-items: as the item takes it, or not sent)
                 use = self._use_item(sel, i, oid, kind, int(tgt[i]), int(bx[i]), int(by[i]), st["n_own"])
                 if use is None:
@@ -544,6 +591,92 @@ class BCAgent:
         self.sent_resources += [None] * (len(out) - len(self.sent_resources))
         self.issued += len(out)
         return out
+
+    def _full(self, sel: np.ndarray, i: int, c: int, oid: int, kind: int, k: int, bx: int, by: int, n_own: int, pay):
+        """--full-vocab: unit row i's order of class `c` (one fullvocab.extend added; pointer row `k`, point bins bx, by) ->
+        the command the game takes (an item dropped, given, sold or picked up; the laboratory's reveal; an item of a race
+        shop's that shopitems leaves out bought; an order with a partner aimed at the right one), False: not sent (the unit
+        can't now: its mana, its cooldown, no partner, no item there), None: the usual path's (a unit ability once its
+        mana and cooldown allow, a train, a build, a generic order)."""
+        from . import fullvocab as fv
+        ch = self.full
+        unit, row = int(sel[i, fx.C_ID]), sel[i]
+        own = sel[:n_own]
+        alive = own[(own[:, fx.C_FLAGS] & (fx.DEAD | fx.CONSTRUCTING)) == 0]
+        if not ch.unit_ok(c, row, self.t, self.cooling, self.autocast):
+            return False
+        if c in ch.night and not ch.is_night(self.t, self.view.step_seconds):
+            return False
+        if c in ch.timed:
+            cool = ch.timed[c].get(int(row[fx.C_TYPE]), (0.0, 0.0))[1]
+            if cool > 0:
+                self.timed_sent[unit] = (c, int(math.ceil(cool / max(self.view.step_seconds, 1e-3))))
+
+        def nearest(rows: np.ndarray):
+            if not len(rows):
+                return None
+            d = (rows[:, fx.C_X] - row[fx.C_X]) ** 2 + (rows[:, fx.C_Y] - row[fx.C_Y]) ** 2
+            return rows[int(d.argmin())]
+
+        def pointed_or_nearest(ok: np.ndarray, rows: np.ndarray):
+            if 0 <= k < len(sel) and (rows[:, fx.C_ID] == sel[k, fx.C_ID]).any() and ok[rows[:, fx.C_ID] == sel[k, fx.C_ID]].any():
+                return sel[k]
+            return nearest(rows[ok])
+        if c in ch.item:
+            verb, slot = ch.item[c]
+            if len(row) <= fx.C_ITEM0 + slot or not row[fx.C_ITEM0 + slot]:
+                return False
+            if verb == "drop":
+                x, y = fx.bins_world(bx, by, self.view.sign)
+                return DropItem(unit, slot, x, y)
+            if verb == "give":  # (to another hero of the player's with a free slot: the pointed one, else the nearest)
+                heroes = alive[(alive[:, fx.C_FLAGS] & fx.HERO > 0) & (alive[:, fx.C_ID] != unit)]
+                ok = (heroes[:, fx.C_ITEM0:fx.C_ITEM0 + 6] == 0).any(1) if len(heroes) and heroes.shape[1] > fx.C_ITEM0 + 5 \
+                    else np.zeros(len(heroes), bool)
+                t = pointed_or_nearest(ok, heroes)
+                return False if t is None else DropItem(unit, slot, target=int(t[fx.C_ID]))
+            shops = sel[np.isin(sel[:, fx.C_TYPE], fv.PAWN_SHOPS)
+                        | (np.isin(sel[:, fx.C_TYPE], fv.RACE_SHOP_CODES) & (sel[:, fx.C_OWNER] == self.player)
+                           & (sel[:, fx.C_FLAGS] & fx.CONSTRUCTING == 0))]
+            t = pointed_or_nearest(np.ones(len(shops), bool), shops)
+            return False if t is None else DropItem(unit, slot, target=int(t[fx.C_ID]))
+        if c == ch.pickup:
+            x, y = fx.bins_world(bx, by, self.view.sign)
+            return PickUpAt(unit, x, y, fv.PICKUP_RADIUS)
+        if c == ch.reveal:  # (the goblin laboratory nearest: its reveal at the point; its units: the usual Buy, neutral.seller)
+            rows = getattr(self, "rows", sel)
+            lab = nearest(rows[(rows[:, fx.C_TYPE] == fv.LAB) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0)])
+            if lab is None or not pay(c):
+                return False
+            x, y = fx.bins_world(bx, by, self.view.sign)
+            return NeutralPointOrder(unit, int(lab[fx.C_ID]), oid, x, y)
+        if oid >= TYPE_CODE and kind == fx.UNIT and fx.rawcode(oid) in ch.extra_items:  # (its race's own shop, finished)
+            shops = alive[np.isin(alive[:, fx.C_TYPE], fv.RACE_SHOP_CODES)]
+            t = nearest(shops)
+            if t is None or (len(row) > fx.C_ITEM0 + 5 and (row[fx.C_ITEM0:fx.C_ITEM0 + 6] != 0).all()) or not pay(c):
+                return False
+            return Buy(unit, int(t[fx.C_ID]), oid)
+        partner = ch.partner.get(c)
+        if partner is not None:
+            p = partner.get(int(row[fx.C_TYPE]))
+            if p is None:
+                return False
+            if p == fv.GOLD_MINE:  # (a gold mine, any: the pointed one, else the nearest)
+                rows = getattr(self, "rows", sel)
+                cand = rows[(rows[:, fx.C_TYPE] == p) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0)]
+            else:
+                cand = alive[alive[:, fx.C_TYPE] == p]
+            t = pointed_or_nearest(np.ones(len(cand), bool), cand)
+            return False if t is None else TargetOrder(unit, oid, int(t[fx.C_ID]))
+        if c == ch.ground:  # (attack ground: refused beyond the unit's range, scripts/vocab_probe.py)
+            x, y = fx.bins_world(bx, by, self.view.sign)
+            reach = ch.range.get(int(row[fx.C_TYPE]), 0.0)
+            if reach and math.hypot(x - row[fx.C_X], y - row[fx.C_Y]) > reach:
+                return False
+        if oid == fv.order_ids().get("unsummon"):  # (a building of the player's, the one pointed at only)
+            if not (0 <= k < n_own and int(sel[k, fx.C_FLAGS]) & fx.STRUCTURE):
+                return False
+        return None
 
     def _militia(self, sel: np.ndarray, i: int, oid: int, has_militia: bool):
         """A militia order (or a militia's harvest) of unit row i as the game takes it (features.MILITIA_*), or None: not

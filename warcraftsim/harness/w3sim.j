@@ -95,6 +95,8 @@ globals
     item w3s_pick_best = null
     real w3s_pick_d = 0.0
     boolean w3s_pick_free = false
+    real w3s_pick_x = 0.0  // (the point the distance is from: the hero's, op 9; a point's, op 11)
+    real w3s_pick_y = 0.0
     rect w3s_clear_rect = null  // (op 88: the cleared area, its dropped items swept)
     // late-game starts (ops 74-78, fullgame/late.py): the unit placed last (op 77), which op 78 gives a skill, an item or
     // its death; the unit W3S_Nearest found
@@ -1524,6 +1526,58 @@ function W3S_PickUp takes unit u, real r returns boolean
     return ok
 endfunction
 
+// op 11 (--full-vocab): as op 9, the item lying nearest a point (w3s_pick_x, w3s_pick_y) rather than the hero
+function W3S_PickAtEnum takes nothing returns nothing
+    local item it = GetEnumItem()
+    local real dx
+    local real dy
+    if not IsItemOwned(it) and IsItemVisible(it) and GetWidgetLife(it) > 0.405 and (w3s_pick_free or GetItemType(it) == ITEM_TYPE_POWERUP) and IsVisibleToPlayer(GetItemX(it), GetItemY(it), GetOwningPlayer(w3s_pick_u)) then
+        set dx = GetItemX(it) - w3s_pick_x
+        set dy = GetItemY(it) - w3s_pick_y
+        if dx * dx + dy * dy < w3s_pick_d then
+            set w3s_pick_d = dx * dx + dy * dy
+            set w3s_pick_best = it
+        endif
+    endif
+    set it = null
+endfunction
+
+function W3S_PickUpAt takes unit u, real x, real y, real r returns boolean
+    local rect area = Rect(x - r, y - r, x + r, y + r)
+    local boolean ok = false
+    set w3s_pick_u = u
+    set w3s_pick_x = x
+    set w3s_pick_y = y
+    set w3s_pick_best = null
+    set w3s_pick_d = r * r
+    set w3s_pick_free = UnitInventoryCount(u) < UnitInventorySize(u)
+    call EnumItemsInRect(area, null, function W3S_PickAtEnum)
+    if w3s_pick_best != null then
+        set ok = IssueTargetOrderById(u, 851971, w3s_pick_best)
+    endif
+    call RemoveRect(area)
+    set area = null
+    set w3s_pick_best = null
+    set w3s_pick_u = null
+    return ok
+endfunction
+
+// op 10 (--full-vocab): the item in a slot let go of: on the ground at a point, or to a unit (given to one of the player's,
+// sold to a shop that buys items)
+function W3S_DropItem takes unit u, integer slot, real x, real y, unit t returns boolean
+    local item it = UnitItemInSlot(u, slot)
+    local boolean ok = false
+    if it != null then
+        if t != null then
+            set ok = UnitDropItemTarget(u, it, t)
+        else
+            set ok = UnitDropItemPoint(u, it, x, y)
+        endif
+    endif
+    set it = null
+    return ok
+endfunction
+
 function W3S_ClearItem takes nothing returns nothing
     call RemoveItem(GetEnumItem())
 endfunction
@@ -1714,6 +1768,34 @@ function W3S_ApplyOne takes integer at returns integer
         set n = 3
         if W3S_Owned(u) then
             set ok = W3S_PickUp(u, I2R(w3s_cmd[at + 2]))
+        endif
+    elseif op == 10 then
+        // the item of a slot dropped at a point, given or sold to a unit (W3S_DropItem)
+        set n = 6
+        set s = null
+        if w3s_cmd[at + 5] != 0 then
+            set s = W3S_Unit(w3s_cmd[at + 5])
+        endif
+        if W3S_Owned(u) and (w3s_cmd[at + 5] == 0 or s != null) then
+            set ok = W3S_DropItem(u, w3s_cmd[at + 2], I2R(w3s_cmd[at + 3] - 65536), I2R(w3s_cmd[at + 4] - 65536), s)
+        endif
+    elseif op == 11 then
+        // a hero picks up the item lying nearest a point within a radius (W3S_PickUpAt)
+        set n = 5
+        if W3S_Owned(u) then
+            set ok = W3S_PickUpAt(u, I2R(w3s_cmd[at + 2] - 65536), I2R(w3s_cmd[at + 3] - 65536), I2R(w3s_cmd[at + 4]))
+        endif
+    elseif op == 12 then
+        // a neutral building's ability at a point for the unit's player (the goblin laboratory's reveal), the unit within
+        // its reach, else the unit walks there
+        set n = 6
+        set s = W3S_Unit(w3s_cmd[at + 2])
+        if W3S_Owned(u) and s != null then
+            if IsUnitInRange(u, s, W3S_BUY_RANGE) then
+                set ok = IssueNeutralPointOrderById(GetOwningPlayer(u), s, w3s_cmd[at + 3], I2R(w3s_cmd[at + 4] - 65536), I2R(w3s_cmd[at + 5] - 65536))
+            else
+                set ok = IssuePointOrderById(u, 851986, GetUnitX(s), GetUnitY(s))
+            endif
         endif
     elseif op == 87 then
         // take gold and lumber from a player (an income tax; < 0: give), what it has now less them: a sale the step

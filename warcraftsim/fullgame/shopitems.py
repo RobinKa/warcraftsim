@@ -212,6 +212,9 @@ def use_ok(item: int, kind: int, hero: np.ndarray) -> bool:
     if not item:
         return False
     kinds = _USE.get(item)
+    if kinds is None and fx.FULL_VOCAB:  # (--full-vocab: the mechanical critter's and the tiny great hall's forms too)
+        from .fullvocab import EXTRA_USES
+        kinds = {code(c): k for c, k in EXTRA_USES.items()}.get(item)
     if kinds is None:
         return (kind == NOW and item not in fx.TARGETED_ITEMS
                 and bool(fx._mod("herodata").item_table().get(item, (0, 0, 0, 0))[0]))

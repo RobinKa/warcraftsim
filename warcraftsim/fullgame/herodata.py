@@ -150,6 +150,9 @@ def order_needs(vocab: dict) -> dict[tuple[int, int], int]:
     for k in range(ITEM_SLOTS):
         for c in by_order.get(852008 + k, ()):
             out[(-1, c)] = 12 + k
+    if vocab.get("full_vocab"):  # (--full-vocab: its unit abilities' mana, its item orders' slot: fullvocab.valid_needs)
+        from .fullvocab import valid_needs
+        out.update(valid_needs(vocab))
     return out
 
 

@@ -31,6 +31,7 @@ def _order_temp_default(state, prefix, *_):
 
 class FullGameNet(nn.Module):
     valid_bits = 19  # (unit_valid's bits; set_valid: more when valid_need asks for them)
+    valid_mana: tuple = ()  # (--full-vocab: the mana steps of unit_valid's bits from fullvocab.MANA0 on)
 
     def __init__(self, n_types: int, n_cur: int, n_orders: int, G: int, d: int = 192, heads: int = 4,
                  layers: int = 3, dropout: float = 0.0, memory: bool = False, target_temperature: float = 1.0,
@@ -142,6 +143,10 @@ class FullGameNet(nn.Module):
         self.valid_cols, self.valid_need = self.valid_cols.to(dev), self.valid_need.to(dev)
         self.config["valid"] = need.shape[1]
         self.valid_bits = max(19, int(need.max()) + 1)  # (20: --shop-items' free inventory slot too)
+        if vocab.get("full_vocab"):  # (--full-vocab: an item held per slot, a unit's mana at each step: fullvocab)
+            from .fullvocab import MANA0, mana_steps
+            self.valid_mana = mana_steps()
+            self.valid_bits = max(self.valid_bits, MANA0 + len(self.valid_mana))
 
     def unit_valid(self, ent, typ):
         """[N, O, K] bool: whether each of the first O units can carry out each of the order classes that need
@@ -155,6 +160,11 @@ class FullGameNet(nn.Module):
                           e[..., hidden:hidden + 1] < 0.5], -1)
         if self.valid_bits > 19:
             bits = torch.cat([bits, (e[..., it:it + 6 * fx.HERO_ITEM_F:fx.HERO_ITEM_F] < 0.5).any(-1, keepdim=True)], -1)
+        if self.valid_bits > 20:  # (--full-vocab: bits 20-25 slot k holds an item, 26 on the unit's mana at least each of
+            # fullvocab.mana_steps: mana / max mana times max mana / 1000, the entity's columns 7 and 8)
+            mana = e[..., 7].float() * e[..., 8].float() * 1000.0  # (compared with Python's numbers: no tensor made here,
+            bits = torch.cat([bits, e[..., it:it + 6 * fx.HERO_ITEM_F:fx.HERO_ITEM_F] > 0.5]  # inside a graph's capture)
+                             + [(mana >= s - 0.5).unsqueeze(-1) for s in self.valid_mana], -1)
         need = self.valid_need[typ.long()]
         ok = torch.ones(need.shape, dtype=torch.bool, device=need.device)
         for j in range(bits.shape[-1]):
@@ -494,6 +504,7 @@ def configure_for(path) -> None:
     fx.set_macros(int(vocab.get("macros") or 0))
     fx.set_spells(int(vocab.get("spells") or 0))
     fx.set_shop_items(int(vocab.get("shop_items") or 0))
+    fx.set_full_vocab(int(vocab.get("full_vocab") or 0))
     fx.set_z(c.get("z", 0))
     fx.set_fine(c.get("fine", 0))  # (--fine-points: the sub-cells its fine head picks)
     fx.set_value_tax(c.get("vtax", 0))  # (--value-tax: the taxes it reads, zeros here)
@@ -579,6 +590,11 @@ def load(path, device="cpu", memory: bool | None = None, vocab: dict | None = No
             new = shopitems.extend(ck["vocab"])
             net = shopitems.grow(net, ck["vocab"], new)
             ck = {**ck, "vocab": new}
+        from . import fullvocab  # (--full-vocab, or a run whose vocabulary has it: every order left, after the shops' items)
+        if (fx.FULL_VOCAB or vocab is not None and vocab.get("full_vocab")) and not fullvocab.extended(ck["vocab"]):
+            new = fullvocab.extend(ck["vocab"])
+            net = fullvocab.grow(net, ck["vocab"], new)
+            ck = {**ck, "vocab": new}
         if vocab is not None and ck["vocab"]["orders"] != vocab["orders"]:
             if neutral.reorder(net, ck["vocab"], vocab) is None:
                 raise RuntimeError(f"{path}: its vocabulary has other orders than the run's")
@@ -586,6 +602,8 @@ def load(path, device="cpu", memory: bool | None = None, vocab: dict | None = No
         neutral.who_buys(net, ck["vocab"])  # (and its tables as they are now: networks grown before them too)
         if ck["vocab"].get("shop_items"):
             shopitems.allow(net, ck["vocab"])
+        if ck["vocab"].get("full_vocab"):
+            fullvocab.allow(net, ck["vocab"])
         if net.config.get("valid"):
             net.set_valid(ck["vocab"])
     if "vocab" in ck and "allowed" in dict(net.named_buffers()):

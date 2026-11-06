@@ -66,6 +66,17 @@ def order_costs(vocab: dict, map_name: str = "duelrush") -> np.ndarray:
         elif code in upgrades:  # the first level's cost (later levels cost more: research_steps, Encoder.at_levels)
             r = upgrades[code]
             out[c] = (scaled(_num(r, "goldbase")), scaled(_num(r, "lumberbase")), 0)
+    if vocab.get("full_vocab"):  # (--full-vocab: a morph the game charges for, the units' difference: fullvocab.MORPH_COSTS)
+        from .fullvocab import MORPH_COSTS, order_ids
+        ids = order_ids()
+        at = {(int(o), int(k)): c for c, (o, k) in enumerate(vocab["orders"], start=1)}
+        for name, (frm, to) in MORPH_COSTS.items():
+            c = at.get((ids.get(name, -1), fx.IMMEDIATE))
+            if c is not None and frm in units and to in units:
+                a, b = units[frm], units[to]
+                out[c] = (max(0, scaled(_num(b, "goldcost")) - scaled(_num(a, "goldcost"))),
+                          max(0, scaled(_num(b, "lumbercost")) - scaled(_num(a, "lumbercost"))),
+                          max(0, _num(b, "fused") - _num(a, "fused")))
     return out
 
 

@@ -4,10 +4,10 @@ Which orders a player can give in a 1.29 melee game the policy's vocabulary has.
 
 | race | orders before | orders with --full-vocab | unit types before | with --full-vocab |
 |---|---|---|---|---|
-| human | 219/273 | 273/273 | 50/85 | 85/85 |
-| orc | 210/263 | 263/263 | 50/86 | 86/86 |
-| undead | 215/278 | 278/278 | 51/85 | 85/85 |
-| nightelf | 218/283 | 283/283 | 46/85 | 85/85 |
+| human | 219/271 | 271/271 | 50/85 | 85/85 |
+| orc | 210/260 | 260/260 | 50/86 | 86/86 |
+| undead | 215/276 | 276/276 | 51/85 | 85/85 |
+| nightelf | 218/279 | 279/279 | 46/85 | 85/85 |
 
 An order counts as covered in its own target form, or for a spell or unit ability aimed at a place also in the other one (the built-in AI casts blizzard, earthquake, stasis trap and dispel on a unit's place, raise dead and carrion scarabs on a corpse); a peasant's call to arms and a militia's back to work are the vocabulary's militiaconvert and militiaunconvert, which the agent turns into them.
 
@@ -15,12 +15,12 @@ An order counts as covered in its own target form, or for a spell or unit abilit
 
 Missing before (each added by `--full-vocab 1`):
 
-- **ability**: cyclone (unit), detectaoe (point), flare (point), frenzy (immediate), magicleash (unit), polymorph (unit), selfdestruct (unit), unload (point)
+- **ability**: cyclone (unit), flare (point), frenzy (immediate), magicleash (unit), polymorph (unit), selfdestruct (unit), unloadall (point)
 - **generic**: attackground (point), holdposition (immediate), patrol (point), setrally (point), setrally (unit)
 - **item**: mcri (unit), drop item 1 (point), drop item 2 (point), drop item 3 (point), drop item 4 (point), drop item 5 (point), drop item 6 (point), give item 1 (unit), give item 2 (unit), give item 3 (unit), give item 4 (unit), give item 5 (unit), give item 6 (unit), pick up an item near a point (point), sell item 1 (unit), sell item 2 (unit), sell item 3 (unit), sell item 4 (unit), sell item 5 (unit), sell item 6 (unit)
 - **neutral**: neutraldetectaoe (point)
 - **research**: Rhfl (immediate), Rhrt (immediate)
-- **toggle**: autodispeloff (immediate), coldarrows (immediate), healoff (immediate), innerfireoff (immediate), innerfireon (immediate), repairoff (immediate), repairon (immediate), slowoff (immediate), spellstealoff (immediate), uncoldarrows (immediate), undivineshield (immediate)
+- **toggle**: autodispeloff (immediate), coldarrows (immediate), healoff (immediate), innerfireoff (immediate), innerfireon (immediate), repairoff (immediate), repairon (immediate), slowoff (immediate), spellstealoff (immediate), uncoldarrows (immediate)
 - **train**: hmtt (immediate), hrtt (immediate)
 - **upgrade**: hatw (immediate), hctw (immediate)
 - **ware**: ngir (unit), ngsp (unit), nzep (unit)
@@ -30,10 +30,10 @@ Missing before (each added by `--full-vocab 1`):
 
 Missing before (each added by `--full-vocab 1`):
 
-- **ability**: ancestralspirittarget (unit), berserk (immediate), cyclone (unit), disenchant (point), evileye (point), frenzy (immediate), selfdestruct (unit), spiritlink (unit), unload (point)
+- **ability**: berserk (immediate), cyclone (unit), evileye (point), frenzy (immediate), selfdestruct (unit), spiritlink (unit), unloadall (point)
 - **build**: owtw (point)
 - **generic**: attackground (point), holdposition (immediate), patrol (point), setrally (point), setrally (unit)
-- **item**: tgrh (unit), drop item 1 (point), drop item 2 (point), drop item 3 (point), drop item 4 (point), drop item 5 (point), drop item 6 (point), give item 1 (unit), give item 2 (unit), give item 3 (unit), give item 4 (unit), give item 5 (unit), give item 6 (unit), pick up an item near a point (point), sell item 1 (unit), sell item 2 (unit), sell item 3 (unit), sell item 4 (unit), sell item 5 (unit), sell item 6 (unit)
+- **item**: drop item 1 (point), drop item 2 (point), drop item 3 (point), drop item 4 (point), drop item 5 (point), drop item 6 (point), give item 1 (unit), give item 2 (unit), give item 3 (unit), give item 4 (unit), give item 5 (unit), give item 6 (unit), pick up an item near a point (point), sell item 1 (unit), sell item 2 (unit), sell item 3 (unit), sell item 4 (unit), sell item 5 (unit), sell item 6 (unit)
 - **morph**: corporealform (immediate)
 - **neutral**: neutraldetectaoe (point)
 - **research**: Robf (immediate), Robk (immediate), Rotr (immediate), Rowt (immediate)
@@ -47,14 +47,13 @@ Missing before (each added by `--full-vocab 1`):
 
 Missing before (each added by `--full-vocab 1`):
 
-- **ability**: absorb (unit), cyclone (unit), devourmagic (point), freezingbreath (unit), frenzy (immediate), loadcorpse (unit), possession (unit), sacrifice (unit), selfdestruct (unit), unload (point), unloadallcorpses (immediate), unsummon (unit)
+- **ability**: absorb (unit), cyclone (unit), devourmagic (point), frenzy (immediate), possession (unit), requestsacrifice (unit), sacrifice (unit), selfdestruct (unit), unloadall (point), unloadallcorpses (immediate), unsummon (unit)
 - **generic**: attackground (point), holdposition (immediate), patrol (point), setrally (point), setrally (unit)
 - **item**: drop item 1 (point), drop item 2 (point), drop item 3 (point), drop item 4 (point), drop item 5 (point), drop item 6 (point), give item 1 (unit), give item 2 (unit), give item 3 (unit), give item 4 (unit), give item 5 (unit), give item 6 (unit), pick up an item near a point (point), sell item 1 (unit), sell item 2 (unit), sell item 3 (unit), sell item 4 (unit), sell item 5 (unit), sell item 6 (unit)
 - **morph**: avengerform (immediate)
 - **neutral**: neutraldetectaoe (point)
 - **research**: Ruex (immediate)
 - **toggle**: autodispeloff (immediate), carrionscarabsoff (immediate), carrionscarabson (immediate), coldarrows (immediate), curseoff (immediate), frostarmoroff (immediate), frostarmoron (immediate), healoff (immediate), raisedeadoff (immediate), raisedeadon (immediate), replenishlifeoff (immediate), replenishlifeon (immediate), replenishmanaoff (immediate), replenishmanaon (immediate), restorationoff (immediate), restorationon (immediate), slowoff (immediate), uncoldarrows (immediate), weboff (immediate)
-- **unmorph**: unavengerform (immediate)
 - **upgrade**: uzg2 (immediate)
 - **ware**: ngir (unit), ngsp (unit), nzep (unit)
 - **unit types**: Nal2, Nal3, Nalm, Nrob, nba2, ndr1, ndr2, ndr3, nfa1, nfa2, nfac, ngad, ngir, ngsp, ngz1, ngz2, ngz3, nlv1, nlv2, nlv3, npn1, npn2, npn3, nqb1, nqb2, nqb3, ntor, nwe1, nwe2, nwe3, nzep, ubsp, ushd, uzg2
@@ -63,7 +62,7 @@ Missing before (each added by `--full-vocab 1`):
 
 Missing before (each added by `--full-vocab 1`):
 
-- **ability**: ambush (immediate), corrosivebreath (unit), coupletarget (unit), cyclone (unit), decouple (immediate), eattree (tree), entangle (unit), frenzy (immediate), recharge (unit), root (point), selfdestruct (unit), unload (immediate), unload (point)
+- **ability**: ambush (immediate), coupletarget (unit), cyclone (unit), decouple (immediate), entangle (unit), frenzy (immediate), recharge (unit), selfdestruct (unit), unloadall (immediate), unloadall (point)
 - **build**: etrp (point)
 - **generic**: attackground (point), holdposition (immediate), patrol (point), setrally (point), setrally (unit)
 - **item**: drop item 1 (point), drop item 2 (point), drop item 3 (point), drop item 4 (point), drop item 5 (point), drop item 6 (point), give item 1 (unit), give item 2 (unit), give item 3 (unit), give item 4 (unit), give item 5 (unit), give item 6 (unit), pick up an item near a point (point), sell item 1 (unit), sell item 2 (unit), sell item 3 (unit), sell item 4 (unit), sell item 5 (unit), sell item 6 (unit)
@@ -71,7 +70,7 @@ Missing before (each added by `--full-vocab 1`):
 - **neutral**: neutraldetectaoe (point)
 - **research**: Reht (immediate), Renb (immediate), Repb (immediate)
 - **spell**: flamingarrowstarg (unit)
-- **toggle**: autodispeloff (immediate), coldarrows (immediate), faeriefireoff (immediate), healoff (immediate), phaseshiftoff (immediate), rechargeoff (immediate), rechargeon (immediate), renewoff (immediate), renewon (immediate), slowoff (immediate), uncoldarrows (immediate), unflamingarrows (immediate), unroot (immediate), vengeanceoff (immediate)
+- **toggle**: autodispeloff (immediate), coldarrows (immediate), faeriefireoff (immediate), healoff (immediate), phaseshiftoff (immediate), rechargeoff (immediate), rechargeon (immediate), renewoff (immediate), renewon (immediate), slowoff (immediate), uncoldarrows (immediate), unflamingarrows (immediate), vengeanceoff (immediate)
 - **train**: ehip (immediate)
 - **unmorph**: unbearform (immediate), unravenform (immediate)
 - **ware**: ngir (unit), ngsp (unit), nzep (unit)
@@ -84,6 +83,13 @@ Missing before (each added by `--full-vocab 1`):
 - **marketplace**: the marketplace's stock is random (blizzard.j PerformStockUpdates: an item of a level and class creeps have dropped, every 30 s) and 1.29's JASS can't read a shop's stock, so no mask could tell what it sells
 - **backpack**: a unit's backpack (Rhpm, Ropm, Rupm, Repm research): the harness reports inventories of heroes only
 - **awaken**: a tavern's instant revival of a dead hero: an altar revives it (the hero's train order), and the tavern's button picks no hero the policy can point at (dead heroes are no entities)
+- **passive breaths**: a frost wyrm's freezing breath and a chimaera's corrosive breath: their files give an order, the game refuses it on a visible enemy building (scripts/vocab_probe.py); they act through the attack once researched
+- **arcane reveal**: the arcane tower's reveal (AHta): refused in every form tried (detectaoe and neutraldetectaoe at a point, detectaoe at once), its research done
+- **undivineshield**: a paladin's divine shield cut short: refused before, during and after the shield
+- **undestroyer**: a destroyer back to an obsidian statue: the files' unsphinxform is no order of the game's, its unavengerform refused
+- **uproot**: an ancient's unroot, root and eat tree: the probe uprooted an ancient but could not root it again (at its own place, on open ground 500 away, at once), and an uprooted ancient trains and researches nothing: left out so that the policy can't strand its buildings
+- **corpses**: a meat wagon's get corpse and a spirit walker's ancestral spirit: the harness reports a unit's death and then drops it, so a corpse is no entity to point at, and a harness order on the nearest corpse was refused for both (a necromancer's raise dead there too)
+- **tiny great hall**: the orc shop's tiny great hall: sold, then gone from the buyer within 5 s (the engine uses it by itself for a computer slot; shopitems.py's probe saw it stand once, vanish, and be used unasked)
 
 ## Neutral buildings on the maps
 

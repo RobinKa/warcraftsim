@@ -349,6 +349,7 @@ def play_and_render(r: dict, runs: Path, update) -> dict:
     fx.set_macros(int(cfg.get("macros", 0) or 0))
     fx.set_spells(int(cfg.get("spells", 0) or 0))
     fx.set_shop_items(int(cfg.get("shop_items", 0) or 0))
+    fx.set_full_vocab(int(cfg.get("full_vocab", 0) or 0))
     fx.set_fine(int(cfg.get("fine_points", 0) or 0))  # (--fine-points: the point indices)
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     fx.set_econ_masks(cfg.get("econ_masks", 0))
