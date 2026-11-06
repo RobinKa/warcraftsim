@@ -2232,6 +2232,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         if scenario == "base2":  # (its second hall stands from the start: "expand" given, "no_expand" out of reach)
             m.pop("expand", None)
             m.pop("no_expand", None)
+        if scenario == "dry":  # (its main runs dry in minutes: a target that forbids expanding asks it to lose its income)
+            m.pop("no_expand", None)
         if "workers" in m and fx.ECON_MASK:
             m["workers"] = float(min(m["workers"], fx.worker_cap(race, 1)))
         return m
@@ -4450,7 +4452,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--scenarios", default="", help="scenarios (scenarios.py: clash, raid, rich, natural, base2; late.py: late; "
                     "comma-separated; one named twice is drawn twice as often) a share of the training games start in "
                     "(late: games between agents only, else a game from the start; base2: the agents' sides with their "
-                    "naturals running, in a game against the built-in AI only the learner's)")
+                    "naturals running, in a game against the built-in AI only the learner's; dry: both mains with "
+                    "25-60%% of their gold, both naturals' camps cleared: expand or lose the income)")
     ap.add_argument("--scenario-share", type=float, default=0.0, help="--scenarios: the share of the training games")
     ap.add_argument("--late-capture", type=float, default=0.0, help="late-game starts (late.py): this share of the "
                     "training games give their state at a game minute drawn in --late-minutes, a line of the run's "

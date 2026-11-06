@@ -161,3 +161,23 @@ def test_hall_spot():
     assert macros.hall_spot(*NAT_L, *L) == (NAT_L[0] + 100, NAT_L[1] + 800)
     x, y = macros.hall_spot(0.0, 0.0, 3000.0, 4000.0)  # (another map's: toward its start)
     assert (round(x), round(y)) == (450, 600)
+
+
+@pytest.mark.parametrize("races", [("human", "orc"), ("undead", "nightelf")])
+def test_dry_mains_low_and_naturals_cleared(races):
+    """dry: each start's main mine (its own race's kind) gets one share of its gold for both sides, both naturals' camps
+    are cleared, and nothing else is touched."""
+    import random as _random
+    from warcraftsim.protocol import ClearCreeps, SetMineGold
+    obs = _first(races)
+    for k, u in enumerate(obs.units, start=1):
+        u.id = 100 + k
+    got = scenarios.commands("dry", obs, 0, list(races), _random.Random(3))
+    gold = {c.unit: c.gold for c in got if isinstance(c, SetMineGold)}
+    mains = {u.id: u.resource for u in obs.units if (u.x, u.y) in (MAIN_L, MAIN_R)}
+    assert set(gold) == set(mains)
+    shares = {round(gold[i] / mains[i], 3) for i in gold}
+    assert len(shares) == 1 and scenarios.DRY_SHARE[0] <= shares.pop() <= scenarios.DRY_SHARE[1]
+    cleared = sorted((c.x, c.y) for c in got if isinstance(c, ClearCreeps))
+    assert cleared == sorted([NAT_L, NAT_R])
+    assert len(got) == 4

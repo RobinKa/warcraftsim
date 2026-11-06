@@ -4,10 +4,21 @@
 
 **Judging.** At ~50M steps and ~250 games a policy, from a run's second hour on, against its start: head to head, against insane by race, wins past 18 minutes, expansions, gold a minute, the top unit's share, with a target. Stop at ~30M steps if head to head with the small evaluation set is at or under ~45% and against insane is not above its start (`fgself-169` and `fgself-171` would have stopped, every kept run gone on; see [the log](../reference/experiment-log.md)); a variety run reads its behaviour from the second hour. The evaluation set is the current policy, with a target, and the start.
 
+## Bold changes (2026-11-06)
+
+The user: "lets make bold meaningful changes instead of small ones". Every one-flag run since `fgself-176` read level, and the play stayed mass tier-1 on one mine. Each run below changes how the policy trains, not one knob. They are judged at ~50M steps and read on to ~100M (runs go on overnight).
+
+1. **League-first** (`fgself-194`, running). The fixed main exploiter, plus the built-in AI in 40% of launches instead of 80%. AlphaStar's main agents train against their league; ours trained mostly against one scripted AI.
+2. **Expansions forced by the game** (the `dry` scenario, built). Both mains start with 25-60% of their gold and both naturals' camps are cleared, in a large share of the training games, so a side must expand or lose its income. It uses no labels (the expansion lessons hurt), only the game's own pressure; the main's gold is in the policy's inputs.
+3. **Train on the game we are judged on**. The real Echo Isles rules (the evaluation's) as a share of the training games beside `echofast2`. Real-rules training pulled down at `fgself-98/99`, but that was before the late starts, scenarios, masks and audit fixes, and the long games it loses are real-rules games.
+4. **League exploiters** (code). Exploiters that train against the whole league and join it, as AlphaStar's do, so the league holds members that play differently.
+5. If 1 holds against insane: no built-in AI games in training at all, with insane only as the yardstick.
+
 ## Running
 
 | Run | Change | Why |
 |---|---|---|
+| `fgself-194` (running) | `--exploiter-share 0.1 --ai-share 0.4` (bold 1) | League-first training: the fixed exploiter and half the AI games |
 | `fgself-193` (invalid, stopped at 5.9M) | `--exploiter-share 0.2` (item 6, brought forward) | The exploiter path was broken (fixed in 8f57073): run again as `fgself-194` with `--exploiter-share 0.1` |
 | `fgself-192` (not kept) | `--ref-ema 0.00046` (4× faster) | Level, play no wider: the anchor is not what holds variety back now |
 | `fgself-191` (stopped at 75M) | `--ref-ema 0.000115` (item 5) | Level throughout, play no wider |

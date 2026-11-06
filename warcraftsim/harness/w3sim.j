@@ -1761,6 +1761,9 @@ function W3S_ApplyOne takes integer at returns integer
         set n = 5
         set u = CreateUnit(Player(W3S_Real(w3s_cmd[at + 1])), w3s_cmd[at + 2], I2R(w3s_cmd[at + 3] - 65536), I2R(w3s_cmd[at + 4] - 65536), 270.0)
         set ok = u != null
+        if ok and w3s_agent[W3S_Real(w3s_cmd[at + 1])] then
+            call RemoveGuardPosition(u)  // (a scenario's army: no AI guard post to walk back to, as a trained unit's)
+        endif
     elseif op == 88 then
         // remove the neutral hostile units within a radius of a point (scenarios: an expansion's camp cleared)
         set n = 4
@@ -1774,6 +1777,9 @@ function W3S_ApplyOne takes integer at returns integer
             call SetHeroLevel(u, w3s_cmd[at + 5], false)
         endif
         set ok = u != null
+        if ok and w3s_agent[W3S_Real(w3s_cmd[at + 1])] then
+            call RemoveGuardPosition(u)  // (as op 91's)
+        endif
     elseif op == 74 then
         // a unit taken out of the game (late-game starts: a start's unit the captured state replaces, a creep it had
         // killed): no death, no bounty, no drop; the pass that no longer meets it writes its "R" record
@@ -2796,6 +2802,24 @@ function W3S_OnSummon takes nothing returns boolean
     return false
 endfunction
 
+function W3S_OnReviveFinish takes nothing returns boolean
+    local unit u = GetRevivingUnit()
+    if u != null and (w3s_agent[GetPlayerId(GetOwningPlayer(u))] or w3s_scripted[GetPlayerId(GetOwningPlayer(u))]) then
+        call RemoveGuardPosition(u)  // (a computer slot's revived hero: no guard post to walk back to; bug finder 2026-11-05)
+    endif
+    set u = null
+    return false
+endfunction
+
+function W3S_OnSell takes nothing returns boolean
+    local unit u = GetSoldUnit()
+    if u != null and (w3s_agent[GetPlayerId(GetOwningPlayer(u))] or w3s_scripted[GetPlayerId(GetOwningPlayer(u))]) then
+        call RemoveGuardPosition(u)  // (a tavern's hero or a mercenary bought by a computer slot: as a trained unit's)
+    endif
+    set u = null
+    return false
+endfunction
+
 function W3S_OnItemPickup takes nothing returns boolean
     local item it = GetManipulatedItem()
     local integer seen = w3s_seq - LoadInteger(w3s_ht, GetHandleId(it), 9)
@@ -3014,6 +3038,8 @@ function W3S_Init takes nothing returns nothing
     call W3S_Reg(EVENT_PLAYER_HERO_LEVEL, function W3S_OnHeroLevel)
     call W3S_Reg(EVENT_PLAYER_UNIT_SPELL_EFFECT, function W3S_OnSpell)
     call W3S_Reg(EVENT_PLAYER_UNIT_SUMMON, function W3S_OnSummon)
+    call W3S_Reg(EVENT_PLAYER_HERO_REVIVE_FINISH, function W3S_OnReviveFinish)
+    call W3S_Reg(EVENT_PLAYER_UNIT_SELL, function W3S_OnSell)
     call W3S_Reg(EVENT_PLAYER_UNIT_PICKUP_ITEM, function W3S_OnItemPickup)
     if W3S_CFG_RECORD_ORDERS then
         call W3S_Reg(EVENT_PLAYER_UNIT_ISSUED_ORDER, function W3S_OnIssuedOrder)

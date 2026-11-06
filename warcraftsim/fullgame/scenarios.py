@@ -10,6 +10,9 @@ shaping starts even (base2 against the built-in AI: only the learner, its own wa
     raid    the opponent's army (ARMY gold) at the learner's base, the learner's as large at home
     rich    both sides 1,500 more gold and 700 more lumber: the tiers, the tech, the heroes early
     base2   a two-base game: each agent's side has its natural running from the start (below)
+    dry     both mains' gold mines start with DRY_SHARE of their gold (one share for both sides) and both naturals' camps
+            cleared: the main runs dry in a few minutes, so a side that does not expand loses its income (the long games
+            are lost on income and the policy never expands; base2 handed it a running natural, this makes it build one)
 
 The two-base game (the first scenario given to one side only, against the built-in AI): against the insane AI's double
 income the policy's one mine caps it at ~500 gold a minute and it never expands; so it gets experience of what a second
@@ -31,9 +34,12 @@ import math
 import random
 
 from . import late, macros
-from ..protocol import ClearCreeps, Place, SetResources, Spawn, SpawnHero
+from ..protocol import ClearCreeps, Place, SetMineGold, SetResources, Spawn, SpawnHero
 
-SCENARIOS = ("clash", "raid", "rich", "natural", "base2")
+SCENARIOS = ("clash", "raid", "rich", "natural", "base2", "dry")
+DRY_SHARE = (0.25, 0.6)  # (dry: the mains' gold left, a share of what they start with: echofast2's main, mined out
+#   at ~12-13 minutes from full, then lasts ~3-8)
+MINES = ("ngol", "ugol", "egol")
 BASE2_WORKERS = 5
 TREE_FROM_MINE, TREE_BOX = 650.0, 448.0  # (a night elf's start: the melee script's tree from its mine, within a box)
 WORKERS = {"human": "hpea", "orc": "opeo", "undead": "uaco", "nightelf": "ewsp"}
@@ -113,6 +119,18 @@ def commands(name: str, obs, side: int, races: list[str], rng: random.Random) ->
     if len(starts) < 2:
         return []
     out = []
+    if name == "dry":  # (each start's main: its nearest gold mine within NATURAL_FROM_START; its natural: the nearest past)
+        mines = [(u.id, u.x, u.y, u.resource) for u in obs.units if u.type in MINES]
+        share = rng.uniform(*DRY_SHARE)
+        for x0, y0 in starts.values():
+            by = sorted((math.hypot(x - x0, y - y0), i, x, y, g) for i, x, y, g in mines)
+            main = next((m for m in by if m[0] <= NATURAL_FROM_START), None)
+            if main is not None and main[4] > 0:
+                out.append(SetMineGold(main[1], max(1, int(main[4] * share))))
+            far = next((m for m in by if m[0] > NATURAL_FROM_START), None)
+            if far is not None:
+                out.append(ClearCreeps(far[2], far[3], CAMP_RADIUS))
+        return out
     if name == "natural":  # (each start's natural: its nearest gold mine past its main)
         mines = [(u.x, u.y) for u in obs.units if u.type in ("ngol", "ugol", "egol")]
         for x0, y0 in starts.values():
