@@ -287,3 +287,36 @@ def test_actor_network_masks_as_the_learner(game_tables, tmp_path):
     ent = torch.rand(3, 8, fx.ENT_F if hasattr(fx, "ENT_F") else net.ent.in_features)
     typ = torch.randint(0, n_types, (3, 8))
     assert torch.equal(actor.unit_valid(ent, typ), net.unit_valid(ent, typ))
+
+
+def test_lab_units_cost_the_games_price(game_tables):
+    """order_costs scales a ware's price only where the map's rules do (duelmap.rules_files: the races' units and
+    NEUTRAL_SOLD): the goblin laboratory's units (race "creeps") at the game's price on echofast2, its mercenaries and tavern
+    heroes halved as before."""
+    from warcraftsim.data import duelmap
+    from warcraftsim.data.mpq import GameArchives
+    from warcraftsim.data.objects import parse_slk
+    from warcraftsim.fullgame import fullvocab
+    from warcraftsim.fullgame.costs import order_costs
+    _flags(1)
+    v = fullvocab.extend(VOCAB)
+    with GameArchives() as g:
+        ud = {r.get("unitID"): r for r in parse_slk(g.read("Units\\UnitData.slk").decode("latin-1"))}
+        ub = {r.get("unitBalanceID"): r for r in parse_slk(g.read("Units\\UnitBalance.slk").decode("latin-1"))}
+        campaign = {r.get("unitUIID") for r in parse_slk(g.read("Units\\UnitUI.slk").decode("latin-1"))
+                    if r.get("campaign") == "1"}
+    creeps = {t for camp in (duelmap.KOBOLDS, duelmap.OGRES, duelmap.GNOLLS) for t in camp}
+    used = {u for u, r in ud.items() if r.get("race") in {"human", "orc", "undead", "nightelf", "other"} and u not in campaign}
+    used |= creeps | set(duelmap.ECHO_CREEPS) | set(duelmap.NEUTRAL_SOLD) | {"ngol", "ninf"}  # (rules_files' `used`)
+    full, half = order_costs(v, "(2)EchoIsles"), order_costs(v, "echofast2")
+    seen = set()
+    for c, (o, k) in enumerate(v["orders"], start=1):
+        name = fullvocab.rawcode(o) if o >= fx.TYPE_CODE else ""
+        if k != fx.UNIT or name not in ub or not full[c, 0]:
+            continue
+        seen.add(name)
+        want = full[c, :2].tolist() if name not in used else [max(1, round(x * 0.5)) if x > 0 else 0 for x in full[c, :2]]
+        assert half[c, :2].tolist() == want, name
+    assert {"ngsp", "nzep", "ngir"} <= seen
+    zep = v["orders"].index([fullvocab.code("nzep"), fx.UNIT]) + 1
+    assert half[zep, 0] == int(ub["nzep"]["goldcost"]) == 240
