@@ -271,8 +271,8 @@ def own_heroes(rows: np.ndarray, player: int) -> list:
 
 _OWN_HEROES: dict[int, tuple] = {}  # player -> (a step's rows, own_heroes)
 # own_list's columns, and their places in its rows
-OWN_COLS = (C_ID, C_TYPE, C_FLAGS, C_X, C_Y, C_HP, C_MAXHP, C_ORDER)
-O_ID, O_TYPE, O_FL, O_X, O_Y, O_HP, O_MAXHP, O_ORDER = range(len(OWN_COLS))
+OWN_COLS = (C_ID, C_TYPE, C_FLAGS, C_X, C_Y, C_HP, C_MAXHP, C_ORDER, C_MANA)
+O_ID, O_TYPE, O_FL, O_X, O_Y, O_HP, O_MAXHP, O_ORDER, O_MANA = range(len(OWN_COLS))
 _OWN_LIST: dict[int, tuple] = {}  # player -> (a step's rows, own_list)
 
 
@@ -285,6 +285,21 @@ def own_list(rows: np.ndarray, player: int) -> list:
         return hit[1]
     out = own_alive(rows, player)[:, OWN_COLS].tolist()
     _OWN_LIST[player] = (rows, out)
+    return out
+
+
+_ROW_TYPES: tuple = (None, None)  # (a step's rows, row_types of them)
+
+
+def row_types(rows: np.ndarray) -> frozenset:
+    """Every row's type (any owner, living or dead) as a set, once per rows object (Checks.mask's tests for a gold
+    mine, the goblin laboratory, a shop that buys: each a numpy pass over the rows before). Read only."""
+    global _ROW_TYPES
+    got = _ROW_TYPES
+    if got[0] is rows:
+        return got[1]
+    out = frozenset(rows[:, C_TYPE].tolist())
+    _ROW_TYPES = (rows, out)  # (a tuple replaced whole: an actor's game threads share it)
     return out
 
 
@@ -1673,7 +1688,7 @@ class View:
         copies: dict[int, list] = {}
         coming = set()
         n_workers = n_mines = 0
-        for i, ty, fl, _, _, _, _, order in own_list(rows, self.player):
+        for i, ty, fl, _, _, _, _, order, _ in own_list(rows, self.player):
             if ty == wc:
                 n_workers += 1
             if fl & STRUCTURE:
