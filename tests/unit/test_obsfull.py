@@ -300,3 +300,21 @@ def test_remembered_enemies_show_no_state_now():
         fx.set_obs_full(0)
         fx.set_inputs(1)
 
+
+def test_tables_cache_written_whole(tmp_path, monkeypatch):
+    """obsfull.tables()' cache file is written whole under another name, then renamed (as fullvocab's): actors starting
+    together on a fresh machine had read another's half-written file."""
+    from pathlib import Path as P
+
+    from warcraftsim.fullgame import obsfull as of
+    written = []
+    real = P.write_text
+
+    def spy(self, text, *a, **k):
+        written.append(self)
+        return real(self, text, *a, **k)
+    monkeypatch.setattr(P, "write_text", spy)
+    path = tmp_path / "cache" / "obs_full-1.json"
+    of.write_whole(path, '{"a": 1}')
+    assert path.read_text() == '{"a": 1}' and written and all(w != path for w in written)
+    assert not list(path.parent.glob("*.tmp"))

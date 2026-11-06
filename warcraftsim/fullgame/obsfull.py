@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from functools import lru_cache
 
 import numpy as np
@@ -157,9 +158,17 @@ def tables() -> dict:
             secs = num(r.get("DataA1"), 1.0) * max(num(r.get("Cast1"), 1.0), 1.0)
         areas[a] = (num(r.get("Area1"), 200.0), secs)
     out = {"speed": speed, "upgrades": ups, "areas": areas, "build": build, "timemod": timemod, "creeps": map_creeps()}
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(out, sort_keys=True))
+    write_whole(path, json.dumps(out, sort_keys=True))
     return out
+
+
+def write_whole(path, text: str) -> None:
+    """`text` into `path` whole, then renamed (as fullvocab's cache files): actors starting together on a fresh machine
+    (the box, the laptop) read a whole file or none; written in place, one had read another's half-written file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(f".{os.getpid()}.tmp")
+    tmp.write_text(text)
+    tmp.replace(path)
 
 
 CRITTERS = ("npig", "nrac", "nshe", "nfro", "ndog", "ncrb", "nder", "nfbr", "nhmc", "nskk", "nsno", "nalb", "nech",
