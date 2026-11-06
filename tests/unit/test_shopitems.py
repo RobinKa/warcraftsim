@@ -72,7 +72,7 @@ def test_flag_off_is_as_before(game_tables, tmp_path):
     v = ck["vocab"]
     assert v == neutral.extend_vocab(VOCAB) and not v.get("shop_items")
     assert (code("phea"), fx.UNIT) not in {tuple(o) for o in v["orders"]}
-    assert 19 not in order_needs(v).values() and net.valid_bits == 19
+    assert 19 not in order_needs(v).values() and int(net.valid_need.max()) < 19
     assert fx.item_use_now(code("ssan"), _row(1, "Hpal", fx.HERO))  # (usable, not in TARGETED_ITEMS: as ever)
 
 
@@ -97,7 +97,7 @@ def test_grow_keeps_the_old_network(game_tables, tmp_path):
     assert torch.allclose(b[:, oix[(852013, fx.POINT)]], b[:, 0] - shopitems.USE_BIAS)
     assert (oix[(852009, fx.IMMEDIATE)] and oix[(852013, fx.UNIT)])  # (the slots the demonstrations lacked)
     assert net.order_kind[oix[(852008, fx.POINT)]] == fx.POINT and net.order_kind[oix[(code("phea"), fx.UNIT)]] == fx.UNIT
-    assert net.valid_bits == 20
+    assert int(net.valid_need.max()) == 19  # (a free inventory slot: what an item bought needs)
     # again: a vocabulary with them stays, a network loads into its orders (a snapshot of the run)
     torch.save({"config": net.config, "model": net.state_dict(), "vocab": v}, tmp_path / "n.pt")
     again, ck2 = load(tmp_path / "n.pt", vocab=v)
@@ -173,6 +173,38 @@ def test_valid_mask_free_slot(game_tables, tmp_path):
     at = net.valid_cols.tolist().index(oix[(code("phea"), fx.UNIT)])
     assert ok[0, 0, at] and not ok[0, 1, at]
     assert ok[0, 1, net.valid_cols.tolist().index(oix[(code("Npbm"), fx.UNIT)])]
+
+
+def test_free_slot_mask_in_the_actors_network(game_tables, tmp_path):
+    """The actors' networks (selfplay.Nets: the published config and state dict; PastNet likewise) mask a full
+    inventory's buy as the learner's (model.load, set_valid) does: the free slot had been an attribute of set_valid's
+    alone, so the actors sampled buys the learner held at log-probability -1e9 (an update's approximate KL ~1e5)."""
+    from warcraftsim.fullgame.model import FullGameNet, evaluate, load
+    _nets(tmp_path)
+    fx.set_neutral(1)
+    fx.set_shop_items(1)
+    net, ck = load(tmp_path / "o.pt")
+    live = FullGameNet(**net.config).eval()  # (as Nets._live builds "current" from current.pt)
+    live.load_state_dict(net.state_dict())
+    v = ck["vocab"]
+    oix = {tuple(o): c for c, o in enumerate(v["orders"], start=1)}
+    view = fx.Encoder(v).view(0, 1.0, [0, 1])
+    full = _row(2, "Hpal", fx.HERO, items=("stwp", "phea", "pman", "plcl", "sreg", "tsct"))
+    st = view.step(np.stack([full]), None, np.zeros((0, 5), np.int64), 0)
+    ent, typ = torch.as_tensor(st["ent"]).unsqueeze(0).float(), torch.as_tensor(st["type"]).unsqueeze(0).long()
+    assert torch.equal(live.unit_valid(ent, typ), net.unit_valid(ent, typ))
+    buy = oix[(code("phea"), fx.UNIT)]
+    assert not live.unit_valid(ent, typ)[0, 0, live.valid_cols.tolist().index(buy)]
+    # the learner's log-probability of an order the actor's network may sample: finite, never the mask's -1e9
+    with torch.no_grad():
+        g, u = live.encode(ent, typ, torch.zeros_like(typ), torch.ones_like(typ, dtype=torch.bool), torch.zeros(1, live.config["G"]))
+        lg = live.order_logits(g, u, typ, torch.tensor([1]), ent=ent)
+        allowed = (lg[0, 0] > -1e8).nonzero().flatten().tolist()
+        zero = torch.zeros(1, 1, dtype=torch.long)
+        for c in allowed:
+            lp = evaluate(net, ent, typ, torch.zeros_like(typ), torch.ones_like(typ, dtype=torch.bool), torch.zeros(1, net.config["G"]),
+                          torch.tensor([1]), torch.tensor([[c]]), zero, zero, zero)["logp"]
+            assert float(lp) > -1e4, c
 
 
 def test_slot_forms_mask_and_commands(game_tables):
