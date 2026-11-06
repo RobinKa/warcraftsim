@@ -23,7 +23,8 @@ Rejected changes worth switching on anyway (2026-11-06 review): none of the tuni
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-194` (running) | `--exploiter-share 0.1 --ai-share 0.4` (bold 1) | League-first training: the fixed exploiter and half the AI games |
+| `fgself-195` (running) | the `dry` scenario in a third of scenario starts (bold 2) | Expand or lose the income |
+| `fgself-194` (not kept) | `--exploiter-share 0.1 --ai-share 0.4` (bold 1) | Level head to head, -13 against insane (only ~12% AI games); no wider; the exploiter never joined |
 | `fgself-193` (invalid, stopped at 5.9M) | `--exploiter-share 0.2` (item 6, brought forward) | The exploiter path was broken (fixed in 8f57073): run again as `fgself-194` with `--exploiter-share 0.1` |
 | `fgself-192` (not kept) | `--ref-ema 0.00046` (4× faster) | Level, play no wider: the anchor is not what holds variety back now |
 | `fgself-191` (stopped at 75M) | `--ref-ema 0.000115` (item 5) | Level throughout, play no wider |
