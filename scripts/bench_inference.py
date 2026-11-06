@@ -64,6 +64,12 @@ def main() -> int:
                                            "answers, ms a round (use --live-rows near the run's, e.g. 10,45)")
     ap.add_argument("--precisions", help="fused fp32 against these (selfplay --infer-precision: tf32, bf16, or both "
                                          "comma-separated): ms a round, and how far the values and entropies move")
+    ap.add_argument("--twice", action="store_true",
+                    help="the same settings twice (fused, side by side), each row against itself in order: the "
+                         "current network's rows and the past snapshots' apart (two calls of a round had shared one "
+                         "pinned answer buffer: Inference._launch, fixed)")
+    ap.add_argument("--only", choices=("current", "past"), help="rounds of the current network's rows alone, or of past "
+                                                                "snapshots' alone")
     a = ap.parse_args()
     device = torch.device("cuda")
     if a.setup:
@@ -85,6 +91,10 @@ def main() -> int:
         groups = {"current": [(None, i, rng.choice(steps)) for i in range(rng.randint(*live_rows))]}
         for key in rng.sample(keys, rng.randint(1, min(len(keys), 6))):
             groups[key] = [(None, i, rng.choice(steps)) for i in range(rng.randint(*past_rows))]
+        if a.only == "current":
+            groups = {"current": groups["current"]}
+        elif a.only == "past":
+            groups.pop("current")
         rounds.append(groups)
 
     ents = lambda text: tuple(int(x) for x in text.split(","))  # noqa: E731
@@ -112,7 +122,8 @@ def main() -> int:
             if r >= len(rounds):
                 times.append((t1 - t0, t2 - t1, t3 - t2))
             else:
-                out.append([(x["value"], x["entropy"]) for part in res for x in part])
+                out.append([(x["value"], x["entropy"], fwd is past) for (fwd, _, _, _), part in zip(calls, res)
+                            for x in part])  # (and whether a past snapshot's row: --twice)
         if fuse:  # the sampling's noise must differ from one replay of a graph to the next
             same = 0
             for _ in range(2):
@@ -124,6 +135,19 @@ def main() -> int:
             print(f"two replays of the same round sampled {'the SAME orders (noise not redrawn)' if same else 'different orders'}")
         return out, 1000 * np.mean(times, axis=0)
 
+    if a.twice:  # the same settings twice: every row against itself, in order (the same calls both times)
+        base, _ = run(True, fuse=True)
+        again, t = run(True, fuse=True)
+        bad = 0
+        for name, past_rows_ in (("current network", False), ("past snapshots", True)):
+            d = [max(abs(x[0] - y[0]), abs(x[1] - y[1])) for rs, rp in zip(base, again) for x, y in zip(rs, rp)
+                 if x[2] == past_rows_]
+            if d:
+                n_off = sum(v > 1e-3 for v in d)
+                bad += n_off
+                print(f"{name}: {len(d)} rows, value/entropy difference max {max(d):.2e}, rows off by > 1e-3: {n_off}")
+        print(f"{t.sum():.2f} ms a round")
+        return 0 if bad == 0 else 1
     if a.compare_rows:  # fused, side by side: the given row counts against these
         base, t_base = run(True, fuse=True)
         out, t = run(True, fuse=True, rows=a.compare_rows)

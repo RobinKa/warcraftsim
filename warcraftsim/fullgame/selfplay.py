@@ -404,7 +404,10 @@ class Inference:
             x, graph, packed = self._graph(net, host)
             x.copy_(host, non_blocking=True)
             graph.replay()
-            key = ("out", B, packed.shape[1], slot, self.bank)
+            # (the answers' buffer keyed as the input's, by the input's width and its slot: keyed by the answers' own
+            # width, two calls of a round padded to 96 and to 160 entities (both 5 x min(MAX_OWN = 96, E) + 2 numbers a
+            # row, their slots counted apart) shared one, the last copy won, and the first call read the second's rows)
+            key = ("out", B, W, slot, self.bank)
             if key not in self._hosts:
                 self._hosts[key] = torch.zeros(B, packed.shape[1]).pin_memory()
             out = self._hosts[key]
