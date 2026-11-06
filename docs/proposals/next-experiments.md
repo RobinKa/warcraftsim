@@ -14,6 +14,9 @@ The user: "lets make bold meaningful changes instead of small ones". Every one-f
 4. **League exploiters** (code). Exploiters that train against the whole league and join it, as AlphaStar's do, so the league holds members that play differently.
 5. If 1 holds against insane: no built-in AI games in training at all, with insane only as the yardstick.
 6. **PFSP with data** (found 2026-11-06). Only ~1% of the games against past snapshots enter PFSP's records: the win-balance tax, scenarios and targets each take a game out (audits 4-6), so the league is drawn evenly. Both the tax and PFSP aim at even games, and they pull against each other. Options: count target and scenario games (their bias is the same for every opponent), or no win-balance tax in games against past snapshots. Needed before the league plan can mean what it says.
+7. **Complete the vocabulary** (being built, 2026-11-06). The orders are those the demonstrations gave 5+ times, so whatever the built-in AI never does is missing. The agent can never make spirit walkers, hippogryphs and riders, siege engines, destroyers or shades. It can't build arcane or cannon towers, watch towers, nerubian towers or ancient protectors. It lacks about 20 unit abilities (polymorph, cripple, possession, faerie fire, cyclone, rejuvenation, bear and crow form, berserk, aerial shackles, flare, sentry ward, spirit link, ancestral spirit, abolish and devour magic, absorb mana, corporeal form, sacrifice) and patrol and hold position. Much of people's tier-3 play is out of reach. Added as `--spells` and `--shop-items` were: at the vocabulary's end, new logits low, old ones exact, each order probed in the real game.
+
+Rejected changes worth switching on anyway (2026-11-06 review): none of the tuning knobs. `--value-tax` (correct in principle, 41% at 30M), the gentle hunt lesson and the one-item shop targets are worth trying again inside a bold run; mercenaries only once they are taught.
 
 ## Running
 
