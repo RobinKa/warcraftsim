@@ -92,6 +92,8 @@ A unit token is the sum of three parts:
 
 The features have 26 more channels (hit-point change, sine and cosine of the position, each unit's last order). They are zero in use (`--features 29`): they did not help.
 
+What a person playing sees that these inputs lack (buffs, corpses, the fog's memory, enemy upgrades, items, area spells...), ranked, with what the game exposes: [observation-coverage](reference/observation-coverage.md) (`scripts/observation_coverage.py`, probed by `scripts/obs_probe.py`).
+
 With `--inputs 3` (`fgself-107`; the new channels start with zero weights, so a network plays as before):
 
 | index | channel |
