@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from warcraftsim.fullgame import bc, features as fx  # noqa: E402
 from warcraftsim.fullgame.costs import order_costs  # noqa: E402
-from warcraftsim.fullgame.selfplay import Inference, Nets, PastNet, infer_rows, launch_round  # noqa: E402
+from warcraftsim.fullgame.selfplay import Inference, Nets, PastNet, infer_rows, launch_round, precision_flags  # noqa: E402
 from warcraftsim.fullgame.trace import unit_values  # noqa: E402
 
 
@@ -62,7 +62,7 @@ def main() -> int:
     ap.add_argument("--rows", default="8,24,64", help="the current network's padded row counts (selfplay --infer-rows)")
     ap.add_argument("--compare-rows", help="also these row counts (e.g. 8,16,24,32,48,64), fused, side by side: the same "
                                            "answers, ms a round (use --live-rows near the run's, e.g. 10,45)")
-    ap.add_argument("--precisions", help="fused fp32 against these (selfplay --infer-precision: tf32, bf16, or both "
+    ap.add_argument("--precisions", help="fused fp32 against these (selfplay --infer-precision: tf32, bf16, bf16-mixed, "
                                          "comma-separated): ms a round, and how far the values and entropies move")
     ap.add_argument("--twice", action="store_true",
                     help="the same settings twice (fused, side by side), each row against itself in order: the "
@@ -100,12 +100,12 @@ def main() -> int:
     ents = lambda text: tuple(int(x) for x in text.split(","))  # noqa: E731
 
     def run(parallel: bool, fuse: bool = False, bf16: bool = False, live_e: str = a.entities,
-            past_e: str = a.past_entities, rows: str = a.rows, tf32: bool = False) -> tuple[list, float]:
+            past_e: str = a.past_entities, rows: str = a.rows, tf32: bool = False, mixed: bool = False) -> tuple[list, float]:
         buckets = infer_rows(rows, 64)
         infer = Inference(nets, device, 64, True, buckets=buckets, thread=False, entities=ents(live_e), fuse=fuse, bf16=bf16,
-                          tf32=tf32)
+                          tf32=tf32, mixed=mixed)
         past = Inference(nets, device, 16, True, buckets=(4, 16), thread=False, entities=ents(past_e), fuse=fuse, bf16=bf16,
-                         tf32=tf32)
+                         tf32=tf32, mixed=mixed)
         swap = PastNet(device, slots=a.slots if parallel else 1)
         streams = {} if parallel else None
         out, times = [], []
@@ -159,18 +159,19 @@ def main() -> int:
             print(f"rows {name}: {tt.sum():.2f} ms a round (launching {tt[0]:.2f}, GPU {tt[1]:.2f}, answers {tt[2]:.2f})")
         print(f"largest difference in value + entropy {worst:.2e}; GPU memory reserved {torch.cuda.max_memory_reserved() / 2 ** 30:.1f} GB")
         return 0 if worst < 1e-3 else 1
-    if a.precisions:  # fused fp32 (the reference) against tf32 / bf16, side by side
+    if a.precisions:  # fused fp32 (the reference) against tf32 / bf16 / bf16-mixed, side by side
         base, t_base = run(True, fuse=True)
         print(f"fused fp32: {t_base.sum():.2f} ms a round (launching {t_base[0]:.2f}, GPU {t_base[1]:.2f}, "
               f"answers {t_base[2]:.2f})", flush=True)
         for prec in a.precisions.split(","):
-            out, t = run(True, fuse=True, bf16=prec == "bf16", tf32=prec == "tf32")
+            out, t = run(True, fuse=True, **precision_flags(prec))
             pairs = [(x, y) for rs, rp in zip(base, out) for x, y in zip(rs, rp)]
             dv = [abs(x[0] - y[0]) for x, y in pairs]
             de = [abs(x[1] - y[1]) for x, y in pairs]
             print(f"fused {prec}: {t.sum():.2f} ms a round (launching {t[0]:.2f}, GPU {t[1]:.2f}, answers {t[2]:.2f}); "
                   f"value difference mean {np.mean(dv):.1e} p99 {np.percentile(dv, 99):.1e} max {max(dv):.1e}, entropy mean "
-                  f"{np.mean(de):.1e} max {max(de):.1e}", flush=True)
+                  f"{np.mean(de):.1e} p99 {np.percentile(de, 99):.1e} max {max(de):.1e}; GPU memory reserved so far "
+                  f"{torch.cuda.max_memory_reserved() / 2 ** 30:.1f} GB", flush=True)
         return 0
     if a.compare:  # fused, side by side: the given entity counts against these
         base, t_base = run(True, fuse=True)

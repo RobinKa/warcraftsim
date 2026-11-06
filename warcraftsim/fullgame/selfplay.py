@@ -156,7 +156,15 @@ class Nets:
 
 
 INFER_ROWS = (8, 24, 64)  # the rows the current network's calls pad to (--infer-rows; a CUDA graph per entity count each)
-INFER_PRECISIONS = ("fp32", "tf32", "bf16")  # --infer-precision
+INFER_PRECISIONS = ("fp32", "tf32", "bf16", "bf16-mixed")  # --infer-precision
+
+
+def precision_flags(prec: str | None) -> dict:
+    """--infer-precision -> Inference's keyword arguments (bf16, tf32, mixed); empty or None: fp32."""
+    prec = prec or "fp32"
+    if prec not in INFER_PRECISIONS:
+        raise ValueError(f"--infer-precision {prec}: one of {', '.join(INFER_PRECISIONS)}")
+    return {"bf16": prec == "bf16", "tf32": prec == "tf32", "mixed": prec == "bf16-mixed"}
 
 
 def infer_rows(rows, top: int) -> tuple[int, ...]:
@@ -197,7 +205,7 @@ class Inference:
     def __init__(self, nets: Nets, device, max_batch: int, compile_: bool = True, buckets: tuple[int, ...] | None = None,
                  thread: bool = True, entities: tuple[int, ...] = (fx.MAX_ENT,), shared: "SharedRows | None" = None,
                  fuse: bool = False, bf16: bool = False, generator: torch.Generator | None = None,
-                 capture_mode: str = "global", guide: bool = False, tf32: bool = False):
+                 capture_mode: str = "global", guide: bool = False, tf32: bool = False, mixed: bool = False):
         """`buckets`: the batch sizes its compiled calls pad to (the smallest that fits; default: just
         max_batch); `entities`: likewise the entity counts (a call padded 4 rows of ~47 entities to
         16 x 160: ~50 times the attention). `thread` False: no batching thread of its own (the
@@ -216,10 +224,13 @@ class Inference:
             torch._dynamo.config.recompile_limit = max(torch._dynamo.config.recompile_limit, 256)
             torch._dynamo.config.accumulated_recompile_limit = max(torch._dynamo.config.accumulated_recompile_limit, 1024)
         # bf16: the network's matmuls in bfloat16 (tensor cores); the sampling and log-probabilities stay fp32
-        self.bf16 = bf16 and device.type == "cuda"
+        self.bf16 = (bf16 or mixed) and device.type == "cuda"
+        # mixed (--infer-precision bf16-mixed): bf16 for the trunk alone (the encoders, the transformer, the memory core),
+        # the heads in fp32 (model.act's heads_fp32: no bf16 rounding of their logits and the value), their matmuls TF32
+        self.mixed = mixed and self.bf16
         # tf32: the float32 matmuls on TF32 tensor cores (inputs rounded to 10 bits of mantissa, fp32 sums), set while a
         # call is compiled and captured (matmul_precision); the rest of the call in fp32 as before
-        self.tf32 = tf32 and device.type == "cuda" and not self.bf16
+        self.tf32 = device.type == "cuda" and ((tf32 and not self.bf16) or self.mixed)
         # generator: the sampling's random numbers (an inference thread in the learner's process: the learner's
         # dropout uses the default one, and a capture in one thread must not see the other's draws);
         # capture_mode "thread_local": the other thread's CUDA calls go on while a graph is captured
@@ -293,7 +304,7 @@ class Inference:
         if net not in self._fns:
             G, NO, d = net.config["G"], net.config["n_orders"], net.config["d"] if net.memory else 0
             ref = weakref.ref(net)  # (not the network itself: the entry would keep it alive)
-            bf16, gen, guided = self.bf16, self.generator, self.guide
+            bf16, gen, guided, mixed = self.bf16, self.generator, self.guide, self.mixed
 
             def packed_act(x):
                 # one tensor in and one out: each copy to or from the GPU is a driver call of its own
@@ -312,9 +323,11 @@ class Inference:
                 tens = torch.floor(flag / 10.0) if guided else torch.zeros_like(flag)
                 shared = flag - 10.0 * tens > 1.5
                 guide = torch.where(tens > 0, tens / 10.0, torch.ones_like(tens)) if guided else None
-                with torch.autocast("cuda", dtype=torch.bfloat16, enabled=bf16, cache_enabled=False):
+                # (cache_enabled False: each call casts the weights it reads, so weights copied into them, a reloaded
+                # network's or a past snapshot's into its slot, are what the graph computes with)
+                with torch.autocast(x.device.type, dtype=torch.bfloat16, enabled=bf16, cache_enabled=False):
                     out = act(ref(), ent, typ, cur, mask, glob, n_own, avail, x[:, a + 1 + NO:] if d else None,
-                              generator=gen, shared=shared, guide=guide)
+                              generator=gen, shared=shared, guide=guide, heads_fp32=mixed)
                 return torch.cat([out["order"].float(), out["tgt"].float(), out["bx"].float(), out["by"].float(),
                                   out["logp"].float(), out["value"].float()[:, None], out["entropy"].float()[:, None]]
                                  + ([out["h"].float()] if d else []), 1)
@@ -778,14 +791,13 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
     top = cfg["infer_batch"]
     shared = SharedRows(*cfg["shared_rows"]) if cfg.get("shared_rows") else None
     fuse = bool(cfg.get("infer_fuse", 0))
-    prec = cfg.get("infer_precision") or "fp32"  # (--infer-precision)
+    prec = precision_flags(cfg.get("infer_precision"))  # (--infer-precision)
     infer = Inference(nets, device, top, cfg["compile"], buckets=infer_rows(cfg.get("infer_rows"), top),
                       thread=False, entities=tuple(cfg.get("infer_entities", (48, 96))), shared=shared, fuse=fuse,
-                      generator=generator, capture_mode=mode, bf16=prec == "bf16", tf32=prec == "tf32")
+                      generator=generator, capture_mode=mode, **prec)
     past = Inference(nets, device, 16, cfg["compile"], buckets=(4, 16), thread=False,
                      entities=tuple(cfg.get("infer_past_entities", (64,))),
-                     shared=shared, fuse=fuse, generator=generator, capture_mode=mode,
-                     bf16=prec == "bf16", tf32=prec == "tf32")  # past snapshots: few calls
+                     shared=shared, fuse=fuse, generator=generator, capture_mode=mode, **prec)  # past snapshots: few calls
     swap = PastNet(device, slots=cfg.get("infer_past_slots", 1))
     streams = {} if cfg.get("infer_streams", 0) else None
     if in_thread and device.type == "cuda" and cfg.get("compile", True):
@@ -5287,9 +5299,11 @@ def main(argv: list[str] | None = None) -> int:
                     "depend on the others: finer steps pad less, at the cost of more graphs at the start")
     ap.add_argument("--infer-precision", default="fp32", choices=INFER_PRECISIONS,
                     help="the inference calls' matrix multiplies: fp32 (as before), tf32 (TF32 tensor cores: inputs "
-                         "rounded to 10 bits of mantissa, sums in fp32) or bf16 (autocast, as the learner's update); the "
-                         "sampling, log-probabilities and values in fp32 either way. Not the same numbers: the games' "
-                         "orders and values change by the rounding (docs/reference/optimization-log.md)")
+                         "rounded to 10 bits of mantissa, sums in fp32), bf16 (autocast, as the learner's update) or "
+                         "bf16-mixed (the trunk in bf16, the heads and the value in fp32 with TF32 multiplies: no bf16 "
+                         "rounding of their large logits); the sampling, log-probabilities and values in fp32 either way. "
+                         "Not the same numbers: the games' orders and values change by the rounding "
+                         "(docs/reference/optimization-log.md)")
     ap.add_argument("--gpu-split", type=int, default=0, help="with --infer-native: this many of the GPU's SMs the "
                                                             "inference loop's alone, the rest the learner's (CUDA green "
                                                             "contexts, gpu_split.py); 0: both on all")
