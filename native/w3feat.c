@@ -502,3 +502,70 @@ void w3f_natural(const int64_t *rows, int nrows, int ncols, double sx, double sy
         else if (r[C_OWNER] <= 1 && d < taken_near) out[4] = 1;
     }
 }
+
+/* features.spell_any (FUTILE_MASK) with its arguments in one int64 array: rows, nrows, ncols, player, the sorted
+ * undead, mechanical, ancient and spell immune types (a pointer and a count each), n_sp, the spells (per spell: 1 if it
+ * heals the undead, its caster's type), found (out: int64 [n_sp]). Per spell, whether a row is its target other than one
+ * of the player's units of its caster's type: living and no building, neither mechanical nor ancient; one of the
+ * player's of the kind it heals below full health, or another player's of the other kind that the player sees, not
+ * spell immune (features.spell_targets' masks). */
+void w3f_spell_any_a(const int64_t *a) {
+    const int64_t *rows = (const int64_t *)a[0];
+    int nrows = (int)a[1], ncols = (int)a[2];
+    int64_t player = a[3];
+    const int64_t *und = (const int64_t *)a[4], *mech = (const int64_t *)a[6], *anc = (const int64_t *)a[8],
+                  *imm = (const int64_t *)a[10], *sp = (const int64_t *)a[13];
+    int nu = (int)a[5], nm = (int)a[7], na = (int)a[9], ni = (int)a[11], n_sp = (int)a[12];
+    int64_t *found = (int64_t *)a[14];
+    int left = n_sp;
+    for (int s = 0; s < n_sp; s++) found[s] = 0;
+    for (int i = 0; i < nrows && left; i++) {
+        const int64_t *r = rows + (size_t)i * ncols;
+        int64_t fl = r[C_FLAGS], ty = r[C_TYPE];
+        if ((fl & (DEAD | STRUCTURE)) || in_sorted(mech, nm, ty, NULL, NULL) || in_sorted(anc, na, ty, NULL, NULL))
+            continue;
+        int64_t u = in_sorted(und, nu, ty, NULL, NULL);
+        if (r[C_OWNER] == player) {
+            if (r[C_HP] < r[C_MAXHP])
+                for (int s = 0; s < n_sp; s++)
+                    if (!found[s] && u == sp[2 * s] && ty != sp[2 * s + 1]) { found[s] = 1; left--; }
+        } else if (((r[C_VIS] >> player) & 1) == 1 && !in_sorted(imm, ni, ty, NULL, NULL)) {
+            for (int s = 0; s < n_sp; s++)
+                if (!found[s] && u != sp[2 * s]) { found[s] = 1; left--; }
+        }
+    }
+}
+
+/* View.futile's mines (features.mine_workers) with its arguments in one int64 array: rows, nrows, ncols, player, the
+ * mine's type, the sorted mining orders (a pointer and a count), near (a double's bits), out. Of the player's living
+ * finished units of the mine's type, in their order, each one's id and how many of the player's living workers work it:
+ * within `near` of it (numpy's hypot is libm's, of the int64 differences) and on a mining order or inside it (hidden).
+ * Returns the number of mines. */
+#define HIDDEN 16
+int w3f_mine_counts_a(const int64_t *a) {
+    const int64_t *rows = (const int64_t *)a[0];
+    int nrows = (int)a[1], ncols = (int)a[2];
+    int64_t player = a[3], mtype = a[4];
+    const int64_t *mining = (const int64_t *)a[5];
+    int nmining = (int)a[6];
+    double near;
+    memcpy(&near, &a[7], sizeof near);
+    int64_t *out = (int64_t *)a[8];
+    int n = 0;
+    for (int i = 0; i < nrows; i++) {
+        const int64_t *m = rows + (size_t)i * ncols;
+        if (m[C_OWNER] != player || (m[C_FLAGS] & (DEAD | CONSTRUCTING)) || m[C_TYPE] != mtype) continue;
+        int64_t k = 0;
+        for (int j = 0; j < nrows; j++) {
+            const int64_t *w = rows + (size_t)j * ncols;
+            int64_t fl = w[C_FLAGS];
+            if (w[C_OWNER] != player || (fl & DEAD) || !(fl & WORKER)) continue;
+            if (!(fl & HIDDEN) && !in_sorted(mining, nmining, w[C_ORDER], NULL, NULL)) continue;
+            if (hypot((double)(w[C_X] - m[C_X]), (double)(w[C_Y] - m[C_Y])) < near) k++;
+        }
+        out[2 * n] = m[C_ID];
+        out[2 * n + 1] = k;
+        n++;
+    }
+    return n;
+}

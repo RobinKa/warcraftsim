@@ -57,6 +57,10 @@ def lib():
         L.w3f_view_a.argtypes = [P, D]
         L.w3f_afford_a.restype = None
         L.w3f_afford_a.argtypes = [P]
+        L.w3f_spell_any_a.restype = None
+        L.w3f_spell_any_a.argtypes = [P]
+        L.w3f_mine_counts_a.restype = I
+        L.w3f_mine_counts_a.argtypes = [P]
         _lib = L
     return _lib or None
 
@@ -378,3 +382,63 @@ def to_f16(a: np.ndarray) -> np.ndarray:
     if L is None or not a.size or not L.w3f_to_f16(a.ctypes.data, out.ctypes.data, a.size):
         return a.astype(np.float16)
     return out
+
+
+_SPELL_TABLES: list = [None, None]  # spell_any's sorted type lists and spells: [what they were made from, (arrays, head)]
+
+
+def spell_any(fx, rows: np.ndarray, player: int, owner) -> dict | None:
+    """features.spell_any in C (w3f_spell_any_a): {spell order: whether a row is its target}, or None without the
+    library. `owner`: an object to keep the call's argument and output arrays on (a view: one thread's)."""
+    L = lib()
+    if L is None:
+        return None
+    spells, k = tuple(fx.FUTILE_SPELLS), fx._kinds()
+    key = (spells, k)
+    if _SPELL_TABLES[0] is None or _SPELL_TABLES[0][0] != spells or _SPELL_TABLES[0][1] is not k:  # (once: the kinds'
+        arrs = [np.ascontiguousarray(k[n], np.int64) for n in ("undead", "mechanical", "ancient", "immune")]
+        sp = np.asarray([v for o in spells for v in (int(fx.FUTILE_SPELLS[o] == "undead"), fx.SPELL_CASTERS[o])] or [0],
+                        np.int64)
+        head = _array("q", [x for a in arrs for x in (a.ctypes.data, len(a))] + [len(spells), sp.ctypes.data])
+        _SPELL_TABLES[:] = [key, (arrs, sp, head)]
+    rows = np.ascontiguousarray(rows, np.int64)
+    buf = owner.__dict__.get("_spell_buf")  # (codes are fixed, but a test may swap them)
+    if buf is None or buf[4] is not _SPELL_TABLES[0]:
+        a = _array("q", bytes(8 * 15))
+        found = np.zeros(max(len(spells), 1), np.int64)
+        a[4:14] = _SPELL_TABLES[1][2]
+        a[14] = found.ctypes.data
+        buf = owner._spell_buf = (a, a.buffer_info()[0], found, spells, _SPELL_TABLES[0], _SPELL_TABLES[1])  # (its tables kept alive)
+    a, found = buf[0], buf[2]
+    a[0], a[1], a[2], a[3] = _rows_addr(rows), len(rows), rows.shape[1], int(player)
+    L.w3f_spell_any_a(buf[1])
+    return dict(zip(spells, map(bool, found[:len(spells)].tolist())))
+
+
+_MINING: list = [None, None]  # mine_counts' mining orders: [the array given, (the sorted array, its pointer)]
+
+
+def mine_counts(rows: np.ndarray, player: int, mine_type: int, mining: np.ndarray, near: float, owner) -> list | None:
+    """View.futile's mines in C (w3f_mine_counts_a): [(id, workers working it)] of the player's living finished units
+    of `mine_type`, in their order (features.mine_workers' count), or None without the library. `mining`: the mining
+    orders, sorted (features._MINING). `owner`: an object to keep the call's arrays on (a view: one thread's)."""
+    L = lib()
+    if L is None:
+        return None
+    if _MINING[0] is not mining:
+        m = np.ascontiguousarray(mining, np.int64)
+        _MINING[:] = [mining, (m, m.ctypes.data)]
+    rows = np.ascontiguousarray(rows, np.int64)
+    buf = owner.__dict__.get("_mine_buf")
+    if buf is None or len(buf[2]) < 2 * len(rows) or buf[4] != near:
+        a = _array("q", bytes(8 * 9))
+        a[7] = _array("q", _array("d", [float(near)]).tobytes())[0]  # (the double's bits)
+        out = np.empty(max(2 * len(rows), 256), np.int64)
+        a[8] = out.ctypes.data
+        buf = owner._mine_buf = (a, a.buffer_info()[0], out, None, near)
+    a, out = buf[0], buf[2]
+    m, mp = _MINING[1]
+    a[0], a[1], a[2], a[3], a[4], a[5], a[6] = _rows_addr(rows), len(rows), rows.shape[1], int(player), int(mine_type), mp, len(m)
+    n = L.w3f_mine_counts_a(buf[1])
+    flat = out[:2 * n].tolist()
+    return list(zip(flat[0::2], flat[1::2]))
