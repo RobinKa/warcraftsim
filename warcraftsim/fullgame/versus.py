@@ -100,7 +100,8 @@ def main(argv: list[str] | None = None) -> int:
     if side == 1:
         slots.reverse()
     setup = GameSetup(map=args.map, slots=slots, step_seconds=0.5, max_game_seconds=args.max_minutes * 60,
-                      victory="decisive", window=(w, h), speed=args.speed, warm_spare=False)
+                      victory="decisive", window=(w, h), speed=args.speed, warm_spare=False,
+                      obs_full=bool(fx.OBS_FULL))  # (a network trained with --obs-full: the harness's events 101-109)
     print(f"you: {you} ({'left' if side == 0 else 'right'} base) · the policy: {agent} · {args.map} · "
           f"{args.checkpoint}", flush=True)
     display = None if args.display.lower() in ("", "none") else args.display

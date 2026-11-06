@@ -212,3 +212,153 @@ def test_identity_fgself182():
         fx.set_macros(0)
         fx.set_spells(0)
         fx.set_shop_items(0)
+
+
+def test_corpse_rows_never_take_a_units_id(obs_on):
+    """A corpse's row has an id of its own (as the items' and areas'), and a corpse whose handle id a living unit has
+    after its death's step is gone: the game gives a removed corpse's id to a new unit (a real game: a farm took a
+    ghoul's id 5 s after its death, while the corpse was still kept), and two rows with one id had the view's index take
+    the unit's id to the corpse's row, which the target pointer masks (the AI's labels, the paid orders, the last
+    orders' targets)."""
+    from warcraftsim.fullgame import obsfull as of
+    enc = fx.Encoder(VOCAB)
+    view = enc.view(0, 1.0, [0, 1])
+    foot, grunt = _row(1, "hfoo", 0, -4000, 2900), _row(4, "ogru", 1, -3800, 2900)
+    ev = [(4, 1, 6, 1, code("ugho")), (4, of.EV_CORPSE, 6, -3900, 2950), (4, of.EV_CORPSE_SEEN, 6, 1, 0)]
+    st = view.step(np.stack([foot, grunt]), None, np.asarray(ev, np.int64), 4)
+    A, sel = fx.A_OBS, st["sel"]
+    corpse = int(np.flatnonzero(st["ent"][:, A] > 0.5)[0])
+    assert sel[corpse, fx.C_ID] < 0 and 6 not in st["index"]  # (its row: an id no unit has)
+    assert sel[corpse, fx.C_TYPE] == code("ugho")  # (its type still its unit's)
+    # the corpse used (raise dead, a meat wagon): the harness's 107 lost, and a new unit of the enemy's takes id 6
+    bar = _row(6, "obar", 1, -3700, 2900, flags=fx.STRUCTURE)
+    st = view.step(np.stack([foot, grunt, bar]), None, np.zeros((0, 5), np.int64), 10)
+    assert (st["ent"][:, A] < 0.5).all() and 6 not in view.obs.corpses  # (the corpse gone)
+    k = st["index"][6]
+    assert st["sel"][k, fx.C_TYPE] == code("obar") and st["ent"][k, A:A + 3].sum() == 0
+    # an AI order on the new unit: its label points at the unit's row, one the target pointer takes
+    y, _ = enc.step_labels(view, st, np.asarray([(10, 1, 851983, 2, 0, 0, 6)], np.int64), None,
+                           np.zeros((0, 5), np.int64), {})
+    assert y["y_order"][0] > 0 and y["y_ptr"][0] == k
+
+
+def test_corpse_forgotten_after_its_decay(obs_on):
+    from warcraftsim.fullgame import obsfull as of
+    enc = fx.Encoder(VOCAB)
+    view = enc.view(0, 1.0, [0, 1])
+    rows = np.stack([_row(1, "hfoo", 0, -4000, 2900)])
+    ev = [(0, 1, 6, 4, code("ugho")), (0, of.EV_CORPSE, 6, -3900, 2950), (0, of.EV_CORPSE_SEEN, 6, 1, 0)]
+    view.step(rows, None, np.asarray(ev, np.int64), 0)
+    view.step(rows, None, np.zeros((0, 5), np.int64), int(90 / 0.5))
+    assert 6 in view.obs.corpses  # (90 s: it lies yet)
+    st = view.step(rows, None, np.zeros((0, 5), np.int64), int(of.CORPSE_SECONDS / 0.5) + 1)
+    assert 6 not in view.obs.corpses and (st["ent"][:, fx.A_OBS] < 0.5).all()  # (decayed by ~92 s: never a 107)
+    assert of.CORPSE_SECONDS < 100
+
+
+def test_remembered_enemies_show_no_state_now():
+    """(inputs 3) An enemy the player saw and no longer sees is a row as it was then: not its state now (the shim
+    writes a unit's state while any seer sees it, its owner always), its owner's upgrade levels now or its building's
+    progress now."""
+    try:
+        from warcraftsim.fullgame import obsfull as of
+        of.tables()
+    except Exception as e:  # noqa: BLE001
+        pytest.skip(f"no game data: {e}")
+    fx.set_inputs(3)
+    fx.set_obs_full(1)
+    try:
+        enc = fx.Encoder(VOCAB)
+        view = enc.view(0, 1.0, [0, 1])
+        foot = _row(1, "hfoo", 0, -4000, 2900)
+        grunt = _row(4, "ogru", 1, -1000, 2900, vis=3)  # (seen by player 0)
+        bar = _row(5, "obar", 1, -1200, 2500, flags=fx.STRUCTURE | fx.CONSTRUCTING, vis=3)
+        ev = [(0, of.EV_STATE, 4, 0, (270 << 12) | 2048), (0, 2, 5, code("obar"), 0)]
+        st = view.step(np.stack([foot, grunt, bar]), None, np.asarray(ev, np.int64), 0)
+        A = fx.A_OBS
+        at = {int(u): k for k, u in enumerate(st["sel"][:, fx.C_ID].tolist())}
+        assert st["ent"][at[4], A + of.K_HAVE] == 1 and st["ent"][at[4], A + of.K_CLASS] == 0
+        # out of sight now: the enemy's own view of its grunt says it is stunned, its weapons reach level 2
+        grunt2, bar2 = grunt.copy(), bar.copy()
+        grunt2[fx.C_VIS], bar2[fx.C_VIS] = 2, 2
+        ev = [(40, of.EV_STATE, 4, 1, (270 << 12) | 2048), (40, fx.RESEARCH_FINISH, 9, code("Rome"), 2)]
+        st = view.step(np.stack([foot, grunt2, bar2]), None, np.asarray(ev, np.int64), 40)
+        at = {int(u): k for k, u in enumerate(st["sel"][:, fx.C_ID].tolist())}
+        g0 = st["ghost0"]
+        assert at[4] >= g0 and at[5] >= g0  # (remembered)
+        ghost, gb = st["ent"][at[4]], st["ent"][at[5]]
+        assert ghost[A + of.K_CLASS] == 0 and ghost[A + of.K_HAVE] == 0  # (not stunned: the player can't see it)
+        assert ghost[A + of.K_UPG] == 0  # (its owner's level now: not on a unit out of sight)
+        assert gb[A + of.K_PROD + 2] == 0  # (the building's progress now: not out of sight)
+        # in sight again: its state and its owner's levels as the game shows them
+        st = view.step(np.stack([foot, grunt, bar]), None, np.zeros((0, 5), np.int64), 41)
+        at = {int(u): k for k, u in enumerate(st["sel"][:, fx.C_ID].tolist())}
+        assert at[4] < st["ghost0"] and st["ent"][at[4], A + of.K_CLASS] == 1
+        assert st["ent"][at[4], A + of.K_UPG] == pytest.approx(2 / 3)
+        assert st["ent"][at[5], A + of.K_PROD + 2] > 0
+    finally:
+        fx.set_obs_full(0)
+        fx.set_inputs(1)
+
+
+def test_tables_cache_written_whole(tmp_path, monkeypatch):
+    """obsfull.tables()' cache file is written whole under another name, then renamed (as fullvocab's): actors starting
+    together on a fresh machine had read another's half-written file."""
+    from pathlib import Path as P
+
+    from warcraftsim.fullgame import obsfull as of
+    written = []
+    real = P.write_text
+
+    def spy(self, text, *a, **k):
+        written.append(self)
+        return real(self, text, *a, **k)
+    monkeypatch.setattr(P, "write_text", spy)
+    path = tmp_path / "cache" / "obs_full-1.json"
+    of.write_whole(path, '{"a": 1}')
+    assert path.read_text() == '{"a": 1}' and written and all(w != path for w in written)
+    assert not list(path.parent.glob("*.tmp"))
+
+
+def test_obs_full_network_in_a_process_without_it(tmp_path):
+    """A network trained with --obs-full loaded where the features were set without it (a later run's league or
+    evaluation checkpoints, --league-add, a fork that turns the flag off) reads the run's rows without its block, as a
+    network with more inputs reads those it has: building it from its config had turned the whole process's features
+    to its width (fx.F + 70), and the run's own network and rows no longer fit them."""
+    from warcraftsim.fullgame import model
+    from warcraftsim.fullgame.model import FullGameNet
+    fx.set_inputs(2)
+    fx.set_obs_full(1)
+    try:
+        net = FullGameNet(n_types=7, n_cur=3, n_orders=4, G=23, gx=3, obsfull=1)
+        path = tmp_path / "obs.pt"
+        torch.save({"model": net.state_dict(), "config": net.config}, path)
+        fx.set_obs_full(0)
+        F0 = fx.F
+        net2, _ = model.load(path)
+        assert fx.OBS_FULL == 0 and fx.F == F0 and fx.A_OBS == -1  # (the process's features as they were set)
+        assert not net2.config.get("obsfull") and net2.ent.weight.shape[1] == F0
+        assert torch.equal(net2.ent.weight, net.ent.weight[:, :F0])
+        fx.set_obs_full(1)  # (a run with it: the network as it was)
+        net3, _ = model.load(path)
+        assert net3.config.get("obsfull") == 1 and torch.equal(net3.ent.weight, net.ent.weight)
+    finally:
+        fx.set_obs_full(0)
+        fx.set_inputs(1)
+
+
+def test_every_game_a_network_plays_asks_the_harness_for_it():
+    """The games a run's networks play (training and evaluation: selfplay.game_loop; the dashboard's videos:
+    render_request; a person against the policy: versus) give the harness W3S_CFG_OBS_FULL as the network's features
+    have it: without it a network trained with --obs-full played with every unit's state, its buffs, the corpses and
+    the area spells empty (the harness writes no events 101-109), and render_request did not set the features' flag."""
+    import ast
+    import inspect
+
+    from warcraftsim.fullgame import render_request, selfplay, versus
+    for mod in (selfplay, render_request, versus):
+        calls = [c for c in ast.walk(ast.parse(inspect.getsource(mod))) if isinstance(c, ast.Call)
+                 and getattr(c.func, "id", getattr(c.func, "attr", None)) == "GameSetup"]
+        assert calls and all(any(k.arg == "obs_full" for k in c.keywords) for c in calls), mod.__name__
+    src = inspect.getsource(render_request.play_and_render)
+    assert "fx.set_obs_full(" in src and src.index("fx.set_obs_full(") < src.index("GameSetup(")

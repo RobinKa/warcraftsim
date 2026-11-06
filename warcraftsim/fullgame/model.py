@@ -520,6 +520,11 @@ def adapt_config(config: dict) -> dict:
         config["privileged"] = True
     if fx.OBS_FULL and not config.get("obsfull"):  # (--obs-full: its block's weights zero, its new kinds hidden: -30)
         config["obsfull"] = fx.OBS_FULL
+    elif config.get("obsfull") and not fx.OBS_FULL and fx.OBS_FULL_SET:  # (a process set without it: a later run's
+        # league, evaluation or --league-add holding a network trained with it. The network without its block and kinds,
+        # as one with more inputs reads those it has (load); built as it was, its constructor had turned the whole
+        # process's features to its width, and the run's own network and rows no longer fit them)
+        config.pop("obsfull")
     gx = config.get("gx", 0)
     if fx.GX > gx:
         config["G"] += fx.GX - gx
@@ -609,6 +614,8 @@ def load(path, device="cpu", memory: bool | None = None, vocab: dict | None = No
         state = {**state, "glob.0.weight": grow_glob(w, config, gx_old, z_old, G_old)}
     if not net.vtax:  # (a network trained with --value-tax, in a run without: its value without the taxes)
         state = {k: v for k, v in state.items() if not k.startswith("tax_proj.")}
+    if not net.obsfull:  # (one trained with --obs-full, in a process without it: adapt_config)
+        state = {k: v for k, v in state.items() if k != "kind_bias"}
     missing, unexpected = net.load_state_dict(state, strict=False)
     if unexpected or any(not (k.startswith(("value_head.", "mem_", "priv_proj.", "priv_pol.", "tax_proj."))
                               or k in ("order_kind", "target_temp", "ghost_bias", "kind_bias"))

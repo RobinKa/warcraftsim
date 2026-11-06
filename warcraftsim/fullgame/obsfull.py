@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from functools import lru_cache
 
 import numpy as np
@@ -65,7 +66,7 @@ K_AGE = K_PROD + 3
 K_RADIUS = K_AGE + 1
 OBS_F = K_RADIUS + 1  # 70
 MAX_CORPSES, MAX_ITEMS, MAX_AREAS = 8, 6, 4  # (a fight leaves ~15-20 corpses in sight: the 8 nearest own units)
-CORPSE_SECONDS = 120.0  # (a corpse never reported gone: forgotten after this)
+CORPSE_SECONDS = 95.0  # (a corpse never reported gone: forgotten after this; they decay after ~92 s, scripts/obs_probe.py)
 CLASSES = ("stunned", "snared", "poisoned", "polymorphed", "sleeping", "ethereal", "magic immune", "plagued")
 # the area spells in progress a person sees on the ground (their AbilityData: Area1, Dur1 / HeroDur1, or waves DataA1
 # x Cast1); the channeled ones end with their caster's death
@@ -157,9 +158,17 @@ def tables() -> dict:
             secs = num(r.get("DataA1"), 1.0) * max(num(r.get("Cast1"), 1.0), 1.0)
         areas[a] = (num(r.get("Area1"), 200.0), secs)
     out = {"speed": speed, "upgrades": ups, "areas": areas, "build": build, "timemod": timemod, "creeps": map_creeps()}
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(out, sort_keys=True))
+    write_whole(path, json.dumps(out, sort_keys=True))
     return out
+
+
+def write_whole(path, text: str) -> None:
+    """`text` into `path` whole, then renamed (as fullvocab's cache files): actors starting together on a fresh machine
+    (the box, the laptop) read a whole file or none; written in place, one had read another's half-written file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(f".{os.getpid()}.tmp")
+    tmp.write_text(text)
+    tmp.replace(path)
 
 
 CRITTERS = ("npig", "nrac", "nshe", "nfro", "ndog", "ncrb", "nder", "nfbr", "nhmc", "nskk", "nsno", "nalb", "nech",
@@ -315,6 +324,15 @@ class State:
                     self._pace((t - got[0]) * step_seconds / got[1])
         for k in [k for k, v in self.corpses.items() if (t - v[4]) * step_seconds > CORPSE_SECONDS]:
             del self.corpses[k]
+        if self.corpses and len(rows):  # (a corpse's handle id a living unit's after its death's step: the corpse is
+            # gone, decayed or used, and the game gave its id to a new unit, or it was raised again; the harness's 107
+            # had never come for a removed corpse: a real game kept a ghoul's corpse 5 s after a farm took its id, 466 of
+            # 707 steps had such a pair, and the views' index took the unit's id to the corpse's row: AI labels on it)
+            alive = rows[(rows[:, fx.C_FLAGS] & fx.DEAD) == 0, fx.C_ID]
+            ids = np.fromiter(self.corpses, np.int64, len(self.corpses))
+            for k in ids[np.isin(ids, alive)].tolist():
+                if self.corpses[k][4] < t:
+                    del self.corpses[k]
         self.areas = [ar for ar in self.areas if ar[4] > t]
 
     def row(self, uid: int) -> np.ndarray | None:
@@ -388,12 +406,15 @@ def apply(view, rows: np.ndarray, events, t: int, sel: np.ndarray, n_own: int, f
     A = fx.A_OBS
     tb = tables()
     n = len(sel)
+    # (the entities in sight: inputs 3's remembered enemies after them are rows as last seen, and their state now, their
+    # owner's upgrade levels now and their construction's progress now are what the player does not see)
+    seen = n if getattr(view, "privileged_act", False) else max(0, min(int(getattr(view.enc, "ghost0", n)), n))
     if n:  # (Python's lists: the arrays are ~50 rows, numpy's calls on them had cost more than the loops)
         idl, tyl, owl = sel[:, fx.C_ID].tolist(), sel[:, fx.C_TYPE].tolist(), sel[:, fx.C_OWNER].tolist()
         if st.extras:  # (the units' extras: each unit's block row, kept until an event changes it)
             hit, got, spd = [], [], []
             sp = tb["speed"]
-            for k, uid in enumerate(idl):
+            for k, uid in enumerate(idl[:seen]):
                 r = st.row(uid)
                 if r is not None:
                     hit.append(k)
@@ -406,7 +427,7 @@ def apply(view, rows: np.ndarray, events, t: int, sel: np.ndarray, n_own: int, f
         own = view.player
         memo: dict = {}
         ups, upk = [], []
-        for k in range(n):  # (the upgrade levels: per type and owner of the players' units in view)
+        for k in range(seen):  # (the upgrade levels: per type and owner of the players' units in view)
             o = owl[k]
             if o != own and o != 1 - own:
                 continue
@@ -433,7 +454,7 @@ def apply(view, rows: np.ndarray, events, t: int, sel: np.ndarray, n_own: int, f
             for d, col, mine in ((st.since, K_PROD, True), (st.built, K_PROD + 2, False)):
                 for uid, (t0, secs) in d.items():
                     k = where.get(uid)
-                    if k is None or secs <= 0 or (mine and k >= n_own):
+                    if k is None or secs <= 0 or k >= seen or (mine and k >= n_own):
                         continue
                     if not mine and not sel[k, fx.C_FLAGS] & fx.CONSTRUCTING:
                         continue
@@ -453,8 +474,10 @@ def apply(view, rows: np.ndarray, events, t: int, sel: np.ndarray, n_own: int, f
         xy = np.array([[v[2], v[3]] for _, v in cs], np.float64)
         d = ((xy[:, None, :] - mine[None, :, :]) ** 2).sum(-1).min(1)
         cs = [cs[i] for i in np.argsort(d, kind="stable")[:MAX_CORPSES].tolist()]
-    for cid, (typ, owner, x, y, t0, _) in cs[:MAX_CORPSES]:
-        new.append((0, cid, typ, owner, x, y, {K_AGE: min((t - t0) * step_s / 90.0, 2.0)}))
+    for ci, (cid, (typ, owner, x, y, t0, _)) in enumerate(cs[:MAX_CORPSES]):  # (an id of its own, as the items' and
+        # areas': its unit's handle id goes to a new unit once the corpse is gone, and two rows with one id had the
+        # views' index take the unit's id to the corpse's row, which the target pointer masks)
+        new.append((0, -(3000 + ci), typ, owner, x, y, {K_AGE: min((t - t0) * step_s / 90.0, 2.0)}))
     gi = 0
     for g in getattr(view, "ground", ()) or ():
         if gi >= MAX_ITEMS:
