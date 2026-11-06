@@ -279,10 +279,12 @@ def report(run_dir: Path) -> tuple[list[str], dict]:
     universe = sorted(set().union(*(set(v) for v in src.values())))
     asked = set(probe_buffs())
     lines += ["### Buffs", "",
-              f"{len(universe)} buffs can be on a unit in these games; the observation encodes none of them (a few show "
-              "indirectly: a sleeping creep's flag, a summon's flag, an own illusion's flag). `scripts/obs_probe.py` asks "
-              f"the game for {len(asked & set(universe))} of them (BUFFS); `GetUnitAbilityLevel(unit, buff)` answers for "
-              "any.", "", "| from | buffs (the units or items that cast them) |", "|---|---|"]
+              f"{len(universe)} buffs can be on a unit in these games; without `--obs-full` the observation encodes none of "
+              "them (a few show indirectly: a sleeping creep's flag, a summon's flag, an own illusion's flag). With "
+              "`--obs-full 1` every one reaches the network: the shim reads each unit's buff list (obsfull.K_BUFF, a code "
+              f"per buff id). `scripts/obs_probe.py buffs` asks the game for {len(asked & set(universe))} of them (BUFFS); "
+              "`GetUnitAbilityLevel(unit, buff)` answers for any.", "", "| from | buffs (the units or items that cast them) |",
+              "|---|---|"]
     for s in SOURCES:
         got = src.get(s, {})
         cells = [f"{b} {buffs[b][0]}{'' if b in asked else ' (not probed)'} ({', '.join(sorted(got[b])[:3])}"
@@ -300,8 +302,9 @@ def report(run_dir: Path) -> tuple[list[str], dict]:
     lines += ["### Items", "",
               f"{ic['items']} item types a hero may hold in these games (the race shops, the goblin merchant, the maps' "
               f"drop tables); the hero block's five numbers per slot (held, usable, heals, restores mana, town portal) "
-              f"tell {ic['codes']} kinds apart. {len(ic['charged'])} of them have charges, which no input counts. Items "
-              "that look alike:", "", "| held, usable, heals, mana, portal | items |", "|---|---|"]
+              f"tell {ic['codes']} kinds apart. {len(ic['charged'])} of them have charges, which no input counts. "
+              "(`--obs-full 1`: each item's own code and each slot's charges.) Items that look alike:", "",
+              "| held, usable, heals, mana, portal | items |", "|---|---|"]
     for k, v in sorted(ambiguous.items(), key=lambda kv: -len(kv[1])):
         lines.append(f"| 1, {', '.join(map(str, k))} | {len(v)}: {', '.join(v)} |")
     summary["item_codes"] = (ic["items"], ic["codes"])
@@ -332,7 +335,7 @@ def report(run_dir: Path) -> tuple[list[str], dict]:
     tc = type_coverage(vocab)
     lines += ["### Unit types", "", f"Types a player meets without an embedding of their own in `{run['name']}`'s vocabulary "
               "(their entities get index 0, unknown). `--full-vocab 1` adds the races', the tavern's and the mercenaries' "
-              "(`fullvocab.extend`), not the creeps':", ""]
+              "(`fullvocab.extend`), `--obs-full 1` the creeps' (`obsfull.extend`):", ""]
     for k, v in tc.items():
         lines.append(f"- **{k}**: " + (', '.join(f"{t} ({names_.get(t, '?')})" if k == "creeps" else t for t in v)
                                        or 'none'))

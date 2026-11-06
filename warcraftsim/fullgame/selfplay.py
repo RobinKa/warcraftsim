@@ -781,6 +781,7 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
     fx.set_spells(int(cfg.get("spells", 0) or 0))
     fx.set_shop_items(int(cfg.get("shop_items", 0) or 0))
     fx.set_full_vocab(int(cfg.get("full_vocab", 0) or 0))
+    fx.set_obs_full(int(cfg.get("obs_full", 0) or 0))  # (--obs-full: the rows' width, its entity kinds)
     fx.set_fine(int(cfg.get("fine_points", 0) or 0))  # (--fine-points: the point indices)
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     fx.set_econ_masks(cfg.get("econ_masks", 0))
@@ -1577,7 +1578,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                           render_threads=0, pairs=cfg.get("pairs", 1),
                           # (evaluation: the exact game, never shim/approx.c's approximations)
                           cuts=(exact_cuts(cfg.get("game_cuts")) if evaluating else cfg.get("game_cuts")) or None,
-                          seed=rng.randint(1, cfg.get("grpo_seeds", 8)) if seeded else 0)
+                          seed=rng.randint(1, cfg.get("grpo_seeds", 8)) if seeded else 0,
+                          obs_full=bool(cfg.get("obs_full")))  # (--obs-full: the harness's events 101-109)
         per_launch = cfg["games_per_process"] * (cfg["agent_games_factor"] if agents_only else 1)
         if evaluating:  # (a launch's games share their matchup and opponent: at 8 a launch, 34 of a policy's 40 games head
             per_launch = min(per_launch, EVAL_PER_LAUNCH)  # to head were one matchup; evaluation's verdicts need many)
@@ -3016,6 +3018,7 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
     fx.set_spells(int(cfg.get("spells", 0) or 0))
     fx.set_shop_items(int(cfg.get("shop_items", 0) or 0))
     fx.set_full_vocab(int(cfg.get("full_vocab", 0) or 0))
+    fx.set_obs_full(int(cfg.get("obs_full", 0) or 0))  # (--obs-full: the rows' width, its entity kinds)
     fx.set_fine(int(cfg.get("fine_points", 0) or 0))  # (--fine-points: the point indices)
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     fx.set_econ_masks(cfg.get("econ_masks", 0))
@@ -3650,7 +3653,7 @@ def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast, teach_scale: fl
     ok = (own & (lp_y > -1e4)).float()                   # the labelled ones alone, a rare label pulled the policy away)
     denom = every.sum().clamp(min=1)
     l_order = -(lp_y * ok).sum() / denom
-    ptr, xl, z = net.target_logits(ev["g"], ev["u"], mb["mask"], y)  # (in the caller's autocast)
+    ptr, xl, z = net.target_logits(ev["g"], ev["u"], mb["mask"], y, mb["ent"])  # (in the caller's autocast)
     y_x, y_y, y_f = point_parts(mb["y_x"], mb["y_y"])  # (--fine-points: the labels' bins, and their sub-cell)
     yl = net.y_logits(z, y_x)
     # (masked means, not boolean indexing: every index or any() was a wait for the GPU)
@@ -4864,6 +4867,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--spells", type=int, default=0, help="1: the melee heroes' spells the demonstrations never gave "
                     "(War Stomp, Hex, Banish, Far Sight, Scout; spells.py) as orders: every network loaded grows to "
                     "them, rare at first, only the hero with the ability may give one (needs --neutral)")
+    ap.add_argument("--obs-full", type=int, default=0, help="1: what a person playing sees that the inputs lacked "
+                    "(fullgame/obsfull.py; docs/reference/observation-coverage.md): each unit's state (stunned, snared, "
+                    "polymorphed..., its magic buffs, its buffs, move speed and armor now), upgrade levels as tooltips show "
+                    "them, a hero's items and charges, production and construction progress, and corpses, items on the "
+                    "ground and area spells in progress as entities (the harness's events 101-109, the shim's buff lists); "
+                    "the maps' creep types the vocabulary lacked. A network loaded grows to them with zero weights, the new "
+                    "entity kinds hidden by an attention bias of -30 (--obs-fade), out of the target pointer (needs "
+                    "--neutral)")
+    ap.add_argument("--obs-fade", type=int, default=0, help="--obs-full: the new entity kinds' attention bias rises from "
+                    "-8 to 0 over this many of the learner's updates (published with the weights; 0: kept at -30, hidden)")
     ap.add_argument("--full-vocab", type=int, default=0, help="1: every order a player can give that the vocabulary lacks "
                     "(fullvocab.py, from the game's tables: units, towers, research, unit abilities with their autocast "
                     "and morph pairs, patrol, hold position, attack ground, rally points, dropping, giving, selling and "
@@ -5428,6 +5441,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.full_vocab and not (args.neutral and args.spells and args.shop_items):  # (its orders after theirs: model.load)
         ap.error("--full-vocab needs --neutral, --spells 1 and --shop-items 1")
     fx.set_full_vocab(args.full_vocab)
+    if args.obs_full and not args.neutral:  # (its creep types after the others: model.load)
+        ap.error("--obs-full needs --neutral")
+    fx.set_obs_full(args.obs_full)
     if args.z_shop:  # (the items as orders, and pools whose strategies hold them)
         if not args.shop_items or not args.z_pool:
             ap.error("--z-shop needs --shop-items and --z-pool")
@@ -5501,6 +5517,9 @@ def main(argv: list[str] | None = None) -> int:
             if weights_vocab is not None and fx.FULL_VOCAB:  # (--full-vocab: and every order left after them)
                 from .fullvocab import extend as with_full_vocab
                 weights_vocab = with_full_vocab(weights_vocab)
+            if weights_vocab is not None and fx.OBS_FULL:  # (--obs-full: and the maps' creep types after them)
+                from .obsfull import extend as with_obs_full
+                weights_vocab = with_obs_full(weights_vocab)
     net, ck = load(args.init, device, None if args.memory < 0 else bool(args.memory), vocab=weights_vocab)
     vocab = ck["vocab"]
     trained_for = ck.get("value_reward")  # the rewards BC's value head learned (fullgame/bc.py)
@@ -5690,6 +5709,9 @@ def main(argv: list[str] | None = None) -> int:
         if c.get("vocab") and (fx.FULL_VOCAB or vocab.get("full_vocab")):  # (--full-vocab: and every order left)
             from .fullvocab import extend as with_full_vocab
             c["vocab"] = with_full_vocab(c["vocab"])
+        if c.get("vocab") and (fx.OBS_FULL or vocab.get("obs_full")):  # (--obs-full: and the maps' creep types)
+            from .obsfull import extend as with_obs_full
+            c["vocab"] = with_obs_full(c["vocab"])
         from .neutral import same_orders  # (--neutral: a reordering of the run's fits, Nets.get)
         return (c["config"].get("bins", 128) == fx.BINS and c.get("vocab") is not None
                 and (c["vocab"] == vocab or bool(fx.NEUTRAL) and same_orders(c["vocab"], vocab))
@@ -5787,7 +5809,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "hunt_lesson": args.hunt_lesson, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "hunt_lesson": args.hunt_lesson, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "late_capture": args.late_capture, "late_minutes": [float(x) for x in args.late_minutes.split(",")],
@@ -6047,6 +6069,8 @@ def main(argv: list[str] | None = None) -> int:
             measured = {}
             if args.memory_fade > 0 and net.config.get("ghost"):  # (published with the weights: the actors see it too)
                 net.ghost_bias.fill_(-8.0 * max(0.0, 1.0 - update / args.memory_fade))
+            if args.obs_fade > 0 and net.config.get("obsfull"):  # (--obs-fade: the new entity kinds, likewise)
+                net.kind_bias.fill_(-8.0 * max(0.0, 1.0 - update / args.obs_fade))
             part_stats = parts_pass(net, batch_chunks, args, device) if args.reward_parts else {}  # (--reward-parts)
             if args.noise_scale > 0 and update % args.noise_scale == 0:  # (at the weights the update starts from)
                 t_noise = time.time()

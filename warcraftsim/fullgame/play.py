@@ -1081,7 +1081,7 @@ class BCAgent:
             if self.order_temperature != 1.0:  # whether a unit gets an order stays as learned; which one sharpens
                 again = self._sample(logits[..., 1:] / self.order_temperature) + 1
                 order = torch.where(order > 0, again, order)
-            ptr, xl, z = self.net.target_logits(g, u, mask, order)
+            ptr, xl, z = self.net.target_logits(g, u, mask, order, ent)
             tgt = self._sample(ptr)[0]
             bx_, by, _ = sample_points(self.net, z, xl, self._sample)  # (--fine-points: point indices)
         return self.commands(st, order[0].tolist(), tgt.tolist(), bx_[0].tolist(), by[0].tolist())

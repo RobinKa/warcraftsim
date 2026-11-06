@@ -38,6 +38,10 @@ globals
     // is not a new game: the engine keeps its own count of their heroes, and the built-in AI's
     // state.)
     constant integer W3S_CFG_PAIRS = 1
+    // --obs-full (fullgame/obsfull.py): what a player sees beyond the unit records, as events of kinds 101-109: a unit's
+    // state (classifications, magic buffs, its buffs, move speed and armor now, a hero's item charges), corpses, the
+    // points of spells. False: none of it runs (the observation as before)
+    constant boolean W3S_CFG_OBS_FULL = false
     constant integer W3S_VERSION = 4
     constant integer W3S_QS_SKILLS = 8
     constant integer W3S_ABIL_SLOTS = 4  // warcraftsim.protocol.HERO_ABILITY_SLOTS
@@ -62,6 +66,9 @@ globals
     timer w3s_timer = null
     group w3s_group = null
     group w3s_all = null
+    group w3s_corpses = null  // (W3S_CFG_OBS_FULL) the dead units whose corpses lie (W3S_CorpseAdd)
+    hashtable w3s_cht = null  // (and each corpse's last visibility bits)
+    boolean w3s_cextras = false  // (and the shim writes the units' extras with its records: shim/units.c unit_extras)
     boolean w3s_configured = false
     boolean w3s_prune = false
     integer w3s_seq = 0
@@ -420,6 +427,98 @@ function W3S_Visibility takes unit u returns integer
     return bits
 endfunction
 
+// (W3S_CFG_OBS_FULL, the harness writes the unit records) what a player sees on a unit it sees beyond its record, as
+// shim/units.c unit_extras writes it with the shim's records (but the buff list, which needs the unit's object):
+// event 101 (the unit; its classifications stunned, snared, poisoned, polymorphed, sleeping, ethereal, magic immune,
+// plagued as bits 0-7, its positive and negative magic buffs (not auras) x 256 and x 4096; its move speed now x 4096
+// plus its armor now x 10 + 2048), and a hero's item charges, event 105 (slots 0-2 and 3-5, 10 bits each), when they
+// changed (w3s_ht key 10: their hash)
+function W3S_Extras takes unit u, integer hid returns nothing
+    local integer b = 0
+    local integer c = 0
+    local integer d = 0
+    local integer n
+    local integer h
+    local integer k = 0
+    local integer e
+    local item it
+    if IsUnitType(u, UNIT_TYPE_STUNNED) then
+        set b = b + 1
+    endif
+    if IsUnitType(u, UNIT_TYPE_SNARED) then
+        set b = b + 2
+    endif
+    if IsUnitType(u, UNIT_TYPE_POISONED) then
+        set b = b + 4
+    endif
+    if IsUnitType(u, UNIT_TYPE_POLYMORPHED) then
+        set b = b + 8
+    endif
+    if IsUnitType(u, UNIT_TYPE_SLEEPING) then
+        set b = b + 16
+    endif
+    if IsUnitType(u, UNIT_TYPE_ETHEREAL) then
+        set b = b + 32
+    endif
+    if IsUnitType(u, UNIT_TYPE_MAGIC_IMMUNE) then
+        set b = b + 64
+    endif
+    if IsUnitType(u, UNIT_TYPE_PLAGUED) then
+        set b = b + 128
+    endif
+    set n = UnitCountBuffsEx(u, true, false, true, false, false, false, false)
+    if n > 15 then
+        set n = 15
+    endif
+    set b = b + n * 256
+    set n = UnitCountBuffsEx(u, false, true, true, false, false, false, false)
+    if n > 15 then
+        set n = 15
+    endif
+    set b = b + n * 4096
+    set n = R2I(BlzGetUnitArmor(u) * 10.0) + 2048
+    if n < 0 then
+        set n = 0
+    elseif n > 4095 then
+        set n = 4095
+    endif
+    set h = R2I(GetUnitMoveSpeed(u) + 0.5)
+    if h > 4095 then
+        set h = 4095
+    endif
+    set e = h * 4096 + n
+    set h = b * 31 + e
+    if IsUnitType(u, UNIT_TYPE_HERO) then
+        set c = 0
+        loop
+            exitwhen k >= 6
+            set it = UnitItemInSlot(u, k)
+            if it != null then
+                set n = GetItemCharges(it)
+                if n > 1023 then
+                    set n = 1023
+                endif
+                if k < 3 then
+                    set c = c + n * W3S_Pow2(10 * k)
+                else
+                    set d = d + n * W3S_Pow2(10 * (k - 3))
+                endif
+            endif
+            set k = k + 1
+        endloop
+        set h = (h * 31 + c) * 31 + d + 1
+    endif
+    set it = null
+    if not w3s_full and HaveSavedInteger(w3s_ht, hid, 10) and LoadInteger(w3s_ht, hid, 10) == h then
+        return
+    endif
+    call SaveInteger(w3s_ht, hid, 10, h)
+    call W3S_Ev(101, hid, b, e)
+    if IsUnitType(u, UNIT_TYPE_HERO) then
+        call W3S_Ev(105, hid, c, d)
+    endif
+endfunction
+
 // A unit record is only written when the unit changed since it was last written (a rolling
 // hash over its fields is kept per unit), or on a full snapshot (first observation).
 function W3S_SerUnit takes unit u returns nothing
@@ -443,6 +542,9 @@ function W3S_SerUnit takes unit u returns nothing
     local integer array alevel
     local integer array acool
     set h = h * 31 + res
+    if W3S_CFG_OBS_FULL and vis != 0 and not IsUnitType(u, UNIT_TYPE_DEAD) and not w3s_cextras then
+        call W3S_Extras(u, hid)
+    endif
     if IsUnitType(u, UNIT_TYPE_HERO) then
         set h = (h * 31 + GetHeroXP(u)) * 31 + GetHeroSkillPoints(u)
         set i = 0
@@ -694,6 +796,9 @@ function W3S_CSerInit takes nothing returns nothing
                 set i = i + 1
             endloop
             set w3s_capply = true
+        endif
+        if W3S_CFG_OBS_FULL then  // (the units' extras with the shim's records, the buff list too: shim/units.c)
+            set w3s_cextras = GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 46) == 1
         endif
     endif
     set w3s_loaded = true
@@ -2389,6 +2494,11 @@ endfunction
 
 function W3S_MeleeReset takes nothing returns nothing
     local integer i = 0
+    if W3S_CFG_OBS_FULL then
+        call GroupClear(w3s_corpses)
+        call FlushParentHashtable(w3s_cht)
+        set w3s_cht = InitHashtable()
+    endif
     if W3S_CFG_PAIRS > 1 then
         call W3S_PairClear()
         return  // (W3S_PairMake and the first step follow, a tick apart: see W3S_PairClear)
@@ -2635,6 +2745,49 @@ function W3S_ShadowSettle takes nothing returns nothing
     set u = null
 endfunction
 
+// (W3S_CFG_OBS_FULL) a corpse: a dead unit (not a hero, a building, a summon or an image) lies until it decays (~90 s)
+// or is used (raise dead, cannibalize, a meat wagon), and the harness's own pass drops it at its death. Event 106 (the
+// unit, its x and y) at its death; then each step W3S_CorpseEnum: 108 (the unit, the seers that see its place, as the
+// units' visibility bits) when that changed, 107 (the unit) when it is gone
+function W3S_CorpseAdd takes unit u returns nothing
+    if IsUnitType(u, UNIT_TYPE_HERO) or IsUnitType(u, UNIT_TYPE_STRUCTURE) or IsUnitType(u, UNIT_TYPE_SUMMONED) or IsUnitIllusion(u) then
+        return
+    endif
+    call GroupAddUnit(w3s_corpses, u)
+    call SaveInteger(w3s_cht, GetHandleId(u), 0, -1)
+    call W3S_Ev(106, GetHandleId(u), R2I(GetUnitX(u)), R2I(GetUnitY(u)))
+endfunction
+
+function W3S_CorpseEnum takes nothing returns nothing
+    local unit u = GetEnumUnit()
+    local integer hid = GetHandleId(u)
+    local integer bits = 0
+    local integer k = 0
+    local real x
+    local real y
+    if GetUnitTypeId(u) == 0 or not IsUnitType(u, UNIT_TYPE_DEAD) or IsUnitHidden(u) then
+        call GroupRemoveUnit(w3s_corpses, u)
+        call FlushChildHashtable(w3s_cht, hid)
+        call W3S_Ev(107, hid, 0, 0)
+        set u = null
+        return
+    endif
+    set x = GetUnitX(u)
+    set y = GetUnitY(u)
+    loop
+        exitwhen k >= w3s_nseer
+        if IsVisibleToPlayer(x, y, w3s_seer_p[k]) then
+            set bits = bits + w3s_seer_bit[k]
+        endif
+        set k = k + 1
+    endloop
+    if w3s_full or LoadInteger(w3s_cht, hid, 0) != bits then
+        call SaveInteger(w3s_cht, hid, 0, bits)
+        call W3S_Ev(108, hid, bits, 0)
+    endif
+    set u = null
+endfunction
+
 function W3S_Step takes nothing returns nothing
     if w3s_first then
         call W3S_CSerInit()
@@ -2647,6 +2800,9 @@ function W3S_Step takes nothing returns nothing
         call W3S_CPass()
     endif
     call W3S_CheckResult()
+    if W3S_CFG_OBS_FULL then
+        call ForGroup(w3s_corpses, function W3S_CorpseEnum)
+    endif
     call W3S_WriteObs()
     set w3s_first = false
     set w3s_seq = w3s_seq + 1
@@ -2752,6 +2908,9 @@ endfunction
 
 function W3S_OnDeath takes nothing returns boolean
     call W3S_Ev(1, GetHandleId(GetTriggerUnit()), W3S_Hid(GetKillingUnit()), GetUnitTypeId(GetTriggerUnit()))
+    if W3S_CFG_OBS_FULL then
+        call W3S_CorpseAdd(GetTriggerUnit())
+    endif
     return false
 endfunction
 
@@ -2871,7 +3030,24 @@ function W3S_OnHeroLevel takes nothing returns boolean
 endfunction
 
 function W3S_OnSpell takes nothing returns boolean
+    local integer k = 0
+    local integer bits = 0
+    local real x
+    local real y
     call W3S_Ev(15, GetHandleId(GetTriggerUnit()), GetSpellAbilityId(), W3S_Hid(GetSpellTargetUnit()))
+    if W3S_CFG_OBS_FULL then  // (the spell's point, and the seers that see it: an area spell in progress, obsfull.py)
+        set x = GetSpellTargetX()
+        set y = GetSpellTargetY()
+        loop
+            exitwhen k >= w3s_nseer
+            if IsVisibleToPlayer(x, y, w3s_seer_p[k]) then
+                set bits = bits + w3s_seer_bit[k]
+            endif
+            set k = k + 1
+        endloop
+        call W3S_Ev(104, GetHandleId(GetTriggerUnit()), R2I(x), R2I(y))
+        call W3S_Ev(109, GetHandleId(GetTriggerUnit()), GetSpellAbilityId(), bits)
+    endif
     return false
 endfunction
 
@@ -3087,6 +3263,10 @@ function W3S_Init takes nothing returns nothing
     call W3S_InitHeroAbilities()
     set w3s_group = CreateGroup()
     set w3s_all = CreateGroup()
+    if W3S_CFG_OBS_FULL then
+        set w3s_corpses = CreateGroup()
+        set w3s_cht = InitHashtable()
+    endif
     call W3S_VisInit()
     call W3S_Configure()
     call GroupEnumUnitsInRect(w3s_group, GetWorldBounds(), null)

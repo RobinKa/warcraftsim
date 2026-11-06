@@ -67,6 +67,7 @@ class HarnessConfig:
     melee_reset: str = ""  # melee: the map's function that makes its units; restarts then stay in the game
     pairs: int = 1  # games per load of the map, each with two players of its own (see the harness's W3S_CFG_PAIRS)
     seed: int = 0  # the game's random seed, set first thing in main (0: the game's own)
+    obs_full: bool = False  # --obs-full: events 101-109 (W3S_CFG_OBS_FULL; fullgame/obsfull.py)
 
     hero_abilities: dict[str, tuple[str, ...]] | None = None  # hero type -> ability per slot
 
@@ -158,6 +159,7 @@ def _split_harness(src: str, cfg: HarnessConfig) -> tuple[str, str]:
         "W3S_CFG_RECORD_ORDERS": f"constant boolean W3S_CFG_RECORD_ORDERS = {jbool(cfg.record_orders)}",
         "W3S_CFG_MELEE_RESET": f'constant string W3S_CFG_MELEE_RESET = "{cfg.melee_reset}"',
         "W3S_CFG_PAIRS": f"constant integer W3S_CFG_PAIRS = {cfg.pairs}",
+        "W3S_CFG_OBS_FULL": f"constant boolean W3S_CFG_OBS_FULL = {jbool(cfg.obs_full)}",
     }
     for name, decl in replacements.items():
         glob, n = re.subn(rf"^\s*constant \w+ {name} = .*$", "    " + decl, glob, flags=re.M)

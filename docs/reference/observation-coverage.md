@@ -1,6 +1,6 @@
 # Observation coverage
 
-What a person playing a 1.29 melee game can see or know that the agent's observation lacks: the counterpart of [order-coverage](order-coverage.md) for the inputs. Phase 1 (2026-11-06): the list, the gaps ranked, how each would be added. Nothing here changes the features or the network yet.
+What a person playing a 1.29 melee game can see or know that the agent's observation lacks: the counterpart of [order-coverage](order-coverage.md) for the inputs. Phase 1 (2026-11-06): the list, the gaps ranked, how each would be added. Phase 2 built the first eight behind `--obs-full 1` ([below](#built---obs-full-1-phase-2-2026-11-06)); the tables after it describe the inputs without the flag.
 
 Checked two ways:
 
@@ -8,6 +8,43 @@ Checked two ways:
 * **The real game** (`scripts/obs_probe.py`): four games (human vs orc, orc vs night elf, undead vs human, undead vs night elf; echofast2, one at a time). The harness gets one more function that asks the natives about every unit each step. Spells are cast on placed units, the units fight, and the corpses are watched. Results are under [What the game exposes](#what-the-game-exposes).
 
 The settings are fgself-194's (`runs/fgself-194/run.json`): `--inputs 2`, `--features 29`, `--neutral 2`, `--macros 3`, `--spells 1`, `--shop-items 1`, the tech, valid and economy masks, and `--memory 1` (the minGRU).
+
+## Built: `--obs-full 1` (phase 2, 2026-11-06)
+
+`selfplay --obs-full 1` (needs `--neutral`; `fullgame/obsfull.py`) adds what the ranked list below asks for, as a block of 70 channels at the very end of each entity's features (`features.A_OBS`) and three new entity kinds after the units. Off (the default), nothing runs: the harness's new code is behind `W3S_CFG_OBS_FULL`, the shim's behind the harness's call, and the features and the network are as before.
+
+| gap (rank) | with `--obs-full 1` | from |
+|---|---|---|
+| buffs and debuffs (1) | per unit in sight: the 8 classifications (stunned, snared, poisoned, polymorphed, sleeping, ethereal, magic immune, plagued), its positive and negative magic buffs, armor and move speed now, move speed over its type's, and **every buff on it** as a sum of fixed 24-number codes, one code per buff id | the shim reads each unit's buff list from the game's memory (`shim/units.c` `o_buffs`: the list `0x6d6570` walks; the codes as each ability's `BuffID` spells them, so Unholy Frenzy is `BUhf`); `IsUnitType`, `UnitCountBuffsEx`, `BlzGetUnitArmor`, `GetUnitMoveSpeed`. Event 101 and its 102s, written only when they change. Defend sets no buff: its state shows in the speed (188 of 270). |
+| corpses (3) | entities, kind "corpse": the dead unit's type and owner, its place, seconds since its death; the 8 nearest own units of those in sight | the harness keeps each dead unit (not a hero, building, summon or image) in a group of its own: event 106 at its death, 108 when its place's visibility changes, 107 when it is gone (decayed, raised, eaten, carried) |
+| enemy upgrade levels (4) | per unit of either player in sight: its owner's weapon and armor upgrade level for its type, what its tooltip shows. An enemy's come from the research its buildings finished; an enemy out of sight shows nothing | the research-finished events already in each observation (`View` had dropped the enemy's); `UnitBalance`'s upgrades per type and `UpgradeData`'s effects (`ratd` weapons, `rarm` armor) |
+| items (5) | a hero's items as a sum of fixed 16-number codes (all 56 apart, the 6 kinds before), each slot's charges; items on the ground as entities, kind "item" (their code, a powerup flag) | the hero's record's item types; event 105 (`GetItemCharges`); the `G` records |
+| area spells in progress (6) | entities, kind "area": the spell's code, its point, radius, seconds left, the caster's side, for 14 lasting area spells (blizzard, flame strike, death and decay, earthquake, rain of fire, volcano, starfall, tranquility, stampede, locust swarm, cloud, monsoon) | events 104 (the spell's point, `GetSpellTargetX/Y`) and 109 (the ability, the seers that see the point); durations and radii from `AbilityData` |
+| production and construction progress (7) | own buildings: the current item's progress and seconds left; any building under construction in sight: its progress | the start and end events already in the observation, `UnitBalance` / `UpgradeData` times; the map's pace (echofast2 builds faster than the tables) learned from the items that finish, the median of the last 15 |
+| creep types (8) | the 7 Echo Isles creeps that read as unknown get types (and every creep of the five maps the runs play). Their embeddings start as unknown's: every token is as before | `obsfull.extend` / `grow` (`--full-vocab` adds the races', the tavern's and the mercenaries', not the creeps') |
+
+The new entity kinds get an attention bias of -30 per kind (`FullGameNet.kind_bias`, a buffer in the state dict, and `config["obsfull"]`): the network plays exactly as it did. `--obs-fade N` raises the learner's to 0 over its first N updates, as `--memory-fade` did for the remembered enemies; the anchor and older networks keep -30. No order of the vocabulary takes a corpse, an item lying or an area (the pick-up order is a point's), so the target pointer never points at them (`target_logits(..., ent)`).
+
+**Identity** (`tests/unit/test_obsfull.py`, fgself-182's checkpoint): with the flag, any values in the block and five new-kind entities, `model.evaluate` gives the same order logits, log-probabilities, value, point logits and pointer logits as the network without the flag, to the last bit (max |difference| 0.0). The actors' path (`FullGameNet(**config)` and the state dict) gives the same, bit for bit. With the kind bias raised to 0 the value moves (0.025): the bias is what hides them.
+
+**Cost**, measured on the CPU (`scripts/obs_probe.py cost`, `scripts/obs_full_bench.py`):
+
+* The game: insane against insane on echofast2, 700 steps each, two games each way. 8.07 ms of game thread a step off, 7.95 on: below the noise (±0.5 ms). ~2.2 events of kinds 101-109 a step: the shim writes a unit's only when they change.
+* The observation path: `View.step` with the masks, per side-step, on a loaded machine (load ~30-46 on 32 cores): 400 → 634 µs at its quietest, 700 → 1,000 µs at its busiest, about +50%. `obsfull.apply` itself is 120-220 µs of that. The rest is the wider rows (176 channels instead of 106).
+* The network: `ent` 106 → 176 inputs (+0.6% of a token's work); the new kinds add +2.7 entities a step (AI against AI, corpses mostly); a real game played by fgself-182's network with the flag saw 17.6 corpses in sight a step, so they are capped at the 8 nearest own units. The rollouts' entity rows are 66% wider: memory in the learner's batches (the GPU's) grows with them.
+
+**Checked in the real game:** `scripts/obs_probe.py full` (`W3SIM_OBS_CHECK=1`: each buff in a unit's list against `GetUnitAbilityLevel`, and 24 common buffs the other way round). No mismatch. The lists held what was cast (`BUfa`, `BUhf`, `Bam2`, `Bfae`, `BEer`, `Bcrs`, `Bcri`, `Broa`, `Brej`, `Bcy2`, `BEah`, `Brai`). `scripts/obs_probe.py play` has fgself-182's network play insane on echofast2 through the actors' path with the flag.
+
+**Not built here:**
+
+* **The 26 zeroed channels** (hp change, the position's sines and cosines, the last order): fgself-182's weights for them are exactly zero, so `--features 55` (or no `--features`) turns them on with the network's outputs unchanged until it trains. They are a separate setting, not part of `--obs-full`: they did not help in fgself-21, and a run changing both could not tell which helped.
+* **Fog memory** (`--inputs 3` hurt twice). What it would need instead:
+  * a look at what the policy did with the remembered enemies first;
+  * then the explored grid (`IsMaskedToPlayer` on 24 × 24 points every 8 steps, ~0.04 ms a step, as global numbers or a channel per remembered entity), behind the same kind of attention bias as here.
+* **The map's terrain**: a spatial input (a coarse minimap image through a small CNN) or static map tokens. It matters for a map pool, not on one map.
+* **Non-hero cooldowns and autocast state** (rank 9):
+  * cooldowns: `BlzGetUnitAbilityCooldownRemaining` works on unit abilities (probe);
+  * autocast: a bit of the ability object that a probe still has to find.
 
 ## What the agent reads today
 
@@ -270,7 +307,7 @@ From `scripts/obs_probe.py` (2026-11-06; 1.29 under Wine; four games):
 
 ### Buffs
 
-160 buffs can be on a unit in these games; the observation encodes none of them (a few show indirectly: a sleeping creep's flag, a summon's flag, an own illusion's flag). `scripts/obs_probe.py` asks the game for 81 of them (BUFFS); `GetUnitAbilityLevel(unit, buff)` answers for any.
+160 buffs can be on a unit in these games; without `--obs-full` the observation encodes none of them (a few show indirectly: a sleeping creep's flag, a summon's flag, an own illusion's flag). With `--obs-full 1` every one reaches the network: the shim reads each unit's buff list (obsfull.K_BUFF, a code per buff id). `scripts/obs_probe.py buffs` asks the game for 81 of them (BUFFS); `GetUnitAbilityLevel(unit, buff)` answers for any.
 
 | from | buffs (the units or items that cast them) |
 |---|---|
@@ -285,7 +322,7 @@ From `scripts/obs_probe.py` (2026-11-06; 1.29 under Wine; four games):
 
 ### Items
 
-56 item types a hero may hold in these games (the race shops, the goblin merchant, the maps' drop tables); the hero block's five numbers per slot (held, usable, heals, restores mana, town portal) tell 6 kinds apart. 38 of them have charges, which no input counts. Items that look alike:
+56 item types a hero may hold in these games (the race shops, the goblin merchant, the maps' drop tables); the hero block's five numbers per slot (held, usable, heals, restores mana, town portal) tell 6 kinds apart. 38 of them have charges, which no input counts. (`--obs-full 1`: each item's own code and each slot's charges.) Items that look alike:
 
 | held, usable, heals, mana, portal | items |
 |---|---|
@@ -319,7 +356,7 @@ Only a hero's four ability slots report a cooldown; a unit's castable abilities 
 
 ### Unit types
 
-Types a player meets without an embedding of their own in `fgself-194`'s vocabulary (their entities get index 0, unknown). `--full-vocab 1` adds the races', the tavern's and the mercenaries' (`fullvocab.extend`), not the creeps':
+Types a player meets without an embedding of their own in `fgself-194`'s vocabulary (their entities get index 0, unknown). `--full-vocab 1` adds the races', the tavern's and the mercenaries' (`fullvocab.extend`), `--obs-full 1` the creeps' (`obsfull.extend`):
 
 - **human**: hatw, hctw, hmtt, hrtt
 - **orc**: oeye, ospm, ospw, otbk, owtw

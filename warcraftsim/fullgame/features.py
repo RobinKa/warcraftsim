@@ -313,6 +313,13 @@ GX = 0
 # block: model.FullGameNet "privileged"). A view that is not privileged has zeros there.
 PRIVILEGED = os.environ.get("WARCRAFTSIM_PRIVILEGED", "0") == "1"
 A_HID = -1  # (set_inputs: the last entity channel when PRIVILEGED)
+# --obs-full 1 (fullgame/obsfull.py; docs/reference/observation-coverage.md): what a person playing sees that the inputs
+# lacked, as OBS_F channels at the very end (after the privileged one: a network from before reads its own channels where
+# they were, model.load gives it zero weights for these) and three entity kinds after the units (corpses, items on the
+# ground, area spells in progress). 0: none (the features as before, bit for bit)
+OBS_FULL = int(os.environ.get("WARCRAFTSIM_OBS_FULL", "0") or 0)
+OBS_F = 70  # (obsfull.OBS_F)
+A_OBS = -1  # (set_inputs: the block's first channel with OBS_FULL)
 
 
 def set_inputs(v: int, privileged: bool | None = None) -> None:
@@ -326,6 +333,9 @@ def set_inputs(v: int, privileged: bool | None = None) -> None:
     GX = 0 if INPUTS < 2 else 3
     if PRIVILEGED:
         A_HID, F, GX = F, F + 1, GX + 1
+    globals()["A_OBS"] = -1
+    if OBS_FULL:  # (--obs-full: its block last)
+        globals()["A_OBS"], F = F, F + OBS_F
     os.environ["WARCRAFTSIM_INPUTS"] = str(INPUTS)  # (processes started anew)
     os.environ["WARCRAFTSIM_PRIVILEGED"] = str(int(PRIVILEGED))
 
@@ -407,6 +417,18 @@ def set_full_vocab(v: int) -> None:
     global FULL_VOCAB
     FULL_VOCAB = int(v)
     os.environ["WARCRAFTSIM_FULL_VOCAB"] = str(FULL_VOCAB)
+
+
+def set_obs_full(v: int) -> None:
+    """--obs-full: the block at the features' end and the new entity kinds (obsfull.py); 0: the features as before. F
+    and A_OBS follow (set_inputs with the inputs as they are)."""
+    global OBS_FULL, ACTIVE_F
+    full = ACTIVE_F == F  # (a run's --features left as all: all again)
+    OBS_FULL = int(v or 0)
+    os.environ["WARCRAFTSIM_OBS_FULL"] = str(OBS_FULL)
+    set_inputs(INPUTS)
+    if full:
+        ACTIVE_F = F
 
 
 def set_masks(tech: bool, valid: bool) -> None:
@@ -798,6 +820,10 @@ def describe_spaces(vocab: dict, order_names: dict[int, str] | None = None, agen
                 + [f"making: {w}" for w in ("a worker", "an army unit", "a hero", "research", "its next tier")])
     if INPUTS >= 3:
         ent += ["an enemy it remembers (out of sight now)", "seen seconds ago / 60"]
+    if PRIVILEGED:
+        ent += ["privileged: an enemy out of sight"]
+    if OBS_FULL:  # (--obs-full: its block, last)
+        ent += _mod("obsfull").channel_names()
     glob = (["gold / 1000", "lumber / 1000", "food used / 100", "food cap / 100", "upkeep / 2", "time (steps / 1800)"]
             + [f"own race: {r}" for r in RACES] + [f"enemy race: {r}" for r in RACES]
             + [f"upgrade {rawcode(u)} (level / 3)" for u in vocab["upgrades"]]
@@ -1829,6 +1855,10 @@ class View:
             o = np.argsort(sel[:, C_ID], kind="stable")
             self.hp_last = (sel[o, C_ID], hp[o])
             self._marks = None
+        if OBS_FULL:  # (--obs-full: the block for the entities in view, then corpses, items on the ground and area
+            # spells in progress after them: obsfull.apply)
+            sel, f, types, cur = _mod("obsfull").apply(self, rows, events, t, sel, n_own, f, types, cur)
+            ids = sel[:, C_ID].tolist()
         index = {u: k for k, u in enumerate(ids)} if self.active_f > A_LAST else {}
         if self.active_f > A_LAST:  # (a per-unit loop: skipped when the run does not use them, --features)
             f[:n_own, A_LAST + 4] = 1.0  # (never ordered: long ago)

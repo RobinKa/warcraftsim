@@ -565,7 +565,7 @@ def losses(net: FullGameNet, b: dict, device, states: torch.Tensor | None = None
         if net.training:  # the orders each unit type gets (padding and "none" set class 0: always allowed)
             y_flat = y_order.clamp(min=0).reshape(-1)  # (a GPU tensor of True: a Python True is a copy from the CPU, not capturable)
             net.allowed.index_put_((typ[:, :O].reshape(-1), y_flat), torch.ones_like(y_flat, dtype=torch.bool))
-        ptr, xl, z = net.target_logits(g, u, mask, y_order.clamp(min=0))
+        ptr, xl, z = net.target_logits(g, u, mask, y_order.clamp(min=0), ent)
         yl = net.y_logits(z, y_x)
         l_pt = _masked_ce(xl, y_x, w) + _masked_ce(yl, y_y, w)
         if y_f is not None:  # (the sub-cell given the true bins)
@@ -589,7 +589,7 @@ def losses(net: FullGameNet, b: dict, device, states: torch.Tensor | None = None
     if net.training:  # the orders each unit type gets (the mask for playing)
         issued_ = own & (y_order > 0)
         net.allowed[typ[:, :O][issued_], y_order[issued_]] = True
-    ptr, xl, z = net.target_logits(g, u, mask, y_order.clamp(min=0))
+    ptr, xl, z = net.target_logits(g, u, mask, y_order.clamp(min=0), ent)
     yl = net.y_logits(z, y_x)  # given the true x (teacher forcing)
     has_ptr, has_pt = (y_ptr >= 0) & own, (y_x >= 0) & own
     l_ptr = F_.cross_entropy(ptr[has_ptr], y_ptr[has_ptr]) if has_ptr.any() else logits.sum() * 0
@@ -620,7 +620,7 @@ def losses(net: FullGameNet, b: dict, device, states: torch.Tensor | None = None
         k_all = k_act * 0
         if hold_all:  # (model.anchor_kl's forward-all, the targets' terms over the units that use them only: a whole
             with torch.no_grad():  # game's validation batch of [N, O, bins] log-softmaxes is gigabytes)
-                ptr_r, xl_r, z_r = ref.target_logits(g_r, u_r, mask, y_order.clamp(min=0))
+                ptr_r, xl_r, z_r = ref.target_logits(g_r, u_r, mask, y_order.clamp(min=0), ent)
                 ptr_r, xl_r, z_r = ptr_r[has_ptr], xl_r[has_pt], z_r[has_pt]
                 yl_r = ref.y_logits(z_r, y_x[has_pt])
                 fl_r = (ref.fine_logits(z_r, y_x[has_pt], y_y[has_pt]) if y_f is not None and fine_head(ref)
