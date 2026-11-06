@@ -176,7 +176,8 @@ class NativeServer:
     def _snapshot(self, key: str):  # (from the loop's thread: a past snapshot it has not seen yet)
         src = self.nets.get(key)
         arch = arch_key(src.config)
-        flat = torch.cat([p.data.reshape(-1) for p in src.parameters()])
+        from .selfplay import pack_flat
+        flat = pack_flat(src.parameters())  # (laid out as the slots' own: PastNet, flat_layout)
         buffers = list(src.buffers())
         torch.cuda.current_stream().synchronize()  # (made before the loop's streams copy from them)
         self.kept[key] = (flat, buffers)

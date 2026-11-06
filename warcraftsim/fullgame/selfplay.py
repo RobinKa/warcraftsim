@@ -404,7 +404,10 @@ class Inference:
             x, graph, packed = self._graph(net, host)
             x.copy_(host, non_blocking=True)
             graph.replay()
-            key = ("out", B, packed.shape[1], slot, self.bank)
+            # (the answers' buffer keyed as the input's, by the input's width and its slot: keyed by the answers' own
+            # width, two calls of a round padded to 96 and to 160 entities (both 5 x min(MAX_OWN = 96, E) + 2 numbers a
+            # row, their slots counted apart) shared one, the last copy won, and the first call read the second's rows)
+            key = ("out", B, W, slot, self.bank)
             if key not in self._hosts:
                 self._hosts[key] = torch.zeros(B, packed.shape[1]).pin_memory()
             out = self._hosts[key]
@@ -592,10 +595,36 @@ class RemoteInference:
         return out
 
 
+FLAT_ALIGN = 128  # (floats: 512 bytes, the CUDA caching allocator's own alignment, as separate tensors' would be)
+
+
+def flat_layout(params) -> tuple[list[int], int]:
+    """Each parameter's offset in a slot's flat weights (PastNet), each at a FLAT_ALIGN boundary, and the total. Packed
+    end to end, every parameter after the order head's odd-sized bias (519 classes in fgself-194) sat 12 bytes off a
+    16-byte boundary: 20 of the 102 (the target heads' query, key, point and embedding weights)."""
+    offsets, at = [], 0
+    for q in params:
+        offsets.append(at)
+        at += -(-q.numel() // FLAT_ALIGN) * FLAT_ALIGN
+    return offsets, at
+
+
+def pack_flat(params) -> torch.Tensor:
+    """The parameters in one flat tensor laid out as flat_layout (zeros between them), on their device: a slot's own
+    weights, and the snapshot weights copied into a slot (PastNet; NativeServer's, which the C++ loop copies)."""
+    params = list(params)
+    offsets, total = flat_layout(params)
+    flat = torch.zeros(total, dtype=params[0].dtype, device=params[0].device)
+    for q, at in zip(params, offsets):
+        flat[at:at + q.numel()].copy_(q.data.reshape(-1))
+    return flat
+
+
 class PastNet:
     """The past snapshots' calls through a few network objects (slots, per architecture): a snapshot's
     weights are copied into a slot before its calls. Its parameters are views of one flat tensor, so
-    that is one copy. Each slot has its CUDA graphs and stream: a round's snapshots run side by side.
+    that is one copy (each view at a 512-byte boundary, flat_layout: packed end to end, a fifth of them were only
+    4-byte aligned, and with --infer-precision tf32 the warm-up's capture of a slot failed, "misaligned address"). Each slot has its CUDA graphs and stream: a round's snapshots run side by side.
     (Compiled per snapshot, every new league member stalled all the games for 25-50 s: four shapes to
     compile, every 20 updates.)"""
 
@@ -620,19 +649,17 @@ class PastNet:
     @torch.no_grad()
     def get(self, key: str, src: FullGameNet, slot: int = 0) -> FullGameNet:
         if src not in self.flats:
-            self.flats[src] = (torch.cat([p.data.reshape(-1) for p in src.parameters()]), list(src.buffers()),
-                               arch_key(src.config))
+            self.flats[src] = (pack_flat(src.parameters()), list(src.buffers()), arch_key(src.config))
         flat, buffers, arch = self.flats[src]
         self.holding[slot] = key
         host = self.hosts.get((arch, slot))
         if host is None:
             net = FullGameNet(**src.config).to(self.device).eval()
             net.load_state_dict(src.state_dict())
-            mine = torch.cat([p.data.reshape(-1) for p in net.parameters()])
-            at = 0
-            for p in net.parameters():
+            params = list(net.parameters())
+            mine = pack_flat(params)
+            for p, at in zip(params, flat_layout(params)[0]):
                 p.data = mine[at:at + p.numel()].view(p.shape)
-                at += p.numel()
             host = self.hosts[(arch, slot)] = [net, mine, list(net.buffers()), key]
         if host[3] != key:
             host[1].copy_(flat)
