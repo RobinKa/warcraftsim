@@ -92,7 +92,7 @@ class NativeServer:
     """The server's setup in Python and its loop in C++ (start(), stop(), failed())."""
 
     def __init__(self, cfg: dict, conns: list, device, split=None):
-        from .selfplay import Inference, Nets, PastNet, SharedRows, infer_rows, warm_inference
+        from .selfplay import Inference, Nets, PastNet, SharedRows, infer_rows, precision_flags, warm_inference
         assert cfg.get("shared_rows"), "--infer-native needs --infer-shm 1"
         self.cfg, self.conns, self.device = cfg, conns, device
         self.split = split  # (gpu_split.GpuSplit: the loop's streams in its part of the GPU)
@@ -104,17 +104,17 @@ class NativeServer:
         self.generator.seed()
         top = cfg["infer_batch"]
         fuse = bool(cfg.get("infer_fuse", 0))
-        # --infer-precision: the calls' matmuls in fp32 (as before), TF32 or bf16 (both networks' graphs alike)
-        prec = cfg.get("infer_precision") or "fp32"
+        # --infer-precision: the calls' matmuls in fp32 (as before), TF32, bf16, or bf16 for the trunk with the heads in
+        # fp32 (bf16-mixed); both networks' graphs alike. The loop only replays them: a slot's graphs cast the fp32
+        # weights copied into it at each call (autocast without its cache)
+        prec = precision_flags(cfg.get("infer_precision"))
         self.shared = SharedRows(*cfg["shared_rows"])
         self.infer = Inference(self.nets, device, top, True, buckets=infer_rows(cfg.get("infer_rows"), top),
                                thread=False, entities=tuple(cfg.get("infer_entities", (48, 96))), fuse=fuse,
-                               generator=self.generator, capture_mode="thread_local",
-                               bf16=prec == "bf16", tf32=prec == "tf32")
+                               generator=self.generator, capture_mode="thread_local", **prec)
         self.past = Inference(self.nets, device, 16, True, buckets=(4, 16), thread=False,
                               entities=tuple(cfg.get("infer_past_entities", (64,))), fuse=fuse,
-                              generator=self.generator, capture_mode="thread_local",
-                              bf16=prec == "bf16", tf32=prec == "tf32")
+                              generator=self.generator, capture_mode="thread_local", **prec)
         self.swap = PastNet(device, slots=cfg.get("infer_past_slots", 1))
         t0 = time.time()
         league = Path(cfg["run_dir"]) / "league.json"

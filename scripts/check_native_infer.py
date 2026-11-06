@@ -29,8 +29,13 @@ from warcraftsim.fullgame import features as fx  # noqa: E402
 from warcraftsim.fullgame.costs import order_costs  # noqa: E402
 from warcraftsim.fullgame.model import load  # noqa: E402
 from warcraftsim.fullgame.native_infer import NativeServer  # noqa: E402
-from warcraftsim.fullgame.selfplay import Inference, RemoteInference, SharedRows, publish  # noqa: E402
+from warcraftsim.fullgame.selfplay import Inference, RemoteInference, SharedRows, precision_flags, publish  # noqa: E402
 from bench_inference import view_steps  # noqa: E402
+
+# the largest (value, entropy) difference against a direct fp32 call that passes, per --infer-precision (fp32: graphs
+# against eager; the others about twice the largest scripts/infer_cpu_study.py mixed found on ~110k units, the value's
+# per row and the order entropy's per unit, which a row with one own unit is: rounding, not a bug)
+TOL = {"fp32": (1e-3, 1e-3), "tf32": (5e-3, 2.5e-2), "bf16-mixed": (2e-2, 0.2), "bf16": (5e-2, 0.25)}
 
 
 def main() -> int:
@@ -45,12 +50,15 @@ def main() -> int:
                                                             "the GPU of this many SMs")
     ap.add_argument("--past-period-ms", type=float, default=0.0, help="selfplay --infer-past-period-ms")
     ap.add_argument("--rows", default="", help="selfplay --infer-rows (the current network's padded row counts)")
-    ap.add_argument("--precision", default="fp32", help="selfplay --infer-precision: the loop's calls in fp32, tf32 or "
-                                                        "bf16, checked against direct fp32 calls within --tol")
-    ap.add_argument("--tol", type=float, default=1e-3, help="the largest difference in value or entropy that passes")
+    ap.add_argument("--precision", default="fp32", help="selfplay --infer-precision: the loop's calls in fp32, tf32, "
+                                                        "bf16 or bf16-mixed, checked against direct fp32 calls within --tol "
+                                                        "(and reported against direct calls of the same precision)")
+    ap.add_argument("--tol", type=float, help="the largest difference in value or entropy that passes (default by "
+                                              "precision, the value's and the entropy's: TOL)")
     ap.add_argument("--setup", action="store_true", help="the run's input settings first (scripts/bench_view.setup: a "
                                                           "recent run needs them)")
     a = ap.parse_args()
+    tol_v, tol_e = (a.tol, a.tol) if a.tol is not None else TOL[a.precision]
     device = torch.device("cuda")
     if a.setup:
         from bench_view import setup
@@ -82,11 +90,16 @@ def main() -> int:
     remote = RemoteInference([x for x, _ in pipes], SharedRows(*spec), [2 * k for k in range(a.games)])
     steps = view_steps(sorted(a.data.glob("game*.npz"))[:3], ck["vocab"], order_costs(ck["vocab"], "duelfast"), 400)
     direct = Inference(None, device, 64, compile_=False, thread=False)
+    # (and plain calls of the loop's precision: what the compiled graphs and the loop add to the rounding itself)
+    alike = Inference(None, device, 64, compile_=False, thread=False, **precision_flags(a.precision)) \
+        if a.precision != "fp32" else None
     keys = ["current"] + past
     nets = {k: (net if k == "current" else load(k, device, vocab=ck["vocab"] if fx.NEUTRAL else None)[0].eval()) for k in keys}
     errors, counts, rng0 = [], {"calls": 0}, np.random.default_rng(0)
     diffs: list[tuple[float, float]] = []  # (value, entropy) against the direct fp32 call
-    lock = threading.Lock()
+    same: list[tuple[float, float]] = []  # (value, entropy) against the direct call of the same precision
+    past_diffs: list[tuple[float, float]] = []  # (the past snapshots' slots' rows alone, against fp32)
+    lock, ref_lock = threading.Lock(), threading.Lock()
     slowest = [0.0]
 
     def game(seed: int, check: bool, until: float):
@@ -104,10 +117,16 @@ def main() -> int:
                 slowest[0] = max(slowest[0], time.time() - t_asked)
             if check:
                 for key, got in zip(asked, answers):
-                    want = direct._finish(direct._launch(nets[key], [st]))[0]
+                    with ref_lock:  # (one direct call at a time: a tf32 or bf16-mixed one sets the process's matmul
+                        want = direct._finish(direct._launch(nets[key], [st]))[0]  # precision while it runs)
+                        w2 = alike._finish(alike._launch(nets[key], [st]))[0] if alike is not None else None
                     if got is not None:
                         diffs.append((abs(got["value"] - want["value"]), abs(got["entropy"] - want["entropy"])))
-                    bad = got is None or abs(got["value"] - want["value"]) > a.tol or abs(got["entropy"] - want["entropy"]) > a.tol \
+                        if key != "current":
+                            past_diffs.append(diffs[-1])
+                        if w2 is not None:
+                            same.append((abs(got["value"] - w2["value"]), abs(got["entropy"] - w2["entropy"])))
+                    bad = got is None or abs(got["value"] - want["value"]) > tol_v or abs(got["entropy"] - want["entropy"]) > tol_e \
                         or got["version"] != (7 if key == "current" else -1)
                     if bad:
                         errors.append((key, None if got is None else (got["value"], got["entropy"], got["version"]),
@@ -121,10 +140,14 @@ def main() -> int:
     [t.start() for t in threads]
     [t.join() for t in threads]
     print(f"checked {counts['calls']} calls: {len(errors)} wrong" + (f", e.g. {errors[:3]}" if errors else ""), flush=True)
-    if diffs:
-        d = np.array(diffs)
-        print(f"against direct fp32 calls ({a.precision}): value difference mean {d[:, 0].mean():.1e} max {d[:, 0].max():.1e}, "
-              f"entropy mean {d[:, 1].mean():.1e} max {d[:, 1].max():.1e}", flush=True)
+    for name, got in ((f"direct fp32 calls (tol {tol_v:g}, {tol_e:g})", diffs), ("direct fp32 calls, past snapshots' slots alone",
+                                                                     past_diffs),
+                      (f"direct {a.precision} calls (eager)", same)):
+        if got:
+            d = np.array(got)
+            print(f"{a.precision} against {name}, {len(d)} rows: value difference mean {d[:, 0].mean():.1e} p99 "
+                  f"{np.percentile(d[:, 0], 99):.1e} max {d[:, 0].max():.1e}, entropy mean {d[:, 1].mean():.1e} p99 "
+                  f"{np.percentile(d[:, 1], 99):.1e} max {d[:, 1].max():.1e}", flush=True)
     # sampling: the same view step twice gives different orders (somewhere)
     st = dict(steps[0], h=None)
     o1, o2 = remote.request([("current", st)])[0], remote.request([("current", st)])[0]

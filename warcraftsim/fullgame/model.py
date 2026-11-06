@@ -337,8 +337,19 @@ def fine_head(net: FullGameNet) -> bool:
     return fx.FINE > 1 and net.fine == fx.FINE
 
 
+def _in_fp32(device_type: str | None, fn, *args, **kw):
+    """fn(*args, **kw); with a device type (act's heads_fp32) in fp32 inside a bf16 autocast region: that device's
+    autocast off and the floating inputs cast up (the trunk's outputs are fp32 already: its last layer norm, the memory's
+    sum). None: the plain call, nothing added."""
+    if device_type is None:
+        return fn(*args, **kw)
+    up = lambda a: a.float() if isinstance(a, torch.Tensor) and a.is_floating_point() else a  # noqa: E731
+    with torch.autocast(device_type, enabled=False):
+        return fn(*[up(a) for a in args], **{k: up(v) for k, v in kw.items()})
+
+
 def act(net: FullGameNet, ent, typ, cur, mask, glob, n_own, avail=None, h=None, generator=None, shared=None,
-        guide=None) -> dict:
+        guide=None, heads_fp32: bool = False) -> dict:
     """Sample every own unit's order and targets (the first O = min(MAX_OWN, E) entities; the
     orders each unit type got in the demonstrations). -> order, tgt, bx, by (point indices: sample_points), logp [N, O] (the
     action's log-probability per unit: order, plus the targets that order uses; 0 for padding)
@@ -348,19 +359,24 @@ def act(net: FullGameNet, ent, typ, cur, mask, glob, n_own, avail=None, h=None, 
     `guide` [N] (1: none), classifier-free guidance by the target strategy (as in image generation): the order's
     logits also without the strategy (its block of the global vector zeroed: the policy trains both ways, a
     quarter of its games with no target) and mixed as free + guide * (with - free); > 1 follows the target
-    harder. The targets (unit, x, y), the value and the memory come from the pass with the strategy."""
+    harder. The targets (unit, x, y), the value and the memory come from the pass with the strategy.
+    `heads_fp32` (--infer-precision bf16-mixed): in a bf16 autocast region only the trunk (the encoders, the transformer,
+    the memory core) in bf16, every head (the order; the target's conditioning, query, key and pointer; the point's x
+    and y; the value) in fp32 (_in_fp32): bf16 rounds its outputs, a logit near 30 (the point and pointer heads' are) to
+    steps of 0.125-0.25 and a value near 0.5 to 0.004. Without autocast it changes nothing."""
     h_in = h
     g, u = net.encode(ent, typ, cur, mask, glob)
     g, h = net.context(g, h)
     O = min(fx.MAX_OWN, u.shape[1])
-    logits = net.order_logits(g, u[:, :O], typ, n_own, avail=avail, ent=ent)
+    heads32 = g.device.type if heads_fp32 else None
+    logits = _in_fp32(heads32, net.order_logits, g, u[:, :O], typ, n_own, avail=avail, ent=ent)
     if guide is not None and net.config.get("z"):
         z0 = net.config["G"] - net.priv - net.config.get("gx", 0) - net.config["z"]
         blank = glob.clone()
         blank[:, z0:z0 + net.config["z"]] = 0.0
         g0, u0 = net.encode(ent, typ, cur, mask, blank)
         g0, _ = net.context(g0, h_in)
-        free = net.order_logits(g0, u0[:, :O], typ, n_own, avail=avail, ent=ent)
+        free = _in_fp32(heads32, net.order_logits, g0, u0[:, :O], typ, n_own, avail=avail, ent=ent)
         w = guide.to(logits.dtype)[:, None, None]
         logits = torch.where(w != 1, free + w * (logits - free), logits)
     def sample(lg):
@@ -368,14 +384,15 @@ def act(net: FullGameNet, ent, typ, cur, mask, glob, n_own, avail=None, h=None, 
     # (the order itself with a draw of its own per unit: one draw for all made a side's similar units take a rare
     # order together or not at all: every worker builds a farm, or none does; the A/B of 2026-10-12)
     order = _gumbel_argmax(logits, generator)
-    ptr, xl, z = net.target_logits(g, u, mask, order)
+    ptr, xl, z = _in_fp32(heads32, net.target_logits, g, u, mask, order)
     tgt = sample(ptr)
-    bx, by, lp_pt = sample_points(net, z, xl, sample)  # (with --fine-points: point indices, the sub-cell too)
-    uses_ptr, uses_pt = net.uses(order)
+    bx, by, lp_pt = _in_fp32(heads32, sample_points, net, z, xl, sample)  # (with --fine-points: point indices, the
+    uses_ptr, uses_pt = net.uses(order)                                       # sub-cell too)
     own = torch.arange(O, device=ent.device)[None] < n_own[:, None]
     logp = _logp(logits, order) + uses_ptr * _logp(ptr, tgt) + uses_pt * lp_pt
     ent = (_entropy(logits) * own).sum(-1) / own.sum(-1).clamp(min=1)  # the order's, mean over own units
-    out = {"order": order, "tgt": tgt, "bx": bx, "by": by, "logp": logp * own, "value": net.value(g, glob), "entropy": ent}
+    out = {"order": order, "tgt": tgt, "bx": bx, "by": by, "logp": logp * own,
+           "value": _in_fp32(heads32, net.value, g, glob), "entropy": ent}
     if net.memory:
         out["h"] = h
     return out

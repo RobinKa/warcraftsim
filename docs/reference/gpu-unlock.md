@@ -6,7 +6,7 @@ Since 2026-10-24 the training machine's RTX 3090 runs with its BF16/FP16 tensor-
 
 GeForce cards of the RTX 30 series issue BF16 and FP16 tensor-core instructions that accumulate into FP32 at half the rate of the professional cards built from the same chips. gpu-unlock is a Linux kernel module for GA102, GA103, GA104 and GA106 chips (the RTX 3090 is a GA102). At every boot, before the NVIDIA driver takes the card, it writes the card's speed selectors to the professional rate with a firmware payload derived from NVIDIA's CMP cards. The NVIDIA driver itself is not patched. Plain FP32 math is not affected.
 
-The learner's updates run their matrix multiplies in BF16 (`torch.autocast`), so they use the faster rate. The actors' inference does not: its calls run in FP32 (~17-23 TFLOPS at our shapes, below), unless `selfplay --infer-precision tf32` or `bf16` is given ([the inference calls' precision](optimization-log.md#the-inference-calls-precision-and-padding-2026-11-05-opt-in-not-yet-measured-on-the-gpu)).
+The learner's updates run their matrix multiplies in BF16 (`torch.autocast`), so they use the faster rate. The actors' inference does not: its calls run in FP32 (~17-23 TFLOPS at our shapes, below), unless `selfplay --infer-precision tf32`, `bf16` or `bf16-mixed` is given ([the inference calls' precision](optimization-log.md#the-inference-calls-precision-and-padding-2026-11-05-opt-in-not-yet-measured-on-the-gpu); [bf16-mixed](optimization-log.md#inference-in-bf16-without-hurting-learning-bf16-mixed-2026-11-06-cpu-study-gpu-to-measure): the trunk in BF16, the heads and the value in FP32 with TF32 multiplies).
 
 ## What it gave
 
