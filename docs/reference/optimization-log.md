@@ -905,3 +905,5 @@ Not done: the remaining masks in C (`econ_allowed`, `chores`, `futile`'s items, 
 
 
 **The actors' per-step Python cut (`fgself-196` restarted 20:20 on d22f6f5; outputs bit-identical):** 20:26-20:42, **5,638 agent steps/s (median update SPS 6,125)** against ~5,000-5,380 before; the learner's wait for data 0.30 → 0.19 s; actors 8.2 → 7.5 cores (less than the 6 estimated), games 16.6-16.8 cores, the machine still ~96% busy. The games' CPU on the main machine stays the cap.
+
+**What `--obs-full` costs (`fgself-197` against `fgself-196`, 2026-11-06 23:00):** steps/s (update medians) 6,251 → 5,024. The learner's update 1.14 → 1.38 s: ~4 more entities a step (45 → 49, max 52 → 59: corpses, ground items, area spells) in the transformer, rows 106 → 176 channels to collate and copy. The actors' Python 7.4 → 8.9 cores for the new features, on a machine with none to spare. The actors' part can go to C, as the actors' masks did (an agent on it, outputs bit-identical); the update's part is what seeing more costs, short of capping the new kinds.
