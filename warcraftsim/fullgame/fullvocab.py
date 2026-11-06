@@ -27,6 +27,8 @@ id of its own for (ITEM_ORDERS: protocol.DropItem, PickUpAt)."""
 
 from __future__ import annotations
 
+import os
+
 import json
 import re
 from dataclasses import dataclass, field
@@ -280,7 +282,9 @@ def tables() -> dict:
              for c, r in idata.items() if c and len(c) == 4}
     out = {"units": units, "abilities": abilities, "funcs": funcs, "items": items}
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(out, sort_keys=True))
+    tmp = path.with_suffix(f".{os.getpid()}.tmp")  # (written whole, then renamed: actors starting together on a fresh
+    tmp.write_text(json.dumps(out, sort_keys=True))  # machine read a whole file or none)
+    tmp.replace(path)
     return out
 
 
@@ -846,7 +850,9 @@ def lab_stock() -> dict[str, float]:
         except ValueError:
             out[c] = 0.0
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(out))
+    tmp = path.with_suffix(f".{os.getpid()}.tmp")  # (as tables(): whole, then renamed)
+    tmp.write_text(json.dumps(out))
+    tmp.replace(path)
     return out
 
 
