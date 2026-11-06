@@ -168,7 +168,7 @@ def infer_rows(rows, top: int) -> tuple[int, ...]:
     given = {int(x) for x in rows or ()}
     if any(b < 1 or b > top for b in given):
         raise ValueError(f"--infer-rows {sorted(given)}: each from 1 to {top}")
-    return tuple(sorted(given | {top})) if given else tuple(b for b in INFER_ROWS if b <= top) or (top,)
+    return tuple(sorted((given or {b for b in INFER_ROWS if b <= top}) | {top}))
 
 
 @contextlib.contextmanager

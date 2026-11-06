@@ -291,6 +291,7 @@ After micro, the whole melee game (economy, building, tech, armies, heroes), sta
     * The queue of trajectories holds one batch: actors faster than the learner wait instead of piling up steps from older policies.
     * `--resume` continues a run; with `--note`, the note says why it was restarted.
     * `--games-per-actor` training games and one evaluation game per actor (8 actors): 8 since 2026-10-24, when the actors' features moved to C (`native/w3feat.c`, `fullgame/featnative.py`; `WARCRAFTSIM_PY_FEATURES=1` for the numpy path, `scripts/bench_view.py --compare` checks both give the same features).
+    * `--infer-rows` (finer row buckets for the current network's calls) and `--infer-precision tf32|bf16` (the inference calls' matmuls; fp32 by default, the numbers change slightly): opt-in, see [optimizations](optimization-log.md#the-inference-calls-precision-and-padding-2026-11-05-opt-in-not-yet-measured-on-the-gpu).
     * `--game-cuts 521721`: the game's own code, faster with the same results (`shim/cuts.c`; `scripts/cut_ab.py` plays a replay back once per variant and compares every step).
 * **On the dashboard**:
   * collections (`DEMOS`): games, rate, game lengths, ties, win rates by matchup, and videos of a game every 10 minutes (`--video-every`) to check what was recorded;
