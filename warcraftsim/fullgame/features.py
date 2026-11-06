@@ -207,18 +207,32 @@ PASSIVE_IDS = np.array([int.from_bytes(c.encode(), "big") for c in (
     "hhou", "otrb", "uzig", "emow", "hwtw", "hgtw", "hctw", "hatw", "owtw", "uzg1", "uzg2", "etrp", "ugol", "egol")], np.int64)
 
 
-_OWN_ALIVE: dict[int, tuple] = {}  # player -> (a step's rows, their living units of the player's)
+_OWN_ALIVE: dict[tuple, tuple] = {}  # (id(rows), player) -> (a step's rows, their living units of the player's)
+STEP_CACHE = 32  # (the per-rows caches' entries at most: a few steps' of an actor's game threads, which interleave)
+
+
+def _cached(cache: dict, rows: np.ndarray, player: int):
+    """A per-rows cache's entry for these rows and player, or None. (Keyed by the rows' id with the rows kept in the
+    entry, so the id is not reused while it is there; an actor's game threads' steps each keep theirs.)"""
+    hit = cache.get((id(rows), player))
+    return hit[1] if hit is not None and hit[0] is rows else None
+
+
+def _keep(cache: dict, rows: np.ndarray, player: int, out):
+    if len(cache) >= STEP_CACHE:
+        cache.clear()
+    cache[(id(rows), player)] = (rows, out)
+    return out
 
 
 def own_alive(rows: np.ndarray, player: int, mask: np.ndarray | None = None) -> np.ndarray:
     """rows[(owner == player) & living] (`mask`: that mask, when the caller has it), copied once per rows object and
     player (play_one's rows: the trackers' at a step's end, the teacher's at the next step's start). Read only."""
-    hit = _OWN_ALIVE.get(player)
-    if hit is not None and hit[0] is rows:
-        return hit[1]
-    out = rows[(rows[:, C_OWNER] == player) & (rows[:, C_FLAGS] & DEAD == 0) if mask is None else mask]
-    _OWN_ALIVE[player] = (rows, out)
-    return out
+    out = _cached(_OWN_ALIVE, rows, player)
+    if out is not None:
+        return out
+    return _keep(_OWN_ALIVE, rows, player,
+                 rows[(rows[:, C_OWNER] == player) & (rows[:, C_FLAGS] & DEAD == 0) if mask is None else mask])
 
 
 
@@ -261,32 +275,28 @@ ROW_COLS = 32
 def own_heroes(rows: np.ndarray, player: int) -> list:
     """own_alive's heroes' rows as lists of Python's numbers (none when the rows have no item columns), once per rows
     object and player (the masks' item and slot checks: View.futile, View.item_slots). Read only."""
-    hit = _OWN_HEROES.get(player)
-    if hit is not None and hit[0] is rows:
-        return hit[1]
+    out = _cached(_OWN_HEROES, rows, player)
+    if out is not None:
+        return out
     own = own_alive(rows, player)
-    out = own[own[:, C_FLAGS] & HERO > 0].tolist() if own.shape[1] > C_ITEM0 + 5 else []
-    _OWN_HEROES[player] = (rows, out)
-    return out
+    return _keep(_OWN_HEROES, rows, player, own[own[:, C_FLAGS] & HERO > 0].tolist() if own.shape[1] > C_ITEM0 + 5 else [])
 
 
-_OWN_HEROES: dict[int, tuple] = {}  # player -> (a step's rows, own_heroes)
+_OWN_HEROES: dict[tuple, tuple] = {}  # (id(rows), player) -> (a step's rows, own_heroes)
 # own_list's columns, and their places in its rows
 OWN_COLS = (C_ID, C_TYPE, C_FLAGS, C_X, C_Y, C_HP, C_MAXHP, C_ORDER, C_MANA)
 O_ID, O_TYPE, O_FL, O_X, O_Y, O_HP, O_MAXHP, O_ORDER, O_MANA = range(len(OWN_COLS))
-_OWN_LIST: dict[int, tuple] = {}  # player -> (a step's rows, own_list)
+_OWN_LIST: dict[tuple, tuple] = {}  # (id(rows), player) -> (a step's rows, own_list)
 
 
 def own_list(rows: np.ndarray, player: int) -> list:
     """own_alive's rows' OWN_COLS as lists of Python's numbers, in their order, once per rows object and player (the
     masks' passes over a player's units: View.econ_allowed, View.chores; numpy's calls on a step's ~50 rows cost
     ~5-15k instructions each, a pass in Python a few hundred a unit). Read only."""
-    hit = _OWN_LIST.get(player)
-    if hit is not None and hit[0] is rows:
-        return hit[1]
-    out = own_alive(rows, player)[:, OWN_COLS].tolist()
-    _OWN_LIST[player] = (rows, out)
-    return out
+    out = _cached(_OWN_LIST, rows, player)
+    if out is not None:
+        return out
+    return _keep(_OWN_LIST, rows, player, own_alive(rows, player)[:, OWN_COLS].tolist())
 
 
 def _near_any(ux: float, uy: float, among: list, dd: float) -> bool:
@@ -1876,9 +1886,11 @@ class View:
 
     def last_features(self, f: np.ndarray, sel: np.ndarray, ids: list, n_own: int, t: int) -> None:
         """The A_LAST features of the view's own units (the first n_own of `sel`, `ids` their ids) in `f`, in place:
-        each one's last order (View.note_orders) relative to it, its kind and its age. In Python's floats, written
-        a column at a time (a unit at a time with numpy's scalars and np.clip had been ~1M instructions a side-step at
-        ~30 own units; the same double arithmetic, clipped alike, and the same float32 roundings)."""
+        each one's last order (View.note_orders) relative to it, its kind and its age. In C (featnative.last_features)
+        from last_packed's records, which note_orders and step's pruning keep with last_order (a writer of last_order
+        that leaves them apart: the counts differ, and this Python runs); else in Python's floats, written a column at a
+        time. (A unit at a time with numpy's scalars and np.clip had been ~1M instructions a side-step at ~30 own
+        units; the same double arithmetic either way, clipped alike, and the same float32 roundings.)"""
         packed = self.__dict__.get("last_packed")
         if packed is not None and len(packed) == len(self.last_order) and _mod("featnative").last_features(
                 f, sel, n_own, packed, t, self.sign, A_LAST, LAST_SCALE, LAST_AGE, self):
