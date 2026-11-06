@@ -25,7 +25,8 @@ Rejected changes worth switching on anyway (2026-11-06 review): none of the tuni
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-196` (running) | `--full-vocab 1 --features 55` (bold 7), `--learner-intake 1` | Every order a player can give; 26 more unit channels |
+| `fgself-197` (running) | `--obs-full 1 --obs-fade 600` (bold 8), from `fgself-196` | The agent sees what a player sees |
+| `fgself-196` (kept, new base) | `--full-vocab 1 --features 55` (bold 7), `--learner-intake 2` | Level at 50M (48% h2h, insane 67/69); every order a player can give; new orders in use |
 | `fgself-195` (not kept) | the `dry` scenario in a third of scenario starts (bold 2) | No expansions in evaluation (0 of 241); head to head 43%, lumber and creeps down |
 | `fgself-194` (not kept) | `--exploiter-share 0.1 --ai-share 0.4` (bold 1) | Level head to head, -13 against insane (only ~12% AI games); no wider; the exploiter never joined |
 | `fgself-193` (invalid, stopped at 5.9M) | `--exploiter-share 0.2` (item 6, brought forward) | The exploiter path was broken (fixed in 8f57073): run again as `fgself-194` with `--exploiter-share 0.1` |
