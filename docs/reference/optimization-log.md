@@ -844,3 +844,28 @@ To measure on the GPU (between runs, the GPU free), from the main tree:
 | `--update-pause-ms 8`, `--infer-period-ms 3` | 5,236 | 278 | 3.71 |
 
 More games and a faster inference loop gave nothing while staleness rose: data waits for the learner. The learner works in turns, collecting 8,192 steps (~0.43 s, `perf/rollout`) and then updating (~1.1 s). In 8 py-spy dumps of its main thread, 3 were in `collate`/`to_device` (building minibatches on the CPU inside the update), 2 in the queue's `get`/`recv` (unpickling the games' steps), and 3 waiting on the GPU. The next gain is overlapping that Python with the GPU's work: intake in a thread or process, the next minibatch collated while the current one runs. Past-snapshot batching (~620 calls/s of 1.3 rows) stays a smaller, later gain. The pause and period changes go back to 4 and 4 at the next launch.
+
+### The learner reads ahead during its update: `--learner-intake` (2026-11-06, opt-in, CPU-tested; run to measure)
+
+fgself-195 after the bf16-mixed speed-up: the inference loop given more room (rounds 211 to 278 a second) and 8 more box games gave nothing (5,240-5,345 steps/s) while the staleness rose (3.28 to 3.71). The learner's cycle is strictly sequential, collect (`perf/rollout` ~0.43 s) then update (`perf/train` ~1.1 s), and py-spy put its main thread in collate (3 of 8 dumps), in `out_q.get` (2) and in the update's GPU wait or pause (3).
+
+Measured on the CPU, synthetic data of fgself-195's shapes (8,192 steps in chunks of 64, entities 8-150 around 45, F 106, G 318, 519 orders, d 192, labels on ~15% of steps; `--seq-len 16 --minibatch 256 --pad-groups 8`, widths 32-128):
+
+| the learner's work a cycle | ms |
+|---|---|
+| receiving and unpickling a batch (128 messages, ~100 MB, 8 actor processes waiting with theirs) | 257 (2.0 a message) |
+| of which unpickling alone | 76 |
+| the collect loop's own handling | 2 |
+| collating the update's 32 minibatches | 228 (7.1 each, p90 10.8) |
+| a minibatch's copy to pinned memory (6.4 MB, a memcpy) | ~0.3 |
+
+* **Collate is not on the update's critical path.** Each minibatch is collated while the GPU runs the one before (~25 ms a minibatch, from 1.1 s / 32 less the 8 ms pause); the dumps found the thread there because that is where it spends the GPU's time. Vectorising it would not shorten the update.
+* **The intake is.** It runs only between updates, and `out_q` holds at most a batch's messages (`batch_steps // chunk` = 128, episodes and games' short last chunks among them), so during the update the actors' and gateways' puts block once it is full, their games stop, and the collect loop then receives and unpickles (~0.26 s) and waits for the rest. More games or faster inference only filled the queue sooner.
+* **The update idles anyway**: 31 pauses of 8 ms (`--update-pause-ms 8`, the GPU to the inference loop) are 0.25 s a cycle of `time.sleep`, and its waits for the GPU before them another ~0.3 s.
+
+Built: **`--learner-intake`** (`selfplay.Intake`; default 0, as before). 1: the update's pauses read the actors' queue ahead instead of sleeping (each pause still ends 8 ms after the GPU finished, plus at most one message's read, ~2 ms); 2: also while it waits for the GPU (polling the minibatch's event between messages: late by at most one message). The collect loop takes the messages read ahead first and handles each exactly as before (episodes, exploiters' chunks, staleness at the same update), so the batches, their order and every minibatch are the same; reading ahead stops while a batch's steps wait, and the queue's own bound then holds the actors back as before. It needs `--update-pause-ms` above 0 (the CUDA-graph update; the eager fallback reads as before). `train.jsonl` gains `intake/messages`, `intake/steps`, `intake/seconds` (read ahead during the update) and `intake/waiting_steps`. Tests: `tests/unit/test_learner_intake.py` (three updates' batches, staleness and every minibatch tensor equal bit for bit with reads ahead at random moments, through a multiprocessing queue as the actors' messages come; the order kept; the cap; the pause's sleep, read and GPU poll).
+
+Expected: the cycle 0.43 + 1.1 = 1.53 s (5,350 steps/s). Mode 1 moves the ~0.26 s of receiving and unpickling into the 0.25 s of pauses: ≥ 1.27 s, ~6,450 steps/s (+20%). The rest of the collect phase was the actors blocked on the full queue; with it drained during the update they keep playing, and the cycle tends to the update alone, ~1.13 s: ~7,250 steps/s (+35%) when the games make that many (now the extra box games count). The update may lengthen by up to ~2 ms a minibatch (a read overrunning a pause or, with 2, the GPU's end): ≤ 60 ms.
+
+In the run (a fork of fgself-195 with only `--learner-intake 1`, then 2): `train.jsonl` medians over ≥ 100 updates against fgself-195's last 100: `perf/rollout` 0.43 → ≤ 0.2 s, `perf/train` ≤ 1.16 s, `SPS` 5,300 → ≥ 6,300, `intake/steps` ~5,000-8,000 an update, `staleness` not above ~4; the losses (`loss/kl`, `loss/clipfrac`, `loss/value`) in their usual ranges.
+

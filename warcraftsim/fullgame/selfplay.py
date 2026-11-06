@@ -4071,6 +4071,75 @@ class _WholeLoss(torch.nn.Module):
         return self.loss(s, b)
 
 
+class Intake:
+    """The actors' queue as the learner's collect loop reads it: get() gives the messages in the order they arrived.
+    With --learner-intake (`ahead`), fill() reads messages ahead while the update would otherwise sleep (its pauses,
+    --update-pause-ms; with 2 also its waits for the GPU): get() then gives those first, and the collect loop handles
+    each as before, in the same order, so the batches are the same. Reading ahead stops while the messages waiting
+    hold a batch's steps (the queue's own bound then holds the actors back, as before).
+
+    Why: the learner's cycle was strictly sequential, collect (~0.43 s in fgself-195) then update (~1.1 s), and out_q
+    holds at most a batch's messages (batch_steps // chunk), so during the update the actors' puts blocked once it was
+    full and the collect loop then received and unpickled ~100 MB (~0.26 s) and waited for the rest. Here the update's
+    idle moments receive and unpickle, and the actors' puts keep going."""
+
+    def __init__(self, q, batch_steps: int, ahead: int = 0):
+        self.q, self.limit, self.ahead = q, int(batch_steps), int(ahead)
+        self.pending: deque = deque()
+        self.steps = 0  # (the trajectory steps in the messages read ahead, not yet taken)
+        self.read = 0  # (messages read ahead since the last stats())
+        self.read_steps = 0
+        self.seconds = 0.0  # (spent reading them)
+
+    @staticmethod
+    def _steps(msg) -> int:
+        steps = msg.get("steps") if isinstance(msg, dict) else None
+        return len(steps) if steps is not None else 0
+
+    def get(self, timeout: float):
+        """The next message: one read ahead, else from the queue (queue.Empty after `timeout`)."""
+        if self.pending:
+            msg = self.pending.popleft()
+            self.steps -= self._steps(msg)
+            return msg
+        return self.q.get(timeout=timeout)
+
+    def fill(self, seconds: float, wait: bool = False) -> None:
+        """For `seconds`: messages read ahead (while those waiting hold less than a batch's steps), the rest of the
+        time asleep. `wait` (the update waiting for the GPU): back as soon as one message is read (the caller polls the
+        GPU between); none read, asleep for the rest as well (no spinning once a batch waits)."""
+        end = time.monotonic() + seconds
+        while self.ahead and self.steps < self.limit:
+            left = end - time.monotonic()
+            if left <= 0:
+                return
+            t = time.monotonic()
+            try:
+                msg = self.q.get(timeout=left)
+            except queue.Empty:
+                break
+            self.pending.append(msg)
+            n = self._steps(msg)
+            self.steps += n
+            self.read += 1
+            self.read_steps += n
+            self.seconds += time.monotonic() - t
+            if wait:
+                return
+        left = end - time.monotonic()
+        if left > 0:
+            time.sleep(left)
+
+    def stats(self) -> dict:
+        """The reading ahead since the last call (train.jsonl's intake/ keys): messages, their steps, seconds spent;
+        and the steps waiting now (read ahead for the next batch)."""
+        out = {"intake/messages": self.read, "intake/steps": self.read_steps, "intake/seconds": round(self.seconds, 3),
+               "intake/waiting_steps": self.steps}
+        self.read = self.read_steps = 0
+        self.seconds = 0.0
+        return out
+
+
 class GraphedUpdate:
     """The update's minibatch step (every forward pass, the losses, the backward pass, the gradient's
     clip and Adam's step) as CUDA graphs, one per shape: the minibatch's entities padded to WIDTHS,
@@ -4082,6 +4151,11 @@ class GraphedUpdate:
     def __init__(self, net: FullGameNet, ref: FullGameNet | None, opt, args, device):
         self.net, self.ref, self.opt, self.args, self.device = net, ref, opt, args, device
         self.graphs: dict[tuple, tuple] = {}
+        # --learner-intake: Intake.fill, called in the update's pauses instead of sleeping (idle_waits: and while it
+        # waits for the GPU before them); None: sleep as before
+        self.idle: Callable | None = None
+        self.idle_waits = False
+        self._done_event = None
         cuda = device.type == "cuda"  # (on the CPU only _backward and _step are of use: tests)
         self.pool = torch.cuda.graph_pool_handle() if cuda else None
         self.mgraphs: dict[tuple, tuple] = {}  # (the noise measurement's: GraphedUpdate.measure)
@@ -4334,6 +4408,25 @@ class GraphedUpdate:
                 yield (width, b["width"] if b is not None else 0, mb["pent"].shape[1] if "pent" in mb else 0,
                        tuple(sorted(k for k, v in mb.items() if isinstance(v, torch.Tensor)))), mb, b
 
+    def _pause(self, seconds: float) -> None:
+        """--update-pause-ms: wait for the minibatch on the GPU, then leave the GPU to the inference loop for `seconds`.
+        With an intake (--learner-intake: `idle`, Intake.fill) the learner reads the actors' queue ahead meanwhile
+        instead of sleeping (2: and while it waits for the GPU, until its minibatch is done), the same GPU work
+        and pause after it; else it sleeps as before."""
+        stream = torch.cuda.current_stream()
+        if self.idle is not None and self.idle_waits:
+            if self._done_event is None:
+                self._done_event = torch.cuda.Event()
+            done = self._done_event
+            done.record(stream)
+            while not done.query():  # (a message read takes ~1 ms: so late by at most that)
+                self.idle(0.001, wait=True)
+        stream.synchronize()
+        if self.idle is not None:
+            self.idle(seconds)
+        else:
+            time.sleep(seconds)
+
     def update(self, steps: list[dict], chunks: list[list[dict]], warmup: bool, bc_iter=None) -> dict:
         args, net = self.args, self.net
         advs = self._prepare(steps, warmup)
@@ -4353,8 +4446,7 @@ class GraphedUpdate:
             outs.append({k: v.detach().clone() for k, v in out.items()})
             nxt = next(batches, None)  # (made while the GPU runs this one)
             if pause > 0 and nxt is not None:  # then the GPU to the inference loop for a moment (--update-pause-ms)
-                torch.cuda.current_stream().synchronize()
-                time.sleep(pause / 1000)
+                self._pause(pause / 1000)
         net.eval()
         keys = dict.fromkeys(k for o in outs for k in o)  # (some only in some minibatches: --opsd-coef's, with a privileged view)
         stats = {k: float(torch.stack([o[k] for o in outs if k in o]).float().mean()) for k in keys}
@@ -5288,6 +5380,11 @@ def main(argv: list[str] | None = None) -> int:
                                                                      "loop this long (during the update its rounds took "
                                                                      "~10x their GPU time; the learner waits for data "
                                                                      "about as long as it updates)")
+    ap.add_argument("--learner-intake", type=int, default=0, choices=(0, 1, 2),
+                    help="the learner reads the actors' queue ahead during the CUDA-graph update instead of only between "
+                         "updates (Intake): 1 in its pauses (--update-pause-ms) instead of sleeping, 2 also while it "
+                         "waits for the GPU before them; the collect loop then takes those messages first, in the same "
+                         "order (the same batches). 0: as before")
     ap.add_argument("--update-fuse", default="", help="the update's forward passes and losses compiled before its CUDA "
                     "graphs are captured (torch.compile's mode: default, max-autotune-no-cudagraphs; empty: eager)")
     ap.add_argument("--update-grad-fuse", type=int, default=0, help="with --update-fuse: the gradients computed inside "
@@ -5421,6 +5518,8 @@ def main(argv: list[str] | None = None) -> int:
         ap.error(str(e))
     if len(args.late_minutes.split(",")) != 2:
         ap.error("--late-minutes: two game minutes, the capture's range (8,16)")
+    if args.learner_intake and not args.update_pause_ms > 0:
+        ap.error("--learner-intake reads the actors' queue in the update's pauses: --update-pause-ms above 0")
     fx.ACTIVE_F = args.features  # (the cloning loss's data workers fork from here: they inherit it)
     os.environ["WARCRAFTSIM_FEATURES"] = str(args.features)  # (and processes started anew: actors, videos)
     if args.valid_mask and args.inputs < 2:
@@ -5910,6 +6009,9 @@ def main(argv: list[str] | None = None) -> int:
                                      else (0, 0, 0))
     bc_iter = None
     updater = GraphedUpdate(net, ref, opt, args, device) if graphed else None
+    intake = Intake(out_q, args.batch_steps, args.learner_intake)  # (--learner-intake: read ahead in the update's pauses)
+    if updater is not None and args.learner_intake:
+        updater.idle, updater.idle_waits = intake.fill, args.learner_intake >= 2
     noise = NoiseScale(path=run_dir / "noise_scale.json",  # (--noise-scale; a fork's start: its parent's means)
                        parent=(args.runs / args.league_from / "noise_scale.json") if args.league_from else None)
     # the exploiter's updates as CUDA graphs too (eager, an update of 4,096 steps took the learner ~3-5 s
@@ -6008,7 +6110,7 @@ def main(argv: list[str] | None = None) -> int:
             t_collect = time.time()
             while len(buf) < args.batch_steps:
                 try:
-                    msg = out_q.get(timeout=600)
+                    msg = intake.get(timeout=600)  # (those read ahead first: Intake)
                 except queue.Empty:
                     raise RuntimeError("no trajectories from the actors for 10 minutes")
                 if "episode" in msg:
@@ -6133,7 +6235,8 @@ def main(argv: list[str] | None = None) -> int:
             row = {"agent_steps": agent_steps, "epoch": update, "time": now, "uptime": now - t0,
                    "SPS": len(steps) / max(now - t_collect, 1e-9), "lr": args.lr, "value_warmup": warmup,
                    "perf/rollout": t_train - t_collect, "perf/train": now - t_train,
-                   "staleness": sum(stale) / len(stale) if stale else 0.0, **stats, **league.train_keys()}
+                   "staleness": sum(stale) / len(stale) if stale else 0.0, **stats, **league.train_keys(),
+                   **(intake.stats() if args.learner_intake else {})}
             stale = []
             with open(run_dir / "train.jsonl", "a") as f:
                 f.write(json.dumps(row) + "\n")
