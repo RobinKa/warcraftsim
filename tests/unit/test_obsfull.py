@@ -318,3 +318,30 @@ def test_tables_cache_written_whole(tmp_path, monkeypatch):
     of.write_whole(path, '{"a": 1}')
     assert path.read_text() == '{"a": 1}' and written and all(w != path for w in written)
     assert not list(path.parent.glob("*.tmp"))
+
+
+def test_obs_full_network_in_a_process_without_it(tmp_path):
+    """A network trained with --obs-full loaded where the features were set without it (a later run's league or
+    evaluation checkpoints, --league-add, a fork that turns the flag off) reads the run's rows without its block, as a
+    network with more inputs reads those it has: building it from its config had turned the whole process's features
+    to its width (fx.F + 70), and the run's own network and rows no longer fit them."""
+    from warcraftsim.fullgame import model
+    from warcraftsim.fullgame.model import FullGameNet
+    fx.set_inputs(2)
+    fx.set_obs_full(1)
+    try:
+        net = FullGameNet(n_types=7, n_cur=3, n_orders=4, G=23, gx=3, obsfull=1)
+        path = tmp_path / "obs.pt"
+        torch.save({"model": net.state_dict(), "config": net.config}, path)
+        fx.set_obs_full(0)
+        F0 = fx.F
+        net2, _ = model.load(path)
+        assert fx.OBS_FULL == 0 and fx.F == F0 and fx.A_OBS == -1  # (the process's features as they were set)
+        assert not net2.config.get("obsfull") and net2.ent.weight.shape[1] == F0
+        assert torch.equal(net2.ent.weight, net.ent.weight[:, :F0])
+        fx.set_obs_full(1)  # (a run with it: the network as it was)
+        net3, _ = model.load(path)
+        assert net3.config.get("obsfull") == 1 and torch.equal(net3.ent.weight, net.ent.weight)
+    finally:
+        fx.set_obs_full(0)
+        fx.set_inputs(1)

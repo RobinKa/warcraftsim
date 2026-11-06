@@ -318,6 +318,10 @@ A_HID = -1  # (set_inputs: the last entity channel when PRIVILEGED)
 # they were, model.load gives it zero weights for these) and three entity kinds after the units (corpses, items on the
 # ground, area spells in progress). 0: none (the features as before, bit for bit)
 OBS_FULL = int(os.environ.get("WARCRAFTSIM_OBS_FULL", "0") or 0)
+# (whether the process's setting is a decision: a run's flag or its config, set_obs_full, or the environment its parent
+# set. Then a network trained with the block, loaded without it, reads the rows without the block: model.adapt_config;
+# undecided, a network's config sets it, FullGameNet)
+OBS_FULL_SET = "WARCRAFTSIM_OBS_FULL" in os.environ
 OBS_F = 70  # (obsfull.OBS_F)
 A_OBS = -1  # (set_inputs: the block's first channel with OBS_FULL)
 
@@ -422,9 +426,9 @@ def set_full_vocab(v: int) -> None:
 def set_obs_full(v: int) -> None:
     """--obs-full: the block at the features' end and the new entity kinds (obsfull.py); 0: the features as before. F
     and A_OBS follow (set_inputs with the inputs as they are)."""
-    global OBS_FULL, ACTIVE_F
+    global OBS_FULL, ACTIVE_F, OBS_FULL_SET
     full = ACTIVE_F == F  # (a run's --features left as all: all again)
-    OBS_FULL = int(v or 0)
+    OBS_FULL, OBS_FULL_SET = int(v or 0), True
     os.environ["WARCRAFTSIM_OBS_FULL"] = str(OBS_FULL)
     set_inputs(INPUTS)
     if full:
