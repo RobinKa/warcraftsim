@@ -44,6 +44,10 @@ def main() -> int:
     ap.add_argument("--gpu-split", type=int, default=0, help="selfplay --gpu-split: the loop's streams in a part of "
                                                             "the GPU of this many SMs")
     ap.add_argument("--past-period-ms", type=float, default=0.0, help="selfplay --infer-past-period-ms")
+    ap.add_argument("--rows", default="", help="selfplay --infer-rows (the current network's padded row counts)")
+    ap.add_argument("--precision", default="fp32", help="selfplay --infer-precision: the loop's calls in fp32, tf32 or "
+                                                        "bf16, checked against direct fp32 calls within --tol")
+    ap.add_argument("--tol", type=float, default=1e-3, help="the largest difference in value or entropy that passes")
     ap.add_argument("--setup", action="store_true", help="the run's input settings first (scripts/bench_view.setup: a "
                                                           "recent run needs them)")
     a = ap.parse_args()
@@ -65,7 +69,8 @@ def main() -> int:
     cfg = {"run_dir": str(tmp), "device": "cuda", "learner_pid": os.getpid(), "infer_batch": 64, "compile": True,
            "max_past": 32, "shared_rows": spec, "infer_fuse": 1, "infer_past_slots": 4, "infer_period": 0.004,
            "exploiter_share": 0, "infer_entities": [int(x) for x in a.entities.split(",")], "vocab": str(a.run / "vocab.json"),
-           "infer_past_period": a.past_period_ms / 1000.0,
+           "infer_past_period": a.past_period_ms / 1000.0, "infer_precision": a.precision,
+           **({"infer_rows": [int(x) for x in a.rows.split(",") if x]} if a.rows else {}),
            "infer_past_entities": [int(x) for x in a.past_entities.split(",")]}
     split = None
     if a.gpu_split:
@@ -80,6 +85,7 @@ def main() -> int:
     keys = ["current"] + past
     nets = {k: (net if k == "current" else load(k, device, vocab=ck["vocab"] if fx.NEUTRAL else None)[0].eval()) for k in keys}
     errors, counts, rng0 = [], {"calls": 0}, np.random.default_rng(0)
+    diffs: list[tuple[float, float]] = []  # (value, entropy) against the direct fp32 call
     lock = threading.Lock()
     slowest = [0.0]
 
@@ -99,7 +105,9 @@ def main() -> int:
             if check:
                 for key, got in zip(asked, answers):
                     want = direct._finish(direct._launch(nets[key], [st]))[0]
-                    bad = got is None or abs(got["value"] - want["value"]) > 1e-3 or abs(got["entropy"] - want["entropy"]) > 1e-3 \
+                    if got is not None:
+                        diffs.append((abs(got["value"] - want["value"]), abs(got["entropy"] - want["entropy"])))
+                    bad = got is None or abs(got["value"] - want["value"]) > a.tol or abs(got["entropy"] - want["entropy"]) > a.tol \
                         or got["version"] != (7 if key == "current" else -1)
                     if bad:
                         errors.append((key, None if got is None else (got["value"], got["entropy"], got["version"]),
@@ -113,6 +121,10 @@ def main() -> int:
     [t.start() for t in threads]
     [t.join() for t in threads]
     print(f"checked {counts['calls']} calls: {len(errors)} wrong" + (f", e.g. {errors[:3]}" if errors else ""), flush=True)
+    if diffs:
+        d = np.array(diffs)
+        print(f"against direct fp32 calls ({a.precision}): value difference mean {d[:, 0].mean():.1e} max {d[:, 0].max():.1e}, "
+              f"entropy mean {d[:, 1].mean():.1e} max {d[:, 1].max():.1e}", flush=True)
     # sampling: the same view step twice gives different orders (somewhere)
     st = dict(steps[0], h=None)
     o1, o2 = remote.request([("current", st)])[0], remote.request([("current", st)])[0]

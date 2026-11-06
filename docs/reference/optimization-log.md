@@ -728,6 +728,33 @@ Then `fgself-178` at 1,725 MHz +200: the learner died within the minute with `CU
 
 It is not a leak: the game's own part stays ~6.4 ms a step and only the wait for orders rises, and a run's rise levels off. `fgself-170` over 6 hours: 35 ms in its first half hour, ~38 from its second hour, up to 39 late; inference rounds 17 ms to ~20-21 ms; entities flat at ~40; training steps/s flat at ~4,400 (+-3%). The GPU is at 100% throughout, so a game step waits for its share of a saturated GPU, and the wait follows how much it has to serve. What grows is the past snapshots' traffic: 714 rows/s to ~900, in ~550 calls/s of ~700 (1.6 rows a call). `fgself-168` shows the same step: past calls 351/s to 570/s with rounds 13.8 ms to 18.9 ms. The first figures also read low because long games have not ended yet. `fgself-174`'s larger rise (rounds 17.6 to 27.9 ms in an hour) is not clean: it starts from fewer past games, and an agent's probes and browser tests were running beside it (load 40-58): re-read once they end. Possible gain, not built: past snapshots' inference on the box's CPU, where it has spare cores (80% of the GPU's calls for ~17% of its rows; `--infer-past-period-ms` batching them gave no net gain).
 
+### The inference calls' precision and padding (2026-11-05, opt-in, not yet measured on the GPU)
+
+Written beside a live run on the CPU (`scripts/infer_cpu_study.py`). With the GPU the limit, inference is ~2/3 of it, and its matrix multiplies run in **FP32**: the BF16 unlock never reached them (the gpu-unlock page had said otherwise). From fgself-182's calls (`infer_cpu_study.py flops`: FLOPs per call shape, weighted by `inference.jsonl`'s calls by rows and by widest row) and this GPU's rates at our layer shapes (fp32 ~18, tf32 ~40, bf16 ~80 TFLOPS), the inference calls' matmuls alone take ~250 ms of GPU a second, ~a quarter of it. 61% of the current network's calls pad to 64 rows (a call of 25-32 rows pays for 64). A call of 64 rows x 96 entities is 34 GFLOP: 1.9 ms in fp32, 0.85 in tf32, 0.43 in bf16.
+
+| setting | the current network's matmul FLOPs | inference matmuls, GPU-ms a second |
+|---|---|---|
+| today: fp32, rows 8,24,64, entities 32,48,64,96 | 3.9 TFLOP/s | ~250 |
+| `--infer-rows 8,16,24,32,48,64` | -26% | ~195 |
+| and `--infer-entities 32,48,64,80,96,112` | -33% | ~180 |
+| `--infer-precision tf32` (today's buckets) | | ~115 |
+| tf32 and both bucket changes | | ~80 |
+| `--infer-precision bf16` (today's buckets) | | ~55 |
+
+Matmuls only: the small kernels' latency (past snapshots' calls are ~1-2 rows) is not in it, so these are upper bounds on what each frees.
+
+* **`--infer-rows`** (default 8,24,64, as before): the rows the current network's calls pad to. A row's answer does not depend on the others (`tests/unit/test_infer_speed.py`: value, entropy and memory state the same with 0 to 27 rows beside it); only the sampling's noise is drawn for another shape. More graphs at the start (each row count x each entity count, compiled once, then from the inductor cache).
+* **`--infer-precision`** fp32 (default) / tf32 / bf16, both networks' calls. tf32 is set only while the inference calls are compiled and their graphs captured (`selfplay.matmul_precision`; a graph keeps its cuBLAS kernels), so the learner's own numbers stay as they were. What it changes, on 6,372 recorded steps of fgself-148 (`infer_cpu_study.py precision`; TF32 emulated by rounding every matmul's operands, bf16 by the CPU's autocast):
+
+| against fp32 | a unit's log-probability, mean / p99 / max | the order distribution's KL, mean | value, mean / max (values ~0.5) | most likely order the same |
+|---|---|---|---|---|
+| tf32 | 4.6e-5 / 1.3e-3 / 1.5e-2 | 2.6e-8 | 1.9e-4 / 9.8e-4 | 100% |
+| bf16 (also: the learner's `--bf16 1` evaluation against today's fp32 acting) | 8.0e-4 / 2.2e-2 / 0.25 | 1.1e-5 | 1.9e-3 / 1.3e-2 | 99.97% |
+
+The bf16 row is the gap PPO's ratio already carries between the actors' fp32 and the learner's bf16; tf32 adds about a twentieth of it, and moves the values by ~0.4% of the advantages' spread (adv/std ~0.044). bf16 doubles the ratio's rounding and moves the values by ~4% of it.
+
+Not built (the next ones): **the past snapshots' calls in one call per round.** They are ~520 of ~670 calls a second at 1.4 rows each, ~3.7 a round, each a chain of ~100 small kernels, so their cost is per call, not per row: the 2026-10-30 estimate put them near two thirds of the calls' GPU. The slots' weights stacked ([slots, ...]) and one graph per shape running every slot's rows through batched matmuls (`torch.func.vmap` over `functional_call`, the sampling's noise drawn outside it) would make a round's 3-4 past calls one. It needs the C++ loop to gather a round's past rows by slot into one input; the network's answers can be checked against today's on the CPU, the speed only on the GPU.
+
 ### Recording videos faster than real time (2026-11-01, the user's question)
 
 A 40-minute game took ~48 minutes on the main machine, and a quarter of the frames (`--speed 4`) saved nothing: the game side cost ~0.8 wall seconds per game second whatever the frame count. What paced it, all of it in the virtual sound card and in Python, none in the game's clock:
