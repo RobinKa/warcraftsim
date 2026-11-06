@@ -350,6 +350,7 @@ def play_and_render(r: dict, runs: Path, update) -> dict:
     fx.set_spells(int(cfg.get("spells", 0) or 0))
     fx.set_shop_items(int(cfg.get("shop_items", 0) or 0))
     fx.set_full_vocab(int(cfg.get("full_vocab", 0) or 0))
+    fx.set_obs_full(int(cfg.get("obs_full", 0) or 0))  # (--obs-full: the rows' width, its entity kinds)
     fx.set_fine(int(cfg.get("fine_points", 0) or 0))  # (--fine-points: the point indices)
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     fx.set_econ_masks(cfg.get("econ_masks", 0))
@@ -412,7 +413,8 @@ def play_and_render(r: dict, runs: Path, update) -> dict:
     setup = GameSetup(map=cfg["map"], slots=slots, step_seconds=cfg["step_seconds"],
                       max_game_seconds=q["minutes"] * 60, victory="decisive", window=(320, 240), draw=False,
                       wait_floor_ms=cfg["wait_floor_ms"], native_obs=cfg["native_obs"], d3d_thread=False,
-                      render_threads=0, cuts=cfg.get("game_cuts") or None)  # (niced: this process is)
+                      render_threads=0, cuts=cfg.get("game_cuts") or None,  # (niced: this process is)
+                      obs_full=bool(cfg.get("obs_full")))  # (--obs-full: the harness's events 101-109)
     jobs: list[tuple] = []
 
     class Rows:  # (play_one's out_q: the episode row only, no learner to send it to)

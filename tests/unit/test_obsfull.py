@@ -345,3 +345,20 @@ def test_obs_full_network_in_a_process_without_it(tmp_path):
     finally:
         fx.set_obs_full(0)
         fx.set_inputs(1)
+
+
+def test_every_game_a_network_plays_asks_the_harness_for_it():
+    """The games a run's networks play (training and evaluation: selfplay.game_loop; the dashboard's videos:
+    render_request; a person against the policy: versus) give the harness W3S_CFG_OBS_FULL as the network's features
+    have it: without it a network trained with --obs-full played with every unit's state, its buffs, the corpses and
+    the area spells empty (the harness writes no events 101-109), and render_request did not set the features' flag."""
+    import ast
+    import inspect
+
+    from warcraftsim.fullgame import render_request, selfplay, versus
+    for mod in (selfplay, render_request, versus):
+        calls = [c for c in ast.walk(ast.parse(inspect.getsource(mod))) if isinstance(c, ast.Call)
+                 and getattr(c.func, "id", getattr(c.func, "attr", None)) == "GameSetup"]
+        assert calls and all(any(k.arg == "obs_full" for k in c.keywords) for c in calls), mod.__name__
+    src = inspect.getsource(render_request.play_and_render)
+    assert "fx.set_obs_full(" in src and src.index("fx.set_obs_full(") < src.index("GameSetup(")
