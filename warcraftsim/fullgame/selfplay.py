@@ -3022,6 +3022,14 @@ EXPLOITER_PREFIXES = ("exploiter:", LX_PREFIX)  # (the main exploiter's snapshot
 # exploiters')
 
 
+def exploiter_launch_share(exploiter_share: float, league_exploiters: int, league_exploiter_share: float) -> float:
+    """The launches' share the exploiters take out of every other kind's (League.spec's `took`): the main exploiter's and
+    each league exploiter's. At 1 or more the agents' and the built-in AI's launches got 0 or a negative chance (_choose
+    then never drew the first kinds: --league-exploiters 4 --league-exploiter-share 0.25 with --exploiter-share 0.1)."""
+    return (exploiter_share if exploiter_share > 0 else 0.0) + (league_exploiter_share * league_exploiters
+                                                                if league_exploiters > 0 else 0.0)
+
+
 def kept_for_good(name: str) -> bool:
     """A league member the past snapshots' rotation (--max-past) never takes out: --league-add's ("fixed:"), and the
     exploiters' snapshots, the main exploiter's and the league exploiters' (among the learner's own, one every 40
@@ -3116,6 +3124,9 @@ class League:
         self.exploiter_life = 0  # (the version its current life began with: games of an earlier one count for none)
         self.lx = [LeagueExploiterRecord(i) for i in range(league_exploiters)]  # (--league-exploiters)
         self.lx_share = league_exploiter_share if league_exploiters > 0 else 0.0
+        if exploiter_launch_share(exploiter_share, league_exploiters, league_exploiter_share) >= 1.0:
+            raise ValueError("the exploiters' launch shares add up to 1 or more: spec()'s other launches would get none "
+                             "or a negative chance")
         self.shaping: float | None = None  # (--shaping-anneal: the shaping's weight now, in the spec)
         self.past_recent: deque = deque(maxlen=300)  # (the learner's newest results against past snapshots)
         # --win-balance: games between agents taxed by who is expected to win (balance.py; the races' balance until fitted)
@@ -5331,6 +5342,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--note", default="", help="the run's notes (notes.md); with --resume, why it was restarted (the "
                                                 "restart's marker on the dashboard's charts)")
     args = ap.parse_args(argv)
+    if exploiter_launch_share(args.exploiter_share, args.league_exploiters, args.league_exploiter_share) >= 1.0:
+        ap.error("--exploiter-share plus --league-exploiters x --league-exploiter-share must stay below 1 (the "
+                 "agents' and the built-in AI's launches get what is left)")
     if args.opd_share > 0 and args.opd_difficulty == "insane":
         ap.error("--opd-difficulty insane doubles the learner's income (agent_difficulty)")
     if "late" in args.scenarios.split(",") and not args.late_states:
