@@ -65,7 +65,7 @@ K_AGE = K_PROD + 3
 K_RADIUS = K_AGE + 1
 OBS_F = K_RADIUS + 1  # 70
 MAX_CORPSES, MAX_ITEMS, MAX_AREAS = 8, 6, 4  # (a fight leaves ~15-20 corpses in sight: the 8 nearest own units)
-CORPSE_SECONDS = 120.0  # (a corpse never reported gone: forgotten after this)
+CORPSE_SECONDS = 95.0  # (a corpse never reported gone: forgotten after this; they decay after ~92 s, scripts/obs_probe.py)
 CLASSES = ("stunned", "snared", "poisoned", "polymorphed", "sleeping", "ethereal", "magic immune", "plagued")
 # the area spells in progress a person sees on the ground (their AbilityData: Area1, Dur1 / HeroDur1, or waves DataA1
 # x Cast1); the channeled ones end with their caster's death
@@ -315,6 +315,15 @@ class State:
                     self._pace((t - got[0]) * step_seconds / got[1])
         for k in [k for k, v in self.corpses.items() if (t - v[4]) * step_seconds > CORPSE_SECONDS]:
             del self.corpses[k]
+        if self.corpses and len(rows):  # (a corpse's handle id a living unit's after its death's step: the corpse is
+            # gone, decayed or used, and the game gave its id to a new unit, or it was raised again; the harness's 107
+            # had never come for a removed corpse: a real game kept a ghoul's corpse 5 s after a farm took its id, 466 of
+            # 707 steps had such a pair, and the views' index took the unit's id to the corpse's row: AI labels on it)
+            alive = rows[(rows[:, fx.C_FLAGS] & fx.DEAD) == 0, fx.C_ID]
+            ids = np.fromiter(self.corpses, np.int64, len(self.corpses))
+            for k in ids[np.isin(ids, alive)].tolist():
+                if self.corpses[k][4] < t:
+                    del self.corpses[k]
         self.areas = [ar for ar in self.areas if ar[4] > t]
 
     def row(self, uid: int) -> np.ndarray | None:
@@ -453,8 +462,10 @@ def apply(view, rows: np.ndarray, events, t: int, sel: np.ndarray, n_own: int, f
         xy = np.array([[v[2], v[3]] for _, v in cs], np.float64)
         d = ((xy[:, None, :] - mine[None, :, :]) ** 2).sum(-1).min(1)
         cs = [cs[i] for i in np.argsort(d, kind="stable")[:MAX_CORPSES].tolist()]
-    for cid, (typ, owner, x, y, t0, _) in cs[:MAX_CORPSES]:
-        new.append((0, cid, typ, owner, x, y, {K_AGE: min((t - t0) * step_s / 90.0, 2.0)}))
+    for ci, (cid, (typ, owner, x, y, t0, _)) in enumerate(cs[:MAX_CORPSES]):  # (an id of its own, as the items' and
+        # areas': its unit's handle id goes to a new unit once the corpse is gone, and two rows with one id had the
+        # views' index take the unit's id to the corpse's row, which the target pointer masks)
+        new.append((0, -(3000 + ci), typ, owner, x, y, {K_AGE: min((t - t0) * step_s / 90.0, 2.0)}))
     gi = 0
     for g in getattr(view, "ground", ()) or ():
         if gi >= MAX_ITEMS:

@@ -67,7 +67,9 @@ globals
     group w3s_group = null
     group w3s_all = null
     group w3s_corpses = null  // (W3S_CFG_OBS_FULL) the dead units whose corpses lie (W3S_CorpseAdd)
-    hashtable w3s_cht = null  // (and each corpse's last visibility bits)
+    hashtable w3s_cht = null  // (and each corpse's last visibility bits, key 0, and the step ForGroup last met it + 1, key 1)
+    integer array w3s_cids  // (and their handle ids, w3s_ncids of them: W3S_CorpseSweep finds those ForGroup no longer meets)
+    integer w3s_ncids = 0
     boolean w3s_cextras = false  // (and the shim writes the units' extras with its records: shim/units.c unit_extras)
     boolean w3s_configured = false
     boolean w3s_prune = false
@@ -2498,6 +2500,7 @@ function W3S_MeleeReset takes nothing returns nothing
         call GroupClear(w3s_corpses)
         call FlushParentHashtable(w3s_cht)
         set w3s_cht = InitHashtable()
+        set w3s_ncids = 0
     endif
     if W3S_CFG_PAIRS > 1 then
         call W3S_PairClear()
@@ -2748,13 +2751,19 @@ endfunction
 // (W3S_CFG_OBS_FULL) a corpse: a dead unit (not a hero, a building, a summon or an image) lies until it decays (~90 s)
 // or is used (raise dead, cannibalize, a meat wagon), and the harness's own pass drops it at its death. Event 106 (the
 // unit, its x and y) at its death; then each step W3S_CorpseEnum: 108 (the unit, the seers that see its place, as the
-// units' visibility bits) when that changed, 107 (the unit) when it is gone
+// units' visibility bits) when that changed, 107 (the unit) when it is gone: alive again, hidden, or (W3S_CorpseSweep) no
+// longer met by ForGroup, which skips a removed unit (a corpse decayed or used: no 107 had ever come, the corpses stayed
+// in the observation for obsfull.CORPSE_SECONDS and their handle ids went to new units meanwhile)
 function W3S_CorpseAdd takes unit u returns nothing
     if IsUnitType(u, UNIT_TYPE_HERO) or IsUnitType(u, UNIT_TYPE_STRUCTURE) or IsUnitType(u, UNIT_TYPE_SUMMONED) or IsUnitIllusion(u) then
         return
     endif
     call GroupAddUnit(w3s_corpses, u)
     call SaveInteger(w3s_cht, GetHandleId(u), 0, -1)
+    if w3s_ncids < 8000 then
+        set w3s_cids[w3s_ncids] = GetHandleId(u)
+        set w3s_ncids = w3s_ncids + 1
+    endif
     call W3S_Ev(106, GetHandleId(u), R2I(GetUnitX(u)), R2I(GetUnitY(u)))
 endfunction
 
@@ -2772,6 +2781,7 @@ function W3S_CorpseEnum takes nothing returns nothing
         set u = null
         return
     endif
+    call SaveInteger(w3s_cht, hid, 1, w3s_seq + 1)  // (met this step: W3S_CorpseSweep)
     set x = GetUnitX(u)
     set y = GetUnitY(u)
     loop
@@ -2788,6 +2798,26 @@ function W3S_CorpseEnum takes nothing returns nothing
     set u = null
 endfunction
 
+// (after W3S_CorpseEnum's pass) the corpses it did not meet this step: removed from the game, 107 each
+function W3S_CorpseSweep takes nothing returns nothing
+    local integer i = 0
+    local integer hid
+    loop
+        exitwhen i >= w3s_ncids
+        set hid = w3s_cids[i]
+        if HaveSavedInteger(w3s_cht, hid, 0) and LoadInteger(w3s_cht, hid, 1) == w3s_seq + 1 then
+            set i = i + 1
+        else
+            if HaveSavedInteger(w3s_cht, hid, 0) then  // (not 107 already: W3S_CorpseEnum's flush)
+                call FlushChildHashtable(w3s_cht, hid)
+                call W3S_Ev(107, hid, 0, 0)
+            endif
+            set w3s_ncids = w3s_ncids - 1
+            set w3s_cids[i] = w3s_cids[w3s_ncids]
+        endif
+    endloop
+endfunction
+
 function W3S_Step takes nothing returns nothing
     if w3s_first then
         call W3S_CSerInit()
@@ -2802,6 +2832,7 @@ function W3S_Step takes nothing returns nothing
     call W3S_CheckResult()
     if W3S_CFG_OBS_FULL then
         call ForGroup(w3s_corpses, function W3S_CorpseEnum)
+        call W3S_CorpseSweep()
     endif
     call W3S_WriteObs()
     set w3s_first = false

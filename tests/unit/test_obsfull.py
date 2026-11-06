@@ -212,3 +212,46 @@ def test_identity_fgself182():
         fx.set_macros(0)
         fx.set_spells(0)
         fx.set_shop_items(0)
+
+
+def test_corpse_rows_never_take_a_units_id(obs_on):
+    """A corpse's row has an id of its own (as the items' and areas'), and a corpse whose handle id a living unit has
+    after its death's step is gone: the game gives a removed corpse's id to a new unit (a real game: a farm took a
+    ghoul's id 5 s after its death, while the corpse was still kept), and two rows with one id had the view's index take
+    the unit's id to the corpse's row, which the target pointer masks (the AI's labels, the paid orders, the last
+    orders' targets)."""
+    from warcraftsim.fullgame import obsfull as of
+    enc = fx.Encoder(VOCAB)
+    view = enc.view(0, 1.0, [0, 1])
+    foot, grunt = _row(1, "hfoo", 0, -4000, 2900), _row(4, "ogru", 1, -3800, 2900)
+    ev = [(4, 1, 6, 1, code("ugho")), (4, of.EV_CORPSE, 6, -3900, 2950), (4, of.EV_CORPSE_SEEN, 6, 1, 0)]
+    st = view.step(np.stack([foot, grunt]), None, np.asarray(ev, np.int64), 4)
+    A, sel = fx.A_OBS, st["sel"]
+    corpse = int(np.flatnonzero(st["ent"][:, A] > 0.5)[0])
+    assert sel[corpse, fx.C_ID] < 0 and 6 not in st["index"]  # (its row: an id no unit has)
+    assert sel[corpse, fx.C_TYPE] == code("ugho")  # (its type still its unit's)
+    # the corpse used (raise dead, a meat wagon): the harness's 107 lost, and a new unit of the enemy's takes id 6
+    bar = _row(6, "obar", 1, -3700, 2900, flags=fx.STRUCTURE)
+    st = view.step(np.stack([foot, grunt, bar]), None, np.zeros((0, 5), np.int64), 10)
+    assert (st["ent"][:, A] < 0.5).all() and 6 not in view.obs.corpses  # (the corpse gone)
+    k = st["index"][6]
+    assert st["sel"][k, fx.C_TYPE] == code("obar") and st["ent"][k, A:A + 3].sum() == 0
+    # an AI order on the new unit: its label points at the unit's row, one the target pointer takes
+    y, _ = enc.step_labels(view, st, np.asarray([(10, 1, 851983, 2, 0, 0, 6)], np.int64), None,
+                           np.zeros((0, 5), np.int64), {})
+    assert y["y_order"][0] > 0 and y["y_ptr"][0] == k
+
+
+def test_corpse_forgotten_after_its_decay(obs_on):
+    from warcraftsim.fullgame import obsfull as of
+    enc = fx.Encoder(VOCAB)
+    view = enc.view(0, 1.0, [0, 1])
+    rows = np.stack([_row(1, "hfoo", 0, -4000, 2900)])
+    ev = [(0, 1, 6, 4, code("ugho")), (0, of.EV_CORPSE, 6, -3900, 2950), (0, of.EV_CORPSE_SEEN, 6, 1, 0)]
+    view.step(rows, None, np.asarray(ev, np.int64), 0)
+    view.step(rows, None, np.zeros((0, 5), np.int64), int(90 / 0.5))
+    assert 6 in view.obs.corpses  # (90 s: it lies yet)
+    st = view.step(rows, None, np.zeros((0, 5), np.int64), int(of.CORPSE_SECONDS / 0.5) + 1)
+    assert 6 not in view.obs.corpses and (st["ent"][:, fx.A_OBS] < 0.5).all()  # (decayed by ~92 s: never a 107)
+    assert of.CORPSE_SECONDS < 100
+
