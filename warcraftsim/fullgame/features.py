@@ -398,6 +398,17 @@ def set_shop_items(v: int) -> None:
     os.environ["WARCRAFTSIM_SHOP_ITEMS"] = str(SHOP_ITEMS)
 
 
+# selfplay --full-vocab: every order a player can give (fullgame/fullvocab.py: the units, abilities, morphs, toggles, items
+# and neutral wares the demonstrations never gave), after --shop-items' in every network's vocabulary
+FULL_VOCAB = int(os.environ.get("WARCRAFTSIM_FULL_VOCAB", "0") or 0)
+
+
+def set_full_vocab(v: int) -> None:
+    global FULL_VOCAB
+    FULL_VOCAB = int(v)
+    os.environ["WARCRAFTSIM_FULL_VOCAB"] = str(FULL_VOCAB)
+
+
 def set_masks(tech: bool, valid: bool) -> None:
     global TECH_MASK, VALID_MASK
     TECH_MASK, VALID_MASK = bool(tech), bool(valid)
@@ -1254,6 +1265,12 @@ class TechMask:
             shops = _mod("shopitems")
             self.shop_items = {c for c, code in self.items if c in self.wares and code in shops.ITEM_NAMES}
             self.sold = shops.sold
+        self.full_needs = None  # (--full-vocab: its new orders' research or building, fullvocab.tech_needs; the goblin
+        if vocab.get("full_vocab"):  # laboratory's units in stock from their stockStart)
+            fv = _mod("fullvocab")
+            self.full_needs = fv.tech_needs(vocab, race)
+            if self.wares:
+                self.stock = {**self.stock, **fv.lab_stock()}
         self.n = len(vocab["orders"]) + 1
         self._key: tuple | None = None
         self._ok = np.ones(self.n, bool)
@@ -1309,6 +1326,11 @@ class TechMask:
                          and (code not in UNIT_RESEARCH or levels.get(UNIT_RESEARCH[code], 0) > 0))
         for c, (r, a) in self.abilities:  # (at its level: inner fire, polymorph, bloodlust need level 2; audit 11)
             ok[c] = levels.get(r, 0) >= a
+        if self.full_needs:  # (--full-vocab: a research at its level, a building finished; "-": another race's shop; "!":
+            for c, needs in self.full_needs.items():  # not that research: the workshop's siege engine before the barrage)
+                if c < self.n and ok[c]:
+                    ok[c] = all(levels.get(r[1:], 0) < a if r[:1] == "!" else levels.get(r, 0) >= a if r[:1] == "R"
+                                else r in have for r, a in needs)
         self._key, self._ok = key, ok
         return ok
 
@@ -1887,6 +1909,11 @@ class View:
             self.futile(rows, avail, t)
         if avail is not None and SHOP_ITEMS:  # (--shop-items: a slot's use only in a form an item held there takes)
             self.item_slots(rows, avail)
+        if avail is not None and FULL_VOCAB and enc.vocab.get("full_vocab"):  # (--full-vocab: its orders only while a
+            checks = enc.__dict__.get("full_checks")  # unit of the player's can give them: mana, cooldown, a partner,
+            if checks is None:  # an item, a shop, the goblin laboratory; fullvocab.Checks)
+                checks = enc.full_checks = _mod("fullvocab").Checks(enc.vocab)
+            checks.mask(self, rows, avail, t)
         if avail is not None and enc.expand_class is not None:  # (--macros: expand, while the natural is free and
             site = _mod("macros").site                            # its hall affordable; night elves' tree of life
             race = RACES[self.races[player]]                      # entangles its mine, play.BCAgent._entangle)

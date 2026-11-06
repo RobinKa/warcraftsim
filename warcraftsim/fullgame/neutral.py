@@ -20,6 +20,7 @@ SHOPS = (TAVERN, MERCHANT, CAMP, MARKET)
 TAVERN_HEROES = ("Nalc", "Ntin", "Nfir", "Nngs", "Nbrn", "Npbm", "Nplh", "Nbst")
 MERCENARIES = ("nftb", "nfsp", "nogm", "ngrk")
 MERCHANT_ITEMS = ("stwp", "bspd", "dust", "tret", "prvt", "cnob", "stel", "pnvl", "shea", "spro", "pinv")
+LAB, LAB_UNITS = "ngad", ("ngsp", "nzep", "ngir")  # (the goblin laboratory's: a vocabulary has them with --full-vocab only)
 # the game's order ids of the tavern heroes' spells (a game's order table, 2026-10-20)
 SPELL_IDS = {"acidbomb": 852662, "blackarrow": 852577, "blackarrowoff": 852579, "blackarrowon": 852578,
              "breathoffire": 852580, "charm": 852581, "chemicalrage": 852663, "clusterrockets": 852652,
@@ -207,22 +208,26 @@ def is_ware(oid: int) -> bool:
     """A neutral building's ware (a tavern hero, a mercenary, a goblin merchant's item), or a race shop's item (a
     vocabulary has those with --shop-items only): bought (protocol.Buy)."""
     from .shopitems import ITEM_NAMES
-    return int(oid).to_bytes(4, "big").decode("latin-1") in {*TAVERN_HEROES, *MERCENARIES, *MERCHANT_ITEMS, *ITEM_NAMES}
+    return int(oid).to_bytes(4, "big").decode("latin-1") in {*TAVERN_HEROES, *MERCENARIES, *MERCHANT_ITEMS, *ITEM_NAMES,
+                                                             *LAB_UNITS}
+
+
+def seller(code: str) -> str:
+    """The neutral building that sells a ware: a tavern its heroes, a camp its mercenaries, the goblin laboratory its
+    units, the goblin merchant its items."""
+    return TAVERN if code in TAVERN_HEROES else CAMP if code in MERCENARIES else LAB if code in LAB_UNITS else MERCHANT
 
 
 def sells(type_id: int, ware: int) -> bool:
     """Whether a building of `type_id` sells `ware` (a tavern its heroes, a camp its mercenaries, the merchant its items)."""
-    code = int(ware).to_bytes(4, "big").decode("latin-1")
-    kind = TAVERN if code in TAVERN_HEROES else CAMP if code in MERCENARIES else MERCHANT
-    return int(type_id) == fourcc(kind)
+    return int(type_id) == fourcc(seller(int(ware).to_bytes(4, "big").decode("latin-1")))
 
 
 def nearest_shop(sel, ware: int, unit):
     """The row of the building in view nearest `unit` that sells `ware` (a tavern its heroes, a camp its
     mercenaries, the goblin merchant its items), or None."""
     from . import features as fx
-    code = int(ware).to_bytes(4, "big").decode("latin-1")
-    kind = TAVERN if code in TAVERN_HEROES else CAMP if code in MERCENARIES else MERCHANT
+    kind = seller(int(ware).to_bytes(4, "big").decode("latin-1"))
     shops = sel[sel[:, fx.C_TYPE] == fourcc(kind)]
     if not len(shops):
         return None

@@ -486,6 +486,9 @@ class Op(IntEnum):
     ITEM = 7
     BUY = 8
     PICK_UP = 9
+    DROP_ITEM = 10
+    PICK_UP_AT = 11
+    NEUTRAL_POINT = 12
     REMOVE_UNIT = 74
     SET_MINE_GOLD = 75
     SET_RESEARCH = 76
@@ -625,6 +628,48 @@ class PickUp(Command):
 
     def encode(self) -> list[int]:
         return [Op.PICK_UP, self.unit, int(self.radius)]
+
+
+@dataclass(frozen=True)
+class DropItem(Command):
+    """The unit `unit` lets go of the item in its inventory slot `slot` (0-5): on the ground at (x, y) without a `target`
+    (UnitDropItemPoint), else to the unit `target` (UnitDropItemTarget: to a unit of the player's it gives the item, to a
+    shop that buys items it sells it)."""
+    unit: int
+    slot: int
+    x: float = 0.0
+    y: float = 0.0
+    target: int = 0
+
+    def encode(self) -> list[int]:
+        return [Op.DROP_ITEM, self.unit, int(self.slot), _coord(self.x), _coord(self.y), int(self.target)]
+
+
+@dataclass(frozen=True)
+class PickUpAt(Command):
+    """The hero `unit` picks up the item lying nearest (x, y) within `radius` that its player sees (a powerup, or with a
+    free slot in its inventory): a right-click on it."""
+    unit: int
+    x: float
+    y: float
+    radius: int
+
+    def encode(self) -> list[int]:
+        return [Op.PICK_UP_AT, self.unit, _coord(self.x), _coord(self.y), int(self.radius)]
+
+
+@dataclass(frozen=True)
+class NeutralPointOrder(Command):
+    """A neutral building's ability used by `unit`'s player at a point (IssueNeutralPointOrderById: the goblin laboratory's
+    reveal) while `unit` is within its reach, else `unit` walks to it (the order given again later)."""
+    unit: int
+    building: int
+    order: int
+    x: float
+    y: float
+
+    def encode(self) -> list[int]:
+        return [Op.NEUTRAL_POINT, self.unit, self.building, self.order, _coord(self.x), _coord(self.y)]
 
 
 @dataclass(frozen=True)
@@ -920,7 +965,8 @@ def encode_commands(commands: Iterable[Command]) -> list[int]:
 
 
 _OP_LENGTHS = {Op.POINT: 5, Op.TARGET: 4, Op.IMMEDIATE: 3, Op.BUILD: 5, Op.LEARN: 3, Op.TARGET_DESTRUCTABLE: 4,
-               Op.ITEM: 7, Op.BUY: 4, Op.PICK_UP: 3, Op.REMOVE_UNIT: 2, Op.SET_MINE_GOLD: 3, Op.SET_RESEARCH: 4, Op.PLACE: 9,
+               Op.ITEM: 7, Op.BUY: 4, Op.PICK_UP: 3, Op.DROP_ITEM: 6, Op.PICK_UP_AT: 5, Op.NEUTRAL_POINT: 6,
+               Op.REMOVE_UNIT: 2, Op.SET_MINE_GOLD: 3, Op.SET_RESEARCH: 4, Op.PLACE: 9,
                Op.PLACED: 3, Op.VIS_CLEAR: 1, Op.VIS_MARK: 6, Op.VIS_LINE: 9, Op.VIS_AREA: 5, Op.CAMERA_ZOOM: 2,
                Op.SET_RESOURCES: 4, Op.TAKE_RESOURCES: 4, Op.SPAWN: 5, Op.SPAWN_HERO: 6, Op.CLEAR_CREEPS: 4, Op.QUEUE_SPAWN: 8, Op.QUEUE_SKILL: 2, Op.START_AI: 2, Op.SHADOW_AI: 2, Op.CAMERA: 3,
                Op.END_GAME: 1, Op.SNAPSHOT: 1, Op.RESTART: 1}

@@ -217,6 +217,7 @@ class PolicyMatch:
         fx.set_macros(int(cfg.get("macros", 0) or 0))
         fx.set_spells(int(cfg.get("spells", 0) or 0))
         fx.set_shop_items(int(cfg.get("shop_items", 0) or 0))
+        fx.set_full_vocab(int(cfg.get("full_vocab", 0) or 0))
         from warcraftsim.data.mapbuild import stock_map_path
         fx.set_geometry(*fx.map_geometry(stock_map_path(cfg["map"])))
         ck = torch.load(checkpoint, map_location="cpu", weights_only=False)

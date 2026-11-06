@@ -120,7 +120,7 @@ SETTINGS = ("map", "handicap", "step_seconds", "max_minutes", "wait_floor_ms", "
             "eval_z", "z_pool", "z_src", "z_enforce", "z_time_scale", "z_build", "eval_map", "eval_z_pool", "eval_vs", "eval_guide",
             "inputs", "tech_mask", "valid_mask", "z_modes", "neutral", "opsd_share", "opsd_coef", "macros", "z_mix",
             "macros_off", "eval_human", "z_comp", "z_forbid_mask")
-SETTINGS_SET = ("spells",)  # (settings added since: in the key only when set)
+SETTINGS_SET = ("spells", "full_vocab")  # (settings added since: in the key only when set)
 SETTINGS_NAMED = ("econ_masks", "fine_points", "z_workers", "z_shop")  # (the same, with their names: audit 12's)
 
 
