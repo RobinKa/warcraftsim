@@ -346,3 +346,53 @@ def test_morph_cost_paid_from_the_step_budget(game_tables):
     assert bot.commands(st, [1, 0, 3], [0] * 3, [0] * 3, [0] * 3) == [ImmediateOrder(3, ids["holdposition"])]
     bot.me = np.array([0, 0, 400, 100, 10, 30, 0])
     assert len(bot.commands(st, [1, 2, 0], [0] * 3, [0] * 3, [0] * 3)) == 2
+
+
+def _reference_mask(ch, view, rows, avail, t) -> None:
+    """Checks.mask's timed and toggle loops as merged (one np.isin per class): the faster mask must give the same."""
+    own = fx.own_alive(rows, view.player)
+    cooling, states = getattr(view, "cooling", {}), getattr(view, "autocast", {})
+    types = own[:, fx.C_TYPE]
+    for c, need in ch.timed.items():
+        if c >= len(avail) or not avail[c]:
+            continue
+        avail[c] = any(ch.unit_ok(c, r, t, cooling, states) for r in own[np.isin(types, list(need))])
+    for c, (ability, on, givers) in ch.toggle.items():
+        if c >= len(avail) or not avail[c] or c in ch.timed:
+            continue
+        avail[c] = any(ch.state(states, int(u), ability) != on for u in own[np.isin(types, list(givers)), fx.C_ID].tolist())
+
+
+def test_checks_mask_fast_path_is_the_same(game_tables):
+    """Checks.mask skips a class whose givers the player has none of (no np.isin per class: ~0.7 -> ~0.2 ms a side-step):
+    the same mask as the per-class loops on random sides of every race, cooldowns and autocast states."""
+    from warcraftsim.fullgame import fullvocab
+    _flags(1)
+    v = fullvocab.extend(VOCAB)
+    ch = fullvocab.Checks(v)
+    rng = np.random.default_rng(0)
+    pool = sorted({fullvocab.rawcode(g) for c in ch.timed for g in ch.timed[c]}
+                  | {fullvocab.rawcode(g) for c in ch.toggle for g in ch.toggle[c][2]} | {"hfoo", "hpea", "ogru", "ewsp"})
+    timed = sorted(ch.timed)
+
+    class View:
+        player, step_seconds, ground = 0, 0.5, ()
+
+    for trial in range(200):
+        view = View()
+        n = int(rng.integers(1, 30))
+        rows = np.stack([_row(i + 1, pool[int(rng.integers(len(pool)))], owner=int(rng.integers(2)),
+                              flags=fx.DEAD if rng.random() < 0.1 else 0, mana=(int(rng.integers(0, 400)), 400))
+                         for i in range(n)])
+        view.cooling = {(int(rng.integers(1, n + 1)), timed[int(rng.integers(len(timed)))]): int(rng.integers(0, 20))
+                        for _ in range(5)}
+        view.autocast = {(int(rng.integers(1, n + 1)), ch.toggle[int(c)][0]): bool(rng.integers(2))
+                         for c in rng.choice(sorted(ch.toggle), 6)}
+        start = rng.random(len(v["orders"]) + 1) < 0.8
+        t = int(rng.integers(0, 20))
+        a, b = start.copy(), start.copy()
+        ch.mask(view, rows, a, t)
+        _reference_mask(ch, view, rows, b, t)
+        later = set(ch.night) | set(ch.partner) | set(ch.item) | set(ch.lab) | {ch.pickup, ch.reveal}  # (the mask's later
+        cls = sorted((set(ch.timed) | set(ch.toggle)) - later)                                       # loops: not compared)
+        assert len(cls) > 30 and np.array_equal(a[cls], b[cls]), trial

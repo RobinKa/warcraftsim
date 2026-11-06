@@ -948,13 +948,22 @@ class Checks:
         cooling = getattr(view, "cooling", {})
         states = getattr(view, "autocast", {})
         types = own[:, fx.C_TYPE]
+        # (the unit types the player has: most classes are another race's, no giver of theirs here, and one np.isin per
+        # class had been ~0.7 ms a side-step, more than all the rest of the actor's Python per step)
+        present = set(types.tolist())
         for c, need in self.timed.items():
             if c >= len(avail) or not avail[c]:
+                continue
+            if present.isdisjoint(need):
+                avail[c] = False
                 continue
             rows_c = own[np.isin(types, list(need))]
             avail[c] = any(self.unit_ok(c, r, t, cooling, states) for r in rows_c)
         for c, (ability, on, givers) in self.toggle.items():  # (a toggle while a giver is in the other state)
             if c >= len(avail) or not avail[c] or c in self.timed:
+                continue
+            if present.isdisjoint(givers):
+                avail[c] = False
                 continue
             ids = own[np.isin(types, list(givers)), fx.C_ID].tolist()
             avail[c] = any(self.state(states, int(u), ability) != on for u in ids)
