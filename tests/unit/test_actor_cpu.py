@@ -172,10 +172,13 @@ def test_last_order_features_as_before():
             x, y = (float(rng.integers(-9000, 9000)), float(rng.integers(-9000, 9000))) if kind == 1 else (0.0, 0.0)
             view.last_order[u] = (kind, x, y, target if kind == 2 else 0, int(rng.integers(max(0, t - 80), t + 1)))
         f0 = rng.standard_normal((n, fx.A_LAST + 8)).astype(np.float32)
-        a, b = f0.copy(), f0.copy()
+        a, b, c = f0.copy(), f0.copy(), f0.copy()
         ref["last_loop"](view, a, sel, ids, n_own, t)
-        fx.View.last_features(view, b, sel, ids, n_own, t)
+        fx.View.last_features(view, b, sel, ids, n_own, t)  # (no records: the Python)
         assert np.array_equal(a.view(np.uint32), b.view(np.uint32)), trial
+        view.last_packed = {u: fx.LAST_PACK.pack(u, *v) for u, v in view.last_order.items()}  # (as note_orders keeps)
+        fx.View.last_features(view, c, sel, ids, n_own, t)  # (in C, when the library is there)
+        assert np.array_equal(a.view(np.uint32), c.view(np.uint32)), trial
 
 
 @pytest.fixture()

@@ -262,6 +262,12 @@ def replay_once(rec: dict, cfg: dict, vocab: dict, prof=None, count: bool = Fals
     views: list = []
     answers = Answers(copy.deepcopy(rec["answers"]), views if VIEWS else None)
     obs = g.start()
+    if os.environ.get("BENCH_GC") == "off":  # (the cyclic collector's share: BENCH_GC=off, or freeze as an actor may)
+        import gc
+        gc.disable()
+    elif os.environ.get("BENCH_GC") == "freeze":
+        import gc
+        gc.freeze()
     if count:
         PERF("enable")
     t0 = time.process_time()  # (this process's CPU: the machine is busy with a run, wall time is noisy)

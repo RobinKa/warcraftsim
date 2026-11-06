@@ -602,3 +602,57 @@ int w3f_to_f32(const uint16_t *src, float *dst, int n) {
     to_f32_vec(src, dst, n);
     return 1;
 }
+
+/* features.View.last_features with its arguments in one int64 array: sel (int64 [n][ncols]), n, ncols, n_own, f (float32
+ * [n][F]), F, a_last, the view's last orders (records of View.last_packed: unit id, kind, x, y, target id, the order's
+ * step t0; int64, int64, double, double, int64, int64), their count, t, sign, scale, age (the doubles' bits).
+ * f[k][a_last + 4] = 1 for every own row k; an own row's unit with a last order: its age (t - t0) / age (at most 1), the
+ * point it was sent to (kind 1) or its target's place (kind 2, the target among sel's rows: its last), relative to it (x
+ * mirrored by sign) / scale clipped to [-2, 2], and its kind's flag: View.step's numbers in double, stored as float
+ * (numpy's float64 into the float32 features). */
+typedef struct { int64_t id, kind; double x, y; int64_t target, t0; } LastOrder;
+
+void w3f_last_a(const int64_t *a) {
+    const int64_t *sel = (const int64_t *)a[0];
+    int n = (int)a[1], ncols = (int)a[2], n_own = (int)a[3];
+    float *f = (float *)a[4];
+    int F = (int)a[5], al = (int)a[6];
+    const char *recs = (const char *)a[7];
+    int m = (int)a[8];
+    int64_t t = a[9];
+    double sign, scale, age;
+    memcpy(&sign, &a[10], sizeof sign);
+    memcpy(&scale, &a[11], sizeof scale);
+    memcpy(&age, &a[12], sizeof age);
+    for (int k = 0; k < n_own; k++) {
+        float *fk = f + (size_t)k * F;
+        fk[al + 4] = 1.0f;
+        int64_t id = sel[(size_t)k * ncols + C_ID];
+        LastOrder v;
+        int found = 0;
+        for (int q = 0; q < m && !found; q++) {
+            memcpy(&v, recs + q * sizeof(LastOrder), sizeof v);
+            found = v.id == id;
+        }
+        if (!found) continue;
+        int kind = (int)v.kind;
+        double x = v.x, y = v.y;
+        double g = (double)(t - v.t0) / age;
+        fk[al + 4] = (float)(g < 1.0 ? g : 1.0);
+        int j = -1;
+        if (kind == 2)
+            for (int i = n - 1; i >= 0; i--)
+                if (sel[(size_t)i * ncols + C_ID] == v.target) { j = i; break; }
+        if (j >= 0) {
+            x = (double)sel[(size_t)j * ncols + C_X];
+            y = (double)sel[(size_t)j * ncols + C_Y];
+        }
+        if (kind == 1 || j >= 0) {
+            double vx = sign * (x - (double)sel[(size_t)k * ncols + C_X]) / scale;
+            double vy = (y - (double)sel[(size_t)k * ncols + C_Y]) / scale;
+            fk[al] = (float)(vx < -2.0 ? -2.0 : vx > 2.0 ? 2.0 : vx);
+            fk[al + 1] = (float)(vy < -2.0 ? -2.0 : vy > 2.0 ? 2.0 : vy);
+        }
+        if (kind) fk[al + 1 + kind] = 1.0f;
+    }
+}

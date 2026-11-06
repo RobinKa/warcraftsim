@@ -22,6 +22,7 @@ import bisect
 import json
 import os
 import math
+import struct
 from collections import Counter
 from pathlib import Path
 
@@ -288,21 +289,6 @@ def own_list(rows: np.ndarray, player: int) -> list:
     return out
 
 
-_ROW_TYPES: tuple = (None, None)  # (a step's rows, row_types of them)
-
-
-def row_types(rows: np.ndarray) -> frozenset:
-    """Every row's type (any owner, living or dead) as a set, once per rows object (Checks.mask's tests for a gold
-    mine, the goblin laboratory, a shop that buys: each a numpy pass over the rows before). Read only."""
-    global _ROW_TYPES
-    got = _ROW_TYPES
-    if got[0] is rows:
-        return got[1]
-    out = frozenset(rows[:, C_TYPE].tolist())
-    _ROW_TYPES = (rows, out)  # (a tuple replaced whole: an actor's game threads share it)
-    return out
-
-
 def _near_any(ux: float, uy: float, among: list, dd: float) -> bool:
     """View.chores' near for one unit: one of `among`'s (x, y) within sqrt(dd) of (ux, uy) (numpy's float64 arithmetic
     there: the squares as x * x, their sum, the comparison; the same doubles here)."""
@@ -378,6 +364,7 @@ A_POS = A_HPD + 1
 # group's units could not see that they head for one point (their point orders scattered, fgself-13)
 A_LAST = A_POS + 4 * len(POS_FREQS)
 LAST_SCALE, LAST_AGE = 1536.0, 40.0
+LAST_PACK = struct.Struct("<qqddqq")  # (View.last_packed's records: unit, kind, x, y, target, step)
 F_BASE = A_LAST + 5  # 55
 # inputs v2 (selfplay --inputs 2, 2026-10-20; a checkpoint from before gets zero weights for them, model.load): a
 # hero's state, as the harness reports it (protocol.Unit.abilities, items): per ability slot its level / 3, whether
@@ -1512,6 +1499,7 @@ class View:
         self.hp_last = (np.zeros(0, np.int64), np.zeros(0, np.int64))  # the units in view the last step (sorted ids)
         # and their hit points
         self.last_order: dict[int, tuple] = {}  # own unit -> (kind 0 none/1 point/2 unit, x, y, target, step)
+        self.last_packed: dict[int, bytes] = {}  # (the same, each as LAST_PACK's record: featnative.last_features)
         # inputs 2 and --tech-mask: what each own building makes now (its kind, A_PROD's, and code), research levels
         self.making: dict[int, tuple[int, int]] = {}
         self.dead_heroes: dict[int, int] = {}  # own dead heroes: type -> unit id (BCAgent revives them)
@@ -1558,9 +1546,11 @@ class View:
                 continue
             if kind == 2 and trees and int(target) in trees:  # (a tree: the point it stands on)
                 kind, (x, y) = 1, trees[int(target)]
-            self.last_order[int(unit)] = ((1, float(x), float(y), 0, t) if kind == 1 else
-                                          (2, 0.0, 0.0, int(target), t) if kind == 2 else (0, 0.0, 0.0, 0, t))
-            self.added(int(unit))
+            u = int(unit)
+            v = self.last_order[u] = ((1, float(x), float(y), 0, t) if kind == 1 else
+                                      (2, 0.0, 0.0, int(target), t) if kind == 2 else (0, 0.0, 0.0, 0, t))
+            self.last_packed[u] = LAST_PACK.pack(u, *v)
+            self.added(u)
 
     def record_orders(self, orders) -> None:
         """The player's orders of the last step (unit, order id, kind): train / research orders
@@ -1889,6 +1879,10 @@ class View:
         each one's last order (View.note_orders) relative to it, its kind and its age. In Python's floats, written
         a column at a time (a unit at a time with numpy's scalars and np.clip had been ~1M instructions a side-step at
         ~30 own units; the same double arithmetic, clipped alike, and the same float32 roundings)."""
+        packed = self.__dict__.get("last_packed")
+        if packed is not None and len(packed) == len(self.last_order) and _mod("featnative").last_features(
+                f, sel, n_own, packed, t, self.sign, A_LAST, LAST_SCALE, LAST_AGE, self):
+            return  # (in C: the same numbers)
         f[:n_own, A_LAST + 4] = 1.0  # (never ordered: long ago)
         get = self.last_order.get
         hits = [(k, lo) for k, lo in enumerate(map(get, ids[:n_own])) if lo is not None]
@@ -1962,11 +1956,11 @@ class View:
         if prev is not None and self.__dict__.get("_keys_safe"):
             gone = prev - units
             if gone:
-                for d in (self.assign, self.mine_of, self.last_order):
+                for d in (self.assign, self.mine_of, self.last_order, self.last_packed):
                     for k in gone:
                         d.pop(k, None)
         else:
-            for d in (self.assign, self.mine_of, self.last_order):
+            for d in (self.assign, self.mine_of, self.last_order, self.last_packed):
                 for k in d.keys() - units:
                     del d[k]
         self._units_prev, self._keys_safe = units, True
