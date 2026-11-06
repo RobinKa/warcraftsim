@@ -29,8 +29,10 @@ def _order_temp_default(state, prefix, *_):
     state.setdefault(prefix + "order_temp", torch.tensor(1.0))
 
 
+VALID_BITS = 20  # (unit_valid's bits: what herodata.order_needs can ask of a unit, 0..19)
+
+
 class FullGameNet(nn.Module):
-    valid_bits = 19  # (unit_valid's bits; set_valid: more when valid_need asks for them)
 
     def __init__(self, n_types: int, n_cur: int, n_orders: int, G: int, d: int = 192, heads: int = 4,
                  layers: int = 3, dropout: float = 0.0, memory: bool = False, target_temperature: float = 1.0,
@@ -141,20 +143,24 @@ class FullGameNet(nn.Module):
         self.valid_need.copy_(need)
         self.valid_cols, self.valid_need = self.valid_cols.to(dev), self.valid_need.to(dev)
         self.config["valid"] = need.shape[1]
-        self.valid_bits = max(19, int(need.max()) + 1)  # (20: --shop-items' free inventory slot too)
+        if int(need.max()) >= VALID_BITS:
+            raise ValueError(f"an order needs bit {int(need.max())}: unit_valid has {VALID_BITS}")
 
     def unit_valid(self, ent, typ):
         """[N, O, K] bool: whether each of the first O units can carry out each of the order classes that need
         something of it (valid_cols): the bits its A_HERO features give (ready per ability slot, learned, a skill
-        point it may spend there, a usable item per inventory slot)."""
+        point it may spend there, a usable item per inventory slot, not hidden, a free inventory slot).
+        Every bit, whatever the network's valid_need asks: the free slot's had been checked only by a network that ran
+        set_valid itself (an instance attribute), and the actors' networks are built from a published config and
+        state dict (selfplay.Nets, PastNet), so they let a hero with six items buy a race-shop item the learner's
+        network masks: its log-probability there -1e9, the update's approximate KL ~1e3-1e5 (fgself-179 on)."""
         h, af, it = fx.A_HERO, fx.HERO_ABIL_F, fx.A_HERO + 4 * fx.HERO_ABIL_F
         e = ent[:, :typ.shape[1]] if ent.shape[1] > typ.shape[1] else ent
         hidden = 9 + fx.FLAG_BITS.index(16)  # (UnitFlags.HIDDEN: a worker inside a gold mine)
         bits = torch.cat([e[..., h + 1:h + 4 * af:af] > 0.5, e[..., h:h + 4 * af:af] > 0.1,
                           e[..., h + 3:h + 4 * af:af] > 0.5, e[..., it + 1:it + 6 * fx.HERO_ITEM_F:fx.HERO_ITEM_F] > 0.5,
-                          e[..., hidden:hidden + 1] < 0.5], -1)
-        if self.valid_bits > 19:
-            bits = torch.cat([bits, (e[..., it:it + 6 * fx.HERO_ITEM_F:fx.HERO_ITEM_F] < 0.5).any(-1, keepdim=True)], -1)
+                          e[..., hidden:hidden + 1] < 0.5,
+                          (e[..., it:it + 6 * fx.HERO_ITEM_F:fx.HERO_ITEM_F] < 0.5).any(-1, keepdim=True)], -1)
         need = self.valid_need[typ.long()]
         ok = torch.ones(need.shape, dtype=torch.bool, device=need.device)
         for j in range(bits.shape[-1]):

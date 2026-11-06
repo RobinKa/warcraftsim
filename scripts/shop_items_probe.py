@@ -563,7 +563,7 @@ def play(a) -> int:
     net, got = load(ck, "cpu")
     vocab = got["vocab"]
     print(f"{ck}: orders {orders0} -> {len(vocab['orders'])}, types {types0} -> {len(vocab['types'])}, allowed {tuple(allowed0)} -> "
-          f"{tuple(net.allowed.shape)}, valid_bits {net.valid_bits}, shop_items {vocab.get('shop_items')}, old orders' biases the same: "
+          f"{tuple(net.allowed.shape)}, free-slot needs {int((net.valid_need == 19).sum())}, shop_items {vocab.get('shop_items')}, old orders' biases the same: "
           f"{bool(torch.equal(head0, net.order[2].bias[:len(head0)]))}", flush=True)
     if a.bias > 0:  # (to see the policy's own orders in a short game: the new rows far less rare than a run starts them)
         with torch.no_grad():
