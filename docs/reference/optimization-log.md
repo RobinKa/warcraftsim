@@ -903,3 +903,5 @@ To check in the run (a fork with only the code changed, against `fgself-196`'s l
 
 Not done: the remaining masks in C (`econ_allowed`, `chores`, `futile`'s items, `Checks.mask`: ~600k a side-step, `own_list`'s ~100k of Python numbers among them), the policy's commands (~130-250k), View.step's and play_one's own lines (~250k each), the ctypes wrappers (~40k each).
 
+
+**The actors' per-step Python cut (`fgself-196` restarted 20:20 on d22f6f5; outputs bit-identical):** 20:26-20:42, **5,638 agent steps/s (median update SPS 6,125)** against ~5,000-5,380 before; the learner's wait for data 0.30 → 0.19 s; actors 8.2 → 7.5 cores (less than the 6 estimated), games 16.6-16.8 cores, the machine still ~96% busy. The games' CPU on the main machine stays the cap.
