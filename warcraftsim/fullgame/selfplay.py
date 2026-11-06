@@ -2439,9 +2439,10 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             for s in zs:
                 made[s].update(scenarios.base2_made(zs[s]))
     # --late-capture: this share of the training games give their state at a game minute drawn in --late-minutes (late.py;
-    # not a late start's: the research it set up gave no events; not a two-base start's: the pool stays games' own)
+    # not a late start's: the research it set up gave no events; not a two-base start's: the pool stays games' own; not a
+    # dry start's: its dried mains would carry into late starts unlabelled, the dry share no longer --scenarios')
     capture_at = (random.uniform(*cfg.get("late_minutes", late_game.MINUTES)[:2]) * 60.0
-                  if cfg.get("late_capture", 0.0) > 0 and train and replay is None and scenario not in ("late", "base2")
+                  if cfg.get("late_capture", 0.0) > 0 and train and replay is None and scenario not in ("late", "base2", "dry")
                   and opp.get("kind") != "lexploit"  # (the learner's games' states only)
                   and random.random() < cfg.get("late_capture", 0.0) else None)
     research_seen = {0: {}, 1: {}}  # (each side's research levels, from the game's events: the capture's)
