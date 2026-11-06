@@ -22,6 +22,10 @@ import numpy as np
 from . import features as fx
 
 
+UNSCALED_WARES = ("ngsp", "nzep", "ngir")  # (neutral.LAB_UNITS: sold at the game's price on every map, duelmap's rules
+# scaling only the races' units and NEUTRAL_SOLD)
+
+
 def _num(row: dict, key: str) -> int:
     try:
         return int(float(row.get(key) or 0))
@@ -52,8 +56,11 @@ def order_costs(vocab: dict, map_name: str = "duelrush") -> np.ndarray:
         code = fx.rawcode(oid)
         if kind == fx.UNIT:  # (bought at a neutral building, protocol.Buy: a tavern's hero, a mercenary, an item; or
             if code in units:  # built on a unit: a haunted gold mine) a unit's scaled as the map's tables (duelmap:
-                r = units[code]  # NEUTRAL_SOLD), an item's not
-                out[c] = (scaled(_num(r, "goldcost")), scaled(_num(r, "lumbercost")), _num(r, "fused"))
+                r = units[code]  # NEUTRAL_SOLD), an item's not; nor the goblin laboratory's units (--full-vocab): race
+                # "creeps", which duelmap.rules_files leaves at the game's price (a zeppelin 240 gold on echofast2-like
+                # maps, not the 120 the mask had kept for it)
+                f = (lambda v: v) if code in UNSCALED_WARES else scaled
+                out[c] = (f(_num(r, "goldcost")), f(_num(r, "lumbercost")), _num(r, "fused"))
             elif code in items:
                 out[c] = (_num(items[code], "goldcost"), _num(items[code], "lumbercost"), 0)
             continue

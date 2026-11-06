@@ -287,3 +287,112 @@ def test_actor_network_masks_as_the_learner(game_tables, tmp_path):
     ent = torch.rand(3, 8, fx.ENT_F if hasattr(fx, "ENT_F") else net.ent.in_features)
     typ = torch.randint(0, n_types, (3, 8))
     assert torch.equal(actor.unit_valid(ent, typ), net.unit_valid(ent, typ))
+
+
+def test_lab_units_cost_the_games_price(game_tables):
+    """order_costs scales a ware's price only where the map's rules do (duelmap.rules_files: the races' units and
+    NEUTRAL_SOLD): the goblin laboratory's units (race "creeps") at the game's price on echofast2, its mercenaries and tavern
+    heroes halved as before."""
+    from warcraftsim.data import duelmap
+    from warcraftsim.data.mpq import GameArchives
+    from warcraftsim.data.objects import parse_slk
+    from warcraftsim.fullgame import fullvocab
+    from warcraftsim.fullgame.costs import order_costs
+    _flags(1)
+    v = fullvocab.extend(VOCAB)
+    with GameArchives() as g:
+        ud = {r.get("unitID"): r for r in parse_slk(g.read("Units\\UnitData.slk").decode("latin-1"))}
+        ub = {r.get("unitBalanceID"): r for r in parse_slk(g.read("Units\\UnitBalance.slk").decode("latin-1"))}
+        campaign = {r.get("unitUIID") for r in parse_slk(g.read("Units\\UnitUI.slk").decode("latin-1"))
+                    if r.get("campaign") == "1"}
+    creeps = {t for camp in (duelmap.KOBOLDS, duelmap.OGRES, duelmap.GNOLLS) for t in camp}
+    used = {u for u, r in ud.items() if r.get("race") in {"human", "orc", "undead", "nightelf", "other"} and u not in campaign}
+    used |= creeps | set(duelmap.ECHO_CREEPS) | set(duelmap.NEUTRAL_SOLD) | {"ngol", "ninf"}  # (rules_files' `used`)
+    full, half = order_costs(v, "(2)EchoIsles"), order_costs(v, "echofast2")
+    seen = set()
+    for c, (o, k) in enumerate(v["orders"], start=1):
+        name = fullvocab.rawcode(o) if o >= fx.TYPE_CODE else ""
+        if k != fx.UNIT or name not in ub or not full[c, 0]:
+            continue
+        seen.add(name)
+        want = full[c, :2].tolist() if name not in used else [max(1, round(x * 0.5)) if x > 0 else 0 for x in full[c, :2]]
+        assert half[c, :2].tolist() == want, name
+    assert {"ngsp", "nzep", "ngir"} <= seen
+    zep = v["orders"].index([fullvocab.code("nzep"), fx.UNIT]) + 1
+    assert half[zep, 0] == int(ub["nzep"]["goldcost"]) == 240
+
+
+def test_morph_cost_paid_from_the_step_budget(game_tables):
+    """A destroyer form (fullvocab.MORPH_COSTS: the game takes the units' difference) is paid from the step's budget as a
+    train order is: with money for one, the step's footman after it is not sent (it had been, and the game refused one)."""
+    from warcraftsim.fullgame import fullvocab
+    from warcraftsim.fullgame.play import BCAgent
+    from warcraftsim.protocol import ImmediateOrder
+    ids = fullvocab.order_ids()
+    v = {**VOCAB, "types": VOCAB["types"] + [code("uobs")],
+         "orders": [[ids["avengerform"], fx.IMMEDIATE], [code("hfoo"), fx.IMMEDIATE], [ids["holdposition"], fx.IMMEDIATE]]}
+    costs = np.array([[0, 0, 0], [50, 24, 2], [135, 0, 2], [0, 0, 0]])
+    bot = BCAgent(None, v, 0, None, costs=costs)
+    bot.view = bot.enc.view(0, 1.0, [0, 1])
+    bot.trees, bot.building_since, bot.t = {}, {}, 0
+    statue, rax, foot = _row(1, "uobs"), _row(2, "hbar", fx.STRUCTURE), _row(3, "hfoo")
+    bot.rows = np.stack([statue, rax, foot])
+    bot.view.own_buildings = {2}
+    st = {"sel": bot.rows, "n_own": 3}
+    bot.me = np.array([0, 0, 150, 100, 10, 30, 0])  # (150 gold: the morph's 50, then 100 left, short of a footman's 135)
+    assert bot.commands(st, [1, 2, 3], [0] * 3, [0] * 3, [0] * 3) == [ImmediateOrder(1, ids["avengerform"]),
+                                                                      ImmediateOrder(3, ids["holdposition"])]
+    bot.me = np.array([0, 0, 40, 100, 10, 30, 0])  # (40: neither, and the free order still goes)
+    assert bot.commands(st, [1, 0, 3], [0] * 3, [0] * 3, [0] * 3) == [ImmediateOrder(3, ids["holdposition"])]
+    bot.me = np.array([0, 0, 400, 100, 10, 30, 0])
+    assert len(bot.commands(st, [1, 2, 0], [0] * 3, [0] * 3, [0] * 3)) == 2
+
+
+def _reference_mask(ch, view, rows, avail, t) -> None:
+    """Checks.mask's timed and toggle loops as merged (one np.isin per class): the faster mask must give the same."""
+    own = fx.own_alive(rows, view.player)
+    cooling, states = getattr(view, "cooling", {}), getattr(view, "autocast", {})
+    types = own[:, fx.C_TYPE]
+    for c, need in ch.timed.items():
+        if c >= len(avail) or not avail[c]:
+            continue
+        avail[c] = any(ch.unit_ok(c, r, t, cooling, states) for r in own[np.isin(types, list(need))])
+    for c, (ability, on, givers) in ch.toggle.items():
+        if c >= len(avail) or not avail[c] or c in ch.timed:
+            continue
+        avail[c] = any(ch.state(states, int(u), ability) != on for u in own[np.isin(types, list(givers)), fx.C_ID].tolist())
+
+
+def test_checks_mask_fast_path_is_the_same(game_tables):
+    """Checks.mask skips a class whose givers the player has none of (no np.isin per class: ~0.7 -> ~0.2 ms a side-step):
+    the same mask as the per-class loops on random sides of every race, cooldowns and autocast states."""
+    from warcraftsim.fullgame import fullvocab
+    _flags(1)
+    v = fullvocab.extend(VOCAB)
+    ch = fullvocab.Checks(v)
+    rng = np.random.default_rng(0)
+    pool = sorted({fullvocab.rawcode(g) for c in ch.timed for g in ch.timed[c]}
+                  | {fullvocab.rawcode(g) for c in ch.toggle for g in ch.toggle[c][2]} | {"hfoo", "hpea", "ogru", "ewsp"})
+    timed = sorted(ch.timed)
+
+    class View:
+        player, step_seconds, ground = 0, 0.5, ()
+
+    for trial in range(200):
+        view = View()
+        n = int(rng.integers(1, 30))
+        rows = np.stack([_row(i + 1, pool[int(rng.integers(len(pool)))], owner=int(rng.integers(2)),
+                              flags=fx.DEAD if rng.random() < 0.1 else 0, mana=(int(rng.integers(0, 400)), 400))
+                         for i in range(n)])
+        view.cooling = {(int(rng.integers(1, n + 1)), timed[int(rng.integers(len(timed)))]): int(rng.integers(0, 20))
+                        for _ in range(5)}
+        view.autocast = {(int(rng.integers(1, n + 1)), ch.toggle[int(c)][0]): bool(rng.integers(2))
+                         for c in rng.choice(sorted(ch.toggle), 6)}
+        start = rng.random(len(v["orders"]) + 1) < 0.8
+        t = int(rng.integers(0, 20))
+        a, b = start.copy(), start.copy()
+        ch.mask(view, rows, a, t)
+        _reference_mask(ch, view, rows, b, t)
+        later = set(ch.night) | set(ch.partner) | set(ch.item) | set(ch.lab) | {ch.pickup, ch.reveal}  # (the mask's later
+        cls = sorted((set(ch.timed) | set(ch.toggle)) - later)                                       # loops: not compared)
+        assert len(cls) > 30 and np.array_equal(a[cls], b[cls]), trial
