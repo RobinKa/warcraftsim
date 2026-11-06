@@ -502,7 +502,13 @@ class BCAgent:
                 out.append(UseItem(unit, oid - fx.USESLOT))  # (--econ-masks bit 64: the item's use, the form the game
                 # takes; its slot's immediate order refused for every item tried, scripts/undead_probe.py)
             elif kind == fx.IMMEDIATE:
-                if oid < TYPE_CODE or produce(unit, oid, c):  # (a hero too: the first one's cost 0, the mask's costs)
+                if oid >= TYPE_CODE:
+                    if produce(unit, oid, c):  # (a hero too: the first one's cost 0, the mask's costs)
+                        out.append(ImmediateOrder(unit, oid))
+                elif costs is None or not (int(costs[c][0]) > 0 or int(costs[c][1]) > 0) or pay(c):
+                    # (an ability that costs money, --full-vocab's destroyer form (fullvocab.MORPH_COSTS: the game takes
+                    # the units' difference): paid from the step's budget as a train is, else the step's later paid
+                    # orders spent it too and the game refused one of them)
                     out.append(ImmediateOrder(unit, oid))
             elif kind == fx.SKILL:
                 out.append(LearnSkill(unit, oid))

@@ -320,3 +320,29 @@ def test_lab_units_cost_the_games_price(game_tables):
     assert {"ngsp", "nzep", "ngir"} <= seen
     zep = v["orders"].index([fullvocab.code("nzep"), fx.UNIT]) + 1
     assert half[zep, 0] == int(ub["nzep"]["goldcost"]) == 240
+
+
+def test_morph_cost_paid_from_the_step_budget(game_tables):
+    """A destroyer form (fullvocab.MORPH_COSTS: the game takes the units' difference) is paid from the step's budget as a
+    train order is: with money for one, the step's footman after it is not sent (it had been, and the game refused one)."""
+    from warcraftsim.fullgame import fullvocab
+    from warcraftsim.fullgame.play import BCAgent
+    from warcraftsim.protocol import ImmediateOrder
+    ids = fullvocab.order_ids()
+    v = {**VOCAB, "types": VOCAB["types"] + [code("uobs")],
+         "orders": [[ids["avengerform"], fx.IMMEDIATE], [code("hfoo"), fx.IMMEDIATE], [ids["holdposition"], fx.IMMEDIATE]]}
+    costs = np.array([[0, 0, 0], [50, 24, 2], [135, 0, 2], [0, 0, 0]])
+    bot = BCAgent(None, v, 0, None, costs=costs)
+    bot.view = bot.enc.view(0, 1.0, [0, 1])
+    bot.trees, bot.building_since, bot.t = {}, {}, 0
+    statue, rax, foot = _row(1, "uobs"), _row(2, "hbar", fx.STRUCTURE), _row(3, "hfoo")
+    bot.rows = np.stack([statue, rax, foot])
+    bot.view.own_buildings = {2}
+    st = {"sel": bot.rows, "n_own": 3}
+    bot.me = np.array([0, 0, 150, 100, 10, 30, 0])  # (150 gold: the morph's 50, then 100 left, short of a footman's 135)
+    assert bot.commands(st, [1, 2, 3], [0] * 3, [0] * 3, [0] * 3) == [ImmediateOrder(1, ids["avengerform"]),
+                                                                      ImmediateOrder(3, ids["holdposition"])]
+    bot.me = np.array([0, 0, 40, 100, 10, 30, 0])  # (40: neither, and the free order still goes)
+    assert bot.commands(st, [1, 0, 3], [0] * 3, [0] * 3, [0] * 3) == [ImmediateOrder(3, ids["holdposition"])]
+    bot.me = np.array([0, 0, 400, 100, 10, 30, 0])
+    assert len(bot.commands(st, [1, 2, 0], [0] * 3, [0] * 3, [0] * 3)) == 2
