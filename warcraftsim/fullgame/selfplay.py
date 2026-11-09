@@ -4126,6 +4126,10 @@ class Intake:
         self.read = 0  # (messages read ahead since the last stats())
         self.read_steps = 0
         self.seconds = 0.0  # (spent reading them)
+        # (a read ahead that failed: the queue's error, raised by get() after the messages read before it, where the
+        # collect loop had met it. Raised inside the update it had read as a CUDA-graph failure: the batch's minibatches
+        # applied so far, then the eager update again over the same batch, and the graphs gone for the run)
+        self.error: BaseException | None = None
 
     @staticmethod
     def _steps(msg) -> int:
@@ -4138,6 +4142,9 @@ class Intake:
             msg = self.pending.popleft()
             self.steps -= self._steps(msg)
             return msg
+        if self.error is not None:
+            e, self.error = self.error, None
+            raise e
         return self.q.get(timeout=timeout)
 
     def fill(self, seconds: float, wait: bool = False) -> None:
@@ -4145,7 +4152,7 @@ class Intake:
         time asleep. `wait` (the update waiting for the GPU): back as soon as one message is read (the caller polls the
         GPU between); none read, asleep for the rest as well (no spinning once a batch waits)."""
         end = time.monotonic() + seconds
-        while self.ahead and self.steps < self.limit:
+        while self.ahead and self.steps < self.limit and self.error is None:
             left = end - time.monotonic()
             if left <= 0:
                 return
@@ -4153,6 +4160,9 @@ class Intake:
             try:
                 msg = self.q.get(timeout=left)
             except queue.Empty:
+                break
+            except Exception as e:  # noqa: BLE001 (the queue's: the collect loop's to meet, get())
+                self.error = e
                 break
             self.pending.append(msg)
             n = self._steps(msg)

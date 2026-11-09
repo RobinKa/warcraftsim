@@ -170,6 +170,33 @@ def test_reads_ahead_in_order_and_up_to_a_batch():
         intake.get(timeout=0.01)
 
 
+def test_a_failed_read_ahead_meets_the_collect_loop():
+    """A read ahead the queue fails (a message it can't give): not raised inside the update's pause (there it had read as
+    a CUDA-graph failure: the eager update over the same batch again, the graphs gone for the run), but by get() after
+    the messages read before it, where the collect loop had met it without reading ahead; the queue's next after it."""
+    class Q:
+        def __init__(self, items):
+            self.items = list(items)
+
+        def get(self, timeout=None):
+            if not self.items:
+                raise queue.Empty
+            x = self.items.pop(0)
+            if isinstance(x, BaseException):
+                raise x
+            return x
+    a, b, c = {"steps": [1, 2]}, {"episode": {"outcome": 1.0}}, {"steps": [3]}
+    err = EOFError("a message cut short")
+    intake = sp.Intake(Q([a, b, err, c]), BATCH, ahead=1)
+    intake.fill(0.01)  # (no exception here)
+    intake.fill(0.01, wait=True)
+    assert list(intake.pending) == [a, b] and intake.steps == 2
+    assert intake.get(timeout=1) is a and intake.get(timeout=1) is b
+    with pytest.raises(EOFError):
+        intake.get(timeout=1)
+    assert intake.get(timeout=1) is c
+
+
 def test_off_and_waits():
     q = queue.Queue()
     q.put({"steps": [1, 2, 3]})
