@@ -3441,13 +3441,19 @@ class League:
     def write(self) -> None:
         spec = self.run_dir / "league_spec.json"
         tmp = spec.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.spec(self.real_share)))
+        drawn = self.spec(self.real_share)
+        tmp.write_text(json.dumps(drawn))
         tmp.replace(spec)
+        # (a member's "weight": its chance in the agents' games as the spec draws it: PFSP over the smoothed scores with
+        # its floor, the fixed members' share. pfsp_weight of the raw score had shown an unplayed snapshot at 1.0 and one
+        # won 4 of 4 at 0.0, while the spec drew them at a half's weight and at the 0.05 floor: the dashboard's column
+        # read as if the newest snapshot took the past's games)
+        share = {a["name"]: a["p"] for a in drawn["agents"] if a.get("kind") == "past"}
 
         def row(m: Member) -> dict:
             p = m.win_rate()
             return {"name": m.name, "steps": m.steps, "games": m.games, "wins": m.wins, "losses": m.losses,
-                    "draws": m.draws, "win_rate": p, "weight": pfsp_weight(p, self.pfsp) if m.path else None,
+                    "draws": m.draws, "win_rate": p, "weight": share.get(m.name) if m.path else None,
                     "path": m.path, "recent": m.recent}
         summary = {"pfsp": self.pfsp, "members": [row(m) for m in [*self.scripts.values(), *self.real.values(), *self.past]],
                    "self": row(self.self_member), "level": {f"{n}|{r}": v for (n, r), v in self.level.items()},
@@ -4120,6 +4126,10 @@ class Intake:
         self.read = 0  # (messages read ahead since the last stats())
         self.read_steps = 0
         self.seconds = 0.0  # (spent reading them)
+        # (a read ahead that failed: the queue's error, raised by get() after the messages read before it, where the
+        # collect loop had met it. Raised inside the update it had read as a CUDA-graph failure: the batch's minibatches
+        # applied so far, then the eager update again over the same batch, and the graphs gone for the run)
+        self.error: BaseException | None = None
 
     @staticmethod
     def _steps(msg) -> int:
@@ -4132,6 +4142,9 @@ class Intake:
             msg = self.pending.popleft()
             self.steps -= self._steps(msg)
             return msg
+        if self.error is not None:
+            e, self.error = self.error, None
+            raise e
         return self.q.get(timeout=timeout)
 
     def fill(self, seconds: float, wait: bool = False) -> None:
@@ -4139,7 +4152,7 @@ class Intake:
         time asleep. `wait` (the update waiting for the GPU): back as soon as one message is read (the caller polls the
         GPU between); none read, asleep for the rest as well (no spinning once a batch waits)."""
         end = time.monotonic() + seconds
-        while self.ahead and self.steps < self.limit:
+        while self.ahead and self.steps < self.limit and self.error is None:
             left = end - time.monotonic()
             if left <= 0:
                 return
@@ -4147,6 +4160,9 @@ class Intake:
             try:
                 msg = self.q.get(timeout=left)
             except queue.Empty:
+                break
+            except Exception as e:  # noqa: BLE001 (the queue's: the collect loop's to meet, get())
+                self.error = e
                 break
             self.pending.append(msg)
             n = self._steps(msg)
