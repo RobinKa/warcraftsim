@@ -65,6 +65,12 @@ def lib():
         L.w3f_spell_any_a.argtypes = [P]
         L.w3f_mine_counts_a.restype = I
         L.w3f_mine_counts_a.argtypes = [P]
+        L.w3f_obs_layout.restype = I  # (--obs-full: obsfull.apply's block and new kinds)
+        L.w3f_obs_layout.argtypes = [P]
+        L.w3f_obs_a.restype = I
+        L.w3f_obs_a.argtypes = [P]
+        L.w3f_obs_rehash.restype = None
+        L.w3f_obs_rehash.argtypes = [P, P, Q, P, P, Q]
         _lib = L
     return _lib or None
 
@@ -173,7 +179,7 @@ def view_step(enc, fx, view, rows: np.ndarray, player: int, sign: float, product
     out = np.empty(8 * E + 16, np.int64)
     f = np.zeros((cap + 1, fx.F), np.float32)  # (its last row: the privileged numbers)
     sel = np.empty((max(cap, 1), ncols), np.int64)
-    fa, oa = addr(f), addr(out)
+    fa, oa, sa = addr(f), addr(out), addr(sel)
     nq, nb, nl, nm = len(qk), len(b), len(lm), len(mk)
     va = view.__dict__.get("_view_args")  # (the arguments in one array of the view's, its address kept: w3f_view_a)
     if va is None:
@@ -182,7 +188,7 @@ def view_step(enc, fx, view, rows: np.ndarray, player: int, sign: float, product
     a = va[0]
     a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9] = (_rows_addr(rows), nrows, ncols, int(player), tabs[2],
                                                                   ka, nq, nb, nl, nm)
-    a[10], a[11], a[12], a[13], a[14], a[15], a[16], a[17] = (pa, ha, len(last[0]), int(view.active_f), oa, fa, addr(sel),
+    a[10], a[11], a[12], a[13], a[14], a[15], a[16], a[17] = (pa, ha, len(last[0]), int(view.active_f), oa, fa, sa,
                                                               fa + 4 * cap * fx.F if priv else 0)
     k = L.w3f_view_a(va[1], float(sign))
     if k < 0:
@@ -191,7 +197,10 @@ def view_step(enc, fx, view, rows: np.ndarray, player: int, sign: float, product
     n = pk[0]
     view.hp_last = hp = (out[3 * E:3 * E + n], out[4 * E:4 * E + n])
     view._hp_addr = (hp, oa + 24 * E, oa + 32 * E)
-    return sel[:n], pk[1], f[:n], out[E:E + n], out[2 * E:2 * E + n], pk, f[cap, :fx.PRIV] if priv else None
+    got = sel[:n], f[:n], out[E:E + n], out[2 * E:2 * E + n]
+    if fx.OBS_FULL:  # (the arrays and their addresses: obsfull.apply writes its block into them)
+        view._obs_addrs = (*got, sa, fa, oa + 8 * E, oa + 16 * E)
+    return got[0], pk[1], got[1], got[2], got[3], pk, f[cap, :fx.PRIV] if priv else None
 
 
 def side(rows: np.ndarray, player: int, fresh: bool = False, owner=None) -> list:

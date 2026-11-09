@@ -656,3 +656,391 @@ void w3f_last_a(const int64_t *a) {
         if (kind) fk[al + 1 + kind] = 1.0f;
     }
 }
+
+/* ---- --obs-full (fullgame/obsfull.py): the block of OBS_F channels at the features' end for a step's entities and the
+ * new kinds' rows after them, the numbers obsfull's Python makes (its doubles stored as float, its float32 sums in its
+ * order).
+ *
+ * A view's units' state (the harness's events 101, 102, 105: State.extras) is kept as each unit's block K_CLASS ..
+ * K_PROD (State.row's numbers) in arrays its State owns: an open-addressing table hk (keys; OBS_EMPTY: free) and hs
+ * (their slots) of H entries (a power of two), the blocks blk [cap][OBS_BLK], and meta {H, cap, count}. The caller
+ * keeps room: count plus the step's 101 events at most cap and H / 2. A 101 makes the unit's block anew (no buffs, no
+ * charges), a 102 adds its buff's code to it (State.row's sum, in the events' order), a 105 sets its charges. */
+enum { K_KIND = 0, K_CLASS = 3, K_MAGIC = 11, K_ARMOR = 13, K_SPEED = 14, K_SPEED_R = 15, K_HAVE = 16, K_BUFF = 17,
+       K_UPG = 41, K_ITEM = 43, K_CHARGE = 59, K_PROD = 65, K_AGE = 68, K_RADIUS = 69, OBS_F = 70, BUFF_D = 24,
+       ITEM_D = 16, OBS_BLK = K_PROD - K_CLASS, MAX_CORPSES = 8, MAX_ITEMS = 6, MAX_AREAS = 4 };
+#define EV_STATE 101
+#define EV_BUFF 102
+#define EV_CHARGES 105
+#define OBS_EMPTY INT64_MIN
+#define OBS_NOMEM (-(1 << 30))
+
+/* The layout this file computes, into out (obsfull checks it against its own before it uses w3f_obs_a). */
+int w3f_obs_layout(int64_t *out) {
+    const int64_t v[] = {K_KIND, K_CLASS, K_MAGIC, K_ARMOR, K_SPEED, K_SPEED_R, K_HAVE, K_BUFF, K_UPG, K_ITEM, K_CHARGE,
+                         K_PROD, K_AGE, K_RADIUS, OBS_F, BUFF_D, ITEM_D, MAX_CORPSES, MAX_ITEMS, MAX_AREAS,
+                         EV_STATE, EV_BUFF, EV_CHARGES, C_ITEM0, OBS_NOMEM};
+    memcpy(out, v, sizeof v);
+    return (int)(sizeof v / sizeof v[0]);
+}
+
+static uint64_t obs_hash(int64_t k) {
+    uint64_t x = (uint64_t)k * 0x9E3779B97F4A7C15ULL;
+    return x ^ (x >> 31);
+}
+
+/* The entry of `key` in the table, or the free one where it would go. */
+static int64_t obs_find(const int64_t *hk, int64_t H, int64_t key) {
+    uint64_t m = (uint64_t)H - 1, i = obs_hash(key) & m;
+    while (hk[i] != OBS_EMPTY && hk[i] != key) i = (i + 1) & m;
+    return (int64_t)i;
+}
+
+static int64_t obs_slot(const int64_t *hk, const int64_t *hs, int64_t H, int64_t key) {
+    int64_t i = obs_find(hk, H, key);
+    return hk[i] == key ? hs[i] : -1;
+}
+
+/* The table grown: every key of (hk, hs, H) into (nk, ns, nH), nk all OBS_EMPTY. */
+void w3f_obs_rehash(const int64_t *hk, const int64_t *hs, int64_t H, int64_t *nk, int64_t *ns, int64_t nH) {
+    for (int64_t i = 0; i < H; i++) {
+        if (hk[i] == OBS_EMPTY) continue;
+        int64_t j = obs_find(nk, nH, hk[i]);
+        nk[j] = hk[i];
+        ns[j] = hs[i];
+    }
+}
+
+static int has(const int64_t *ids, int n, int64_t v) {
+    int i = lower(ids, n, v);
+    return i < n && ids[i] == v;
+}
+
+static const float *code_row(const int64_t *ids, int n, const float *codes, int d, int64_t v) {
+    return codes + (size_t)lower(ids, n, v) * d;  /* (the caller made sure it is there: has) */
+}
+
+/* A code (d, v) missing: into `missing` (pairs, `room` of them) once; the count so far. */
+static int need(int64_t *missing, int room, int miss, int64_t d, int64_t v) {
+    for (int q = 0; q < miss && q < room; q++)
+        if (missing[2 * q] == d && missing[2 * q + 1] == v) return miss;
+    if (miss < room) { missing[2 * miss] = d; missing[2 * miss + 1] = v; }
+    return miss + 1;
+}
+
+static int64_t level_of(const int64_t *lv, int n, int64_t research) {  /* (ids, then their levels: a dict's get(c, 0)) */
+    for (int i = 0; i < n; i++)
+        if (lv[i] == research) return lv[n + i];
+    return 0;
+}
+
+/* obsfull.apply's numbers after State.events, its arguments in one int64 array:
+ *  0 sel (int64 [n + room][ncols]: the step's entities, then room for the new rows), 1 n, 2 ncols, 3 n_own, 4 seen (the
+ *  entities in sight: the units' state, upgrades and progress only for them), 5 f (float32 [n + room][F]), 6 F, 7 A (the
+ *  block's first channel), 8 types, 9 cur (int64 [n + room]), 10 room (new rows at most), 11 player, 12 t, 13 doubles
+ *  {the step's seconds, sign, State.scale}, 14-15 unused, 16-19 the store (hk, hs, blk, meta), 20 the step's events 101, 102, 105
+ *  (int64 [ne][5]: step, kind, a, b, c), 21 ne, 22-24 the buffs' codes (sorted ids, their count, float32 [n][BUFF_D]),
+ *  25-27 the items' codes (the same, ITEM_D), 28 missing (int64 pairs out: (d, id) of a code not in the tables), 29 its
+ *  room in pairs, 30-32 the move speeds (sorted types, their speeds as doubles, count), 33-36 the types' upgrades
+ *  (sorted types, count, int64 [count][3] (first, weapon count, armor count) into 36's research ids), 37-38 the player's
+ *  levels (its research ids, then their levels; count), 39-40 the others' (State.enemy_levels), 41-43 State.since
+ *  ((uid, t0) pairs, count, their seconds as doubles), 44-46 State.built (the same), 47-48 State.corpses ((id, type,
+ *  owner, x, y, t0, seers) each, in its order; count), 49-50 the items on the ground (the first MAX_ITEMS in sight:
+ *  (item, x, y, powerup)), 51-53 the area spells (the first MAX_AREAS in sight: (ability, x, y, owner); count; (radius,
+ *  the step it ends) doubles), 54 the view's tables (featnative.view_tables: the geometry, the types' indices), 55 pos
+ *  (float32 [room][5][2] out: a new row's x and y times each frequency's pi * k, the products numpy's sin and cos then
+ *  take), 56 whether pos is wanted, 57 whether the rows have the heroes' item columns, 58-60 the step's rows (int64
+ *  [nrows][rcols]: every unit), nrows, rcols, 61 gone (int64 out: the count, then the ids of the corpses a living unit's
+ *  id took: the caller forgets them).
+ * Returns the new rows written after the entities (their f rows, sel rows, types and cur whole), -k when k codes are
+ * missing (nothing changed: the caller adds them and calls again), or OBS_NOMEM. */
+int w3f_obs_a(const int64_t *a) {
+    int64_t *sel = (int64_t *)a[0];
+    int n = (int)a[1], ncols = (int)a[2], n_own = (int)a[3], seen = (int)a[4];
+    float *f = (float *)a[5];
+    int F = (int)a[6], A = (int)a[7];
+    int64_t *types = (int64_t *)a[8], *cur = (int64_t *)a[9];
+    int room = (int)a[10], p = (int)a[11];
+    int64_t t = a[12];
+    const double *num = (const double *)a[13];
+    double step_s = num[0], sign = num[1], scale = num[2];
+    int64_t *hk = (int64_t *)a[16], *hs = (int64_t *)a[17], *meta = (int64_t *)a[19];
+    float *blk = (float *)a[18];
+    const int64_t *ev = (const int64_t *)a[20];
+    int ne = (int)a[21];
+    const int64_t *bid = (const int64_t *)a[22], *iid = (const int64_t *)a[25];
+    int nbid = (int)a[23], niid = (int)a[26];
+    const float *bcode = (const float *)a[24], *icode = (const float *)a[27];
+    int64_t *missing = (int64_t *)a[28];
+    int miss_room = (int)a[29];
+    const int64_t *spk = (const int64_t *)a[30];
+    const double *spv = (const double *)a[31];
+    int nsp = (int)a[32];
+    const int64_t *uk = (const int64_t *)a[33];
+    int nuk = (int)a[34];
+    const int64_t *uinfo = (const int64_t *)a[35], *ures = (const int64_t *)a[36];
+    const int64_t *lv_own = (const int64_t *)a[37], *lv_oth = (const int64_t *)a[39];
+    int nlo = (int)a[38], nle = (int)a[40];
+    const int64_t *since = (const int64_t *)a[41], *built = (const int64_t *)a[44];
+    int nsince = (int)a[42], nbuilt = (int)a[45];
+    const double *since_s = (const double *)a[43], *built_s = (const double *)a[46];
+    const int64_t *corpses = (const int64_t *)a[47], *ground = (const int64_t *)a[49], *areas = (const int64_t *)a[51];
+    int ncorpse = (int)a[48], nground = (int)a[50], narea = (int)a[52];
+    const double *area_d = (const double *)a[53];
+    const int64_t *tabs = (const int64_t *)a[54];
+    float *pos = (float *)a[55];
+    int pos_on = (int)a[56], items_on = (int)a[57];
+    const int64_t *rows = (const int64_t *)a[58];
+    int nrows = (int)a[59], rcols = (int)a[60];
+    int64_t *gone = (int64_t *)a[61];
+    int64_t H = meta[0];
+
+    /* the codes it needs, before anything changes */
+    int miss = 0;
+    for (int e = 0; e < ne; e++)
+        if (ev[5 * e + 1] == EV_BUFF && !has(bid, nbid, ev[5 * e + 3]))
+            miss = need(missing, miss_room, miss, BUFF_D, ev[5 * e + 3]);
+    if (items_on)
+        for (int k = 0; k < n; k++) {
+            const int64_t *r = sel + (size_t)k * ncols;
+            if (!(r[C_FLAGS] & HERO)) continue;
+            for (int s = 0; s < 6; s++)
+                if (r[C_ITEM0 + s] && !has(iid, niid, r[C_ITEM0 + s]))
+                    miss = need(missing, miss_room, miss, ITEM_D, r[C_ITEM0 + s]);
+        }
+    for (int g = 0; g < nground; g++)
+        if (!has(iid, niid, ground[4 * g])) miss = need(missing, miss_room, miss, ITEM_D, ground[4 * g]);
+    for (int r = 0; r < narea; r++)
+        if (!has(bid, nbid, areas[4 * r])) miss = need(missing, miss_room, miss, BUFF_D, areas[4 * r]);
+    if (miss) return -miss;
+
+    /* the units' state: the step's events 101, 102, 105 */
+    for (int e = 0; e < ne; e++) {
+        const int64_t *x = ev + 5 * e;
+        int64_t kind = x[1], u = x[2], b = x[3], c = x[4];
+        if (kind == EV_STATE) {
+            int64_t i = obs_find(hk, H, u), s;
+            if (hk[i] == u) s = hs[i];
+            else { s = meta[2]++; hk[i] = u; hs[i] = s; }
+            float *r = blk + (size_t)s * OBS_BLK;
+            memset(r, 0, OBS_BLK * sizeof *r);
+            for (int q = 0; q < 8; q++)
+                if (b >> q & 1) r[q] = 1.0f;
+            r[K_MAGIC - K_CLASS] = (float)((double)(b >> 8 & 15) / 3.0);
+            r[K_MAGIC - K_CLASS + 1] = (float)((double)(b >> 12 & 15) / 3.0);
+            r[K_ARMOR - K_CLASS] = (float)((double)((c & 4095) - 2048) / 100.0);
+            r[K_SPEED - K_CLASS] = (float)((double)(c >> 12) / 400.0);
+            r[K_HAVE - K_CLASS] = 1.0f;
+        } else if (kind == EV_BUFF || kind == EV_CHARGES) {
+            int64_t s = obs_slot(hk, hs, H, u);
+            if (s < 0) continue;  /* (no state for it: State.events ignores it) */
+            float *r = blk + (size_t)s * OBS_BLK;
+            if (kind == EV_BUFF) {
+                const float *cd = code_row(bid, nbid, bcode, BUFF_D, b);
+                for (int j = 0; j < BUFF_D; j++) r[K_BUFF - K_CLASS + j] += cd[j];
+            } else
+                for (int q = 0; q < 6; q++) {
+                    int64_t ch = ((q < 3 ? b : c) >> (10 * (q % 3))) & 1023;
+                    float v = (float)ch / 5.0f;  /* (numpy's float32 division, then np.minimum) */
+                    r[K_CHARGE - K_CLASS + q] = v < 2.0f ? v : 2.0f;
+                }
+        }
+    }
+
+    /* the entities in sight: their state and its speed against their type's, then their owner's upgrade levels */
+    for (int k = 0; k < seen && meta[2]; k++) {
+        const int64_t *r = sel + (size_t)k * ncols;
+        int64_t s = obs_slot(hk, hs, H, r[C_ID]);
+        if (s < 0) continue;
+        float *fk = f + (size_t)k * F + A;
+        const float *b = blk + (size_t)s * OBS_BLK;
+        memcpy(fk + K_CLASS, b, OBS_BLK * sizeof *b);
+        int i = lower(spk, nsp, r[C_TYPE]);
+        double base = i < nsp && spk[i] == r[C_TYPE] ? spv[i] : 0.0;
+        fk[K_SPEED_R] = base > 0 ? (float)((double)b[K_SPEED - K_CLASS] * 400.0 / base) : 0.0f;
+    }
+    for (int k = 0; k < seen; k++) {
+        const int64_t *r = sel + (size_t)k * ncols;
+        int64_t o = r[C_OWNER];
+        if (o != p && o != 1 - p) continue;
+        int i = lower(uk, nuk, r[C_TYPE]);
+        if (i >= nuk || uk[i] != r[C_TYPE]) continue;
+        const int64_t *info = uinfo + 3 * (size_t)i, *lv = o == p ? lv_own : lv_oth;
+        int nl = o == p ? nlo : nle;
+        double v[2];
+        int64_t at = info[0];
+        for (int w = 0; w < 2; w++) {
+            int64_t cnt = info[1 + w], best = 0;
+            for (int64_t j = 0; j < cnt; j++) {
+                int64_t l = level_of(lv, nl, ures[at + j]);
+                if (j == 0 || l > best) best = l;
+            }
+            v[w] = cnt ? (double)best / 3.0 : 0.0;
+            at += cnt;
+        }
+        if (v[0] != 0.0 || v[1] != 0.0) {
+            float *fk = f + (size_t)k * F + A;
+            fk[K_UPG] = (float)v[0];
+            fk[K_UPG + 1] = (float)v[1];
+        }
+    }
+    /* every hero's items */
+    if (items_on)
+        for (int k = 0; k < n; k++) {
+            const int64_t *r = sel + (size_t)k * ncols;
+            if (!(r[C_FLAGS] & HERO)) continue;
+            float *fk = f + (size_t)k * F + A + K_ITEM;
+            for (int s = 0; s < 6; s++) {
+                if (!r[C_ITEM0 + s]) continue;
+                const float *cd = code_row(iid, niid, icode, ITEM_D, r[C_ITEM0 + s]);
+                for (int j = 0; j < ITEM_D; j++) fk[j] += cd[j];
+            }
+        }
+    /* production's and construction's progress (at an id's last entity) */
+    for (int w = 0; w < 2; w++) {
+        const int64_t *d = w ? built : since;
+        const double *secs = w ? built_s : since_s;
+        int nd = w ? nbuilt : nsince;
+        for (int e = 0; e < nd; e++) {
+            int64_t uid = d[2 * e], t0 = d[2 * e + 1];
+            int k = -1;
+            for (int i = n - 1; i >= 0 && k < 0; i--)
+                if (sel[(size_t)i * ncols + C_ID] == uid) k = i;
+            if (k < 0 || secs[e] <= 0 || k >= seen || (!w && k >= n_own)) continue;
+            if (w && !(sel[(size_t)k * ncols + C_FLAGS] & CONSTRUCTING)) continue;
+            double total = secs[e] * scale, done = (double)(t - t0) * step_s, q = done / total;
+            float *fk = f + (size_t)k * F + A;
+            fk[K_PROD + 2 * w] = (float)(1.0 < q ? 1.0 : q);  /* (Python's min(q, 1.0)) */
+            if (!w) {
+                double left = total - done;
+                fk[K_PROD + 1] = (float)((0.0 > left ? 0.0 : left) / 60.0);
+            }
+        }
+    }
+
+    /* State.events' last look at its corpses: one whose id a living unit has (the game gave its handle to a new unit,
+     * or it was raised) is gone unless it died this step; their ids into `gone` (the count first). The others in
+     * sight are the new kinds' corpses. */
+    int ngone = 0, ncand = 0, nold = 0;
+    int *cand = ncorpse ? malloc(sizeof(int) * (size_t)ncorpse) : NULL;
+    int64_t *old = ncorpse ? malloc(2 * sizeof(int64_t) * (size_t)ncorpse) : NULL;  /* (id, index): sorted by id */
+    char *taken = ncorpse ? calloc((size_t)ncorpse, 1) : NULL;
+    if (ncorpse && (!cand || !old || !taken)) {
+        free(cand);
+        free(old);
+        free(taken);
+        return OBS_NOMEM;
+    }
+    for (int i = 0; i < ncorpse; i++)
+        if (corpses[7 * i + 5] < t) {
+            old[2 * nold] = corpses[7 * i];
+            old[2 * nold + 1] = i;
+            nold++;
+        }
+    if (nold) {
+        qsort(old, (size_t)nold, 2 * sizeof(int64_t), cmp_pair);
+        for (int r = 0; r < nrows; r++) {
+            const int64_t *u = rows + (size_t)r * rcols;
+            if (u[C_FLAGS] & DEAD) continue;
+            int lo = 0, hi = nold;
+            while (lo < hi) {
+                int mid = (lo + hi) / 2;
+                if (old[2 * mid] < u[C_ID]) lo = mid + 1; else hi = mid;
+            }
+            for (; lo < nold && old[2 * lo] == u[C_ID]; lo++) taken[old[2 * lo + 1]] = 1;
+        }
+    }
+    for (int i = 0; i < ncorpse; i++) {
+        if (taken[i]) gone[1 + ngone++] = corpses[7 * i];
+        else if (corpses[7 * i + 6] >> p & 1) cand[ncand++] = i;
+    }
+    gone[0] = ngone;
+    free(old);
+    free(taken);
+
+    /* the new kinds after the entities: corpses (the MAX_CORPSES nearest the player's own units when more are in
+     * sight), items on the ground, area spells */
+    if (room <= 0) {
+        free(cand);
+        return 0;
+    }
+    int pick[MAX_CORPSES], npick = 0;
+    if (ncand > MAX_CORPSES && n_own) {
+        double *dist = malloc(sizeof(double) * (size_t)ncand);
+        char *used = calloc((size_t)ncand, 1);
+        if (!dist || !used) {
+            free(dist);
+            free(used);
+            free(cand);
+            return OBS_NOMEM;
+        }
+        for (int i = 0; i < ncand; i++) {  /* (numpy's: the squares' sum, its least over the own units) */
+            const int64_t *c = corpses + 7 * cand[i];
+            double cx = (double)c[3], cy = (double)c[4], best = 0.0;
+            for (int j = 0; j < n_own; j++) {
+                const int64_t *r = sel + (size_t)j * ncols;
+                double dx = cx - (double)r[C_X], dy = cy - (double)r[C_Y], dd = dx * dx + dy * dy;
+                if (j == 0 || dd < best) best = dd;
+            }
+            dist[i] = best;
+        }
+        for (; npick < MAX_CORPSES; npick++) {  /* (a stable argsort's first: the nearest, the first of equals) */
+            int b = -1;
+            for (int i = 0; i < ncand; i++)
+                if (!used[i] && (b < 0 || dist[i] < dist[b])) b = i;
+            used[b] = 1;
+            pick[npick] = cand[b];
+        }
+        free(dist);
+        free(used);
+    } else
+        for (; npick < ncand && npick < MAX_CORPSES; npick++) pick[npick] = cand[npick];
+    free(cand);
+    const double *geo = (const double *)tabs[T_GEO];
+    const int64_t *tk = (const int64_t *)tabs[T_TYPEK], *tv = (const int64_t *)tabs[T_TYPEV];
+    int ntype = (int)tabs[T_NTYPE];
+    int m = 0, total = npick + nground + narea;
+    for (int j = 0; j < total && m < room; j++, m++) {
+        int64_t *s = sel + (size_t)(n + m) * ncols;
+        float *o = f + (size_t)(n + m) * F;
+        memset(s, 0, sizeof *s * (size_t)ncols);
+        memset(o, 0, sizeof *o * (size_t)F);
+        int kind;
+        int64_t id, typ = 0, owner = -1, x, y;
+        if (j < npick) {
+            const int64_t *c = corpses + 7 * pick[j];
+            kind = 0, id = -(3000 + j), typ = c[1], owner = c[2], x = c[3], y = c[4];
+            double age = (double)(t - c[5]) * step_s / 90.0;
+            o[A + K_AGE] = (float)(2.0 < age ? 2.0 : age);
+        } else if (j < npick + nground) {
+            const int64_t *g = ground + 4 * (j - npick);
+            kind = 1, id = -(1000 + (j - npick)), x = g[1], y = g[2];
+            memcpy(o + A + K_ITEM, code_row(iid, niid, icode, ITEM_D, g[0]), ITEM_D * sizeof(float));
+            o[A + K_AGE] = (float)(double)g[3];
+        } else {
+            int q = j - npick - nground;
+            const int64_t *r = areas + 4 * q;
+            kind = 2, id = -(2000 + q), x = r[1], y = r[2], owner = r[3];
+            memcpy(o + A + K_BUFF, code_row(bid, nbid, bcode, BUFF_D, r[0]), BUFF_D * sizeof(float));
+            double left = (area_d[2 * q + 1] - (double)t) * step_s / 30.0;
+            o[A + K_AGE] = (float)(2.0 < left ? 2.0 : left);
+            o[A + K_RADIUS] = (float)(area_d[2 * q] / 1000.0);
+        }
+        s[C_ID] = id, s[C_TYPE] = typ, s[C_OWNER] = owner, s[C_X] = x, s[C_Y] = y;
+        o[owner == p ? 0 : owner == 1 - p ? 1 : 2] = 1.0f;
+        o[A + K_KIND + kind] = 1.0f;
+        double fx, fy;
+        frame((double)x, (double)y, sign, geo, &fx, &fy);
+        o[3] = (float)fx, o[4] = (float)fy;
+        int64_t v;
+        types[n + m] = in_sorted(tk, ntype, typ, &v, tv) ? v : 0;
+        cur[n + m] = 0;
+        if (pos_on)
+            for (int q = 0; q < N_POS; q++) {  /* (numpy's float32 products: the Python number made float32 first) */
+                float c = (float)(M_PI * POS_FREQS[q]);
+                pos[10 * m + 2 * q] = c * o[3];
+                pos[10 * m + 2 * q + 1] = c * o[4];
+            }
+    }
+    return m;
+}
