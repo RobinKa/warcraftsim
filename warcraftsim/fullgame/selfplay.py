@@ -3441,13 +3441,19 @@ class League:
     def write(self) -> None:
         spec = self.run_dir / "league_spec.json"
         tmp = spec.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.spec(self.real_share)))
+        drawn = self.spec(self.real_share)
+        tmp.write_text(json.dumps(drawn))
         tmp.replace(spec)
+        # (a member's "weight": its chance in the agents' games as the spec draws it: PFSP over the smoothed scores with
+        # its floor, the fixed members' share. pfsp_weight of the raw score had shown an unplayed snapshot at 1.0 and one
+        # won 4 of 4 at 0.0, while the spec drew them at a half's weight and at the 0.05 floor: the dashboard's column
+        # read as if the newest snapshot took the past's games)
+        share = {a["name"]: a["p"] for a in drawn["agents"] if a.get("kind") == "past"}
 
         def row(m: Member) -> dict:
             p = m.win_rate()
             return {"name": m.name, "steps": m.steps, "games": m.games, "wins": m.wins, "losses": m.losses,
-                    "draws": m.draws, "win_rate": p, "weight": pfsp_weight(p, self.pfsp) if m.path else None,
+                    "draws": m.draws, "win_rate": p, "weight": share.get(m.name) if m.path else None,
                     "path": m.path, "recent": m.recent}
         summary = {"pfsp": self.pfsp, "members": [row(m) for m in [*self.scripts.values(), *self.real.values(), *self.past]],
                    "self": row(self.self_member), "level": {f"{n}|{r}": v for (n, r), v in self.level.items()},

@@ -41,3 +41,26 @@ def test_on_counts_target_and_scenario_games_not_taxed_ones(tmp_path):
 def test_on_leaves_other_members_as_before(tmp_path):
     lg = _league(tmp_path, 0.5)
     assert lg.recorded({"opponent": "self", "outcome": 1.0, "scenario": "base2"}) is None
+
+
+def test_league_json_weight_is_the_specs_draw(tmp_path):
+    """league.json's weight (the dashboard's PFSP column): each snapshot's chance as league_spec.json draws it (smoothed
+    scores, the floor, the fixed members' share), not pfsp_weight of the raw score (an unplayed snapshot had shown 1.0
+    and one won 4 of 4 had shown 0.0 while the spec drew them at a half's weight and at the floor)."""
+    import json
+
+    lg = _league(tmp_path, 0.5)
+    lg.add_snapshot(tmp_path / "b.pt", 2000, name="past:2000")
+    lg.add_snapshot(tmp_path / "c.pt", 3000, name="past:3000")
+    lg.add_snapshot(tmp_path / "f.pt", 0, name="fixed:f")
+    for _ in range(4):
+        lg.member("past:1000").record(1.0)  # (won 4 of 4)
+    for o in (1.0, -1.0, -1.0):
+        lg.member("past:2000").record(o)
+    lg.write()  # (past:3000 unplayed)
+    spec = {a["name"]: a["p"] for a in json.loads((tmp_path / "league_spec.json").read_text())["agents"]}
+    rows = {m["name"]: m for m in json.loads((tmp_path / "league.json").read_text())["members"]}
+    for name in ("past:1000", "past:2000", "past:3000", "fixed:f"):
+        assert rows[name]["weight"] == spec[name], name
+    assert rows["script:ai-insane"]["weight"] is None
+    assert 0 < rows["past:1000"]["weight"] < rows["past:3000"]["weight"] < rows["past:2000"]["weight"] < 1.0
