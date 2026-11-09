@@ -734,11 +734,11 @@ static int64_t level_of(const int64_t *lv, int n, int64_t research) {  /* (ids, 
     return 0;
 }
 
-/* obsfull.apply's numbers after State.events, its arguments in one int64 array (the doubles' bits):
+/* obsfull.apply's numbers after State.events, its arguments in one int64 array:
  *  0 sel (int64 [n + room][ncols]: the step's entities, then room for the new rows), 1 n, 2 ncols, 3 n_own, 4 seen (the
  *  entities in sight: the units' state, upgrades and progress only for them), 5 f (float32 [n + room][F]), 6 F, 7 A (the
- *  block's first channel), 8 types, 9 cur (int64 [n + room]), 10 room (new rows at most), 11 player, 12 t, 13 the
- *  step's seconds, 14 sign, 15 State.scale, 16-19 the store (hk, hs, blk, meta), 20 the step's events 101, 102, 105
+ *  block's first channel), 8 types, 9 cur (int64 [n + room]), 10 room (new rows at most), 11 player, 12 t, 13 doubles
+ *  {the step's seconds, sign, State.scale}, 14-15 unused, 16-19 the store (hk, hs, blk, meta), 20 the step's events 101, 102, 105
  *  (int64 [ne][5]: step, kind, a, b, c), 21 ne, 22-24 the buffs' codes (sorted ids, their count, float32 [n][BUFF_D]),
  *  25-27 the items' codes (the same, ITEM_D), 28 missing (int64 pairs out: (d, id) of a code not in the tables), 29 its
  *  room in pairs, 30-32 the move speeds (sorted types, their speeds as doubles, count), 33-36 the types' upgrades
@@ -760,10 +760,8 @@ int w3f_obs_a(const int64_t *a) {
     int64_t *types = (int64_t *)a[8], *cur = (int64_t *)a[9];
     int room = (int)a[10], p = (int)a[11];
     int64_t t = a[12];
-    double step_s, sign, scale;
-    memcpy(&step_s, &a[13], sizeof step_s);
-    memcpy(&sign, &a[14], sizeof sign);
-    memcpy(&scale, &a[15], sizeof scale);
+    const double *num = (const double *)a[13];
+    double step_s = num[0], sign = num[1], scale = num[2];
     int64_t *hk = (int64_t *)a[16], *hs = (int64_t *)a[17], *meta = (int64_t *)a[19];
     float *blk = (float *)a[18];
     const int64_t *ev = (const int64_t *)a[20];

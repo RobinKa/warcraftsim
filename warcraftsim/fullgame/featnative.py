@@ -65,6 +65,14 @@ def lib():
         L.w3f_spell_any_a.argtypes = [P]
         L.w3f_mine_counts_a.restype = I
         L.w3f_mine_counts_a.argtypes = [P]
+        L.w3f_obs_layout.restype = I  # (--obs-full: obsfull.apply's block and new kinds)
+        L.w3f_obs_layout.argtypes = [P]
+        L.w3f_obs_a.restype = I
+        L.w3f_obs_a.argtypes = [P]
+        L.w3f_obs_rehash.restype = None
+        L.w3f_obs_rehash.argtypes = [P, P, Q, P, P, Q]
+        L.w3f_ids_alive_a.restype = None
+        L.w3f_ids_alive_a.argtypes = [P]
         _lib = L
     return _lib or None
 
