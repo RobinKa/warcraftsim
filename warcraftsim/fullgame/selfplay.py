@@ -2397,7 +2397,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         zm = dict(replay.get("zm", {}))
     if rec is not None:
         rec["zs"], rec["zm"] = dict(zs), dict(zm)
-    if opp.get("kind") == "past" and cfg.get("win_balance") and train and random.random() < UNTAXED_PAST:
+    if opp.get("kind") == "past" and cfg.get("win_balance") and train and random.random() < (cfg.get("pfsp_data") or UNTAXED_PAST):
         opp.pop("tax", None)  # (a share of the games against past snapshots untaxed: PFSP's measure of them)
         opp.pop("tax_side", None)
         opp.pop("win_balance", None)
@@ -3260,8 +3260,11 @@ class League:
         if m is None or e.get("eval") or e.get("league_exploiter") is not None:  # (a league exploiter's: lx_record)
             return None
         taxed = self.win_balance is not None and bool(e.get("balance_tax"))
-        pulled = self.win_balance is not None and bool(e.get("z_t")) and m in self.past
-        scen = bool(e.get("scenario")) and m is not self.exploiter
+        # (--pfsp-data: a past snapshot's games with a target or in a scenario count too: their bias is about the same
+        # against every snapshot, so PFSP's order of them holds, and without them ~1% of its games reached its records)
+        data = getattr(self, "pfsp_data", 0.0) > 0 and m in self.past
+        pulled = self.win_balance is not None and bool(e.get("z_t")) and m in self.past and not data
+        scen = bool(e.get("scenario")) and m is not self.exploiter and not data
         # (a game the exploiter's earlier life played, begun before its restart and ended after: not the new one's. With
         # its games counted, a restart at 70% would fill the fresh one's 50 games with its predecessor's within minutes)
         old = m is self.exploiter and e.get("exploiter_version", self.exploiter_life) < self.exploiter_life
@@ -5354,6 +5357,7 @@ def main(argv: list[str] | None = None) -> int:
                     "its past snapshots that fit (this map's point bins, the same orders) with their records, "
                     "and its curriculum levels and balance (scripts/selfplay_fork.py: the parent's)")
     ap.add_argument("--pfsp", default="hard")
+    ap.add_argument("--pfsp-data", type=float, default=0.0, help="PFSP with data (the league plan's item 6): this share of the games against past snapshots untaxed under --win-balance (0: 0.25, as before), and those with a target or in a scenario count in the snapshots' records too (their bias is about the same against each); before, ~1%% of them reached the records (taxed, a target, a scenario each took a game out) and PFSP drew the league about evenly")
     ap.add_argument("--batch-steps", type=int, default=8192, help="agent steps per update")
     ap.add_argument("--minibatch", type=int, default=256)
     ap.add_argument("--pad-groups", type=int, default=8,
@@ -5818,6 +5822,7 @@ def main(argv: list[str] | None = None) -> int:
                     exploiter_share=args.exploiter_share, tie=args.curriculum_tie, floor=args.curriculum_floor,
                     win_balance=args.win_balance, league_exploiters=args.league_exploiters,
                     league_exploiter_share=args.league_exploiter_share)
+    league.pfsp_data = args.pfsp_data  # (--pfsp-data: League.recorded)
     league.real_share = args.real_share
     if args.shaping_anneal > 0:  # (the games from the start: the weight at this run's update)
         league.shaping = shaping_now(args, resumed["update"] if resumed else 0)
@@ -5957,7 +5962,7 @@ def main(argv: list[str] | None = None) -> int:
            "avail_mask": bool(args.avail_mask),
            "opd_share": args.opd_share, "opd_difficulty": args.opd_difficulty,
            "costs": order_costs(vocab, args.map).tolist() if args.avail_mask else None, "max_past": args.max_past,
-           "eval_fallback": args.eval_fallback, "worker_cap": args.worker_cap, "z_dim": fx.ZDIM, "z_pool": str(args.z_pool) if args.z_pool else "", "z_share": args.z_share, "win_balance": args.win_balance,
+           "eval_fallback": args.eval_fallback, "worker_cap": args.worker_cap, "pfsp_data": args.pfsp_data, "z_dim": fx.ZDIM, "z_pool": str(args.z_pool) if args.z_pool else "", "z_share": args.z_share, "win_balance": args.win_balance,
            "z_reward": args.z_reward, **({"z_shop": args.z_shop} if args.z_shop else {}), "z_mix": args.z_mix, "z_mix_reward": args.z_mix_reward, "reward_parts": args.reward_parts, "z_modes": args.z_modes, "z_mode_reward": args.z_mode_reward, "z_comp": args.z_comp, "z_forbid_mask": args.z_forbid_mask, "z_winners": args.z_winners, "z_src": args.z_src, "eval_z": args.eval_z,
            "z_enforce": args.z_enforce, "z_time_scale": args.z_time_scale, "z_build": args.z_build, "z_build_labels": args.z_build_labels, "z_workers": args.z_workers,
            "grpo_share": args.grpo_share, "grpo_group": args.grpo_group, "grpo_coef": args.grpo_coef,
