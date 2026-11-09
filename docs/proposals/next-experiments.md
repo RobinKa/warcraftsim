@@ -27,7 +27,8 @@ Rejected changes worth switching on anyway (2026-11-06 review): none of the tuni
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-198` (running) | `--pfsp-data 0.5` (bold 6), from `fgself-197` | PFSP with data |
+| `fgself-199` (running) | `--snapshot-every 400 --max-past 12 --pfsp-data 0.5` (bold 9), from `fgself-197` | A league with history |
+| `fgself-198` (not kept) | `--pfsp-data 0.5` (bold 6), from `fgself-197` | 47% h2h, insane -9 (n.s.); the league was minutes deep |
 | `fgself-197` (kept, better, new base) | `--obs-full 1 --obs-fade 600` (bold 8), from `fgself-196` | 53.5% h2h vs `fgself-196`, 57% vs `fgself-182`; wins past 18 min 46% vs 16%; wider |
 | `fgself-196` (kept, new base) | `--full-vocab 1 --features 55` (bold 7), `--learner-intake 2` | Level at 50M (48% h2h, insane 67/69); every order a player can give; new orders in use |
 | `fgself-195` (not kept) | the `dry` scenario in a third of scenario starts (bold 2) | No expansions in evaluation (0 of 241); head to head 43%, lumber and creeps down |
