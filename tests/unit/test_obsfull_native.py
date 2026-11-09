@@ -480,3 +480,45 @@ def test_c_path_is_used(ref):
     view.ground = ground
     view.step(rows, None, ev, 0)
     assert view.obs.native and not view.obs.extras and obsfull._native(view) is not None
+
+
+@pytest.mark.parametrize("obs_full", [0, 1])
+def test_collate_entities_as_before(obs_full):
+    """The learner's minibatch entities: collated as float16 (the chunks' dtype) and made float32 after the copy, the
+    same float32 tensor as master's float32 fill; a step of another dtype keeps the float32 buffer."""
+    import torch
+
+    from warcraftsim.fullgame.selfplay import collate_seq
+    fx.set_inputs(2)
+    fx.set_obs_full(obs_full)
+    try:
+        rng = np.random.default_rng(obs_full)
+        G = 40
+
+        def step(n, dt=np.float16):
+            e = (rng.standard_normal((n, fx.F)) * 3).astype(np.float16)
+            e[rng.random((n, fx.F)) < 0.6] = 0  # (zeros, as most channels)
+            e[0, 0] = np.float16(np.inf) if n > 30 else np.float16(6e-8)  # (the extremes float16 has)
+            if dt != np.float16:  # (numbers float16 can't hold)
+                e = (rng.standard_normal((n, fx.F)) / 3).astype(dt)
+            return {"ent": e.astype(dt), "type": rng.integers(0, 9, n).astype(np.int16),
+                    "cur": rng.integers(0, 3, n).astype(np.int16), "glob": rng.standard_normal(G).astype(np.float32),
+                    "n": n, "n_own": min(n, 5), "logp": np.zeros(min(n, 5), np.float32), "adv": 0.5, "ret": 0.1,
+                    "avail": None, **{k: np.zeros(min(n, 5), np.int16) for k in ("order", "tgt", "bx", "by")}}
+        for mixed in (False, True):
+            seqs = [[step(int(rng.integers(8, 70))) for _ in range(int(rng.integers(1, 8)))] for _ in range(6)]
+            if mixed:
+                seqs[2][0] = step(20, np.float32)
+            mb = collate_seq(seqs, torch.device("cpu"), width=80, B=7, T=8)
+            T = 8
+            flat = [q[t] if t < len(q) else None for q in seqs + [[]] for t in range(T)]
+            want = np.zeros((len(flat), 80, fx.F), np.float32)  # (master's: a float32 buffer the steps fill)
+            for i, s in enumerate(flat):
+                if s is not None:
+                    want[i, :s["n"]] = s["ent"]
+            got = mb["ent"]
+            assert got.dtype == torch.float32 and got.shape == want.shape
+            assert np.array_equal(got.numpy().view(np.uint32), want.view(np.uint32))  # (bit for bit)
+    finally:
+        fx.set_obs_full(0)
+        fx.set_inputs(1)

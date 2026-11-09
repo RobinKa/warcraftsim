@@ -3547,7 +3547,10 @@ def collate(steps: list[dict], device, width: int | None = None, with_labels: bo
     B, E = len(steps), max(max(s["n"] for s in steps), width or 0)
     O = min(fx.MAX_OWN, E)
     G = len(steps[0]["glob"])
-    ent = np.zeros((B, E, fx.F), np.float32)
+    # (the entities as the steps bring them, float16, made float32 on the device: the same numbers, half the bytes to
+    # fill, pin and copy; --obs-full's 176 channels had made them ~23 MB a minibatch. Any other dtype: float32 here)
+    half = all(type(s["ent"]) is np.ndarray and s["ent"].dtype == np.float16 for s in steps)
+    ent = np.zeros((B, E, fx.F), np.float16 if half else np.float32)
     typ, cur = np.zeros((B, E), np.int64), np.zeros((B, E), np.int64)
     mask = np.zeros((B, E), bool)
     glob = np.zeros((B, G), np.float32)
@@ -3600,7 +3603,7 @@ def collate(steps: list[dict], device, width: int | None = None, with_labels: bo
             if s.get("ladv") is not None:
                 o = min(len(s["ladv"]), O)
                 ladv[i, :o] = s["ladv"][:o]
-    return {"ent": t(ent), "type": t(typ), "cur": t(cur), "mask": t(mask), "glob": t(glob), "n_own": t(n_own), **labels, **priv,
+    return {"ent": t(ent).float(), "type": t(typ), "cur": t(cur), "mask": t(mask), "glob": t(glob), "n_own": t(n_own), **labels, **priv,
             **({"ladv": t(ladv)} if ladv is not None else {}),
             **({"uadv": t(np.array([s.get("uadv", 0.0) for s in steps], np.float32))}  # (--upgo)
                if any("uadv" in s for s in steps) else {}),

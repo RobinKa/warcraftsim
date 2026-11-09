@@ -245,6 +245,7 @@ class State:
         self.store = _Store() if native else None
         self.extras: dict[int, list] = {}  # unit -> [bits, speed/armor word, [buffs], charges (6,) or None]
         self.corpses: dict[int, list] = {}  # unit -> [type, owner, x, y, step of death, seers' bits]
+        self.cv = 0  # (the corpses' version: one more at each change, _apply_c's copy of them made again)
         self.areas: list[list] = []  # [ability, x, y, radius, step it ends, seers' bits, caster, owner]
         self.enemy_levels: dict[int, int] = {}  # research -> level (the other players' finished research)
         self.since: dict[int, tuple] = {}  # building -> (step it started, seconds the item takes in the tables)
@@ -294,11 +295,14 @@ class State:
                 if len(hit):
                     owner = int(hit[0, fx.C_OWNER])
                 self.corpses[a] = [typ, owner, b, c, t, 0]
+                self.cv += 1
             elif kind == EV_CORPSE_GONE:
-                self.corpses.pop(a, None)
+                if self.corpses.pop(a, None) is not None:
+                    self.cv += 1
             elif kind == EV_CORPSE_SEEN:
                 if a in self.corpses:
                     self.corpses[a][5] = b
+                    self.cv += 1
             elif kind == EV_SPELL_AT:
                 self._spell[a] = (b, c)
             elif kind == EV_SPELL_SEEN:
@@ -330,14 +334,17 @@ class State:
                     self._pace((t - got[0]) * step_seconds / got[1])
         for k in [k for k, v in self.corpses.items() if (t - v[4]) * step_seconds > CORPSE_SECONDS]:
             del self.corpses[k]
-        if self.corpses and len(rows):  # (a corpse's handle id a living unit's after its death's step: the corpse is
-            # gone, decayed or used, and the game gave its id to a new unit, or it was raised again; the harness's 107
-            # had never come for a removed corpse: a real game kept a ghoul's corpse 5 s after a farm took its id, 466 of
-            # 707 steps had such a pair, and the views' index took the unit's id to the corpse's row: AI labels on it)
+            self.cv += 1
+        if self.corpses and len(rows) and not self.native:  # (a corpse's handle id a living unit's after its death's
+            # step: the corpse is gone, decayed or used, and the game gave its id to a new unit, or it was raised again;
+            # the harness's 107 had never come for a removed corpse: a real game kept a ghoul's corpse 5 s after a farm
+            # took its id, 466 of 707 steps had such a pair, and the views' index took the unit's id to the corpse's row:
+            # AI labels on it. Native: w3f_obs_a looks, apply forgets them, before anything reads the corpses)
             old = [k for k, v in self.corpses.items() if v[4] < t]
             if old:
                 for k in _living(rows, old):
                     del self.corpses[k]
+                    self.cv += 1
         self.areas = [ar for ar in self.areas if ar[4] > t]
 
     def row(self, uid: int) -> np.ndarray | None:
@@ -414,7 +421,7 @@ def apply(view, rows: np.ndarray, events, t: int, sel: np.ndarray, n_own: int, f
     # owner's upgrade levels now and their construction's progress now are what the player does not see)
     seen = n if getattr(view, "privileged_act", False) else max(0, min(int(getattr(view.enc, "ghost0", n)), n))
     if st.native:
-        return _apply_c(st, view, events, t, sel, n_own, f, types, cur, step_s, seen)
+        return _apply_c(st, view, rows, events, t, sel, n_own, f, types, cur, step_s, seen)
     return _apply_py(st, view, t, sel, n_own, f, types, cur, step_s, seen)
 
 
@@ -657,38 +664,80 @@ def _static() -> tuple:
 
 
 def _living(rows: np.ndarray, ids: list) -> list:
-    """Those of `ids` a living row (not DEAD) has, in their order (State.events' corpses whose id a unit took)."""
-    from . import featnative
-    L = featnative.lib()
-    if L is None or not isinstance(rows, np.ndarray) or rows.ndim != 2:
-        alive = set(rows[(rows[:, fx.C_FLAGS] & fx.DEAD) == 0, fx.C_ID].tolist())
-        return [k for k in ids if k in alive]
-    rows = np.ascontiguousarray(rows, np.int64)
-    q = _array("q", ids)
-    out = _array("q", bytes(8 * len(ids)))
-    a = _array("q", (featnative.addr(rows) if len(rows) else 0, len(rows), rows.shape[1], q.buffer_info()[0], len(ids),
-                     out.buffer_info()[0]))
-    L.w3f_ids_alive_a(a.buffer_info()[0])
-    return [k for k, h in zip(ids, out) if h]
+    """Those of `ids` a living row (not DEAD) has, in their order (State.events' corpses whose id a unit took; in C,
+    w3f_obs_a's, when the State is native)."""
+    alive = set(rows[(rows[:, fx.C_FLAGS] & fx.DEAD) == 0, fx.C_ID].tolist())
+    return [k for k in ids if k in alive]
 
 
-def _apply_c(st: State, view, events, t: int, sel: np.ndarray, n_own: int, f: np.ndarray, types: np.ndarray,
-             cur: np.ndarray, step_s: float, seen: int) -> tuple:
+class _Bufs:
+    """A native State's buffers for w3f_obs_a, made once: its argument array (the fixed arguments set here), the new
+    rows' position products, the missing codes, the corpses gone, and scratch rows (the entities and the new rows: a
+    step with new rows writes there, its arrays copied out)."""
+
+    def __init__(self, st: State, tabs):
+        from .featnative import addr
+        self.a = _array("q", bytes(8 * 64))
+        self.pos = np.empty((MAX_CORPSES + MAX_ITEMS + MAX_AREAS, 5, 2), np.float32)
+        self.missing = _array("q", bytes(16 * _MISS_ROOM))
+        self.gone = _array("q", bytes(8 * 64))
+        self.scratch = None
+        self.tabs = tabs
+        self.cv, self.seen_any, self.corpse_arr = -1, 0, None  # (the corpses as C reads them, of State.cv's version)
+        a = self.a
+        a[28], a[29] = self.missing.buffer_info()[0], _MISS_ROOM
+        a[30], a[31], a[32], a[33], a[34], a[35], a[36] = _static()[1]
+        a[54], a[55], a[61] = tabs[2], addr(self.pos), self.gone.buffer_info()[0]
+        self.store(st)
+        self.head = a.buffer_info()[0]
+
+    def store(self, st: State) -> None:
+        self.a[16], self.a[17], self.a[18], self.a[19] = st.store.addrs
+
+    def corpses(self, k: int) -> None:
+        """Room for k corpses gone."""
+        if len(self.gone) < k + 1:
+            self.gone = _array("q", bytes(8 * (2 * k + 1)))
+            self.a[61] = self.gone.buffer_info()[0]
+
+    def rows(self, n: int, ncols: int, F: int) -> tuple:
+        """Scratch for n rows (the entities and the new rows): (sel, f, types, cur) and their addresses."""
+        s = self.scratch
+        if s is None or len(s[0]) < n or s[0].shape[1] != ncols or s[1].shape[1] != F:
+            from .featnative import addr
+            m = max(n, fx.MAX_ENT)
+            arrs = (np.empty((m, ncols), np.int64), np.empty((m, F), np.float32), np.empty(m, np.int64),
+                    np.empty(m, np.int64))
+            s = self.scratch = (*arrs, *map(addr, arrs))
+        return s
+
+
+def _apply_c(st: State, view, rows: np.ndarray, events, t: int, sel: np.ndarray, n_own: int, f: np.ndarray,
+             types: np.ndarray, cur: np.ndarray, step_s: float, seen: int) -> tuple:
     """_apply_py's numbers by w3f_obs_a: the units' state from the step's events 101, 102, 105 kept in st.store, then
-    the block of the entities and the new kinds' rows (written into arrays of the entities and those rows). The sines
-    and cosines of the new rows' positions by numpy, as _apply_py's (glibc's float32 sin differs in ~15% of last bits)."""
+    the block of the entities (in their own arrays) and the new kinds' rows after them (a step with new rows: in the
+    State's scratch rows, copied out). State.events' last look at its corpses there too. The sines and cosines of the
+    new rows' positions by numpy, as _apply_py's (glibc's float32 sin differs from numpy's in ~15% of last bits)."""
     from . import featnative
     L = featnative.lib()
     n, p = len(sel), view.player
+    vs = view.__dict__.get("_obs_addrs")  # (view_step's arrays this step: its tables made this step too)
+    here = vs is not None and vs[0] is sel and vs[1] is f and vs[2] is types and vs[3] is cur
+    got = view.enc.__dict__.get("_view_tables") if here else None
+    tabs = got[1] if got is not None and got[1] is not None else featnative.view_tables(view.enc, fx)
+    b = st.__dict__.get("_bufs")
+    if b is None or b.tabs is not tabs:
+        b = st._bufs = _Bufs(st, tabs)
+    a = b.a
     # (the step's numbers for C: its ints in one array, its doubles in another, each part's place in them)
     ev = [r for r in events if int(r[1]) in _UNIT_EVENTS]
     ints: list = []
-    for r in ev:
-        ints += (int(r[0]), int(r[1]), int(r[2]), int(r[3]), int(r[4]))
     if ev:
+        for r in ev:
+            ints += (int(r[0]), int(r[1]), int(r[2]), int(r[3]), int(r[4]))
         k101 = sum(1 for r in ev if int(r[1]) == EV_STATE)
-        if k101:
-            st.store.reserve(k101)
+        if k101 and st.store.reserve(k101):
+            b.store(st)
     lv, le = view.levels, st.enemy_levels
     o_lv = len(ints)
     ints += lv.keys()
@@ -697,20 +746,23 @@ def _apply_c(st: State, view, events, t: int, sel: np.ndarray, n_own: int, f: np
     ints += le.keys()
     ints += le.values()
     dbl = [step_s, float(view.sign), float(st.scale)]
-    o_si, d_si = len(ints), len(dbl)
+    o_si = len(ints)
     for uid, (t0, s) in st.since.items():
         ints += (uid, t0)
         dbl.append(s)
-    o_bu, d_bu = len(ints), len(dbl)
+    o_bu = len(ints)
     for uid, (t0, s) in st.built.items():
         ints += (uid, t0)
         dbl.append(s)
-    o_co = len(ints)
-    nc = 0
-    for v in st.corpses.values():
-        if v[5] >> p & 1:
-            ints += v[:5]
-            nc += 1
+    if b.cv != st.cv:  # (the corpses for C, made again when they changed: State.cv)
+        cs, seen_any = [], 0
+        for k, v in st.corpses.items():
+            cs += (k, v[0], v[1], v[2], v[3], v[4], v[5])
+            seen_any |= v[5] >> p & 1  # (corpses in sight: new rows maybe, unless their ids were taken)
+        b.corpse_arr, b.cv, b.seen_any = _array("q", cs), st.cv, seen_any
+        a[47], a[48] = b.corpse_arr.buffer_info()[0], len(st.corpses)
+        b.corpses(len(st.corpses))
+    seen_any = b.seen_any
     o_gr = len(ints)
     gi = 0
     for g in getattr(view, "ground", ()) or ():
@@ -731,58 +783,52 @@ def _apply_c(st: State, view, events, t: int, sel: np.ndarray, n_own: int, f: np
         ints += (ab, x, y, owner)
         dbl += (radius, t_end)
         ai += 1
-    room = fx.MAX_ENT - n
-    R = min(room, min(nc, MAX_CORPSES) + gi + ai) if room > 0 else 0
+    room = min(fx.MAX_ENT - n, MAX_CORPSES + MAX_ITEMS + MAX_AREAS) if seen_any or gi or ai else 0
     ncols, F = (sel.shape[1] if sel.ndim == 2 else fx.ROW_COLS), f.shape[1]
-    if R:  # (the new rows after the entities: arrays of n + R rows, the entities' copied in)
-        S = np.empty((n + R, ncols), np.int64)
-        S[:n] = sel
-        Fo = np.empty((n + R, F), np.float32)
-        Fo[:n] = f
-        T, Cu = np.empty(n + R, np.int64), np.empty(n + R, np.int64)
-        T[:n], Cu[:n] = types, cur
-    else:  # (the block into the entities' own arrays, as _apply_py's)
-        S, Fo, T, Cu = (np.ascontiguousarray(sel, np.int64), np.ascontiguousarray(f, np.float32),
-                        np.ascontiguousarray(types, np.int64), np.ascontiguousarray(cur, np.int64))
+    if room > 0:  # (the entities' arrays copied into the scratch rows, the new rows after them)
+        S, Fo, T, Cu, a[0], a[5], a[8], a[9] = b.rows(n + room, ncols, F)
+        S[:n], Fo[:n], T[:n], Cu[:n] = sel, f, types, cur
+    else:  # (the block into the entities' own arrays, as _apply_py's: view_step's, their addresses kept)
+        room = 0
+        if here:
+            a[0], a[5], a[8], a[9] = vs[4:]
+        else:
+            sel, f = np.ascontiguousarray(sel, np.int64), np.ascontiguousarray(f, np.float32)
+            types, cur = np.ascontiguousarray(types, np.int64), np.ascontiguousarray(cur, np.int64)
+            a[0], a[5], a[8], a[9] = (featnative.addr(x) if x.size else 0 for x in (sel, f, types, cur))
+    rows = np.ascontiguousarray(rows, np.int64)
     ia, da = _array("q", ints), _array("d", dbl)
     ib, db = ia.buffer_info()[0], da.buffer_info()[0]
-    args = st.__dict__.get("_args")
-    if args is None:
-        args = st._args = (_array("q", bytes(8 * 58)), np.empty((MAX_CORPSES + MAX_ITEMS + MAX_AREAS, 5, 2), np.float32),
-                           np.empty(2 * _MISS_ROOM, np.int64))
-    a, pos, missing = args
-    tabs = featnative.view_tables(view.enc, fx)
-    _, sa = _static()
-    hk, hs, blk, meta = st.store.addrs
-    a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7] = (featnative.addr(S) if S.size else 0, n, ncols, int(n_own), int(seen),
-                                                      featnative.addr(Fo) if Fo.size else 0, F, fx.A_OBS)
-    a[8], a[9], a[10], a[11], a[12], a[13] = (featnative.addr(T) if T.size else 0, featnative.addr(Cu) if Cu.size else 0,
-                                              R, int(p), int(t), db)
-    a[16], a[17], a[18], a[19], a[20], a[21] = hk, hs, blk, meta, ib, len(ev)
-    a[28], a[29] = featnative.addr(missing), _MISS_ROOM
-    a[30], a[31], a[32], a[33], a[34], a[35], a[36] = sa
-    a[37], a[38], a[39], a[40] = ib + 8 * o_lv, len(lv), ib + 8 * o_le, len(le)
-    a[41], a[42], a[43] = ib + 8 * o_si, len(st.since), db + 8 * d_si
-    a[44], a[45], a[46] = ib + 8 * o_bu, len(st.built), db + 8 * d_bu
-    a[47], a[48], a[49], a[50] = ib + 8 * o_co, nc, ib + 8 * o_gr, gi
-    a[51], a[52], a[53], a[54] = ib + 8 * o_ar, ai, db + 8 * d_ar, tabs[2]
+    a[1], a[2], a[3], a[4], a[6], a[7], a[10], a[11], a[12], a[13] = (n, ncols, int(n_own), int(seen), F, fx.A_OBS, room,
+                                                                      int(p), int(t), db)
+    a[20], a[21] = ib, len(ev)
+    a[37], a[38], a[39], a[40], a[41], a[42], a[43] = ib + 8 * o_lv, len(lv), ib + 8 * o_le, len(le), ib + 8 * o_si, len(
+        st.since), db + 24
+    a[44], a[45], a[46], a[49], a[50] = ib + 8 * o_bu, len(st.built), db + 24 + 8 * len(st.since), ib + 8 * o_gr, gi
+    a[51], a[52], a[53] = ib + 8 * o_ar, ai, db + 8 * d_ar
     pos_on = getattr(view, "active_f", fx.F) > fx.A_POS
-    a[55], a[56], a[57] = featnative.addr(pos), int(pos_on), int(ncols >= fx.ROW_COLS)
+    a[56], a[57] = int(pos_on), int(ncols >= fx.ROW_COLS)
+    a[58], a[59], a[60] = featnative._rows_addr(rows) if rows.size else 0, len(rows), rows.shape[1] if rows.ndim == 2 else 0
     while True:
         bt, it_ = _CODE_TABLES[BUFF_D].now, _CODE_TABLES[ITEM_D].now  # (held while C reads them)
-        a[22], a[23], a[24] = bt[3], bt[2], bt[4]
-        a[25], a[26], a[27] = it_[3], it_[2], it_[4]
-        m = L.w3f_obs_a(a.buffer_info()[0])
+        a[22], a[23], a[24], a[25], a[26], a[27] = bt[3], bt[2], bt[4], it_[3], it_[2], it_[4]
+        m = L.w3f_obs_a(b.head)
         if m >= 0:
             break
         if m == _LAYOUT[1]:
             raise MemoryError("w3f_obs_a")
-        got = missing[:2 * min(-m, _MISS_ROOM)].tolist()
+        got = b.missing[:2 * min(-m, _MISS_ROOM)].tolist()
         for d in (BUFF_D, ITEM_D):
             _CODE_TABLES[d].add(v for dd, v in zip(got[0::2], got[1::2]) if dd == d)
-    if not R:
-        return S, Fo, T, Cu
-    if pos_on:  # (the new rows' positions' sines and cosines: numpy's, of C's float32 products)
-        P = pos[:m]
+    gone = b.gone
+    if gone[0]:  # (the corpses whose id a living unit took: forgotten, as State.events had)
+        for k in gone[1:1 + gone[0]]:
+            del st.corpses[k]
+        st.cv += 1
+    if not room:
+        return sel, f, types, cur
+    if m and pos_on:  # (the new rows' positions' sines and cosines: numpy's, of C's float32 products)
+        P = b.pos[:m]
         Fo[n:n + m, fx.A_POS:fx.A_POS + 4 * len(fx.POS_FREQS)] = np.stack([np.sin(P), np.cos(P)], -1).reshape(m, -1)
-    return S[:n + m], Fo[:n + m], T[:n + m], Cu[:n + m]
+    k = n + m
+    return S[:k].copy(), Fo[:k].copy(), T[:k].copy(), Cu[:k].copy()

@@ -744,12 +744,14 @@ static int64_t level_of(const int64_t *lv, int n, int64_t research) {  /* (ids, 
  *  room in pairs, 30-32 the move speeds (sorted types, their speeds as doubles, count), 33-36 the types' upgrades
  *  (sorted types, count, int64 [count][3] (first, weapon count, armor count) into 36's research ids), 37-38 the player's
  *  levels (its research ids, then their levels; count), 39-40 the others' (State.enemy_levels), 41-43 State.since
- *  ((uid, t0) pairs, count, their seconds as doubles), 44-46 State.built (the same), 47-48 the corpses in sight ((type,
- *  owner, x, y, t0) each, in State.corpses' order; count), 49-50 the items on the ground (the first MAX_ITEMS in sight:
+ *  ((uid, t0) pairs, count, their seconds as doubles), 44-46 State.built (the same), 47-48 State.corpses ((id, type,
+ *  owner, x, y, t0, seers) each, in its order; count), 49-50 the items on the ground (the first MAX_ITEMS in sight:
  *  (item, x, y, powerup)), 51-53 the area spells (the first MAX_AREAS in sight: (ability, x, y, owner); count; (radius,
  *  the step it ends) doubles), 54 the view's tables (featnative.view_tables: the geometry, the types' indices), 55 pos
  *  (float32 [room][5][2] out: a new row's x and y times each frequency's pi * k, the products numpy's sin and cos then
- *  take), 56 whether pos is wanted, 57 whether the rows have the heroes' item columns.
+ *  take), 56 whether pos is wanted, 57 whether the rows have the heroes' item columns, 58-60 the step's rows (int64
+ *  [nrows][rcols]: every unit), nrows, rcols, 61 gone (int64 out: the count, then the ids of the corpses a living unit's
+ *  id took: the caller forgets them).
  * Returns the new rows written after the entities (their f rows, sel rows, types and cur whole), -k when k codes are
  * missing (nothing changed: the caller adds them and calls again), or OBS_NOMEM. */
 int w3f_obs_a(const int64_t *a) {
@@ -788,6 +790,9 @@ int w3f_obs_a(const int64_t *a) {
     const int64_t *tabs = (const int64_t *)a[54];
     float *pos = (float *)a[55];
     int pos_on = (int)a[56], items_on = (int)a[57];
+    const int64_t *rows = (const int64_t *)a[58];
+    int nrows = (int)a[59], rcols = (int)a[60];
+    int64_t *gone = (int64_t *)a[61];
     int64_t H = meta[0];
 
     /* the codes it needs, before anything changes */
@@ -913,20 +918,65 @@ int w3f_obs_a(const int64_t *a) {
         }
     }
 
+    /* State.events' last look at its corpses: one whose id a living unit has (the game gave its handle to a new unit,
+     * or it was raised) is gone unless it died this step; their ids into `gone` (the count first). The others in
+     * sight are the new kinds' corpses. */
+    int ngone = 0, ncand = 0, nold = 0;
+    int *cand = ncorpse ? malloc(sizeof(int) * (size_t)ncorpse) : NULL;
+    int64_t *old = ncorpse ? malloc(2 * sizeof(int64_t) * (size_t)ncorpse) : NULL;  /* (id, index): sorted by id */
+    char *taken = ncorpse ? calloc((size_t)ncorpse, 1) : NULL;
+    if (ncorpse && (!cand || !old || !taken)) {
+        free(cand);
+        free(old);
+        free(taken);
+        return OBS_NOMEM;
+    }
+    for (int i = 0; i < ncorpse; i++)
+        if (corpses[7 * i + 5] < t) {
+            old[2 * nold] = corpses[7 * i];
+            old[2 * nold + 1] = i;
+            nold++;
+        }
+    if (nold) {
+        qsort(old, (size_t)nold, 2 * sizeof(int64_t), cmp_pair);
+        for (int r = 0; r < nrows; r++) {
+            const int64_t *u = rows + (size_t)r * rcols;
+            if (u[C_FLAGS] & DEAD) continue;
+            int lo = 0, hi = nold;
+            while (lo < hi) {
+                int mid = (lo + hi) / 2;
+                if (old[2 * mid] < u[C_ID]) lo = mid + 1; else hi = mid;
+            }
+            for (; lo < nold && old[2 * lo] == u[C_ID]; lo++) taken[old[2 * lo + 1]] = 1;
+        }
+    }
+    for (int i = 0; i < ncorpse; i++) {
+        if (taken[i]) gone[1 + ngone++] = corpses[7 * i];
+        else if (corpses[7 * i + 6] >> p & 1) cand[ncand++] = i;
+    }
+    gone[0] = ngone;
+    free(old);
+    free(taken);
+
     /* the new kinds after the entities: corpses (the MAX_CORPSES nearest the player's own units when more are in
      * sight), items on the ground, area spells */
-    if (room <= 0) return 0;
+    if (room <= 0) {
+        free(cand);
+        return 0;
+    }
     int pick[MAX_CORPSES], npick = 0;
-    if (ncorpse > MAX_CORPSES && n_own) {
-        double *dist = malloc(sizeof(double) * (size_t)ncorpse);
-        char *used = calloc((size_t)ncorpse, 1);
+    if (ncand > MAX_CORPSES && n_own) {
+        double *dist = malloc(sizeof(double) * (size_t)ncand);
+        char *used = calloc((size_t)ncand, 1);
         if (!dist || !used) {
             free(dist);
             free(used);
+            free(cand);
             return OBS_NOMEM;
         }
-        for (int i = 0; i < ncorpse; i++) {  /* (numpy's: the squares' sum, its least over the own units) */
-            double cx = (double)corpses[5 * i + 2], cy = (double)corpses[5 * i + 3], best = 0.0;
+        for (int i = 0; i < ncand; i++) {  /* (numpy's: the squares' sum, its least over the own units) */
+            const int64_t *c = corpses + 7 * cand[i];
+            double cx = (double)c[3], cy = (double)c[4], best = 0.0;
             for (int j = 0; j < n_own; j++) {
                 const int64_t *r = sel + (size_t)j * ncols;
                 double dx = cx - (double)r[C_X], dy = cy - (double)r[C_Y], dd = dx * dx + dy * dy;
@@ -936,15 +986,16 @@ int w3f_obs_a(const int64_t *a) {
         }
         for (; npick < MAX_CORPSES; npick++) {  /* (a stable argsort's first: the nearest, the first of equals) */
             int b = -1;
-            for (int i = 0; i < ncorpse; i++)
+            for (int i = 0; i < ncand; i++)
                 if (!used[i] && (b < 0 || dist[i] < dist[b])) b = i;
             used[b] = 1;
-            pick[npick] = b;
+            pick[npick] = cand[b];
         }
         free(dist);
         free(used);
     } else
-        for (; npick < ncorpse && npick < MAX_CORPSES; npick++) pick[npick] = npick;
+        for (; npick < ncand && npick < MAX_CORPSES; npick++) pick[npick] = cand[npick];
+    free(cand);
     const double *geo = (const double *)tabs[T_GEO];
     const int64_t *tk = (const int64_t *)tabs[T_TYPEK], *tv = (const int64_t *)tabs[T_TYPEV];
     int ntype = (int)tabs[T_NTYPE];
@@ -957,9 +1008,9 @@ int w3f_obs_a(const int64_t *a) {
         int kind;
         int64_t id, typ = 0, owner = -1, x, y;
         if (j < npick) {
-            const int64_t *c = corpses + 5 * pick[j];
-            kind = 0, id = -(3000 + j), typ = c[0], owner = c[1], x = c[2], y = c[3];
-            double age = (double)(t - c[4]) * step_s / 90.0;
+            const int64_t *c = corpses + 7 * pick[j];
+            kind = 0, id = -(3000 + j), typ = c[1], owner = c[2], x = c[3], y = c[4];
+            double age = (double)(t - c[5]) * step_s / 90.0;
             o[A + K_AGE] = (float)(2.0 < age ? 2.0 : age);
         } else if (j < npick + nground) {
             const int64_t *g = ground + 4 * (j - npick);
@@ -992,19 +1043,4 @@ int w3f_obs_a(const int64_t *a) {
             }
     }
     return m;
-}
-
-/* obsfull.State.events' corpses: out[i] = 1 when a living row (not DEAD) has the id ids[i], else 0. Its arguments in
- * one int64 array: rows, nrows, ncols, ids, nids, out (int64). */
-void w3f_ids_alive_a(const int64_t *a) {
-    const int64_t *rows = (const int64_t *)a[0], *ids = (const int64_t *)a[3];
-    int nrows = (int)a[1], ncols = (int)a[2], nids = (int)a[4];
-    int64_t *out = (int64_t *)a[5];
-    for (int i = 0; i < nids; i++) out[i] = 0;
-    for (int r = 0; r < nrows; r++) {
-        const int64_t *u = rows + (size_t)r * ncols;
-        if (u[C_FLAGS] & DEAD) continue;
-        for (int i = 0; i < nids; i++)
-            if (u[C_ID] == ids[i]) out[i] = 1;
-    }
 }
