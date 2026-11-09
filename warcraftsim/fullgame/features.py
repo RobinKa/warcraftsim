@@ -670,10 +670,12 @@ _KINDS: dict | None = None
 def _kinds() -> dict:
     """herodata.unit_kinds (undead, mechanical, ancient) and SPELL_IMMUNE as isin's sorted codes, once."""
     global _KINDS
-    if _KINDS is None:
-        _KINDS = {k: codes(v) for k, v in _mod("herodata").unit_kinds().items()}
-        _KINDS["immune"] = codes(SPELL_IMMUNE)
-    return _KINDS
+    got = _KINDS
+    if got is None:  # (made whole, then published: an actor's game threads share it, and one had been able to get it
+        got = {k: codes(v) for k, v in _mod("herodata").unit_kinds().items()}  # without "immune" yet)
+        got["immune"] = codes(SPELL_IMMUNE)
+        _KINDS = got
+    return got
 
 
 def spell_targets(order: int, rows: np.ndarray, player: int) -> np.ndarray:

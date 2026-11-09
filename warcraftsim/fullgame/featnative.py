@@ -397,7 +397,9 @@ def to_f16(a: np.ndarray) -> np.ndarray:
     return out
 
 
-_SPELL_TABLES: list = [None, None]  # spell_any's sorted type lists and spells: [what they were made from, (arrays, head)]
+_SPELL_TABLES: list = [None]  # spell_any's sorted type lists and spells: [(what they were made from, (arrays, head))],
+# the tuple replaced whole and read once a call (an actor's game threads share it: two reads had let another thread's
+# rebuild in between, and a view's arguments then pointed into tables nothing kept alive)
 
 
 def spell_any(fx, rows: np.ndarray, player: int, owner) -> dict | None:
@@ -407,21 +409,21 @@ def spell_any(fx, rows: np.ndarray, player: int, owner) -> dict | None:
     if L is None:
         return None
     spells, k = tuple(fx.FUTILE_SPELLS), fx._kinds()
-    key = (spells, k)
-    if _SPELL_TABLES[0] is None or _SPELL_TABLES[0][0] != spells or _SPELL_TABLES[0][1] is not k:  # (once: the kinds'
+    tabs = _SPELL_TABLES[0]
+    if tabs is None or tabs[0][0] != spells or tabs[0][1] is not k:  # (once: the kinds' codes are made once)
         arrs = [np.ascontiguousarray(k[n], np.int64) for n in ("undead", "mechanical", "ancient", "immune")]
         sp = np.asarray([v for o in spells for v in (int(fx.FUTILE_SPELLS[o] == "undead"), fx.SPELL_CASTERS[o])] or [0],
                         np.int64)
         head = _array("q", [x for a in arrs for x in (a.ctypes.data, len(a))] + [len(spells), sp.ctypes.data])
-        _SPELL_TABLES[:] = [key, (arrs, sp, head)]
+        tabs = _SPELL_TABLES[0] = ((spells, k), (arrs, sp, head))
     rows = np.ascontiguousarray(rows, np.int64)
     buf = owner.__dict__.get("_spell_buf")  # (codes are fixed, but a test may swap them)
-    if buf is None or buf[4] is not _SPELL_TABLES[0]:
+    if buf is None or buf[4] is not tabs[0]:
         a = _array("q", bytes(8 * 15))
         found = np.zeros(max(len(spells), 1), np.int64)
-        a[4:14] = _SPELL_TABLES[1][2]
+        a[4:14] = tabs[1][2]
         a[14] = found.ctypes.data
-        buf = owner._spell_buf = (a, a.buffer_info()[0], found, spells, _SPELL_TABLES[0], _SPELL_TABLES[1])  # (its tables kept alive)
+        buf = owner._spell_buf = (a, a.buffer_info()[0], found, spells, tabs[0], tabs[1])  # (its tables kept alive)
     a, found = buf[0], buf[2]
     a[0], a[1], a[2], a[3] = _rows_addr(rows), len(rows), rows.shape[1], int(player)
     L.w3f_spell_any_a(buf[1])
