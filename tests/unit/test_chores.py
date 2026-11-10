@@ -199,3 +199,47 @@ def test_burrow_mask_and_stand_down():
         assert BCAgent._stand_down(bot, r) == []  # (not again at once)
     finally:
         fx.set_econ_masks(0)
+
+
+def test_a_human_builder_at_its_frame_is_committed():
+    """A human builder's current order while it constructs is "repair" (852024), not the building's type (recorded
+    games): it counts as building (play.constructing), so the agent sends it no other order and its frame does not stall;
+    a worker repairing far from any frame (a finished building's repair) is free."""
+    from warcraftsim.fullgame import play
+    frame = _unit(20, 0, -1500, 0, "hbar", fx.STRUCTURE | fx.CONSTRUCTING)
+    builder = _unit(21, 0, -1500, 220, "hpea", fx.WORKER)
+    builder[fx.C_ORDER] = fx.REPAIR
+    far = _unit(22, 0, -2600, -600, "hpea", fx.WORKER)
+    far[fx.C_ORDER] = fx.REPAIR
+    rows = _base(militia=False, extra=(frame, builder, far))
+    own = rows[rows[:, fx.C_OWNER] == 0]
+    assert play.constructing(own, [21, 22], [20]) == {21}
+    assert play.constructing(own, [21, 22], []) == set() and play.constructing(own, [], [20]) == set()
+    bot, st = _bot(rows)
+    for marks in (True, False):  # (featnative's marks, or the numpy path)
+        bot.building_since = {}
+        obs = SimpleNamespace(events=[], ground=(), players={0: SimpleNamespace(
+            gold=500, lumber=500, food_used=5, food_cap=30, upkeep=0, gold_gathered=0, lumber_gathered=0, structures=2,
+            result=0)})
+        if not marks:
+            bot.view.step = lambda *a, **k: (setattr(bot.view, "_marks", None), st)[1]
+        bot.observe(obs, 5, rows)
+        assert 21 in bot.building_since and 22 not in bot.building_since
+        assert bot.committed(21) and not bot.committed(22)
+        n = st["n_own"]
+        order = [0] * n
+        order[st["index"][21]] = HARVEST
+        assert bot.commands(st, order, [st["index"][7]] * n, [0] * n, [0] * n) == []  # (not pulled off its frame)
+
+
+def test_lessons_take_no_worker_at_a_frame():
+    """The teacher's worker picks (the hall, the altar, lumber) leave out workers on their way to build or at a frame."""
+    from warcraftsim.fullgame.teacher import _free
+    a = _unit(1, 0, 0, 0, "hpea", fx.WORKER)
+    b = _unit(2, 0, 0, 0, "hpea", fx.WORKER)
+    b[fx.C_ORDER] = fx.REPAIR
+    c = _unit(3, 0, 0, 0, "hpea", fx.WORKER)
+    c[fx.C_ORDER] = code("hbar")
+    d = _unit(4, 0, 0, 0, "hpea", fx.WORKER)
+    d[fx.C_ORDER] = fx.HARVEST
+    assert _free(np.stack([a, b, c, d])).tolist() == [True, False, False, True]

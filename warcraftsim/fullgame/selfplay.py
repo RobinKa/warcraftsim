@@ -2182,7 +2182,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             else:
                 shops = [u for u in obs.units if u.type == kind and u.alive]
             mine = self._mine(obs) if mine is None else mine
-            workers = [u for u in mine if u.is_worker and not u.is_structure and not fx.building(int(u.flags), u.order)]
+            workers = [u for u in mine if u.is_worker and not u.is_structure and not fx.building(int(u.flags), u.order)
+                       and u.order != _REPAIR]  # (repairing: a human builder at its frame, play.constructing)
             if not shops or not workers:
                 self.why_not = "no shop" if not shops else "no worker"
                 return None
@@ -2197,7 +2198,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             away = _AWAY  # (in a mine, or loaded: refused)
             mine = self._mine(obs) if mine is None else mine
             workers = [u for u in mine if u.is_worker and not u.is_structure and not fx.building(int(u.flags), u.order)
-                       and not int(u.flags) & away]
+                       and u.order != _REPAIR and not int(u.flags) & away]  # (a human builder at its frame repairs it:
+            # its label had pulled builders off their frames, the agent commits them now, play.constructing)
             if not workers:
                 self.why_not = "no worker"
                 w = WORKER_TYPES.get(self.race)

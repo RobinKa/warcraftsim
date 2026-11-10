@@ -106,6 +106,7 @@ NATURAL_FROM_START = 1500.0  # (the main mine is nearer its start)
 LOW_EVERY = 20  # (--expand-lesson: the main mine looked at every 20 steps, 10 s)
 CAMP_NEAR = 900.0  # creeps this near the natural mine guard it
 HARVEST = 852018
+REPAIR = 852024  # (a human builder's current order while it constructs, play.constructing)
 HIDDEN = 16  # (UnitFlags.HIDDEN: a worker inside a gold mine)
 MIX_FROM, MIX_SLACK, MIX_LEAST = 120.0, 0.15, 5
 # the lumber lesson's choppers (undead's: ghouls) and how many at most: people put ~5 workers on lumber (2-3 ghouls),
@@ -565,7 +566,7 @@ class Teacher:
             return []
         fl = alive[:, fx.C_FLAGS]
         cand = alive[(alive[:, fx.C_TYPE] == fourcc(code)) & (fl & (HIDDEN | fx.STRUCTURE) == 0)
-                     & (alive[:, fx.C_ORDER] < fx.TYPE_CODE) & ~np.isin(alive[:, fx.C_ID], list(choppers))]
+                     & _free(alive) & ~np.isin(alive[:, fx.C_ID], list(choppers))]
         halls = alive[fx.isin(alive[:, fx.C_TYPE], HALL_CODES)]
         if not len(cand) or not len(halls):
             return []
@@ -591,7 +592,7 @@ class Teacher:
         alive = fx.own_alive(rows, self.side)
         code = ALTAR.get(self.race)
         workers = alive[fx.isin(alive[:, fx.C_TYPE], WORKER_CODES) & (alive[:, fx.C_FLAGS] & HIDDEN == 0)
-                        & (alive[:, fx.C_FLAGS] & fx.STRUCTURE == 0)]
+                        & (alive[:, fx.C_FLAGS] & fx.STRUCTURE == 0) & _free(alive)]
         halls = alive[fx.isin(alive[:, fx.C_TYPE], HALL_CODES)]
         if code is None or not len(workers) or (can is not None and not can(code, fx.POINT)) or not self._due("altar", t):
             return []
@@ -747,9 +748,18 @@ class Teacher:
             ox, oy = 750.0 * (sx - mx) / n, 750.0 * (sy - my) / n
         x, y = mx + ox, my + oy
         alive = fx.own_alive(rows, self.side)
-        workers = alive[fx.isin(alive[:, fx.C_TYPE], WORKER_CODES) & (alive[:, fx.C_FLAGS] & HIDDEN == 0)]
+        workers = alive[fx.isin(alive[:, fx.C_TYPE], WORKER_CODES) & (alive[:, fx.C_FLAGS] & HIDDEN == 0) & _free(alive)]
+        if not len(workers):
+            return []
         w = workers[int(np.argmin(np.hypot(workers[:, fx.C_X] - x, workers[:, fx.C_Y] - y)))]
         return [Build(int(w[fx.C_ID]), hall, x, y)]
+
+
+def _free(alive: np.ndarray) -> np.ndarray:
+    """Per row: no worker on its way to build (its order a building's type) nor at a frame (a human builder constructs
+    with "repair", play.constructing): a lesson that took one had pulled it off its building."""
+    o = alive[:, fx.C_ORDER]
+    return (o < fx.TYPE_CODE) & (o != REPAIR)
 
 
 TH, EH, HF = rulesnative.TH, rulesnative.EH, rulesnative.HF  # (the C's facts: their heads, a hero's fields)
