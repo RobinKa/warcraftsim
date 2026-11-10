@@ -1391,6 +1391,24 @@ def mine_scale(map_name: str) -> float:
         return 1.0
 
 
+def eval_map_cfg(cfg: dict) -> dict:
+    """The settings of a game on --eval-map's map: its map, strategies (--eval-z-pool) and order costs, the rest as
+    `cfg` (whatever play_one reads by the map follows: the mine feature's scale, the research steps, the teacher's
+    pace)."""
+    return {**cfg, "map": cfg["eval_map"], "z_pool": cfg.get("eval_z_pool") or cfg.get("z_pool"),
+            "costs_array": np.asarray(cfg["eval_costs"], np.int64) if cfg.get("eval_costs") else None}
+
+
+def real_game_cfg(cfg: dict) -> dict | None:
+    """A training slot's settings for --real-share's launches ("script:ai-X (real)": the built-in AI untaxed): the real
+    game, the evaluation games' (eval_map_cfg), when --eval-map names another map than the run's and --real-map is on;
+    else None (the run's own map). Until 2026-11-10 they always played the run's map: on echofast2 a "real" launch was
+    echofast2 against the untaxed AI, and fgself-200's --real-share 0.5 never played Echo Isles' own rules."""
+    if not cfg.get("real_map", 1) or not cfg.get("eval_map") or cfg["eval_map"] == cfg.get("map"):
+        return None
+    return eval_map_cfg(cfg)
+
+
 def agent_difficulty(cfg: dict) -> str:
     """An agent slot's difficulty: normal, a person's income. An agent slot is a computer slot, and the engine gives it
     its difficulty's income (insane: double; docs/reference/engine-notes.md), so the learner had gathered twice what a
@@ -1496,14 +1514,15 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
     name = f"fgsp{cfg['slot']}_{wid}_{k}"
     evaluating = k >= cfg["games_per_actor"]  # an evaluation slot (--eval-games-per-actor)
     if evaluating and cfg.get("eval_map"):  # (--eval-map: its games on another map, with its costs and strategies)
-        cfg = {**cfg, "map": cfg["eval_map"], "z_pool": cfg.get("eval_z_pool") or cfg.get("z_pool"),
-               "costs_array": np.asarray(cfg["eval_costs"], np.int64) if cfg.get("eval_costs") else None}
+        cfg = eval_map_cfg(cfg)
     paired: list[tuple] = []  # an evaluation slot's next launches: one matchup for every policy in turn
     mirrored: list[tuple] = []  # (--eval-vs) the next launch against a checkpoint: the last one's races swapped
     alive = Path(cfg["run_dir"]) / "remote-eval.alive"  # (scripts/remote_eval.py: its games still arrive)
     began = time.time()
     home_cfg, map_pool = cfg, cfg.get("eval_map_pool" if evaluating else "map_pool")  # (--map-pool: each launch its map)
+    real_cfg = real_game_cfg(home_cfg) if not evaluating else None  # (--real-share's launches: --eval-map's game)
     while not stop.is_set() and os.getppid() == cfg["learner_pid"]:
+        cfg = home_cfg  # (a real launch's settings were the last launch's alone)
         if map_pool:
             cfg = {**home_cfg, "map": mapframe.draw(rng, map_pool)}
         if evaluating and cfg.get("eval_fallback", 0) > 0:  # --eval-fallback: another machine plays them while
@@ -1570,6 +1589,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
         adv = agent_difficulty(cfg)  # (a person's income; with --opd-share the advisor's, protocol.ShadowAI)
         slots = [Agent(races[0], handicap=cfg["handicap"], difficulty=adv), Agent(races[1], handicap=cfg["handicap"], difficulty=adv)]
         real = bool(ai.get("real"))  # the real game (the yardstick, no curriculum)
+        if real and real_cfg is not None:  # (on --eval-map's map, its costs and strategies, as the evaluation games:
+            cfg = real_cfg  # until 2026-11-10 these launches played the run's map, echofast2, the AI untaxed alone)
         curr = ai["kind"] == "ai" and "by_race" in ai  # a curriculum game (League.knobs, by the learner's race)
         key = matchup(cfg["mirror"], races[side], races[1 - side])
         if curr:
@@ -1605,7 +1626,7 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
             per_launch = min(per_launch, EVAL_PER_LAUNCH)  # to head were one matchup; evaluation's verdicts need many)
         try:
             with GameInstance(setup, name=name, timeout=120) as g:
-                if map_pool:  # (another map's positions as the process's frame reads them)
+                if map_pool and cfg is not real_cfg:  # (another map's positions as the process's frame reads them)
                     g = mapframe.framed(g, cfg["map"])
                 obs = g.start()
                 fresh = True
@@ -5343,6 +5364,9 @@ def main(argv: list[str] | None = None) -> int:
                     "slot's too, so its income: not insane, which doubles it)")
     ap.add_argument("--real-share", type=float, default=0.1, help="with a curriculum: the share of launches against "
                                                                    "the built-in AI that play the real game (the yardstick)")
+    ap.add_argument("--real-map", type=int, default=1, help="1: --real-share's launches play --eval-map's game when it "
+                    "names another map (its map, costs and --eval-z-pool), as the evaluation games; 0: the run's map with "
+                    "the AI untaxed (every run before 2026-11-10: on echofast2 they never played Echo Isles' own rules)")
     ap.add_argument("--curriculum-mode", default="hp", choices=("hp", "delay", "tax"),
                     help="the curriculum's knobs (League): the learner's hit points then the AI's late start, the "
                          "late start alone, or a tax on the AI's income")
@@ -5940,7 +5964,7 @@ def main(argv: list[str] | None = None) -> int:
            "actors": args.actors, "values": unit_values(), "shaping": args.shaping, "shaping_scale": args.shaping_scale,
            "shaping_decay": args.shaping_decay,
            "tie_break": args.tie_break, "tie_value": args.tie_value, "compile": bool(args.compile), "native_obs": bool(args.native_obs),
-           "real_share": args.real_share, "infer_batch": 64, "infer_streams": args.infer_streams, "infer_pipeline": args.infer_pipeline,
+           "real_share": args.real_share, "real_map": args.real_map, "infer_batch": 64, "infer_streams": args.infer_streams, "infer_pipeline": args.infer_pipeline,
            "infer_fuse": args.infer_fuse, "game_cuts": args.game_cuts, "shared_noise": args.shared_noise,
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
@@ -6002,7 +6026,9 @@ def main(argv: list[str] | None = None) -> int:
     if remote_pipes:
         from .gateway import gateway_main
         files = {"vocab": Path(cfg["vocab"]).read_text(),
-                 "z_pool": Path(cfg["z_pool"]).read_text() if cfg.get("z_pool") else None}
+                 "z_pool": Path(cfg["z_pool"]).read_text() if cfg.get("z_pool") else None,
+                 # (the real game's strategies: --real-share's launches there, real_game_cfg)
+                 **({"eval_z_pool": Path(cfg["eval_z_pool"]).read_text()} if cfg.get("eval_z_pool") else {})}
         hello = {"run": args.name, "cfg": cfg, "files": files, "start_update": cfg["start_update"],
                  "wine": {"wine": args.wine, "fsync": bool(args.fsync), "ntsync": bool(args.ntsync)}}
         from . import wire
