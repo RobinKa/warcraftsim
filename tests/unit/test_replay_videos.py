@@ -499,3 +499,31 @@ def test_overlay_composes_bgrx_frames_beside_its_panel(monkeypatch):
     assert img[4, 0, :3].tolist() == [0, 150, 0]  # (the strip below the picture)
     end = ov.render_end(a, 40)
     assert len(end) == int(ov.END_SECONDS * 40) and len(end[0]) == len(frames[0])
+
+
+def test_panel_shows_hero_items_and_upgrades():
+    """The panel draws each hero's items under it and both sides' upgrades (2026-11-10, the user); traces from before
+    (heroes without items, no upgrades) still draw."""
+    from types import SimpleNamespace
+    from warcraftsim.fullgame.overlay import FullGameOverlay
+    base = {"t": 0, "game_time": 600.0, "material": {"0": 3000, "1": 2800}, "res": {"0": [100, 50, 30, 40]},
+            "orders": {}, "value": {}, "entropy": {}}
+    new = dict(base, heroes={"0": [["Hpal", 3, 1, [2, 1, 0, 0], ["hslv", "stwp"]]], "1": []},
+               upgrades={"0": {"Rhme": 2}, "1": {}})
+    old = dict(base, heroes={"0": [["Hpal", 3, 1, [2, 1, 0, 0]]], "1": []})
+    sides = [{"player": 0, "name": "a (human)", "kind": "agent"}, {"player": 1, "name": "b (orc)", "kind": "ai"}]
+    for step in (new, old):
+        ov = FullGameOverlay({"steps": [step] * 3, "gamma": 0.99, "sides": sides, "outcome": {"0": 1.0, "1": -1.0},
+                              "shaping": {}, "title": "t"})
+        ov.begin(None, {}, 64, 36)
+        img = ov._panel(1, SimpleNamespace(game_time=600.0))
+        assert img.size == (ov.PANEL_W, 36 + ov.STRIP_H)
+
+
+def test_trace_heroes_carry_items():
+    from types import SimpleNamespace
+    from warcraftsim.fullgame import trace
+    hero = SimpleNamespace(is_hero=True, owner=0, type="Hpal", hero_level=2, alive=True, abilities=[(1, 0), (1, 0), (0, 0), (0, 0)],
+                           items=(int.from_bytes(b"hslv", "big"), 0, 0, 0, 0, 0))
+    out = trace.heroes(SimpleNamespace(units=[hero]))
+    assert out["0"][0][4] == ["hslv"]

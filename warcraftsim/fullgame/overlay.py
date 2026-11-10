@@ -220,12 +220,27 @@ class FullGameOverlay:
                 mine = hs.get(str(s["player"])) or []
                 if not mine:
                     y = self._wrapped(d, f"{'AB'[i]}: –", x0, x1, y, SIDE_COLORS[i]) + 2
-                for code, level, alive, levels in mine:
+                for h in mine:
+                    code, level, alive, levels = h[:4]
+                    items = h[4] if len(h) > 4 else []  # (traces before 2026-11-10 hold no items)
                     slots = _hero_abilities().get(code, ())
                     learned = ", ".join(f"{_name(a)} {lv}" for a, lv in zip(slots, levels) if lv > 0) or "none"
                     color = SIDE_COLORS[i] if alive else tuple(int(c * 0.5) for c in SIDE_COLORS[i])
                     y = self._wrapped(d, f"{'AB'[i]}: {_name(code)} {level}{'' if alive else ' (dead)'}: {learned}",
-                                      x0, x1, y, color) + 2
+                                      x0, x1, y, color, H - 52) + 2
+                    if items:
+                        y = self._wrapped(d, "items: " + ", ".join(_name(c) for c in items), x0 + 14, x1, y,
+                                          tuple(int(c * 0.8) for c in color), H - 52) + 2
+            y += 4
+        # the upgrades researched so far, each at its level (both sides': the video's view is an observer's)
+        ups = row.get("upgrades")
+        if ups is not None and y + 30 < H - 52:
+            d.text((x0, y), "upgrades: researched · level", font=self.f_small, fill=DIM)
+            y += 15
+            for i, s in enumerate(self.sides):
+                mine = ups.get(str(s["player"])) or {}
+                text = ", ".join(f"{_name(c)} {lv}" for c, lv in sorted(mine.items())) or "none"
+                y = self._wrapped(d, f"{'AB'[i]}: {text}", x0, x1, y, SIDE_COLORS[i], H - 52) + 2
             y += 4
         if len(self.steps) and np.isfinite(self.entropy).any() and y + 50 < H:
             ent = [(self.entropy[:, i], SIDE_COLORS[i], False) for i in range(len(self.sides))

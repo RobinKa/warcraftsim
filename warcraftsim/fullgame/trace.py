@@ -20,27 +20,32 @@ def _features():
 
 
 def heroes(obs: Observation) -> dict[str, list]:
-    """Each player's heroes: [type, level, alive, [each ability slot's level (data.abilities order)]]."""
+    """Each player's heroes: [type, level, alive, [each ability slot's level (data.abilities order)], [its items' types]]."""
     from .features import rawcode
     out: dict[str, list] = {"0": [], "1": []}
     ua = getattr(obs, "unit_array", None)
-    if ua is not None:  # (native observations: columns of native.py; the abilities' levels at 23, 25, 27, 29)
-        for r in ua[(ua[:, 11] & HERO_FLAG) > 0].tolist():
+    if ua is not None:  # (native observations: columns of native.py; the 6 items at 17-22, the abilities' levels at
+        for r in ua[(ua[:, 11] & HERO_FLAG) > 0].tolist():  # 23, 25, 27, 29)
             if r[2] in (0, 1):
-                out[str(r[2])].append([rawcode(r[1]), r[14], int(not r[11] & DEAD_FLAG), r[23:31:2]])
+                out[str(r[2])].append([rawcode(r[1]), r[14], int(not r[11] & DEAD_FLAG), r[23:31:2],
+                                       [rawcode(v) for v in r[17:23] if v]])
         return out
     for u in obs.units:
         if u.is_hero and u.owner in (0, 1):
-            out[str(u.owner)].append([u.type, u.hero_level, int(u.alive), [lv for lv, _ in u.abilities]])
+            out[str(u.owner)].append([u.type, u.hero_level, int(u.alive), [lv for lv, _ in u.abilities],
+                                      [rawcode(v) if isinstance(v, int) else v for v in u.items if v]])
     return out
 
 
-def trace_step(t: int, obs: Observation, material: dict, orders: dict, **policy) -> dict:
-    """One step's row: `material` {player: value}, `orders` {player: Counter of order labels},
-    `policy`: value / reward / entropy, each {player: float} (the players a policy controls)."""
+def trace_step(t: int, obs: Observation, material: dict, orders: dict, upgrades: dict | None = None, **policy) -> dict:
+    """One step's row: `material` {player: value}, `orders` {player: Counter of order labels}, `upgrades` {player: {research
+    code: level}} so far (the video's panel), `policy`: value / reward / entropy, each {player: float} (the players a
+    policy controls)."""
     res = {str(p): [s.gold, s.lumber, s.food_used, s.food_cap] for p, s in obs.players.items() if p in (0, 1)}
     row = {"t": t, "game_time": round(obs.game_time, 2), "material": {str(p): round(v) for p, v in material.items()},
            "res": res, "orders": {str(p): dict(c) for p, c in orders.items()}, "heroes": heroes(obs)}
+    if upgrades is not None:
+        row["upgrades"] = {str(p): dict(v) for p, v in upgrades.items()}
     for k, v in policy.items():
         row[k] = {str(p): round(float(x), 4) for p, x in v.items()}
     return row

@@ -2606,8 +2606,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             if s in bots:
                 bots[s].view.reserve = b.reserve
         sts = {s: bot.observe(obs, t, rows) for s, bot in bots.items()}
-        if capture_at is not None:  # (--late-capture: the research so far, then the state at its minute)
+        if capture_at is not None or record:  # (the research so far: --late-capture's state, a video's upgrades)
             late_game.note_research(research_seen, obs.events, rows)
+        if capture_at is not None:  # (--late-capture: the state at its minute)
             if obs.game_time >= capture_at:
                 captured = late_game.capture(rows, obs.players, races, cfg["map"], research_seen, obs.game_time,
                                              {u: r for b in bots.values() for u, r in b.view.assign.items()}, mat)
@@ -2646,7 +2647,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         if record:
             chose = {s: Counter(fx.order_label(*bots[s].orders[int(c)], names) for c in r["order"] if c)
                      for s, r in zip(live, results) if r is not None}
-            trace.append(trace_step(t, obs, mat, chose, value={s: r["value"] for s, r in zip(live, results) if r},
+            trace.append(trace_step(t, obs, mat, chose, upgrades=research_seen,
+                                    value={s: r["value"] for s, r in zip(live, results) if r},
                                     entropy={s: r["entropy"] for s, r in zip(live, results) if r}))
         for s, tc in teachers.items():  # (--teach: never carried out, the side's step just recorded labelled; every
             # step: a lesson the mask allows only on the step the player can pay (a first hero, an altar, the army mix)
