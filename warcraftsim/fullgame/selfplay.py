@@ -1277,6 +1277,9 @@ def merge_labels(step: dict, y: dict, teach: bool = False) -> None:
     n = step["n_own"]
     if teach:
         step["y_teach"] = (step.get("y_teach", np.zeros(n, bool)) | (y["y_order"][:n] > 0))
+    elif "y_teach" in step:  # (a unit this one labels anew is no lesson: the builder's label after the teacher's on the
+        step["y_teach"] = step["y_teach"] & ~(y["y_order"][:n] > 0)  # same unit, a building's mix lesson and its next
+        # target item, had kept --teach-coef's weight, ~10x a builder's label; bug finder 2026-11-10)
     if "y_order" in step:
         on = y["y_order"][:n] > 0
         for k in ("y_order", "y_ptr", "y_x", "y_y"):

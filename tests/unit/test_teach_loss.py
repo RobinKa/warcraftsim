@@ -67,6 +67,27 @@ def test_the_place_has_the_teach_weight(norm):
     assert grads[1] > 2.0 * grads[0]
 
 
+def _y(orders, x=-1):
+    import numpy as np
+    n = len(orders)
+    return {"y_order": np.asarray(orders, np.int16), "y_ptr": np.full(n, -1, np.int16),
+            "y_x": np.full(n, x, np.int16), "y_y": np.full(n, x, np.int16)}
+
+
+def test_a_later_label_on_a_lesson_s_unit_is_no_lesson():
+    """merge_labels: the builder's label after the teacher's on the same unit replaces it, and with it the teacher's
+    weight (a building's mix lesson, then its next target item: the item had kept --teach-coef)."""
+    from warcraftsim.fullgame.selfplay import merge_labels
+    step = {"n_own": 3}
+    merge_labels(step, _y([5, 0, 6]), teach=True)  # (lessons for units 0 and 2)
+    assert step["y_teach"].tolist() == [True, False, True]
+    merge_labels(step, _y([7, 8, 0], x=4))  # (the builder: units 0 and 1)
+    assert step["y_order"].tolist() == [7, 8, 6]
+    assert step["y_teach"].tolist() == [False, False, True]  # (unit 2's lesson stays)
+    merge_labels(step, _y([9, 0, 0]), teach=True)  # (a lesson again on unit 0)
+    assert step["y_order"].tolist() == [9, 8, 6] and step["y_teach"].tolist() == [True, False, True]
+
+
 def test_no_lesson_no_teach_term():
     ev, mb, net = _batch(30, teach=False)
     _, _, teach = distill_loss(net, ev, mb, None, teach_scale=10.0, norm="units")
