@@ -124,7 +124,9 @@ def actor_settings(hello: dict, a, local_dir: Path, key: bytes, slot: int) -> di
     cfg = dict(hello["cfg"])
     cfg.pop("shared_rows", None)
     cfg.update(run_dir=str(local_dir), vocab=str(local_dir / "vocab.json"),
-               z_pool=str(local_dir / "z_pool.json") if hello["files"].get("z_pool") else "", eval_z_pool="",
+               z_pool=str(local_dir / "z_pool.json") if hello["files"].get("z_pool") else "",
+               # (the real game's strategies, for --real-share's launches there: selfplay.real_game_cfg)
+               eval_z_pool=str(local_dir / "eval_z_pool.json") if hello["files"].get("eval_z_pool") else "",
                games_per_actor=a.games_per_actor, eval_games_per_actor=0, eval_games=0, actors=a.actors,
                video_every=0.0, cpus=None, device="cpu", slot=slot, learner_pid=os.getpid(),
                seed=f"{cfg.get('seed', 0)}/{a.name}", start_update=f"{hello.get('start_update', 0)}/{int(time.time())}",
@@ -167,7 +169,8 @@ class Control:
 
 def write_files(hello: dict, local_dir: Path) -> None:
     local_dir.mkdir(parents=True, exist_ok=True)
-    for name, text in (("vocab.json", hello["files"]["vocab"]), ("z_pool.json", hello["files"].get("z_pool"))):
+    for name, text in (("vocab.json", hello["files"]["vocab"]), ("z_pool.json", hello["files"].get("z_pool")),
+                       ("eval_z_pool.json", hello["files"].get("eval_z_pool"))):
         if text:
             tmp = local_dir / f"{name}.tmp"
             tmp.write_text(text)

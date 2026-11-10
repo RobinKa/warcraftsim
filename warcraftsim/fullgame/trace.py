@@ -199,13 +199,19 @@ def material(obs, values: dict, hero_level: float = 0.0, worker_cap: int = 0) ->
     return out
 
 
+# units a player's unit turns into for nothing, which the tables price at 0: the source's value (an acolyte sacrificed
+# at the sacrificial pit becomes a shade; at 0 the shaping's material had read each shade as 75 lost, and an enemy's
+# as nothing to kill: 1,407 shades in fgself-200's first 3,780 undead games)
+MADE_FROM = {"ushd": "uaco"}
+
+
 def unit_values() -> dict[str, int]:
-    """What each unit type costs (gold + lumber, the game's own tables): {type id: value}."""
+    """What each unit type costs (gold + lumber, the game's own tables; MADE_FROM's at their source's): {type id: value}."""
     from ..data.mpq import GameArchives
     from ..data.objects import parse_slk
     with GameArchives() as g:
         rows = parse_slk(g.read("Units\\UnitBalance.slk").decode("latin-1"))
-    out = {}
+    out, by_code = {}, {}
     for r in rows:
         oid = r.get("unitBalanceID", "")
         if len(oid) != 4:
@@ -215,7 +221,10 @@ def unit_values() -> dict[str, int]:
         except ValueError:
             continue
         if v > 0:
-            out[str(int.from_bytes(oid.encode("latin-1"), "big"))] = v
+            out[str(int.from_bytes(oid.encode("latin-1"), "big"))] = by_code[oid] = v
+    for made, src in MADE_FROM.items():
+        if src in by_code and str(int.from_bytes(made.encode("latin-1"), "big")) not in out:
+            out[str(int.from_bytes(made.encode("latin-1"), "big"))] = by_code[src]
     return out
 
 

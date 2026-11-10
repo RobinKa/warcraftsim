@@ -276,9 +276,10 @@ class Teacher:
             # an item lying near, picked up when no enemy is near
             if hid in pickers and fx.MACROS >= 2:
                 h = rows[i]
-                if enemies is None:
+                if enemies is None:  # (those it sees, as the other lessons': an unseen one near had held the label back)
                     enemies = rows[(rows[:, fx.C_OWNER] == 1 - self.side)
-                                   & (rows[:, fx.C_FLAGS] & (fx.DEAD | fx.STRUCTURE) == 0)]
+                                   & (rows[:, fx.C_FLAGS] & (fx.DEAD | fx.STRUCTURE) == 0)
+                                   & ((rows[:, fx.C_VIS] >> self.side) & 1 == 1)]
                 if not (np.hypot(enemies[:, fx.C_X] - h[fx.C_X], enemies[:, fx.C_Y] - h[fx.C_Y]) < ENEMY_NEAR).any() \
                         and self._due(f"item {hid}", t, "item"):
                     out.append(ImmediateOrder(hid, fx._mod("macros").PICKUP))
