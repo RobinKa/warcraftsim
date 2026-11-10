@@ -2473,9 +2473,11 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         else:
             for d in (zs, zm, made, builders, trackers, viol):
                 d.clear()
+            for s, bot in bots.items():  # (the first drawn targets' inputs too, --late-z or not: cleared only with it
+                # until 2026-11-10, a late start's views had kept them, a target seen and never paid, and the balance's
+                # tax counted them: 840 of fgself-201's first 1,524 late starts had drawn one; even_out below)
+                bot.view.z, bot.view.zmask, bot.view.forbid, bot.view.mix_target = None, None, None, {}
             if cfg.get("late_z"):
-                for s, bot in bots.items():
-                    bot.view.z, bot.view.zmask, bot.view.forbid, bot.view.mix_target = None, None, None, {}
                 for s in trajs if pool is not None else ():
                     st = late_game.plan_target(late_start, s, pool["items"][races[s]],
                                                _MERCENARIES if fx.NEUTRAL == 2 else (), trainable_units(),
@@ -2486,7 +2488,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                         made[s] = {}
                         if cfg.get("z_build"):
                             builders[s] = TargetBuilder(cfg, vocab, s, zs[s], random.Random())
-                even_out()
+            even_out()  # (the balance told the targets the game has)
     # the scenario "base2" (scenarios.py): the agents' sides (bots: not the built-in AI's, not the hand-written player's)
     # start with their naturals running. Its state, in late.py's form, goes the late start's way below: steps 0 to 2 set it
     # up, no side acts before step 2, so the shaping's potential and Production start from it (no gift in the first reward,
