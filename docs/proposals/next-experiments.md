@@ -29,7 +29,8 @@ Rejected changes worth switching on anyway (2026-11-06 review): none of the tuni
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-205` (running) | all of the day's fixes, no blind start (5584484), from `fgself-197` | The corrected base |
+| `fgself-207` (stopped at 14.7M) | a plain fork of `fgself-197` on its own code + the fade fix | Dropped too (35% h2h, insane -14): forking itself takes a strong start down; resuming does not |
+| `fgself-205` (stopped at 13M) | all of the day's fixes, no blind start (5584484), from `fgself-197` | Below `fgself-197` (34% h2h, insane -23) |
 | `fgself-204` (stopped at 14M) | the fixes with `--teach-point 0` | Confounded: every fork of `fgself-197` began blind to the new entities for ~600 updates |
 | `fgself-203` (stopped at 30M) | the expansion fixes alone (no `--expand-lesson`) | 33% h2h against `fgself-197`, insane -19: the fixes hurt too |
 | `fgself-202` (stopped, collapsed) | expansion fixes + `--expand-lesson 0.5` (item 10) | It expanded (17% of no-target games), but h2h 22% |
