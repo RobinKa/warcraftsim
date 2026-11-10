@@ -349,3 +349,27 @@ def test_gateways_sharing_a_port_fill_every_slot(tmp_path):
         stop.set()
         for s in socks:
             s.close()
+
+
+def test_code_version_holds_the_game_tables(tmp_path):
+    """The handshake's code_version changes with what a remote game runs: the package's Python and the game's tables it
+    reads (data/*.json: --full-vocab's order ids, what a remote game sends the game; left out until 2026-11-10), not the
+    dashboard's files."""
+    pkg = tmp_path / "warcraftsim"
+    for d in ("fullgame", "data", "dashboard"):
+        (pkg / d).mkdir(parents=True)
+    (pkg / "fullgame" / "a.py").write_text("x = 1\n")
+    (pkg / "data" / "order_ids.json").write_text('{"attack": 851983}')
+    (pkg / "dashboard" / "index.html").write_text("<html></html>")
+
+    def version():
+        wire._CODE.pop(str(tmp_path), None)
+        return wire.code_version(tmp_path)
+    v0 = version()
+    (pkg / "dashboard" / "index.html").write_text("<html>2</html>")
+    assert version() == v0
+    (pkg / "data" / "order_ids.json").write_text('{"attack": 851984}')
+    v1 = version()
+    assert v1 != v0
+    (pkg / "fullgame" / "a.py").write_text("x = 2\n")
+    assert version() != v1
