@@ -1773,6 +1773,7 @@ _MINE_CODES: dict = {}  # (race -> its worked mines' types, features.ECON_WORKER
 EXPANSION_ITEMS = {"htow", "ogre", "unpl", "etol", "ugol"}
 RENDER_NICE = 10  # (the run's video renderer: frame-stepped, so a lower priority only slows it; at 0 it took ~2 of the
 # 32 threads from the niced games, 6% of the machine)
+TEACH_POINT = 0.5  # (--teach-point: the teacher's lessons' place in its loss, distill_loss)
 UNTAXED_PAST = 0.25  # (--win-balance: the share of games against past snapshots left untaxed, PFSP's)
 WORKER_IDS = {int.from_bytes(c.encode(), "big") for c in WORKER_TYPES.values()}
 _FOOD: dict[int, int] = {}
@@ -3743,13 +3744,16 @@ def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast, teach_scale: fl
         # (a lesson's place too, as the labels' l_pt: the hall at the natural, the camp's attack-move, the altar's spot,
         # the tree to chop. Without it a point lesson's order had --teach-coef and its place only --opd-coef's share
         # of l_pt, ~10-20x less: the policy learned "build a hall" and built it at home; bug finder 2026-11-10)
-        t_pt = _masked_ce(xl, y_x, tm) + _masked_ce(yl, y_y, tm)
-        if y_f is not None and fine_head(net):
-            t_pt = t_pt + _masked_ce(net.fine_logits(z, y_x, y_y), y_f, tm)
+        # (--teach-point W: the place's weight; 0: as before 2026-11-10, the order and the pointer only)
+        t_pt = torch.zeros((), device=out.device)
+        if TEACH_POINT > 0:
+            t_pt = _masked_ce(xl, y_x, tm) + _masked_ce(yl, y_y, tm)
+            if y_f is not None and fine_head(net):
+                t_pt = t_pt + _masked_ce(net.fine_logits(z, y_x, y_y), y_f, tm)
         if norm == "units":
-            teach = (-(lp_y * tm).sum() + (_masked_ce(ptr, mb["y_ptr"], tm) + 0.5 * t_pt) * tm.sum()) / denom
+            teach = (-(lp_y * tm).sum() + (_masked_ce(ptr, mb["y_ptr"], tm) + TEACH_POINT * t_pt) * tm.sum()) / denom
         else:
-            teach = -(lp_y * tm).sum() / tm.sum().clamp(min=1) + _masked_ce(ptr, mb["y_ptr"], tm) + 0.5 * t_pt
+            teach = -(lp_y * tm).sum() / tm.sum().clamp(min=1) + _masked_ce(ptr, mb["y_ptr"], tm) + TEACH_POINT * t_pt
         out = out + teach_scale * teach
     return out, acc, teach.detach()
 
@@ -5416,6 +5420,7 @@ def main(argv: list[str] | None = None) -> int:
                     "its past snapshots that fit (this map's point bins, the same orders) with their records, "
                     "and its curriculum levels and balance (scripts/selfplay_fork.py: the parent's)")
     ap.add_argument("--pfsp", default="hard")
+    ap.add_argument("--teach-point", type=float, default=0.5, help="the weight of a lesson's place (x, y, the fine sub-cell) in the teacher's loss (--teach); 0: the order and the pointer only, as before 2026-11-10 (7dfea5b; fgself-203 with it: 33%% head to head against fgself-197)")
     ap.add_argument("--pfsp-data", type=float, default=0.0, help="PFSP with data (the league plan's item 6): this share of the games against past snapshots untaxed under --win-balance (0: 0.25, as before), and those with a target or in a scenario count in the snapshots' records too (their bias is about the same against each); before, ~1%% of them reached the records (taxed, a target, a scenario each took a game out) and PFSP drew the league about evenly")
     ap.add_argument("--batch-steps", type=int, default=8192, help="agent steps per update")
     ap.add_argument("--minibatch", type=int, default=256)
@@ -5600,6 +5605,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--note", default="", help="the run's notes (notes.md); with --resume, why it was restarted (the "
                                                 "restart's marker on the dashboard's charts)")
     args = ap.parse_args(argv)
+    global TEACH_POINT
+    TEACH_POINT = float(args.teach_point)  # (--teach-point: distill_loss)
     if exploiter_launch_share(args.exploiter_share, args.league_exploiters, args.league_exploiter_share) >= 1.0:
         ap.error("--exploiter-share plus --league-exploiters x --league-exploiter-share must stay below 1 (the "
                  "agents' and the built-in AI's launches get what is left)")

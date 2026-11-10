@@ -92,3 +92,19 @@ def test_no_lesson_no_teach_term():
     ev, mb, net = _batch(30, teach=False)
     _, _, teach = distill_loss(net, ev, mb, None, teach_scale=10.0, norm="units")
     assert float(teach) == 0.0
+
+
+@pytest.mark.parametrize("norm", ["units", "lessons"])
+def test_teach_point_zero_leaves_the_place_out(norm, monkeypatch):
+    """--teach-point 0: the lesson's place is not in the teacher's term (as before 2026-11-10): a label at another bin is
+    the same loss; with it, another."""
+    from warcraftsim.fullgame import selfplay
+    for w, differs in ((0.5, True), (0.0, False)):
+        monkeypatch.setattr(selfplay, "TEACH_POINT", w)
+        got = []
+        for y_x in (3, 30):
+            ev, mb, net = _batch(y_x, teach=True)
+            with torch.no_grad():
+                _, _, teach = selfplay.distill_loss(net, ev, mb, None, teach_scale=10.0, norm=norm)
+            got.append(float(teach))
+        assert (got[0] != pytest.approx(got[1])) is differs
