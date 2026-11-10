@@ -131,6 +131,25 @@ def test_builder_trains_workers_up_to_its_targets(monkeypatch):
     assert len(b.commands(_obs(t=110.0), {}, 60, 0.5, rows=_hall_rows(13))) == 1
 
 
+@pytest.mark.parametrize("teach,repair_mask,want", [(False, False, True), (True, False, True), (True, True, False),
+                                                    (False, True, True)])
+def test_builder_resumes_a_stalled_frame_only_where_the_agent_can(monkeypatch, teach, repair_mask, want):
+    """A human frame no worker builds (no hit points gained in 20 steps): the builder's resume (a repair on it). Taught
+    (--z-build 2) under --econ-masks 16 none: the agent never sends a repair to a frame (View.chores' repair_ids)."""
+    from warcraftsim.fullgame import selfplay as sp
+    b = _builder(monkeypatch, {"t": {}, "n": {}}, z_workers=0)
+    b.teach = teach
+    monkeypatch.setattr(fx, "REPAIR_MASK", repair_mask)
+    rows = _rows([(1, "htow", 0, fx.STRUCTURE), (2, "hbar", 0, fx.STRUCTURE | fx.CONSTRUCTING), (10, "hpea", 0, fx.WORKER)])
+    got = []
+    for t in range(0, 30):
+        got += b.commands(_obs(t=65.0 + t), {}, t, 0.5, rows=rows)
+    resumes = [c for c in got if getattr(c, "order", None) == sp._REPAIR]
+    assert bool(resumes) == want
+    if want:
+        assert resumes[0].unit == 10 and resumes[0].target == 2
+
+
 def test_builder_workers_capped_by_the_mines_and_off_by_default(monkeypatch):
     b = _builder(monkeypatch, {"t": {}, "n": {"hpea": 40}})
     o = _obs()

@@ -2099,6 +2099,9 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         if self.race != "human":  # (an orc frame takes no repair, not even from its builder: tested 2026-10-24; its
             # resume had been taught 140 times a game as orc, an order the game refuses; audit 6)
             return None
+        if self.teach and fx.REPAIR_MASK:  # (--econ-masks 16: the agent sends no repair to a frame, View.chores'
+            return None  # repair_ids hold finished buildings only, and the order is masked while none is damaged: the
+            # label taught an order that is never sent, 10,947 in 1,676 of fgself-201's human games; bug finder 2026-11-10)
         own = self._own_rows(obs)  # (each frame's id -> its hit points and place; from the rows)
         c = getattr(self, "_cols", _UA_COLS)
         if own is not None and c is _ROW_COLS and featnative.lib() is not None:  # (featnative.side's rows of its units
