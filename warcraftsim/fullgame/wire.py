@@ -133,15 +133,17 @@ _CODE: dict[str, str] = {}
 
 def code_version(root: Path | None = None) -> str:
     """A hash of what the actors' games and features run: the package's Python and JASS that they import (not
-    the dashboard's, the scripts'), the native sources and the built shim. A remote machine's must be the
-    learner's: other features, other orders or another harness would train the policy on what it does not do
-    here."""
+    the dashboard's, the scripts'), the game's tables the package reads (data/*.json: --full-vocab's order ids,
+    order_ids.json, are what a remote game sends the game for the policy's orders; left out until 2026-11-10), the
+    native sources and the built shim. A remote machine's must be the learner's: other features, other orders or
+    another harness would train the policy on what it does not do here."""
     from .. import paths
     root = Path(root or paths.REPO_ROOT)
     if str(root) not in _CODE:
         pkg = root / "warcraftsim"
         files = [p for p in pkg.glob("*.py")] + [p for d in ("fullgame", "runtime", "harness", "data", "rl")
-                                                  for p in (pkg / d).rglob("*") if p.suffix in (".py", ".j")
+                                                  for p in (pkg / d).rglob("*")
+                                                  if (p.suffix in (".py", ".j") or d == "data" and p.suffix == ".json")
                                                   and "__pycache__" not in p.parts]
         files += [p for p in (root / "native").rglob("*") if p.suffix in (".c", ".h", ".cpp")]
         files += [root / "build" / "shim" / f for f in ("w3shim.dll", "w3launch.exe") if (root / "build" / "shim" / f).exists()]
