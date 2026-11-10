@@ -1406,7 +1406,7 @@ def real_game_cfg(cfg: dict) -> dict | None:
     echofast2 against the untaxed AI, and fgself-200's --real-share 0.5 never played Echo Isles' own rules."""
     if not cfg.get("real_map", 1) or not cfg.get("eval_map") or cfg["eval_map"] == cfg.get("map"):
         return None
-    return eval_map_cfg(cfg)
+    return {**eval_map_cfg(cfg), "real_launch": True}  # (its rows say the map: play_one)
 
 
 def agent_difficulty(cfg: dict) -> str:
@@ -2887,6 +2887,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
            if side in bots and getattr(bots[side], "order_results", None) else {}),
         **({"map": cfg["map"], "base": "left" if obs.players[side].start_x < fx.MAP_CX else "right"}
            if (cfg.get("map_pool") or cfg.get("eval_map_pool")) and obs.players.get(side) is not None else {}),
+        **({"map": cfg["map"]} if cfg.get("real_launch") else {}),  # (--real-share's launches on --eval-map's map)
         **({"scenario": scenario} if scenario else {}),
         **({"late_minute": late_start["minute"]} if scenario == "late" else {}),  # (the state's minute)
         **({"late_replay": late_start["replay"]} if scenario == "late" and late_start.get("replay") else {}),

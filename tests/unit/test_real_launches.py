@@ -89,6 +89,7 @@ def test_real_game_cfg():
     cfg = {"map": "echofast2", "eval_map": "(2)EchoIsles", "z_pool": "a", "eval_z_pool": "b", "eval_costs": [[1, 2, 3]]}
     got = selfplay.real_game_cfg(cfg)
     assert got["map"] == "(2)EchoIsles" and got["z_pool"] == "b" and got["costs_array"].tolist() == [[1, 2, 3]]
+    assert got["real_launch"] and "real_launch" not in selfplay.eval_map_cfg(cfg)  # (its episode rows name the map)
     assert selfplay.real_game_cfg({**cfg, "eval_map": "echofast2"}) is None  # (the run's own map: nothing to switch)
     assert selfplay.real_game_cfg({**cfg, "real_map": 0}) is None
     assert selfplay.real_game_cfg({**cfg, "eval_z_pool": ""})["z_pool"] == "a"
