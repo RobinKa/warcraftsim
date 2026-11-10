@@ -5959,6 +5959,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"league: {name} added for good", flush=True)
     league.write()
     publish(net, resumed["update"] if resumed else 0, run_dir)
+    # --obs-fade / --memory-fade: only for a network that has never seen the new entities. A fork of a run that faded them in
+    # (its start weights' bias near 0) had them hidden again from its update 0 for the fade's length (every fork of
+    # fgself-197 spent ~600 updates nearly blind to corpses, items and area spells; 2026-11-10)
+    def _faded(key: str) -> bool:
+        if not args.start_weights:
+            return False
+        try:
+            b = torch.load(args.start_weights, map_location="cpu", weights_only=False)["model"].get(key)
+        except (OSError, RuntimeError, KeyError):
+            return False
+        return b is not None and float(b.max()) > -1.0
+    obs_fade_on = args.obs_fade > 0 and bool(net.config.get("obsfull")) and not _faded("kind_bias")
+    memory_fade_on = args.memory_fade > 0 and bool(net.config.get("ghost")) and not _faded("ghost_bias")
+    if args.obs_fade > 0 and net.config.get("obsfull") and not obs_fade_on:
+        print("--obs-fade: the start network already sees the new entity kinds (its bias ~0): no fade", flush=True)
     x_update = x_since = 0  # the exploiter's updates (its weights' version), and since its last restart
     if x_init is not None and resumed is not None:  # (the exploiters' restarts from the run's starting weights: on a
         got = run_start_state(run_dir, net, device)    # resume `net` held --init's when x_init was taken, and the
@@ -6276,9 +6291,9 @@ def main(argv: list[str] | None = None) -> int:
             if native is not None:  # (the inference loop's statistics: rounds during the update apart)
                 native.loop.learner_busy = 1
             measured = {}
-            if args.memory_fade > 0 and net.config.get("ghost"):  # (published with the weights: the actors see it too)
+            if memory_fade_on:  # (published with the weights: the actors see it too)
                 net.ghost_bias.fill_(-8.0 * max(0.0, 1.0 - update / args.memory_fade))
-            if args.obs_fade > 0 and net.config.get("obsfull"):  # (--obs-fade: the new entity kinds, likewise)
+            if obs_fade_on:  # (--obs-fade: the new entity kinds, likewise; not in a fork of a network that sees them)
                 net.kind_bias.fill_(-8.0 * max(0.0, 1.0 - update / args.obs_fade))
             part_stats = parts_pass(net, batch_chunks, args, device) if args.reward_parts else {}  # (--reward-parts)
             if args.noise_scale > 0 and update % args.noise_scale == 0:  # (at the weights the update starts from)
