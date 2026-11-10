@@ -1277,6 +1277,9 @@ def merge_labels(step: dict, y: dict, teach: bool = False) -> None:
     n = step["n_own"]
     if teach:
         step["y_teach"] = (step.get("y_teach", np.zeros(n, bool)) | (y["y_order"][:n] > 0))
+    elif "y_teach" in step:  # (a unit this one labels anew is no lesson: the builder's label after the teacher's on the
+        step["y_teach"] = step["y_teach"] & ~(y["y_order"][:n] > 0)  # same unit, a building's mix lesson and its next
+        # target item, had kept --teach-coef's weight, ~10x a builder's label; bug finder 2026-11-10)
     if "y_order" in step:
         on = y["y_order"][:n] > 0
         for k in ("y_order", "y_ptr", "y_x", "y_y"):
@@ -2096,6 +2099,9 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
         if self.race != "human":  # (an orc frame takes no repair, not even from its builder: tested 2026-10-24; its
             # resume had been taught 140 times a game as orc, an order the game refuses; audit 6)
             return None
+        if self.teach and fx.REPAIR_MASK:  # (--econ-masks 16: the agent sends no repair to a frame, View.chores'
+            return None  # repair_ids hold finished buildings only, and the order is masked while none is damaged: the
+            # label taught an order that is never sent, 10,947 in 1,676 of fgself-201's human games; bug finder 2026-11-10)
         own = self._own_rows(obs)  # (each frame's id -> its hit points and place; from the rows)
         c = getattr(self, "_cols", _UA_COLS)
         if own is not None and c is _ROW_COLS and featnative.lib() is not None:  # (featnative.side's rows of its units
@@ -2176,7 +2182,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             else:
                 shops = [u for u in obs.units if u.type == kind and u.alive]
             mine = self._mine(obs) if mine is None else mine
-            workers = [u for u in mine if u.is_worker and not u.is_structure and not fx.building(int(u.flags), u.order)]
+            workers = [u for u in mine if u.is_worker and not u.is_structure and not fx.building(int(u.flags), u.order)
+                       and u.order != _REPAIR]  # (repairing: a human builder at its frame, play.constructing)
             if not shops or not workers:
                 self.why_not = "no shop" if not shops else "no worker"
                 return None
@@ -2191,7 +2198,8 @@ class TargetBuilder:  # (uses protocol.Build and ImmediateOrder, imported below 
             away = _AWAY  # (in a mine, or loaded: refused)
             mine = self._mine(obs) if mine is None else mine
             workers = [u for u in mine if u.is_worker and not u.is_structure and not fx.building(int(u.flags), u.order)
-                       and not int(u.flags) & away]
+                       and u.order != _REPAIR and not int(u.flags) & away]  # (a human builder at its frame repairs it:
+            # its label had pulled builders off their frames, the agent commits them now, play.constructing)
             if not workers:
                 self.why_not = "no worker"
                 w = WORKER_TYPES.get(self.race)
@@ -3732,10 +3740,16 @@ def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast, teach_scale: fl
     teach = torch.zeros((), device=out.device)
     if teach_scale and "y_teach" in mb:  # (the heuristic teacher's lessons: rare, their own weight, --teach-coef)
         tm = (mb["y_teach"] & mb["own"] & (lp_y > -1e4)).float()
+        # (a lesson's place too, as the labels' l_pt: the hall at the natural, the camp's attack-move, the altar's spot,
+        # the tree to chop. Without it a point lesson's order had --teach-coef and its place only --opd-coef's share
+        # of l_pt, ~10-20x less: the policy learned "build a hall" and built it at home; bug finder 2026-11-10)
+        t_pt = _masked_ce(xl, y_x, tm) + _masked_ce(yl, y_y, tm)
+        if y_f is not None and fine_head(net):
+            t_pt = t_pt + _masked_ce(net.fine_logits(z, y_x, y_y), y_f, tm)
         if norm == "units":
-            teach = (-(lp_y * tm).sum() + _masked_ce(ptr, mb["y_ptr"], tm) * tm.sum()) / denom
+            teach = (-(lp_y * tm).sum() + (_masked_ce(ptr, mb["y_ptr"], tm) + 0.5 * t_pt) * tm.sum()) / denom
         else:
-            teach = -(lp_y * tm).sum() / tm.sum().clamp(min=1) + _masked_ce(ptr, mb["y_ptr"], tm)
+            teach = -(lp_y * tm).sum() / tm.sum().clamp(min=1) + _masked_ce(ptr, mb["y_ptr"], tm) + 0.5 * t_pt
         out = out + teach_scale * teach
     return out, acc, teach.detach()
 

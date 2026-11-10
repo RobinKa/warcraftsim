@@ -136,6 +136,23 @@ PICKUP_COMMIT_STEPS = 8  # (a hero sent to pick up an item: 4 s to walk there, m
 # unless it picks something up before)
 BUY_COMMIT_STEPS = 120  # (a unit sent to buy: 60 s to walk there, the harness keeps the purchase pending meanwhile; a
 # worker from its start reached the tavern, unseen, in 77 steps)
+FRAME_NEAR = 450.0  # (a worker repairing this near a frame of its player's constructs it: recorded human games, the
+# repairing builder's distance to its frame's centre a median 113-280 by type, a town hall's 280)
+
+
+def constructing(own: np.ndarray, repairing, frames) -> set:
+    """The ids of the workers among `repairing` (ids: workers whose current order is repair) within FRAME_NEAR of one of
+    `frames` (ids: the player's buildings under construction), of the player's rows `own`: those building a frame (a
+    human builder's order while it constructs is "repair", as a helper's)."""
+    if not len(repairing) or not len(frames):
+        return set()
+    ids = own[:, fx.C_ID]
+    fr = own[fx.isin(ids, fx.codes(frames))][:, [fx.C_X, fx.C_Y]].astype(np.float64)
+    rp = own[fx.isin(ids, fx.codes(repairing))]
+    if not len(fr) or not len(rp):
+        return set()
+    d = np.hypot(rp[:, None, fx.C_X] - fr[None, :, 0], rp[:, None, fx.C_Y] - fr[None, :, 1]).min(1)
+    return set(rp[d < FRAME_NEAR, fx.C_ID].tolist())
 
 
 class BCAgent:
@@ -302,15 +319,23 @@ class BCAgent:
         st = self.view.step(rows, me, events, t, opp)
         # the workers busy with a building order (features.building), and since when (the view's own entities' workers
         # on a building order, repairing, and its frames, when featnative made them: View._marks)
+        # (a human builder's current order while it constructs is "repair", not the building's: recorded games, 9,464 of
+        # 9,583 human frame-steps with a worker near had one repairing and none on the type. Committed then only on its
+        # walk, the policy pulled builders off their frames, which stalled for good (no resume under --econ-masks 16, no
+        # cancel): a repairing worker this near a frame of its player's is building it; bug finder 2026-11-10)
+        own = st["sel"][:st["n_own"]]
         marks = getattr(self.view, "_marks", None)
         if marks is not None:
-            busy = set(marks[0]) | set(marks[1]) if self.repair_builds else set(marks[0])
+            busy = set(marks[0]) | (set(marks[1]) if self.repair_builds else constructing(own, marks[1], marks[2]))
             self._frames_of = (st, marks[2])
         else:
-            sel = st["sel"][:st["n_own"]]
-            cur = sel[:, fx.C_ORDER]  # (by masks: a unit at a time, numpy's scalars, had been ~1% of an actor's time)
+            cur = own[:, fx.C_ORDER]  # (by masks: a unit at a time, numpy's scalars, had been ~1% of an actor's time)
+            work = own[:, fx.C_FLAGS] & fx.WORKER > 0
             to_build = (cur >= fx.TYPE_CODE) | ((cur == REPAIR) if self.repair_builds else False)
-            busy = set(sel[(sel[:, fx.C_FLAGS] & fx.WORKER > 0) & to_build, fx.C_ID].tolist())
+            busy = set(own[work & to_build, fx.C_ID].tolist())
+            if not self.repair_builds:
+                busy |= constructing(own, own[work & (cur == REPAIR), fx.C_ID].tolist(),
+                                     own[own[:, fx.C_FLAGS] & fx.CONSTRUCTING > 0, fx.C_ID].tolist())
             self._frames_of = None
         self.building_since = {u: self.building_since.get(u, t) for u in busy}
         return st if st["n_own"] > 0 else None
