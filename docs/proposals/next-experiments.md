@@ -29,7 +29,8 @@ Rejected changes worth switching on anyway (2026-11-06 review): none of the tuni
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-201` (running) | `--real-share 0.5` (bold 3), real launches in the real game (fixed), from `fgself-197` | Train on the game it is judged on |
+| `fgself-202` (running) | expansion fixes + `--expand-lesson 0.5` (item 10), from `fgself-197` | Teach expansions properly |
+| `fgself-201` (not kept) | `--real-share 0.5` (bold 3), real launches in the real game (fixed), from `fgself-197` | 44% h2h, insane level, lumber -28 |
 | `fgself-200` (invalid) | `--real-share 0.5` | Its "real" launches played `echofast2` untaxed (the bug since the start; fixed e4e28ce) |
 | `fgself-199` (not kept) | `--snapshot-every 400 --max-past 12 --pfsp-data 0.5` (bold 9), from `fgself-197` | Wider, but -19 against insane |
 | `fgself-198` (not kept) | `--pfsp-data 0.5` (bold 6), from `fgself-197` | 47% h2h, insane -9 (n.s.); the league was minutes deep |
