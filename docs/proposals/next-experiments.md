@@ -27,7 +27,8 @@ Rejected changes worth switching on anyway (2026-11-06 review): none of the tuni
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-200` (running) | `--real-share 0.5` (bold 3), from `fgself-197` | Half the AI launches in the real game |
+| `fgself-201` (running) | `--real-share 0.5` (bold 3), real launches in the real game (fixed), from `fgself-197` | Train on the game it is judged on |
+| `fgself-200` (invalid) | `--real-share 0.5` | Its "real" launches played `echofast2` untaxed (the bug since the start; fixed e4e28ce) |
 | `fgself-199` (not kept) | `--snapshot-every 400 --max-past 12 --pfsp-data 0.5` (bold 9), from `fgself-197` | Wider, but -19 against insane |
 | `fgself-198` (not kept) | `--pfsp-data 0.5` (bold 6), from `fgself-197` | 47% h2h, insane -9 (n.s.); the league was minutes deep |
 | `fgself-197` (kept, better, new base) | `--obs-full 1 --obs-fade 600` (bold 8), from `fgself-196` | 53.5% h2h vs `fgself-196`, 57% vs `fgself-182`; wins past 18 min 46% vs 16%; wider |
