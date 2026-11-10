@@ -1020,6 +1020,9 @@ def test_pickup_macro_takes_the_items_lying_near(v2):
         foe = _unit(90, 1, -4800, 2900, 1, 0, "ogru")
         tc = Teacher(0, "human", random.Random(0))
         assert tc.commands(np.vstack([rows, foe]), player, 300.0, 1, None, [80]) == []  # (a fight: later)
+        hidden = _unit(90, 1, -4800, 2900, 2, 0, "ogru")  # (as near, out of the player's sight: player 1's alone)
+        tc = Teacher(0, "human", random.Random(0))
+        assert tc.commands(np.vstack([rows, hidden]), player, 300.0, 1, None, [80]) == [ImmediateOrder(80, macros.PICKUP)]
     finally:
         fx.set_macros(0)
 
