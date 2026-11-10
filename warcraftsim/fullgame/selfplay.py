@@ -3732,10 +3732,16 @@ def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast, teach_scale: fl
     teach = torch.zeros((), device=out.device)
     if teach_scale and "y_teach" in mb:  # (the heuristic teacher's lessons: rare, their own weight, --teach-coef)
         tm = (mb["y_teach"] & mb["own"] & (lp_y > -1e4)).float()
+        # (a lesson's place too, as the labels' l_pt: the hall at the natural, the camp's attack-move, the altar's spot,
+        # the tree to chop. Without it a point lesson's order had --teach-coef and its place only --opd-coef's share
+        # of l_pt, ~10-20x less: the policy learned "build a hall" and built it at home; bug finder 2026-11-10)
+        t_pt = _masked_ce(xl, y_x, tm) + _masked_ce(yl, y_y, tm)
+        if y_f is not None and fine_head(net):
+            t_pt = t_pt + _masked_ce(net.fine_logits(z, y_x, y_y), y_f, tm)
         if norm == "units":
-            teach = (-(lp_y * tm).sum() + _masked_ce(ptr, mb["y_ptr"], tm) * tm.sum()) / denom
+            teach = (-(lp_y * tm).sum() + (_masked_ce(ptr, mb["y_ptr"], tm) + 0.5 * t_pt) * tm.sum()) / denom
         else:
-            teach = -(lp_y * tm).sum() / tm.sum().clamp(min=1) + _masked_ce(ptr, mb["y_ptr"], tm)
+            teach = -(lp_y * tm).sum() / tm.sum().clamp(min=1) + _masked_ce(ptr, mb["y_ptr"], tm) + 0.5 * t_pt
         out = out + teach_scale * teach
     return out, acc, teach.detach()
 
