@@ -202,3 +202,20 @@ def test_gauntlet_list_followed_in_place(tmp_path):
     stop.set()
     t.join(1)
     assert cfg["eval_checkpoints"] == ["pyproject.toml"] and copy["eval_checkpoints"] is cfg["eval_checkpoints"]
+
+
+def test_worker_plays_at_the_runs_inference_precision(tmp_path):
+    """The worker's network calls take the run's --infer-precision (the actors' and the run's own evaluation slots'):
+    they had been fp32 while the run's games played bf16-mixed. Runs without one: fp32, as before."""
+    from warcraftsim.fullgame.selfplay import precision_flags
+    assert evalworker.run_config(_run(tmp_path), "laptop", 2, 0)[0]["infer_precision"] == "fp32"
+    (tmp_path / "b").mkdir()
+    run = _run(tmp_path / "b")
+    data = json.loads((run / "run.json").read_text())
+    data["config"]["infer_precision"] = "bf16-mixed"
+    (run / "run.json").write_text(json.dumps(data))
+    cfg, _ = evalworker.run_config(run, "laptop", 2, 0)
+    assert precision_flags(cfg["infer_precision"]) == {"bf16": False, "tf32": False, "mixed": True}
+    src = (paths.REPO_ROOT / "warcraftsim" / "fullgame" / "evalworker.py").read_text()
+    body = src[src.index("def worker_main("):src.index("def _follow_gauntlet(")]
+    assert '**precision_flags(cfg.get("infer_precision"))' in body

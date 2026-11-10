@@ -158,6 +158,9 @@ def run_config(run_dir: Path, host: str, games: int, start_update) -> tuple[dict
            "tie_break": num("tie_break", 0.0), "tie_value": num("tie_value", 0.0), "unit_credit": 0.0,
            "upgo": 0.0, "chunk": num("chunk", 64, int), "max_past": num("max_past", 12, int),
            "avail_mask": _flag(c.get("avail_mask", 1)), "infer_entities": [int(x) for x in c.get("infer_entities", "48,96").split(",")],
+           # (the run's --infer-precision, as its actors sample: until 2026-11-10 the worker's calls were fp32 while the
+           # run's games, its own evaluation slots too, played bf16-mixed since 2026-11-06)
+           "infer_precision": c.get("infer_precision") if c.get("infer_precision") not in (None, "None", "") else "fp32",
            "exploiter_share": 0.0, "video_every": 0.0,
            # every slot evaluates (game_loop: k >= games_per_actor); the draws: this worker's, from this start
            "games_per_actor": 0, "eval_games_per_actor": games, "eval_games": 0,
@@ -193,7 +196,7 @@ def worker_main(wid: int, cfg: dict, games: int, keys: dict, host: str, q, stop)
 
     from ..runtime import reaper
     from . import features as fx
-    from .selfplay import Inference, Nets, _exit, game_loop
+    from .selfplay import Inference, Nets, _exit, game_loop, precision_flags
     signal.signal(signal.SIGTERM, _exit)
     if cfg.get("gauntlet_file"):  # (the gauntlet's processes: its list followed as the manager changes it)
         threading.Thread(target=_follow_gauntlet, args=(cfg, stop), daemon=True).start()
@@ -224,7 +227,7 @@ def worker_main(wid: int, cfg: dict, games: int, keys: dict, host: str, q, stop)
         # the calls padded to a few batch sizes and entity counts (each shape a CUDA graph, captured at its first call)
         buckets = tuple(sorted({b for b in (2, 4, 8) if b < games} | {games}))
         infer = Inference(nets, device, games, compile_=cuda, buckets=buckets, entities=tuple(cfg["infer_entities"]),
-                          guide=cfg.get("eval_guide", 0.0) > 0)
+                          guide=cfg.get("eval_guide", 0.0) > 0, **precision_flags(cfg.get("infer_precision")))
         rows = Rows(q, host, keys, infer)
         threads = [threading.Thread(target=game_loop, args=(wid, k, cfg, infer, rows, stop, None), daemon=True)
                    for k in range(games)]
@@ -269,6 +272,8 @@ def main(argv: list[str] | None = None) -> int:
                                                              "a process's games share its GIL, ~10 ms of Python a step)")
     ap.add_argument("--host", default=socket.gethostname(), help="this worker's name: the rows' host and part of the draws' seed")
     ap.add_argument("--device", help="the inference's device (default: cuda if available)")
+    ap.add_argument("--precision", default="", help="the inference's precision (selfplay --infer-precision's choices; "
+                    "default: the run's own, as its actors play; bf16 ones on a GPU only)")
     ap.add_argument("--hours", type=float, default=0.0, help="stop after this long (0: when stopped)")
     ap.add_argument("--gauntlet", type=Path, nargs="*", default=[], help="checkpoints (paths relative to the repository) "
                     "the current policy plays head to head in --gauntlet-games of the games: the top rated ones, played "
@@ -335,6 +340,8 @@ def main(argv: list[str] | None = None) -> int:
     cfg["costs"] = order_costs(vocab, cfg["map"]).tolist() if cfg["avail_mask"] else None
     cfg["order_names"] = vocab.get("order_names") or {}  # (only for videos' traces: none here)
     cfg["device"] = a.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    if a.precision:
+        cfg["infer_precision"] = a.precision
     cfg["slot"], slot_lock = claim_slot(RUNS)
     cfg["learner_pid"] = os.getpid()  # (game_loop and the processes stop when this process is gone)
     spec = run_dir / "league_spec.json"
