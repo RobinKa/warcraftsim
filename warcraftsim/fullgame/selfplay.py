@@ -72,6 +72,7 @@ from .trace import DEAD_FLAG, Production, material, trace_step, unit_values  # n
 from .play import unit_rows
 from .model import FullGameNet, act, adapt_config, anchor_kl, arch_key, evaluate, fine_head, load, point_parts, trained
 from .teacher import Teacher, lumber_short, pace as teacher_pace
+from .obsfull import buff_on as _buff_on
 from ..native import unit_from_row
 from .neutral import MERCENARIES as _MERCENARIES
 from ..protocol import Build as _Build, Buy as _Buy, ImmediateOrder as _ImmediateOrder, TargetOrder as _TargetOrder, \
@@ -1367,6 +1368,23 @@ def spells_cast(results: dict) -> dict:
     return out
 
 
+def lesson_casts(results: dict) -> dict:
+    """play.BCAgent.order_results ("Kind:order id" -> (sent, refused)) -> the policy's casts sent of the spells the spell
+    lesson teaches (--spell-lesson: teacher.SPELL_LESSONS, immolation's on and off), by order string."""
+    from .teacher import SPELL_LESSONS, TOGGLES, _spell_tables
+    table, info, ids = _spell_tables()
+    names = {info[c].order for c in SPELL_LESSONS if c in info and info[c].order}
+    names |= {n for _, on, off in TOGGLES.values() for n in (on, off)}
+    want = {ids[n]: n for n in names if n in ids}
+    out: dict = {}
+    for k, (sent, _) in results.items():
+        o = k.rpartition(":")[2]
+        name = want.get(int(o)) if o.isdigit() else None
+        if name is not None and sent:
+            out[name] = out.get(name, 0) + sent
+    return out
+
+
 def _json_or_none(line: str):
     """A JSON line, or None for one a machine reset left unfinished (NUL bytes, cut short)."""
     try:
@@ -2535,7 +2553,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                             upgrades=bool(cfg.get("upgrade_lesson", 0)), creep=int(cfg.get("creep_lesson", 0)),
                             pace=cfg.get("lesson_time_scale") or teacher_pace(cfg["map"]),
                             hunt=int(cfg.get("hunt_lesson", 0) == 1 or (cfg.get("hunt_lesson", 0) == 2
-                                     and opp.get("kind") in ("self", "past", "exploiter"))))
+                                     and opp.get("kind") in ("self", "past", "exploiter"))),
+                            spells=float(cfg.get("spell_lesson", 0.0) or 0.0))
                  for s in trajs if keys[s] == "current"}
                 if cfg.get("teach") and replay is None else {})
     # --teach-heuristic: a target drawn from the hand-written player's games (strategy.from_demos names the strategy) is
@@ -2677,6 +2696,12 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                 # View.step's set of them; read only)
                 tc.busy, tc.levels = bots[s].view.busy, bots[s].view.levels  # (audit 16's lessons: idle buildings,
                 # research levels; read only)
+                if tc.spells > 0:  # (--spell-lesson: an order the policy could give now, in the vocabulary's form and
+                    st_ = sts[s]   # its mask; a hero's buff from the step's obs-full block)
+                    tc.order_ok = lambda oid, k, av=av, oix=oix: ((c := oix.get((oid, k))) is not None
+                                                                  and (av is None or bool(av[c])))
+                    tc.buff_on = lambda uid, b, st_=st_: (None if (k := st_["index"].get(uid)) is None
+                                                          else _buff_on(st_["ent"][k], b))
                 c = tc.commands(rows, obs.players.get(s), obs.game_time, t, can, getattr(bots[s].view, "pickers", ()))
                 q = obs.players.get(s)
                 if c and q is not None:
@@ -2908,6 +2933,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"late_captured": captured["minute"]} if captured else {}),  # (--late-capture: this game's state at it)
         **({"spells": cast} if fx.SPELLS and side in bots and (cast := spells_cast(getattr(bots[side], "order_results", {})))
            else {}),  # (--spells: the learner's casts of each, sent to the game; audit 13 found no way to tell)
+        **({"spell_casts": sc} if cfg.get("spell_lesson") and side in bots
+           and (sc := lesson_casts(getattr(bots[side], "order_results", {}))) else {}),  # (--spell-lesson: the taught
+        # spells' casts the learner sent, its own; "taught" counts the lessons, "spell <ability>")
         **({"z_t": {c: round(v) for c, v in zs[side]["t"].items()},
             "z_made": {c: round(v) for c, v in made[side].items()}} if side in zs else {}),
         **({"z_mix_gap": round(strat.mix_gap(prod.trained[side], zs[side]), 3),
@@ -5130,6 +5158,13 @@ def main(argv: list[str] | None = None) -> int:
                     "lately (teacher.py; ties at 40 minutes with the winner's army at a dead main: scripts/hunt_probe.py); 2: only "
                     "in games between agents (the ties are there; fgself-175's lesson in every game cost ~9 points "
                     "against insane)")
+    ap.add_argument("--spell-lesson", type=float, default=0.0, help="X (with --teach): the hero spell lesson: a hero's "
+                    "area spell (blizzard, flame strike, shockwave, impale, carrion swarm, breath of fire, ...), nova "
+                    "(thunder clap, war stomp, fan of knives, ...), immolation, or spell on an enemy hero (mana burn, "
+                    "hex, sleep, entangling roots, ...), when a person would cast it (3 units in its area in reach; "
+                    "immolation on in a fight, off after; an enemy hero in reach), labelled with chance X at most every "
+                    "10 s a hero's spell (teacher.SPELL_LESSONS; the masks allow them, the policy gave them ~1e-4-1e-3 "
+                    "of its probability there: 2026-11-11). 0: none")
     ap.add_argument("--militia-lesson", type=int, default=0, help="1 (with --teach): human's militia lesson: militia "
                     "and no enemy unit near them nor a hall, the hall ends the town bell (audit 16: militia idled, their "
                     "back to work refused, in 175 of 207 human games)")
@@ -6026,7 +6061,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "hunt_lesson": args.hunt_lesson, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "hunt_lesson": args.hunt_lesson, "spell_lesson": args.spell_lesson, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "late_capture": args.late_capture, "late_minutes": [float(x) for x in args.late_minutes.split(",")],
