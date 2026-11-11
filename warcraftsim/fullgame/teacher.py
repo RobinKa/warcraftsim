@@ -60,6 +60,16 @@ selfplay --teach 1 (needs --neutral 1: the orders it teaches are the neutral bui
                    or more: the army nearest the target (half, HUNT_ARMY at least) attack-moves to the nearest building it
                    remembers, else to the nearest gold mine it has not had in sight for HUNT_STALE (a mine's place is on
                    the map: the only thing it uses that it did not see). scripts/hunt_probe.py has what it was measured on
+    hero spells:   (--spell-lesson X) the heroes' spells the policy all but never casts (SPELL_LESSONS), when a person
+                   would: learned, cooled down and paid for in mana, and an area spell's SPELL_CLUMP units within its area
+                   of one point in reach (the clump's centre; a unit there where the vocabulary has the spell on a unit
+                   only, as the built-in AI casts blizzard), a nova's SPELL_CLUMP within its area of the hero, immolation on
+                   with 2 units within IMMOLATION_NEAR and off with none within IMMOLATION_CLEAR (its buff from obs-full's
+                   events: note_buffs; none without --obs-full), a hex, sleep, mana burn (on mana), entangling roots... on the nearest enemy
+                   hero in reach. The enemy's units and creeps the side sees, not buildings, not spell immune. Each hero's
+                   spell looked at every SPELL_GAP steps at most, a lesson given with chance X then. (2026-11-11: the masks
+                   allowed these orders in every such state of people's games and of fgself-201's own; the policy gave
+                   them ~1e-4-1e-3 of its probability there, death coil or holy light ~0.2-0.5)
     The policy's masks decide (`can`: the tech, the money; a lesson they drop teaches nothing), each lesson looked at
     every LOOK steps at most.
 
@@ -77,6 +87,7 @@ from ..protocol import Build, Buy, ImmediateOrder, PointOrder, TargetOrder
 from . import features as fx
 from . import rulesnative
 from .neutral import fourcc
+from .obsfull import EV_BUFF, EV_STATE
 
 # the tavern heroes people pick for each race (1.29 ladder habits)
 PICKS = {"human": ("Npbm", "Nfir", "Ntin"), "orc": ("Ntin", "Npbm", "Nalc"), "undead": ("Nplh", "Nbrn", "Nalc"),
@@ -152,6 +163,32 @@ CAMP_JOIN = 550.0  # (creeps this near each other: one camp, heuristic.CAMP_JOIN
 # --hunt-lesson
 HUNT_QUIET, HUNT_CLEARED, HUNT_ARMY, HUNT_STALE = 120.0, 3, 6, 240.0  # (game seconds: walking is not sped up on faster rules)
 HUNT_GAP, HUNT_SAME_MINE, HUNT_FOUND_NEAR = 60, 400.0, 1500.0  # (GAP's steps: one attack-move lasts a long walk)
+# --spell-lesson: the spells taught, by how: "area" at a clump of enemy units (a point spell: blizzard, flame strike, the
+# lines of shockwave, impale, carrion swarm and breath of fire), "nova" around the hero, "toggle" (immolation), "hero" on
+# the nearest enemy hero in reach (mana burn's with mana to burn), as people cast those. Not the spells the policy casts
+# (death coil, frost nova, storm bolt, holy light, healing wave: ~0.1-0.5 of its probability in a fight), nor summons,
+# auras, buffs on its own units or the utility ones
+SPELL_LESSONS = {
+    "AHbz": "area", "AHfs": "area", "AOsh": "area", "AUim": "area", "AUcs": "area", "AUdd": "area", "ANbf": "area",
+    "ANcs": "area", "ANrf": "area", "ANvc": "area", "ANst": "area",
+    "AHtc": "nova", "AOws": "nova", "AEfk": "nova", "ANht": "nova", "AEsf": "nova", "AUls": "nova", "AOww": "nova",
+    "AEim": "toggle",
+    "AEmb": "hero", "AEer": "hero", "AUsl": "hero", "AOhx": "hero", "AHbn": "hero", "ANdh": "hero", "AEsh": "hero",
+    "ANso": "hero", "ANdo": "hero",
+}
+MANA_BURN, MANA_BURN_LEAST = "AEmb", 50  # (mana burn: an enemy hero with this much mana)
+HERO_REACH, FIGHT_NEAR, FIGHT_UNITS = 100.0, 900.0, 3  # (a spell on a hero: in its range and a step, in a fight: this
+# many enemy units, the hero too, this near the caster; a hero in sight and a minute's walk away is no fight)
+TOGGLES = {"AEim": ("BEim", "immolation", "unimmolation")}  # (its buff, its on and off orders)
+SPELL_GAP = 20  # (steps between two looks at one hero's spell: 10 s, a lesson given or not)
+SPELL_GAPS = {"AOhx": 60}  # (hex: 30 s. At these gaps and X 1 the lessons came about as often as people cast, in 30 of
+# their Echo Isles games (lessons / casts a side-game): blizzard 0.25 / 0.19, flame strike 0.28 / 0.30, war stomp 0.33 /
+# 0.55, thunder clap 0.12 / 0.12, mana burn 0.22 / 0.62, sleep 0.15 / 0.11, entangling roots 0.15 / 0.22, banish 0.25 /
+# 0.16; hex 1.5 / 1.1, at 10 s 2.9; their tavern heroes have no ability levels there: breath of fire unmeasured)
+SPELL_CLUMP = 3  # (enemy units in an area spell's area, or around a nova's hero)
+SPELL_AREA = 200.0  # (an area spell's clump within at least this of its point: the lines' widths are 100-125)
+SPELL_REACH = 300.0  # (a clump this far past the spell's range: the hero walks a step and casts)
+IMMOLATION_NEAR, IMMOLATION_CLEAR = 300.0, 900.0  # (on: 2 enemy units this near; off: none this near)
 
 
 class Teacher:
@@ -160,7 +197,7 @@ class Teacher:
     def __init__(self, side: int, race: str, rng: random.Random, target: dict | None = None, target_hero: bool = False,
                  lumber: bool = False, burrows: bool = False, main_low: float = 0.0, mine_full: float = 12500.0,
                  saturation: bool = False, revive: bool = False, militia: bool = False, army: bool = False,
-                 upgrades: bool = False, creep: int = 0, pace: float = 1.0, hunt: int = 0):
+                 upgrades: bool = False, creep: int = 0, pace: float = 1.0, hunt: int = 0, spells: float = 0.0):
         """`target` (the side's target strategy, if it has one): its tavern hero is the one taught, and none when it
         has none (another hero would break a narrow target). `target_hero` (--teach 2): its first hero from the altar
         taught too, when that is its first hero (the builder taught it only once due: the policy had made another one
@@ -186,6 +223,12 @@ class Teacher:
         self.hunt_points: list = []  # (the points taught)
         self.hunt_lessons, self.hunt_found_at = 0, None  # (the episode row: the lessons; a base in view near a taught
         # point, when first)
+        # --spell-lesson: the chance a due lesson is given (0: none); play_one sets `order_ok` each step ((order id,
+        # kind) -> the policy could give it now: in the vocabulary and its mask) and gives it the step's events
+        # (note_buffs: each unit's buffs, from obs-full's events)
+        self.spells = float(spells or 0.0)
+        self.order_ok = None
+        self.buffs: dict[int, set] = {}
         self.busy: set = set()  # (the side's buildings making something, and its research levels: View.busy and
         self.levels: dict = {}  # View.levels, play_one's of the step; read only)
         # the tavern hero taught, and the heroes the side has when it is hired: a target's, at its place among the
@@ -317,6 +360,102 @@ class Teacher:
             out += self._creep(rows, player, live, t)
         if self.hunt and self._look("hunt", t):
             out += self._hunt(rows, now, t)
+        if self.spells > 0 and n_live and self.order_ok is not None:
+            out += self._spells(rows, live, t)
+        return out
+
+    def note_buffs(self, events) -> None:
+        """--spell-lesson: the units' buffs, from a step's events (obs-full, as obsfull.State reads them: 101 a unit's
+        state anew, its buffs' codes in the 102s after it; a unit with none yet: unknown). The exact list: the block's
+        sum of codes had read immolation on in 12% of a tauren chieftain's steps (its aura)."""
+        for e in events:
+            k = int(e.kind)
+            if k == EV_STATE:
+                self.buffs[e.a] = set()
+            elif k == EV_BUFF:
+                got = self.buffs.get(e.a)
+                if got is not None:
+                    got.add(int(e.b))
+
+    def _spells(self, rows: np.ndarray, live: list, t: int) -> list:
+        """--spell-lesson: each living hero's SPELL_LESSONS spell, when a person would cast it (the module's docstring), in
+        the form the vocabulary has and the policy's mask allows now (`order_ok`)."""
+        table, info, ids = _spell_tables()
+        out, en = [], None
+        for j in range(0, len(live), HF):
+            i, hid = live[j], live[j + 1]
+            h = rows[i]
+            for k, ab in enumerate(table.get(int(h[fx.C_TYPE]), ())):
+                how = SPELL_LESSONS.get(ab.code) if ab is not None else None
+                if how is None:
+                    continue
+                key = f"spell {hid} {ab.code}"
+                lvl, gap = int(h[fx.C_ABIL0 + 2 * k]), SPELL_GAPS.get(ab.code, SPELL_GAP)
+                if lvl <= 0 or 0 <= t - self.last.get(key, -gap) < gap:
+                    continue
+                ready = (int(h[fx.C_ABIL0 + 2 * k + 1]) == 0
+                         and h[fx.C_MANA] >= (ab.mana[min(lvl, len(ab.mana)) - 1] if ab.mana else 0.0))
+                if not ready and how != "toggle":
+                    continue
+                if en is None:  # (the enemy's units and the creeps the side sees: not buildings, not spell immune; once
+                    side, own = self.side, rows[:, fx.C_OWNER]  # a step)
+                    m = (((own == 1 - side) | (own == 12)) & (rows[:, fx.C_FLAGS] & (fx.DEAD | fx.STRUCTURE) == 0)
+                         & ((rows[:, fx.C_VIS] >> side) & 1 == 1) & ~fx.isin(rows[:, fx.C_TYPE], _IMMUNE_CODES))
+                    en = rows[m][:, [fx.C_ID, fx.C_X, fx.C_Y, fx.C_FLAGS, fx.C_MANA]].astype(np.float64)
+                d = np.hypot(en[:, 1] - float(h[fx.C_X]), en[:, 2] - float(h[fx.C_Y]))
+                a = info.get(ab.code)
+                area = a.at(a.area, lvl) if a is not None else SPELL_AREA
+                cmd = None
+                if how == "toggle":
+                    buff, on, off = TOGGLES[ab.code]
+                    got = self.buffs.get(hid)
+                    if got is None:  # (its state unknown: no obs-full event for it)
+                        continue
+                    state = fourcc(buff) in got
+                    on, off = ids[on], ids[off]
+                    if not state and ready and int((d < IMMOLATION_NEAR).sum()) >= 2 and self.order_ok(on, fx.IMMEDIATE):
+                        cmd = ImmediateOrder(hid, on)
+                    elif state and not (d < IMMOLATION_CLEAR).any() and self.order_ok(off, fx.IMMEDIATE):
+                        cmd = ImmediateOrder(hid, off)
+                elif how == "nova":
+                    oid = ids.get(ab.order)
+                    if oid is not None and int((d < area).sum()) >= SPELL_CLUMP and self.order_ok(oid, fx.IMMEDIATE):
+                        cmd = ImmediateOrder(hid, oid)
+                elif how == "hero":  # (the nearest enemy hero in reach, in a fight; mana burn's with mana to burn)
+                    oid = ids.get(ab.order)
+                    rng = a.at(a.range, lvl) if a is not None else 600.0
+                    if int((d < FIGHT_NEAR).sum()) < FIGHT_UNITS:
+                        continue
+                    ok = ((en[:, 3].astype(np.int64) & fx.HERO) > 0) & (d < rng + HERO_REACH)
+                    if ab.code == MANA_BURN:
+                        ok &= en[:, 4] >= MANA_BURN_LEAST
+                    if oid is None or not ok.any() or int(h[fx.C_ORDER]) == oid or not self.order_ok(oid, fx.UNIT):
+                        continue
+                    k_ = np.flatnonzero(ok)[int(np.argmin(d[ok]))]
+                    cmd = TargetOrder(hid, oid, int(en[k_, 0]))
+                else:  # (area: the clump with the most enemy units within the area of one of them, in reach)
+                    oid = ids.get(ab.order)
+                    rng = a.at(a.range, lvl) if a is not None else 800.0
+                    c = en[d < rng + SPELL_REACH]
+                    if oid is None or len(c) < SPELL_CLUMP or int(h[fx.C_ORDER]) == oid:  # (channelling it already)
+                        continue
+                    r = max(area, SPELL_AREA)
+                    near = np.hypot(c[:, None, 1] - c[None, :, 1], c[:, None, 2] - c[None, :, 2]) < r
+                    b = int(near.sum(1).argmax())
+                    if int(near[b].sum()) < SPELL_CLUMP:
+                        continue
+                    g = c[near[b]]
+                    cx, cy = float(g[:, 1].mean()), float(g[:, 2].mean())
+                    if self.order_ok(oid, fx.POINT):
+                        cmd = PointOrder(hid, oid, int(round(cx)), int(round(cy)))
+                    elif self.order_ok(oid, fx.UNIT):  # (the unit nearest the clump's centre)
+                        cmd = TargetOrder(hid, oid, int(g[int(np.argmin(np.hypot(g[:, 1] - cx, g[:, 2] - cy))), 0]))
+                if cmd is None:
+                    continue
+                self.last[key] = t  # (looked at: the next look SPELL_GAP on, the lesson given or not)
+                if self.rng.random() < self.spells:
+                    self.taught[f"spell {ab.code}"] = self.taught.get(f"spell {ab.code}", 0) + 1
+                    out.append(cmd)
         return out
 
     def _look(self, kind: str, t: int) -> bool:
@@ -983,3 +1122,23 @@ def _maker_codes(code: str) -> np.ndarray:
     if got is None:
         got = _MAKER_CODES[code] = fx.codes(_makers(code))
     return got
+
+
+_IMMUNE_CODES = fx.codes(fx.SPELL_IMMUNE)  # (--spell-lesson: no spell's target)
+_SPELL_TABLES: tuple | None = None
+
+
+def _spell_tables() -> tuple:
+    """--spell-lesson's tables, once: the heroes' abilities per slot (herodata.hero_table), their ranges and areas
+    (data.abilities.ability_info) and the game's order id of each order string (warcraftsim/data/order_ids.json)."""
+    global _SPELL_TABLES
+    if _SPELL_TABLES is None:
+        import json
+        from importlib import resources
+
+        from ..data.abilities import ability_info
+        from .herodata import hero_table
+        ids = {k: int(v) for k, v in json.loads(resources.files("warcraftsim.data").joinpath("order_ids.json")
+                                                .read_text()).items()}
+        _SPELL_TABLES = (hero_table(), ability_info(), ids)
+    return _SPELL_TABLES
