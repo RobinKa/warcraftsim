@@ -162,6 +162,26 @@ def test_lesson_labels_the_hero():
     assert int(y["y_order"][h]) == 1 and int(y["y_ptr"][h]) == st["index"][80]
 
 
+def test_demon_form_gives_the_demon_hunters_orders():
+    """model.hero_forms: the metamorphosed demon hunter (Edmm) may attack a unit, stop and turn immolation on, as the
+    demon hunter may (the demonstrations' table had left it attack-moves, mana burn and immolation off); not morph again."""
+    from warcraftsim.fullgame import model
+    types = ("Edem", "Edmm", "hfoo")
+    vocab = {"types": [code(c) for c in types], "current_orders": [], "upgrades": [],
+             "orders": [[851983, fx.UNIT], [851972, fx.IMMEDIATE], [IMMOLATION, fx.IMMEDIATE], [852180, fx.IMMEDIATE],
+                        [851986, fx.POINT]]}
+    net = model.FullGameNet(n_types=len(types) + 1, n_cur=2, n_orders=len(vocab["orders"]) + 1,
+                            G=fx.Encoder(vocab).G, d=16, layers=1)
+    net.allowed.fill_(False)
+    net.allowed[1, 1:] = True  # (the demon hunter: everything)
+    net.allowed[2, 5] = True  # (its demon form: moves)
+    net.allowed[3, [1, 5]] = True  # (a footman)
+    assert model.hero_forms(net, vocab) == 3
+    assert net.allowed[2].tolist() == [False, True, True, True, False, True]  # (attack, stop, immolation; no morph)
+    assert net.allowed[3].tolist() == [False, True, False, False, False, True]
+    assert model.hero_forms(net, vocab) == 0
+
+
 def test_episode_counts_the_learners_casts():
     from warcraftsim.fullgame.selfplay import lesson_casts
     results = {f"TargetOrder:{BLIZZARD}": (3, 1), f"ImmediateOrder:{IMMOLATION}": (2, 0), f"PointOrder:{BREATH}": (1, 0),

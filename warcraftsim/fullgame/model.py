@@ -673,7 +673,35 @@ def load(path, device="cpu", memory: bool | None = None, vocab: dict | None = No
             net.set_valid(ck["vocab"])
     if "vocab" in ck and "allowed" in dict(net.named_buffers()):
         prune_allowed(net, ck["vocab"])
+        hero_forms(net, ck["vocab"])
     return net.eval(), ck
+
+
+# a hero's morphed form -> (the hero, the order that morphs it): the form keeps the hero's abilities and orders but that one
+HERO_FORMS = {"Edmm": ("Edem", 852180)}  # (the demon hunter's metamorphosis, 60 s at level 6+)
+
+
+@torch.no_grad()
+def hero_forms(net: FullGameNet, vocab: dict) -> int:
+    """A hero's morphed form may give what its hero may (`net`'s allowed table, in place; HERO_FORMS) -> how many it
+    gains. The table came from the demonstrations, where the built-in AI's demon form only attack-moved, burned mana
+    and turned immolation off: no attack on a unit, no stop, no immolation on (2026-11-11, people's games: 7 of 782
+    immolation states blocked so). The valid mask still asks of the form what it asks of the hero (its slots)."""
+    tix = {fx.rawcode(int(t)): i for i, t in enumerate(vocab["types"], start=1)}
+    oix = {(int(o), int(k)): c for c, (o, k) in enumerate(vocab["orders"], start=1)}
+    T, O = net.allowed.shape
+    n = 0
+    for form, (hero, morph) in HERO_FORMS.items():
+        i, j = tix.get(form), tix.get(hero)
+        if i is None or j is None or i >= T or j >= T:
+            continue
+        add = net.allowed[j] & ~net.allowed[i]
+        c = oix.get((morph, fx.IMMEDIATE))
+        if c is not None and c < O:
+            add[c] = False
+        net.allowed[i] |= add
+        n += int(add.sum())
+    return n
 
 
 @torch.no_grad()
