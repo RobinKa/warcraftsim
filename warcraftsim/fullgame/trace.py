@@ -165,7 +165,29 @@ def _material_c(ua, values: dict, hero_level, worker_cap):
     return {0: out[0], 1: out[1]}
 
 
-def material(obs, values: dict, hero_level: float = 0.0, worker_cap: int = 0) -> dict[int, float]:
+def material(obs, values: dict, hero_level: float = 0.0, worker_cap: int = 0, mana_value: float = 0.0) -> dict[int, float]:
+    """material_units() and, with `mana_value` (--mana-value), each living unit's mana at that much a point: a spell then
+    spends material at its cast and earns it back only by what it destroys, so a wasted cast is no longer free (the
+    shaping is a potential's difference: what is best stays the same, the feedback comes at the cast; 2026-11-11, the
+    heroes spammed their spells once taught them)."""
+    out = material_units(obs, values, hero_level, worker_cap)
+    if not mana_value:
+        return out
+    ua = getattr(obs, "unit_array", None)
+    if ua is not None:  # (native observations: column 8 the mana, 9 the max mana, 11 the flags, 2 the owner)
+        if len(ua):
+            live = ((ua[:, 11] & DEAD_FLAG) == 0) & ((ua[:, 2] == 0) | (ua[:, 2] == 1)) & (ua[:, 9] > 0)
+            a = ua[live]
+            for pl in (0, 1):
+                out[pl] += mana_value * float(a[a[:, 2] == pl, 8].sum())
+        return out
+    for u in obs.units:
+        if u.owner in (0, 1) and not int(u.flags) & DEAD_FLAG and getattr(u, "max_mana", 0) > 0:
+            out[u.owner] += mana_value * float(u.mana)
+    return out
+
+
+def material_units(obs, values: dict, hero_level: float = 0.0, worker_cap: int = 0) -> dict[int, float]:
     """What each player's living units and buildings cost, times their hit points left: {0: .., 1: ..}.
     `hero_level`: a hero also counts this much for each level above the first (its cost alone does not
     grow as it levels; a dead hero counts nothing until it is revived). `worker_cap`: a player's workers

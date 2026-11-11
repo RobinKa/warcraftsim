@@ -2587,7 +2587,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         rec["shared_noise"] = shared_noise
     values, scale = cfg["values"], cfg["shaping_scale"]
     shaping = opp.get("shaping", cfg["shaping"])  # (the potential goes back to 0 with the weight it was paid with)
-    mat = material(obs, values, cfg.get("hero_level_value", 0.0), cfg.get("worker_cap", 0))
+    mat = material(obs, values, cfg.get("hero_level_value", 0.0), cfg.get("worker_cap", 0), cfg.get("mana_value", 0.0))
     pot = shaped(obs, mat, cfg.get("float_penalty", 0.0))
     phi = {s: (pot[s] - pot[1 - s]) / scale for s in trajs}  # at the last recorded state
     ret = {s: 0.0 for s in trajs}
@@ -2815,7 +2815,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         for s, tk in trackers.items():  # (--z-modes: evaluation games too, their rows' report)
             p_ = obs.players.get(s)
             viol[s] = tk.step(rows_next, obs.events, p_.food_used if p_ is not None else 0, obs.game_time)
-        mat = material(obs, values, cfg.get("hero_level_value", 0.0), cfg.get("worker_cap", 0))
+        mat = material(obs, values, cfg.get("hero_level_value", 0.0), cfg.get("worker_cap", 0), cfg.get("mana_value", 0.0))
         pot = shaped(obs, mat, cfg.get("float_penalty", 0.0))
         if obs.game_over or t >= cfg["max_steps"]:
             break
@@ -5453,6 +5453,7 @@ def main(argv: list[str] | None = None) -> int:
                     "its past snapshots that fit (this map's point bins, the same orders) with their records, "
                     "and its curriculum levels and balance (scripts/selfplay_fork.py: the parent's)")
     ap.add_argument("--pfsp", default="hard")
+    ap.add_argument("--mana-value", type=float, default=0.0, help="each living unit's mana counts this much material a point in the shaping's potential: a spell spends it at its cast and earns it back by what it destroys, so a wasted cast is no longer free (0: off; the heroes spammed their spells once --spell-lesson taught them, fgself-208/209)")
     ap.add_argument("--teach-point", type=float, default=0.5, help="the weight of a lesson's place (x, y, the fine sub-cell) in the teacher's loss (--teach); 0: the order and the pointer only, as before 2026-11-10 (7dfea5b; fgself-203 with it: 33%% head to head against fgself-197)")
     ap.add_argument("--pfsp-data", type=float, default=0.0, help="PFSP with data (the league plan's item 6): this share of the games against past snapshots untaxed under --win-balance (0: 0.25, as before), and those with a target or in a scenario count in the snapshots' records too (their bias is about the same against each); before, ~1%% of them reached the records (taxed, a target, a scenario each took a game out) and PFSP drew the league about evenly")
     ap.add_argument("--batch-steps", type=int, default=8192, help="agent steps per update")
@@ -6076,7 +6077,7 @@ def main(argv: list[str] | None = None) -> int:
            "avail_mask": bool(args.avail_mask),
            "opd_share": args.opd_share, "opd_difficulty": args.opd_difficulty,
            "costs": order_costs(vocab, args.map).tolist() if args.avail_mask else None, "max_past": args.max_past,
-           "eval_fallback": args.eval_fallback, "worker_cap": args.worker_cap, "pfsp_data": args.pfsp_data, "z_dim": fx.ZDIM, "z_pool": str(args.z_pool) if args.z_pool else "", "z_share": args.z_share, "win_balance": args.win_balance,
+           "eval_fallback": args.eval_fallback, "worker_cap": args.worker_cap, "pfsp_data": args.pfsp_data, "mana_value": args.mana_value, "z_dim": fx.ZDIM, "z_pool": str(args.z_pool) if args.z_pool else "", "z_share": args.z_share, "win_balance": args.win_balance,
            "z_reward": args.z_reward, **({"z_shop": args.z_shop} if args.z_shop else {}), "z_mix": args.z_mix, "z_mix_reward": args.z_mix_reward, "reward_parts": args.reward_parts, "z_modes": args.z_modes, "z_mode_reward": args.z_mode_reward, "z_comp": args.z_comp, "z_forbid_mask": args.z_forbid_mask, "z_winners": args.z_winners, "z_src": args.z_src, "eval_z": args.eval_z,
            "z_enforce": args.z_enforce, "z_time_scale": args.z_time_scale, "z_build": args.z_build, "z_build_labels": args.z_build_labels, "z_workers": args.z_workers,
            "grpo_share": args.grpo_share, "grpo_group": args.grpo_group, "grpo_coef": args.grpo_coef,
