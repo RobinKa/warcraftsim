@@ -36,7 +36,8 @@ Rejected changes worth switching on anyway (2026-11-06 review): none of the tuni
 | `fgself-204` (stopped at 14M) | the fixes with `--teach-point 0` | Confounded: every fork of `fgself-197` began blind to the new entities for ~600 updates |
 | `fgself-203` (stopped at 30M) | the expansion fixes alone (no `--expand-lesson`) | 33% h2h against `fgself-197`, insane -19: the fixes hurt too |
 | `fgself-202` (stopped, collapsed) | expansion fixes + `--expand-lesson 0.5` (item 10) | It expanded (17% of no-target games), but h2h 22% |
-| `fgself-208` (running) | `--spell-lesson 1`, from `fgself-201` | Teach the heroes' spells the policy never casts |
+| `fgself-209` (running) | `--spell-lesson 0.25`, from `fgself-201` | The spells, gentler |
+| `fgself-208` (stopped at 30M) | `--spell-lesson 1` | Spells spammed (~40 a game), h2h 37%, insane -13, gold -34 |
 | `fgself-201` (re-read 2026-11-11: **better**, kept as the base) | `--real-share 0.5` (bold 3), real launches in the real game (fixed), from `fgself-197` | Insane 0.81 against the continuation's 0.70 (+11, ~3.5 SE); dropped first only against a peak checkpoint; resumed |
 | `fgself-200` (invalid) | `--real-share 0.5` | Its "real" launches played `echofast2` untaxed (the bug since the start; fixed e4e28ce) |
 | `fgself-199` (not kept) | `--snapshot-every 400 --max-past 12 --pfsp-data 0.5` (bold 9), from `fgself-197` | Wider, but -19 against insane |
