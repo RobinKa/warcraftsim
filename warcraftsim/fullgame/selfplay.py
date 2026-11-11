@@ -72,7 +72,6 @@ from .trace import DEAD_FLAG, Production, material, trace_step, unit_values  # n
 from .play import unit_rows
 from .model import FullGameNet, act, adapt_config, anchor_kl, arch_key, evaluate, fine_head, load, point_parts, trained
 from .teacher import Teacher, lumber_short, pace as teacher_pace
-from .obsfull import buff_on as _buff_on
 from ..native import unit_from_row
 from .neutral import MERCENARIES as _MERCENARIES
 from ..protocol import Build as _Build, Buy as _Buy, ImmediateOrder as _ImmediateOrder, TargetOrder as _TargetOrder, \
@@ -2683,6 +2682,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         for s, tc in teachers.items():  # (--teach: never carried out, the side's step just recorded labelled; every
             # step: a lesson the mask allows only on the step the player can pay (a first hero, an altar, the army mix)
             # lost 40-90% of them every other step; audit 6)
+            if tc.spells > 0:  # (--spell-lesson: the units' buffs from every step's events, immolation's state)
+                tc.note_buffs(obs.events)
             if s in spans and trajs[s].steps:
                 av, oix = sts[s].get("avail"), bots[s].enc.order_index
                 can = (None if av is None else  # (the units the policy could train now: the army mix teaches only those)
@@ -2697,11 +2698,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                 tc.busy, tc.levels = bots[s].view.busy, bots[s].view.levels  # (audit 16's lessons: idle buildings,
                 # research levels; read only)
                 if tc.spells > 0:  # (--spell-lesson: an order the policy could give now, in the vocabulary's form and
-                    st_ = sts[s]   # its mask; a hero's buff from the step's obs-full block)
-                    tc.order_ok = lambda oid, k, av=av, oix=oix: ((c := oix.get((oid, k))) is not None
+                    tc.order_ok = lambda oid, k, av=av, oix=oix: ((c := oix.get((oid, k))) is not None  # its mask)
                                                                   and (av is None or bool(av[c])))
-                    tc.buff_on = lambda uid, b, st_=st_: (None if (k := st_["index"].get(uid)) is None
-                                                          else _buff_on(st_["ent"][k], b))
                 c = tc.commands(rows, obs.players.get(s), obs.game_time, t, can, getattr(bots[s].view, "pickers", ()))
                 q = obs.players.get(s)
                 if c and q is not None:

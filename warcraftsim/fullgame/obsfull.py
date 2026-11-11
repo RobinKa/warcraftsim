@@ -107,19 +107,6 @@ def code_of(v: int, d: int) -> np.ndarray:
     return c
 
 
-BUFF_ON = 0.5  # (buff_on: the buff's code against the unit's sum; ~1 with it, ~0 +- 0.2 each other buff without)
-
-
-def buff_on(f_row: np.ndarray, buff: int) -> bool | None:
-    """Whether an entity's features (a row of View.step's "ent", with the block) show the buff `buff` (its id: BEim):
-    its code (code_of) against the sum of the unit's buffs' codes, K_BUFF's -> None while its state is unknown (no event
-    101 came for it, K_HAVE) or the features have no block (teacher.py's --spell-lesson: immolation on or off)."""
-    if not fx.OBS_FULL or fx.A_OBS < 0 or len(f_row) < fx.A_OBS + OBS_F or f_row[fx.A_OBS + K_HAVE] < 0.5:
-        return None
-    a = fx.A_OBS + K_BUFF
-    return float(np.dot(np.asarray(f_row[a:a + BUFF_D], np.float32), code_of(buff, BUFF_D))) > BUFF_ON
-
-
 def fourcc(c: str) -> int:
     return int.from_bytes(c.encode("latin-1"), "big")
 

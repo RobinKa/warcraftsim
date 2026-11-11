@@ -6,10 +6,9 @@ from types import SimpleNamespace
 import numpy as np
 
 from warcraftsim.fullgame import features as fx
-from warcraftsim.fullgame import obsfull
 from warcraftsim.fullgame import teacher as tm
 from warcraftsim.fullgame.teacher import Teacher
-from warcraftsim.protocol import ImmediateOrder, PointOrder, TargetOrder
+from warcraftsim.protocol import Event, ImmediateOrder, PointOrder, TargetOrder
 
 BLIZZARD, THUNDERCLAP, IMMOLATION, UNIMMOLATION, BREATH = 852089, 852096, 852177, 852178, 852580
 MANA_BURN, SLEEP = 852179, 852227
@@ -45,11 +44,12 @@ CLUMP = [(600, 0), (650, 60), (620, -60)]  # (within 200 of each other, 600-650 
 
 def _lessons(rows, forms=((BLIZZARD, fx.UNIT),), t=100, share=1.0, buff=None, tc=None):
     """The spell lessons of side 0 at step t: `forms` the (order id, kind) the policy's vocabulary and mask allow,
-    `buff` the hero's immolation (None: unknown)."""
+    `buff` the hero's immolation as the step's events tell it (None: no obs-full event for it)."""
     if tc is None:
         tc = Teacher(0, "human", random.Random(0), spells=share)
     tc.order_ok = lambda oid, k: (oid, k) in forms
-    tc.buff_on = lambda uid, b: buff
+    if buff is not None:  # (its state anew, an aura's buff, immolation's if on)
+        tc.note_buffs([Event(101, 50, 0, 0)] + [Event(102, 50, code(b), 0) for b in ["BHab"] + ["BEim"] * buff])
     out = [c for c in tc.commands(np.stack(rows), PLAYER, 300.0, t) if getattr(c, "order", None) in
            (BLIZZARD, THUNDERCLAP, IMMOLATION, UNIMMOLATION, BREATH, MANA_BURN, SLEEP)]
     return tc, out
@@ -134,21 +134,15 @@ def test_gap_share_and_off():
     assert off.spells == 0.0 and _lessons(rows, tc=off)[1] == []
 
 
-def test_buff_on_reads_the_obs_full_block(monkeypatch):
-    monkeypatch.setattr(fx, "OBS_FULL", 1)
-    monkeypatch.setattr(fx, "A_OBS", 7)
-    row = np.zeros(7 + obsfull.OBS_F, np.float32)
-    a = 7 + obsfull.K_BUFF
-    imm, other = code("BEim"), code("BHbz")
-    assert obsfull.buff_on(row, imm) is None  # (no event 101 for it yet)
-    row[7 + obsfull.K_HAVE] = 1.0
-    assert obsfull.buff_on(row, imm) is False
-    row[a:a + obsfull.BUFF_D] = obsfull.code_of(other, obsfull.BUFF_D)
-    assert obsfull.buff_on(row, imm) is False
-    row[a:a + obsfull.BUFF_D] += obsfull.code_of(imm, obsfull.BUFF_D)
-    assert obsfull.buff_on(row, imm) is True
-    monkeypatch.setattr(fx, "OBS_FULL", 0)
-    assert obsfull.buff_on(row, imm) is None
+def test_buffs_from_the_events():
+    tc = Teacher(0, "human", random.Random(0), spells=1.0)
+    tc.note_buffs([Event(102, 50, code("BEim"), 0)])  # (a buff before its unit's state: unknown still)
+    assert tc.buffs == {}
+    tc.note_buffs([Event(101, 50, 0, 0), Event(102, 50, code("BEim"), 0), Event(102, 50, code("BHab"), 1),
+                   Event(101, 51, 0, 0)])
+    assert tc.buffs == {50: {code("BEim"), code("BHab")}, 51: set()}
+    tc.note_buffs([Event(1, 52, 0, 0), Event(101, 50, 0, 0), Event(102, 50, code("BHab"), 0)])  # (anew: off)
+    assert tc.buffs[50] == {code("BHab")} and tc.buffs[51] == set()
 
 
 def test_lesson_labels_the_hero():

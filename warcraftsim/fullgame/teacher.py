@@ -64,8 +64,8 @@ selfplay --teach 1 (needs --neutral 1: the orders it teaches are the neutral bui
                    would: learned, cooled down and paid for in mana, and an area spell's SPELL_CLUMP units within its area
                    of one point in reach (the clump's centre; a unit there where the vocabulary has the spell on a unit
                    only, as the built-in AI casts blizzard), a nova's SPELL_CLUMP within its area of the hero, immolation on
-                   with 2 units within IMMOLATION_NEAR and off with none within IMMOLATION_CLEAR (its buff from the
-                   obs-full block: `buff_on`), a hex, sleep, mana burn (on mana), entangling roots... on the nearest enemy
+                   with 2 units within IMMOLATION_NEAR and off with none within IMMOLATION_CLEAR (its buff from obs-full's
+                   events: note_buffs; none without --obs-full), a hex, sleep, mana burn (on mana), entangling roots... on the nearest enemy
                    hero in reach. The enemy's units and creeps the side sees, not buildings, not spell immune. Each hero's
                    spell looked at every SPELL_GAP steps at most, a lesson given with chance X then. (2026-11-11: the masks
                    allowed these orders in every such state of people's games and of fgself-201's own; the policy gave
@@ -87,6 +87,7 @@ from ..protocol import Build, Buy, ImmediateOrder, PointOrder, TargetOrder
 from . import features as fx
 from . import rulesnative
 from .neutral import fourcc
+from .obsfull import EV_BUFF, EV_STATE
 
 # the tavern heroes people pick for each race (1.29 ladder habits)
 PICKS = {"human": ("Npbm", "Nfir", "Ntin"), "orc": ("Ntin", "Npbm", "Nalc"), "undead": ("Nplh", "Nbrn", "Nalc"),
@@ -222,11 +223,12 @@ class Teacher:
         self.hunt_points: list = []  # (the points taught)
         self.hunt_lessons, self.hunt_found_at = 0, None  # (the episode row: the lessons; a base in view near a taught
         # point, when first)
-        # --spell-lesson: the chance a due lesson is given (0: none); play_one sets, each step, `order_ok` ((order id,
-        # kind) -> the policy could give it now: in the vocabulary and its mask) and `buff_on` ((unit, buff) -> on,
-        # None: unknown) for it
+        # --spell-lesson: the chance a due lesson is given (0: none); play_one sets `order_ok` each step ((order id,
+        # kind) -> the policy could give it now: in the vocabulary and its mask) and gives it the step's events
+        # (note_buffs: each unit's buffs, from obs-full's events)
         self.spells = float(spells or 0.0)
-        self.order_ok = self.buff_on = None
+        self.order_ok = None
+        self.buffs: dict[int, set] = {}
         self.busy: set = set()  # (the side's buildings making something, and its research levels: View.busy and
         self.levels: dict = {}  # View.levels, play_one's of the step; read only)
         # the tavern hero taught, and the heroes the side has when it is hired: a target's, at its place among the
@@ -362,6 +364,19 @@ class Teacher:
             out += self._spells(rows, live, t)
         return out
 
+    def note_buffs(self, events) -> None:
+        """--spell-lesson: the units' buffs, from a step's events (obs-full, as obsfull.State reads them: 101 a unit's
+        state anew, its buffs' codes in the 102s after it; a unit with none yet: unknown). The exact list: the block's
+        sum of codes had read immolation on in 12% of a tauren chieftain's steps (its aura)."""
+        for e in events:
+            k = int(e.kind)
+            if k == EV_STATE:
+                self.buffs[e.a] = set()
+            elif k == EV_BUFF:
+                got = self.buffs.get(e.a)
+                if got is not None:
+                    got.add(int(e.b))
+
     def _spells(self, rows: np.ndarray, live: list, t: int) -> list:
         """--spell-lesson: each living hero's SPELL_LESSONS spell, when a person would cast it (the module's docstring), in
         the form the vocabulary has and the policy's mask allows now (`order_ok`)."""
@@ -393,9 +408,10 @@ class Teacher:
                 cmd = None
                 if how == "toggle":
                     buff, on, off = TOGGLES[ab.code]
-                    state = self.buff_on(hid, fourcc(buff)) if self.buff_on is not None else None
-                    if state is None:
+                    got = self.buffs.get(hid)
+                    if got is None:  # (its state unknown: no obs-full event for it)
                         continue
+                    state = fourcc(buff) in got
                     on, off = ids[on], ids[off]
                     if not state and ready and int((d < IMMOLATION_NEAR).sum()) >= 2 and self.order_ok(on, fx.IMMEDIATE):
                         cmd = ImmediateOrder(hid, on)
