@@ -59,7 +59,7 @@ def _play(monkeypatch, late_z: int) -> tuple[dict, list]:
     monkeypatch.setattr(selfplay.strat, "sample", lambda *a, **k: {"race": "human", "t": {"hbar": 100.0}, "src": "ai",
                                                                    "won": True})
     monkeypatch.setattr(selfplay.strat, "scaled", lambda st, f: st)
-    monkeypatch.setattr(selfplay.late_game, "states", lambda files: NS(pick=lambda *a: {"minute": 9.0, "sides": [{}, {}]}))
+    monkeypatch.setattr(selfplay.late_game, "states", lambda files, from_minute=0.0: NS(pick=lambda *a: {"minute": 9.0, "sides": [{}, {}]}))
     monkeypatch.setattr(selfplay.late_game, "commands", lambda state, rows: [])
     monkeypatch.setattr(selfplay.late_game, "levels", lambda state, s: {})
     monkeypatch.setattr(selfplay.late_game, "plan_target", lambda *a, **k: None)  # (--late-z: no plan in this state)

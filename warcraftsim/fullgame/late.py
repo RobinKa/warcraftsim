@@ -438,14 +438,16 @@ class States:
     captures them may be the one that uses them). A file given a weight ("PATH:W", weighted) is drawn with it, the
     files without one share the rest (1 less the weights given, at least 0) as one pool of states drawn alike; among the
     files with a state that fits the game, renormalized (people's states half of the late starts while a run's own pile
-    up; a matchup only one file has comes from it)."""
+    up; a matchup only one file has comes from it). `from_minute` (--late-from): only the states captured at that game
+    minute or later (0: all; the losses are past 18 minutes, the captures were set at minutes 8-16 for echofast2)."""
 
-    def __init__(self, files: list[str], refresh: float = 600.0):
+    def __init__(self, files: list[str], refresh: float = 600.0, from_minute: float = 0.0):
         parsed = [weighted(str(f)) for f in files]
         self.files = [Path(f) for f, _ in parsed]
         self.weights = [w for _, w in parsed]
         self.rest = max(0.0, 1.0 - sum(w for w in self.weights if w is not None))  # (the files without a weight)
         self.refresh = refresh
+        self.from_minute = float(from_minute)
         self.index: dict[tuple, dict[int, list[tuple[int, bool]]]] = {}  # key -> file -> [(offset, swapped)]
         self.done = [0] * len(self.files)  # (each file's bytes indexed)
         self.checked = 0.0
@@ -470,6 +472,9 @@ class States:
                         break
                     try:
                         st = json.loads(line)
+                        if float(st.get("minute", 0.0)) < self.from_minute:
+                            at += len(line)
+                            continue
                         for flip in (False, True):
                             o = swapped(st) if flip else st
                             self.index.setdefault(_key(o["map"], o["races"], o["starts"]), {}).setdefault(
@@ -519,11 +524,11 @@ class States:
 _STATES: dict[tuple, States] = {}
 
 
-def states(files: list[str]) -> States:
+def states(files: list[str], from_minute: float = 0.0) -> States:
     """This process's States of `files` (made once)."""
-    key = tuple(files)
+    key = (tuple(files), float(from_minute))
     if key not in _STATES:
-        _STATES[key] = States(list(files))
+        _STATES[key] = States(list(files), from_minute=from_minute)
     return _STATES[key]
 
 

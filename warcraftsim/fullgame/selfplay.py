@@ -68,7 +68,7 @@ from . import featnative
 from . import macros
 from . import techtree
 from .featnative import addr as _faddr, lib as _featlib, to_f16, to_f32_into as _to_f32_into
-from .trace import DEAD_FLAG, Production, material, trace_step, unit_values  # noqa: F401
+from .trace import DEAD_FLAG, Production, material, research_material, research_values, trace_step, unit_values  # noqa: F401
 from .play import unit_rows
 from .model import FullGameNet, act, adapt_config, anchor_kl, arch_key, evaluate, fine_head, load, point_parts, trained
 from .teacher import Teacher, lumber_short, pace as teacher_pace
@@ -1307,6 +1307,17 @@ def label_step(obs, t: int, advised: list[int], spans: dict, sts: dict, held: di
             step[k] = v[:n]
 
 
+def with_research(mat: dict, prod, value: float) -> dict:
+    """--research-value V: `mat` plus V times what each player's finished research cost (trace.research_material; the
+    game's tables). Without it an upgrade read as gold gone (the float penalty's refund at its order, then nothing) while
+    a unit read as its cost at once: the base's armies were tier 1 with ~0.4 weapon and armour levels a game, and lost
+    102 of 118 games past 18 minutes (fgself-201 against insane)."""
+    if not value:
+        return mat
+    table = research_values()
+    return {p: v + value * research_material(prod.research.get(p, {}), table) for p, v in mat.items()}
+
+
 def shaped(obs, mat: dict, penalty: float) -> dict:
     """The material the shaping's potential counts: `mat` (units and buildings, fullgame.trace.material)
     less `penalty` times the gold and lumber each player holds. With a penalty, spending is credited
@@ -2491,7 +2502,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     if scenario == "late":
         if (cfg.get("late_states") and opp.get("kind") != "ai" and grpo is None and late is None and heur is None
                 and not opp.get("advise") and all(obs.players.get(s) is not None for s in (0, 1))):
-            late_start = late_game.states(cfg.get("late_states")).pick(
+            late_start = late_game.states(cfg.get("late_states"), cfg.get("late_from", 0.0)).pick(
                 cfg["map"], races, [(obs.players[s].start_x, obs.players[s].start_y) for s in (0, 1)], random)
         scenario_cmds = late_game.commands(late_start, unit_rows(obs, 0)) if late_start is not None else None
         if scenario_cmds is None:  # (no state fits, or its commands would not fit in a step)
@@ -2587,7 +2598,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         rec["shared_noise"] = shared_noise
     values, scale = cfg["values"], cfg["shaping_scale"]
     shaping = opp.get("shaping", cfg["shaping"])  # (the potential goes back to 0 with the weight it was paid with)
-    mat = material(obs, values, cfg.get("hero_level_value", 0.0), cfg.get("worker_cap", 0), cfg.get("mana_value", 0.0))
+    mat = with_research(material(obs, values, cfg.get("hero_level_value", 0.0), cfg.get("worker_cap", 0),
+                                 cfg.get("mana_value", 0.0)), prod, cfg.get("research_value", 0.0))
     pot = shaped(obs, mat, cfg.get("float_penalty", 0.0))
     phi = {s: (pot[s] - pot[1 - s]) / scale for s in trajs}  # at the last recorded state
     ret = {s: 0.0 for s in trajs}
@@ -2815,7 +2827,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         for s, tk in trackers.items():  # (--z-modes: evaluation games too, their rows' report)
             p_ = obs.players.get(s)
             viol[s] = tk.step(rows_next, obs.events, p_.food_used if p_ is not None else 0, obs.game_time)
-        mat = material(obs, values, cfg.get("hero_level_value", 0.0), cfg.get("worker_cap", 0), cfg.get("mana_value", 0.0))
+        mat = with_research(material(obs, values, cfg.get("hero_level_value", 0.0), cfg.get("worker_cap", 0),
+                                     cfg.get("mana_value", 0.0)), prod, cfg.get("research_value", 0.0))
         pot = shaped(obs, mat, cfg.get("float_penalty", 0.0))
         if obs.game_over or t >= cfg["max_steps"]:
             break
@@ -5121,6 +5134,9 @@ def main(argv: list[str] | None = None) -> int:
                     "training games give their state at a game minute drawn in --late-minutes, a line of the run's "
                     "late-states.jsonl (none from a decided game or a late start)")
     ap.add_argument("--late-minutes", default="8,16", help="--late-capture: the range of the game minute captured")
+    ap.add_argument("--late-from", type=float, default=0.0, help="the late starts: only --late-states' states captured at "
+                    "this game minute or later (0: all). The base loses past 18 minutes (102 of 118 losses against insane, "
+                    "fgself-201), and --late-minutes 8,16 were set for echofast2, where those were late")
     ap.add_argument("--late-states", default="", help="the scenario \"late\" (--scenarios ...,late): the files of "
                     "captured states it starts from (comma-separated; each read again for new lines every 10 minutes), "
                     "a state of the game's map and races whose start locations are the game's. PATH:W: that file's "
@@ -5453,6 +5469,10 @@ def main(argv: list[str] | None = None) -> int:
                     "its past snapshots that fit (this map's point bins, the same orders) with their records, "
                     "and its curriculum levels and balance (scripts/selfplay_fork.py: the parent's)")
     ap.add_argument("--pfsp", default="hard")
+    ap.add_argument("--research-value", type=float, default=0.0, help="the shaping's material also counts this times what "
+                    "each player's finished research cost (each level, the game's tables): an upgrade reads as what it "
+                    "bought, as a unit does, not as gold gone (0: off; the base made ~0.4 weapon and armour levels a game "
+                    "and lost 102 of 118 games past 18 minutes against insane)")
     ap.add_argument("--mana-value", type=float, default=0.0, help="each living unit's mana counts this much material a point in the shaping's potential: a spell spends it at its cast and earns it back by what it destroys, so a wasted cast is no longer free (0: off; the heroes spammed their spells once --spell-lesson taught them, fgself-208/209)")
     ap.add_argument("--teach-point", type=float, default=0.5, help="the weight of a lesson's place (x, y, the fine sub-cell) in the teacher's loss (--teach); 0: the order and the pointer only, as before 2026-11-10 (7dfea5b; fgself-203 with it: 33%% head to head against fgself-197)")
     ap.add_argument("--pfsp-data", type=float, default=0.0, help="PFSP with data (the league plan's item 6): this share of the games against past snapshots untaxed under --win-balance (0: 0.25, as before), and those with a target or in a scenario count in the snapshots' records too (their bias is about the same against each); before, ~1%% of them reached the records (taxed, a target, a scenario each took a game out) and PFSP drew the league about evenly")
@@ -6063,7 +6083,7 @@ def main(argv: list[str] | None = None) -> int:
            "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "hunt_lesson": args.hunt_lesson, "spell_lesson": args.spell_lesson, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
-           "late_capture": args.late_capture, "late_minutes": [float(x) for x in args.late_minutes.split(",")],
+           "late_capture": args.late_capture, "late_minutes": [float(x) for x in args.late_minutes.split(",")], "late_from": args.late_from, "research_value": args.research_value,
            "late_states": [x for x in args.late_states.split(",") if x], "late_z": args.late_z,
            "eval_ai": [d for d in args.eval_ai.split(",") if d],
            "map_geometry": [fx.STARTS, fx.BIN_RANGE],

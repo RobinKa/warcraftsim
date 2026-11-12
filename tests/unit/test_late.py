@@ -444,3 +444,19 @@ def test_from_demo(heroes):
     values = {str(fourcc("hkee")): 1000, str(fourcc("unpl")): 10}  # (the undead under a quarter: decided)
     assert late.from_demo(arrays, meta, [4, 10], [R, L], values) == []
     assert len(late.from_demo(arrays, meta, [4, 10], [R, L], {str(fourcc("hkee")): 1000, str(fourcc("unpl")): 900})) == 2
+
+
+def test_from_minute(tmp_path, heroes):
+    """--late-from M: only the states captured at minute M or later are drawn; the earlier lines are skipped (and not
+    read again), and a game none fits starts from minute 0."""
+    st = late.capture(midgame(), players(), ["human", "undead"], "echofast2", {0: {}, 1: {}}, 600.0)
+    f = tmp_path / "late-states.jsonl"
+    for minute in (8.5, 12.0, 17.9, 18.0, 24.5):
+        late.append(f, dict(st, minute=minute))
+    rng = random.Random(0)
+    s = late.States([str(f)], refresh=0.0, from_minute=18.0)
+    got = {s.pick("echofast2", ["human", "undead"], [L, R], rng)["minute"] for _ in range(200)}
+    assert got == {18.0, 24.5} and s.count == 2 and s.done[0] == f.stat().st_size
+    assert late.States([str(f)], refresh=0.0).pick("echofast2", ["human", "undead"], [L, R], rng) is not None
+    assert late.States([str(f)], refresh=0.0, from_minute=30.0).pick("echofast2", ["human", "undead"], [L, R], rng) is None
+    assert late.states([str(f)], 18.0) is late.states([str(f)], 18.0) is not late.states([str(f)])

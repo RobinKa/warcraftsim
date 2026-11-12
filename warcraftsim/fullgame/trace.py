@@ -3,6 +3,8 @@ imaging here, so the players can import it without Pillow."""
 
 from __future__ import annotations
 
+import functools
+
 from ..protocol import Observation
 
 DEAD_FLAG = 1024  # the unit flags' dead bit (an int test, not an enum operation: per unit per step)
@@ -252,6 +254,34 @@ def unit_values() -> dict[str, int]:
     for made, src in MADE_FROM.items():
         if src in by_code and str(int.from_bytes(made.encode("latin-1"), "big")) not in out:
             out[str(int.from_bytes(made.encode("latin-1"), "big"))] = by_code[src]
+    return out
+
+
+@functools.lru_cache(maxsize=1)
+def research_values() -> dict[str, tuple[int, int]]:
+    """Each research's cost (gold + lumber, the game's own tables, unscaled as unit_values): {code: (its first level's,
+    the step each further level adds)}; level n costs first + (n - 1) * step (iron forged swords 150, 350, 550)."""
+    from ..data.mpq import GameArchives
+    from ..data.objects import parse_slk
+    with GameArchives() as g:
+        rows = parse_slk(g.read("Units\\UpgradeData.slk").decode("latin-1"))
+
+    def num(r: dict, k: str) -> int:
+        try:
+            return int(float(r.get(k) or 0))
+        except ValueError:
+            return 0
+    return {r["upgradeid"]: (num(r, "goldbase") + num(r, "lumberbase"), num(r, "goldmod") + num(r, "lumbermod"))
+            for r in rows if len(r.get("upgradeid") or "") == 4}
+
+
+def research_material(research: dict, table: dict) -> float:
+    """What a player's finished research cost ({code: level}, trace.Production's): each level up to the one it has."""
+    out = 0.0
+    for code, level in research.items():
+        first, step = table.get(code, (0, 0))
+        n = max(int(level), 0)
+        out += n * first + step * n * (n - 1) / 2
     return out
 
 
