@@ -479,7 +479,8 @@ def test_placed_levels_in_the_inputs():
 
 
 def test_late_start_sets_the_inputs_upgrades():
-    """play_one gives a late start's levels to the views through View.place_levels (the upgrades too), not levels alone."""
+    """play_one gives a late start's levels to the views through View.place_levels (the upgrades too, and the other
+    side's for --obs-full), not levels alone."""
     src = (ROOT / "warcraftsim" / "fullgame" / "selfplay.py").read_text()
-    assert "view.place_levels(late_game.levels(late_start, s))" in src
+    assert "view.place_levels(late_game.levels(late_start, s), late_game.levels(late_start, 1 - s))" in src
     assert "view.levels.update(late_game.levels(" not in src
