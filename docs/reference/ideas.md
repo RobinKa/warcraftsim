@@ -2,37 +2,55 @@
 
 Where the project's ideas came from and what became of them. Many are the user's; others come from AlphaStar and OpenAI Five ([what those papers found](ideas-from-alphastar-and-openai-five.md)), from LLM reinforcement learning, from image generation, or from our own runs. Each experiment's numbers are in the [experiment log](experiment-log.md).
 
-## The queue (2026-10-20, updated 2026-10-25)
+## The queue (2026-11-12)
 
-In the order they run. The code for each is in place unless it says otherwise.
+In the order they run. The code for each is in place unless it says otherwise. [Next experiments](../proposals/next-experiments.md) has the details.
 
 | idea | from | what it is | status |
 |---|---|---|---|
-| What the agent can't see or do | the user's question | each hero's abilities, cooldowns and items, what buildings make, the clock, the enemies it saw before (`--inputs 3`); masks for orders the game refuses (`--tech-mask`, `--valid-mask`) | `fgself-107`: below its start (41% head to head); `fgself-108` without the memory (running) |
-| Narrow target strategies | the user ("they all seem big and generic") | a game's heroes, its main army and what they need; the rest free; drawn evenly per signature (`strategy.narrow`, `--narrow` pools) | next |
-| More kinds of strategy conditioning | the user ("no rush" and many more); AlphaStar's z had statistics beside the build order | no rush, rush, expand, no expansion, workers, creeping, harass, scouting, army size, low upkeep: a switch and a parameter each (`fullgame/modes.py`, `--z-modes`) | next |
-| Rewards by part | the user (rewards combined in LLM RL): GDPO, SAW | an advantage per reward (outcome, shaping, strategy), each normalized, a saturated one held small (`--reward-parts`) | built |
-| Neutral shops, the tavern, mercenaries | the user's question | a `Buy` order (checked in the real game: a worker hires a tavern hero, a hero buys an item, a unit hires a mercenary); new order classes, the vocabulary and the network grown | built (`--neutral`; `Buy` checked in the game) |
-| A heuristic teacher | the user ("buying a first hero with a worker": what it rarely stumbles on) | our own advisor whose orders label the policy's steps, as the target builder does (`--z-build 2`): a tavern hero with a worker, a town portal, a potion when low | built (`--teach`) |
-| Self-distillation with privileged information (OPSD) | the user, from LLM training | the same network given what the player can't see is the teacher; a KL pulls the policy without it toward it; never in evaluation | built (`--opsd-share`, `--opsd-coef`) |
-| Scenarios and weight averaging | the user (the micro curriculum, kept on); model soups, task arithmetic | mid-game situations the harness sets up; specialists forked from one checkpoint, merged by averaging their weights | built (`--scenarios`, `scripts/average_weights.py`) |
-| Skill ratings | the user (the insane AI's win rate is spent) | a Bradley–Terry rating over every evaluation game, the insane AI at 1500: the dashboard's Ratings view | done |
-| The target's first hero taught at the altar | ours (`fgself-139`'s first heroes matched the target's by chance) | the teacher's first-hero lesson names the target's, as soon as the altar stands (`--teach 2`) | running (`fgself-140`) |
-| Training games on a second machine | the user (a games box ordered, 2026-10-24) | games and actors there, their inference on the 3090 over the network, trajectories to the learner | being built |
-| A heuristic opponent stronger than the learner | the user (2026-10-25) | a scripted player (tight build orders, continuous production, focus fire, pulling back hurt units, the hero's spells, attack timings) built to beat our learner: its weaknesses shown, then a league opponent and a yardstick | being built (a worktree agent) |
-| Diverse play without macro help | the user (2026-10-25: "without hacks like a command to train the desired mix, or creeping an expansion command") | the army-mix, creep and expand orders masked (`--macros-off`); the lessons teach their low-level orders (a unit at a building, a hall at the natural, workers to it, the camp cleared) | built, next run |
-| Targets that limit or forbid units | the user (footman spam) | new kinds of target: the army's most common unit at most a share of its food; a named basic unit forbidden; several unit types by a time | to build (after the actors' round 4: modes moved to C) |
-| Cloning diverse scripted strategies | the user, with the heuristic opponent | a family of scripted players (builds, army mixes, timings, expansions) whose games are demonstrations: a cloning loss on them with their own build as the target, and their decisions as lessons when the learner plays that target (AlphaStar's supervised diversity) | the heuristic agent's next step |
-| Fine points around the unit | the user (2026-10-25: how coarse are the positions? "a target mode around the unit") | the point head's bins are 48 world units near the bases and in y, ~206 in x between them (the squeezed frame); a local head of offsets around the acting unit (e.g. ±512 at 16 units) beside the global bins, the policy choosing which: fine moves, kiting, retreats, point spells and placement in fights | to build (a model change: its own experiment) |
-| A lumber lesson | ours (audit 9: human lumber a minute 105 → 38 since `fgself-120`) | a target's next item short of lumber: a worker taught to chop (`--teach 3`) | built, queued (`fgself-147`) |
-| Same-page merging of the games' memory | ours | the games' identical pages shared by the kernel (`PR_SET_MEMORY_MERGE`): ~225 of a game's ~345 MB in a test | to try in a run |
-| Human data | AlphaStar (Fig. 3E, its largest gain) | a cloning loss on people's 95 Echo Isles games, played back in our client | later |
+| Every training game in the real game | ours (bold changes, 2026-11-06) | `--map "(2)EchoIsles"`: the AI games, the games between agents, the scenarios and the late starts all in the game it is judged on | running (`fgself-212`) |
+| Late starts from the late game | ours (2026-11-12: 102 of `fgself-201`'s 118 losses past 18 minutes) | states captured at minutes 16-28 of real-map games, against the AI too, and only those drawn (`--late-minutes 16,28 --late-from 16`) | built |
+| Upgrades in the shaping | ours (2026-11-12) | finished research counted at its cost in the shaping's material, as a unit is (`--research-value`) | built |
+| The heroes' spells, another way | the user (2026-11-11: heroes rarely cast) | lessons made the heroes spam their spells (`fgself-208` to `-210`). A new approach is needed | open |
+| Expansions, gentler | ours (audit 15, a bug finder 2026-11-10) | expansion lessons only when the main mine is nearly empty | open |
+| Fine points around the unit | the user (2026-10-25) | a sub-cell within the chosen point bin (`--fine-points 7`) | merged, not yet in a run |
 | Fewer decisions, spatial point heads | AlphaStar (action rate), SC2LE | a "keep this order k steps" head; points on a map, not x then y | later |
+| An APM cap | ours | every unit acts every half second now | before games against people |
 
 ## Tried
 
 | idea | from | result |
 |---|---|---|
+| Half the AI games in the real game | ours (bold changes, 2026-11-06) | `--real-share 0.5` (`fgself-201`): +11 points against insane over the continuation, kept as the base |
+| The strongest checkpoint as a league member | the user (2026-11-11) | `fgself-197`'s peak fixed in the league since `fgself-201`'s resume |
+| The heroes' spells taught | the user (2026-11-11) | `--spell-lesson`, with a mana cost or without (`fgself-208` to `-210`): the heroes cast ~25-40 spells a game, -10 to -15 against insane, not kept |
+| Make sure the agent can do everything | the user (2026-11-06) | `--full-vocab 1`: every order a melee player can give, 13 exclusions with reasons ([order coverage](order-coverage.md)); `fgself-196` kept, level |
+| What the agent can't observe | the user (2026-11-06) | `--obs-full 1`: buffs, corpses, items, area spells, enemy upgrades ([observation coverage](observation-coverage.md)); `fgself-197` kept, wins past 18 minutes 16% → 46% |
+| BF16 inference | the user (2026-11-06) | `--infer-precision bf16-mixed` and finer inference rows, part of ~4,300 → ~5,800 steps/s |
+| Bold changes over one-flag tweaks | the user (2026-11-06, 2026-11-12) | league-first, dry mains, the full vocabulary, obs-full, real-game training |
+| AlphaStar's league first, a league with history | AlphaStar | the AI in 40% of the games (`fgself-194`): -13 against insane; snapshots spanning hours (`fgself-199`): level |
+| PFSP with data | ours (a bug finder, 2026-11-06) | `--pfsp-data` (`fgself-198`): level |
+| Dry mains to force expansions | ours (bold changes) | the `dry` scenario (`fgself-195`): no expansions in evaluation |
+| Expansion lessons with the place taught | a bug finder (2026-11-10) | `--expand-lesson 0.5` (`fgself-202`): pulled hard toward early expansions, 40% against insane |
+| More maps in the training pool | the user (2026-11-01) | `fgself-178`: level off Echo Isles, worse on it; not kept |
+| The value sees the tax | the user (2026-11-01) | `--value-tax 1` (`fgself-184`): 41% head to head, off |
+| An EMA anchor | the user (2026-11-01) | `--ref-ema` (`fgself-191`, `-192`): level, no wider |
+| Shop items in the targets | the user (2026-11-02) | `--z-shop 3` (`fgself-183`): 3 items a game bought, -22 against insane |
+| Training games on a second machine | the user (2026-10-24) | the games box: 56, now 64 training games; ~4,450 steps/s with it (`fgself-168`) |
+| Narrow targets, more kinds of conditioning | the user | `fgself-109`: level; the easy kinds followed, the hard ones not |
+| Rewards by part (GDPO) | the user (LLM RL) | worse (`fgself-110`, `-116`) |
+| Self-distillation with privileged information (OPSD) | the user (LLM training) | no gain (`fgself-112`, `-121`) |
+| Neutral shops, the tavern, mercenaries | the user | tavern heroes hired; untaught mercenaries cost real-game wins (`--neutral 2`); shop items as orders kept (`fgself-179`: 66% → 77%) |
+| A heuristic teacher | the user | the teacher's lessons label the policy's steps (`--teach 3`), in every run |
+| Scenarios, weight averaging | the user (the micro curriculum; model soups) | level (`fgself-114`, `-115`) |
+| Skill ratings | the user | a Bradley-Terry rating of every policy: the dashboard's Ratings view |
+| A heuristic opponent stronger than the learner | the user (2026-10-25) | `fullgame/heuristic.py`, in the evaluation games (`--eval-heuristic`) |
+| Diverse play without macro help | the user (2026-10-25) | `--macros-off mix,creep,expand` (`fgself-151`): kept, it adapted |
+| Targets that limit or forbid units | the user (footman spam) | `--z-comp` (`fgself-154`): not kept |
+| A lumber lesson | ours (audit 9) | `fgself-150`: kept |
+| Same-page merging of the games' memory | ours | on the games box (KSM) |
+| Human data | AlphaStar (Fig. 3E) | a clone of people's play was passive (2026-10-27); people's late-game states are late starts (`fgself-168`) |
+| The target's first hero taught at the altar | ours | `--teach 2` (`fgself-140`): level |
 | Strategic variety first, a lower win rate accepted for a while | the user (2026-10-18) | the direction since; targets the policy follows on its own came with the tech-tree builder (`fgself-95`) |
 | Faster games for variety: the duel map, faster rules | the user | `echofast` training judged on the real game: the best line (`fgself-100`, 95%) |
 | Teach expanding, creeping, picking up items | the user (2026-10-22) | as lessons they failed (`fgself-123`, `-124`: armies dragged to the camp, halls built at home); as orders of the agent's own that the policy chooses when (`--macros`: expand, creep) the first expansions in the real game and the best policy yet (`fgself-127` to `-129`); items off the ground: `--macros 2` (`fgself-134`) |

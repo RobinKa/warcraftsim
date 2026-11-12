@@ -20,13 +20,23 @@ xychart-beta
 
 ```mermaid
 xychart-beta
-  title "Games won against the untaxed insane AI, each run's evaluation games"
+  title "Won against insane, the agent at the AI's double income (until 2026-10-26)"
   x-axis ["fgself-56 as is", "fgself-62", "fgself-68", "fgself-73", "fgself-77", "fgself-78", "fgself-100", "fgself-102", "fgself-129", "fgself-139"]
   y-axis "%" 0 --> 100
   bar [49, 59, 62, 72, 82, 89, 95, 95, 94, 97]
 ```
 
-Each run plays its own matchups, so compare within a run: in `fgself-78`'s games its policy won 89% and its start 84%; in `fgself-100`'s, 95% to `fgself-78`'s 87%. A quarter of the KL's pull (`fgself-77`), strategy conditioning (`fgself-78`) and training on the fast rules toward targets the policy can follow (`fgself-100`) made the last gains. Since then the yardstick is spent (95-97%); games against frozen snapshots of the policy (`--eval-vs`, head to head) and a rating over all evaluation games (Bradley-Terry, the insane AI at 1500: the dashboard's Ratings) measure progress beside it, and the work turned to strategic variety: playing a given target build order (68% against insane with one, `fgself-139`).
+Until 2026-10-26 the agent slots had the insane AI's double income, so these figures were at that income. Since then every agent slot plays at a person's income:
+
+```mermaid
+xychart-beta
+  title "Won against insane at a person's income, each run's evaluation games"
+  x-axis ["fgself-153", "fgself-155", "fgself-166", "fgself-173", "fgself-179", "fgself-197", "fgself-201"]
+  y-axis "%" 0 --> 100
+  bar [39, 74, 74, 73, 77, 74, 81]
+```
+
+Each run plays its own matchups and windows, so compare within a run. The masks and order fixes of `fgself-155` gave most of the jump. Late-game starts (`fgself-166`), shop items (`fgself-179`), what a player sees (`fgself-197`) and half the AI games in the real game (`fgself-201`) gave the rest. Head to head games against frozen checkpoints measure progress beside it. Since 2026-11-11 a run is judged against an unchanged continuation's level: `fgself-197`'s checkpoint was a peak (0.79) that continuations do not reach again (~0.70).
 
 ## What worked
 
@@ -54,6 +64,14 @@ Each run plays its own matchups, so compare within a run: in `fgself-78`'s games
 | A first hero taught in games without a target | human plays a hero again (`fgself-135`) |
 | A hero's skill points spent when the policy leaves them (`--macros 3`) and a third audit's fixes | 51% head to head with its start (`fgself-137`) |
 | Orders the game refuses not sent (repairs of what needs none, harvests at mines the race cannot mine, power builds without lumber) | 58% head to head with its start (`fgself-139`); 97% against insane |
+| Late-game starts from captured states, half from people's games (`fgself-166`, `-168`) | against insane 69% → 74% |
+| Two-base starts (`fgself-173`) | level, undead up |
+| A smaller anchor pull (`--ref-kl 0.01`, `fgself-176`) | level, a little more varied |
+| A strong past run fixed in the league (`fgself-177`) | 58% head to head with its start |
+| Shop items as orders (`--shop-items 1`, `fgself-179`) | against insane 66% → 77%, though it hardly buys |
+| Every order a player can give (`--full-vocab 1`, `fgself-196`) | level, and nothing out of reach |
+| What a player sees: buffs, corpses, items, area spells, enemy upgrades (`--obs-full 1`, `fgself-197`) | wins past 18 minutes 16% → 46% |
+| Half the training games against the AI in the real game (`--real-share 0.5`, `fgself-201`) | against insane 0.70 → 0.81 over the continuation |
 
 ## What did not help
 
@@ -72,6 +90,10 @@ Each run plays its own matchups, so compare within a run: in `fgself-78`'s games
 * Expansion taught with a lesson to clear the natural's camp (`-123`): armies dragged away, much worse; without it (`-124`) the policy built a second hall at home.
 * The target's army mix taught a unit at a time (`-131`): level; an order to train it (`-132`): followed, at a cost in wins. Halfway rules between `echofast` and the real game (`echo50`, `-133`): worse.
 * Items off the ground as an order (`--macros 2`, `-134`): it picks them up, but without a target the human policy built no altar, so had no hero.
+* Expansion lessons in every game (`-156`, `-157`, `-202`): worse each time. With the place taught (`-202`) they pulled hard toward early expansions and the run fell to 40% against insane.
+* People's late plans as targets (`-169`, `-170`), no KL anchor (`-171`), no AI tax in training (`-174`: -15), a lesson to hunt hidden bases (`-175`), a map pool (`-178`), shop items in the targets (`-183`: -22), a value tax (`-184`), a uniform PFSP (`-187`), larger minibatches (`-189`), more two-base starts (`-190`), an EMA anchor (`-191`, `-192`): level or worse.
+* AlphaStar's league first (`-194`: the built-in AI in 40% of the games, -13 against insane), dry mains to force expansions (`-195`: none in evaluation), PFSP with more data (`-198`), a league with history (`-199`): level or worse.
+* Spell lessons (`-208` to `-210`), with a mana cost or without: the heroes cast ~25-40 spells a game, and the runs lost 10-15 points against insane.
 
 ## What went wrong
 
@@ -88,3 +110,10 @@ Each run plays its own matchups, so compare within a run: in `fgself-78`'s games
 | The real-game yardstick's AI record was the duel maps' until 2026-10-23 | the wrong table (audit 4) |
 | 30-40% of the policy's orders refused by the game | repairs of what needed none, workers sent to mines their race cannot mine, a peasant's power build without lumber (audits 5 and 6, tested in the game) |
 | The first hero the target's only by chance (25-37%) | in target games no lesson came before the policy had made another hero (`fgself-140` teaches it) |
+| Every figure before 2026-10-26 was at double income | the agent slots had the insane AI's income. All agent slots now play at a person's |
+| The laptop's evaluation read too high | relaunches cut its games in flight, mostly losses and ties. The worker now drains before a relaunch |
+| The engine sent trained units home 67 times a game | the computer slot's guard posts covered the agent's units (fixed 2026-11-03) |
+| `fgself-200`'s real launches never played the real map | they played the training map, untaxed (fixed 2026-11-10) |
+| Every fork of `fgself-197` read low | forks faded the new inputs in again: ~15 minutes nearly blind. Also, the start checkpoint was a peak |
+| Expansion lessons taught "build a hall" but not where | the teacher's loss never covered the point (fixed 2026-11-10) |
+| The machine reset itself twice under full load | an uncorrected machine check (data fabric). BIOS settings to check |
