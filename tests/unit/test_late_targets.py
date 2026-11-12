@@ -18,6 +18,7 @@ class _Bot:
 
     def __init__(self, *_a, **_k):
         self.view = NS(z=None, zmask=None, forbid=None, mix_target={}, levels={}, max_own=0, max_ent=0)
+        self.view.place_levels = lambda own, enemy=None: self.view.levels.update(own)  # (features.View.place_levels)
         self.enc = NS()
         self.h, self.trees, self.issued = None, {}, 0
         _Bot.made.append(self)
