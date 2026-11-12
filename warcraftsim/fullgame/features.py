@@ -1543,6 +1543,21 @@ class View:
                 self.assign[unit] = res
                 self.added(unit)
 
+    def place_levels(self, levels: dict[int, int], enemy: dict[int, int] | None = None) -> None:
+        """Research levels the player has without a research event (a late start's, set by SetResearch: late.levels;
+        upgrade id -> level): View.levels (the costs, the tech mask, --obs-full's own units' upgrades) and the global
+        features' upgrades, as step() sets both from an event. Until 2026-11-12 a late start set View.levels alone, and
+        its upgrades read 0 in the input for the whole game but for a level researched after it (90% of the real-map
+        states' sides hold research). `enemy`: the other player's (--obs-full: its units' upgrades, obsfull's
+        enemy_levels, which only its research events set)."""
+        self.levels.update({int(k): int(v) for k, v in levels.items()})
+        for code, lv in levels.items():
+            k = self.enc.upgrade_index.get(int(code))
+            if k is not None:
+                self.upgrades[k] = int(lv) / 3.0
+        if enemy and OBS_FULL:
+            _mod("obsfull").place_enemy_levels(self, enemy)
+
     def added(self, unit: int) -> None:
         """A unit's entry put in assign, mine_of or last_order: unless it is among the living units of the view's last
         step, the next step forgets those dicts' gone units by a full pass (step: by the units gone since otherwise)."""

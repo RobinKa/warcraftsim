@@ -521,6 +521,20 @@ class States:
         return fit(st, map_name, races, starts)
 
 
+def count_from(files: list[str], map_name: str, from_minute: float) -> dict[str, int]:
+    """--late-from's check at a run's start: per --late-states file (its path, a weight's suffix off), its states of
+    `map_name` captured at minute `from_minute` or later now (a file not there yet: 0). The files given are all a late
+    start draws from: a run's own captures (runs/<run>/late-states.jsonl) only when listed."""
+    s = States(list(files), refresh=0.0, from_minute=from_minute)
+    s._update()
+    out = {str(f): 0 for f in s.files}
+    for key, by_file in s.index.items():
+        if key[0] == map_name:
+            for k, offs in by_file.items():
+                out[str(s.files[k])] += sum(1 for _, flip in offs if not flip)  # (each state once: not its swapped self)
+    return out
+
+
 _STATES: dict[tuple, States] = {}
 
 

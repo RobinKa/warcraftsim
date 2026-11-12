@@ -407,6 +407,17 @@ def _type_upgrades(typ: int) -> tuple[tuple[int, ...], tuple[int, ...]]:
     return tuple(fourcc(u) for u in w), tuple(fourcc(u) for u in a)
 
 
+def place_enemy_levels(view, levels: dict) -> None:
+    """The other player's research levels the game has without an event (a late start's, set by SetResearch:
+    late.levels; upgrade id -> level): State.enemy_levels, its units' upgrade levels (K_UPG), as its research events would
+    have set them (until 2026-11-12 a late start's enemy units read the levels placed as 0, own ones as placed)."""
+    st: State = view.__dict__.get("obs")
+    if st is None:
+        st = view.obs = State(native=_native(view) is not None)
+    for c, v in levels.items():
+        st.enemy_levels[int(c)] = max(st.enemy_levels.get(int(c), 0), int(v))
+
+
 def apply(view, rows: np.ndarray, events, t: int, sel: np.ndarray, n_own: int, f: np.ndarray, types: np.ndarray,
           cur: np.ndarray) -> tuple:
     """The block for this step's entities, and the new kinds' rows after them -> (sel, f, types, cur). In C

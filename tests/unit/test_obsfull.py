@@ -112,6 +112,30 @@ def test_block_and_new_kinds(obs_on):
     assert st["ent"][:, A + 2].sum() == 0
 
 
+def test_late_start_levels_on_both_sides_units(obs_on):
+    """A late start's research (SetResearch: no event) on the units' upgrade channel: the player's own through View.levels,
+    the enemy's through the obs state's enemy_levels (View.place_levels; the enemy's had read 0 until it researched a
+    level more), in C and in Python alike."""
+    from warcraftsim.fullgame import obsfull as of
+    rows = np.stack([_row(1, "hfoo", 0, -4000, 2900), _row(4, "ogru", 1, -3800, 2900)])
+    for native in (True, False):
+        enc = fx.Encoder(VOCAB)
+        view = enc.view(0, 1.0, [0, 1])
+        if not native:
+            view.obs = of.State(native=False)
+        view.step(rows, None, np.zeros((0, 5), np.int64), 0)
+        view.place_levels({code("Rhme"): 1}, {code("Rome"): 2, code("Roar"): 1})
+        st = view.step(rows, None, np.zeros((0, 5), np.int64), 1)
+        at = {int(u): k for k, u in enumerate(st["sel"][:, fx.C_ID].tolist())}
+        foot, grunt = st["ent"][at[1]], st["ent"][at[4]]
+        A = fx.A_OBS
+        assert foot[A + of.K_UPG] == pytest.approx(1 / 3) and foot[A + of.K_UPG + 1] == 0, native
+        assert grunt[A + of.K_UPG] == pytest.approx(2 / 3) and grunt[A + of.K_UPG + 1] == pytest.approx(1 / 3), native
+        # a level more by the enemy's research: the event's level, the game's (the placed ones in it)
+        st = view.step(rows, None, np.asarray([(2, fx.RESEARCH_FINISH, 5, code("Rome"), 3)], np.int64), 2)
+        assert st["ent"][at[4]][A + of.K_UPG] == pytest.approx(1.0), native
+
+
 def test_creep_types_grow_as_unknown(obs_on):
     from warcraftsim.fullgame import obsfull as of
     from warcraftsim.fullgame.model import FullGameNet
