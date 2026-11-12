@@ -460,3 +460,26 @@ def test_from_minute(tmp_path, heroes):
     assert late.States([str(f)], refresh=0.0).pick("echofast2", ["human", "undead"], [L, R], rng) is not None
     assert late.States([str(f)], refresh=0.0, from_minute=30.0).pick("echofast2", ["human", "undead"], [L, R], rng) is None
     assert late.states([str(f)], 18.0) is late.states([str(f)], 18.0) is not late.states([str(f)])
+
+
+def test_placed_levels_in_the_inputs():
+    """A late start's research levels (SetResearch: no research event) reach the view as an event's would: View.levels
+    (the costs, the tech) and the global features' upgrades (until 2026-11-12 only the levels: the inputs read 0)."""
+    vocab = {"types": [], "current_orders": [], "orders": [],
+             "upgrades": [fourcc("Rhme"), fourcc("Rhar"), fourcc("Rhra")]}
+    enc = fx.Encoder(vocab)
+    view = fx.View(enc, 0, 1.0, [0, 2])
+    st = {"sides": [{"research": {"Rhme": 2, "Rhar": 1, "Rhpm": 1}}, {"research": {}}]}
+    view.place_levels(late.levels(st, 0))
+    assert view.levels == {fourcc("Rhme"): 2, fourcc("Rhar"): 1, fourcc("Rhpm"): 1}  # (all of it: not only the vocabulary's)
+    assert view.upgrades.tolist() == pytest.approx([2 / 3, 1 / 3, 0.0])  # (step()'s scale: an event's level / 3)
+    other = fx.View(enc, 1, -1.0, [2, 0])
+    other.place_levels(late.levels(st, 1))
+    assert other.levels == {} and not other.upgrades.any()
+
+
+def test_late_start_sets_the_inputs_upgrades():
+    """play_one gives a late start's levels to the views through View.place_levels (the upgrades too), not levels alone."""
+    src = (ROOT / "warcraftsim" / "fullgame" / "selfplay.py").read_text()
+    assert "view.place_levels(late_game.levels(late_start, s))" in src
+    assert "view.levels.update(late_game.levels(" not in src

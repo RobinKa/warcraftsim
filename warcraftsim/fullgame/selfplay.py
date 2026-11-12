@@ -2773,9 +2773,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             rec["spans"].append(dict(spans))
             rec["res"].append({s_: list(bots[s_].sent_resources) for s_ in spans})
         obs = g.step(cmds)
-        if late_start is not None and t == 0:  # (the views learn the state's research levels: View.levels, which only
-            for s in bots:                      # research events set)
-                bots[s].view.levels.update(late_game.levels(late_start, s))
+        if late_start is not None and t == 0:  # (the views learn the state's research levels: View.levels and the
+            for s in bots:                      # inputs' upgrades, which only research events set; View.place_levels)
+                bots[s].view.place_levels(late_game.levels(late_start, s))
         elif late_given:  # (the harvesters' jobs the game took: the views' assignments, before the agents' own orders')
             for s, given_s in late_given.items():
                 late_game.noted(bots[s].view, given_s, obs.command_results[late_at:late_at + len(given_s)])
