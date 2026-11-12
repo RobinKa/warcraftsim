@@ -52,5 +52,5 @@ The plan: [next experiments](proposals/next-experiments.md). [Ideas](reference/i
 
 ## Compute
 
-* ~5,000-5,800 agent steps a second in training: 72 games on the main machine (Ryzen 9 5950X, RTX 3090) and 64 on a games box. The GPU is now the limit.
+* ~5,000-5,600 agent steps a second in training: 72 games on the main machine (Ryzen 9 5950X, RTX 3090) and 64 on a games box. The main machine's CPU sets the speed, and the GPU is ~84% busy.
 * A laptop plays more evaluation games, so a verdict (~300 games a policy) takes about two hours of a run.

@@ -88,7 +88,7 @@ xychart-beta horizontal
   bar [560, 719, 822, 1000, 1110, 1280, 1490, 1850, 2280, 4450, 5350]
 ```
 
-The main machine (Ryzen 9 5950X, RTX 3090) runs the learner, the inference loop and 72 games. A games box (Ryzen 9 8945HX) plays 64 more over a direct cable, its orders from the 3090: ~5,000-5,600 agent steps a second, and the GPU is now the limit. A laptop under WSL2 plays more evaluation games, so an experiment's verdict comes within a few hours. [Optimizations](docs/optimizations.md) and the [optimization log](docs/reference/optimization-log.md) have every fix.
+The main machine (Ryzen 9 5950X, RTX 3090) runs the learner, the inference loop and 72 games. A games box (Ryzen 9 8945HX) plays 64 more over a direct cable, its orders from the 3090: ~5,000-5,600 agent steps a second. The main machine's CPU sets the speed, and the GPU is nearly as busy. A laptop under WSL2 plays more evaluation games, so an experiment's verdict comes within a few hours. [Optimizations](docs/optimizations.md) and the [optimization log](docs/reference/optimization-log.md) have every fix.
 
 ## The dashboard
 

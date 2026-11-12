@@ -2,7 +2,7 @@
 
 Self-play is CPU-bound: the games and the actors' Python set the speed, and the RTX 3090 is far from full ([optimizations](../optimizations.md), [GPU unlock](gpu-unlock.md)). This page asks what the cheapest way is to get more games per second: what to buy, or whether to rent. Prices are UK prices of 24 October 2026, with UK electricity.
 
-**Now (2026-11-12):** we bought the games box (below). It plays 64 training games beside the main machine's 72, and a run makes ~5,000-5,800 agent steps a second. The GPU is now the limit, not the CPU ([optimizations](../optimizations.md)). The rest of this page is as written in October.
+**Now (2026-11-12):** we bought the games box (below). It plays 64 training games beside the main machine's 72, and a run makes ~5,000-5,600 agent steps a second. The main machine's CPU still sets the speed, and the GPU is ~84% busy, so more games need more GPU too ([optimizations](../optimizations.md)). The rest of this page is as written in October.
 
 ## What the workload needs
 

@@ -23,7 +23,7 @@ The yardstick is the evaluation games. The policy plays the real game against th
 ## Since 2026-10-26
 
 * Every agent slot plays at a person's income. Before, the agent slots had the insane AI's double income, and the ~95-100% figures were at that income.
-* A games box plays 64 training games. Training runs at ~5,000-5,800 agent steps a second, and the GPU is now the limit.
+* A games box plays 64 training games. Training runs at ~5,000-5,600 agent steps a second. The main machine's CPU sets the speed, and the GPU is nearly as busy.
 * Late-game starts from captured states, two-base starts and a fixed league of strong past runs (`fgself-130`, `-171`, and `fgself-197`'s peak).
 * The full order vocabulary (`fgself-196`), and inputs for buffs, corpses, items, area spells and enemy upgrades (`fgself-197`: wins past 18 minutes 46% against 16%).
 * Half the training games against the AI in the real game (`fgself-201`: +11 points against insane). `fgself-212` puts every training game there.
