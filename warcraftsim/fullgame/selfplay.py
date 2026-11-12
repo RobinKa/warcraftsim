@@ -1307,15 +1307,24 @@ def label_step(obs, t: int, advised: list[int], spans: dict, sts: dict, held: di
             step[k] = v[:n]
 
 
-def with_research(mat: dict, prod, value: float) -> dict:
+def with_research(mat: dict, prod, value: float, placed: dict | None = None) -> dict:
     """--research-value V: `mat` plus V times what each player's finished research cost (trace.research_material; the
     game's tables). Without it an upgrade read as gold gone (the float penalty's refund at its order, then nothing) while
     a unit read as its cost at once: the base's armies were tier 1 with ~0.4 weapon and armour levels a game, and lost
-    102 of 118 games past 18 minutes (fgself-201 against insane)."""
+    102 of 118 games past 18 minutes (fgself-201 against insane). `placed`: each player's levels a late start set up
+    ({player: {code: level}}, its state's: no research event, Production reset at step 2), counted as its placed units
+    are; an event's level is the game's (GetPlayerTechCount: the placed ones in it), so a level on top costs only its
+    own (without them the next level had counted every level below it at once, a windfall of the placed ones' cost)."""
     if not value:
         return mat
     table = research_values()
-    return {p: v + value * research_material(prod.research.get(p, {}), table) for p, v in mat.items()}
+    out = {}
+    for p, v in mat.items():
+        levels = prod.research.get(p, {})
+        if placed and placed.get(p):
+            levels = {**placed[p], **{c: max(n, placed[p].get(c, 0)) for c, n in levels.items()}}
+        out[p] = v + value * research_material(levels, table)
+    return out
 
 
 def shaped(obs, mat: dict, penalty: float) -> dict:
@@ -2598,8 +2607,11 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         rec["shared_noise"] = shared_noise
     values, scale = cfg["values"], cfg["shaping_scale"]
     shaping = opp.get("shaping", cfg["shaping"])  # (the potential goes back to 0 with the weight it was paid with)
+    # (--research-value: a late start's research levels, set up with no event, count as its placed units do)
+    placed_research = ({s: dict(late_start["sides"][s].get("research") or {}) for s in (0, 1)}
+                       if late_start is not None and cfg.get("research_value") else None)
     mat = with_research(material(obs, values, cfg.get("hero_level_value", 0.0), cfg.get("worker_cap", 0),
-                                 cfg.get("mana_value", 0.0)), prod, cfg.get("research_value", 0.0))
+                                 cfg.get("mana_value", 0.0)), prod, cfg.get("research_value", 0.0), placed_research)
     pot = shaped(obs, mat, cfg.get("float_penalty", 0.0))
     phi = {s: (pot[s] - pot[1 - s]) / scale for s in trajs}  # at the last recorded state
     ret = {s: 0.0 for s in trajs}
@@ -2828,7 +2840,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             p_ = obs.players.get(s)
             viol[s] = tk.step(rows_next, obs.events, p_.food_used if p_ is not None else 0, obs.game_time)
         mat = with_research(material(obs, values, cfg.get("hero_level_value", 0.0), cfg.get("worker_cap", 0),
-                                     cfg.get("mana_value", 0.0)), prod, cfg.get("research_value", 0.0))
+                                     cfg.get("mana_value", 0.0)), prod, cfg.get("research_value", 0.0), placed_research)
         pot = shaped(obs, mat, cfg.get("float_penalty", 0.0))
         if obs.game_over or t >= cfg["max_steps"]:
             break
