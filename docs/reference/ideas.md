@@ -8,7 +8,7 @@ In the order they run. The code for each is in place unless it says otherwise. [
 
 | idea | from | what it is | status |
 |---|---|---|---|
-| Late starts from the late game | ours (2026-11-12: 102 of `fgself-201`'s 118 losses past 18 minutes) | states captured at minutes 16-28 of real-map games, against the AI too, and only those drawn (`--late-minutes 16,28 --late-from 16`); late starts are games on the training map, so this needs real-map late starts on `echofast2` runs | built, needs real-map late starts |
+| Late starts from the late game | ours (2026-11-12: 102 of `fgself-201`'s 118 losses past 18 minutes) | a share of the games between agents in the real game, each from a real-map state of minutes 16-28, captured in real games against the AI too (`--real-agents`, `--real-late-minutes 16,28`, `--real-late-from 16`) | built, after `fgself-213` |
 | Unit attacks | the user (2026-11-12: workers survive attack-moves) | the policy attacks a unit in <1% of its attacks; a gentle lesson or exploration for it ([next experiments](../proposals/next-experiments.md), 13) | open |
 | Upgrades in the shaping | ours (2026-11-12) | finished research counted at its cost in the shaping's material, as a unit is (`--research-value`) | running (`fgself-213`) |
 | The heroes' spells, another way | the user (2026-11-11: heroes rarely cast) | lessons made the heroes spam their spells (`fgself-208` to `-210`). A new approach is needed | open |

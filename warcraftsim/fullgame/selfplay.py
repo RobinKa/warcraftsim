@@ -1446,7 +1446,14 @@ def real_game_cfg(cfg: dict) -> dict | None:
     echofast2 against the untaxed AI, and fgself-200's --real-share 0.5 never played Echo Isles' own rules."""
     if not cfg.get("real_map", 1) or not cfg.get("eval_map") or cfg["eval_map"] == cfg.get("map"):
         return None
-    return {**eval_map_cfg(cfg), "real_launch": True}  # (its rows say the map: play_one)
+    out = {**eval_map_cfg(cfg), "real_launch": True}  # (its rows say the map: play_one)
+    # (--real-late-minutes, --real-late-from: the real game's own capture window and late starts' first minute; the run's
+    # --late-minutes 8,16 are the training map's late game, on the real map its middle)
+    if cfg.get("real_late_minutes"):
+        out["late_minutes"] = list(cfg["real_late_minutes"])
+    if cfg.get("real_late_from") is not None and cfg["real_late_from"] >= 0:
+        out["late_from"] = float(cfg["real_late_from"])
+    return out
 
 
 def agent_difficulty(cfg: dict) -> str:
@@ -1631,6 +1638,13 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
         real = bool(ai.get("real"))  # the real game (the yardstick, no curriculum)
         if real and real_cfg is not None:  # (on --eval-map's map, its costs and strategies, as the evaluation games:
             cfg = real_cfg  # until 2026-11-10 these launches played the run's map, echofast2, the AI untaxed alone)
+        # --real-agents X: X of the training launches between agents (self, past snapshots) play the real game too, every
+        # game of them from a late state of the real map (--real-late-from on: the late game where the base loses; the
+        # states captured there in games against the AI hold its two bases and tier 3, which either agent may play)
+        real_agents = (not evaluating and not heur and not versus and ai["kind"] == "agents" and real_cfg is not None
+                       and cfg.get("real_agents", 0.0) > 0 and rng.random() < cfg.get("real_agents", 0.0))  # (no draw at 0)
+        if real_agents:
+            cfg = real_cfg
         curr = ai["kind"] == "ai" and "by_race" in ai  # a curriculum game (League.knobs, by the learner's race)
         key = matchup(cfg["mirror"], races[side], races[1 - side])
         if curr:
@@ -1703,6 +1717,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                             opp["tax"], opp["tax_side"] = share, taxed
                         if spec.get("win_balance") and opp.get("kind") in ("self", "past"):  # (--win-balance: by who
                             opp["win_balance"] = spec["win_balance"]  # is expected to win, play_one)
+                    if real_agents:  # (--real-agents: a late start, play_one; none fits: a game from minute 0)
+                        opp["late_only"] = True
                     # on-policy distillation: the built-in AI advises the learner (never in the real game)
                     opp["advise"] = not real and rng.random() < cfg.get("opd_share", 0.0)
                     if evaluating and not versus and not heur and eval_key != "current":
@@ -2423,7 +2439,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     zs: dict[int, dict] = {}
     zm: dict[int, dict] = {}  # (--z-modes: each side's modes, modes.draw; --z-comp: its composition kinds too)
     # --scenarios: a share of the training games start in a situation the harness sets up (scenarios.py)
-    scenario = (random.choice(cfg["scenarios"]) if train and replay is None and cfg.get("scenarios")
+    scenario = ("late" if opp.get("late_only") and train and replay is None else  # (--real-agents' games)
+                random.choice(cfg["scenarios"]) if train and replay is None and cfg.get("scenarios")
                 and "(real)" not in str(opp.get("name")) and random.random() < cfg.get("scenario_share", 0.0) else None)
     # (not the untaxed real-game launches: they are the training's yardstick; audit 6)
     def draw_modes(race: str) -> dict:  # (--econ-masks: a workers mode asks no more than the cap lets one base have; it
@@ -5147,6 +5164,14 @@ def main(argv: list[str] | None = None) -> int:
                     "training games give their state at a game minute drawn in --late-minutes, a line of the run's "
                     "late-states.jsonl (none from a decided game or a late start)")
     ap.add_argument("--late-minutes", default="8,16", help="--late-capture: the range of the game minute captured")
+    ap.add_argument("--real-agents", type=float, default=0.0, help="this share of the training launches between agents "
+                    "(self, past snapshots) play --eval-map's real game, every game from a late state of the real map "
+                    "(none that fits: from minute 0). The base loses past 18 minutes of the real game (102 of 118 losses "
+                    "against insane, fgself-201), and its late starts were all on the training map")
+    ap.add_argument("--real-late-minutes", default="", help="the real game's games (--real-share's, --real-agents'): the "
+                    "range of the game minute --late-capture takes their state at (empty: --late-minutes)")
+    ap.add_argument("--real-late-from", type=float, default=-1.0, help="late starts in the real game: only states "
+                    "captured at this minute or later (-1: --late-from)")
     ap.add_argument("--late-from", type=float, default=0.0, help="the late starts: only --late-states' states captured at "
                     "this game minute or later (0: all). The base loses past 18 minutes (102 of 118 losses against insane, "
                     "fgself-201), and --late-minutes 8,16 were set for echofast2, where those were late")
@@ -5687,6 +5712,16 @@ def main(argv: list[str] | None = None) -> int:
         ap.error(str(e))
     if len(args.late_minutes.split(",")) != 2:
         ap.error("--late-minutes: two game minutes, the capture's range (8,16)")
+    if args.real_late_minutes and len(args.real_late_minutes.split(",")) != 2:
+        ap.error("--real-late-minutes: two game minutes, the capture's range in the real game (16,28)")
+    if args.real_agents > 0 and (not args.eval_map or args.eval_map == args.map or not args.late_states):
+        ap.error("--real-agents: an --eval-map other than --map (the real game) and --late-states")
+    if args.real_agents > 0:  # (its late starts' states of the real game that pass the minute now, said at the start)
+        rfrom = args.real_late_from if args.real_late_from >= 0 else args.late_from
+        got = late_game.count_from([x for x in args.late_states.split(",") if x], args.eval_map, rfrom)
+        print(f"--real-agents {args.real_agents:g}: {sum(got.values())} states of {args.eval_map} at minute {rfrom:g} or "
+              "later now (" + ", ".join(f"{Path(f).parent.name}/{Path(f).name} {n}" for f, n in got.items()) + "); the "
+              "games none fits play from minute 0", flush=True)
     if args.late_from > 0 and "late" in args.scenarios.split(","):  # (--late-from: the states that pass it now, said at
         # the start: a late start none fits plays a game from minute 0, silently; the captures so far were at 8-16)
         got = late_game.count_from([x for x in args.late_states.split(",") if x], args.map, args.late_from)
@@ -6102,7 +6137,9 @@ def main(argv: list[str] | None = None) -> int:
            "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "hunt_lesson": args.hunt_lesson, "spell_lesson": args.spell_lesson, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
-           "late_capture": args.late_capture, "late_minutes": [float(x) for x in args.late_minutes.split(",")], "late_from": args.late_from, "research_value": args.research_value,
+           "late_capture": args.late_capture, "late_minutes": [float(x) for x in args.late_minutes.split(",")], "late_from": args.late_from, "research_value": args.research_value, "real_agents": args.real_agents,
+           "real_late_minutes": [float(x) for x in args.real_late_minutes.split(",")] if args.real_late_minutes else None,
+           "real_late_from": args.real_late_from,
            "late_states": [x for x in args.late_states.split(",") if x], "late_z": args.late_z,
            "eval_ai": [d for d in args.eval_ai.split(",") if d],
            "map_geometry": [fx.STARTS, fx.BIN_RANGE],

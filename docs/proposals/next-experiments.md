@@ -35,6 +35,7 @@ Rejected changes worth switching on anyway (2026-11-06 review): none of the tuni
 
 | Run | Change | Why |
 |---|---|---|
+| next | `--real-agents 0.5 --real-late-minutes 16,28 --real-late-from 16`, the run's own late-states file listed | The late game in the real game: half the games between agents start at minute 16+ of a real-map state (item 12) |
 | `fgself-213` (running) | `--research-value 1` on `fgself-201`'s recipe, with bug finder 9's late-start fixes | Upgrades count in the shaping as units do; the base loses past 18 minutes |
 | `fgself-212` (not kept, 92M) | `--map "(2)EchoIsles"`: every game in the real game, from `fgself-201` | Level: insane 0.82/0.83, h2h 0.44, the peak 0.34; twice the game time |
 | `fgself-210` (stopped at 31M) | `--spell-lesson 0.25 --mana-value 1` | Casts ~25 a game; h2h 27%, insane -15: not kept |

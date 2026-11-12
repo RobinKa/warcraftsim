@@ -83,3 +83,31 @@ def test_late_start_drops_the_drawn_target(monkeypatch, late_z):
     for b in bots:  # (nor in its views: the policy's input)
         assert b.view.z is None and b.view.mix_target == {} and b.view.zmask is None and b.view.forbid is None
     assert ep["tb_x"][4] == 0.0  # (the balance's features: neither side plays toward a target)
+
+
+def test_late_only_forces_a_late_start(monkeypatch):
+    """--real-agents: a game whose opponent carries late_only starts from a late state whatever the scenario draw."""
+    _Bot.made = []
+    monkeypatch.setattr(play, "BCAgent", _Bot)
+    monkeypatch.setattr(selfplay.late_game, "states", lambda files, from_minute=0.0: NS(pick=lambda *a: {"minute": 20.0, "sides": [{}, {}]}))
+    monkeypatch.setattr(selfplay.late_game, "commands", lambda state, rows: [])
+    monkeypatch.setattr(selfplay.late_game, "levels", lambda state, s: {})
+    cfg = {"map": "(2)EchoIsles", "values": {}, "shaping_scale": 2000.0, "shaping": 0.5, "gamma": 0.99, "lam": 0.95,
+           "chunk": 64, "max_steps": 10, "step_seconds": 0.5, "tie_break": 0.1, "tie_value": -0.5, "float_penalty": 0.5,
+           "scenarios": ["natural"], "scenario_share": 0.0, "late_states": ["states.jsonl"], "late_from": 16.0,
+           "win_balance": 0.5, "pfsp_data": 1e-9, "run_dir": "."}
+    for late_only, want in ((True, "late"), (False, None)):
+        opp = {"kind": "past", "name": "past:1", "path": "/x/1.pt", **({"late_only": True} if late_only else {})}
+        ep = selfplay.play_one(_Game(), _obs(False), cfg, {"orders": []}, ["human", "orc"], 0, opp, None,
+                               NS(put=lambda x: None), 0)
+        assert ep.get("scenario") == want
+
+
+def test_real_game_cfg_takes_the_real_window():
+    base = {"map": "echofast2", "eval_map": "(2)EchoIsles", "real_map": 1, "late_minutes": [8.0, 16.0], "late_from": 0.0}
+    assert selfplay.real_game_cfg({**base, "map": "(2)EchoIsles"}) is None
+    out = selfplay.real_game_cfg(base)
+    assert out["map"] == "(2)EchoIsles" and out["late_minutes"] == [8.0, 16.0] and out["late_from"] == 0.0
+    out = selfplay.real_game_cfg({**base, "real_late_minutes": [16.0, 28.0], "real_late_from": 16.0})
+    assert out["late_minutes"] == [16.0, 28.0] and out["late_from"] == 16.0
+    assert selfplay.real_game_cfg({**base, "real_late_from": -1.0})["late_from"] == 0.0
