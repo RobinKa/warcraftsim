@@ -35,8 +35,8 @@ Rejected changes worth switching on anyway (2026-11-06 review): none of the tuni
 
 | Run | Change | Why |
 |---|---|---|
-| next (after `fgself-212`) | late starts from minutes 16-28 (`--late-minutes 16,28 --late-from 16`) and `--research-value 1` | The late game: 102 of `fgself-201`'s 118 losses against insane come past 18 minutes (item 12) |
-| `fgself-212` (running) | `--map "(2)EchoIsles"`: every game in the real game, from `fgself-201` | Train on the game it is judged on, all the way |
+| `fgself-213` (running) | `--research-value 1` on `fgself-201`'s recipe, with bug finder 9's late-start fixes | Upgrades count in the shaping as units do; the base loses past 18 minutes |
+| `fgself-212` (not kept, 92M) | `--map "(2)EchoIsles"`: every game in the real game, from `fgself-201` | Level: insane 0.82/0.83, h2h 0.44, the peak 0.34; twice the game time |
 | `fgself-210` (stopped at 31M) | `--spell-lesson 0.25 --mana-value 1` | Casts ~25 a game; h2h 27%, insane -15: not kept |
 | `fgself-209` (stopped at 30M) | `--spell-lesson 0.25` | Spells still ~33 a game; h2h 40%, insane -10 (n.s.), gold -23: not kept |
 | `fgself-208` (stopped at 30M) | `--spell-lesson 1` | Spells spammed (~40 a game), h2h 37%, insane -13, gold -34 |
