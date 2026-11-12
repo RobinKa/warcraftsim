@@ -462,6 +462,19 @@ def test_from_minute(tmp_path, heroes):
     assert late.states([str(f)], 18.0) is late.states([str(f)], 18.0) is not late.states([str(f)])
 
 
+def test_count_from(tmp_path, heroes):
+    """--late-from's check at the start: each listed file's states of the map at that minute or later (each once, not
+    its swapped self; another map's and a missing file's none)."""
+    st = late.capture(midgame(), players(), ["human", "undead"], "(2)EchoIsles", {0: {}, 1: {}}, 600.0)
+    f, g = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
+    for minute in (8.0, 15.9, 16.0, 22.0):
+        late.append(f, dict(st, minute=minute))
+    late.append(f, dict(st, minute=20.0, map="echofast2"))
+    got = late.count_from([str(f), f"{g}:0.5"], "(2)EchoIsles", 16.0)
+    assert got == {str(f): 2, str(g): 0}
+    assert late.count_from([str(f)], "(2)EchoIsles", 0.0) == {str(f): 4}
+
+
 def test_placed_levels_in_the_inputs():
     """A late start's research levels (SetResearch: no research event) reach the view as an event's would: View.levels
     (the costs, the tech) and the global features' upgrades (until 2026-11-12 only the levels: the inputs read 0)."""

@@ -5687,6 +5687,12 @@ def main(argv: list[str] | None = None) -> int:
         ap.error(str(e))
     if len(args.late_minutes.split(",")) != 2:
         ap.error("--late-minutes: two game minutes, the capture's range (8,16)")
+    if args.late_from > 0 and "late" in args.scenarios.split(","):  # (--late-from: the states that pass it now, said at
+        # the start: a late start none fits plays a game from minute 0, silently; the captures so far were at 8-16)
+        got = late_game.count_from([x for x in args.late_states.split(",") if x], args.map, args.late_from)
+        print(f"--late-from {args.late_from:g}: {sum(got.values())} states of {args.map} at that minute or later now ("
+              + ", ".join(f"{Path(f).parent.name}/{Path(f).name} {n}" for f, n in got.items()) + ")"
+              + ("; WARNING: no late start until a listed file has some" if not sum(got.values()) else ""), flush=True)
     if args.learner_intake and not args.update_pause_ms > 0:
         ap.error("--learner-intake reads the actors' queue in the update's pauses: --update-pause-ms above 0")
     fx.ACTIVE_F = args.features  # (the cloning loss's data workers fork from here: they inherit it)
