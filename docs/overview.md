@@ -9,7 +9,7 @@ warcraftsim trains agents on the real Warcraft III 1.29, headless under Wine. Py
 | Micro fights | 91% against the scripted opponent. League self-play: 82%, and 79% against the 91% policy. | `--trainer torch` |
 | Whole game, `duelrush` (2-minute games) | **79%** against the built-in AI, all 16 matchups. | `fgself-10` |
 | Whole game, `duelfast` (6-minute games) | **80%** of its games against the insane AI won. Every matchup is above the AI's own record. | `fgself-51` |
-| **The real game on Echo Isles** (the game's own rules, no handicap, a person's income) | **~81% of its games against the insane AI won** (612 games). It can give every order a melee player can, and it sees what a player sees. | base `fgself-201`/142699211. Running: `fgself-201` resumed as a control (forks 212-214 were level). |
+| **The real game on Echo Isles** (the game's own rules, no handicap, a person's income) | **~81% of its games against the insane AI won** (612 games). It can give every order a melee player can, and it sees what a player sees. | base `fgself-212` (every training game in the real game: 0.86 against insane in a paired evaluation burst, +8 over `fgself-201`/142699211). Running: `fgself-212`. |
 
 The yardstick is the evaluation games. The policy plays the real game against the untaxed insane AI, and games against frozen checkpoints (head to head). Each policy in a run plays the same matchups, so a run compares its policies directly. Since 2026-11-11 a run is judged against the level of an unchanged continuation of its start, not against the start checkpoint alone. A checkpoint can be a peak that no continuation plays at again (`fgself-197`'s, [the log](reference/experiment-log.md)).
 
@@ -26,7 +26,7 @@ The yardstick is the evaluation games. The policy plays the real game against th
 * A games box plays 64 training games. Training runs at ~5,000-5,600 agent steps a second. The main machine's CPU sets the speed, and the GPU is nearly as busy.
 * Late-game starts from captured states, two-base starts and a fixed league of strong past runs (`fgself-130`, `-171`, and `fgself-197`'s peak).
 * The full order vocabulary (`fgself-196`), and inputs for buffs, corpses, items, area spells and enemy upgrades (`fgself-197`: wins past 18 minutes 46% against 16%).
-* Half the training games against the AI in the real game (`fgself-201`: +11 points against insane). Every training game there (`fgself-212`) added nothing more.
+* Half the training games against the AI in the real game (`fgself-201`: +11 points against insane), then every training game there (`fgself-212`: +8 more in a paired burst, undead up most).
 
 [Experiments](experiments.md) has the lessons, [the plan](proposals/next-experiments.md) the next runs.
 

@@ -37,7 +37,8 @@ Rejected changes worth switching on anyway (2026-11-06 review): none of the tuni
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-201` (control, running) | resumed on master with its 142.7M checkpoint in the evaluation | Forks 212-214 all read 0.39-0.44 head to head against it: what does an unchanged continuation read? |
+| `fgself-212` (resumed 2026-11-13, **the new base**) | every game in the real game, on master | Burst: 0.859 against insane, +8 over `fgself-201`/142.7M, +4.5 over its continuation; undead 0.80 |
+| `fgself-201` (control, stopped at 173.1M) | resumed unchanged | 0.444 head to head against its own 142.7M, 0.815 against insane in the burst: 142.7M was a high point |
 | `fgself-214` (not kept, 59M) | `--real-agents 0.5 --real-late-minutes 16,28 --real-late-from 16` | Level: insane 0.81/0.79, h2h 0.39, the peak 0.43; the late game unchanged |
 | `fgself-213` (not kept, 60M) | `--research-value 1` on `fgself-201`'s recipe | Insane 0.68 against its start's 0.78 (-11, sliding); upgrades up, strength down |
 | `fgself-212` (not kept, 92M) | `--map "(2)EchoIsles"`: every game in the real game, from `fgself-201` | Level: insane 0.82/0.83, h2h 0.44, the peak 0.34; twice the game time |

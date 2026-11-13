@@ -19,9 +19,10 @@ In the order they run. The code for each is in place unless it says otherwise. [
 
 | idea | from | result |
 |---|---|---|
-| Late starts from the late game, in the real game | ours (2026-11-12: 102 of `fgself-201`'s 118 losses past 18 minutes) | `--real-agents 0.5 --real-late-minutes 16,28 --real-late-from 16` (`fgself-214`): level, the late game unchanged; not kept |
+| Late starts from the late game, in the real game | ours (2026-11-12: 102 of `fgself-201`'s 118 losses past 18 minutes) | `--real-agents 0.5 --real-late-minutes 16,28 --real-late-from 16` (`fgself-214`): worse in the burst (0.69 against insane; human and undead fell); not kept |
+| Faster, less noisy verdicts | the user (2026-11-13) | training games as a read (`scripts/train_read.py`, drifts between days), the laptop mostly head to head (~3x), evaluation bursts on the main machine (~1,400 games an hour, paired, one window) | in use |
 | Upgrades in the shaping | ours (2026-11-12) | `--research-value 1` (`fgself-213`): more upgrades, -11 against insane; not kept |
-| Every training game in the real game | ours (bold changes) | `--map "(2)EchoIsles"` (`fgself-212`): level, at twice the game time; not kept |
+| Every training game in the real game | ours (bold changes) | `--map "(2)EchoIsles"` (`fgself-212`): read as level against a high-point start, then **best against insane** in a paired evaluation burst (0.86, +8 over `fgself-201`/142.7M): the base since 2026-11-13 |
 | Half the AI games in the real game | ours (bold changes, 2026-11-06) | `--real-share 0.5` (`fgself-201`): +11 points against insane over the continuation, kept as the base |
 | The strongest checkpoint as a league member | the user (2026-11-11) | `fgself-197`'s peak fixed in the league since `fgself-201`'s resume |
 | The heroes' spells taught | the user (2026-11-11) | `--spell-lesson`, with a mana cost or without (`fgself-208` to `-210`): the heroes cast ~25-40 spells a game, -10 to -15 against insane, not kept |
