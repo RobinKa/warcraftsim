@@ -2202,6 +2202,10 @@ Head to head 216 against 217 0.448 (262 games), against 92M 0.461 (311). 216 min
 
 **`fgself-219`** (22:31, from `fgself-212`/118808740, its latest, code b86b08d): **the attack lesson with a floor**, `--attack-lesson 0.25 --teach-floor 0.05` (`selfplay.teach_floored`, `tests/unit/test_teach_floor.py`: the labels of attacks on a unit, and of the spell lesson's 30 spell forms, push only while the unit's chance of the order is under 5%; 31 of 629 classes). Budget ~26M; then `fgself-212` from 118808740 as the control, and a burst.
 
+**`fgself-219`: not kept** (stopped 22:58 at 9.2M). The floor slowed the spread but did not stop it: attacks on a unit 57% of its attacks in its first 15 minutes, 54% after (~900 a game against ~760 attack-moves; 212's checkpoints 0.5%), ~7.8 lessons a game. KL to `fgself-100` 0.17-0.19 (218: 0.3-0.5). Head to head 0.36 against 92M (91 games), 0.31 against 118.5M (109), falling; training read -0.149* against 212's. A 5% chance per unit decision is above the policy's rate of attack-moves (~744 a game over ~40,000 unit decisions, ~2%).
+
+**`fgself-220`** (23:00, from `fgself-212`/118808740, code 5381bf8): the same lesson with `--teach-floor 0.002`, an order below the attack-move rate: attacks on a unit at most ~10% of its attacks. If it slides too, the unit-attack line closes for now.
+
 **Check A** (2026-11-04 13:22, `scripts/blend_check.py`, CPU, for item 5: an EMA anchor, `--ref-ema`): blends of the anchor `fgself-100` (grown to `fgself-182`'s vocabulary and inputs, as a run grows it) and `fgself-182`/50150172, the anchor's weights moved 0-100% of the way (the EMA's own step at that share; the two are 0.12 apart, relative L2). The KL per own unit is the run's term (forward-all, KL(parent || blend); the orders' alone in brackets) on 18,433 steps of these games. 12 games each against the untaxed insane AI on (2)EchoIsles, real rules, a person's income, every blend on the same 12 matchups:
 
 | Blend | KL to `fgself-100` | KL to `fgself-182` | Won | Minutes | Supply at 5 / 10 min | Workers | Army | Gold |
