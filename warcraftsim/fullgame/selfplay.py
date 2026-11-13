@@ -1387,6 +1387,13 @@ def spells_cast(results: dict) -> dict:
     return out
 
 
+def attack_counts(results: dict) -> dict:
+    """play.BCAgent.order_results -> the attacks sent: "unit" (on a unit), "point" (attack-moves); none sent: {}."""
+    from .teacher import ATTACK
+    out = {"unit": results.get(f"TargetOrder:{ATTACK}", (0, 0))[0], "point": results.get(f"PointOrder:{ATTACK}", (0, 0))[0]}
+    return out if out["unit"] or out["point"] else {}
+
+
 def lesson_casts(results: dict) -> dict:
     """play.BCAgent.order_results ("Kind:order id" -> (sent, refused)) -> the policy's casts sent of the spells the spell
     lesson teaches (--spell-lesson: teacher.SPELL_LESSONS, immolation's on and off), by order string."""
@@ -2590,7 +2597,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                             pace=cfg.get("lesson_time_scale") or teacher_pace(cfg["map"]),
                             hunt=int(cfg.get("hunt_lesson", 0) == 1 or (cfg.get("hunt_lesson", 0) == 2
                                      and opp.get("kind") in ("self", "past", "exploiter"))),
-                            spells=float(cfg.get("spell_lesson", 0.0) or 0.0))
+                            spells=float(cfg.get("spell_lesson", 0.0) or 0.0),
+                            attacks=float(cfg.get("attack_lesson", 0.0) or 0.0))
                  for s in trajs if keys[s] == "current"}
                 if cfg.get("teach") and replay is None else {})
     # --teach-heuristic: a target drawn from the hand-written player's games (strategy.from_demos names the strategy) is
@@ -2738,7 +2746,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                 # View.step's set of them; read only)
                 tc.busy, tc.levels = bots[s].view.busy, bots[s].view.levels  # (audit 16's lessons: idle buildings,
                 # research levels; read only)
-                if tc.spells > 0:  # (--spell-lesson: an order the policy could give now, in the vocabulary's form and
+                if tc.spells > 0 or tc.attacks > 0:  # (--spell-lesson, --attack-lesson: an order the policy could give now, in the vocabulary's form and
                     tc.order_ok = lambda oid, k, av=av, oix=oix: ((c := oix.get((oid, k))) is not None  # its mask)
                                                                   and (av is None or bool(av[c])))
                 c = tc.commands(rows, obs.players.get(s), obs.game_time, t, can, getattr(bots[s].view, "pickers", ()))
@@ -2974,6 +2982,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"late_captured": captured["minute"]} if captured else {}),  # (--late-capture: this game's state at it)
         **({"spells": cast} if fx.SPELLS and side in bots and (cast := spells_cast(getattr(bots[side], "order_results", {})))
            else {}),  # (--spells: the learner's casts of each, sent to the game; audit 13 found no way to tell)
+        **({"attacks": at} if side in bots and (at := attack_counts(getattr(bots[side], "order_results", {}))) else {}),
+        # (the learner's attacks sent: on a unit, attack-moves; --attack-lesson's measure, proposals 13)
         **({"spell_casts": sc} if cfg.get("spell_lesson") and side in bots
            and (sc := lesson_casts(getattr(bots[side], "order_results", {}))) else {}),  # (--spell-lesson: the taught
         # spells' casts the learner sent, its own; "taught" counts the lessons, "spell <ability>")
@@ -5244,6 +5254,11 @@ def main(argv: list[str] | None = None) -> int:
                     "immolation on in a fight, off after; an enemy hero in reach), labelled with chance X at most every "
                     "10 s a hero's spell (teacher.SPELL_LESSONS; the masks allow them, the policy gave them ~1e-4-1e-3 "
                     "of its probability there: 2026-11-11). 0: none")
+    ap.add_argument("--attack-lesson", type=float, default=0.0, help="X (with --teach): attacks on a unit where the "
+                    "engine's attack-move picks last (workers have its lowest priority; the policy attack-moves, ~1%% of "
+                    "its attacks on a unit): an enemy worker in reach of the side's army with no enemy army unit near it, "
+                    "or a hurt enemy hero (under 40%% of its hit points) in reach; the nearest 3 army units labelled to "
+                    "attack it, looked at every 5 s, given with chance X (teacher.ATTACK_*). 0: none")
     ap.add_argument("--militia-lesson", type=int, default=0, help="1 (with --teach): human's militia lesson: militia "
                     "and no enemy unit near them nor a hall, the hall ends the town bell (audit 16: militia idled, their "
                     "back to work refused, in 175 of 207 human games)")
@@ -6177,7 +6192,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "hunt_lesson": args.hunt_lesson, "spell_lesson": args.spell_lesson, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "hunt_lesson": args.hunt_lesson, "spell_lesson": args.spell_lesson, "attack_lesson": args.attack_lesson, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "late_capture": args.late_capture, "late_minutes": [float(x) for x in args.late_minutes.split(",")], "late_from": args.late_from, "research_value": args.research_value, "real_agents": args.real_agents,

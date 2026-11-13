@@ -135,6 +135,11 @@ NEAR_MERCHANT = 2500.0
 ENEMY_NEAR = 800.0  # (an item lesson waits while an enemy unit is this near the hero: a fight)
 USESLOT = 852008
 ATTACK = 851983  # (attack-move)
+# --attack-lesson: attacks on a unit where attack-move picks last (the engine's target priority, UnitData prio: a worker
+# 1, the lowest; the policy gave ~1% of its attacks on a unit, the user's 2026-11-12 game none): an enemy worker in reach
+# of the side's army with no enemy army unit near it, or an enemy hero under HURT_HERO of its hit points in reach; the
+# nearest ATTACK_UNITS of the side's army units within ATTACK_REACH labelled to attack it, looked at every ATTACK_LOOK steps
+ATTACK_LOOK, ATTACK_REACH, ATTACK_CLEAR, ATTACK_UNITS, HURT_HERO = 10, 800.0, 900.0, 3, 0.4
 LOOK = 4  # (audit 16's lessons: looked at every 4 steps at most, 2 s; a lesson given waits GAP)
 # --army-lesson: air units (the enemy's seen), each race's anti-air units and tier units (a target-less game's army of
 # one type at tier 2), the tech tree's makers train them; the masks decide which it can now
@@ -197,7 +202,8 @@ class Teacher:
     def __init__(self, side: int, race: str, rng: random.Random, target: dict | None = None, target_hero: bool = False,
                  lumber: bool = False, burrows: bool = False, main_low: float = 0.0, mine_full: float = 12500.0,
                  saturation: bool = False, revive: bool = False, militia: bool = False, army: bool = False,
-                 upgrades: bool = False, creep: int = 0, pace: float = 1.0, hunt: int = 0, spells: float = 0.0):
+                 upgrades: bool = False, creep: int = 0, pace: float = 1.0, hunt: int = 0, spells: float = 0.0,
+                 attacks: float = 0.0):
         """`target` (the side's target strategy, if it has one): its tavern hero is the one taught, and none when it
         has none (another hero would break a narrow target). `target_hero` (--teach 2): its first hero from the altar
         taught too, when that is its first hero (the builder taught it only once due: the policy had made another one
@@ -227,6 +233,7 @@ class Teacher:
         # kind) -> the policy could give it now: in the vocabulary and its mask) and gives it the step's events
         # (note_buffs: each unit's buffs, from obs-full's events)
         self.spells = float(spells or 0.0)
+        self.attacks = float(attacks or 0.0)  # (--attack-lesson: the chance a due lesson is given; order_ok as the spells')
         self.order_ok = None
         self.buffs: dict[int, set] = {}
         self.busy: set = set()  # (the side's buildings making something, and its research levels: View.busy and
@@ -362,6 +369,8 @@ class Teacher:
             out += self._hunt(rows, now, t)
         if self.spells > 0 and n_live and self.order_ok is not None:
             out += self._spells(rows, live, t)
+        if self.attacks > 0 and self.order_ok is not None:
+            out += self._attacks(rows, t)
         return out
 
     def note_buffs(self, events) -> None:
@@ -457,6 +466,54 @@ class Teacher:
                     self.taught[f"spell {ab.code}"] = self.taught.get(f"spell {ab.code}", 0) + 1
                     out.append(cmd)
         return out
+
+    def _attacks(self, rows: np.ndarray, t: int) -> list:
+        """--attack-lesson (ATTACK_*'s note): a hurt enemy hero in reach first, else the enemy worker nearest the side's
+        army with no enemy army unit within ATTACK_CLEAR of it; only what the side sees, only when the mask allows an
+        attack on a unit."""
+        if 0 <= t - self.last.get("attack look", -ATTACK_LOOK) < ATTACK_LOOK:
+            return []
+        self.last["attack look"] = t
+        if not self.order_ok(ATTACK, fx.UNIT):
+            return []
+        side, own = self.side, rows[:, fx.C_OWNER]
+        fl = rows[:, fx.C_FLAGS].astype(np.int64)
+        alive = fl & fx.DEAD == 0
+        mine = rows[(own == side) & alive & (fl & (fx.STRUCTURE | fx.WORKER) == 0)]
+        enemy = (own == 1 - side) & alive & ((rows[:, fx.C_VIS].astype(np.int64) >> side) & 1 == 1)
+        army = rows[enemy & (fl & (fx.STRUCTURE | fx.WORKER) == 0)]
+        if not len(mine):
+            return []
+        mx, my = mine[:, fx.C_X].astype(np.float64), mine[:, fx.C_Y].astype(np.float64)
+        target, kind, dist = None, "", None
+        heroes = army[(army[:, fx.C_FLAGS].astype(np.int64) & fx.HERO) > 0]
+        for h in heroes[np.argsort(heroes[:, fx.C_HP] / np.maximum(heroes[:, fx.C_MAXHP], 1))]:
+            if h[fx.C_HP] >= HURT_HERO * max(float(h[fx.C_MAXHP]), 1.0):
+                break
+            d = np.hypot(mx - float(h[fx.C_X]), my - float(h[fx.C_Y]))
+            if (d < ATTACK_REACH).any():
+                target, kind, dist = h, "hero", d
+                break
+        if target is None:
+            w = rows[enemy & (fl & fx.WORKER > 0) & (fl & fx.STRUCTURE == 0)]
+            if not len(w):
+                return []
+            wx, wy = w[:, fx.C_X].astype(np.float64), w[:, fx.C_Y].astype(np.float64)
+            dw = np.hypot(mx[:, None] - wx[None], my[:, None] - wy[None])  # [own army, workers]
+            ok = (dw < ATTACK_REACH).any(0)
+            if len(army):
+                da = np.hypot(army[:, fx.C_X].astype(np.float64)[:, None] - wx[None],
+                              army[:, fx.C_Y].astype(np.float64)[:, None] - wy[None])
+                ok &= ~(da < ATTACK_CLEAR).any(0)
+            if not ok.any():
+                return []
+            k = np.flatnonzero(ok)[int(np.argmin(dw.min(0)[ok]))]
+            target, kind, dist = w[k], "worker", dw[:, k]
+        if self.rng.random() >= self.attacks:
+            return []
+        near = [i for i in np.argsort(dist)[:ATTACK_UNITS] if dist[i] < ATTACK_REACH]
+        self.taught[f"attack {kind}"] = self.taught.get(f"attack {kind}", 0) + 1
+        return [TargetOrder(int(mine[i, fx.C_ID]), ATTACK, int(target[fx.C_ID])) for i in near]
 
     def _look(self, kind: str, t: int) -> bool:
         """Whether audit 16's lesson `kind` is looked at now (every LOOK steps at most)."""
