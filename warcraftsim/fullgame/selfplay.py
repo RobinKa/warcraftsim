@@ -1834,6 +1834,30 @@ EXPANSION_ITEMS = {"htow", "ogre", "unpl", "etol", "ugol"}
 RENDER_NICE = 10  # (the run's video renderer: frame-stepped, so a lower priority only slows it; at 0 it took ~2 of the
 # 32 threads from the niced games, 6% of the machine)
 TEACH_POINT = 0.5  # (--teach-point: the teacher's lessons' place in its loss, distill_loss)
+TEACH_FLOOR = None  # (--teach-floor P: (the floored order classes [O+1] on the learner's device, log P); main sets it)
+
+
+def floor_classes(vocab: dict) -> torch.Tensor:
+    """--teach-floor's order classes [O+1]: attacks on a unit and the spell lesson's spells (teacher.SPELL_LESSONS,
+    immolation's on and off), in any form the vocabulary has them."""
+    from .teacher import ATTACK, SPELL_LESSONS, TOGGLES, _spell_tables
+    _, info, ids = _spell_tables()
+    oids = {ids[info[c].order] for c in SPELL_LESSONS if c in info and info[c].order in ids}
+    oids |= {ids[n] for _, on, off in TOGGLES.values() for n in (on, off) if n in ids}
+    m = torch.zeros(len(vocab["orders"]) + 1, dtype=torch.bool)
+    for i, (oid, kind) in enumerate(vocab["orders"]):
+        m[i + 1] = (int(oid), int(kind)) == (ATTACK, fx.UNIT) or int(oid) in oids
+    return m
+
+
+def teach_floored(lp_y, y):
+    """--teach-floor: a label's log-chance with the floored orders' (attacks on a unit, the spell lesson's spells) capped
+    at log P, so their labels push only while the unit's chance of the order is under P (fgself-218: an uncapped lesson
+    of a rare order spread it to every unit, 77-84% of the attacks in 20 minutes); the others' as they are."""
+    if TEACH_FLOOR is None:
+        return lp_y
+    fm, lf = TEACH_FLOOR
+    return torch.where(fm[y], lp_y.clamp(max=lf), lp_y)
 UNTAXED_PAST = 0.25  # (--win-balance: the share of games against past snapshots left untaxed, PFSP's)
 WORKER_IDS = {int.from_bytes(c.encode(), "big") for c in WORKER_TYPES.values()}
 _FOOD: dict[int, int] = {}
@@ -3796,7 +3820,7 @@ def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast, teach_scale: fl
     own = mb["own"] & mb["y_has"][:, None]
     y = mb["y_order"]
     lp = torch.log_softmax(ev["logits"].float(), -1)
-    lp_y = lp.gather(-1, y.unsqueeze(-1)).squeeze(-1)
+    lp_y = teach_floored(lp.gather(-1, y.unsqueeze(-1)).squeeze(-1), y)
     every = (own & (lp_y > -1e4)).float()  # (an order the unit can't get now: none of its business)
     if "y_only" in mb:  # (--z-build-labels: those steps label only the units the builder ordered, and each
         own = own & ((y > 0) | ~mb["y_only"][:, None])  # counts as one of all the step's own units: averaged over
@@ -5254,6 +5278,10 @@ def main(argv: list[str] | None = None) -> int:
                     "immolation on in a fight, off after; an enemy hero in reach), labelled with chance X at most every "
                     "10 s a hero's spell (teacher.SPELL_LESSONS; the masks allow them, the policy gave them ~1e-4-1e-3 "
                     "of its probability there: 2026-11-11). 0: none")
+    ap.add_argument("--teach-floor", type=float, default=0.0, help="P: the labels of attacks on a unit and of the spell "
+                    "lesson's spells push only while the unit's chance of the order is under P (selfplay.teach_floored: "
+                    "a lesson makes a rare order possible, RL decides how much of it pays; fgself-218's uncapped attack "
+                    "lesson spread the order to every unit). 0: no floor")
     ap.add_argument("--attack-lesson", type=float, default=0.0, help="X (with --teach): attacks on a unit where the "
                     "engine's attack-move picks last (workers have its lowest priority; the policy attack-moves, ~1%% of "
                     "its attacks on a unit): an enemy worker in reach of the side's army with no enemy army unit near it, "
@@ -5899,6 +5927,11 @@ def main(argv: list[str] | None = None) -> int:
             p.requires_grad_(False)
         ANCHOR2.append(r2)
         print(f"--ref2 {args.ref2}: a second anchor, KL {args.ref2_kl_mode} x{args.ref2_kl}", flush=True)
+    global TEACH_FLOOR
+    TEACH_FLOOR = None
+    if args.teach_floor > 0:  # (--teach-floor: the classes floored, in the run's vocabulary)
+        TEACH_FLOOR = (floor_classes(vocab).to(device), math.log(args.teach_floor))
+        print(f"--teach-floor {args.teach_floor}: {int(TEACH_FLOOR[0].sum())} order classes' labels capped", flush=True)
     if args.start_weights and not args.resume:  # a new run from another run's checkpoint (--init stays the anchor)
         start, _ = load(args.start_weights, device, None if args.memory < 0 else bool(args.memory), vocab=vocab if fx.NEUTRAL else None)
         if arch_key(start.config) != arch_key(net.config):  # a grown network (scripts/grow_model.py): its own
