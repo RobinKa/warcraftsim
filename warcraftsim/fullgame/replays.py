@@ -19,6 +19,19 @@ object ids).
 Checked per game ("sync" in the meta and in games.jsonl): every unit a player's subgroup action
 names (its type and object ids) is a unit of that type in the playback, and the buildings the replay
 places appear where it placed them.
+
+--obs-full: what a self-play run with --obs-full 1 sees beyond the records (fullgame/obsfull.py), in two more arrays
+that bc.py's encoder gives the View as a live game does (features.Encoder.encode):
+
+    obsfull  (step, kind, a, b, c): the events 101-109 in the order the observation had them. The units' state (101,
+             102, 105) as a self-play game's shim writes it (the harness asks it, MBOX - 46; its buff lists need the
+             shim's unit-object path: the playback's W3SIM_CUTS, OBS_FULL_CUTS); the corpses (106 when the harness's
+             enumeration first meets a dead unit, 108, 107: w3obs.j); the area spells' points (104, 109) derived here
+             (derive_spells: a self-play game's come from a spell's trigger, which a playback can't have)
+    ground   (step, item, x, y, the seers' bits, powerup): the items lying on the ground (the observation's G records)
+
+The players' visibility bits in them as the units' (players 0 and 1). The replay build of w3shim must have the units'
+extras (make -C shim replay with the sources from 2026-11-06 on: shim_has_obs_full).
 """
 
 from __future__ import annotations
@@ -34,6 +47,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -52,6 +66,12 @@ ECHO = "(2)EchoIsles"
 RACES = {1: "human", 2: "orc", 3: "undead", 4: "nightelf"}
 # the replay build's flags (shim/replay.c): under construction is the harness's own bit (8)
 PRODUCING, UPGRADING = 4096, 8192
+# --obs-full: the events kept (obsfull.EV_*), and the playback's W3SIM_CUTS: the shim's pass over the units in C (16)
+# and the record from the unit's object (34359738368), whose object the buff list is read from (shim/units.c o_buffs;
+# the natives' path reads none: no 102, which a self-play game's shim writes). Both make nothing and change nothing
+OBS_FULL_KINDS = range(101, 110)
+OBS_FULL_CUTS = 16 | 34359738368
+SPELL_LAG = 3  # (derive_spells: a spell's point order may be labelled up to this many steps after its cast)
 # orders every selected unit takes (the others go to the active subgroup's units)
 GENERIC_ORDERS = {851971: "smart", 851986: "move", 851983: "attack", 851990: "patrol", 851993: "holdposition",
                   851972: "stop", 851984: "attackground"}
@@ -189,17 +209,26 @@ def skip_reason(rep: w3g.Replay, stock: dict[str, tuple[int, bytes]] | tuple[int
     return None
 
 
-def observer_map(name: str = ECHO, step_seconds: float = STEP_SECONDS) -> Path:
-    """A stock map (Echo Isles) with the observing harness (cached by the harness's source)."""
+def observer_map(name: str = ECHO, step_seconds: float = STEP_SECONDS, obs_full: bool = False) -> Path:
+    """A stock map (Echo Isles) with the observing harness (cached by the harness's source; `obs_full`: its
+    W3S_CFG_OBS_FULL)."""
     import hashlib
 
     from ..data.mapbuild import HarnessConfig, build_map, observer_source
-    key = hashlib.sha1((observer_source() + f"{step_seconds}").encode()).hexdigest()[:12]
+    src = observer_source() + f"{step_seconds}" + (" obs-full" if obs_full else "")
+    key = hashlib.sha1(src.encode()).hexdigest()[:12]
     slug = "echo" if name == ECHO else re.sub(r"[^A-Za-z0-9_.-]", "", name)
     path = paths.CACHE_DIR / "maps" / f"{slug}-obs-{key}.w3x"
     if not path.exists():
-        build_map(name, path, HarnessConfig(step_seconds=step_seconds), observer=True)
+        build_map(name, path, HarnessConfig(step_seconds=step_seconds, obs_full=obs_full), observer=True)
     return path
+
+
+def shim_has_obs_full(dll: Path | None = None) -> bool:
+    """Whether the replay build of w3shim writes the units' extras when the harness asks (MBOX - 46: its sources from
+    2026-11-06 on; a build from before answers nothing and writes no event 101)."""
+    dll = dll or REPLAY_SHIM / "w3shim.dll"
+    return dll.exists() and b"obs-full" in dll.read_bytes()
 
 
 def shift_of(probes: list[tuple[int, int]]):
@@ -294,13 +323,15 @@ def version_shift(rep: w3g.Replay, obs, tags: list[list[str]]):
 
 def play(rep: w3g.Replay, data: bytes, name: str, obs_map: Path, checksums: tuple[int, bytes],
          timeout: float = 30.0, nice: int = 10, log=print, map_name: str = ECHO,
-         version: tuple[int, int] | None = None, other_map: bool = False) -> dict:
+         version: tuple[int, int] | None = None, other_map: bool = False, obs_full: bool = False) -> dict:
     """Both playbacks of one replay; returns the raw recording: per step the units, heroes, players,
     the harness's research events, the units' object ids, the trees and theirs, the order names.
     `version` (another game version's replay) or `other_map` (on another version of the map): its
-    object ids mapped to ours (version_shift)."""
+    object ids mapped to ours (version_shift). `obs_full` (`obs_map` built with it): also the events
+    101-109 ("obsfull", in the observation's order) and the items lying on the ground ("ground")."""
     setup = GameSetup(map=map_name, step_seconds=STEP_SECONDS, nice=nice, launch_timeout=90, window=(320, 240),
-                      warm_spare=False, draw=False, d3d_thread=False, render_threads=0, shim_dir=str(REPLAY_SHIM))
+                      warm_spare=False, draw=False, d3d_thread=False, render_threads=0, shim_dir=str(REPLAY_SHIM),
+                      cuts=OBS_FULL_CUTS if obs_full else None)
     g = ReplayGame(setup, obs_map, rep.map_path, name=name, timeout=timeout)
     try:
         t0 = time.time()
@@ -318,7 +349,7 @@ def play(rep: w3g.Replay, data: bytes, name: str, obs_map: Path, checksums: tupl
         obs = g.play(shifted)
         log(f"{name}: harness objects {n} (probe {probes}){f'; ids shifted {voff}' if vfn else ''}; "
             f"playing ({time.time() - t0:.0f}s)")
-        rec = {"units": [], "heroes": [], "players": [], "events": [], "ms": [],
+        rec = {"units": [], "heroes": [], "players": [], "events": [], "ms": [], "obsfull": [], "ground": [],
                "trees": [(d.id, d.type_id, d.x, d.y, d.life) for d in (obs.destructables or [])]}
         rec["order_names"] = dict(obs.orders or {})
         rec["races"] = {p: RACES.get(int(s.race), "unknown") for p, s in obs.players.items()}  # (random: resolved)
@@ -344,6 +375,10 @@ def play(rep: w3g.Replay, data: bytes, name: str, obs_map: Path, checksums: tupl
                                        s.lumber_gathered, s.structures, 0))
             for e in obs.events:
                 rec["events"].append((t, int(e.kind), e.a, e.b, e.c))
+                if obs_full and int(e.kind) in OBS_FULL_KINDS:
+                    rec["obsfull"].append((t, int(e.kind), e.a, e.b, e.c))
+            if obs_full:
+                rec["ground"] += [(t, *(int(v) for v in g[:5])) for g in (getattr(obs, "ground", None) or ())]
             if obs.game_ms + STEP_SECONDS * 1000 > end_ms:
                 break
             try:
@@ -367,7 +402,8 @@ def play(rep: w3g.Replay, data: bytes, name: str, obs_map: Path, checksums: tupl
 
 def remap_players(rec: dict, real: list[int]) -> None:
     """The two players as 0 and 1 (`real`: their ids in the game, in slot order), in owners, player
-    rows and visibility bits (the demonstrations' players are 0 and 1; a replay's are its slots)."""
+    rows and visibility bits (the demonstrations' players are 0 and 1; a replay's are its slots): the
+    units', and --obs-full's (a corpse's seers, 108's b; a spell point's, 109's c; an item lying's)."""
     to = {r: k for k, r in enumerate(real)}
     swap = lambda p: to.get(p, p if p >= 12 else p + 100)  # noqa: E731 (others than the two: out of the way)
 
@@ -382,6 +418,11 @@ def remap_players(rec: dict, real: list[int]) -> None:
     rec["players"] = [(r[0], to[r[1]], *r[2:]) for r in rec["players"] if r[1] in to]
     rec["events"] = [(t, k, -1 - to[-1 - a] if k == 9 and a < 0 and -1 - a in to else a, b, c)
                      for t, k, a, b, c in rec["events"]]
+    if rec.get("obsfull"):
+        rec["obsfull"] = [(t, k, a, bits(b) if k == 108 else b, bits(c) if k == 109 else c)
+                          for t, k, a, b, c in rec["obsfull"]]
+    if rec.get("ground"):
+        rec["ground"] = [(*r[:4], bits(r[4]), *r[5:]) for r in rec["ground"]]
 
 
 def unit_tags(rec: dict) -> tuple[dict, dict]:
@@ -506,7 +547,11 @@ def derive_events(units: np.ndarray, heroes: np.ndarray, steps: int, research: l
     deaths (the killer unknown: 0), hero levels, summons (the summoner unknown: 0), items picked up;
     research done from the harness's polled levels (`research`: (step, 9, -1 - player, upgrade,
     level)) at the player's building last ordered to research it. `new_at`: (step, unit) of the
-    units first seen at a step (the replay build's object ids: a handle reused is a new unit)."""
+    units first seen at a step (the replay build's object ids: a handle reused is a new unit). A unit
+    gone and back with the same object ids (a corpse: the shim's pass drops a dead unit, the observer's
+    enumeration adds it again a step later, for ~90 s) goes on from its last row: no new unit, no second
+    death (until 2026-11-13 each corpse died again every other step: ~100 death events a death, and
+    as many summons of a dead summoned unit)."""
     C = {c: i for i, c in enumerate(UNIT_COLS)}
     F, OWN, TYP, X, Y = C["flags"], C["owner"], C["type"], C["x"], C["y"]
     ev: list[tuple] = []
@@ -533,14 +578,15 @@ def derive_events(units: np.ndarray, heroes: np.ndarray, steps: int, research: l
         return research_ if order and w3g.object_kind(w3g.fourcc(order)) == "upgrade" else train
 
     prev: dict[int, np.ndarray] = {}
+    last: dict[int, np.ndarray] = {}  # (each unit's last row: one gone and back goes on from it)
     items: dict[int, set] = {}
     for t in range(steps + 1):
         cur = {int(r[C["id"]]): r for r in units[by_step[t]:by_step[t + 1]]}
-        fresh = {i for i in cur if i not in prev or (t, i) in new_at}
+        fresh = {i for i in cur if i not in last or (t, i) in new_at}
         producing = {i for i, r in prev.items() if r[F] & 2 and r[F] & PRODUCING and i not in fresh}
         for i, r in cur.items():
             f, typ = int(r[F]), int(r[TYP])
-            old = None if i in fresh else prev[i]
+            old = None if i in fresh else prev.get(i, last[i])
             of = int(old[F]) if old is not None else 0
             if old is None:
                 if f & 2 and f & 8:
@@ -596,7 +642,92 @@ def derive_events(units: np.ndarray, heroes: np.ndarray, steps: int, research: l
                     ev.append((t, 18, hid, item, 0))
             items[hid] = have
         prev = cur
+        last.update(cur)
     return ev
+
+
+@lru_cache(1)
+def area_spell_orders() -> dict[int, tuple[str, ...]]:
+    """The order id of each point-targeted area spell of obsfull.AREA_SPELLS -> its abilities (a person's hero's before
+    a creep's). The instant ones (starfall, tranquility, locust swarm) are left out: a self-play game's 104 gives their
+    point as (0, 0), which obsfull.State reads as no area."""
+    from . import fullvocab as fv
+    from .obsfull import AREA_SPELLS
+    ids, out = fv.order_ids(), {}
+    for a in AREA_SPELLS:
+        if a in ("AEsf", "AEtq", "AUls"):
+            continue
+        name = fv._ability_orders(a).get("Order") or {"ANvc": "volcano"}.get(a)  # (volcano's: not in its files)
+        if name in ids:
+            out[ids[name]] = out.get(ids[name], ()) + (a,)
+    return out
+
+
+def rawcode(v: int) -> str:
+    return int(v).to_bytes(4, "big").decode("latin-1")
+
+
+def derive_spells(units: np.ndarray, orders: list[tuple], steps: int) -> list[tuple]:
+    """--obs-full: the area spells cast as obsfull's events (step, 104, caster, x, y) and (step, 109, caster, ability,
+    the seers that see the point), from the units' states and the labels (`orders`: derive_orders' rows). A self-play
+    game's come from the spell's trigger, which a playback can't have. Here a cast is a unit whose current order was a
+    point-targeted area spell's at the last step or this one and whose mana fell by half the spell's cost since; its
+    point that unit's last point order of the spell up to SPELL_LAG steps later (the player's click: the spell's target
+    point; the labels' steps come up to ~2 steps after the order shows in the units' states late in a game: the
+    replay's action times drift from the playback's clock, ~1 s in 10 minutes); its ability the caster type's with that
+    order. The seers are approximate (the harness's are IsVisibleToPlayer at the point): the caster's owner, and each
+    player who sees a living unit within the spell's radius (at least 300) of the point (its own units: always)."""
+    from . import fullvocab as fv
+    from .obsfull import tables as of_tables
+    by_order = area_spell_orders()
+    points: dict[tuple[int, int], list] = {}  # (unit, order) -> [(step, x, y)] of its point orders
+    for t, u, order, kind, x, y, _ in orders:
+        if kind == 1 and order in by_order:
+            points.setdefault((int(u), int(order)), []).append((int(t), int(x), int(y)))
+    if not len(units) or not points:
+        return []
+    C = {c: i for i, c in enumerate(UNIT_COLS)}
+    O, MANA, OWN, TYP, ID, F, VIS, X, Y = (C[k] for k in ("order", "mana", "owner", "type", "id", "flags",
+                                                         "visible_to", "x", "y"))
+    ab_t, unit_t, areas = fv.tables()["abilities"], fv.tables()["units"], of_tables()["areas"]
+    casters = {u for u, _ in points}
+    bounds = np.searchsorted(units[:, 0], np.arange(steps + 2), side="left")
+    ev, prev = [], {}
+    for t in range(steps + 1):
+        rows = units[bounds[t]:bounds[t + 1]]
+        cur = {int(r[ID]): r for r in rows if int(r[ID]) in casters and not r[F] & 1024}
+        for i, r in cur.items():
+            old = prev.get(i)
+            if old is None:
+                continue
+            order = int(old[O]) if int(old[O]) in by_order else int(r[O])
+            got = [p for p in points.get((i, order), ()) if p[0] <= t + SPELL_LAG]
+            if not got:
+                continue
+            u = unit_t.get(rawcode(r[TYP]), {})
+            have = set(u.get("hero_abil") or ()) | set(u.get("abil") or ())
+            ab = next((a for a in by_order[order] if a in have), by_order[order][0])
+            cost = min((c for c in ab_t.get(ab, {}).get("cost") or () if c > 0), default=50.0)
+            if int(old[MANA]) - int(r[MANA]) < 0.5 * cost:
+                continue
+            _, x, y = got[-1]
+            radius = max(float(areas.get(ab, (200.0, 0.0))[0]), 300.0)
+            near = rows[((rows[:, X] - x) ** 2 + (rows[:, Y] - y) ** 2 <= radius ** 2) & (rows[:, F] & 1024 == 0)]
+            bits = int(np.bitwise_or.reduce(near[:, VIS] & 3)) if len(near) else 0
+            if int(r[OWN]) in (0, 1):
+                bits |= 1 << int(r[OWN])
+            ev.append((t, 104, i, x, y))
+            ev.append((t, 109, i, int.from_bytes(ab.encode(), "big"), bits))
+        prev = cur
+    return ev
+
+
+@lru_cache(1)
+def powerups() -> frozenset:
+    """The item types used on pick-up (ItemData's class PowerUp: ITEM_TYPE_POWERUP, the G record's last field)."""
+    from . import fullvocab as fv
+    return frozenset(int.from_bytes(c.encode(), "big") for c, r in fv.tables()["items"].items()
+                     if str(r.get("class") or "").lower() == "powerup")
 
 
 def type_at(units: np.ndarray) -> dict:
@@ -655,11 +786,11 @@ def sync_check(rep: w3g.Replay, shifted: w3g.Replay, players: list[int], ms: lis
 
 def convert(path: Path, rep: w3g.Replay, data: bytes, name: str, obs_map: Path, checksums: tuple[int, bytes],
             log=print, nice: int = 10, map_name: str = ECHO, version: tuple[int, int] | None = None,
-            other_map: bool = False
+            other_map: bool = False, obs_full: bool = False
             ) -> tuple[dict, dict]:
-    """One replay to the demonstration's arrays and its meta."""
+    """One replay to the demonstration's arrays and its meta (`obs_full`: and the arrays "obsfull" and "ground")."""
     rec = play(rep, data, name, obs_map, checksums, nice=nice, log=log, map_name=map_name, version=version,
-               other_map=other_map)
+               other_map=other_map, obs_full=obs_full)
     playing = rep.playing
     real = [p.slot for p in playing]  # (a melee player's id in the game is its slot)
     remap_players(rec, real)
@@ -703,6 +834,21 @@ def convert(path: Path, rep: w3g.Replay, data: bytes, name: str, obs_map: Path, 
     players[last, -1] = [{"VICTORY": 1, "DEFEAT": 2, "TIE": 3}[result[str(int(p))]] for p in players[last, 1]]
     arrays = {"units": units, "heroes": heroes, "players": players,
               "events": as_array(events, 5), "orders": as_array(orders, 7), "trees": as_array(rec["trees"], 5)}
+    if obs_full:
+        spells = derive_spells(units, orders, steps)
+        ev = as_array(rec["obsfull"] + spells, 5)
+        arrays["obsfull"] = ev[np.argsort(ev[:, 0], kind="stable")]  # (a step's: the observation's, then the spells)
+        ground = as_array(rec["ground"], 6)
+        ground[:, 5] = np.isin(ground[:, 1], np.asarray(sorted(powerups()) or [0], np.int64))
+        arrays["ground"] = ground
+        kinds = {str(k): int(n) for k, n in zip(*np.unique(ev[:, 1], return_counts=True))}
+        if not kinds.get("101"):
+            raise GameError("--obs-full: no event 101 (the units' state) in the playback: the replay build of w3shim "
+                            "from before --obs-full? make -C shim replay")
+        meta["obs_full"] = {"events": kinds, "ground": len(ground), "spells": len(spells) // 2,
+                            "derived": "104, 109 from the casters' orders and mana (derive_spells; their seers "
+                                       "approximate); 101, 102, 105 the shim's; 106-108 and the ground items the "
+                                       "observing harness's"}
     return {k: v.astype(np.int32) for k, v in arrays.items()}, meta
 
 
@@ -740,11 +886,17 @@ def main(argv: list[str] | None = None) -> int:
                     help="the Wine to use (default: the training's GE-Proton, if there)")
     ap.add_argument("--fsync", type=int, default=1, help="with a Proton Wine: its fsync")
     ap.add_argument("--retry-failed", action="store_true", help="convert replays that failed before again")
+    ap.add_argument("--obs-full", action="store_true",
+                    help="also record what a self-play run with --obs-full 1 sees (the units' state, corpses, items on "
+                         "the ground, area spells: the arrays obsfull and ground; bc.py's encoder reads them)")
     args = ap.parse_args(argv)
     if args.wine:
         wine.use_wine(args.wine, fsync=bool(args.fsync))
     if not (REPLAY_SHIM / "w3shim.dll").exists():
         ap.error(f"the replay build of w3shim is missing: make -C shim replay (-> {REPLAY_SHIM})")
+    if args.obs_full and not shim_has_obs_full():
+        ap.error(f"--obs-full: the replay build of w3shim predates it (no units' extras): make -C shim replay "
+                 f"(-> {REPLAY_SHIM})")
     out = args.out
     out.mkdir(parents=True, exist_ok=True)
     (out / "desync").mkdir(exist_ok=True)
@@ -787,7 +939,7 @@ def main(argv: list[str] | None = None) -> int:
         taken.add(n)
         map_name = match_map(head, stock, args.any_version or args.other_map_versions)
         if map_name not in observers:
-            obs = observer_map(map_name)
+            obs = observer_map(map_name, obs_full=args.obs_full)
             observers[map_name] = obs, file_checksums(obs)
         todo.append((path, n, map_name))
         if args.limit and len(todo) >= args.limit:
@@ -809,7 +961,7 @@ def main(argv: list[str] | None = None) -> int:
             rep = w3g.parse_replay(data)
             arrays, meta = convert(path, rep, data, name, obs_map, checksums, nice=args.nice,
                                    log=lambda m: print(m, flush=True), map_name=map_name, version=version,
-                                   other_map=args.other_map_versions)
+                                   other_map=args.other_map_versions, obs_full=args.obs_full)
             sync = meta["sync"]
             share = sync["subgroup_matched"] / max(1, sync["subgroup_units"])
             dest = out / (f"game{n:05d}.npz" if share >= args.min_sync else f"desync/game{n:05d}.npz")
@@ -818,7 +970,8 @@ def main(argv: list[str] | None = None) -> int:
             tmp.replace(dest)
             row = game_row(n, meta, arrays)
             row.update(replay=path.name, seconds=round(time.time() - t0, 1), sync=sync,
-                       desync=share < args.min_sync, apm=meta["source"]["apm"])
+                       desync=share < args.min_sync, apm=meta["source"]["apm"],
+                       **({"obs_full": meta["obs_full"]} if "obs_full" in meta else {}))
             with lock:
                 with open(out / "games.jsonl", "a") as f:
                     f.write(json.dumps(row) + "\n")

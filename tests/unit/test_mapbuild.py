@@ -116,6 +116,25 @@ def test_observer_makes_nothing_in_a_step():
     assert init.strip().startswith("set w3s_probe0 = CreateGroup()")
     last = max(m.start() for m in makes.finditer(init))  # (the last object made: the second probe)
     assert last == init.index("set w3s_probe1 = CreateGroup()") + len("set w3s_probe1 = ")
+    # a callback's wrapper is made on its first use: every callback a step uses was used in W3S_Init before the second
+    # probe (--obs-full's corpses' ForGroup and the items' EnumItemsInRect too)
+    probe1 = init.index("set w3s_probe1 = CreateGroup()")
+    for name in called:
+        for cb in re.findall(r"function (W3S_\w+)", bodies[name]):
+            at = init.find(f"function {cb})")
+            assert 0 <= at < probe1, (name, cb)
+    assert {"W3S_CorpseEnum", "W3S_CorpseSweep", "W3S_SerItem"} <= called  # (--obs-full's: in a step when it is on)
+
+
+def test_observer_obs_full_injection(echo_script):
+    """--obs-full (replays.py): the observing harness with W3S_CFG_OBS_FULL validates; off, the constant is false."""
+    from warcraftsim.data.mapbuild import inject_observer
+    _pjass_available()
+    on = inject_observer(echo_script, HarnessConfig(step_seconds=0.5, obs_full=True), upgrades=("Rhme",))
+    assert "constant boolean W3S_CFG_OBS_FULL = true" in on
+    pjass_check(on)
+    off = inject_observer(echo_script, HarnessConfig(step_seconds=0.5), upgrades=("Rhme",))
+    assert "constant boolean W3S_CFG_OBS_FULL = false" in off
 
 
 def test_seed_first_in_main(echo_script):

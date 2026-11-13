@@ -423,6 +423,7 @@ OBS_FULL = int(os.environ.get("WARCRAFTSIM_OBS_FULL", "0") or 0)
 OBS_FULL_SET = "WARCRAFTSIM_OBS_FULL" in os.environ
 OBS_F = 70  # (obsfull.OBS_F)
 A_OBS = -1  # (set_inputs: the block's first channel with OBS_FULL)
+UNIT_STATE_EVENTS = np.array([101, 102, 105])  # (obsfull's events the shim writes with the unit records: an observation's first)
 
 
 def set_inputs(v: int, privileged: bool | None = None) -> None:
@@ -1255,11 +1256,27 @@ class Encoder:
         view = self.view(player, sign, races)
         view.z = z  # (a strategy as the input: bc's hindsight targets)
         view.step_seconds = float(meta.get("step_seconds", 0.5))
+        # --obs-full: a recorded game's events 101-109 and items lying on the ground (people's replays, replays.py
+        # --obs-full: "obsfull", "ground"), given to the view as a live game gives them (play.BCAgent.observe): the units'
+        # state first (the shim writes it with the unit records), then the step's other events, then the corpses' and
+        # the spells' (the harness's); a game without them: none (the block's state channels, corpses, items and areas
+        # stay empty, as before)
+        xo = game.get("obsfull") if OBS_FULL else None
+        xs = _step_slices(xo[:, 0], T) if xo is not None and len(xo) else None
+        gr = game.get("ground") if OBS_FULL else None
+        gs = _step_slices(gr[:, 0], T) if gr is not None else None
         for t in range(T):
             prow = pl[ps[t]:ps[t + 1]]
             me = prow[prow[:, 1] == player]
             opp = prow[prow[:, 1] == 1 - player]
-            st = view.step(u[us[t]:us[t + 1]], me[0] if len(me) else None, ev[es[t]:es[t + 1]], t,
+            evt = ev[es[t]:es[t + 1]]
+            if xs is not None and xs[t + 1] > xs[t]:
+                x = xo[xs[t]:xs[t + 1]].astype(ev.dtype, copy=False)
+                first = np.isin(x[:, 1], UNIT_STATE_EVENTS)
+                evt = np.concatenate([x[first], evt, x[~first]])
+            if gs is not None:
+                view.ground = [tuple(r) for r in gr[gs[t]:gs[t + 1], 1:6].tolist()]
+            st = view.step(u[us[t]:us[t + 1]], me[0] if len(me) else None, evt, t,
                            opp[0] if len(opp) else None)
             n = st["n"]
             out["ent"][t, :n], out["type"][t, :n], out["cur"][t, :n] = st["ent"], st["type"], st["cur"]

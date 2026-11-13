@@ -162,7 +162,21 @@ def level_frame(game: dict, a, b) -> tuple[dict, tuple]:
     if len(trees):
         turn(trees, 2, 3)
     D = math.hypot(bx - ax, by - ay)
-    return {**game, "units": units, "orders": orders, "trees": trees}, ((mx - D / 2, my), (mx + D / 2, my))
+    more = {}
+    if game.get("obsfull") is not None:  # (--obs-full: a corpse's place, 106's b and c; a spell's point, 104's)
+        xo = game["obsfull"].copy()
+        at = np.flatnonzero(np.isin(xo[:, 1], (106, 104)))
+        if len(at):
+            sub = xo[at]
+            turn(sub, 3, 4)
+            xo[at] = sub
+        more["obsfull"] = xo
+    if game.get("ground") is not None:  # (and the items lying on the ground: step, item, x, y, ...)
+        gr = game["ground"].copy()
+        if len(gr):
+            turn(gr, 2, 3)
+        more["ground"] = gr
+    return {**game, "units": units, "orders": orders, "trees": trees, **more}, ((mx - D / 2, my), (mx + D / 2, my))
 
 
 def game_frame(game: dict, bin_range: float) -> dict | None:
@@ -261,6 +275,71 @@ def game_sides(path: Path, enc: fx.Encoder, values: dict, prep: Prep, rng: rando
             if st is not None and rng.random() < prep.z_share:
                 z[:strategy.ZDIM] = strategy.vector(st, prep.items[st["race"]])
         out.append(side_data(enc, game, player, values, z, prep))
+    return out
+
+
+def live_encode(enc: fx.Encoder, game: dict, player: int, z: np.ndarray | None = None) -> dict:
+    """`game` from `player`'s side as a live game's View gets it (play.BCAgent.observe), to check Encoder.encode's
+    feeding of a demonstration (scripts/bc_obsfull_check.py; tests): each step's units as protocol Units through
+    play.unit_rows (an actor's rows), the step's events as an observation lists them (the units' state the shim writes
+    first, then the harness's: the recorded events, then --obs-full's corpses and spells), the items on the ground as
+    Observation.ground; the labels' bookkeeping (record_orders, note_orders, track_harvest) as encode's. Encode's
+    feature keys ("ent", "type", "cur", "mask", "n_own", "glob", "avail")."""
+    from types import SimpleNamespace
+
+    from ..protocol import Unit
+    from .collect import HERO_COLS
+    from .play import unit_rows
+    meta = game["meta"]
+    T = meta["steps"] + 1
+    u, pl, ev, od = game["units"], game["players"], game["events"], game["orders"]
+    hs = game.get("heroes", np.zeros((0, len(HERO_COLS)), np.int64))
+    us, ps, es, os_, hsl = (fx._step_slices(a[:, 0], T) for a in (u, pl, ev, od, hs))
+    xo, gr = game.get("obsfull") if fx.OBS_FULL else None, game.get("ground") if fx.OBS_FULL else None
+    xs = fx._step_slices(xo[:, 0], T) if xo is not None and len(xo) else None
+    gs = fx._step_slices(gr[:, 0], T) if gr is not None else None
+    sign = enc.side(u[us[0]:us[1]], player)
+    trees = {int(r[0]): (int(r[2]), int(r[3])) for r in game["trees"]}
+    races = [fx.RACES.index(r) if r in fx.RACES else 0 for r in meta["races"]]
+    out = {"ent": np.zeros((T, fx.MAX_ENT, fx.F), np.float16), "type": np.zeros((T, fx.MAX_ENT), np.int16),
+           "cur": np.zeros((T, fx.MAX_ENT), np.int16), "mask": np.zeros((T, fx.MAX_ENT), bool),
+           "n_own": np.zeros(T, np.int16), "glob": np.zeros((T, enc.G), np.float32),
+           "avail": np.ones((T, enc.n_orders), bool)}
+    view = enc.view(player, sign, races)
+    view.z = z
+    view.step_seconds = float(meta.get("step_seconds", 0.5))
+    for t in range(T):
+        hero = {int(r[1]): r for r in hs[hsl[t]:hsl[t + 1]].tolist()}
+        units = []
+        for r in u[us[t]:us[t + 1]].tolist():
+            h = hero.get(r[1])
+            units.append(Unit(*r[1:15], hero_level=r[15], hero_xp=r[16], skill_points=r[17],
+                              items=tuple(h[2:8]) if h else (),
+                              abilities=tuple((h[8 + k], h[12 + k] / 10.0) for k in range(4)) if h else ()))
+        rows = unit_rows(SimpleNamespace(units=units), t)
+        evt = [tuple(r) for r in ev[es[t]:es[t + 1]].tolist()]
+        if xs is not None:
+            x = xo[xs[t]:xs[t + 1]].tolist()
+            first = [tuple(r) for r in x if r[1] in (101, 102, 105)]  # (the shim's, with the unit records)
+            evt = first + evt + [tuple(r) for r in x if r[1] not in (101, 102, 105)]
+        events = np.asarray(evt, np.int64).reshape(-1, 5)
+        if gs is not None:
+            view.ground = [tuple(r[1:6]) for r in gr[gs[t]:gs[t + 1]].tolist()]
+        prow = pl[ps[t]:ps[t + 1]]
+        me, opp = prow[prow[:, 1] == player], prow[prow[:, 1] == 1 - player]
+        st = view.step(rows, me[0] if len(me) else None, events, t, opp[0] if len(opp) else None)
+        n = st["n"]
+        out["ent"][t, :n], out["type"][t, :n], out["cur"][t, :n] = st["ent"], st["type"], st["cur"]
+        out["mask"][t, :n] = True
+        out["n_own"][t] = st["n_own"]
+        out["glob"][t] = st["glob"]
+        if st["avail"] is not None:
+            out["avail"][t] = st["avail"]
+        rows_t = od[os_[t]:os_[t + 1]]
+        _, paid = enc.step_labels(view, st, rows_t, me[0] if len(me) else None, ev[es[t]:es[min(t + 3, T)]], trees)
+        view.record_orders((int(r[1]), int(r[2]), int(r[3])) for r, ok in zip(rows_t, paid) if ok)
+        view.note_orders((tuple(r[1:7]) for r, ok in zip(rows_t.tolist(), paid) if ok), t, trees)
+        view.track_harvest(rows_t, st, trees)
     return out
 
 
@@ -733,8 +812,10 @@ def _float(v) -> float:
 
 def apply_run(cfg: dict) -> None:
     """The features' settings of a self-play run as its learner sets them (selfplay.main, before it loads --init):
-    the unit channels in use, the inputs, the masks, the neutral wares, macros and spells, the strategy block's size
-    (its modes', mix and items bought parts), the run's map's frame."""
+    the unit channels in use, the inputs, the masks, the neutral wares, macros and spells, the full vocabulary,
+    --obs-full (its block and entity kinds: a demonstration's "obsfull" and "ground" arrays fill them, Encoder.encode;
+    without them they stay empty), --value-tax, the strategy block's size (its modes', mix and items bought parts), the
+    run's map's frame."""
     import os
     fx.ACTIVE_F = _int(cfg.get("features")) or fx.F
     os.environ["WARCRAFTSIM_FEATURES"] = str(fx.ACTIVE_F)
@@ -745,6 +826,8 @@ def apply_run(cfg: dict) -> None:
     fx.set_spells(_int(cfg.get("spells")))
     fx.set_shop_items(_int(cfg.get("shop_items")))
     fx.set_full_vocab(_int(cfg.get("full_vocab")))
+    fx.set_obs_full(_int(cfg.get("obs_full")))  # (as selfplay.main: after the inputs, --features' ACTIVE_F kept)
+    fx.set_value_tax(_int(cfg.get("value_tax")))
     fx.set_fine(_int(cfg.get("fine_points")))
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     fx.set_econ_masks(_int(cfg.get("econ_masks")))

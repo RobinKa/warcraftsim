@@ -143,7 +143,7 @@ All 95 Echo Isles 1v1s on the stock map converted (2026-10-17): 23.7 hours of pl
 * Only replays of our client's build (1.29.2, build 6060) play back, and only on a stock map of the game (`Maps/FrozenThrone`, its `Community` folder too) whose checksums the replay has ([other versions](#other-versions)). NetEase's 1.29 games are on NetEase's own map versions ([sources](#sources-and-versions)).
 * `bc.py` takes the map frame (`features.set_geometry`) from its first game: demonstrations of several maps need it per game. On a four-player map (Turtle Rock, Twisted Meadows) a 1v1's two bases are any two of the four starts, and `map_geometry` takes the first two.
 * The labels are the players' commands spread over their selection, not the game's issued orders: which worker builds and which building trains is a choice, and a command the game refused is still a label.
-* The events are reconstructions: the building a unit came from is the nearest producing one, research and train starts come from the last order a building got, and there are no spell, tree-death or killer events.
+* The events are reconstructions: the building a unit came from is the nearest producing one, research and train starts come from the last order a building got, and there are no spell, tree-death or killer events (with `--obs-full`: the area spells' points, derived; [below](#what-a-person-sees-replayspy---obs-full-2026-11-13)).
 * Units the harness never saw are missing: it adds units by enumerating the map each step, which skips units that are hidden from the moment they are made.
 * Each replay plays twice (the probe playback is short: about 10 s).
 * The game's own events and issued orders would need the shim to hook the engine's event dispatch (no script objects): a next step if the derived labels and events fall short.
@@ -342,6 +342,42 @@ On 6 other games `--hold-start 10` drifted -0.072 (KL act 0.20): β 100 is the s
 (or with `--train-heads` added, as `human-heads-1`, for the trunk left exactly as RL left it; `--hold-all 1` for a trust region over the targets too). Read per epoch: `drift ... as played` within ~0.02 of the start's, and `order acc` rising towards `human-act-1`'s 0.727.
 
 **Before using it anywhere** (as an anchor or a teacher): check its play in the real game. Add it to a running run's `--eval-checkpoints` (as for `human-act-1` above) and compare its wins against insane at a person's income (`episodes.jsonl`, `eval_key`) and `scripts/scorecard.py <run> --vs bc/human-hold-1/policy` (orders a game, workers, army, expansions) with `fgself-158`'s in the same hours. It should be near `fgself-158`'s ~70%. Far below that means the orders given one, learned from people's sparse clicks, break play at the policy's own rate: people click when something changes, while the policy decides for every unit every 0.5 s. In that case it should not anchor.
+
+### What a person sees (`replays.py --obs-full`; 2026-11-13)
+
+Runs with `--obs-full 1` (`fgself-197` on, so `fgself-212`) read 70 more channels per entity and three more entity kinds (corpses, items lying on the ground, area spells) from the harness's events 101-109 and its ground-item records (`fullgame/obsfull.py`). The demonstrations before this have none of them. `replays.py --obs-full` records them in two more arrays per game: `obsfull` (step, kind, a, b, c) and `ground` (step, item, x, y, the seers' bits, powerup). `Encoder.encode` gives them to the View as a live game does: the units' state first, then the step's other events, then the corpses' and the spells'; the ground items as `Observation.ground`. `bc.apply_run` sets the run's `--obs-full` (and `--value-tax`).
+
+| what | in a playback | against self-play |
+|---|---|---|
+| a unit's state (101), its buffs (102), a hero's item charges (105) | the shim writes them with its unit records when the observing harness asks (MBOX - 46). The buff lists need its unit-object path, so the playback runs with `W3SIM_CUTS` 16 + 34359738368 | the same code |
+| corpses (106 the place, 108 who sees it, 107 gone) | `w3obs.j`: a dead unit the step's enumeration meets for the first time, then `w3sim.j`'s pass | self-play's 106 comes at the death; a unit removed in the step it died (an explosion) leaves no corpse here (self-play: one for a step) |
+| items lying on the ground | `w3obs.j`'s `W3S_SerItem`; the powerup flag from the item's class (no item-type handle is asked for) | the same |
+| area spells (104 the point, 109 who sees it) | derived (`replays.derive_spells`): a caster whose order was the spell's and whose mana fell by half its cost; the point from its label (up to 3 steps later, see below); the seers approximate (its owner, and a player who sees a unit within the radius) | approximate; the instant ones (starfall, tranquility, locust swarm) give none, as self-play's (0, 0) point |
+| research levels, production and construction progress, a hero's items | from the demonstrations' events and records, as before | as before |
+
+With the flag the harness makes 20 objects instead of 16 (a group, a hashtable, two callbacks' wrappers), all in `W3S_Init`, and the replays stay in step: 85/85, 90/90, 94/94 and 96/96 subgroup units, as without it. A game takes ~75 s instead of ~61 s (11-13 minute games, two at a time beside a run, nice 15). The replay build of w3shim must be from 2026-11-06 or later (`make -C shim replay`; the converter checks it). Demonstrations without the arrays leave the block's state, corpse, item and area parts empty; what the records carry (a hero's items, research levels, production progress) is filled as before.
+
+**Fixed on the way** (every playback, with the flag or not): the observing harness put a dead unit back into its pass every step after the shim had dropped it, so each corpse died again every other step for ~90 s. `demos-human-129-maps` has 536,087 death events for 5,349 deaths in its first 60 games, and dead summoned units were summoned again likewise. `W3S_AddUnit` now adds living units only, and `derive_events` goes on from a unit's last row when it comes back.
+
+**Checked** (2026-11-13: 5 Echo Isles games, `scripts/bc_obsfull_check.py` with `fgself-212`'s settings): the encoder's features equal the live feeding's (`bc.live_encode`: units through `play.unit_rows`) on every step of every side. Of the units in view, 96-97% have their state known (own units 100%). Buffs are on 6-22% of the unit rows, 2-4 corpses are in sight a step and ~0.05 items lying. Game 11164's four blizzards give 48 steps with an area. The old demonstrations' block is empty. A CPU smoke run of the clone command below (3 batches) went through.
+
+**Found, not fixed:** the labels lag the playback's states more and more as a game goes on. An order shows as the unit's current order at the label's step + 1 early in a game (right: the next observation), but at - 1 to - 2 after minute 8. The replay's action times drift from the playback's clock by ~1 s in 10 minutes, so late-game labels come on states where the unit already carries the order out.
+
+**Re-collect and clone** (the replay build first: `make -C shim replay`). Echo Isles first, then the other maps into a directory of their own (a `--map echo` run lists the others as skipped, so a later `--map all` into the same directory would not convert them):
+
+    .venv/bin/python -m warcraftsim.fullgame.replays --replays runs/fullgame/human-replays-129 \
+        --out runs/fullgame/demos-human-129-obsfull-echo --map echo --parallel 2 --obs-full
+    .venv/bin/python -m warcraftsim.fullgame.replays --replays runs/fullgame/human-replays-129 \
+        --out runs/fullgame/demos-human-129-obsfull-maps --parallel 2 --obs-full \
+        --map "(2)LastRefuge-1.3,(2)Amazonia,(4)TurtleRock,(2)TerenasStand_LV,(4)TwistedMeadows,(4)FloodPlains1v1_LV,(2)TirisfalGlades_LV,(2)SecretValley,(2)TheTwoRivers_LV,(2)PlunderIsle_LV,(2)RoadToStratholme_LV"
+    .venv/bin/python scripts/bc_obsfull_check.py runs/fullgame/demos-human-129-obsfull-echo --like-run runs/fgself-212
+    .venv/bin/python -m warcraftsim.fullgame.bc --like-run runs/fgself-212 \
+        --init runs/fgself-212/checkpoints/0000000092016582.pt --acting-only --hold-start 100 \
+        --data runs/fullgame/demos-human-129-obsfull-echo runs/fullgame/demos-human-129-obsfull-maps \
+        --name human-212-obsfull --epochs 2 --batch 256 --seq-len 16 --lr 3e-5 --dropout 0 --value-coef 0 \
+        --val-pct 5 --workers 16 --log-every 500
+
+An encoded side is ~100 MB with the block (~60 MB without), and a loader worker holds ~17 of them: 16 workers need ~30 GB, too much beside a live run.
 
 ## Late-game starts from people's games
 

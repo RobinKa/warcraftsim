@@ -26,6 +26,15 @@
 // levels are polled: an "E" record (kind 9, a = -1 - player, b = the upgrade, c = its level) when
 // a level rises.
 //
+// W3S_CFG_OBS_FULL (fullgame/replays.py --obs-full; fullgame/obsfull.py reads them): what w3sim.j's --obs-full adds, as
+// far as a harness without event triggers can: the units' state (events 101, 102, 105: the shim writes them with its
+// records, MBOX - 46, as in a self-play game), the corpses (106 when a dead unit (not a hero, a building, a summon or an
+// image) is first enumerated, its place; 108 the seers that see its place, when that changed; 107 when it is gone: as
+// w3sim.j's, whose 106 comes from the death's trigger) and the items lying on the ground ("G" records, as w3sim.j's
+// W3S_SerItem; the powerup flag 0: the converter sets it from the item's class). The area spells' points (104, 109) come
+// from a spell's trigger in w3sim.j: the converter derives them (replays.derive_spells). Their objects (a group, a
+// hashtable, the callbacks' wrappers) are made in W3S_Init too.
+//
 // @CONFIG@ lines are substituted at map build time (mapbuild.inject_observer).
 //===========================================================================
 
@@ -33,6 +42,7 @@ globals
     // @CONFIG@ (replaced at map build time)
     constant real W3S_CFG_STEP_S = 0.5
     constant boolean W3S_CFG_SEND_DESTRUCTABLES = true
+    constant boolean W3S_CFG_OBS_FULL = false
     constant integer W3S_VERSION = 4
     constant integer W3S_ABIL_SLOTS = 4  // warcraftsim.protocol.HERO_ABILITY_SLOTS
     constant integer W3S_MBOX = 1048576
@@ -66,6 +76,13 @@ globals
     integer array w3s_upg  // the game's upgrades (W3S_InitUpgrades) and each seer's level of each
     integer w3s_nupg = 0
     integer array w3s_upg_level
+    // (W3S_CFG_OBS_FULL) the corpses (w3sim.j's): their group, their hashtable (key 0: the seers' bits last written, -1
+    // none yet; key 1: the step a pass last met it), their handle ids (W3S_CorpseSweep)
+    group w3s_corpses = null
+    hashtable w3s_cht = null
+    integer array w3s_cids
+    integer w3s_ncids = 0
+    boolean w3s_cb_init = false  // (W3S_Init's calls of the step's callbacks: their wrappers made, nothing done)
 endglobals
 
 //===========================================================================
@@ -121,8 +138,121 @@ function W3S_Seers takes nothing returns nothing
     endloop
 endfunction
 
+// (W3S_CFG_OBS_FULL) a corpse, first met dead by a step's enumeration (w3sim.j's W3S_CorpseAdd, there at its death)
+function W3S_CorpseAdd takes unit u returns nothing
+    if IsUnitType(u, UNIT_TYPE_HERO) or IsUnitType(u, UNIT_TYPE_STRUCTURE) or IsUnitType(u, UNIT_TYPE_SUMMONED) or IsUnitIllusion(u) then
+        return
+    endif
+    call GroupAddUnit(w3s_corpses, u)
+    call SaveInteger(w3s_cht, GetHandleId(u), 0, -1)
+    if w3s_ncids < 8000 then
+        set w3s_cids[w3s_ncids] = GetHandleId(u)
+        set w3s_ncids = w3s_ncids + 1
+    endif
+    call W3S_Ev(106, GetHandleId(u), R2I(GetUnitX(u)), R2I(GetUnitY(u)))
+endfunction
+
+// a unit enumerated in the map: into w3s_all, unless dead (a corpse: the shim's pass wrote its death and dropped it, and
+// added again it had died again every other step for ~90 s, until 2026-11-13; a dead hero stays in the group anyway)
 function W3S_AddUnit takes nothing returns nothing
-    call GroupAddUnit(w3s_all, GetEnumUnit())
+    local unit u = GetEnumUnit()
+    if not IsUnitType(u, UNIT_TYPE_DEAD) then
+        call GroupAddUnit(w3s_all, u)
+    elseif W3S_CFG_OBS_FULL and not HaveSavedInteger(w3s_cht, GetHandleId(u), 0) then
+        call W3S_CorpseAdd(u)
+    endif
+    set u = null
+endfunction
+
+// (W3S_CFG_OBS_FULL) each step, each corpse: 108 when the seers that see its place changed, 107 when it is gone (w3sim.j's)
+function W3S_CorpseEnum takes nothing returns nothing
+    local unit u = GetEnumUnit()
+    local integer hid = GetHandleId(u)
+    local integer bits = 0
+    local integer k = 0
+    local real x
+    local real y
+    if w3s_cb_init then
+        set u = null
+        return
+    endif
+    if GetUnitTypeId(u) == 0 or not IsUnitType(u, UNIT_TYPE_DEAD) or IsUnitHidden(u) then
+        call GroupRemoveUnit(w3s_corpses, u)
+        call FlushChildHashtable(w3s_cht, hid)
+        call W3S_Ev(107, hid, 0, 0)
+        set u = null
+        return
+    endif
+    call SaveInteger(w3s_cht, hid, 1, w3s_seq + 1)  // (met this step: W3S_CorpseSweep)
+    set x = GetUnitX(u)
+    set y = GetUnitY(u)
+    loop
+        exitwhen k >= w3s_nseer
+        if IsVisibleToPlayer(x, y, w3s_seer_p[k]) then
+            set bits = bits + w3s_seer_bit[k]
+        endif
+        set k = k + 1
+    endloop
+    if w3s_full or LoadInteger(w3s_cht, hid, 0) != bits then
+        call SaveInteger(w3s_cht, hid, 0, bits)
+        call W3S_Ev(108, hid, bits, 0)
+    endif
+    set u = null
+endfunction
+
+// (after W3S_CorpseEnum's pass) the corpses it did not meet this step: removed from the game, 107 each
+function W3S_CorpseSweep takes nothing returns nothing
+    local integer i = 0
+    local integer hid
+    loop
+        exitwhen i >= w3s_ncids
+        set hid = w3s_cids[i]
+        if HaveSavedInteger(w3s_cht, hid, 0) and LoadInteger(w3s_cht, hid, 1) == w3s_seq + 1 then
+            set i = i + 1
+        else
+            if HaveSavedInteger(w3s_cht, hid, 0) then  // (not 107 already: W3S_CorpseEnum's flush)
+                call FlushChildHashtable(w3s_cht, hid)
+                call W3S_Ev(107, hid, 0, 0)
+            endif
+            set w3s_ncids = w3s_ncids - 1
+            set w3s_cids[i] = w3s_cids[w3s_ncids]
+        endif
+    endloop
+endfunction
+
+// (W3S_CFG_OBS_FULL) an item lying on the ground (w3sim.j's W3S_SerItem): its type, x, y, the seers that see its spot
+// (none: not written), 0 (the powerup flag: the converter's, from the item's class; no item type handle asked here)
+function W3S_SerItem takes nothing returns nothing
+    local item it = GetEnumItem()
+    local real x
+    local real y
+    local integer k = 0
+    local integer bits = 0
+    if w3s_cb_init then
+        set it = null
+        return
+    endif
+    if not IsItemOwned(it) and IsItemVisible(it) and GetWidgetLife(it) > 0.405 then  // (a used tome lies on as a dead item)
+        set x = GetItemX(it)
+        set y = GetItemY(it)
+        loop
+            exitwhen k >= w3s_nseer
+            if IsVisibleToPlayer(x, y, w3s_seer_p[k]) then
+                set bits = bits + w3s_seer_bit[k]
+            endif
+            set k = k + 1
+        endloop
+        if bits != 0 then
+            call W3S_Rec("G")
+            call W3S_Tok(GetItemTypeId(it))
+            call W3S_Tok(R2I(x))
+            call W3S_Tok(R2I(y))
+            call W3S_Tok(bits)
+            call W3S_Tok(0)
+            call W3S_End()
+        endif
+    endif
+    set it = null
 endfunction
 
 //===========================================================================
@@ -280,6 +410,9 @@ function W3S_CSerInit takes nothing returns nothing
         endif
         set i = i + 1
     endloop
+    if W3S_CFG_OBS_FULL then  // (the units' extras with the shim's records: events 101, 102, 105, shim/units.c)
+        call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 46)
+    endif
 endfunction
 
 function W3S_CPassEnum takes nothing returns nothing
@@ -334,6 +467,11 @@ function W3S_WriteObs takes nothing returns nothing
     endif
     if w3s_cser == 1 then
         call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 11)  // (the records of W3S_CPass)
+    endif
+    if W3S_CFG_OBS_FULL then
+        call EnumItemsInRect(bj_mapInitialPlayableArea, null, function W3S_SerItem)  // items lying on the ground
+    endif
+    if w3s_cser == 1 then
         call GetPlayerTechMaxAllowed(w3s_np, W3S_MBOX - 12)  // (and the units that left the game)
     endif
     set w3s_full = false
@@ -363,6 +501,10 @@ function W3S_Step takes nothing returns nothing
     if w3s_cser == 1 then
         call W3S_CPass()
     endif
+    if W3S_CFG_OBS_FULL then
+        call ForGroup(w3s_corpses, function W3S_CorpseEnum)
+        call W3S_CorpseSweep()
+    endif
     call W3S_PollResearch()
     call W3S_WriteObs()
     set w3s_first = false
@@ -389,6 +531,10 @@ function W3S_Init takes nothing returns nothing
     call W3S_InitUpgrades()
     set w3s_group = CreateGroup()
     set w3s_all = CreateGroup()
+    if W3S_CFG_OBS_FULL then
+        set w3s_corpses = CreateGroup()
+        set w3s_cht = InitHashtable()
+    endif
     call W3S_Seers()
     call GroupEnumUnitsInRect(w3s_group, w3s_world, null)
     call ForGroup(w3s_group, function W3S_AddUnit)
@@ -398,6 +544,12 @@ function W3S_Init takes nothing returns nothing
     endif
     call W3S_CSerInit()
     call ForGroup(w3s_group, function W3S_CPassEnum)  // (its code's wrapper: made now, not in a step)
+    if W3S_CFG_OBS_FULL then  // (and theirs: run once here with w3s_cb_init, doing nothing)
+        set w3s_cb_init = true
+        call ForGroup(w3s_group, function W3S_CorpseEnum)
+        call EnumItemsInRect(bj_mapInitialPlayableArea, null, function W3S_SerItem)
+        set w3s_cb_init = false
+    endif
     set w3s_clock = CreateTimer()
     call TimerStart(w3s_clock, 1000000.0, false, null)
     set w3s_timer0 = CreateTimer()
