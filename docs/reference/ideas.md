@@ -8,7 +8,6 @@ In the order they run. The code for each is in place unless it says otherwise. [
 
 | idea | from | what it is | status |
 |---|---|---|---|
-| Late starts from the late game | ours (2026-11-12: 102 of `fgself-201`'s 118 losses past 18 minutes) | a share of the games between agents in the real game, each from a real-map state of minutes 16-28, captured in real games against the AI too (`--real-agents`, `--real-late-minutes 16,28`, `--real-late-from 16`) | running (`fgself-214`) |
 | Unit attacks | the user (2026-11-12: workers survive attack-moves) | the policy attacks a unit in <1% of its attacks; a gentle lesson or exploration for it ([next experiments](../proposals/next-experiments.md), 13) | open |
 | The heroes' spells, another way | the user (2026-11-11: heroes rarely cast) | lessons made the heroes spam their spells (`fgself-208` to `-210`). A new approach is needed | open |
 | Expansions, gentler | ours (audit 15, a bug finder 2026-11-10) | expansion lessons only when the main mine is nearly empty | open |
@@ -20,6 +19,7 @@ In the order they run. The code for each is in place unless it says otherwise. [
 
 | idea | from | result |
 |---|---|---|
+| Late starts from the late game, in the real game | ours (2026-11-12: 102 of `fgself-201`'s 118 losses past 18 minutes) | `--real-agents 0.5 --real-late-minutes 16,28 --real-late-from 16` (`fgself-214`): level, the late game unchanged; not kept |
 | Upgrades in the shaping | ours (2026-11-12) | `--research-value 1` (`fgself-213`): more upgrades, -11 against insane; not kept |
 | Every training game in the real game | ours (bold changes) | `--map "(2)EchoIsles"` (`fgself-212`): level, at twice the game time; not kept |
 | Half the AI games in the real game | ours (bold changes, 2026-11-06) | `--real-share 0.5` (`fgself-201`): +11 points against insane over the continuation, kept as the base |
