@@ -37,7 +37,8 @@ Rejected changes worth switching on anyway (2026-11-06 review): none of the tuni
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-212` (resumed 2026-11-13, **the new base**) | every game in the real game, on master | Burst: 0.859 against insane, +8 over `fgself-201`/142.7M, +4.5 over its continuation; undead 0.80 |
+| `fgself-215` (running) | people's clone (obs-full, from 212@92M) as the KL anchor, `--ref-kl-mode forward-acting` (item 14) | AlphaStar's human KL: keep mass where people act (expansions, unit attacks, spells, mixed armies); judged by a burst vs 212@92M and 212@118.5M |
+| `fgself-212` (**the new base**, paused at 118.5M as the control) | every game in the real game, on master | Burst: 0.859 against insane, +8 over `fgself-201`/142.7M, +4.5 over its continuation; undead 0.80 |
 | `fgself-201` (control, stopped at 173.1M) | resumed unchanged | 0.444 head to head against its own 142.7M, 0.815 against insane in the burst: 142.7M was a high point |
 | `fgself-214` (not kept, 59M) | `--real-agents 0.5 --real-late-minutes 16,28 --real-late-from 16` | Level: insane 0.81/0.79, h2h 0.39, the peak 0.43; the late game unchanged |
 | `fgself-213` (not kept, 60M) | `--research-value 1` on `fgself-201`'s recipe | Insane 0.68 against its start's 0.78 (-11, sliding); upgrades up, strength down |

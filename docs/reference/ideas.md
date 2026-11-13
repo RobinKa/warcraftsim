@@ -11,6 +11,7 @@ In the order they run. The code for each is in place unless it says otherwise. [
 | Unit attacks | the user (2026-11-12: workers survive attack-moves) | the policy attacks a unit in <1% of its attacks; a gentle lesson or exploration for it ([next experiments](../proposals/next-experiments.md), 13) | open |
 | The heroes' spells, another way | the user (2026-11-11: heroes rarely cast) | lessons made the heroes spam their spells (`fgself-208` to `-210`). A new approach is needed | open |
 | Expansions, gentler | ours (audit 15, a bug finder 2026-11-10) | expansion lessons only when the main mine is nearly empty | open |
+| A KL anchor cloned from people | AlphaStar (its KL to the supervised human policy) | people's replays again with the obs-full events, a clone from `fgself-212`, `--init` it with `--ref-kl-mode forward-acting` | running (`fgself-215`) |
 | Fine points around the unit | the user (2026-10-25) | a sub-cell within the chosen point bin (`--fine-points 7`) | merged, not yet in a run |
 | Fewer decisions, spatial point heads | AlphaStar (action rate), SC2LE | a "keep this order k steps" head; points on a map, not x then y | later |
 | An APM cap | ours | every unit acts every half second now | before games against people |
