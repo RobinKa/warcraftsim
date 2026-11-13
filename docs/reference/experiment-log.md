@@ -2184,6 +2184,18 @@ The `base2` games so far. Against the AI 86% won (of 1,506 at 22:07) at a median
 
 **`fgself-217`** (19:39, from `fgself-212`/92016582, code b4be3fc): **a null fork**, `fgself-212`'s recipe unchanged, the same eval mix. ~0.5 head to head by ~15M: the anchors cost the strength (215 and 216 not kept). ~0.34: forking from an older checkpoint is at fault, and both verdicts are void.
 
+**`fgself-217` stopped at 17.1M (20:37)**: head to head 0.43 against 92M (149 games) and 0.435 against 118.5M (107), in between. Training read: 217 minus 215 +0.196* (215 clearly worse), 217 minus 216 +0.064 (not separable). So an evaluation burst decided (20:38-21:24, `runs/burst-216`, 1,049 games, paired in one window, `--eval-vs 0.4`):
+
+| policy | against insane (races weighed alike) | human | night elf | orc | undead | tier 2 | top unit | won past 18 min |
+|---|---|---|---|---|---|---|---|---|
+| `fgself-216`/16.9M (the clone as a second anchor) | 0.707 ±0.069 | 0.69 | 0.80 | 0.52 | 0.81 | 12% | 93% | 18% of 52 |
+| `fgself-217`/17.1M (null fork) | 0.755 ±0.064 | 0.76 | 0.85 | 0.57 | 0.84 | 43% | 96% | 29% of 43 |
+| `fgself-212`/92.0M (their start) | 0.838 ±0.057 | 0.77 | 0.93 | 0.80 | 0.85 | 16% | 94% | 21% of 29 |
+
+Head to head 216 against 217 0.448 (262 games), against 92M 0.461 (311). 216 minus 217 -0.048 [-0.14, +0.05]; 216 minus 92M -0.131*; 217 minus 92M -0.083 [-0.17, +0.00]. In the burst both forks read nearer their start head to head than in their runs' evaluation games (0.46 against 0.34: those played every checkpoint along the way).
+
+**Verdicts.** `fgself-215` and `-216` **not kept**: people's clone as an anchor, alone or beside `fgself-100`, made no wider play (216's tier 2 fell) and no stronger. Item 14 closed for now. The null fork lost ~8 points against insane in 17M steps, most of it orc (0.57 against 0.80). Whether that is the fork (its league, curriculum and win balance from 212 at 118.5M) or a peak's regression (92M was picked as the best of a burst, as 197@50M and 201@142.7M were high points) is open: 212's own continuation read 0.54 head to head against 92M (320 games) but was never burst against insane. Forks start from the parent's latest checkpoint again, as all before 215 did.
+
 **Check A** (2026-11-04 13:22, `scripts/blend_check.py`, CPU, for item 5: an EMA anchor, `--ref-ema`): blends of the anchor `fgself-100` (grown to `fgself-182`'s vocabulary and inputs, as a run grows it) and `fgself-182`/50150172, the anchor's weights moved 0-100% of the way (the EMA's own step at that share; the two are 0.12 apart, relative L2). The KL per own unit is the run's term (forward-all, KL(parent || blend); the orders' alone in brackets) on 18,433 steps of these games. 12 games each against the untaxed insane AI on (2)EchoIsles, real rules, a person's income, every blend on the same 12 matchups:
 
 | Blend | KL to `fgself-100` | KL to `fgself-182` | Won | Minutes | Supply at 5 / 10 min | Workers | Army | Gold |

@@ -37,8 +37,8 @@ Rejected changes worth switching on anyway (2026-11-06 review): none of the tuni
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-217` (running) | a null fork from 212@92M (no change) | whether 215/216's 0.32-0.34 head to head is the anchors or the fork from an older checkpoint |
-| `fgself-216` (stopped, 17M; held for 217) | people's clone as a second anchor beside `fgself-100` (`--ref2 ... --ref2-kl 0.02 --ref2-kl-mode forward-acting`, item 14) | h2h 0.34/0.34 (167/146 games), insane 0.64 against 92M's 0.92 on the laptop |
+| `fgself-217` (null fork, 17M) | a fork from 212@92M with no change | burst: 0.755 against insane, 92M 0.838 (-8, orc 0.57 against 0.80); fork or a peak's regression, open |
+| `fgself-216` (not kept, 17M) | people's clone as a second anchor beside `fgself-100` (`--ref2 ... --ref2-kl 0.02 --ref2-kl-mode forward-acting`, item 14) | burst: 0.707 against insane, -5 against the null fork, h2h 0.45 against it; tier 2 12% against 43% |
 | `fgself-215` (not kept, 16M) | people's clone as the only KL anchor, `--ref-kl-mode forward-acting` | h2h 0.32/0.31 (~175 games each, falling), training read -15, narrower play: `fgself-100`'s pull swapped for the clone's |
 | `fgself-212` (**the new base**, paused at 118.5M as the control) | every game in the real game, on master | Burst: 0.859 against insane, +8 over `fgself-201`/142.7M, +4.5 over its continuation; undead 0.80 |
 | `fgself-201` (control, stopped at 173.1M) | resumed unchanged | 0.444 head to head against its own 142.7M, 0.815 against insane in the burst: 142.7M was a high point |
