@@ -240,6 +240,62 @@ def test_derived_events():
     assert not any(e[1] == 7 for e in ev)  # (the unit came out: no cancel)
 
 
+def test_derived_events_a_corpse_back_dies_once():
+    """A corpse the shim dropped and the observer's enumeration added again (every other step for ~90 s): one death, no
+    new unit; a handle reused (a new object: new_at) is a new unit again."""
+    from warcraftsim.fullgame.replays import derive_events
+    ghoul, skeleton = 0x7567686F, 0x75736B65
+    units = np.asarray([
+        _row(0, 10, ghoul, 1, 0), _row(0, 11, skeleton, 1, 256),
+        _row(1, 10, ghoul, 1, 1024), _row(1, 11, skeleton, 1, 256 | 1024),  # (both die)
+        _row(3, 10, ghoul, 1, 1024), _row(3, 11, skeleton, 1, 256 | 1024),  # (gone at 2, back at 3: the same objects)
+        _row(5, 10, ghoul, 1, 1024),
+        _row(7, 11, ghoul, 1, 0),  # (11's handle reused by a new unit: its object ids are new)
+    ], np.int64)
+    ev = derive_events(units, np.zeros((0, 16), np.int64), 7, [], [], {(0, 10), (0, 11), (7, 11)})
+    assert [e for e in ev if e[1] == 1] == [(1, 1, 10, 0, ghoul), (1, 1, 11, 0, skeleton)]
+    assert [e for e in ev if e[1] == 17] == [(0, 17, 0, 11, skeleton)]  # (its summon seen once)
+
+
+def test_remap_players_obs_full():
+    from warcraftsim.fullgame.replays import remap_players
+    rec = {"units": [], "players": [], "events": [],
+           "obsfull": [(3, 108, 77, 0b101, 0), (3, 104, 5, -100, 200), (3, 109, 5, 0x4148627A, 0b100),
+                       (3, 101, 5, 0b101, 0b101)],
+           "ground": [(4, 0x74646578, 10, 20, 0b001, 0)]}
+    remap_players(rec, [2, 0])
+    assert rec["obsfull"] == [(3, 108, 77, 0b11, 0), (3, 104, 5, -100, 200), (3, 109, 5, 0x4148627A, 0b01),
+                              (3, 101, 5, 0b101, 0b101)]  # (a unit's state: no players' bits)
+    assert rec["ground"] == [(4, 0x74646578, 10, 20, 0b10, 0)]
+
+
+def test_derive_spells():
+    """A blizzard: the archmage's order the last step, its mana down by the cost, its point the player's click; the seers
+    its owner and the player whose units stand there. Without the mana spent (a walk to range), none yet."""
+    pytest.importorskip("torch")
+    from warcraftsim.fullgame.replays import derive_spells
+    try:
+        from warcraftsim.fullgame import fullvocab
+        fullvocab.tables()
+    except Exception as e:  # noqa: BLE001 (the game's tables: not on every machine)
+        pytest.skip(f"no game data: {e}")
+    archmage, grunt, blizzard = 0x48616D67, 0x6F677275, 852089
+
+    def unit(t, uid, typ, owner, x, y, mana, order, vis):
+        return (t, uid, typ, owner, x, y, 0, 100, 100, mana, 300, order, 1 if typ == archmage else 0, vis, 0, 0, 0, 0)
+    units = np.asarray([unit(0, 3, archmage, 0, 0, 0, 200, blizzard, 1), unit(0, 4, grunt, 1, 900, 0, 0, 0, 2),
+                        unit(1, 3, archmage, 0, 0, 0, 201, blizzard, 1), unit(1, 4, grunt, 1, 900, 0, 0, 0, 3),
+                        unit(2, 3, archmage, 0, 0, 0, 126, blizzard, 1), unit(2, 4, grunt, 1, 900, 0, 0, 0, 3),
+                        unit(3, 3, archmage, 0, 0, 0, 127, blizzard, 1)], np.int64)
+    orders = [(0, 3, blizzard, 1, 900, 50, 0)]
+    ev = derive_spells(units, orders, 3)
+    assert ev == [(2, 104, 3, 900, 50), (2, 109, 3, int.from_bytes(b"AHbz", "big"), 0b11)]
+    assert derive_spells(units, [], 3) == []  # (no point ordered: none)
+    late = [(4, 3, blizzard, 1, 700, 60, 0)]  # (the label's step after the cast: the replay's clock drifts)
+    assert derive_spells(units, late, 3)[0] == (2, 104, 3, 700, 60)
+    assert derive_spells(units, [(9, 3, blizzard, 1, 700, 60, 0)], 3) == []  # (too late: another cast's)
+
+
 def test_derived_orders():
     from warcraftsim.fullgame.replays import derive_orders
     a, b, mine = (100, 100), (101, 101), (50, 50)

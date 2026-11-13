@@ -243,8 +243,9 @@ def inject_observer(script: str, cfg: HarnessConfig, harness: str | None = None,
     `call W3S_Init()` at the end of main. Nothing of the map's own code changes: a replay of a game
     recorded on the stock map (people's games) re-simulates it from the map, so its melee
     initialization (MeleeStartingAI, MeleeInitVictoryDefeat) must run as it did. From `cfg`: the step
-    and whether to send the trees, the order and hero ability tables; `upgrades` (default: the
-    game's, observer_upgrades) the research levels it polls."""
+    and whether to send the trees, the order and hero ability tables, obs_full (the units' state,
+    the corpses and the items on the ground: fullgame/replays.py --obs-full); `upgrades` (default:
+    the game's, observer_upgrades) the research levels it polls."""
     j = script.replace("\r\n", "\n")
     src = harness or observer_source()
     m = re.search(r"^globals\n(.*?)^endglobals\n", src, re.M | re.S)
@@ -253,7 +254,9 @@ def inject_observer(script: str, cfg: HarnessConfig, harness: str | None = None,
     glob, body = m.group(1), src[m.end():]
     for name, decl in {"W3S_CFG_STEP_S": f"constant real W3S_CFG_STEP_S = {cfg.step_seconds:.4f}",
                        "W3S_CFG_SEND_DESTRUCTABLES": "constant boolean W3S_CFG_SEND_DESTRUCTABLES = "
-                                                     + ("true" if cfg.send_destructables else "false")}.items():
+                                                     + ("true" if cfg.send_destructables else "false"),
+                       "W3S_CFG_OBS_FULL": "constant boolean W3S_CFG_OBS_FULL = "
+                                           + ("true" if cfg.obs_full else "false")}.items():
         glob, n = re.subn(rf"^\s*constant \w+ {name} = .*$", "    " + decl, glob, flags=re.M)
         if n != 1:
             raise MapBuildError(f"observer config {name} not found")
