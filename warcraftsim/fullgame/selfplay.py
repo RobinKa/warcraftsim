@@ -4062,6 +4062,21 @@ def parts_pass(net: FullGameNet, chunks: list[list[dict]], args, device) -> dict
     return out
 
 
+ANCHOR2: list = []  # (--ref2: a second KL anchor's network, set by main; none without it)
+
+
+def second_anchor_kl(ev: dict, b: dict, own, n_units, seq, args):
+    """--ref2: the KL term towards the second anchor (--ref2-kl-mode), per unit summed over the units as the first
+    anchor's; None without one."""
+    if not ANCHOR2 or getattr(args, "ref2_kl", 0.0) <= 0:
+        return None
+    r2 = ANCHOR2[0]
+    with torch.no_grad():
+        ev2 = evaluate(r2, b["ent"], b["type"], b["cur"], b["mask"], b["glob"], b["n_own"], b["order"], b["tgt"], b["bx"],
+                       b["by"], b.get("avail"), seq=seq if r2.memory else None)
+    return (anchor_kl(ev, ev2, args.ref2_kl_mode) * own).sum() / n_units
+
+
 def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict], args, warmup: bool, device,
                chunks: list[list[dict]] | None = None, bc_iter=None, measure: bool = False, terms: bool = False) -> dict:
     """PPO epochs over the steps; for a network with memory over sequences cut from `chunks` (the
@@ -4139,6 +4154,10 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
                 # also while the value warms up: it shares the network's trunk, so training it alone
                 # moved the policy too (the KL to the clone doubled in the first five updates)
                 loss = loss + args.ref_kl * ref_kl
+            ref2_kl = second_anchor_kl(ev, mb, own, n_units, seq, args)
+            if ref2_kl is not None:
+                loss = loss + args.ref2_kl * ref2_kl
+                stats.setdefault("loss/ref2_kl", []).append(ref2_kl.detach())
             if getattr(args, "opsd_coef", 0.0) > 0 and "pent" in mb:  # (self-distillation, privileged information)
                 l_opsd = opsd_loss(net, ev, mb, seq)
                 loss = loss + args.opsd_coef * l_opsd
@@ -4164,6 +4183,8 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
                         named["policy"] = pg
                     if ref is not None and args.ref_kl > 0:
                         named["kl"] = args.ref_kl * ref_kl
+                    if ref2_kl is not None:
+                        named["kl2"] = args.ref2_kl * ref2_kl
                     if args.ent_coef or getattr(args, "opd_coef", 0.0) > 0 or (bc_iter is not None and args.bc_coef > 0):
                         named["other"] = loss - sum(named.values())
                     grads = {n: torch.autograd.grad(v, params, retain_graph=True, allow_unused=True) for n, v in named.items()}
@@ -4407,6 +4428,10 @@ class GraphedUpdate:
                 ref_kl = (anchor_kl(ev, ev_ref, getattr(args, "ref_kl_mode", "reverse")) * own).sum() / n_units
                 loss = loss + args.ref_kl * ref_kl
             out["loss/ref_kl"] = ref_kl
+            ref2_kl = second_anchor_kl(ev, s, own, n_units, seq, args)
+            if ref2_kl is not None:
+                loss = loss + args.ref2_kl * ref2_kl
+                out["loss/ref2_kl"] = ref2_kl
             if getattr(args, "opsd_coef", 0.0) > 0 and "pent" in s:  # (self-distillation, privileged information)
                 l_opsd = opsd_loss(net, ev, s, seq)
                 loss = loss + args.opsd_coef * l_opsd
@@ -4539,6 +4564,8 @@ class GraphedUpdate:
                 net.allowed[ty, yy] = True  # ("none" sets class 0: always allowed)
         if self.ref is not None:
             self.ref.allowed.copy_(net.allowed)
+        for r2 in ANCHOR2:
+            r2.allowed.copy_(net.allowed)
         return advs
 
     def _batches(self, chunks: list[list[dict]], bc_iter, epochs: int):
@@ -5527,6 +5554,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--vf-coef", type=float, default=0.5)
     ap.add_argument("--ent-coef", type=float, default=0.0)
     ap.add_argument("--ref-kl", type=float, default=0.05, help="the KL term towards the initial (cloned) policy")
+    ap.add_argument("--ref2", type=Path, default=None, help="a second KL anchor beside --init (a checkpoint of the run's "
+                    "vocabulary: a clone of people's games, bc --like-run), with its own weight and direction")
+    ap.add_argument("--ref2-kl", type=float, default=0.0, help="--ref2's KL term's weight (0: none)")
+    ap.add_argument("--ref2-kl-mode", default="forward-acting", choices=["reverse", "forward", "forward-all", "forward-acting"],
+                    help="--ref2's term's direction and heads, as --ref-kl-mode")
     ap.add_argument("--ref-kl-mode", default="reverse", choices=["reverse", "forward", "forward-all", "forward-acting"],
                     help="that term's direction and heads (model.anchor_kl): reverse KL over the orders (as before), "
                          "forward KL over the orders (AlphaStar's direction: rare orders keep their weight), "
@@ -5842,6 +5874,16 @@ def main(argv: list[str] | None = None) -> int:
     if ref is not None:
         for p in ref.parameters():
             p.requires_grad_(False)
+    ANCHOR2.clear()
+    if args.ref2 is not None and args.ref2_kl > 0:  # (--ref2: the second anchor, in the run's vocabulary)
+        r2, ck2 = load(args.ref2, device, None if args.memory < 0 else bool(args.memory), vocab=vocab if fx.NEUTRAL else None)
+        if ck2.get("vocab", {}).get("orders") != vocab.get("orders"):
+            raise SystemExit(f"--ref2 {args.ref2}: its orders are not the run's (bc --like-run the run it anchors)")
+        r2.eval()
+        for p in r2.parameters():
+            p.requires_grad_(False)
+        ANCHOR2.append(r2)
+        print(f"--ref2 {args.ref2}: a second anchor, KL {args.ref2_kl_mode} x{args.ref2_kl}", flush=True)
     if args.start_weights and not args.resume:  # a new run from another run's checkpoint (--init stays the anchor)
         start, _ = load(args.start_weights, device, None if args.memory < 0 else bool(args.memory), vocab=vocab if fx.NEUTRAL else None)
         if arch_key(start.config) != arch_key(net.config):  # a grown network (scripts/grow_model.py): its own
@@ -5868,6 +5910,7 @@ def main(argv: list[str] | None = None) -> int:
     fx.set_z(net.config.get("z", 0))  # the global vector's strategy block (scripts/grow_strategy.py), as the policy's
     G = fx.Encoder(vocab).G
     for what, n in [("the starting weights" if args.start_weights else "--init", net), ("the anchor (--init)", ref)] + \
+            [("the second anchor (--ref2)", r) for r in ANCHOR2] + \
             [(str(c), FullGameNet(**adapt_config(torch.load(c, map_location="cpu", weights_only=False)["config"])))
              for c in args.eval_checkpoints or []]:
         if n is not None and n.bins != fx.BINS:  # (their point targets must be this map's bins)
