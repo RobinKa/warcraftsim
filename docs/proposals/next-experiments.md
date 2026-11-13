@@ -37,6 +37,7 @@ Rejected changes worth switching on anyway (2026-11-06 review): none of the tuni
 
 | Run | Change | Why |
 |---|---|---|
+| `fgself-219` (running) | `--attack-lesson 0.25 --teach-floor 0.05` from 212's latest (118.8M) | the lesson capped at a 5% chance of the order, RL decides the rest |
 | `fgself-218` (collapsed, 13M) | `--attack-lesson 0.25` from 212's latest (118.7M; item 13) | attacks on a unit 77-84% of its attacks from the first 20 minutes (212: 0.5%), h2h 0.19-0.24, -41 against insane: the lesson's push spread the order to every unit |
 | `fgself-217` (null fork, 17M) | a fork from 212@92M with no change | burst: 0.755 against insane, 92M 0.838 (-8, orc 0.57 against 0.80); fork or a peak's regression, open |
 | `fgself-216` (not kept, 17M) | people's clone as a second anchor beside `fgself-100` (`--ref2 ... --ref2-kl 0.02 --ref2-kl-mode forward-acting`, item 14) | burst: 0.707 against insane, -5 against the null fork, h2h 0.45 against it; tier 2 12% against 43% |
