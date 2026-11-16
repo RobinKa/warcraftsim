@@ -2228,6 +2228,10 @@ Stopped for the night at 120.8M (00:34, the user's word); the control goes on to
 
 The 81's average +0.041 against 144.7M [-0.06, +0.14], level with 118.8M, and above all three head to head. No single difference is beyond noise, but every one points the same way: the average sits at the best single point without anyone picking it. **`fgself-221`** (14:16, code cb53bbf) goes on from it as the base line (Adam's state of 144699411 beside it; a fresh Adam had cost forks ~10 points). From now on a verdict can compare averages (an experiment's last stretch against its control's), which swing less than single checkpoints.
 
+Checked on the way (no run): could the evaluation play with a target strategy? In `fgself-212`'s training games against insane since 92M, no-target games won 0.72-0.89 by race (1,369 games) and target games 0.37-0.62 (4,162, 1,329 strategies); no strategy with 12+ games stood clearly above no target. No.
+
+**`fgself-222`** (14:18, from `fgself-221`/172427, i.e. the weight average, code ae03dac): **the z-modes' deadlines for the real map**, `--z-mode-time 2` (bug finder 9's open item: `modes.py`'s deadlines and spans are echofast's, about twice the violations on the real map; `tests/unit/test_modes.py`). `fgself-221` goes on from 172427 as its control; then a burst of both stretches' weight averages and endpoints.
+
 **Check A** (2026-11-04 13:22, `scripts/blend_check.py`, CPU, for item 5: an EMA anchor, `--ref-ema`): blends of the anchor `fgself-100` (grown to `fgself-182`'s vocabulary and inputs, as a run grows it) and `fgself-182`/50150172, the anchor's weights moved 0-100% of the way (the EMA's own step at that share; the two are 0.12 apart, relative L2). The KL per own unit is the run's term (forward-all, KL(parent || blend); the orders' alone in brackets) on 18,433 steps of these games. 12 games each against the untaxed insane AI on (2)EchoIsles, real rules, a person's income, every blend on the same 12 matchups:
 
 | Blend | KL to `fgself-100` | KL to `fgself-182` | Won | Minutes | Supply at 5 / 10 min | Workers | Army | Gold |
