@@ -37,7 +37,8 @@ Rejected changes worth switching on anyway (2026-11-06 review): none of the tuni
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-224` (running) | `--spell-lesson 0.25 --teach-floor 0.005 --teach-floor-orders spells` from 221/26.7M | the heroes' spells with the lesson capped |
+| `fgself-225` (running, the base) | 224's weight average, the capped spell lesson, bug finder 10's fixes | |
+| `fgself-224` (**kept**) | `--spell-lesson 0.25 --teach-floor 0.005 --teach-floor-orders spells` from 221/26.7M | burst-224: its average 0.876 against insane, the control's 0.849; h2h 0.59-0.62 against the control; ~17 taught spells a game |
 | `fgself-223` (not kept, 13M) | `--expand-lesson 0.3 --teach-floor 0.02 --teach-floor-orders halls` from 221/26.7M | expanded in 4% of no-target games (0% before), but -11 against insane in training, h2h 0.35-0.40; its camp lessons (heroes' attack-moves, 2.5 a game) uncapped |
 | `fgself-222` (not kept, 27M) | `--z-mode-time 2` from 221's start (the weight average) | burst-222: its average 0.753 against insane, the control's 0.788; h2h 0.44 against the control's average |
 | `fgself-221` (the base; its control from 172427 next) | fgself-212's weight average (81 checkpoints, 118.8M-144.7M) | burst-swa: the average 0.845 against insane, 144.7M 0.804, 118.8M 0.856; above all three head to head |

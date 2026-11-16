@@ -2259,7 +2259,18 @@ The control stopped at 53.3M (21:57). **burst-224** (21:58-22:44): 224's average
 3. **Late starts placed timed hero forms that never turn back**: a captured Chemical Rage 'Nal2' placed by CreateUnit was still enraged 90 s later (`scripts/hero_form_probe.py`). `late.HERO_MORPHS` places 'Edmm', 'Nalm', 'Nal2', 'Nal3' as their hero (6 'Nal2' and 55 'Nalm' in fgself-201's 8,336 states).
 4. `--ref2`: the eager update path (exploiters, the noise meter) never gave the second anchor the learner's allowed table (a ~1e9 term in reverse mode only; fgself-216 forward: unaffected).
 5. The evalworker ignored `--z-mode-time` (its eval_z games measured the modes at the default deadlines).
-Not fixed: Chemical Rage refused once a cooldown cycle (~2,800 refusals in 309 of 332 alchemist games; its cooldown reads 0 a tick early: ~0.5 s lost a cycle). Design gaps noted: immolation's toggles masked on "learned" only, not its state (~7,000 refusals); spell targets not masked by side (frost nova on own units etc., ~14,000 refusals). Checked right: the morph forms keep the hero's slots and masks; the replaced tinker abilities keep their order strings and costs; Engineering Upgrade is the only replacing ability; the new flags and scripts since 11-13.
+Not fixed: Chemical Rage refused once a cooldown cycle (~2,800 refusals in 309 of 332 alchemist games; its cooldown reads 0 a tick early: ~0.5 s lost a cycle). Design gaps noted: immolation's toggles masked on "learned" only, not its state (~7,000 refusals); spell targets not masked by side (frost nova on own units etc., ~14,000 refusals). Checked right: the morph forms keep the hero's slots and masks; the replaced tinker abilities keep their order strings and costs; Engineering Upgrade is the only replacing ability; the new flags and scripts since 11-13. Merged (8b26a1a, 22:48); `tinker_probe.py --cuts` on master: all 7 steps right.
+
+**burst-224** (21:58-22:44, 1,096 games):
+
+| policy | against insane (races weighed alike) | human | night elf | orc | undead | tier 2 / 3 | won past 18 min |
+|---|---|---|---|---|---|---|---|
+| `fgself-224`'s average (capped spell lesson) | 0.876 ±0.060 | 0.94 | 0.97 | 0.80 | 0.80 | 41% / 7% | 44% of 25 |
+| `fgself-221`'s average (the control) | 0.849 ±0.063 | 0.81 | 0.81 | 0.93 | 0.85 | 26% / 2% | 32% of 28 |
+| `fgself-224`/26.4M | 0.788 ±0.068 | 0.79 | 0.87 | 0.68 | 0.81 | 52% / 19% | 32% of 38 |
+| `fgself-221`/52.9M | 0.879 ±0.057 | 0.97 | 0.97 | 0.70 | 0.88 | 11% / 1% | 45% of 19 |
+
+The averages +0.026 [-0.06, +0.11]; head to head 224's average 0.589 against the control's average (209 games) and 0.618 against its end (224 games). **`fgself-224` kept**: the first lesson that held (the cap), the heroes casting ~17 taught spells a game in training. Its end read low again (0.788). **`fgself-225`** (22:50, code 8b26a1a) goes on from 224's average as the base, with the capped spell lesson and bug finder 10's fixes.
 
 **Check A** (2026-11-04 13:22, `scripts/blend_check.py`, CPU, for item 5: an EMA anchor, `--ref-ema`): blends of the anchor `fgself-100` (grown to `fgself-182`'s vocabulary and inputs, as a run grows it) and `fgself-182`/50150172, the anchor's weights moved 0-100% of the way (the EMA's own step at that share; the two are 0.12 apart, relative L2). The KL per own unit is the run's term (forward-all, KL(parent || blend); the orders' alone in brackets) on 18,433 steps of these games. 12 games each against the untaxed insane AI on (2)EchoIsles, real rules, a person's income, every blend on the same 12 matchups:
 
