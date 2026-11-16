@@ -22,13 +22,14 @@ def main(argv: list[str]) -> int:
     d = Path("runs") / name
     (d / "checkpoints").mkdir(parents=True, exist_ok=False)
     shutil.copy(f"runs/{src}/vocab.json", d / "vocab.json")
-    shutil.copy(cur, d / "checkpoints" / Path(cur).name)
+    dest = Path(cur).name if Path(cur).stem.isdigit() else f"{0:015d}1.pt"  # (the worker reads <steps>.pt only)
+    shutil.copy(cur, d / "checkpoints" / dest)
     r = json.load(open(f"runs/{src}/run.json"))
     c = r["config"]
     c["eval_checkpoints"] = "[" + ", ".join(f"PosixPath('{e}')" for e in evals) + "]"
     c.update(eval_vs="0.4", eval_z="0", eval_heuristic="0", eval_human="0")
     (d / "run.json").write_text(json.dumps(r, indent=1))
-    print(name, "ready:", Path(cur).name, c["eval_checkpoints"])
+    print(name, "ready:", cur, "as", dest, c["eval_checkpoints"])
     return 0
 
 
