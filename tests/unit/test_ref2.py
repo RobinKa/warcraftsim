@@ -81,3 +81,22 @@ def test_ppo_update_reads_it_too():
     opt = torch.optim.Adam(net.parameters(), lr=1e-3)
     stats = selfplay.ppo_update(net, ref, opt, steps, args, False, torch.device("cpu"), chunks, None)
     assert stats.get("loss/ref2_kl", 0.0) > 1e-5
+
+
+def test_ppo_update_gives_it_the_learners_allowed_table():
+    """The orders each type may give, the learner's (a label's new pair among them) in the second anchor too, as
+    GraphedUpdate's batch gives it: an order only the learner allows had the anchor's logit at -1e9 (a reverse KL's
+    term ~1e9 times the policy's chance of it)."""
+    net = make_net()
+    ref = moved(net)
+    r2 = moved(net, seed=2)
+    selfplay.ANCHOR2.append(r2)
+    with torch.no_grad():
+        net.allowed[1, -1] = True
+        r2.allowed[1, -1] = False
+    chunks = make_chunks(np.random.default_rng(0))
+    steps = [s for c in chunks for s in c]
+    args = settings(ref2_kl=0.5, ref2_kl_mode="reverse", epochs=1, lr=1e-3, label_w=1.0)
+    opt = torch.optim.Adam(net.parameters(), lr=1e-3)
+    selfplay.ppo_update(net, ref, opt, steps, args, False, torch.device("cpu"), chunks, None)
+    assert torch.equal(r2.allowed, net.allowed)

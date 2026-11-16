@@ -4147,6 +4147,8 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
         # pair only the learner allowed had the clone's logit at -1e9: a KL of 96 and a gradient norm
         # of 726 in one of fgself-11's first updates)
         ref.allowed.copy_(net.allowed)
+    for r2 in ANCHOR2:  # (--ref2: the second anchor too, as GraphedUpdate's batch does: the labels' new pairs had stayed
+        r2.allowed.copy_(net.allowed)  # -1e9 there in this path, the exploiters' and the noise meter's)
     stats: dict[str, list[torch.Tensor]] = {}  # (kept on the GPU until the end: a float() each was a wait for it)
     autocast = torch.autocast("cuda", dtype=torch.bfloat16, enabled=bool(device.type == "cuda" and args.bf16))
     net.train()
