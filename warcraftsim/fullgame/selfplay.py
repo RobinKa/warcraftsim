@@ -1837,16 +1837,29 @@ TEACH_POINT = 0.5  # (--teach-point: the teacher's lessons' place in its loss, d
 TEACH_FLOOR = None  # (--teach-floor P: (the floored order classes [O+1] on the learner's device, log P); main sets it)
 
 
-def floor_classes(vocab: dict) -> torch.Tensor:
-    """--teach-floor's order classes [O+1]: attacks on a unit and the spell lesson's spells (teacher.SPELL_LESSONS,
-    immolation's on and off), in any form the vocabulary has them."""
-    from .teacher import ATTACK, SPELL_LESSONS, TOGGLES, _spell_tables
-    _, info, ids = _spell_tables()
-    oids = {ids[info[c].order] for c in SPELL_LESSONS if c in info and info[c].order in ids}
-    oids |= {ids[n] for _, on, off in TOGGLES.values() for n in (on, off) if n in ids}
+FLOOR_GROUPS = ("attack", "spells", "halls")
+
+
+def floor_classes(vocab: dict, groups=("attack", "spells")) -> torch.Tensor:
+    """--teach-floor's order classes [O+1] (--teach-floor-orders): "attack" an attack on a unit, "spells" the spell
+    lesson's spells (teacher.SPELL_LESSONS, immolation's on and off) in any form the vocabulary has them, "halls" the
+    expansion lesson's halls (a town hall, great hall or tree of life built at a point; a haunted gold mine on a mine)."""
+    from .teacher import ATTACK, HALL, SPELL_LESSONS, TOGGLES, _spell_tables
+    from .neutral import fourcc
+    bad = set(groups) - set(FLOOR_GROUPS)
+    if bad:
+        raise SystemExit(f"--teach-floor-orders: unknown {sorted(bad)} (of {FLOOR_GROUPS})")
+    oids = set()
+    if "spells" in groups:
+        _, info, ids = _spell_tables()
+        oids = {ids[info[c].order] for c in SPELL_LESSONS if c in info and info[c].order in ids}
+        oids |= {ids[n] for _, on, off in TOGGLES.values() for n in (on, off) if n in ids}
+    forms = {(ATTACK, fx.UNIT)} if "attack" in groups else set()
+    if "halls" in groups:
+        forms |= {(fourcc(h), fx.POINT) for r, h in HALL.items() if r != "undead"} | {(fourcc("ugol"), fx.UNIT)}
     m = torch.zeros(len(vocab["orders"]) + 1, dtype=torch.bool)
     for i, (oid, kind) in enumerate(vocab["orders"]):
-        m[i + 1] = (int(oid), int(kind)) == (ATTACK, fx.UNIT) or int(oid) in oids
+        m[i + 1] = (int(oid), int(kind)) in forms or int(oid) in oids
     return m
 
 
@@ -5283,6 +5296,8 @@ def main(argv: list[str] | None = None) -> int:
                     "lesson's spells push only while the unit's chance of the order is under P (selfplay.teach_floored: "
                     "a lesson makes a rare order possible, RL decides how much of it pays; fgself-218's uncapped attack "
                     "lesson spread the order to every unit). 0: no floor")
+    ap.add_argument("--teach-floor-orders", default="attack,spells", help="the orders --teach-floor caps: attack (on a "
+                    "unit), spells (the spell lesson's), halls (the expansion lesson's halls and haunted mine)")
     ap.add_argument("--attack-lesson", type=float, default=0.0, help="X (with --teach): attacks on a unit where the "
                     "engine's attack-move picks last (workers have its lowest priority; the policy attack-moves, ~1%% of "
                     "its attacks on a unit): an enemy worker in reach of the side's army with no enemy army unit near it, "
@@ -5934,7 +5949,8 @@ def main(argv: list[str] | None = None) -> int:
     global TEACH_FLOOR
     TEACH_FLOOR = None
     if args.teach_floor > 0:  # (--teach-floor: the classes floored, in the run's vocabulary)
-        TEACH_FLOOR = (floor_classes(vocab).to(device), math.log(args.teach_floor))
+        TEACH_FLOOR = (floor_classes(vocab, tuple(g for g in args.teach_floor_orders.split(",") if g)).to(device),
+                       math.log(args.teach_floor))
         print(f"--teach-floor {args.teach_floor}: {int(TEACH_FLOOR[0].sum())} order classes' labels capped", flush=True)
     if args.start_weights and not args.resume:  # a new run from another run's checkpoint (--init stays the anchor)
         start, _ = load(args.start_weights, device, None if args.memory < 0 else bool(args.memory), vocab=vocab if fx.NEUTRAL else None)

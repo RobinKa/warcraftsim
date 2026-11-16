@@ -28,6 +28,17 @@ def test_floor_classes():
     assert selfplay.floor_classes(vocab).tolist() == [False, False, False, True, True, True]
 
 
+def test_floor_groups():
+    code = lambda c: int.from_bytes(c.encode(), "big")
+    vocab = {"orders": [[ATTACK, fx.UNIT], [code("htow"), fx.POINT], [code("ugol"), fx.UNIT], [code("unpl"), fx.POINT],
+                        [code("hbar"), fx.POINT], [BLIZZARD, fx.UNIT]]}
+    assert selfplay.floor_classes(vocab).tolist() == [False, True, False, False, False, False, True]
+    assert selfplay.floor_classes(vocab, ("halls",)).tolist() == [False, False, True, True, False, False, False]
+    assert selfplay.floor_classes(vocab, ("attack", "halls")).tolist() == [False, True, True, True, False, False, False]
+    with pytest.raises(SystemExit):
+        selfplay.floor_classes(vocab, ("walls",))
+
+
 def test_capped_only_for_the_floored_classes():
     lp = torch.log(torch.tensor([0.001, 0.5, 0.001, 0.5]))
     y = torch.tensor([1, 1, 2, 2])
