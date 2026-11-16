@@ -95,6 +95,10 @@ OWN_MINE = {"undead": "ugol", "nightelf": "egol"}  # (the mine a race's workers 
 HARVESTERS = ("hpea", "opeo", "uaco", "ewsp", "ugho")  # (workers, and undead's ghouls on lumber)
 GOLD_ONLY, LUMBER_ONLY = ("uaco",), ("ugho",)
 MORPHS = {"hmil": "hpea"}  # (a militia, placed as one, would never turn back: the peasant it was)
+# a hero in a timed form (Metamorphosis, Chemical Rage), placed as the hero it was: the form placed (CreateUnit) has no
+# duration of its own; a Chemical Rage of level 2 or 3 ('Nal2', 'Nal3') never turned back (its skill learned from level
+# 1, whose form is 'Nalm': scripts/hero_form_probe.py, 90 s; 'Edmm' and 'Nalm' did). Robo-Goblin is a toggle: kept
+HERO_MORPHS = {"Edmm": "Edem", "Nalm": "Nalc", "Nal2": "Nalc", "Nal3": "Nalc"}
 SKIP = int(UnitFlags.SUMMONED | UnitFlags.ILLUSION | UnitFlags.CONSTRUCTING)
 NEAR_MINE = 450.0  # a harvester this near a gold mine and harvesting: on gold (no agent's view to say)
 START_SAME = 32.0  # start locations this close: the same
@@ -183,8 +187,8 @@ def capture(rows: np.ndarray, players: dict, races: list[str], map_name: str, re
                 levels = [int(r[fx.C_ABIL0 + 2 * k]) for k in range(len(slots))]
                 skills = [c for n in range(1, max(levels, default=0) + 1) for c, lv in zip(slots, levels) if lv >= n]
                 items = [rawcode(int(v)) for v in r[fx.C_ITEM0:fx.C_ITEM0 + 6] if v]
-                heroes.append([t, _r(r[fx.C_X]), _r(r[fx.C_Y]), hp, mana, int(r[fx.C_HLEVEL]), int(r[fx.C_HXP]), skills,
-                               items, int(not alive[i])])
+                heroes.append([HERO_MORPHS.get(t, t), _r(r[fx.C_X]), _r(r[fx.C_Y]), hp, mana, int(r[fx.C_HLEVEL]),
+                               int(r[fx.C_HXP]), skills, items, int(not alive[i])])
             elif alive[i]:
                 units.append([MORPHS.get(t, t), _r(r[fx.C_X]), _r(r[fx.C_Y]), hp, mana, _role(r, mine_xy, jobs)])
         p = players[s]
@@ -298,7 +302,8 @@ def holds(state: dict, side: int) -> set[str]:
     expansions (the start's is no item)."""
     from .techtree import counts_as
     s, mines = state["sides"][side], [m[1:3] for m in state.get("mines", ())]
-    have = counts_as({u[0] for u in s["units"]} | {h[0] for h in s["heroes"]}, state["races"][side])
+    have = counts_as({u[0] for u in s["units"]} | {HERO_MORPHS.get(h[0], h[0]) for h in s["heroes"]},
+                     state["races"][side])
     return ((have - set(EXPANSION_ITEMS)) | set(s.get("research", ()))
             | {u[0] for u in s["units"] if u[0] in EXPANSION_ITEMS and _expansion(u[1:3], state["starts"][side], mines)})
 
@@ -600,8 +605,9 @@ def commands(state: dict, rows: np.ndarray) -> list | None:
         for k, (t, x, y, hp, mana, _role) in enumerate(units):
             if k not in kept and t != "egol":  # (an entangled mine: at step 1, again; its gold mine shows then)
                 out.append(Place(s, t, x, y, hp, mana))
-        for t, x, y, hp, mana, level, xp, skills, items, dead in side.get("heroes", ()):
-            out.append(Place(s, t, x, y, hp, mana, int(level), tuple(skills), tuple(items), bool(dead), int(xp)))
+        for t, x, y, hp, mana, level, xp, skills, items, dead in side.get("heroes", ()):  # (a timed form: its hero, the
+            out.append(Place(s, HERO_MORPHS.get(t, t), x, y, hp, mana, int(level), tuple(skills), tuple(items),  # states
+                             bool(dead), int(xp)))  # captured before HERO_MORPHS)
         out.append(SetResources(s, int(side["gold"]), int(side["lumber"])))
     return out if len(encode_commands(out)) <= MAX_INTS else None
 
