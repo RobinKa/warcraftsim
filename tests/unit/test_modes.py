@@ -203,3 +203,18 @@ def test_target_with_the_composition_kinds():
         assert out is st and len(view.z) == fx.ZDIM and not hasattr(view, "forbid")
     finally:
         fx.set_z(0)
+
+
+def test_time_scale_stretches_the_deadlines():
+    """--z-mode-time 2 (the real map): scout by 240 s and expand by 480 s of the game, for echofast's 120 and 240."""
+    home = np.stack([_row(1, 0, -3000, 0, modes.STRUCTURE, "htow"), _row(2, 0, -2900, 0, modes.WORKER, "hpea")])
+    one = modes.Tracker({"scout": 0.0, "expand": 240.0}, 0, (3000.0, 0.0), {}, {code("hpea")})
+    two = modes.Tracker({"scout": 0.0, "expand": 240.0}, 0, (3000.0, 0.0), {}, {code("hpea")}, time_scale=2.0)
+    for t in (100.0, 200.0, 300.0):
+        one.step(home, [], 10, t)
+        two.step(home, [], 10, t)
+    assert one.v["scout"] == 1.0 and one.v["expand"] == 1.0
+    assert two.v["scout"] == 1.0 and two.v["expand"] == 0.0  # (240 s passed: the scout's 120; not yet 480)
+    two.step(home, [], 10, 500.0)
+    assert two.v["expand"] == 1.0
+    assert modes.Tracker({"scout": 0.0}, 0, (0.0, 0.0), {}, set(), time_scale=0.0).time_scale == 1.0  # (0: as before)

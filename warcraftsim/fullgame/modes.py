@@ -179,10 +179,12 @@ class Tracker:
     """One side's modes in a game: their violations so far (step), each in [0, 1]."""
 
     def __init__(self, modes: dict[str, float], side: int, enemy_start: tuple[float, float], food: dict[int, int],
-                 worker_types: set[int], own_start: tuple[float, float] | None = None, race: str | None = None):
+                 worker_types: set[int], own_start: tuple[float, float] | None = None, race: str | None = None,
+                 time_scale: float = 1.0):
         """`own_start`: an expansion is a hall far from it and at a gold mine (None: any second hall, as before;
         a second hall at home met "expand" and broke "no_expand", the audit of 2026-10-22). `race`: the side's
-        (forbid's unit)."""
+        (forbid's unit). `time_scale` (--z-mode-time): every deadline and span times this (they are echofast's: 2 on
+        the real map, whose economy runs about half as fast; bug finder 9)."""
         self.modes, self.side, self.enemy, self.own = dict(modes), side, enemy_start, own_start
         u = forbidden(modes, race)
         if "forbid" in modes and u is None:
@@ -198,10 +200,12 @@ class Tracker:
         self.enemy_seen: set[int] = set()
         self.mine_seen: set[int] = set()
         self.t = 0.0
+        self.time_scale = float(time_scale or 1.0)
 
     def step(self, rows: np.ndarray, events, food_used: int, now: float) -> float:
         """The game at second `now` (rows: features' unit columns; events: protocol.Event; the side's food used)
         -> the sum of the violations so far."""
+        now = now / self.time_scale  # (--z-mode-time: the game's second as echofast's)
         dt, self.t = max(0.0, now - self.t), now
         s, m, done = self.side, self.modes, self.done
         # (the side's measures the modes below read: in C, rulesnative.modes, numpy's calls had cost ~250k instructions

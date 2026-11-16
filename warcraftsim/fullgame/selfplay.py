@@ -2535,7 +2535,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     even_out()
     # --z-modes: each side's modes measured each step (modes.Tracker: their violations, the strategy potential's)
     trackers = {s: zmodes.Tracker(m, s, (obs.players[1 - s].start_x, obs.players[1 - s].start_y), unit_food(),
-                                  WORKER_IDS, (obs.players[s].start_x, obs.players[s].start_y), races[s])
+                                  WORKER_IDS, (obs.players[s].start_x, obs.players[s].start_y), races[s],
+                                  float(cfg.get("z_mode_time", 1.0) or 1.0))
                 for s, m in zm.items() if m and obs.players.get(1 - s) is not None and obs.players.get(s) is not None}
     viol = {s: 0.0 for s in trackers}
     rows_next = None  # (the step's unit rows, made for the trackers: the next step's)
@@ -5454,6 +5455,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--z-build-labels", type=int, default=0, help="with --z-build and --opd-coef > 0: the builder's "
                     "accepted orders label the agent's step for the distillation loss (only the units it ordered), so the "
                     "agent learns to make its target's buildings and heroes itself")
+    ap.add_argument("--z-mode-time", type=float, default=1.0, help="X: the z-modes' deadlines and spans times X (modes.py: "
+                    "scout by 120 s, expand 240-480 s, ... are echofast's; 2 on the real map, whose economy runs about "
+                    "half as fast: bug finder 9 found twice fgself-201's violations there)")
     ap.add_argument("--z-time-scale", type=float, default=1.0, help="the targets' times scaled (faster rules: e.g. 0.45 "
                     "on echofast, half costs and a third of the build times)")
     ap.add_argument("--eval-z", type=int, default=0, help="with --z-pool: the current policy also plays evaluation "
@@ -6245,7 +6249,7 @@ def main(argv: list[str] | None = None) -> int:
            "opd_share": args.opd_share, "opd_difficulty": args.opd_difficulty,
            "costs": order_costs(vocab, args.map).tolist() if args.avail_mask else None, "max_past": args.max_past,
            "eval_fallback": args.eval_fallback, "worker_cap": args.worker_cap, "pfsp_data": args.pfsp_data, "mana_value": args.mana_value, "z_dim": fx.ZDIM, "z_pool": str(args.z_pool) if args.z_pool else "", "z_share": args.z_share, "win_balance": args.win_balance,
-           "z_reward": args.z_reward, **({"z_shop": args.z_shop} if args.z_shop else {}), "z_mix": args.z_mix, "z_mix_reward": args.z_mix_reward, "reward_parts": args.reward_parts, "z_modes": args.z_modes, "z_mode_reward": args.z_mode_reward, "z_comp": args.z_comp, "z_forbid_mask": args.z_forbid_mask, "z_winners": args.z_winners, "z_src": args.z_src, "eval_z": args.eval_z,
+           "z_reward": args.z_reward, **({"z_shop": args.z_shop} if args.z_shop else {}), "z_mix": args.z_mix, "z_mix_reward": args.z_mix_reward, "reward_parts": args.reward_parts, "z_modes": args.z_modes, "z_mode_reward": args.z_mode_reward, "z_mode_time": args.z_mode_time, "z_comp": args.z_comp, "z_forbid_mask": args.z_forbid_mask, "z_winners": args.z_winners, "z_src": args.z_src, "eval_z": args.eval_z,
            "z_enforce": args.z_enforce, "z_time_scale": args.z_time_scale, "z_build": args.z_build, "z_build_labels": args.z_build_labels, "z_workers": args.z_workers,
            "grpo_share": args.grpo_share, "grpo_group": args.grpo_group, "grpo_coef": args.grpo_coef,
            "grpo_seeds": args.grpo_seeds, "grpo_branch": [float(x) for x in args.grpo_branch.split("-")],
