@@ -323,6 +323,29 @@ function W3S_Unit takes integer hid returns unit
     return LoadUnitHandle(w3s_ht, hid, 0)
 endfunction
 
+// A hero ability's code as the hero has it now. The tinker's Engineering Upgrade ('ANeg', level L) replaces Pocket
+// Factory, Cluster Rockets, Robo-Goblin and its Demolish with their level-L versions (AbilityData.slk's DataC-F:
+// 'ANsy' -> 'ANs1'..'ANs3', 'ANcs' -> 'ANc1'.., 'ANrg' -> 'ANg1'.., 'ANde' -> 'ANd1'..): a learn of the base code then
+// does nothing and its level reads 0 (a tinker that learned the passive first never learned another skill: 224 learn
+// orders for Robo-Goblin in one game; 2026-11-16, the user). Learning and reading go through this.
+function W3S_Skill takes unit u, integer a returns integer
+    local integer e
+    if a != 'ANsy' and a != 'ANcs' and a != 'ANrg' and a != 'ANde' then
+        return a
+    endif
+    set e = GetUnitAbilityLevel(u, 'ANeg')
+    if e <= 0 then
+        return a
+    elseif a == 'ANsy' then
+        return 'ANs0' + e
+    elseif a == 'ANcs' then
+        return 'ANc0' + e
+    elseif a == 'ANrg' then
+        return 'ANg0' + e
+    endif
+    return 'ANd0' + e
+endfunction
+
 // Units are collected from w3s_all (every unit that ever entered the map), not by an area
 // enumeration: enumerations skip hidden units such as workers inside a gold mine.
 function W3S_EnumAdd takes nothing returns nothing
@@ -563,6 +586,7 @@ function W3S_SerUnit takes unit u returns nothing
             set alevel[i] = 0
             set acool[i] = 0
             if a != 0 then
+                set a = W3S_Skill(u, a)
                 set alevel[i] = GetUnitAbilityLevel(u, a)
                 if alevel[i] > 0 then
                     set acool[i] = R2I(BlzGetUnitAbilityCooldownRemaining(u, a) * 10.0 + 0.5)
@@ -1793,6 +1817,7 @@ function W3S_Placed takes integer what, integer id returns boolean
     if w3s_placed == null or GetUnitTypeId(w3s_placed) == 0 then
         return false
     elseif what == 1 then
+        set id = W3S_Skill(w3s_placed, id)
         set before = GetUnitAbilityLevel(w3s_placed, id)
         call SelectHeroSkill(w3s_placed, id)
         return GetUnitAbilityLevel(w3s_placed, id) > before
@@ -1834,7 +1859,7 @@ function W3S_ApplyOne takes integer at returns integer
     elseif op == 5 then
         set n = 3
         if W3S_Owned(u) and GetHeroSkillPoints(u) > 0 then
-            call SelectHeroSkill(u, w3s_cmd[at + 2])
+            call SelectHeroSkill(u, W3S_Skill(u, w3s_cmd[at + 2]))
             set ok = true
         endif
     elseif op == 6 then
@@ -2279,7 +2304,7 @@ function W3S_SpawnQueued takes integer i returns nothing
     set j = 0
     loop
         exitwhen j >= w3s_qs_nskill[i]
-        call SelectHeroSkill(u, w3s_qs_skill[i * W3S_QS_SKILLS + j])
+        call SelectHeroSkill(u, W3S_Skill(u, w3s_qs_skill[i * W3S_QS_SKILLS + j]))
         set j = j + 1
     endloop
     if w3s_qs_hp[i] > 0 then
