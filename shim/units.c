@@ -1583,9 +1583,10 @@ static int cmd_apply(void) {
                     ok = c2(IssueImmediateOrderById_, u, c[2]) != 0;
                 else if (op == 6)
                     ok = c3(IssueTargetOrderById_, u, c[2], c3(LoadDestructableHandle_, g_ht, c[3], 0)) != 0;
-                else if (n1(GetHeroSkillPoints, u) > 0) { /* 5 */
-                    c2(SelectHeroSkill_, u, c[2]);
-                    ok = 1;
+                else if (n1(GetHeroSkillPoints, u) > 0) { /* 5: through the code the hero has now (skill_now); */
+                    int a = skill_now(u, c[2]), before = n2(GetUnitAbilityLevel, u, a); /* ok: its level rose */
+                    c2(SelectHeroSkill_, u, a);
+                    ok = n2(GetUnitAbilityLevel, u, a) > before;
                 }
             }
         }

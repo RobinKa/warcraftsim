@@ -1836,6 +1836,8 @@ function W3S_ApplyOne takes integer at returns integer
     local unit s
     local boolean ok = false
     local integer n = 1
+    local integer a
+    local integer was
     if op == 1 then
         set n = 5
         if W3S_Owned(u) then
@@ -1857,10 +1859,15 @@ function W3S_ApplyOne takes integer at returns integer
             set ok = W3S_Build(u, w3s_cmd[at + 2], I2R(w3s_cmd[at + 3] - 65536), I2R(w3s_cmd[at + 4] - 65536))
         endif
     elseif op == 5 then
+        // a skill learned (through the code the hero has now: W3S_Skill); ok when its level rose (a learn the game
+        // ignored, a skill at its last level or one the hero's level does not allow yet, had read accepted; the shim's
+        // cmd_apply alike)
         set n = 3
         if W3S_Owned(u) and GetHeroSkillPoints(u) > 0 then
-            call SelectHeroSkill(u, W3S_Skill(u, w3s_cmd[at + 2]))
-            set ok = true
+            set a = W3S_Skill(u, w3s_cmd[at + 2])
+            set was = GetUnitAbilityLevel(u, a)
+            call SelectHeroSkill(u, a)
+            set ok = GetUnitAbilityLevel(u, a) > was
         endif
     elseif op == 6 then
         set n = 4
