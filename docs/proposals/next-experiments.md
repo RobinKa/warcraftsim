@@ -37,7 +37,7 @@ Rejected changes worth switching on anyway (2026-11-06 review): none of the tuni
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-222` (running) | `--z-mode-time 2` from 221's start (the weight average) | the z-modes' deadlines for the real map (bug finder 9) |
+| `fgself-222` (not kept, 27M) | `--z-mode-time 2` from 221's start (the weight average) | burst-222: its average 0.753 against insane, the control's 0.788; h2h 0.44 against the control's average |
 | `fgself-221` (the base; its control from 172427 next) | fgself-212's weight average (81 checkpoints, 118.8M-144.7M) | burst-swa: the average 0.845 against insane, 144.7M 0.804, 118.8M 0.856; above all three head to head |
 | `fgself-220` (not kept, 26M) | `--attack-lesson 0.25 --teach-floor 0.002` from 212's 118.8M | burst: 0.681 against the control's 0.759 (-8, n.s.), h2h 0.47; unit attacks 18%. The unit-attack line closes for now |
 | `fgself-219` (not kept, 9M) | `--attack-lesson 0.25 --teach-floor 0.05` | unit attacks 54-57% of its attacks, h2h 0.31-0.36, -15 against insane |

@@ -2232,7 +2232,16 @@ Checked on the way (no run): could the evaluation play with a target strategy? I
 
 **`fgself-222`** (14:18, from `fgself-221`/172427, i.e. the weight average, code ae03dac): **the z-modes' deadlines for the real map**, `--z-mode-time 2` (bug finder 9's open item: `modes.py`'s deadlines and spans are echofast's, about twice the violations on the real map; `tests/unit/test_modes.py`). `fgself-221` goes on from 172427 as its control; then a burst of both stretches' weight averages and endpoints.
 Stopped at 27.3M (15:48): the z-modes' violations a third to a sixth of `fgself-212`'s (scout 0.15 against 0.94, creep 0.19 against 0.56, harass 0.19 against 0.61, rush 0.08 against 0.37, expand 0.69 against 0.97); head to head 0.49 against 212/118.8M (252 games), 0.54 against 212/144.7M (208). `fgself-221`'s control from 172427 started 15:49.
-The control stopped at 26.7M (17:17). **burst-222** (17:18-18:03): the weight averages of both runs' last stretches (222: 33 checkpoints 17.1M-27.3M; 221: 31, 17.1M-26.7M) and both endpoints.
+The control stopped at 26.7M (17:17). **burst-222** (17:18-18:03): the weight averages of both runs' last stretches (222: 33 checkpoints 17.1M-27.3M; 221: 31, 17.1M-26.7M) and both endpoints. 1,045 games:
+
+| policy | against insane (races weighed alike) | human | night elf | orc | undead | tier 2 / 3 | won past 18 min |
+|---|---|---|---|---|---|---|---|
+| `fgself-222`'s average (`--z-mode-time 2`) | 0.753 ±0.083 | 0.76 | 0.84 | 0.70 | 0.72 | 63% / 4% | 28% of 29 |
+| `fgself-221`'s average (the control) | 0.788 ±0.073 | 0.79 | 0.73 | 0.80 | 0.84 | 62% / 15% | 36% of 35 |
+| `fgself-222`/27.3M | 0.687 ±0.083 | 0.48 | 0.71 | 0.73 | 0.82 | 45% / 2% | 27% of 44 |
+| `fgself-221`/26.7M | 0.866 ±0.062 | 0.81 | 0.94 | 0.81 | 0.90 | 45% / 6% | 40% of 25 |
+
+The averages -0.035 [-0.15, +0.08]; head to head 222's average 0.440 against 221's (192 games) and 0.460 against 221's end (198). **`fgself-222` not kept**: the right deadlines do not help, and the old, stricter ones (twice the violations) may have pushed scouting and tech that pays. Averaging this time: 221's end read above its average (0.866 against 0.788, n.s.), 222's below (0.687 against 0.753): an average swings less than a checkpoint, but is not always above it. `fgself-221` goes on from its end (18:06).
 
 **Check A** (2026-11-04 13:22, `scripts/blend_check.py`, CPU, for item 5: an EMA anchor, `--ref-ema`): blends of the anchor `fgself-100` (grown to `fgself-182`'s vocabulary and inputs, as a run grows it) and `fgself-182`/50150172, the anchor's weights moved 0-100% of the way (the EMA's own step at that share; the two are 0.12 apart, relative L2). The KL per own unit is the run's term (forward-all, KL(parent || blend); the orders' alone in brackets) on 18,433 steps of these games. 12 games each against the untaxed insane AI on (2)EchoIsles, real rules, a person's income, every blend on the same 12 matchups:
 
