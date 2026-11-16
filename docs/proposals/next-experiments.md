@@ -37,7 +37,7 @@ Rejected changes worth switching on anyway (2026-11-06 review): none of the tuni
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-223` (running) | `--expand-lesson 0.3 --teach-floor 0.02 --teach-floor-orders halls` from 221/26.7M | expansions late (main under 30%), the lesson capped at a 2% chance |
+| `fgself-223` (not kept, 13M) | `--expand-lesson 0.3 --teach-floor 0.02 --teach-floor-orders halls` from 221/26.7M | expanded in 4% of no-target games (0% before), but -11 against insane in training, h2h 0.35-0.40; its camp lessons (heroes' attack-moves, 2.5 a game) uncapped |
 | `fgself-222` (not kept, 27M) | `--z-mode-time 2` from 221's start (the weight average) | burst-222: its average 0.753 against insane, the control's 0.788; h2h 0.44 against the control's average |
 | `fgself-221` (the base; its control from 172427 next) | fgself-212's weight average (81 checkpoints, 118.8M-144.7M) | burst-swa: the average 0.845 against insane, 144.7M 0.804, 118.8M 0.856; above all three head to head |
 | `fgself-220` (not kept, 26M) | `--attack-lesson 0.25 --teach-floor 0.002` from 212's 118.8M | burst: 0.681 against the control's 0.759 (-8, n.s.), h2h 0.47; unit attacks 18%. The unit-attack line closes for now |
