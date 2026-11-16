@@ -9,6 +9,7 @@ In the order they run. The code for each is in place unless it says otherwise. [
 | idea | from | what it is | status |
 |---|---|---|---|
 | Unit attacks | the user (2026-11-12: workers survive attack-moves) | the policy attacks a unit in <1% of its attacks; a gentle lesson or exploration for it ([next experiments](../proposals/next-experiments.md), 13) | `--attack-lesson` + `--teach-floor`: 218 collapsed, 219 (floor 0.05) spread, 220 (0.002) -8 against its control: closed for now |
+| Weight averaging (SWA) | ours (2026-11-16: a checkpoint's level swings ~8 points, burst-216/220) | the mean of a stretch of checkpoints (`scripts/average_checkpoints.py`) as the policy | burst-swa: the mean of 212's 81 checkpoints 0.845 against insane, its end 0.804, the best single 0.856; `fgself-221` goes on from it |
 | The heroes' spells, another way | the user (2026-11-11: heroes rarely cast) | lessons made the heroes spam their spells (`fgself-208` to `-210`). A new approach is needed | open |
 | Expansions, gentler | ours (audit 15, a bug finder 2026-11-10) | expansion lessons only when the main mine is nearly empty | open |
 | A KL anchor cloned from people | AlphaStar (its KL to the supervised human policy) | people's replays again with the obs-full events, a clone from `fgself-212`, `--init` it with `--ref-kl-mode forward-acting` | `fgself-215` (the clone as the only anchor) not kept: h2h 0.31, `fgself-100`'s pull swapped for the clone's; `fgself-216` (`--ref2`: the clone beside `fgself-100`) not kept either (burst: -5 against a null fork, narrower) |

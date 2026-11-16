@@ -2217,7 +2217,16 @@ Stopped for the night at 120.8M (00:34, the user's word); the control goes on to
 
 220 minus the control -0.077 [-0.17, +0.01]; head to head 220 against the control 0.470 (282 games), against the start 0.443 (298). **`fgself-220` not kept**; the unit-attack line closes for now (three tries: the lesson for a rare order spreads, and capped low it still costs). **The fork question is answered: not the fork.** The control, a plain resume, lost as much against its start (-0.079*) as the null fork did against 92M (-0.083). Both starts read 0.838, every continuation from them 0.68-0.76, and 212's own stretch 92M-118.8M held level: the policy's level against insane swings by ~8 points between checkpoints 20-30M steps apart, and the two starts are good points of it (92M was picked as a burst's best). So an experiment against its start reads ~8 low; against its control it is fair.
 
-**Weight averaging** (13:24, `burst-swa`, the learner still stopped): if single checkpoints swing, the mean of a stretch of them (SWA) may sit above them. `scripts/average_checkpoints.py`: the mean of the control's 81 checkpoints 118.8M-144.7M, and of its last 27 (136.1M-144.7M), bursted against 212/144.7M and 212/118.8M.
+**Weight averaging** (13:24, `burst-swa`, the learner still stopped): if single checkpoints swing, the mean of a stretch of them (SWA) may sit above them. `scripts/average_checkpoints.py`: the mean of the control's 81 checkpoints 118.8M-144.7M, and of its last 27 (136.1M-144.7M), bursted against 212/144.7M and 212/118.8M. 1,087 games, ~110-120 against insane each:
+
+| policy | against insane (races weighed alike) | human | night elf | orc | undead | head to head of the 81's average |
+|---|---|---|---|---|---|---|
+| the mean of 81 (118.8M-144.7M) | 0.845 ±0.069 | 0.80 | 0.92 | 0.84 | 0.81 | |
+| the mean of the last 27 (136.1M-144.7M) | 0.813 ±0.067 | 0.69 | 0.88 | 0.80 | 0.88 | 0.548 (218) |
+| 212/144.7M | 0.804 ±0.069 (burst-220: 0.759) | 0.75 | 0.97 | 0.68 | 0.82 | 0.531 (224) |
+| 212/118.8M | 0.856 ±0.062 (burst-220: 0.838) | 0.71 | 1.00 | 0.78 | 0.93 | 0.521 (187) |
+
+The 81's average +0.041 against 144.7M [-0.06, +0.14], level with 118.8M, and above all three head to head. No single difference is beyond noise, but every one points the same way: the average sits at the best single point without anyone picking it. **`fgself-221`** (14:16, code cb53bbf) goes on from it as the base line (Adam's state of 144699411 beside it; a fresh Adam had cost forks ~10 points). From now on a verdict can compare averages (an experiment's last stretch against its control's), which swing less than single checkpoints.
 
 **Check A** (2026-11-04 13:22, `scripts/blend_check.py`, CPU, for item 5: an EMA anchor, `--ref-ema`): blends of the anchor `fgself-100` (grown to `fgself-182`'s vocabulary and inputs, as a run grows it) and `fgself-182`/50150172, the anchor's weights moved 0-100% of the way (the EMA's own step at that share; the two are 0.12 apart, relative L2). The KL per own unit is the run's term (forward-all, KL(parent || blend); the orders' alone in brackets) on 18,433 steps of these games. 12 games each against the untaxed insane AI on (2)EchoIsles, real rules, a person's income, every blend on the same 12 matchups:
 
