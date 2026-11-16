@@ -572,6 +572,22 @@ static void install_kt(void) {
 static int g_obs_full; /* (--obs-full: unit_extras, below) */
 static void unit_extras(int u, BYTE *o, int hero);
 
+#define RAW(a, b, c, d) ((int)(((unsigned)(a) << 24) | ((unsigned)(b) << 16) | ((unsigned)(c) << 8) | (unsigned)(d)))
+
+/* A hero ability's code as the hero has it now (w3sim.j W3S_Skill): the tinker's Engineering Upgrade ('ANeg', level L)
+ * replaces Pocket Factory, Cluster Rockets, Robo-Goblin and its Demolish with their level-L versions ('ANs1'..,
+ * 'ANc1'.., 'ANg1'.., 'ANd1'..), whose levels the base codes then read as 0. */
+static int skill_now(int u, int a) {
+    if (a != RAW('A', 'N', 's', 'y') && a != RAW('A', 'N', 'c', 's') && a != RAW('A', 'N', 'r', 'g')
+        && a != RAW('A', 'N', 'd', 'e'))
+        return a;
+    int e = n2(GetUnitAbilityLevel, u, RAW('A', 'N', 'e', 'g'));
+    if (e <= 0)
+        return a;
+    int c = a == RAW('A', 'N', 's', 'y') ? 's' : a == RAW('A', 'N', 'c', 's') ? 'c' : a == RAW('A', 'N', 'r', 'g') ? 'g' : 'd';
+    return RAW('A', 'N', c, '0' + e);
+}
+
 static void unit_record(int u) {
     /* (the order of the calls is W3S_SerUnit's: some of them make handles) */
     int flags = 0;
@@ -665,6 +681,7 @@ static void unit_record(int u) {
             int a = n3(LoadInteger, g_abil, typ, i);
             alevel[i] = acool[i] = 0;
             if (a) {
+                a = skill_now(u, a);
                 alevel[i] = n2(GetUnitAbilityLevel, u, a);
                 if (alevel[i] > 0)
                     acool[i] = (int)(r2(BlzGetUnitAbilityCooldownRemaining, u, a) * 10.0f + 0.5f);
