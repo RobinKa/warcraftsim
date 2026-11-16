@@ -179,6 +179,29 @@ def test_commands(heroes):
     assert late.levels(st, 0) == {fourcc("Rhme"): 2}
 
 
+def test_timed_hero_forms_placed_as_their_hero(heroes, monkeypatch):
+    """A hero captured in a timed form (Metamorphosis, Chemical Rage) is placed as the hero it was: a placed 'Nal2' never
+    turned back (scripts/hero_form_probe.py); states captured before keep the form's type and are placed so too. The
+    tinker's Robo-Goblin (a toggle) stays."""
+    import warcraftsim.data.abilities as ab
+    monkeypatch.setattr(ab, "hero_abilities", lambda: {"Nalc": ("ANhs", "ANab", "ANcr", "ANtm"),
+                                                       "Nal2": ("ANhs", "ANab", "ANcr", "ANtm"),
+                                                       "Nrob": ("ANsy", "ANcs", "ANeg", "ANrg"),
+                                                       "Hamg": ("AHbz", "AHab", "AHwe", "AHmt"),
+                                                       "Udea": ("AUdc", "AUdp", "AUau", "AUan")})
+    rows = midgame()
+    extra = np.stack([row(11, "Nal2", 0, -3100, 50, 500, 600, HERO, level=5, abil=(1, 0, 2, 0)),
+                      row(12, "Nrob", 0, -3200, 50, 500, 600, HERO, level=6, abil=(0, 0, 0, 1))])
+    st = late.capture(np.concatenate([rows, extra]), players(), ["human", "undead"], "echofast2", {0: {}, 1: {}}, 600.0)
+    types = [h[0] for h in st["sides"][0]["heroes"]]
+    assert types == ["Hamg", "Nalc", "Nrob"]
+    assert st["sides"][0]["heroes"][1][7] == ["ANhs", "ANcr", "ANcr"]  # (its skills as the form had them)
+    st["sides"][0]["heroes"][1][0] = "Nal2"  # (a state captured before)
+    placed = [c.unit_type for c in late.commands(st, fresh()) if isinstance(c, Place) and c.player == 0]
+    assert "Nal2" not in placed and "Nalc" in placed and "Nrob" in placed
+    assert "Nalc" in late.holds(st, 0) and "Nal2" not in late.holds(st, 0)
+
+
 def test_again(heroes):
     """Steps 1 and 2: the gold mine hidden under a placed haunted mine (the type's own gold), an uncovered mine the
     captured game had mined out, a night elf's entangled mine entangled again and then marked complete."""
