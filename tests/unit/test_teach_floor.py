@@ -39,6 +39,8 @@ def test_floor_groups():
         selfplay.floor_classes(vocab, ("walls",))
     army = {"orders": [[code("hgry"), fx.IMMEDIATE], [code("hfoo"), fx.IMMEDIATE], [code("hgry"), fx.POINT]]}
     assert selfplay.floor_classes(army, ("army",)).tolist() == [False, True, False, False]
+    up = {"orders": [[code("Rhme"), fx.IMMEDIATE], [code("Rhar"), fx.IMMEDIATE], [code("Rhpm"), fx.IMMEDIATE]]}
+    assert selfplay.floor_classes(up, ("upgrades",)).tolist() == [False, True, True, False]
 
 
 def test_capped_only_for_the_floored_classes():
