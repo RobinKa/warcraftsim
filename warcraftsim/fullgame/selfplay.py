@@ -1837,14 +1837,15 @@ TEACH_POINT = 0.5  # (--teach-point: the teacher's lessons' place in its loss, d
 TEACH_FLOOR = None  # (--teach-floor P: (the floored order classes [O+1] on the learner's device, log P); main sets it)
 
 
-FLOOR_GROUPS = ("attack", "spells", "halls")
+FLOOR_GROUPS = ("attack", "spells", "halls", "army")
 
 
 def floor_classes(vocab: dict, groups=("attack", "spells")) -> torch.Tensor:
     """--teach-floor's order classes [O+1] (--teach-floor-orders): "attack" an attack on a unit, "spells" the spell
     lesson's spells (teacher.SPELL_LESSONS, immolation's on and off) in any form the vocabulary has them, "halls" the
-    expansion lesson's halls (a town hall, great hall or tree of life built at a point; a haunted gold mine on a mine)."""
-    from .teacher import ATTACK, HALL, SPELL_LESSONS, TOGGLES, _spell_tables
+    expansion lesson's halls (a town hall, great hall or tree of life built at a point; a haunted gold mine on a mine),
+    "army" the army lesson's units (teacher.ANTI_AIR, TIER_UNITS: their train orders)."""
+    from .teacher import ANTI_AIR, ATTACK, HALL, SPELL_LESSONS, TIER_UNITS, TOGGLES, _spell_tables
     from .neutral import fourcc
     bad = set(groups) - set(FLOOR_GROUPS)
     if bad:
@@ -1857,6 +1858,8 @@ def floor_classes(vocab: dict, groups=("attack", "spells")) -> torch.Tensor:
     forms = {(ATTACK, fx.UNIT)} if "attack" in groups else set()
     if "halls" in groups:
         forms |= {(fourcc(h), fx.POINT) for r, h in HALL.items() if r != "undead"} | {(fourcc("ugol"), fx.UNIT)}
+    if "army" in groups:
+        forms |= {(fourcc(u), fx.IMMEDIATE) for t in (ANTI_AIR, TIER_UNITS) for us in t.values() for u in us}
     m = torch.zeros(len(vocab["orders"]) + 1, dtype=torch.bool)
     for i, (oid, kind) in enumerate(vocab["orders"]):
         m[i + 1] = (int(oid), int(kind)) in forms or int(oid) in oids
@@ -5299,7 +5302,8 @@ def main(argv: list[str] | None = None) -> int:
                     "a lesson makes a rare order possible, RL decides how much of it pays; fgself-218's uncapped attack "
                     "lesson spread the order to every unit). 0: no floor")
     ap.add_argument("--teach-floor-orders", default="attack,spells", help="the orders --teach-floor caps: attack (on a "
-                    "unit), spells (the spell lesson's), halls (the expansion lesson's halls and haunted mine)")
+                    "unit), spells (the spell lesson's), halls (the expansion lesson's halls and haunted mine), army (the army lesson's "
+                    "anti-air and tier units' train orders)")
     ap.add_argument("--attack-lesson", type=float, default=0.0, help="X (with --teach): attacks on a unit where the "
                     "engine's attack-move picks last (workers have its lowest priority; the policy attack-moves, ~1%% of "
                     "its attacks on a unit): an enemy worker in reach of the side's army with no enemy army unit near it, "

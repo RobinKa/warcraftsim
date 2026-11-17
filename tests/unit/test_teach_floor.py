@@ -37,6 +37,8 @@ def test_floor_groups():
     assert selfplay.floor_classes(vocab, ("attack", "halls")).tolist() == [False, True, True, True, False, False, False]
     with pytest.raises(SystemExit):
         selfplay.floor_classes(vocab, ("walls",))
+    army = {"orders": [[code("hgry"), fx.IMMEDIATE], [code("hfoo"), fx.IMMEDIATE], [code("hgry"), fx.POINT]]}
+    assert selfplay.floor_classes(army, ("army",)).tolist() == [False, True, False, False]
 
 
 def test_capped_only_for_the_floored_classes():
