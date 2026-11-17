@@ -2275,7 +2275,18 @@ Stopped for the night at 13.3M (23:35, the user's word): head to head 0.50 again
 
 2026-11-17: `fgself-225` resumed (12:23). **`fgself-226`** (12:25, from `fgself-225`/13260849, code d825717): **the army lesson, capped**. Audit 16's `--army-lesson 1` (anti-air once enemy air was seen and too little of the army hits air; else a tier unit with a one-type army at tier 2) was merged and never run (fgself-157 showed lessons that fire often pull a run off what wins). Now under the cap that held for the spells: `--teach-floor 0.005 --teach-floor-orders spells,army` (new group: the 22 anti-air and tier units' train orders; a unit already trained often gets nothing from the lesson). The base wins ~2 of 49 games against 4+ air units. `fgself-225` goes on from 13260849 as the control; then a burst.
 Stopped at 27.1M (13:53): the army lesson fired rarely (anti-air 0.21, tier unit 0.02 a game); against 4+ air units it trained ~10.8 anti-air units a game (224: 11.0) and won 0.20 of 416 such games (224's window 0.15 of 1,016); head to head 0.50 against 221/52.9M (224 games) and 0.52 against 221's average (225); KL 0.12. The control (225 from 13260849) started 13:54.
-The control stopped at 40.4M (15:24, the same budget). **burst-226** (15:25-16:11): 226's average (32 checkpoints 17.1-27.1M), the control's (31, 30.6-40.4M) and both ends.
+The control stopped at 40.4M (15:24, the same budget). **burst-226** (15:25-16:11): 226's average (32 checkpoints 17.1-27.1M), the control's (31, 30.6-40.4M) and both ends. 1,152 games:
+
+| policy | against insane (races weighed alike) | human | night elf | orc | undead | tier 2 / 3 | won past 18 min | vs 4+ air: games, won |
+|---|---|---|---|---|---|---|---|---|
+| `fgself-226`'s average (army lesson) | 0.822 ±0.063 | 0.80 | 0.80 | 0.80 | 0.88 | 49% / 9% | 33% of 33 | 11, 0.09 |
+| `fgself-225`'s average (the control) | 0.829 ±0.061 | 0.89 | 0.83 | 0.74 | 0.85 | 49% / 2% | 42% of 36 | 7, 0.00 |
+| `fgself-226`/27.1M | 0.583 ±0.080 | 0.49 | 0.76 | 0.43 | 0.65 | 58% / 4% | 15% of 54 | 22, 0.02 |
+| `fgself-225`/40.4M | 0.833 ±0.061 | 0.87 | 0.88 | 0.75 | 0.83 | 32% / 3% | 49% of 39 | 10, 0.10 |
+
+The averages -0.007; head to head 226's average 0.506 against the control's average (175 games), 0.488 against its end (168). **`fgself-226` not kept**: level, the lesson rare (0.23 a game), too few games against air to read, and its end fell to 0.58 (-25 against the control's end, past the usual swing). `fgself-225` goes on from its end (16:15).
+
+**`fgself-227`** (16:17, from `fgself-225`/40490670, code fcbcf6e): **the upgrade lesson, capped**: `--upgrade-lesson 1 --teach-floor-orders spells,upgrades` (new group: the 15 weapon and armor research orders). The base researches ~1 level a game to insane's ~3.7. `fgself-225` goes on from 40490670 as the control; then a burst.
 
 **Check A** (2026-11-04 13:22, `scripts/blend_check.py`, CPU, for item 5: an EMA anchor, `--ref-ema`): blends of the anchor `fgself-100` (grown to `fgself-182`'s vocabulary and inputs, as a run grows it) and `fgself-182`/50150172, the anchor's weights moved 0-100% of the way (the EMA's own step at that share; the two are 0.12 apart, relative L2). The KL per own unit is the run's term (forward-all, KL(parent || blend); the orders' alone in brackets) on 18,433 steps of these games. 12 games each against the untaxed insane AI on (2)EchoIsles, real rules, a person's income, every blend on the same 12 matchups:
 
