@@ -2288,6 +2288,7 @@ The averages -0.007; head to head 226's average 0.506 against the control's aver
 
 **`fgself-227`** (16:17, from `fgself-225`/40490670, code fcbcf6e): **the upgrade lesson, capped**: `--upgrade-lesson 1 --teach-floor-orders spells,upgrades` (new group: the 15 weapon and armor research orders). The base researches ~1 level a game to insane's ~3.7. `fgself-225` goes on from 40490670 as the control; then a burst.
 Stopped at 26.7M (17:42): research levels a game past 8 minutes 5.7 against 225's 3.8 (2.7 lessons a game); its training games against insane level (-0.003), past 18 minutes +0.06 (+0.16 at 12.9M); head to head 0.54 against 221/52.9M (240 games), 0.51 against 221's average (223); KL ~0.13. The control (225 from 40490670) started 17:42.
+The control stopped at 68.1M (19:12; its checkpoint at the same budget 67088139). **burst-227** (19:14-20:00): 227's average (32 checkpoints 16.8-26.7M), the control's (31, 57.2-67.1M) and both ends.
 
 **Check A** (2026-11-04 13:22, `scripts/blend_check.py`, CPU, for item 5: an EMA anchor, `--ref-ema`): blends of the anchor `fgself-100` (grown to `fgself-182`'s vocabulary and inputs, as a run grows it) and `fgself-182`/50150172, the anchor's weights moved 0-100% of the way (the EMA's own step at that share; the two are 0.12 apart, relative L2). The KL per own unit is the run's term (forward-all, KL(parent || blend); the orders' alone in brackets) on 18,433 steps of these games. 12 games each against the untaxed insane AI on (2)EchoIsles, real rules, a person's income, every blend on the same 12 matchups:
 
