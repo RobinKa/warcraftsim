@@ -33,11 +33,22 @@ The user: "lets make bold meaningful changes instead of small ones". Every one-f
 
 Rejected changes worth switching on anyway (2026-11-06 review): none of the tuning knobs. `--value-tax` (correct in principle, 41% at 30M), the gentle hunt lesson and the one-item shop targets are worth trying again inside a bold run; mercenaries only once they are taught.
 
+## Bolder changes (2026-11-17)
+
+The user asked for bolder experiments toward a stronger and more diverse agent. What the last week showed: lessons capped by `--teach-floor` hold (the spells kept; army, upgrades and expansion lessons level), uncapped ones spread and collapse, and a checkpoint's level against insane swings ~8 points (judge by weight averages against a control).
+
+1. **Style specialists in the league.** Fork 2-3 specialists from the base, each pushed hard into one style (strong, uncapped lessons and targets: fast expansion into two bases, air, tier-3 casters), trained until competent at it even if weaker overall, and added as fixed league members. The main agent then must beat styles insane rarely shows (it wins ~2 of 49 games against 4+ air units). AlphaStar's exploiters, aimed at style diversity: our earlier league changes added opponents that played like the main agent. Cost: GPU time on runs that never become the base (~1-2 h each). First: an air specialist.
+2. **Distillation behind a style token.** After 1: a style input, and a KL toward the matching specialist on the games played in that style (a `--ref2` per style). The agent can then be told to play air and do it competently; the evaluation picks the style per matchup from burst results. Code: a style block in the inputs, several anchors, a selector.
+3. **Stacked capped lessons.** Spells, upgrades, army and the expansion (without its camp lesson, which cannot be capped) together under the cap: one at a time each moved one habit at level strength; together they aim at the whole late-game gap. Cheap (the flags exist).
+4. **Late starts from lost positions.** States at minutes 16-24 captured from games the base went on to lose: the late game trained on what it fails to convert (the late starts so far draw states at random).
+5. **Masks for wasted orders.** Spells aimed at the wrong side (~14,000 refused in 4,000 games), immolation's toggle against its state (~7,000), learns the game refuses (Carrion Swarm, Mirror Image, Mass Teleport). More cleanup than bold, but the heroes cast now.
+
 ## Running
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-227` (running) | `--upgrade-lesson 1 --teach-floor-orders spells,upgrades` from 225/40.5M | weapon and armor research, the lesson capped at 0.5% |
+| `fgself-229` (running, the base) | fgself-225's weight average (57.2-67.1M), the capped spell lesson | |
+| `fgself-227` (not kept, 27M) | `--upgrade-lesson 1 --teach-floor-orders spells,upgrades` from 225/40.5M | burst-227: its average 0.797, the control's 0.834; h2h 0.48; research up in training, a little in evaluation |
 | `fgself-226` (not kept, 27M) | `--army-lesson 1 --teach-floor-orders spells,army` from 225/13.3M | burst-226: averages level (0.822 / 0.829), h2h 0.49-0.51, its end 0.58 |
 | `fgself-225` (the base; its control next) | 224's weight average, the capped spell lesson, bug finder 10's fixes | |
 | `fgself-224` (**kept**) | `--spell-lesson 0.25 --teach-floor 0.005 --teach-floor-orders spells` from 221/26.7M | burst-224: its average 0.876 against insane, the control's 0.849; h2h 0.59-0.62 against the control; ~17 taught spells a game |
