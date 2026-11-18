@@ -21,6 +21,7 @@ import torch
 import torch.nn as nn
 
 from . import features as fx
+from . import ordermasks as om
 
 NEG = -1e9
 
@@ -39,7 +40,7 @@ class FullGameNet(nn.Module):
                  layers: int = 3, dropout: float = 0.0, memory: bool = False, target_temperature: float = 1.0,
                  priv: int = 0, order_temperature: float = 1.0, bins: int = 128, z: int = 0, gx: int = 0,
                  valid: int = 0, vparts: int = 0, ghost: bool = False, privileged: bool = False, fine: int = 0,
-                 vtax: int = 0, vmana: int = 0, obsfull: int = 0):
+                 vtax: int = 0, vmana: int = 0, obsfull: int = 0, omask: int = 0):
         super().__init__()
         if obsfull and fx.OBS_FULL != int(obsfull):  # (--obs-full: its block travels in the config, so the features'
             fx.set_obs_full(int(obsfull))             # width is the network's in any process that builds it)
@@ -50,7 +51,7 @@ class FullGameNet(nn.Module):
                            **({"vparts": vparts} if vparts else {}), **({"ghost": True} if ghost else {}),
                            **({"privileged": True} if privileged else {}), **({"fine": int(fine)} if fine > 1 else {}),
                            **({"vtax": int(vtax)} if vtax else {}), **({"vmana": 1} if vmana else {}),
-                           **({"obsfull": int(obsfull)} if obsfull else {}))
+                           **({"obsfull": int(obsfull)} if obsfull else {}), **({"omask": int(omask)} if omask else {}))
         if vmana:  # (--full-vocab's mask bits travel in the config: the actors' networks are built from it and a state
             # dict, never by set_valid, and a bit only the learner checks is a -1e9 log-probability in the update)
             from .fullvocab import mana_steps
@@ -132,6 +133,32 @@ class FullGameNet(nn.Module):
             self.tax_proj = nn.Linear(self.vtax, d)  # the value as before. Registered last, as the fine head)
             nn.init.zeros_(self.tax_proj.weight)
             nn.init.zeros_(self.tax_proj.bias)
+        # (--order-masks 1: each order's pointer rule, the unit types' kinds and the ruled classes (set_order_masks
+        # fills them; `omask` their number). The buffers last, as set_order_masks registers them on a network built
+        # without: a past snapshot's slot copies its buffers by position)
+        self.omask = int(omask)
+        if self.omask:
+            self._omask_buffers(n_types, n_orders, self.omask)
+
+    def _omask_buffers(self, n_types: int, n_orders: int, k: int) -> None:
+        dev = self.order_kind.device
+        self.register_buffer("ptr_rule", torch.zeros(n_orders, dtype=torch.int32, device=dev))  # (ordermasks' bits)
+        self.register_buffer("type_kind", torch.zeros(n_types, dtype=torch.int32, device=dev))  # (MECH, ANCIENT)
+        self.register_buffer("ptr_cols", torch.zeros(k, dtype=torch.long, device=dev))  # (the classes with a rule)
+
+    def set_order_masks(self, vocab: dict) -> None:
+        """--order-masks 1 (ordermasks.py): each unit-target spell's and ability's pointer rule from the game's tables,
+        and the unit types' kinds, for `vocab` (the network's own orders and types)."""
+        T, C = self.type_emb.num_embeddings, self.order_kind.shape[0]
+        rules = (om.pointer_rules(vocab) + [0] * C)[:C]
+        kinds = (om.type_kinds(vocab) + [0] * T)[:T]
+        cols = [c for c, r in enumerate(rules) if r] or [0]
+        self._omask_buffers(T, C, len(cols))
+        self.ptr_rule.copy_(torch.as_tensor(rules, dtype=torch.int32))
+        self.type_kind.copy_(torch.as_tensor(kinds, dtype=torch.int32))
+        self.ptr_cols.copy_(torch.as_tensor(cols, dtype=torch.long))
+        self.omask = len(cols)
+        self.config["omask"] = self.omask
 
     def _valid_buffers(self, n_types: int, k: int) -> None:
         self.register_buffer("valid_cols", torch.zeros(k, dtype=torch.long))  # the order classes that need something
@@ -248,11 +275,13 @@ class FullGameNet(nn.Module):
             k *= 2
         return g + self.mem_out(b.to(g.dtype)), b
 
-    def order_logits(self, g, u, typ, n_own, by_type: bool = True, avail=None, ent=None):
+    def order_logits(self, g, u, typ, n_own, by_type: bool = True, avail=None, ent=None, emask=None):
         """[N, O, n_orders] for the first O entities (own units first; others can only get none).
         `by_type`: only the orders each unit type got in the demonstrations (playing; training
         learns it: a mask there made unseen pairs, e.g. of upgraded buildings, infinitely wrong).
-        `ent` (a network with "valid"): its units' features, for their hero orders (unit_valid)."""
+        `ent` (a network with "valid"): its units' features, for their hero orders (unit_valid).
+        `emask` [N, E] (a network with "omask", with `ent` and `typ` over all the entities): the entities in view; a
+        unit-target spell only while one of them takes it (target_any)."""
         O = u.shape[1]
         own = u[:, :O]
         logits = self.order(torch.cat([own, g.unsqueeze(1).expand_as(own)], -1)) / self.order_temp
@@ -264,23 +293,79 @@ class FullGameNet(nn.Module):
             allowed &= avail[:, None, :].bool()
         if ent is not None and self.config.get("valid"):
             allowed[..., self.valid_cols] &= self.unit_valid(ent[:, :O], typ[:, :O])
+        if self.omask and ent is not None and emask is not None:
+            allowed[..., self.ptr_cols] &= self.target_any(ent, typ, self._targetable(emask, ent), O)
         allowed[..., 0] = True  # no order: always
         return logits.masked_fill(~allowed, NEG)
 
-    def target_logits(self, g, u, mask, order, ent=None):
-        """Given each own unit's order [N, O]: pointer logits [N, O, E], the point's x logits
-        [N, O, BINS], and z (for y_logits). `ent` (a network with --obs-full: its entities' features): the new entity
-        kinds are no targets (no order of the vocabulary takes a corpse, an item lying or an area)."""
+    def _targetable(self, mask, ent):
+        """The entities a pointer may pick [N, E]: those in view, not obs-full's new kinds (no order of the vocabulary
+        takes a corpse, an item lying or an area)."""
         if self.obsfull:
             if ent is None:
                 raise ValueError("target_logits: a network with obsfull needs the entities' features (ent)")
             mask = mask & (ent[..., fx.A_OBS:fx.A_OBS + 3].sum(-1) < 0.5)
+        return mask
+
+    def entity_bits(self, ent, typ):
+        """--order-masks 1: each entity's properties [N, E] (int32, ordermasks' bits) from its features and type: its
+        side, a building, flying or ground, a hero, a machine or an ancient (by type), alive (all of them), and out of
+        the player's sight (a privileged view's hidden enemies: the order mask of opsd's teacher reads only what the
+        player sees, as the policy's)."""
+        flying, struct = ent[..., om.CH_FLYING] > 0.5, ent[..., om.CH_STRUCT] > 0.5
+        i32 = torch.int32
+        bits = ((ent[..., om.CH_OWN] > 0.5).to(i32) * om.OWN + (ent[..., om.CH_ENEMY] > 0.5).to(i32) * om.ENEMY
+                + (ent[..., om.CH_NEUTRAL] > 0.5).to(i32) * om.NEUTRAL + struct.to(i32) * om.STRUCT
+                + (flying & ~struct).to(i32) * om.AIR + (~flying & ~struct).to(i32) * om.GROUND
+                + (ent[..., om.CH_HERO] > 0.5).to(i32) * om.HERO)
+        if self.config.get("privileged") and 0 <= fx.A_HID < ent.shape[-1]:
+            bits = bits + (ent[..., fx.A_HID] > 0.5).to(i32) * om.UNSEEN
+        return bits | self.type_kind[typ.long()] | om.ALIVE
+
+    def pointer_ok(self, ent, typ, mask, order):
+        """--order-masks 1: [N, O, E] the entities each unit's order may aim at: those in `mask` its rule takes (and
+        not the unit itself where the rule refuses it). A unit whose order no entity takes keeps `mask` (as without the
+        rule: its log-probability as before; the order mask, target_any, keeps such an order from being drawn)."""
+        eb = self.entity_bits(ent, typ)  # [N, E]
+        rule = self.ptr_rule[order.long()]  # [N, O]
+        bad = (rule.unsqueeze(-1) & eb.unsqueeze(1)) != 0
+        O, E = order.shape[1], eb.shape[1]
+        itself = torch.arange(O, device=eb.device)[:, None] == torch.arange(E, device=eb.device)[None, :]
+        bad = bad | (itself & ((rule & om.SELF) != 0).unsqueeze(-1))
+        ok = mask.unsqueeze(1) & ~bad
+        return torch.where(ok.any(-1, keepdim=True), ok, mask.unsqueeze(1))
+
+    def target_any(self, ent, typ, mask, O: int):
+        """--order-masks 1: [N, O, len(ptr_cols)] whether some entity in `mask` takes each ruled order of each of the
+        first O units (the unit itself out where the rule refuses it)."""
+        eb = self.entity_bits(ent, typ)  # [N, E]
+        rule = self.ptr_rule[self.ptr_cols]  # [R]
+        ok = ((rule[None, :, None] & eb[:, None, :]) == 0) & mask[:, None, :]  # [N, R, E]
+        n = ok.sum(-1)  # [N, R]
+        E = eb.shape[1]
+        mine = ok[..., :min(O, E)].transpose(1, 2)  # [N, O', R]: unit i is entity i
+        if O > E:
+            mine = torch.cat([mine, mine.new_zeros(mine.shape[0], O - E, mine.shape[2])], 1)
+        n = n.unsqueeze(1) - (mine & ((rule & om.SELF) != 0)).to(n.dtype)  # [N, O, R]
+        return n > 0
+
+    def target_logits(self, g, u, mask, order, ent=None, typ=None):
+        """Given each own unit's order [N, O]: pointer logits [N, O, E], the point's x logits
+        [N, O, BINS], and z (for y_logits). `ent` (a network with --obs-full: its entities' features): the new entity
+        kinds are no targets (_targetable). `typ` [N, E] (a network with "omask", with `ent`): each order's pointer only
+        on the entities it takes (pointer_ok)."""
+        mask = self._targetable(mask, ent)
         O = order.shape[1]
         own = u[:, :O]
         z = self.cond(torch.cat([own + self.order_emb(order.long()), g.unsqueeze(1).expand_as(own)], -1))
         t = self.target_temp
         ptr = torch.einsum("nod,ned->noe", self.query(z), self.key(u)) / (math.sqrt(self.d) * t)
-        ptr = ptr.masked_fill(~mask.unsqueeze(1), NEG)
+        if self.omask:
+            if ent is None or typ is None:
+                raise ValueError("target_logits: a network with omask needs the entities' features and types")
+            ptr = ptr.masked_fill(~self.pointer_ok(ent, typ, mask, order), NEG)
+        else:
+            ptr = ptr.masked_fill(~mask.unsqueeze(1), NEG)
         return ptr, self.point_x(z) / t, z
 
     def y_logits(self, z, x):
@@ -317,6 +402,16 @@ def arch_key(config: dict) -> str:
     return json.dumps({k: v for k, v in config.items() if k not in ("target_temperature", "order_temperature", "dropout")},
                       sort_keys=True,
                       default=str)
+
+
+def pointer_label_ok(net: FullGameNet, ptr, y_ptr, weight):
+    """A pointer loss's `weight` [N, O] without the labels `y_ptr` (-1: none) its order's pointer may not pick
+    (--order-masks 1: a teacher's or a demonstration's target the order's rule refuses, a -1e9 logit, gets no loss);
+    `weight` itself for a network without the rule (as before)."""
+    if not net.omask:
+        return weight
+    got = ptr.gather(-1, y_ptr.clamp(min=0).long().unsqueeze(-1)).squeeze(-1)
+    return weight * (got.float() > NEG / 2).to(weight.dtype)
 
 
 def _logp(logits, x):
@@ -412,14 +507,15 @@ def act(net: FullGameNet, ent, typ, cur, mask, glob, n_own, avail=None, h=None, 
     g, h = net.context(g, h)
     O = min(fx.MAX_OWN, u.shape[1])
     heads32 = g.device.type if heads_fp32 else None
-    logits = _in_fp32(heads32, net.order_logits, g, u[:, :O], typ, n_own, avail=avail, ent=ent)
+    emask = mask if net.omask else None  # (--order-masks 1: a unit-target spell only while an entity in view takes it)
+    logits = _in_fp32(heads32, net.order_logits, g, u[:, :O], typ, n_own, avail=avail, ent=ent, emask=emask)
     if guide is not None and net.config.get("z"):
         z0 = net.config["G"] - net.priv - net.config.get("gx", 0) - net.config["z"]
         blank = glob.clone()
         blank[:, z0:z0 + net.config["z"]] = 0.0
         g0, u0 = net.encode(ent, typ, cur, mask, blank)
         g0, _ = net.context(g0, h_in)
-        free = _in_fp32(heads32, net.order_logits, g0, u0[:, :O], typ, n_own, avail=avail, ent=ent)
+        free = _in_fp32(heads32, net.order_logits, g0, u0[:, :O], typ, n_own, avail=avail, ent=ent, emask=emask)
         w = guide.to(logits.dtype)[:, None, None]
         logits = torch.where(w != 1, free + w * (logits - free), logits)
     def sample(lg):
@@ -427,7 +523,7 @@ def act(net: FullGameNet, ent, typ, cur, mask, glob, n_own, avail=None, h=None, 
     # (the order itself with a draw of its own per unit: one draw for all made a side's similar units take a rare
     # order together or not at all: every worker builds a farm, or none does; the A/B of 2026-10-12)
     order = _gumbel_argmax(logits, generator)
-    ptr, xl, z = _in_fp32(heads32, net.target_logits, g, u, mask, order, ent)
+    ptr, xl, z = _in_fp32(heads32, net.target_logits, g, u, mask, order, ent, typ)
     tgt = sample(ptr)
     bx, by, lp_pt = _in_fp32(heads32, sample_points, net, z, xl, sample)  # (with --fine-points: point indices, the
     uses_ptr, uses_pt = net.uses(order)                                       # sub-cell too)
@@ -449,8 +545,8 @@ def evaluate(net: FullGameNet, ent, typ, cur, mask, glob, n_own, order, tgt, bx,
         B, T, h0, starts = seq
         g = net.context_seq(g.view(B, T, -1), h0, starts)[0].reshape(B * T, -1)
     O = order.shape[1]
-    logits = net.order_logits(g, u[:, :O], typ, n_own, avail=avail, ent=ent)
-    ptr, xl, z = net.target_logits(g, u, mask, order, ent)
+    logits = net.order_logits(g, u[:, :O], typ, n_own, avail=avail, ent=ent, emask=mask if net.omask else None)
+    ptr, xl, z = net.target_logits(g, u, mask, order, ent, typ)
     cx, cy, f = point_parts(bx, by)  # (--fine-points: the bins, and the sub-cell)
     yl = net.y_logits(z, cx)
     uses_ptr, uses_pt = net.uses(order)
@@ -496,7 +592,8 @@ def anchor_kl(ev: dict, ev_ref: dict, mode: str = "reverse"):
     return out
 
 
-DERIVED = ("allowed", "valid_cols", "valid_need")  # tables from the game's data and the vocabulary, never trained
+# tables from the game's data and the vocabulary, never trained
+DERIVED = ("allowed", "valid_cols", "valid_need", "ptr_rule", "type_kind", "ptr_cols")
 
 
 def trained(state: dict, net: FullGameNet) -> dict:
@@ -594,15 +691,23 @@ def load(path, device="cpu", memory: bool | None = None, vocab: dict | None = No
     added since (features.set_inputs: unit features, the clock) start with zero weights, and with --valid-mask
     (features.VALID_MASK) its hero orders' mask is set (set_valid). `vocab` (--neutral: the run's): its orders in
     that vocabulary's order (neutral.reorder; one extended in another process may list a toggle's two the other
-    way round); with --spells, or a `vocab` that has them, the heroes' spells it lacked (spells.py)."""
+    way round); with --spells, or a `vocab` that has them, the heroes' spells it lacked (spells.py). With --order-masks
+    1 (features.ORDER_MASKS), or a network trained with them (its config's "omask"), its order masks' tables are set
+    last, from the vocabulary as it is then (set_order_masks; bit 2's forms too: ordermasks.form_refused)."""
     ck = torch.load(path, map_location=device, weights_only=False)
     config, gx_old, z_old, G_old = glob_layout(ck)
     if memory is not None:
         config["memory"] = memory
     config = adapt_config(config)
     valid = bool(config.get("valid"))
+    # (--order-masks 1's tables: made anew at the end, for the vocabulary the network ends with; built without them, a
+    # network grown below to more orders and types never copies tables of the old sizes. A checkpoint with no vocabulary
+    # keeps its own)
+    omask = bool(config.pop("omask", 0)) if "vocab" in ck else False
     net = FullGameNet(**config).to(device)
     state = ck["model"] if net.memory else {k: v for k, v in ck["model"].items() if not k.startswith("mem_")}
+    if omask:
+        state = {k: v for k, v in state.items() if k not in ("ptr_rule", "type_kind", "ptr_cols")}
     w = state.get("ent.weight")
     if w is not None and w.shape[1] < fx.F:  # features added since (at the end): their weights start at 0
         state = {**state, "ent.weight": torch.cat([w, w.new_zeros(w.shape[0], fx.F - w.shape[1])], 1)}
@@ -674,6 +779,12 @@ def load(path, device="cpu", memory: bool | None = None, vocab: dict | None = No
     if "vocab" in ck and "allowed" in dict(net.named_buffers()):
         prune_allowed(net, ck["vocab"])
         hero_forms(net, ck["vocab"])
+        if fx.ORDER_MASKS & 2:  # (--order-masks 2: the robo-goblin morphs no more, the tinker turns back from nothing)
+            for i, c in om.form_refused(ck["vocab"]):
+                if i < net.allowed.shape[0] and c < net.allowed.shape[1]:
+                    net.allowed[i, c] = False
+    if "vocab" in ck and (fx.ORDER_MASKS & 1 or omask):  # (last: a past snapshot's slot copies its buffers by position)
+        net.set_order_masks(ck["vocab"])
     return net.eval(), ck
 
 

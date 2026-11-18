@@ -1113,12 +1113,13 @@ class BCAgent:
             g, self.h = self.net.context(g, self.h)
             O = min(n_own, fx.MAX_OWN)
             avail = torch.as_tensor(st["avail"], device=dev)[None] if st.get("avail") is not None else None
-            logits = self.net.order_logits(g, u[:, :O], typ, torch.tensor([O], device=dev), avail=avail, ent=ent)
+            logits = self.net.order_logits(g, u[:, :O], typ, torch.tensor([O], device=dev), avail=avail, ent=ent,
+                                           emask=mask if self.net.omask else None)
             order = self._sample(logits)  # [1, O]
             if self.order_temperature != 1.0:  # whether a unit gets an order stays as learned; which one sharpens
                 again = self._sample(logits[..., 1:] / self.order_temperature) + 1
                 order = torch.where(order > 0, again, order)
-            ptr, xl, z = self.net.target_logits(g, u, mask, order, ent)
+            ptr, xl, z = self.net.target_logits(g, u, mask, order, ent, typ)
             tgt = self._sample(ptr)[0]
             bx_, by, _ = sample_points(self.net, z, xl, self._sample)  # (--fine-points: point indices)
         return self.commands(st, order[0].tolist(), tgt.tolist(), bx_[0].tolist(), by[0].tolist())

@@ -665,6 +665,23 @@ def set_econ_masks(v) -> None:
     os.environ["WARCRAFTSIM_ECON_MASK"] = str(v)
 
 
+# selfplay --order-masks (fullgame/ordermasks.py; bug finder 10's refusals of fgself-224/225): orders the game
+# refuses and nothing masked. Bit 1: a unit-target spell's or ability's pointer only on the entities its AbilityData
+# targs1 lets it take (side, the caster itself, a building, air or ground, a hero, a machine, an ancient), and the
+# order only while one in view does (model.FullGameNet "omask", from the entities' features: acting and the update
+# alike). Bit 2: a toggle against its state (View.toggles: immolation, mana shield on while on, off while off, from
+# obs-full's buff events; the robo-goblin's morph and its way back by form, model.load). Bit 4 (with --valid-mask): a
+# skill learned only by a hero type that has it (herodata.order_needs: an unknown type, a hexed hero's critter, a
+# summoned clockwerk goblin learned anything). 0: none, everything as before
+ORDER_MASKS = int(os.environ.get("WARCRAFTSIM_ORDER_MASKS", "0") or 0)
+
+
+def set_order_masks(v) -> None:
+    global ORDER_MASKS
+    ORDER_MASKS = int(v or 0)
+    os.environ["WARCRAFTSIM_ORDER_MASKS"] = str(ORDER_MASKS)
+
+
 _KINDS: dict | None = None
 
 
@@ -2145,6 +2162,11 @@ class View:
             self.chores(rows, avail)
         if avail is not None and FUTILE_MASK:  # (--econ-masks bit 64: orders the game refuses)
             self.futile(rows, avail, t)
+        if avail is not None and ORDER_MASKS & 2:  # (--order-masks 2: a toggle against its state, ordermasks.Toggles)
+            tg = self.__dict__.get("toggles")
+            if tg is None:
+                tg = self.toggles = _mod("ordermasks").Toggles(enc)
+            tg.step(rows, player, events, avail)
         if avail is not None and SHOP_ITEMS:  # (--shop-items: a slot's use only in a form an item held there takes)
             self.item_slots(rows, avail)
         if avail is not None and FULL_VOCAB and enc.vocab.get("full_vocab"):  # (--full-vocab: its orders only while a
