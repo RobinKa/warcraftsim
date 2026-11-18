@@ -49,7 +49,8 @@ The user asked for bolder experiments toward a stronger and more diverse agent. 
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-230` (running) | late starts from lost positions (`--late-states` people's 0.5 + `late-states-lost-224-229.jsonl` 0.5) from 229/45.2M | the late game trained on positions it failed to convert |
+| `fgself-231` (running) | `--order-masks 7` from 229's average | spells' targets, toggles' state, learns only for heroes: orders the game refuses masked |
+| `fgself-230` (not kept, 28M) | late starts from lost positions from 229/45.2M | burst-230: its average 0.821, the control's 0.862, h2h 0.50; more tech, no gain |
 | `fgself-229` (the base; its control next) | fgself-225's weight average (57.2-67.1M), the capped spell lesson | |
 | `fgself-227` (not kept, 27M) | `--upgrade-lesson 1 --teach-floor-orders spells,upgrades` from 225/40.5M | burst-227: its average 0.797, the control's 0.834; h2h 0.48; research up in training, a little in evaluation |
 | `fgself-226` (not kept, 27M) | `--army-lesson 1 --teach-floor-orders spells,army` from 225/13.3M | burst-226: averages level (0.822 / 0.829), h2h 0.49-0.51, its end 0.58 |

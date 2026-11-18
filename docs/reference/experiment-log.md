@@ -2306,7 +2306,18 @@ Stopped at 27.6M (23:57): its late starts drew the lost file as meant (433 own l
 
 Stopped for the night (00:47, the user's word) with the control at 59.4M of its 72.8M; it finishes at the next start, then burst-230, then a fork with `--order-masks 7`.
 
-2026-11-18: the control resumed (10:08) and stopped at 73.4M (10:54; its checkpoint at the same budget 72681799). **burst-230** (10:55-11:41): 230's average (31 checkpoints 17.8-27.6M), the control's (31, 62.8-72.7M) and both ends.
+2026-11-18: the control resumed (10:08) and stopped at 73.4M (10:54; its checkpoint at the same budget 72681799). **burst-230** (10:55-11:41): 230's average (31 checkpoints 17.8-27.6M), the control's (31, 62.8-72.7M) and both ends. 977 games:
+
+| policy | against insane (races weighed alike) | human | night elf | orc | undead | tier 2 / 3 | won past 18 min |
+|---|---|---|---|---|---|---|---|
+| `fgself-230`'s average (late starts from lost positions) | 0.821 ±0.072 | 0.79 | 0.90 | 0.65 | 0.93 | 75% / 20% | 38% of 24 |
+| `fgself-229`'s average (the control) | 0.862 ±0.054 | 0.88 | 1.00 | 0.64 | 0.93 | 63% / 10% | 36% of 25 |
+| `fgself-230`/27.6M | 0.768 ±0.081 | 0.72 | 0.84 | 0.60 | 0.91 | 62% / 13% | 29% of 28 |
+| `fgself-229`/72.7M | 0.810 ±0.071 | 0.97 | 0.78 | 0.52 | 0.98 | 50% / 5% | 26% of 21 |
+
+The averages -0.041 [-0.13, +0.05]; head to head 230's average 0.500 against the control's (235 games), 0.523 against its end (177). **`fgself-230` not kept**: more tech (tier 2 75% against 63%, tier 3 20% against 10%) but no gain; its training read's +0.065 against 229's earlier window was the windows' drift, as feared. The base: 229's average (0.862).
+
+**`fgself-231`** (11:46, from 229's average, Adam's state of 73010571 beside it, code 12612fa): **`--order-masks 7`**, the first run with the masks (and so their first time under the learner's and actors' CUDA graphs). The base goes on from the same average afterwards as its control.
 
 **Check A** (2026-11-04 13:22, `scripts/blend_check.py`, CPU, for item 5: an EMA anchor, `--ref-ema`): blends of the anchor `fgself-100` (grown to `fgself-182`'s vocabulary and inputs, as a run grows it) and `fgself-182`/50150172, the anchor's weights moved 0-100% of the way (the EMA's own step at that share; the two are 0.12 apart, relative L2). The KL per own unit is the run's term (forward-all, KL(parent || blend); the orders' alone in brackets) on 18,433 steps of these games. 12 games each against the untaxed insane AI on (2)EchoIsles, real rules, a person's income, every blend on the same 12 matchups:
 
