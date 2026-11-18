@@ -49,7 +49,8 @@ The user asked for bolder experiments toward a stronger and more diverse agent. 
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-235` (running, the base) | 233's weight average (masks, capped spells) | |
+| `fgself-236` (running) | `--first-hero-weights Ofar:4,Hamg:4` from 235/3.9M | audit 20: the first hero decides orc and human games |
+| `fgself-235` (the base; its control next) | 233's weight average (masks, capped spells) | |
 | `fgself-234` (not kept, 27M) | `--lr 2e-5` from 233/14.8M | burst-234: its average 0.871, the control's 0.852 (n.s.), h2h 0.46 |
 | `fgself-233` (the base; its control next) | 231's weight average, with `--order-masks 7` | |
 | `fgself-231` (**kept**, 27M) | `--order-masks 7` from 229's average | burst-231 (all masked): its average 0.821, the control's 0.803; h2h 0.47; ~20% fewer refused orders |
