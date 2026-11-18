@@ -2306,6 +2306,8 @@ Stopped at 27.6M (23:57): its late starts drew the lost file as meant (433 own l
 
 Stopped for the night (00:47, the user's word) with the control at 59.4M of its 72.8M; it finishes at the next start, then burst-230, then a fork with `--order-masks 7`.
 
+2026-11-18: the control resumed (10:08) and stopped at 73.4M (10:54; its checkpoint at the same budget 72681799). **burst-230** (10:55-11:41): 230's average (31 checkpoints 17.8-27.6M), the control's (31, 62.8-72.7M) and both ends.
+
 **Check A** (2026-11-04 13:22, `scripts/blend_check.py`, CPU, for item 5: an EMA anchor, `--ref-ema`): blends of the anchor `fgself-100` (grown to `fgself-182`'s vocabulary and inputs, as a run grows it) and `fgself-182`/50150172, the anchor's weights moved 0-100% of the way (the EMA's own step at that share; the two are 0.12 apart, relative L2). The KL per own unit is the run's term (forward-all, KL(parent || blend); the orders' alone in brackets) on 18,433 steps of these games. 12 games each against the untaxed insane AI on (2)EchoIsles, real rules, a person's income, every blend on the same 12 matchups:
 
 | Blend | KL to `fgself-100` | KL to `fgself-182` | Won | Minutes | Supply at 5 / 10 min | Workers | Army | Gold |
