@@ -1389,6 +1389,16 @@ def spells_cast(results: dict) -> dict:
     return out
 
 
+def hero_weights(spec) -> dict:
+    """--first-hero-weights "Ofar:4,Hamg:4" -> {"Ofar": 4.0, "Hamg": 4.0} (the teacher's first-hero draw; others 1)."""
+    out = {}
+    for part in str(spec or "").split(","):
+        if part.strip():
+            code, _, w = part.strip().partition(":")
+            out[code] = float(w or 1.0)
+    return out
+
+
 def attack_counts(results: dict) -> dict:
     """play.BCAgent.order_results -> the attacks sent: "unit" (on a unit), "point" (attack-moves); none sent: {}."""
     from .teacher import ATTACK
@@ -2644,7 +2654,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                             hunt=int(cfg.get("hunt_lesson", 0) == 1 or (cfg.get("hunt_lesson", 0) == 2
                                      and opp.get("kind") in ("self", "past", "exploiter"))),
                             spells=float(cfg.get("spell_lesson", 0.0) or 0.0),
-                            attacks=float(cfg.get("attack_lesson", 0.0) or 0.0))
+                            attacks=float(cfg.get("attack_lesson", 0.0) or 0.0),
+                            hero_weights=hero_weights(cfg.get("first_hero_weights", "")))
                  for s in trajs if keys[s] == "current"}
                 if cfg.get("teach") and replay is None else {})
     # --teach-heuristic: a target drawn from the hand-written player's games (strategy.from_demos names the strategy) is
@@ -5315,6 +5326,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--teach-floor-orders", default="attack,spells", help="the orders --teach-floor caps: attack (on a "
                     "unit), spells (the spell lesson's), halls (the expansion lesson's halls and haunted mine), army (the army lesson's "
                     "anti-air and tier units' train orders), upgrades (the upgrade lesson's weapon and armor research)")
+    ap.add_argument("--first-hero-weights", default="", help="the teacher's first hero (a game without a target) drawn with "
+                    "these weights, e.g. Ofar:4,Hamg:4 (others 1; empty: a third each, as before). Audit 20: the first hero "
+                    "decided orc and human games (Far Seer 0.93 against 0.40-0.62, Archmage 0.95 against ~0.77)")
     ap.add_argument("--attack-lesson", type=float, default=0.0, help="X (with --teach): attacks on a unit where the "
                     "engine's attack-move picks last (workers have its lowest priority; the policy attack-moves, ~1%% of "
                     "its attacks on a unit): an enemy worker in reach of the side's army with no enemy army unit near it, "
@@ -6272,7 +6286,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "order_masks": args.order_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "hunt_lesson": args.hunt_lesson, "spell_lesson": args.spell_lesson, "attack_lesson": args.attack_lesson, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "order_masks": args.order_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "hunt_lesson": args.hunt_lesson, "spell_lesson": args.spell_lesson, "attack_lesson": args.attack_lesson, "first_hero_weights": args.first_hero_weights, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "late_capture": args.late_capture, "late_minutes": [float(x) for x in args.late_minutes.split(",")], "late_from": args.late_from, "research_value": args.research_value, "real_agents": args.real_agents,

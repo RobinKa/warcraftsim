@@ -203,7 +203,7 @@ class Teacher:
                  lumber: bool = False, burrows: bool = False, main_low: float = 0.0, mine_full: float = 12500.0,
                  saturation: bool = False, revive: bool = False, militia: bool = False, army: bool = False,
                  upgrades: bool = False, creep: int = 0, pace: float = 1.0, hunt: int = 0, spells: float = 0.0,
-                 attacks: float = 0.0):
+                 attacks: float = 0.0, hero_weights: dict | None = None):
         """`target` (the side's target strategy, if it has one): its tavern hero is the one taught, and none when it
         has none (another hero would break a narrow target). `target_hero` (--teach 2): its first hero from the altar
         taught too, when that is its first hero (the builder taught it only once due: the policy had made another one
@@ -254,7 +254,11 @@ class Teacher:
         self.last: dict[str, int] = {}
         self.taught: dict[str, int] = {}  # each kind's lessons this game (the episode row)
         # (a game without a target: its first hero from the altar, FIRST_HEROES)
-        self.first = fourcc(rng.choice(FIRST_HEROES.get(race, FIRST_HEROES["human"]))) if target is None else None
+        # (--first-hero-weights: a hero's weight in that draw, 1 by default: audit 20 found the first hero deciding orc
+        # and human games, the Far Seer 0.93 against 0.40-0.62, the Archmage 0.95 against ~0.77, drawn a third each)
+        firsts = FIRST_HEROES.get(race, FIRST_HEROES["human"])
+        self.first = (fourcc(rng.choices(firsts, weights=[float((hero_weights or {}).get(c, 1.0)) for c in firsts])[0])
+                      if target is None else None)
         self.first_from = FIRST_HERO_FROM  # (the target's hero: as soon as the altar stands, the mask and food permitting;
         if target is not None and target_hero:  # 45 s had held 71% of its lessons back: the altar was up at ~33 s, audit 7)
             from .techtree import is_hero

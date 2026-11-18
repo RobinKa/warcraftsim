@@ -91,3 +91,16 @@ def test_episode_counts_attacks():
     assert attack_counts({f"TargetOrder:{ATTACK}": (3, 1), f"PointOrder:{ATTACK}": (90, 0), "PointOrder:851986": (5, 0)}) \
         == {"unit": 3, "point": 90}
     assert attack_counts({"PointOrder:851986": (5, 0)}) == {}
+
+
+def test_first_hero_weights():
+    """--first-hero-weights: the teacher's first hero (no target) drawn with the weights given; none: a third each."""
+    from collections import Counter
+    from warcraftsim.fullgame.neutral import fourcc
+    from warcraftsim.fullgame.selfplay import hero_weights
+    assert hero_weights("Ofar:4,Hamg:4") == {"Ofar": 4.0, "Hamg": 4.0} and hero_weights("") == {}
+    picks = Counter(Teacher(0, "orc", random.Random(i), hero_weights={"Ofar": 4.0}).first for i in range(3000))
+    assert abs(picks[fourcc("Ofar")] / 3000 - 4 / 6) < 0.04 and abs(picks[fourcc("Obla")] / 3000 - 1 / 6) < 0.03
+    even = Counter(Teacher(0, "orc", random.Random(i)).first for i in range(3000))
+    assert all(abs(v / 3000 - 1 / 3) < 0.04 for v in even.values()) and len(even) == 3
+    assert Counter(Teacher(0, "undead", random.Random(i), hero_weights={"Ofar": 4.0}).first for i in range(600)).most_common(1)[0][1] < 260
