@@ -43,7 +43,7 @@ import torch.nn.functional as F_
 
 from . import features as fx
 from . import strategy
-from .model import NEG, FullGameNet, fine_head, point_parts
+from .model import NEG, FullGameNet, fine_head, point_parts, pointer_label_ok
 
 KEYS = ("ent", "type", "cur", "mask", "n_own", "glob", "y_order", "y_ptr", "y_x", "y_y", "ret", "avail")
 REWARD = {"gamma": 0.997, "shaping": 1.0, "shaping_scale": 2000.0, "tie_break": 0.5}  # selfplay's defaults
@@ -644,14 +644,14 @@ def losses(net: FullGameNet, b: dict, device, states: torch.Tensor | None = None
         if net.training:  # the orders each unit type gets (padding and "none" set class 0: always allowed)
             y_flat = y_order.clamp(min=0).reshape(-1)  # (a GPU tensor of True: a Python True is a copy from the CPU, not capturable)
             net.allowed.index_put_((typ[:, :O].reshape(-1), y_flat), torch.ones_like(y_flat, dtype=torch.bool))
-        ptr, xl, z = net.target_logits(g, u, mask, y_order.clamp(min=0), ent)
+        ptr, xl, z = net.target_logits(g, u, mask, y_order.clamp(min=0), ent, typ)
         yl = net.y_logits(z, y_x)
         l_pt = _masked_ce(xl, y_x, w) + _masked_ce(yl, y_y, w)
         if y_f is not None:  # (the sub-cell given the true bins)
             l_pt = l_pt + _masked_ce(net.fine_logits(z, y_x, y_y), y_f, w)
         l_order = (_masked_ce(acting(logits), y_order, w * (y_order > 0).float()) if acting_only
                    else _masked_ce(logits, y_order, w))
-        loss = l_order + _masked_ce(ptr, y_ptr, w) + 0.5 * l_pt
+        loss = l_order + _masked_ce(ptr, y_ptr, pointer_label_ok(net, ptr, y_ptr, w)) + 0.5 * l_pt
         if value_coef:
             value, ret = net.value(g, b["glob"].float()).float(), b["ret"].float()
             if "valid" in b:
@@ -668,9 +668,11 @@ def losses(net: FullGameNet, b: dict, device, states: torch.Tensor | None = None
     if net.training:  # the orders each unit type gets (the mask for playing)
         issued_ = own & (y_order > 0)
         net.allowed[typ[:, :O][issued_], y_order[issued_]] = True
-    ptr, xl, z = net.target_logits(g, u, mask, y_order.clamp(min=0), ent)
+    ptr, xl, z = net.target_logits(g, u, mask, y_order.clamp(min=0), ent, typ)
     yl = net.y_logits(z, y_x)  # given the true x (teacher forcing)
     has_ptr, has_pt = (y_ptr >= 0) & own, (y_x >= 0) & own
+    if net.omask:  # (--order-masks 1: a label's target its order refuses: no pointer loss)
+        has_ptr = pointer_label_ok(net, ptr, y_ptr, has_ptr)
     l_ptr = F_.cross_entropy(ptr[has_ptr], y_ptr[has_ptr]) if has_ptr.any() else logits.sum() * 0
     l_pt = (F_.cross_entropy(xl[has_pt], y_x[has_pt]) + F_.cross_entropy(yl[has_pt], y_y[has_pt])
             if has_pt.any() else logits.sum() * 0)
@@ -699,7 +701,7 @@ def losses(net: FullGameNet, b: dict, device, states: torch.Tensor | None = None
         k_all = k_act * 0
         if hold_all:  # (model.anchor_kl's forward-all, the targets' terms over the units that use them only: a whole
             with torch.no_grad():  # game's validation batch of [N, O, bins] log-softmaxes is gigabytes)
-                ptr_r, xl_r, z_r = ref.target_logits(g_r, u_r, mask, y_order.clamp(min=0), ent)
+                ptr_r, xl_r, z_r = ref.target_logits(g_r, u_r, mask, y_order.clamp(min=0), ent, typ)
                 ptr_r, xl_r, z_r = ptr_r[has_ptr], xl_r[has_pt], z_r[has_pt]
                 yl_r = ref.y_logits(z_r, y_x[has_pt])
                 fl_r = (ref.fine_logits(z_r, y_x[has_pt], y_y[has_pt]) if y_f is not None and fine_head(ref)
@@ -831,6 +833,7 @@ def apply_run(cfg: dict) -> None:
     fx.set_fine(_int(cfg.get("fine_points")))
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     fx.set_econ_masks(_int(cfg.get("econ_masks")))
+    fx.set_order_masks(_int(cfg.get("order_masks")))
     # (the run's strategy block: its modes', mix, composition kinds' and items bought parts zeros here)
     if (width := strategy.block_width(_float(cfg.get("z_modes")), _int(cfg.get("z_mix")), _float(cfg.get("z_comp")),
                                       _int(cfg.get("z_shop")))):

@@ -70,7 +70,8 @@ from . import techtree
 from .featnative import addr as _faddr, lib as _featlib, to_f16, to_f32_into as _to_f32_into
 from .trace import DEAD_FLAG, Production, material, research_material, research_values, trace_step, unit_values  # noqa: F401
 from .play import unit_rows
-from .model import FullGameNet, act, adapt_config, anchor_kl, arch_key, evaluate, fine_head, load, point_parts, trained
+from .model import (FullGameNet, act, adapt_config, anchor_kl, arch_key, evaluate, fine_head, load, point_parts,
+                    pointer_label_ok, trained)
 from .teacher import Teacher, lumber_short, pace as teacher_pace
 from ..native import unit_from_row
 from .neutral import MERCENARIES as _MERCENARIES
@@ -789,6 +790,7 @@ def inference_main(cfg: dict, conns: list, stop, in_thread: bool = False) -> Non
     fx.set_fine(int(cfg.get("fine_points", 0) or 0))  # (--fine-points: the point indices)
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     fx.set_econ_masks(cfg.get("econ_masks", 0))
+    fx.set_order_masks(cfg.get("order_masks", 0))  # (--order-masks: the view's toggles; the networks' own from load)
     fx.set_value_tax(cfg.get("value_tax", 0))  # (--value-tax: the rows' width)
     nets = Nets(cfg, device)
     while nets.current is None and not stop.is_set() and alive():
@@ -3004,6 +3006,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"noop_repairs": bots[side].noop_repairs} if side in bots and getattr(bots[side], "noop_repairs", 0) else {}),
         **({"frame_cancels": bots[side].frame_cancels} if side in bots and getattr(bots[side], "frame_cancels", 0) else {}),
         **({"futile_orders": bots[side].futile_orders} if side in bots and getattr(bots[side], "futile_orders", 0) else {}),
+        # (--order-masks 2: the toggle classes the view's mask turned off, summed over the game's steps)
+        **({"toggles_masked": bots[side].view.toggles.masked}
+           if side in bots and getattr(getattr(bots[side], "view", None), "toggles", None) is not None else {}),
         **({k: getattr(bots[side], k) for k in ("militia_back", "militia_skipped", "stood_down_n") if getattr(bots[side], k, 0)}
            if side in bots else {}),
         **({"over_budget": bots[side].over_budget} if side in bots and getattr(bots[side], "over_budget", 0) else {}),
@@ -3204,6 +3209,7 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
     fx.set_fine(int(cfg.get("fine_points", 0) or 0))  # (--fine-points: the point indices)
     fx.set_macros_off(str(cfg.get("macros_off") or "").split(","))
     fx.set_econ_masks(cfg.get("econ_masks", 0))
+    fx.set_order_masks(cfg.get("order_masks", 0))  # (--order-masks: the view's toggles; the networks' own from load)
     fx.set_value_tax(cfg.get("value_tax", 0))  # (--value-tax: the rows' width)
     if cfg.get("remote"):  # (fullgame/remoteactor.py: the calls and the steps over TCP to the learner's gateway)
         from .remoteactor import NetInference
@@ -3847,12 +3853,12 @@ def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast, teach_scale: fl
     ok = (own & (lp_y > -1e4)).float()                   # the labelled ones alone, a rare label pulled the policy away)
     denom = every.sum().clamp(min=1)
     l_order = -(lp_y * ok).sum() / denom
-    ptr, xl, z = net.target_logits(ev["g"], ev["u"], mb["mask"], y, mb["ent"])  # (in the caller's autocast)
+    ptr, xl, z = net.target_logits(ev["g"], ev["u"], mb["mask"], y, mb["ent"], mb.get("type"))  # (the caller's autocast)
     y_x, y_y, y_f = point_parts(mb["y_x"], mb["y_y"])  # (--fine-points: the labels' bins, and their sub-cell)
     yl = net.y_logits(z, y_x)
     # (masked means, not boolean indexing: every index or any() was a wait for the GPU)
     share = ok.sum() / denom
-    l_ptr = _masked_ce(ptr, mb["y_ptr"], ok) * share
+    l_ptr = _masked_ce(ptr, mb["y_ptr"], pointer_label_ok(net, ptr, mb["y_ptr"], ok)) * share  # (--order-masks 1)
     l_pt = _masked_ce(xl, y_x, ok) + _masked_ce(yl, y_y, ok)
     if y_f is not None and fine_head(net):  # (the sub-cell given the labels' bins)
         l_pt = l_pt + _masked_ce(net.fine_logits(z, y_x, y_y), y_f, ok)
@@ -3874,9 +3880,11 @@ def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast, teach_scale: fl
             if y_f is not None and fine_head(net):
                 t_pt = t_pt + _masked_ce(net.fine_logits(z, y_x, y_y), y_f, tm)
         if norm == "units":
-            teach = (-(lp_y * tm).sum() + (_masked_ce(ptr, mb["y_ptr"], tm) + TEACH_POINT * t_pt) * tm.sum()) / denom
+            teach = (-(lp_y * tm).sum() + (_masked_ce(ptr, mb["y_ptr"], pointer_label_ok(net, ptr, mb["y_ptr"], tm))
+                     + TEACH_POINT * t_pt) * tm.sum()) / denom
         else:
-            teach = -(lp_y * tm).sum() / tm.sum().clamp(min=1) + _masked_ce(ptr, mb["y_ptr"], tm) + TEACH_POINT * t_pt
+            teach = (-(lp_y * tm).sum() / tm.sum().clamp(min=1)
+                     + _masked_ce(ptr, mb["y_ptr"], pointer_label_ok(net, ptr, mb["y_ptr"], tm)) + TEACH_POINT * t_pt)
         out = out + teach_scale * teach
     return out, acc, teach.detach()
 
@@ -5350,6 +5358,15 @@ def main(argv: list[str] | None = None) -> int:
                     "and entangled mines, Death Coil and Holy Light on targets they can't take, a burrowed crypt fiend's "
                     "or stone gargoyle's orders but its way back (by type), an item slot's use with no item there usable "
                     "without a target (and sent as the item's use: the slot's order is refused)")
+    ap.add_argument("--order-masks", type=int, default=0, help="orders the game refuses, masked (ordermasks.py; bug "
+                    "finder 10: fgself-225's refused orders). Bit 1: a unit-target spell's or ability's target only on "
+                    "the entities its AbilityData targs1 lets it take (its side, the caster itself, a building, air or "
+                    "ground, a hero, a machine, an ancient), and the order only while one in view does (in the "
+                    "network, from the entities' features: acting and the update alike). Bit 2: a toggle against its "
+                    "state (immolation, mana shield on while on, off while off: --obs-full's buff events; the "
+                    "robo-goblin's morph and its way back by form). Bit 4 (with --valid-mask): a skill learned only by "
+                    "a hero type that has it (an unknown type, a hexed hero, a summoned clockwerk goblin had learned "
+                    "any). 0: none, as before")
     ap.add_argument("--z-workers", type=int, default=0, help="with --z-build: the builder also orders (taught: labels) "
                     "the race's worker at an idle hall while the side has fewer than its target's workers (its start's "
                     "plus the strategy's trained ones, \"n\"; at most features.worker_cap for its mines), after the due "
@@ -5866,6 +5883,7 @@ def main(argv: list[str] | None = None) -> int:
     fx.set_fine(args.fine_points)  # (--fine-points; a policy with a fine head sets it again below, with its size)
     fx.set_macros_off(args.macros_off.split(","))
     fx.set_econ_masks(args.econ_masks)
+    fx.set_order_masks(args.order_masks)  # (--order-masks: before any network is loaded, model.load sets their tables)
     fx.set_value_tax(args.value_tax)  # (--value-tax: model.load gives every network the taxes' inputs, zero at first)
     # the strategy block with the modes' part (--z-comp: it too, its kinds off), the target army's mix, the composition
     # kinds and the items bought, as asked: model.load grows older networks' (zero weights)
@@ -6254,7 +6272,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "hunt_lesson": args.hunt_lesson, "spell_lesson": args.spell_lesson, "attack_lesson": args.attack_lesson, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "order_masks": args.order_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "hunt_lesson": args.hunt_lesson, "spell_lesson": args.spell_lesson, "attack_lesson": args.attack_lesson, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "late_capture": args.late_capture, "late_minutes": [float(x) for x in args.late_minutes.split(",")], "late_from": args.late_from, "research_value": args.research_value, "real_agents": args.real_agents,

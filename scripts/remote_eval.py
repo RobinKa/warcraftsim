@@ -121,7 +121,8 @@ SETTINGS = ("map", "handicap", "step_seconds", "max_minutes", "wait_floor_ms", "
             "inputs", "tech_mask", "valid_mask", "z_modes", "neutral", "opsd_share", "opsd_coef", "macros", "z_mix",
             "macros_off", "eval_human", "z_comp", "z_forbid_mask")
 SETTINGS_SET = ("spells", "full_vocab")  # (settings added since: in the key only when set)
-SETTINGS_NAMED = ("econ_masks", "fine_points", "z_workers", "z_shop")  # (the same, with their names: audit 12's)
+# (the same, with their names: audit 12's)
+SETTINGS_NAMED = ("econ_masks", "fine_points", "z_workers", "z_shop", "order_masks")
 
 
 def launch_key(info: dict) -> str:

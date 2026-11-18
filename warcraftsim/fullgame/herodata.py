@@ -150,6 +150,14 @@ def order_needs(vocab: dict) -> dict[tuple[int, int], int]:
     for k in range(ITEM_SLOTS):
         for c in by_order.get(852008 + k, ()):
             out[(-1, c)] = 12 + k
+    if fx.ORDER_MASKS & 4:  # (--order-masks 4: a skill learned only by a hero type with it in a slot. Every other
+        # type, the unknown one (0) too, needs slot 1's skill-point bit, never set off a hero's own slots
+        # (features._hero_block): the allowed table let an unknown type, and the creep types copied from it, learn
+        # anything; ordermasks.py)
+        skills = [c for (_, k), c in index.items() if k == fx.SKILL]
+        for t in [0] + [t for t, code in enumerate(vocab["types"], start=1) if int(code) not in heroes]:
+            for c in skills:
+                out.setdefault((t, c), 8)
     if vocab.get("full_vocab"):  # (--full-vocab: its unit abilities' mana, its item orders' slot: fullvocab.valid_needs)
         from .fullvocab import valid_needs
         out.update(valid_needs(vocab))
