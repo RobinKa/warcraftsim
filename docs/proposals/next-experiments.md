@@ -49,7 +49,8 @@ The user asked for bolder experiments toward a stronger and more diverse agent. 
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-231` (running) | `--order-masks 7` from 229's average | spells' targets, toggles' state, learns only for heroes: orders the game refuses masked |
+| `fgself-233` (running, the base) | 231's weight average, with `--order-masks 7` | |
+| `fgself-231` (**kept**, 27M) | `--order-masks 7` from 229's average | burst-231 (all masked): its average 0.821, the control's 0.803; h2h 0.47; ~20% fewer refused orders |
 | `fgself-230` (not kept, 28M) | late starts from lost positions from 229/45.2M | burst-230: its average 0.821, the control's 0.862, h2h 0.50; more tech, no gain |
 | `fgself-229` (the base; its control next) | fgself-225's weight average (57.2-67.1M), the capped spell lesson | |
 | `fgself-227` (not kept, 27M) | `--upgrade-lesson 1 --teach-floor-orders spells,upgrades` from 225/40.5M | burst-227: its average 0.797, the control's 0.834; h2h 0.48; research up in training, a little in evaluation |
