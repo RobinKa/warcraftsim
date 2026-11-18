@@ -2331,6 +2331,8 @@ The control stopped at 27.9M (14:53; its checkpoint at the same budget 27297342)
 
 The averages +0.018 [-0.09, +0.12], the ends +0.032; head to head 231's average 0.466 against 232's (160 games), 0.482 against its end (136). **`--order-masks 7` kept** as a cleanup at level strength: trained with them, the policy wastes ~20% fewer orders even where both play masked. **`fgself-233`** (15:50, code 033896a) goes on from 231's average as the base, with the masks.
 
+**`fgself-234`** (16:38, from `fgself-233`/14823755, code 354710b): **lr 2e-5** (from 3e-5). Checkpoints swing ~8 points against insane 20-30M steps apart and the weight averages sit at the best of them: if the policy oscillates around a level, a smaller step may hold a higher one. `fgself-233` goes on from 14823755 as the control; then a burst of averages and ends.
+
 **Check A** (2026-11-04 13:22, `scripts/blend_check.py`, CPU, for item 5: an EMA anchor, `--ref-ema`): blends of the anchor `fgself-100` (grown to `fgself-182`'s vocabulary and inputs, as a run grows it) and `fgself-182`/50150172, the anchor's weights moved 0-100% of the way (the EMA's own step at that share; the two are 0.12 apart, relative L2). The KL per own unit is the run's term (forward-all, KL(parent || blend); the orders' alone in brackets) on 18,433 steps of these games. 12 games each against the untaxed insane AI on (2)EchoIsles, real rules, a person's income, every blend on the same 12 matchups:
 
 | Blend | KL to `fgself-100` | KL to `fgself-182` | Won | Minutes | Supply at 5 / 10 min | Workers | Army | Gold |
