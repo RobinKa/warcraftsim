@@ -35,8 +35,8 @@ Each is a fork from the base's latest checkpoint with a control, judged by a bur
 
 ### Later, or the user's call
 
-* **A larger network.** The policy has 3.3M weights (d 192, 5 layers), tiny beside AlphaStar's. `scripts/grow_model.py` grows a network in place. First a check without a run: the steps a second with a d-384 network (the main machine's CPU is the limit today, the GPU ~90% busy). The user asked for no extra layers on 2026-10-18 (variety first); to be asked again before a run.
-* **An APM cap.** The agent orders every unit every half second. "Superhuman" at that rate is partly speed. Training under a cap is self-play as before (no people needed); it changes what the policy learns, so sooner is cheaper than later. The user's call.
+* **A larger network.** The policy has 3.3M weights (d 192, 5 layers), tiny beside AlphaStar's. A larger one also trains slower. The user (2026-11-20): "only if you think its worth it". So not now: first the league (1-5), which changes what the policy meets; a larger network only if the rating stalls with clear signs of capacity (the value's fit, a grown copy learning faster in a short side-by-side), and after a check of the steps a second with a d-384 network (`scripts/grow_model.py`).
+* **An APM cap: no.** The user (2026-11-20): "the current speed is fine, lets focus on other things".
 * **The anchor.** `--ref-kl 0.01` still pulls toward `fgself-100`, a descendant of the built-in AI's clone. With little AI in training, an anchor at the base's own average may fit better. Earlier anchor moves read level (judged by insane).
 * **More machines.** Training is bound by game CPUs (~5,300 steps a second). A league with exploiters splits that among several learners. A second games box, or rented CPUs for the actors, scales it.
 * **More maps.** Only when the target is the ladder; the map pool cost Echo Isles strength (`fgself-178`).
