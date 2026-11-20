@@ -24,7 +24,7 @@ flowchart LR
 * **The `.wgc` file** starts a game with no menus: the map, the slots and the built-in AI levels.
 * **The game's own code, faster** (`shim/cuts.c`, `--game-cuts`): the shim replaces some of the game's functions with equivalent faster ones. Replays prove the same simulation at every step. With `--game-cuts 521721` (2026-10-24) the shim also talks to Python through Linux system calls instead of Wine's sockets, and writes the players' records and checks the game's result itself instead of the harness's JASS. The runs use rounds 1 to 7 (`--game-cuts 17592186041849`).
 * **Wine** runs each game in a prefix of its own, with no audio, gamepad or system D-Bus (each prefix's device manager had polled the disk service), drawing into an Xvfb screen of 320×240 with nothing drawn.
-* **Other rules** go into a copy of the map as the game's unit and upgrade tables (`data/duelmap.py`): the duel maps, Echo Isles with duelfast's rules (`echofast`, and `echofast2` with the economy scaled too), and fast copies of three more maps (`--map-pool`). The live run (`fgself-212`) plays every game on the real Echo Isles with its own rules.
+* **Other rules** go into a copy of the map as the game's unit and upgrade tables (`data/duelmap.py`): the duel maps, Echo Isles with duelfast's rules (`echofast`, and `echofast2` with the economy scaled too), and fast copies of three more maps (`--map-pool`). Since `fgself-212` (2026-11-12) the runs play every game on the real Echo Isles with its own rules.
 
 ## Self-play
 
@@ -51,7 +51,7 @@ flowchart LR
 
 ## A remote evaluation worker
 
-A verdict needs ~300 evaluation games a policy. The laptop plays them (`fullgame/evalworker.py`, managed from the run's machine by `scripts/remote_eval.py`): 20 at a time, ~310 games an hour of the real game on 2026-11-12 (with 16 it made ~790 an hour of the shorter `echofast` games). The run's own 8 slots play only when the laptop's games stop coming.
+The laptop plays a run's evaluation games (`fullgame/evalworker.py`, managed from the run's machine by `scripts/remote_eval.py`): 20 at a time, ~310 games an hour of the real game on 2026-11-12 (with 16 it made ~790 an hour of the shorter `echofast` games). The run's own 8 slots play only when the laptop's games stop coming. Since 2026-11-13 they are mostly head to head (`--eval-vs 0.7`, `--gauntlet-games 0`): a run's read along the way. The verdict is an [evaluation burst](#evaluation-bursts) on the main machine.
 
 ```mermaid
 flowchart LR
@@ -72,7 +72,7 @@ flowchart LR
 * The worker plays the run's own evaluation games: `selfplay.game_loop`'s evaluation slots and `play_one`, set up from `run.json`'s config. Every policy plays each matchup in turn, as in the run.
 * Its "current" is the run's newest checkpoint, a few minutes behind the learner's live weights. The other policies are the run's `--eval-checkpoints`.
 * It samples at the run's precision (`--infer-precision`). Until 2026-11-10 it played in fp32 while the run played in bf16-mixed.
-* 4 of its 20 games are a gauntlet: the current policy against the 5 top-rated policies, head to head, under today's rules. The manager makes the list again every 30 minutes.
+* With `--gauntlet-games N` (4 by default; 0 in the runs since 2026-11-13), N of its games are a gauntlet: the current policy against the 5 top-rated policies, head to head, under today's rules. The manager makes the list again every 30 minutes.
 * Its draws are seeded by the run's name, the worker's name and where it started: other matchups than the run machine's.
 * Its rows are the learner's evaluation rows plus `host` and `version` (the update "current" played with). `real_games.py`, `run_status.sh` and the dashboard read them with the run's own; `real_games.py --split host` shows them apart, `--no-remote` leaves them out.
 * The manager runs the worker as a systemd user service there. It starts it again when it died or the machine came back. A restart of the run with other settings for its evaluation games, or a worker started anew, gets the run's own commit's code (run.json's launch.git; git archive: later commits and edits not committed stay here).
@@ -84,6 +84,21 @@ scripts/remote_eval.py --host robin@laptop-wsl [--run fgself-76] [--games 20]   
 scripts/remote_eval.py --host robin@laptop-wsl --status | --stop
 scripts/remote_eval.py --host tora-ms-a2@tora-ms-a2 --name tora-ms-a2 --games 32   # or the games box, CPU inference
 ```
+
+## Evaluation bursts
+
+A verdict since 2026-11-13: frozen checkpoints in paired games on the main machine, with the learner stopped and the games box's service stopped, ~950-1,250 games in ~45 minutes, all policies in one window.
+
+```
+scripts/average_checkpoints.py runs/<run>/averaged/swa-<from>-<to>.pt --run <run> --from <steps> --to <steps>   # a weight average
+scripts/burst_prep.py burst-<n> <run> <current>.pt <other policies>.pt ...    # runs/burst-<n>: run.json, vocab.json, the policies
+python -m warcraftsim.fullgame.evalworker --run burst-<n> --games 64 --processes 16 --host tora-burst --hours 0.75
+scripts/head_to_head.py burst-<n> [--vs <a policy>]                           # each policy's games by key
+```
+
+* `burst_prep.py` makes a run directory of its own: the source run's `run.json` and `vocab.json`, one policy as its "current" checkpoint and the others as its evaluation checkpoints, `--eval-vs 0.4` and no target, hand-written player or people's games. The evaluation worker then plays it as it plays a run's: every policy on the same matchups, against the untaxed insane AI and head to head.
+* `average_checkpoints.py` writes the mean of a stretch of a run's checkpoints' float weights, with the newest's tables and config. A run forked from it gets the nearest kept checkpoint's Adam state beside it (only the newest few are kept).
+* The order masks are set per process, so in a burst every policy plays with the masks if any does.
 
 ## Remote actors
 

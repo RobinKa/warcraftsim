@@ -2,7 +2,7 @@
 
 The main lessons, short. The [experiment log](reference/experiment-log.md) has every run, its numbers and why it ran. [Ideas](reference/ideas.md) lists every idea, where it came from (the user, the papers, LLM RL) and what became of it; [what AlphaStar and OpenAI Five found](reference/ideas-from-alphastar-and-openai-five.md) ranks the papers' findings.
 
-Each experiment is a new run, forked from a checkpoint (`scripts/selfplay_fork.py`). The fork starts with its parent's league and gets a title of a few words (`--title`, `runs/<run>/summary.txt`). The dashboard's lineage shows the forks with their titles.
+Each experiment is a new run, forked from a checkpoint (`scripts/selfplay_fork.py`). The fork starts with its parent's league and gets a title of a few words (`--title`, `runs/<run>/summary.txt`). The dashboard's lineage shows the forks with their titles. Since 2026-11-13 the base goes on from the same checkpoint as the experiment's control, and an evaluation burst decides ([below](#verdicts-by-evaluation-bursts)).
 
 ## The duelfast line
 
@@ -30,13 +30,40 @@ Until 2026-10-26 the agent slots had the insane AI's double income, so these fig
 
 ```mermaid
 xychart-beta
-  title "Won against insane at a person's income, each run's evaluation games"
-  x-axis ["fgself-153", "fgself-155", "fgself-166", "fgself-173", "fgself-179", "fgself-197", "fgself-201"]
+  title "Won against insane at a person's income"
+  x-axis ["fgself-153", "fgself-155", "fgself-166", "fgself-173", "fgself-179", "fgself-197", "fgself-201", "fgself-212 (burst)", "fgself-236 average (burst)"]
   y-axis "%" 0 --> 100
-  bar [39, 74, 74, 73, 77, 74, 81]
+  bar [39, 74, 74, 73, 77, 74, 81, 86, 95.5]
 ```
 
-Each run plays its own matchups and windows, so compare within a run. The masks and order fixes of `fgself-155` gave most of the jump. Late-game starts (`fgself-166`), shop items (`fgself-179`), what a player sees (`fgself-197`) and half the AI games in the real game (`fgself-201`) gave the rest. Head to head games against frozen checkpoints measure progress beside it. Since 2026-11-11 a run is judged against an unchanged continuation's level: `fgself-197`'s checkpoint was a peak (0.79) that continuations do not reach again (~0.70).
+Up to `fgself-201` each bar is the run's own evaluation games. Each run played its own matchups and windows, so compare within a run. The masks and order fixes of `fgself-155` gave most of the jump. Late-game starts (`fgself-166`), shop items (`fgself-179`), what a player sees (`fgself-197`) and half the AI games in the real game (`fgself-201`) gave the rest. The last two bars are evaluation bursts: every training game in the real game (`fgself-212`, 195 games) and the weight average of `fgself-236`, whose teacher weights the first hero (95 games, one burst so far, being confirmed).
+
+## Verdicts by evaluation bursts
+
+Until 2026-11-13 a run was judged against its start checkpoint in its own evaluation games, over hours. Two things made that unreliable:
+* **Start checkpoints are high points.** A checkpoint's level against insane swings by ~8 points between checkpoints 20-30M steps apart, and a start is usually picked as a best point. `fgself-201`'s unchanged continuation read 0.444 head to head against its 142.7M checkpoint, and 0.74 against insane where 142.7M read 0.85. `fgself-212`'s 92M and 118.8M both read 0.838 against insane, and every continuation from them 0.68-0.76: a plain resume lost as much as a fork. So `fgself-212` read "level" against its start and turned out the best policy against insane.
+* **Windows drift.** The training games against the untaxed insane AI (`scripts/train_read.py`, ~500 an hour) track the evaluation within a few points, but the same lineage read 0.83 on 2026-11-11 and 0.71-0.75 two days later, on the same code. They compare runs only within one window.
+
+So since then:
+* An experiment forks from the base's latest checkpoint and trains ~26M steps. The base goes on from the same checkpoint for the same budget: the control.
+* Then a burst: the learner stops, and the main machine's 64 game slots and the 3090 play frozen checkpoints for ~45 minutes (`scripts/burst_prep.py`, `evalworker --run burst-N`). ~1,000 games: the experiment's and the control's end checkpoints and weight averages against insane, all on the same matchups, and head to head. The races are weighed alike.
+* **Weight averages** (`scripts/average_checkpoints.py`, the mean of ~30 checkpoints over a run's last ~10M steps) swing less than single checkpoints. The first, the mean of `fgself-212`'s 81 checkpoints over 118.8M-144.7M, read 0.845 against insane, at its best single point (0.856) without anyone picking it, and beat all three head to head. Since `fgself-221` the base mostly goes on from an average (from its end when the end read better), with the nearest kept checkpoint's Adam state beside it (a fresh Adam had cost forks ~10 points).
+* An average is not always above its points (`fgself-221`'s end read 0.866 against its average's 0.788), and one broke a race: `fgself-236`'s average over 17-27M won 0.38 of 57 night elf games while its end won 0.93. Averages are read by race before one becomes a base.
+* Most differences in one burst are inside the noise (±0.04-0.08 a policy against insane). A change is kept when everything points one way; a policy that looks best in one burst is confirmed in the next.
+
+## Lessons, capped
+
+The teacher's lessons label some of the policy's steps with an order (`--teach-coef`). For an order the policy almost never gives, a lesson spreads: with `--label-norm units` its loss pushes the order's chance up until the taught unit gives it, from a log-chance of ~-7, and the order head's shared weights carry it to every unit at every step. The attack lesson (`fgself-218`) took attacks on a unit from 0.5% to 77-84% of all attacks in 20 minutes, and the run collapsed. The spell lessons (`fgself-208` to `-210`) likely spread the same way (~25-40 casts a game).
+
+`--teach-floor P` caps the push: a lesson's label counts only while the unit's chance of the order is under P (`--teach-floor-orders` names the orders: attacks on a unit, the spells, the expansion's halls, the army lesson's units, weapon and armor research). The lesson makes a rare order possible, and the reward decides how much of it pays.
+* Spells at P = 0.005 (`fgself-224`): **kept**. The heroes cast ~17 taught spells a game in training, spread over many spells, and its average beat its control's head to head (0.59-0.62).
+* Attacks on a unit: at 0.05 the order still spread (54-57% of attacks, `fgself-219`); at 0.002 it held at ~20% but read -8 against its control (`fgself-220`). The line is closed for now.
+* The army lesson (`fgself-226`) and the upgrade lesson (`fgself-227`) under the cap: level. The upgrade lesson raised research in training (5.7 against 3.8 levels a game) but only a little in evaluation (1.7 against 1.2).
+* A late expansion lesson (`fgself-223`, halls capped at 0.02): it expanded in 4% of the games without a target, but cost 11 points. Its camp lesson is an attack-move, an order every unit gives, so no cap can hold it.
+
+## The first hero
+
+[Audit 20](reference/audit-20.md) found the first hero deciding orc and human games: orc with the Far Seer won 0.93, with the Tauren Chieftain 0.62 and the Blademaster 0.40; human with the Archmage 0.95, with the others ~0.77. The same held in every burst, against every AI race and head to head. The policy picked each a third of the time because `--teach 3`'s first-hero lesson drew one uniformly in every game without a target, so the label came every game and the reward saw one decision a game. With `--first-hero-weights Ofar:4,Hamg:4` (`fgself-236`) the teacher draws the Far Seer and the Archmage two times in three. The policy's own first hero followed (70-85% in evaluation, where no teacher plays), and orc rose: 0.75 over two bursts against the control average's 0.52. Its average went on to read 0.955 against insane (burst-237). Race weights tuned for orc on top (`fgself-237`) added nothing.
 
 ## What worked
 
@@ -72,6 +99,11 @@ Each run plays its own matchups and windows, so compare within a run. The masks 
 | Every order a player can give (`--full-vocab 1`, `fgself-196`) | level, and nothing out of reach |
 | What a player sees: buffs, corpses, items, area spells, enemy upgrades (`--obs-full 1`, `fgself-197`) | wins past 18 minutes 16% → 46% |
 | Half the training games against the AI in the real game (`--real-share 0.5`, `fgself-201`) | against insane 0.70 → 0.81 over the continuation |
+| Every training game in the real game (`--map "(2)EchoIsles"`, `fgself-212`) | burst: against insane 0.78 → 0.86 over `fgself-201`/142.7M, +4.5 over its continuation |
+| The base from a weight average of ~30-80 checkpoints (`scripts/average_checkpoints.py`, since `fgself-221`) | the mean of 81 at its best single point (0.845), above all three head to head |
+| The spell lesson capped at a 0.5% chance (`--spell-lesson 0.25 --teach-floor 0.005`, `fgself-224`) | averages 0.849 → 0.876 against insane (n.s.), head to head 0.59-0.62 against the control; ~17 taught spells a game |
+| Masks for orders the game refuses (`--order-masks 7`, `fgself-231`) | level (averages 0.803 → 0.821, all played masked); refused orders 40.7 → 32.2 a game |
+| The teacher's first hero weighted (`--first-hero-weights Ofar:4,Hamg:4`, `fgself-236`) | over two bursts its end 0.845 against the control's end 0.754 and average 0.781, orc 0.75 against the average's 0.52; its average 0.955 in the next burst |
 
 ## What did not help
 
@@ -93,7 +125,14 @@ Each run plays its own matchups and windows, so compare within a run. The masks 
 * Expansion lessons in every game (`-156`, `-157`, `-202`): worse each time. With the place taught (`-202`) they pulled hard toward early expansions and the run fell to 40% against insane.
 * People's late plans as targets (`-169`, `-170`), no KL anchor (`-171`), no AI tax in training (`-174`: -15), a lesson to hunt hidden bases (`-175`), a map pool (`-178`), shop items in the targets (`-183`: -22), a value tax (`-184`), a uniform PFSP (`-187`), larger minibatches (`-189`), more two-base starts (`-190`), an EMA anchor (`-191`, `-192`): level or worse.
 * AlphaStar's league first (`-194`: the built-in AI in 40% of the games, -13 against insane), dry mains to force expansions (`-195`: none in evaluation), PFSP with more data (`-198`), a league with history (`-199`): level or worse.
-* Spell lessons (`-208` to `-210`), with a mana cost or without: the heroes cast ~25-40 spells a game, and the runs lost 10-15 points against insane.
+* Spell lessons (`-208` to `-210`), with a mana cost or without: the heroes cast ~25-40 spells a game, and the runs lost 10-15 points against insane. Capped, they held (`-224`, above).
+* Upgrades counted at their cost in the shaping (`--research-value 1`, `-213`): more upgrades, -11 against insane.
+* Late starts in the real game from minutes 16-28 (`--real-agents 0.5`, `-214`): 0.69 against insane in the burst, human and undead down. Late starts from positions the learner went on to lose (`-230`): more tech (tier 3 20% against 10%), averages -4 (n.s.).
+* People's clone as the KL anchor (`-215`), alone or beside `fgself-100` (`--ref2`, `-216`): no wider and no stronger (216: 0.707 against the null fork's 0.755, tier 2 12% against 43%). Alone, it swapped `fgself-100`'s pull for the clone's, and losing that pull costs strength (`-171`).
+* A lesson to attack a unit (workers, hurt heroes; `--attack-lesson`, `-218` to `-220`): uncapped it collapsed; capped at 0.05 it still spread; at 0.002 it held at ~20% of the attacks and read -8 against its control.
+* The z-modes' deadlines scaled to the real map (`--z-mode-time 2`, `-222`): a third to a sixth of the violations, averages -3.5 (n.s.), head to head 0.44.
+* Capped lessons for a late expansion (`-223`: 4% of games expanded, -11), the army (`-226`: rare, level) and upgrades (`-227`: research up in training, level).
+* A smaller learning rate (`--lr 2e-5`, `-234`): level. Race weights shifted toward orc and night elf (`-237`): nothing once the first hero is weighted.
 
 ## What went wrong
 
@@ -117,3 +156,11 @@ Each run plays its own matchups and windows, so compare within a run. The masks 
 | Every fork of `fgself-197` read low | forks faded the new inputs in again: ~15 minutes nearly blind. Also, the start checkpoint was a peak |
 | Expansion lessons taught "build a hall" but not where | the teacher's loss never covered the point (fixed 2026-11-10) |
 | The machine reset itself twice under full load | an uncorrected machine check (data fabric). BIOS settings to check |
+| `fgself-212` judged "not kept" at first, then the best policy against insane | its start checkpoint (`fgself-201`/142.7M) was a high point. Verdicts since by bursts against a control |
+| A late start's research never reached the inputs (since `fgself-166`) | the state's levels are placed with `SetResearch`, which fires no event (bug finder 9; fixed) |
+| The tinker never learned a second skill | Engineering Upgrade replaces its other abilities with new codes, and a learn of the base code did nothing. Fixed in the harness and in the shim's own learn path, which the runs use (bug finder 10) |
+| A learn read "ok" whenever the hero had a skill point | now only when the skill's level rose, so refused learns are counted |
+| Late starts placed timed hero forms that never turned back (a Chemical Rage form still enraged 90 s later) | a form placed by `CreateUnit` has no duration; the timed forms are placed as their hero now |
+| People's replays played back with ~100 times their deaths | the replay harness re-added dead units every step (fixed with the human-anchor pipeline) |
+| The policy picked each first hero a third of the time | the teacher's first-hero lesson drew uniformly in every game without a target (audit 20); weighted since `fgself-236` |
+| A fork from an averaged checkpoint started with a fresh Adam (`fgself-228`) | only the newest few Adam states are kept; the nearest kept one goes beside the average now (`fgself-229`) |

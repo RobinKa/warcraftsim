@@ -28,12 +28,13 @@ flowchart LR
   L -- "weights" --> I
 ```
 
-The live run (2026-11-12, `fgself-212`, every game in the real game) makes ~5,000-5,300 agent steps a second:
+A run on 2026-11-12 (`fgself-212`, every game in the real game) made ~5,000-5,300 agent steps a second:
 
 * The main machine's CPU sets the speed. It is ~96% busy: the 72 games take ~16 of its 32 threads, the Python of the 12 actors and the 4 gateways ~8, and the learner ~1.5. The learner waits ~0.3 s for each batch of 8,192 steps.
 * The games box gives ~2,300 of the steps a second from its 64 games. Its CPU is ~70% busy, and ~7 GB of its memory is free (with same-page merging).
 * The GPU is ~84% busy at ~320 W. The learner's update takes ~1.25 s, and three quarters of the inference rounds (~10 ms each) run beside it. Past snapshots make ~670 of the ~870 inference calls a second, at ~1.2 rows each.
 * A game step takes ~12 ms of wall time to simulate on the main machine and ~7 ms on the box. For the rest of its ~30 ms the game waits for its orders (a round to start and a round to finish), so more games than cores give more steps.
+* With `--order-masks 7` (since `fgself-231`, 2026-11-18) the speed is the same, ~5,250-5,700 steps a second. Only the start is slower: each of the inference server's ~130 graph captures takes ~10 s instead of ~3 s, so `fgself-231`'s training began after ~8 minutes, and the actors' 5-minute wait for an answer ran out once (their games were relaunched).
 
 ## The largest fixes
 
@@ -66,6 +67,7 @@ The live run (2026-11-12, `fgself-212`, every game in the real game) makes ~5,00
 24. The learner's update with fused Adam and finer entity widths (2026-10-30, `--adam-fused 1`, `--update-widths`): an update of 8,192 steps 0.62 → 0.57 s alone (-8%), ~1.35 → ~1.2 s in the run.
 25. Inference in bf16-mixed with finer row buckets (2026-11-06, `--infer-precision bf16-mixed`, `--infer-rows 8,16,24,32,48,64`): the trunk in bf16, every head and the value in fp32 with TF32 multiplies, so PPO's ratio stays as close to the learner's as with fp32 acting. An inference round 7.4 → 3.4 ms, ~4,300 → ~5,300 steps/s.
 26. The learner reads the actors' queue during its update (2026-11-06, `--learner-intake 2`), and 10 past-snapshot slots stop the weight swaps (`--infer-past-slots 10`): no more steps, because the games were the cap, but fresher data (staleness 3.6 → 3.0 updates).
+27. Evaluation bursts (2026-11-13, `scripts/burst_prep.py`: [evaluation bursts](architecture.md#evaluation-bursts)): between runs the learner stops and the main machine's 64 game slots and the 3090 play frozen checkpoints, ~1,400 games an hour where the laptop gives ~30 a policy an hour. A verdict takes ~45 minutes, with every policy in one window.
 
 ## What remains
 

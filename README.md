@@ -4,7 +4,9 @@
 
 Reinforcement learning on the **real Warcraft III** (Legacy TFT 1.29.2) under Wine on Linux, driven step by step from Python. Nothing is reimplemented: the game's own engine runs every unit, spell, building and AI script, headless and many times faster than real time.
 
-The agent plays the **whole game** (economy, buildings, tech, armies, heroes) on the ladder map **Echo Isles** under the game's own rules. It wins **~81% of its games against the built-in AI at its hardest setting** (insane, no handicap) with the income a person has. Until 2026-10-26 the agent's slots had the insane AI's double income too, and the ~97% of October was at that income. It can give every order a melee player can and sees what a player sees. It wins almost every game that ends within 18 minutes. Its weak point is the late game: it rarely expands, masses one unit type and loses most games past 24 minutes, when its one gold mine runs dry. Given a target build order (from the AI's games or people's replays) it expands and techs, and wins ~52% against insane.
+The agent plays the **whole game** (economy, buildings, tech, armies, heroes) on the ladder map **Echo Isles** under the game's own rules, with the income a person has. Its best policy so far won **91 of 95 games (0.955) against the built-in AI at its hardest setting** (insane, no handicap), every race between 0.90 and 1.00. That policy is the weight average of a stretch of `fgself-236`'s checkpoints, measured in one evaluation burst (2026-11-20); the runs since are confirming it. A single checkpoint of the same run read 0.845 over two bursts. Until 2026-10-26 the agent's slots had the insane AI's double income, so the 95-97% of October were at that income and do not compare.
+
+It can give every order a melee player can and sees what a player sees. It wins nearly every game that ends within 15 minutes. Its weak point is the long game: most of its losses come past 18 minutes, when the AI has expanded, researched and teched to air, while the agent stays on one gold mine (it expanded in 3 of 2,832 evaluation games). Given a target build order (from the AI's games or people's replays) it expands and techs, but wins only about half its games against insane.
 
 <p align="center"><img src="docs/media/whole-game.jpg" width="960" alt="A whole-game replay with the policy's panel"></p>
 
@@ -25,12 +27,12 @@ Each bar is the best policy of a step (`fgself-56`, `-62`, `-68`, `-73`, `-77`, 
 ```mermaid
 xychart-beta
   title "Echo Isles: won against insane at a person's income (since 2026-10-26)"
-  x-axis ["first try", "masks and order fixes", "late-game starts", "shop items", "sees what a player sees", "real-game training"]
+  x-axis ["first try", "masks and order fixes", "late-game starts", "shop items", "sees what a player sees", "half the games in the real game", "every game in the real game", "first hero weighted, averaged"]
   y-axis "% won" 0 --> 100
-  bar [39, 74, 74, 77, 74, 81]
+  bar [39, 74, 74, 77, 74, 81, 86, 95.5]
 ```
 
-At a person's income (`fgself-153`, `-155`, `-166`, `-179`, `-197`, `-201`) each run again measures in its own evaluation games. Since 2026-11-11 a run is judged against an unchanged continuation of its start, since a start checkpoint can be a peak. [Experiments](docs/experiments.md) has what worked and what did not; the [experiment log](docs/reference/experiment-log.md) has every run.
+At a person's income the first six bars (`fgself-153`, `-155`, `-166`, `-179`, `-197`, `-201`) are each run's own evaluation games. The last two are evaluation bursts: `fgself-212` (0.86, 195 games) and `fgself-236`'s weight average (0.955, 95 games, one burst so far). Since 2026-11-13 a verdict is such a burst: the learner stops, and the main machine plays ~1,000 games in 45 minutes between the experiment, its control (the base, gone on from the same checkpoint for the same budget) and the insane AI, all in one window. [Experiments](docs/experiments.md) has what worked and what did not; the [experiment log](docs/reference/experiment-log.md) has every run.
 
 ## How it works
 
@@ -76,7 +78,7 @@ flowchart LR
   SP --> E["Evaluation games<br/>vs the untaxed insane AI"]
 ```
 
-The policy started as a clone of the built-in AI and now beats its teacher by a wide margin. Each experiment is a new run forked from the best one, so the dashboard's lineage shows what every change did ([experiments](docs/experiments.md)).
+The policy started as a clone of the built-in AI and now beats its teacher by a wide margin. Each experiment is a new run forked from the base, and the base goes on beside it as a control, so the dashboard's lineage shows what every change did ([experiments](docs/experiments.md)). A checkpoint's level swings by ~8 points, so the base goes on from the weight average of a stretch of checkpoints.
 
 ## Speed
 
@@ -88,7 +90,7 @@ xychart-beta horizontal
   bar [560, 719, 822, 1000, 1110, 1280, 1490, 1850, 2280, 4450, 5350]
 ```
 
-The main machine (Ryzen 9 5950X, RTX 3090) runs the learner, the inference loop and 72 games. A games box (Ryzen 9 8945HX) plays 64 more over a direct cable, its orders from the 3090: ~5,000-5,600 agent steps a second. The main machine's CPU sets the speed, and the GPU is nearly as busy. A laptop under WSL2 plays more evaluation games, so an experiment's verdict comes within a few hours. [Optimizations](docs/optimizations.md) and the [optimization log](docs/reference/optimization-log.md) have every fix.
+The main machine (Ryzen 9 5950X, RTX 3090) runs the learner, the inference loop and 72 games. A games box (Ryzen 9 8945HX) plays 64 more over a direct cable, its orders from the 3090: ~5,000-5,600 agent steps a second. The main machine's CPU sets the speed, and the GPU is nearly as busy. A laptop under WSL2 plays evaluation games beside a run. Between runs the main machine plays evaluation bursts of ~1,000 games in 45 minutes. [Optimizations](docs/optimizations.md) and the [optimization log](docs/reference/optimization-log.md) have every fix.
 
 ## The dashboard
 

@@ -2,20 +2,16 @@
 
 Where the project's ideas came from and what became of them. Many are the user's; others come from AlphaStar and OpenAI Five ([what those papers found](ideas-from-alphastar-and-openai-five.md)), from LLM reinforcement learning, from image generation, or from our own runs. Each experiment's numbers are in the [experiment log](experiment-log.md).
 
-## The queue (2026-11-12)
+## The queue (2026-11-20)
 
-In the order they run. The code for each is in place unless it says otherwise. [Next experiments](../proposals/next-experiments.md) has the details.
+Open ideas. [Next experiments](../proposals/next-experiments.md) has the details; the base is `fgself-238`.
 
 | idea | from | what it is | status |
 |---|---|---|---|
-| Unit attacks | the user (2026-11-12: workers survive attack-moves) | the policy attacks a unit in <1% of its attacks; a gentle lesson or exploration for it ([next experiments](../proposals/next-experiments.md), 13) | `--attack-lesson` + `--teach-floor`: 218 collapsed, 219 (floor 0.05) spread, 220 (0.002) -8 against its control: closed for now |
-| The first hero weighted | audit 20 (2026-11-18) | the teacher's first-hero draw weighted toward the heroes that win (orc Far Seer, human Archmage) | **kept** (`fgself-236`: 0.845 against insane, orc 0.75 from 0.52-0.63) |
-| Masks for orders the game refuses | bug finder 10 (2026-11-16) | spells' targets by the game's rules, toggles by state, learns only for heroes (`--order-masks 7`) | **kept** (`fgself-231`: level, ~20% fewer refused orders) |
-| Style specialists in the league; distillation behind a style token | ours (2026-11-17, the user: bolder changes for strength and diversity) | specialists pushed into one style each as fixed league members, then one policy that plays each style on demand ([next experiments](../proposals/next-experiments.md)) | queued |
-| Weight averaging (SWA) | ours (2026-11-16: a checkpoint's level swings ~8 points, burst-216/220) | the mean of a stretch of checkpoints (`scripts/average_checkpoints.py`) as the policy | burst-swa: the mean of 212's 81 checkpoints 0.845 against insane, its end 0.804, the best single 0.856; `fgself-221` goes on from it |
-| The heroes' spells, another way | the user (2026-11-11: heroes rarely cast) | lessons made the heroes spam their spells (`fgself-208` to `-210`); capped (`--teach-floor 0.005`) they hold | **kept** (`fgself-224`: ~17 spells a game, h2h 0.59-0.62 against its control) |
-| Expansions, gentler | ours (audit 15, a bug finder 2026-11-10) | expansion lessons only when the main mine is nearly empty | open |
-| A KL anchor cloned from people | AlphaStar (its KL to the supervised human policy) | people's replays again with the obs-full events, a clone from `fgself-212`, `--init` it with `--ref-kl-mode forward-acting` | `fgself-215` (the clone as the only anchor) not kept: h2h 0.31, `fgself-100`'s pull swapped for the clone's; `fgself-216` (`--ref2`: the clone beside `fgself-100`) not kept either (burst: -5 against a null fork, narrower) |
+| Pressure on the AI's economy | audit 20 (2026-11-18: long wins are games where the AI's economy broke) | the shaping's material counts the opponent's workers several times their cost: a reward, not a lesson | open (needs a small flag) |
+| Revival under the cap | audit 20 | `--revive-lesson 1` with the revival orders capped by `--teach-floor` (uncapped it was part of `fgself-157`'s loss) | open (needs a floor group) |
+| Style specialists in the league; distillation behind a style token | ours (2026-11-17, the user: bolder changes for strength and diversity) | specialists pushed into one style each (first: air) as fixed league members, then one policy that plays each style on demand | queued |
+| Stacked capped lessons | ours (2026-11-17) | the spell, upgrade, army and expansion lessons together under the cap (one at a time: spells kept, army and upgrades level, the expansion -11 through its uncapped camp lesson) | queued (the flags exist) |
 | Fine points around the unit | the user (2026-10-25) | a sub-cell within the chosen point bin (`--fine-points 7`) | merged, not yet in a run |
 | Fewer decisions, spatial point heads | AlphaStar (action rate), SC2LE | a "keep this order k steps" head; points on a map, not x then y | later |
 | An APM cap | ours | every unit acts every half second now | before games against people |
@@ -24,8 +20,20 @@ In the order they run. The code for each is in place unless it says otherwise. [
 
 | idea | from | result |
 |---|---|---|
+| The first hero weighted | audit 20 (2026-11-18: the first hero decides orc and human games) | `--first-hero-weights Ofar:4,Hamg:4` (`fgself-236`): **kept**; its end 0.845 against insane over two bursts (orc 0.75 against 0.52), its average 0.955 in burst-237 |
+| Race weights after the audit | audit 20 (orc the weakest race, the night elf AI the hardest) | `--learner-races human:0.25,undead:0.25,orc:0.3,nightelf:0.2` (`fgself-237`): nothing once the first hero is weighted; not kept |
+| A smaller learning rate | ours (2026-11-18: checkpoints swing, a smaller step may hold a higher level) | `--lr 2e-5` (`fgself-234`): level; lr stays 3e-5 |
+| Masks for orders the game refuses | bug finder 10 (2026-11-16) | spells' targets by the game's rules, toggles by state, learns only for heroes (`--order-masks 7`, `fgself-231`): **kept**, level strength, ~20% fewer refused orders |
+| Late starts from lost positions | ours (2026-11-17, the bolder changes) | 2,912 states of games the learner went on to lose (`fgself-230`): more tech, no gain; not kept |
+| Capped army and upgrade lessons | audit 16's lessons, under the cap (2026-11-17) | `--army-lesson 1` (`fgself-226`): rare, level; `--upgrade-lesson 1` (`fgself-227`): research up in training, level; not kept |
+| The heroes' spells, capped | the user (2026-11-11: heroes rarely cast) | `--spell-lesson 0.25 --teach-floor 0.005` (`fgself-224`): **kept**, ~17 taught spells a game, head to head 0.59-0.62 against its control |
+| Expansions, gentler | ours (audit 15, a bug finder 2026-11-10) | a late expansion lesson (main mine under 30%) with the halls capped (`fgself-223`): expanded in 4% of games, -11; its camp lesson cannot be capped. Not kept |
+| The z-modes' deadlines for the real map | bug finder 9 (2026-11-12) | `--z-mode-time 2` (`fgself-222`): a third to a sixth of the violations, no gain; not kept |
+| Weight averaging (SWA) | ours (2026-11-16: a checkpoint's level swings ~8 points, burst-216/220) | the mean of a stretch of checkpoints (`scripts/average_checkpoints.py`): the mean of 212's 81 at its best single point (0.845); **in use**, the bases since `fgself-221` mostly start from one. One broke a race (`fgself-236`'s 17-27M: night elf 0.38): averages are read by race |
+| Unit attacks | the user (2026-11-12: workers survive attack-moves) | `--attack-lesson` (`fgself-218` collapsed); with `--teach-floor` 0.05 (`-219`) it spread, at 0.002 (`-220`) -8 against its control: closed for now |
+| A KL anchor cloned from people | AlphaStar (its KL to the supervised human policy) | people's replays again with the obs-full events, a clone from `fgself-212`: as the only anchor (`fgself-215`) h2h 0.31, `fgself-100`'s pull swapped for the clone's; as a second anchor (`--ref2`, `fgself-216`) -5 against a null fork, narrower. Not kept |
 | Late starts from the late game, in the real game | ours (2026-11-12: 102 of `fgself-201`'s 118 losses past 18 minutes) | `--real-agents 0.5 --real-late-minutes 16,28 --real-late-from 16` (`fgself-214`): worse in the burst (0.69 against insane; human and undead fell); not kept |
-| Faster, less noisy verdicts | the user (2026-11-13) | training games as a read (`scripts/train_read.py`, drifts between days), the laptop mostly head to head (~3x), evaluation bursts on the main machine (~1,400 games an hour, paired, one window) | in use |
+| Faster, less noisy verdicts | the user (2026-11-13) | training games as a read (`scripts/train_read.py`, drifts between days), the laptop mostly head to head (~3x), evaluation bursts on the main machine (~1,400 games an hour, paired, one window) against a control that goes on from the same checkpoint for the same budget | in use since 2026-11-13 |
 | Upgrades in the shaping | ours (2026-11-12) | `--research-value 1` (`fgself-213`): more upgrades, -11 against insane; not kept |
 | Every training game in the real game | ours (bold changes) | `--map "(2)EchoIsles"` (`fgself-212`): read as level against a high-point start, then **best against insane** in a paired evaluation burst (0.86, +8 over `fgself-201`/142.7M): the base since 2026-11-13 |
 | Half the AI games in the real game | ours (bold changes, 2026-11-06) | `--real-share 0.5` (`fgself-201`): +11 points against insane over the continuation, kept as the base |
@@ -49,7 +57,7 @@ In the order they run. The code for each is in place unless it says otherwise. [
 | Self-distillation with privileged information (OPSD) | the user (LLM training) | no gain (`fgself-112`, `-121`) |
 | Neutral shops, the tavern, mercenaries | the user | tavern heroes hired; untaught mercenaries cost real-game wins (`--neutral 2`); shop items as orders kept (`fgself-179`: 66% → 77%) |
 | A heuristic teacher | the user | the teacher's lessons label the policy's steps (`--teach 3`), in every run |
-| Scenarios, weight averaging | the user (the micro curriculum; model soups) | level (`fgself-114`, `-115`) |
+| Scenarios, weight averaging | the user (the micro curriculum; model soups) | level (`fgself-114`; `-115`, a soup of two runs). The mean of a stretch of one run's checkpoints is in use (above) |
 | Skill ratings | the user | a Bradley-Terry rating of every policy: the dashboard's Ratings view |
 | A heuristic opponent stronger than the learner | the user (2026-10-25) | `fullgame/heuristic.py`, in the evaluation games (`--eval-heuristic`) |
 | Diverse play without macro help | the user (2026-10-25) | `--macros-off mix,creep,expand` (`fgself-151`): kept, it adapted |
