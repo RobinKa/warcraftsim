@@ -5,7 +5,7 @@ The goal: a policy that plays a real 1v1 on a ladder map with the game's own rul
 ```mermaid
 flowchart LR
   A["duelrush<br/>79%"]:::done --> B["duelfast<br/>80% of games against insane"]:::done
-  B --> D["Echo Isles, the real game<br/>0.955 against insane at a person's income<br/>(one burst, being confirmed)"]:::now
+  B --> D["Echo Isles, the real game<br/>0.95 against insane at a person's income<br/>(263 games, two bursts)"]:::now
   D --> G["The late game<br/>expansions, tech, mixed armies"]:::now
   G --> P["People"]:::todo
   classDef done fill:#1d3a2a,stroke:#4cc38a,color:#d7dee6
@@ -58,7 +58,7 @@ The long games are decided by the AI's development. At the end of the games past
 
 ## Next
 
-First: confirm the 0.955, measured in one burst so far. The plan: [next experiments](proposals/next-experiments.md). [Ideas](reference/ideas.md) lists each idea, where it came from and what became of it.
+The 0.95 is confirmed (250 of 263 over two bursts, 2026-11-20). Insane is beaten without a handicap; the next step the user set (2026-10-15) is people. The plan: [next experiments](proposals/next-experiments.md). [Ideas](reference/ideas.md) lists each idea, where it came from and what became of it.
 
 ## Compute
 

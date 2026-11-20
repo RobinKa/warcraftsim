@@ -4,7 +4,7 @@
 
 Reinforcement learning on the **real Warcraft III** (Legacy TFT 1.29.2) under Wine on Linux, driven step by step from Python. Nothing is reimplemented: the game's own engine runs every unit, spell, building and AI script, headless and many times faster than real time.
 
-The agent plays the **whole game** (economy, buildings, tech, armies, heroes) on the ladder map **Echo Isles** under the game's own rules, with the income a person has. Its best policy so far won **91 of 95 games (0.955) against the built-in AI at its hardest setting** (insane, no handicap), every race between 0.90 and 1.00. That policy is the weight average of a stretch of `fgself-236`'s checkpoints, measured in one evaluation burst (2026-11-20); the runs since are confirming it. A single checkpoint of the same run read 0.845 over two bursts. Until 2026-10-26 the agent's slots had the insane AI's double income, so the 95-97% of October were at that income and do not compare.
+The agent plays the **whole game** (economy, buildings, tech, armies, heroes) on the ladder map **Echo Isles** under the game's own rules, with the income a person has. Its best policy so far won **95% of its games against the built-in AI at its hardest setting** (insane, no handicap): 250 of 263 over two evaluation bursts (0.951 ±0.026), every race between 0.90 and 1.00. That policy is the weight average of a stretch of `fgself-236`'s checkpoints (2026-11-20). A single checkpoint of the same run read 0.845 over two bursts. Until 2026-10-26 the agent's slots had the insane AI's double income, so the 95-97% of October were at that income and do not compare.
 
 It can give every order a melee player can and sees what a player sees. It wins nearly every game that ends within 15 minutes. Its weak point is the long game: most of its losses come past 18 minutes, when the AI has expanded, researched and teched to air, while the agent stays on one gold mine (it expanded in 3 of 2,832 evaluation games). Given a target build order (from the AI's games or people's replays) it expands and techs, but wins only about half its games against insane.
 
@@ -32,7 +32,7 @@ xychart-beta
   bar [39, 74, 74, 77, 74, 81, 86, 95.5]
 ```
 
-At a person's income the first six bars (`fgself-153`, `-155`, `-166`, `-179`, `-197`, `-201`) are each run's own evaluation games. The last two are evaluation bursts: `fgself-212` (0.86, 195 games) and `fgself-236`'s weight average (0.955, 95 games, one burst so far). Since 2026-11-13 a verdict is such a burst: the learner stops, and the main machine plays ~1,000 games in 45 minutes between the experiment, its control (the base, gone on from the same checkpoint for the same budget) and the insane AI, all in one window. [Experiments](docs/experiments.md) has what worked and what did not; the [experiment log](docs/reference/experiment-log.md) has every run.
+At a person's income the first six bars (`fgself-153`, `-155`, `-166`, `-179`, `-197`, `-201`) are each run's own evaluation games. The last two are evaluation bursts: `fgself-212` (0.86, 195 games) and `fgself-236`'s weight average (0.951, 263 games over two bursts). Since 2026-11-13 a verdict is such a burst: the learner stops, and the main machine plays ~1,000 games in 45 minutes between the experiment, its control (the base, gone on from the same checkpoint for the same budget) and the insane AI, all in one window. [Experiments](docs/experiments.md) has what worked and what did not; the [experiment log](docs/reference/experiment-log.md) has every run.
 
 ## How it works
 
