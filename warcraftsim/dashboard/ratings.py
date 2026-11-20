@@ -29,7 +29,7 @@ EQUAL = "insane AI, equal income"
 ANCHOR_RATING = 1500.0
 SCALE = 400.0 / math.log(10.0)  # Elo points per unit of log-strength
 PRIOR_GAMES = 1.0  # each player's virtual tie against the anchor: finite ratings for a few games
-CACHE = ".ratings-cache-v6.json"  # (v2: the "+shops" players; v3: Echo Isles runs only, hours from the creation; v4: the
+CACHE = ".ratings-cache-v8.json"  # (v2: the "+shops" players; v3: Echo Isles runs only, hours from the creation; v4: the
 # pairs' games by the hour they were played; v5: games at the doubled income against EQUAL; v6: no games of a policy
 # with the composition kinds' inputs played by a run without them, blind). Every game counts alike, however old (the user, 2026-10-25: a decay could
 # lose a good past policy); the top rated ones are played anew under today's rules by the evaluation worker's gauntlet
@@ -37,6 +37,11 @@ CACHE = ".ratings-cache-v6.json"  # (v2: the "+shops" players; v3: Echo Isles ru
 # worker started with the harness that reaches a shop in the fog; before, every buy order was refused)
 SHOPS_SINCE = 1792589220.0
 _CKPT = re.compile(r"(fgself-[\w.-]+)/(?:checkpoints/)?0*(\d+)\.pt")
+# (v7, 2026-11-20: a weight average of a run's checkpoints, scripts/average_checkpoints.py, is a player of its own
+# ("fgself-236 avg swa-43-53"), and an evaluation burst's current policy is the checkpoint its burst.json names, not
+# "burst-237 h2": the same policy kept one rating across bursts, the user's "climb the rating")
+_AVG = re.compile(r"(fgself-[\w.-]+)/averaged/([\w.-]+)\.pt")
+BURST = "burst.json"  # (a burst's {"current": the checkpoint it plays as "current", ...}: scripts/burst_prep.py)
 # a checkpoint the evaluation worker's gauntlet plays for a run's policy by the hour ("fgself-102/11882922" for
 # "fgself-102 h2": the run's last checkpoint saved in that hour), written by scripts/remote_eval.py: its games count
 # for that policy, so the top rated ones move as they are played anew (the user, 2026-10-25: the gauntlet's games had
@@ -46,12 +51,15 @@ ALIASES = ".gauntlet-aliases.json"
 
 def checkpoint_name(path: str) -> str | None:
     """'runs/fgself-102/checkpoints/0000000011841833.pt' or 'fgself-102/0000000011841833.pt' -> 'fgself-102/11841833'."""
+    a = _AVG.search(path)
+    if a:
+        return f"{a.group(1)} avg {a.group(2)}"
     m = _CKPT.search(path)
     return f"{m.group(1)}/{m.group(2)}" if m else None
 
 
 def players_of(row: dict, run: str, start: float, untrained=lambda run: False,
-               aliases: dict | None = None, slot: str = "normal") -> tuple[str, str] | None:
+               aliases: dict | None = None, slot: str = "normal", current: str | None = None) -> tuple[str, str] | None:
     """An evaluation row's (player, opponent), or None when it is no rated game. `untrained(run)`: whether that
     checkpoint's run lacked the neutral wares the game is played with (its checkpoints then "+shops"). `aliases`:
     checkpoint -> the run's policy by the hour it stands for (the gauntlet's; ALIASES). `slot`: the run's agent slots'
@@ -65,7 +73,8 @@ def players_of(row: dict, run: str, start: float, untrained=lambda run: False,
         c = checkpoint_name(path)
         if c is not None and aliases and c in aliases:
             return aliases[c]
-        return c + " +shops" if c is not None and late and untrained(c.split("/")[0]) else c
+        return c + " +shops" if c is not None and late and untrained(re.split(r"[ /]", c)[0]) else c  # (the run's
+        # name: "fgself-236/53275744" or "fgself-236 avg swa-43-53")
     if key.startswith("vs heuristic:"):  # (--eval-heuristic: the hand-written player, a player of its own that does not
         b = key[3:]                       # change: fullgame/heuristic.py)
     elif key.startswith("vs "):
@@ -77,7 +86,9 @@ def players_of(row: dict, run: str, start: float, untrained=lambda run: False,
         b = EQUAL if doubled else ANCHOR
     else:
         return None
-    if key.startswith("current") or key.startswith("vs "):
+    if current is not None and (key == "current" or key.startswith("vs ")):  # (a burst's: the checkpoint it plays)
+        a = current
+    elif key.startswith("current") or key.startswith("vs "):
         hour = max(0, int((float(row.get("time", start)) - start) // 3600))
         suffix = {"current+z": " +z", "current+zg": " +zg", "current+human": " +human"}.get(key, "")  # (+human: from a slot at a
         # person's income against the insane AI's double)
@@ -134,6 +145,10 @@ class Ratings:
             if not files or not self._echo(info):
                 continue
             start = None
+            try:  # (an evaluation burst: its current policy by the checkpoint it plays; BURST)
+                current = checkpoint_name(str(json.loads((d / BURST).read_text()).get("current", "")))
+            except (OSError, ValueError):
+                current = None
             shops = self._neutral(d.name) > 0
             untrained = (lambda r: self._neutral(r) == 0) if shops else (lambda r: False)
             for f in files:
@@ -166,7 +181,7 @@ class Ratings:
                     if m_ is not None and self._comp(m_.group(1)) and not self._comp(d.name):
                         continue  # (a policy reading the composition kinds' inputs, played by a run that gives none: its
                         # strategy block shifted, it played blind; fgself-154's lost 60 of 60 to fgself-155)
-                    pair = players_of(row, d.name, start, untrained, aliases, self._slot(d.name))
+                    pair = players_of(row, d.name, start, untrained, aliases, self._slot(d.name), current)
                     if pair is not None:
                         self._add(pair, float(row.get("outcome", 0.0)), float(row.get("time", 0.0)), d.name)
                         changed = True

@@ -29,6 +29,8 @@ def main(argv: list[str]) -> int:
     c["eval_checkpoints"] = "[" + ", ".join(f"PosixPath('{e}')" for e in evals) + "]"
     c.update(eval_vs="0.4", eval_z="0", eval_heuristic="0", eval_human="0")
     (d / "run.json").write_text(json.dumps(r, indent=1))
+    (d / "burst.json").write_text(json.dumps({"current": cur, "evals": evals}, indent=1))  # (the ratings' name for
+    # "current": the checkpoint it is, dashboard/ratings.BURST)
     print(name, "ready:", cur, "as", dest, c["eval_checkpoints"])
     return 0
 

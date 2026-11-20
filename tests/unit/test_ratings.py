@@ -53,3 +53,18 @@ def test_fit_and_incremental_scan(tmp_path):
         f.write(_row("current", 1, 4000.0) + "\n")
     assert r.scan() and "fgself-1 h1" in {p["name"] for p in r.table()["players"]}
     assert ratings.Ratings(tmp_path).state["files"]  # (the offsets kept for the next start)
+
+
+def test_averages_and_bursts_keep_one_name():
+    """v7: a weight average is a player of its own; a burst's current policy is the checkpoint its burst.json names."""
+    assert ratings.checkpoint_name("runs/fgself-236/averaged/swa-43-53.pt") == "fgself-236 avg swa-43-53"
+    assert ratings.checkpoint_name("runs/fgself-236/checkpoints/0000000053275744.pt") == "fgself-236/53275744"
+    row = {"eval": True, "eval_key": "current", "opponent": "script:ai-insane (real)", "outcome": 1.0, "time": 2e9}
+    cur = ratings.checkpoint_name("runs/fgself-236/averaged/swa-43-53.pt")
+    assert ratings.players_of(row, "burst-confirm", 0.0, current=cur) == ("fgself-236 avg swa-43-53", ratings.ANCHOR)
+    vs = {**row, "eval_key": "vs runs/fgself-236/averaged/swa-43-53.pt", "opponent": "eval-vs:x"}
+    assert ratings.players_of(vs, "burst-x", 0.0, current="fgself-239/26000000") == ("fgself-239/26000000", "fgself-236 avg swa-43-53")
+    assert ratings.players_of(row, "fgself-238", 0.0)[0].startswith("fgself-238 h")  # (a run: by the hour, as before)
+    trained = lambda run: run != "fgself-236"  # (an averaged checkpoint's run read from its name, not the whole name)
+    avg = {**row, "eval_key": "runs/fgself-236/averaged/swa-43-53.pt"}
+    assert ratings.players_of(avg, "burst-x", 0.0, untrained=lambda r: r == "fgself-236 avg swa-43-53")[0] == "fgself-236 avg swa-43-53"
