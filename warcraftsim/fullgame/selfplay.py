@@ -1389,6 +1389,17 @@ def spells_cast(results: dict) -> dict:
     return out
 
 
+def rules_line(map_name: str, scenario: str | None = None, late_start: dict | None = None) -> str:
+    """A filmed game's ruleset and start in words (duelmap.rules_label; a scenario's or a late start's after it)."""
+    from ..data.duelmap import rules_label
+    out = rules_label(map_name)
+    if scenario == "late" and late_start:
+        out += f" · late start (minute {late_start.get('minute', 0):.0f})"
+    elif scenario:
+        out += f" · scenario {scenario}"
+    return out
+
+
 def handicap_levels(spec) -> list:
     """--eval-handicap "0.25,0.5" -> [0.25, 0.5] (taxes on the policy's side in evaluation games against the AI)."""
     return [float(x) for x in str(spec or "").split(",") if x.strip() and 0.0 < float(x) < 1.0]
@@ -3107,6 +3118,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                        # (the video's panel: the value without the shaping's potential, overlay.FullGameOverlay)
                        "shaping": {"weight": shaping, "scale": scale, "penalty": cfg.get("float_penalty", 0.0)},
                        "title": f"{Path(cfg['run_dir']).name} · policy v{infer.nets.version} · vs {who}",
+                       # (the ruleset the game was played by, and how it started: the panel's line under the title;
+                       # the user, 2026-11-20)
+                       "rules": rules_line(cfg["map"], scenario, late_start),
                        # (the game's tax: the side losing that share of what it gathers, the AI's curriculum or an
                        # agent's balance; < 0 a bonus. The panel shows it beside that side's economy)
                        **({"tax": {"player": int(taxed), "share": float(opp["tax"])}} if taxed is not None and opp.get("tax") else {}),

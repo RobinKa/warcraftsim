@@ -52,6 +52,7 @@ class FullGameOverlay:
         self.T = max(len(self.steps), 1)
         self.sides = trace["sides"]  # [{"player", "name", "kind"}] for players 0 and 1
         self.title = trace.get("title", "")
+        self.rules = trace.get("rules", "")  # (the ruleset and start, selfplay.rules_line; older traces: none)
         self.outcome = {int(k): v for k, v in (trace.get("outcome") or {}).items()}
         self.target = trace.get("target")  # the learner's target strategy (its items' times, and when each was made)
         self.target_b = trace.get("target_b")  # the other side's, if it had one (an agent in self-play)
@@ -152,6 +153,9 @@ class FullGameOverlay:
         y = 8
         d.text((x0, y), self.title[:58], font=self.f_title, fill=FG)
         y += 20
+        if self.rules:  # (the ruleset the game was played by)
+            d.text((x0, y - 2), self.rules[:72], font=self.f_small, fill=DIM)
+            y += 14
         for i, s in enumerate(self.sides):
             p = s["player"]
             d.rectangle([x0, y + 2, x0 + 10, y + 12], fill=PLAYER_COLORS[p % len(PLAYER_COLORS)])

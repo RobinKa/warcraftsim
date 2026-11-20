@@ -594,6 +594,25 @@ def map_rules(name: str) -> Rules:
     return e[1] if e is not None else Rules()
 
 
+def rules_label(name: str) -> str:
+    """A map name's ruleset in words, for a video's panel and the replays' lists: "Echo Isles · the game's own rules",
+    "Echo Isles · echofast2 rules (costs ×0.5, times ×0.33)", a duel map's name with its scales."""
+    def scales(r: Rules) -> str:
+        parts = [f"{k} ×{v:.2g}" for k, v in (("costs", r.cost), ("times", r.time)) if abs(v - 1.0) > 1e-9]
+        return f" ({', '.join(parts)})" if parts else ""
+    e = parse_echo_name(name)
+    if e is not None:
+        src, rules = e
+        place = "Echo Isles" if src == ECHO_ISLES else src
+        return f"{place} · the game's own rules" if rules == Rules() else f"{place} · {name} rules{scales(rules)}"
+    d = parse_duel_name(name)
+    if d is not None:
+        return f"{name} · duel rules{scales(d[1])}"
+    stock = re.sub(r"^\(\d+\)", "", name)  # ("(2)EchoIsles": a stock map by its file's name)
+    stock = "Echo Isles" if name == ECHO_ISLES else stock
+    return f"{stock} · the game's own rules"
+
+
 def echo_map_path(name: str) -> Path:
     """The cached variant of a stock map for a name parse_echo_name reads (built on first use, on each machine)."""
     from .mapbuild import stock_map_path

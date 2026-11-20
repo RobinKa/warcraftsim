@@ -107,6 +107,8 @@ def summarize(m: dict, trace: dict | None, ep: dict | None, names: dict | None =
         if bought:
             me["bought"] = bought
     tags = []
+    if trace and trace.get("rules"):  # (the ruleset the game was played by: the video's line, searchable)
+        tags.append(str(trace["rules"]))
     for who, s in (("", me), ("opponent: ", opp)):
         neutral = [h[1] for h in s["heroes"] if h[0].startswith("N")]
         if neutral:

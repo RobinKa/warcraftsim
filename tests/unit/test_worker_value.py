@@ -37,3 +37,12 @@ def test_eval_handicap_draw():
     assert eval_handicap({"eval_handicap": [0.25], "eval_handicap_share": 0.0}, rng) == 0.0
     got = [eval_handicap({"eval_handicap": [0.25, 0.5], "eval_handicap_share": 0.4}, rng) for _ in range(4000)]
     assert abs(sum(g > 0 for g in got) / 4000 - 0.4) < 0.03 and set(got) == {0.0, 0.25, 0.5}
+
+
+def test_rules_line_for_the_videos():
+    """A filmed game's ruleset in words (the panel's line under the title, the videos' tag)."""
+    from warcraftsim.fullgame.selfplay import rules_line
+    assert rules_line("(2)EchoIsles") == "Echo Isles · the game's own rules"
+    assert rules_line("echofast2").startswith("Echo Isles · echofast2 rules (costs ×0.5")
+    assert rules_line("(2)EchoIsles", "late", {"minute": 11.6}).endswith("· late start (minute 12)")
+    assert rules_line("echofast2", "base2").endswith("· scenario base2") and len(rules_line("echofast2", "base2")) <= 72
