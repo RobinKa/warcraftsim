@@ -1,19 +1,52 @@
 # Next experiments
 
-**As of 2026-11-20.** The base is `fgself-238`, from `fgself-236`'s weight average: 0.955 against the untaxed insane AI (91 of 95 games, every race 0.90-1.00) in one evaluation burst, being confirmed. What it still loses are long games, decided by the AI's development: its research, tier and air ([audit 20](../reference/audit-20.md)). The open list is [the next section](#next-2026-11-20). The older lists below stay as they were written, each item with its outcome.
+**As of 2026-11-20.** The base is `fgself-238`, from `fgself-236`'s weight average: 0.951 against the untaxed insane AI (250 of 263 games over two evaluation bursts, every race 0.90-1.00). What it still loses are long games, decided by the AI's development: its research, tier and air ([audit 20](../reference/audit-20.md)). The open list is [the next section](#next-2026-11-20). The older lists below stay as they were written, each item with its outcome.
 
 **Judging (since 2026-11-13).** An experiment forks from the base's latest checkpoint and trains ~26M steps; the base goes on from the same checkpoint for the same budget as its control. Then an evaluation burst (~1,000 games in ~45 minutes, every policy in one window): both runs' end checkpoints and weight averages against insane, read by race with the races weighed alike, and head to head. A weight average becomes the base only if no race broke in it. A training read (`scripts/train_read.py`) may stop a run that is clearly worse early, but never keeps one: its windows drift.
 
-## Next (2026-11-20)
+## The plan toward superhuman play (2026-11-20)
 
-Open; the order is not set.
+The user (2026-11-20): insane is beaten (0.951); next "more self play and climb the rating", toward superhuman play. Games against people are not part of training or judging: they do not scale. People's replays (2,591 games, already on disk) stay usable as data.
 
-1. **Confirm the 0.955.** It is one burst at 95 games (±0.042).
-2. **Pressure on the AI's economy** (audit 20, proposal 3). Long wins are games where the AI's economy broke (it trained 27 workers, rebuilding them, against 14 in long losses), and the learner's own build does not separate wins from losses. The shaping's material counts the opponent's workers X times their cost (a small flag in `trace.material_units`, e.g. X = 3): a reward, not a lesson. Judged by a burst against its control: the AI's workers trained a game, the share of games past 18 minutes, the long games won.
-3. **Revival under the cap** (audit 20, proposal 4; weaker evidence: filmed target games only). `--revive-lesson 1` with a new `--teach-floor-orders` group for the revival orders. Judged by the minutes heroes lie dead a game and a burst.
-4. **Style specialists in the league**, then **distillation behind a style token**, and **stacked capped lessons** (the bolder changes below, not run yet).
+Where the base stands: it wins with one hero and one tier-1 unit on one mine, expands in 3 of 2,832 games and loses most games past 18 minutes. The insane AI rarely punishes that. A strong opponent would. So the plan has two halves: yardsticks that still move above 0.95, and opponents that punish what the base does.
 
-Audit 20's proposals 1 (the first hero weighted: `fgself-236`, kept) and 2 (race weights: `fgself-237`, not kept) are done.
+### Yardsticks (no people needed)
+
+| | yardstick | what it shows | state |
+|---|---|---|---|
+| Y1 | **The rating** (dashboard, Bradley-Terry on the Elo scale, insane at 1500) | progress among our own policies | built (ratings v8: one name per policy across bursts). Top: `fgself-236 avg swa-43-53` 1,943 ±22 |
+| Y2 | **Insane as a floor** | that a rating gain is not bought with a real loss | every burst; the floor is ~0.90, races weighed alike |
+| Y3 | **The handicap ladder**: insane against the agent at 75% and 50% of its income | a fixed scripted yardstick with room above 0.95 | to build: an evaluation-only tax on the agent's side (the curriculum's tax exists for the AI's side) |
+| Y4 | **Exploitability**: a fresh exploiter trains against the frozen base alone for a fixed budget; its win rate at the end | how easy the base is to beat for someone who studies it, which is what a strong person does | the main exploiter exists (`--exploiter-share`); to build: a short stand-alone run mode and its read |
+| Y5 | **Distance from people's play** (offline): expansion time, upgrades, army mix and supply at minutes 10/15/20 against the replays' distributions | which habits of strong play are missing; not a strength measure | to build: a script over episode rows and the replays' demonstrations |
+
+Rating alone can inflate: policies can learn to beat their relatives without playing better. Y2-Y4 guard against that. Every burst includes the same reference players (`fgself-236 avg swa-43-53`, `fgself-212`/92M) so ratings stay connected over time.
+
+### Experiments, in order
+
+Each is a fork from the base's latest checkpoint with a control, judged by a burst as before, but the verdict is now: rating up (beyond the errors), insane at or above the floor, no race broken.
+
+1. **More self-play** (`fgself-240`, running): `--ai-share 0.4` from 0.8. With it in one burst: `fgself-239` (`--worker-value 3`) and their shared control.
+2. **A league with history**: `--snapshot-every 400 --max-past 12` (a snapshot lives hours, not ~6 minutes) with `--pfsp-data`. `fgself-199` lost 19 points against insane and was dropped, but it was judged by insane alone, at 80% AI games. On the winner of 1.
+3. **The main exploiter**: `--exploiter-share 0.1`. It trains only to beat the current policy and restarts when it does (AlphaStar's main exploiter). `fgself-194` bundled it with fewer AI games and was judged by insane (-13). Now alone, judged by rating and by Y4.
+4. **League exploiters**: `--league-exploiters 2` (built 2026-11-06, never run). They train against the whole league and join it, so the league holds members that play differently.
+5. **Style exploiters** (code): exploiters held to one family of target strategies from people's replays (two bases, air, casters), trained to win with it against the base. In self-play today the opponent with a target is the learner itself following it poorly (0.37-0.62 against insane with a target, 0.72-0.89 without). A style exploiter is a competent expansion or air player in the league; the base must answer it or lose rating. This is the route to expansions and anti-air that lessons did not open (`fgself-223`, `-226`).
+6. **Little or no AI in training** (`--ai-share 0.1`, then 0), once 2-5 hold the insane floor. Insane stays the yardstick.
+
+### Later, or the user's call
+
+* **A larger network.** The policy has 3.3M weights (d 192, 5 layers), tiny beside AlphaStar's. `scripts/grow_model.py` grows a network in place. First a check without a run: the steps a second with a d-384 network (the main machine's CPU is the limit today, the GPU ~90% busy). The user asked for no extra layers on 2026-10-18 (variety first); to be asked again before a run.
+* **An APM cap.** The agent orders every unit every half second. "Superhuman" at that rate is partly speed. Training under a cap is self-play as before (no people needed); it changes what the policy learns, so sooner is cheaper than later. The user's call.
+* **The anchor.** `--ref-kl 0.01` still pulls toward `fgself-100`, a descendant of the built-in AI's clone. With little AI in training, an anchor at the base's own average may fit better. Earlier anchor moves read level (judged by insane).
+* **More machines.** Training is bound by game CPUs (~5,300 steps a second). A league with exploiters splits that among several learners. A second games box, or rented CPUs for the actors, scales it.
+* **More maps.** Only when the target is the ladder; the map pool cost Echo Isles strength (`fgself-178`).
+
+### From before the plan (2026-11-20)
+
+* **Revival under the cap** (audit 20, proposal 4; weaker evidence): `--revive-lesson 1` with a `--teach-floor-orders` group for the revival orders. A slot filler.
+* **Distillation behind a style token**, after 5: one policy that plays each style on demand.
+
+Done: the 0.955 confirmed (0.951 over 263 games); audit 20's proposals 1 (first hero, kept), 2 (race weights, not kept) and 3 (`--worker-value`, `fgself-239`, in the shared burst).
 
 **2026-11-01.** The list from that week's findings: one mine caps income at half the insane AI's and ~79% of `fgself-168`'s losses come past 18 minutes ([the table](../reference/experiment-log.md)); the KL anchor holds the macro up but holds some variety back (`fgself-171`); and the policy cannot buy from its own shops. One change a run, ~3.5 hours each.
 
