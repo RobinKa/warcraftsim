@@ -68,7 +68,7 @@ from . import featnative
 from . import macros
 from . import techtree
 from .featnative import addr as _faddr, lib as _featlib, to_f16, to_f32_into as _to_f32_into
-from .trace import DEAD_FLAG, Production, material, research_material, research_values, trace_step, unit_values  # noqa: F401
+from .trace import DEAD_FLAG, Production, material, research_material, research_values, trace_step, unit_values, worker_valued  # noqa: F401
 from .play import unit_rows
 from .model import (FullGameNet, act, adapt_config, anchor_kl, arch_key, evaluate, fine_head, load, point_parts,
                     pointer_label_ok, trained)
@@ -2687,7 +2687,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     shared_noise = random.random() < cfg.get("shared_noise", 0.0) if replay is None else replay["shared_noise"]
     if rec is not None:
         rec["shared_noise"] = shared_noise
-    values, scale = cfg["values"], cfg["shaping_scale"]
+    values, scale = worker_valued(cfg["values"], cfg.get("worker_value", 1.0)), cfg["shaping_scale"]  # (--worker-value)
     shaping = opp.get("shaping", cfg["shaping"])  # (the potential goes back to 0 with the weight it was paid with)
     # (--research-value: a late start's research levels, set up with no event, count as its placed units do)
     placed_research = ({s: dict(late_start["sides"][s].get("research") or {}) for s in (0, 1)}
@@ -5326,6 +5326,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--teach-floor-orders", default="attack,spells", help="the orders --teach-floor caps: attack (on a "
                     "unit), spells (the spell lesson's), halls (the expansion lesson's halls and haunted mine), army (the army lesson's "
                     "anti-air and tier units' train orders), upgrades (the upgrade lesson's weapon and armor research)")
+    ap.add_argument("--worker-value", type=float, default=1.0, help="W: the shaping's material counts each worker W times "
+                    "its cost, both sides' (killing the enemy's workers pays more, losing one's own costs more; audit 20: "
+                    "long games were won where the AI's economy broke). 1: as before")
     ap.add_argument("--first-hero-weights", default="", help="the teacher's first hero (a game without a target) drawn with "
                     "these weights, e.g. Ofar:4,Hamg:4 (others 1; empty: a third each, as before). Audit 20: the first hero "
                     "decided orc and human games (Far Seer 0.93 against 0.40-0.62, Archmage 0.95 against ~0.77)")
@@ -6286,7 +6289,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "order_masks": args.order_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "hunt_lesson": args.hunt_lesson, "spell_lesson": args.spell_lesson, "attack_lesson": args.attack_lesson, "first_hero_weights": args.first_hero_weights, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "order_masks": args.order_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "hunt_lesson": args.hunt_lesson, "spell_lesson": args.spell_lesson, "attack_lesson": args.attack_lesson, "first_hero_weights": args.first_hero_weights, "worker_value": args.worker_value, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "late_capture": args.late_capture, "late_minutes": [float(x) for x in args.late_minutes.split(",")], "late_from": args.late_from, "research_value": args.research_value, "real_agents": args.real_agents,

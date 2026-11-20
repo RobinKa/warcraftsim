@@ -234,6 +234,23 @@ def material_units(obs, values: dict, hero_level: float = 0.0, worker_cap: int =
 MADE_FROM = {"ushd": "uaco"}
 
 
+_WORKER_VALUED: dict[tuple, dict] = {}  # ((id of a values' table, w) -> the table with workers at w times: one object
+# a table and weight, so the native material code's table (_VALUES, by id) is made once, not each game)
+
+
+def worker_valued(values: dict, w: float) -> dict:
+    """--worker-value W: the shaping's values' table with each worker type's value W times (both sides': killing the
+    enemy's workers pays more, losing its own costs more; audit 20: long games were won where the AI's economy broke,
+    27 workers trained to rebuild against 14 in long losses); W 1: the table itself."""
+    if not w or float(w) == 1.0:
+        return values
+    key = (id(values), float(w))
+    got = _WORKER_VALUED.get(key)
+    if got is None or got[0] is not values:
+        got = _WORKER_VALUED[key] = (values, {k: (v * float(w) if int(k) in WORKER_IDS else v) for k, v in values.items()})
+    return got[1]
+
+
 def unit_values() -> dict[str, int]:
     """What each unit type costs (gold + lumber, the game's own tables; MADE_FROM's at their source's): {type id: value}."""
     from ..data.mpq import GameArchives
