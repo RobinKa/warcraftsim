@@ -49,7 +49,8 @@ The user asked for bolder experiments toward a stronger and more diverse agent. 
 
 | Run | Change | Why |
 |---|---|---|
-| `fgself-236` (running) | `--first-hero-weights Ofar:4,Hamg:4` from 235/3.9M | audit 20: the first hero decides orc and human games |
+| `fgself-237` (running) | `--learner-races human:0.25,undead:0.25,orc:0.3,nightelf:0.2` from 236's end | audit 20: orc the weakest race, 15% of the training games |
+| `fgself-236` (**kept**, from its end) | `--first-hero-weights Ofar:4,Hamg:4` from 235/3.9M | burst-236/236b pooled: its end 0.845 against insane, 235's 0.754-0.781; orc 0.75 against 0.52-0.63; its own first hero Far Seer 74-82%, Archmage 70-85% |
 | `fgself-235` (the base; its control next) | 233's weight average (masks, capped spells) | |
 | `fgself-234` (not kept, 27M) | `--lr 2e-5` from 233/14.8M | burst-234: its average 0.871, the control's 0.852 (n.s.), h2h 0.46 |
 | `fgself-233` (the base; its control next) | 231's weight average, with `--order-masks 7` | |

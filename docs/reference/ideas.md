@@ -9,7 +9,7 @@ In the order they run. The code for each is in place unless it says otherwise. [
 | idea | from | what it is | status |
 |---|---|---|---|
 | Unit attacks | the user (2026-11-12: workers survive attack-moves) | the policy attacks a unit in <1% of its attacks; a gentle lesson or exploration for it ([next experiments](../proposals/next-experiments.md), 13) | `--attack-lesson` + `--teach-floor`: 218 collapsed, 219 (floor 0.05) spread, 220 (0.002) -8 against its control: closed for now |
-| The first hero weighted | audit 20 (2026-11-18) | the teacher's first-hero draw weighted toward the heroes that win (orc Far Seer, human Archmage) | running (`fgself-236`) |
+| The first hero weighted | audit 20 (2026-11-18) | the teacher's first-hero draw weighted toward the heroes that win (orc Far Seer, human Archmage) | **kept** (`fgself-236`: 0.845 against insane, orc 0.75 from 0.52-0.63) |
 | Masks for orders the game refuses | bug finder 10 (2026-11-16) | spells' targets by the game's rules, toggles by state, learns only for heroes (`--order-masks 7`) | **kept** (`fgself-231`: level, ~20% fewer refused orders) |
 | Style specialists in the league; distillation behind a style token | ours (2026-11-17, the user: bolder changes for strength and diversity) | specialists pushed into one style each as fixed league members, then one policy that plays each style on demand ([next experiments](../proposals/next-experiments.md)) | queued |
 | Weight averaging (SWA) | ours (2026-11-16: a checkpoint's level swings ~8 points, burst-216/220) | the mean of a stretch of checkpoints (`scripts/average_checkpoints.py`) as the policy | burst-swa: the mean of 212's 81 checkpoints 0.845 against insane, its end 0.804, the best single 0.856; `fgself-221` goes on from it |
