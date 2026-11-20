@@ -2342,6 +2342,16 @@ Stopped at 27.3M (22:13): the policy followed the weights (orc Far Seer 69% of t
 Stopped for the night (22:40, the user's word) with the control at 11.3M of its 31.2M; it finishes at the next start, then burst-236.
 
 2026-11-20: the control resumed (10:10) and stopped at 31.2M (11:16; its checkpoint at the same budget 31244014). **burst-236** (11:18-12:04): 236's average (31 checkpoints 17.4-27.3M), the control's (31, 21.4-31.2M) and both ends, all masked; in evaluation there is no teacher, so the first hero is each policy's own choice.
+983 games:
+
+| policy | against insane (races weighed alike) | human | night elf | orc | undead | orc: Far Seer first | human: Archmage first |
+|---|---|---|---|---|---|---|---|
+| `fgself-236`'s average (first hero weighted) | 0.725 ±0.081 | 0.87 | 0.45 | 0.77 | 0.81 | 82% (won 0.94 of 18) | 70% |
+| `fgself-235`'s average (the control) | 0.737 ±0.076 | 0.82 | 0.85 | 0.39 | 0.89 | 22% | 45% |
+| `fgself-236`/27.3M | 0.851 ±0.067 | 0.79 | 0.97 | 0.72 | 0.92 | 74% | 85% |
+| `fgself-235`/31.2M | 0.744 ±0.078 | 0.69 | 0.64 | 0.69 | 0.96 | 38% | 39% |
+
+The policy's own first hero followed the lesson (Far Seer 74-82% from 22-38%, Archmage 70-85% from 39-45%) and orc rose (236's average 0.77 against 0.39). But the averages read level (-0.012), 236's average lost night elf games (0.45 of 30; its end 0.97, and night elf's first heroes were not touched), and head to head 236's average 0.424 against 235's average (185 games), 0.460 against its end; 236's end +0.107* against 235's end. Mixed, so a second burst (**burst-236b**, 12:07-12:53): 236's end as the current policy against 235's average and end and 236's average, for its head to head.
 
 **Check A** (2026-11-04 13:22, `scripts/blend_check.py`, CPU, for item 5: an EMA anchor, `--ref-ema`): blends of the anchor `fgself-100` (grown to `fgself-182`'s vocabulary and inputs, as a run grows it) and `fgself-182`/50150172, the anchor's weights moved 0-100% of the way (the EMA's own step at that share; the two are 0.12 apart, relative L2). The KL per own unit is the run's term (forward-all, KL(parent || blend); the orders' alone in brackets) on 18,433 steps of these games. 12 games each against the untaxed insane AI on (2)EchoIsles, real rules, a person's income, every blend on the same 12 matchups:
 
