@@ -2378,7 +2378,20 @@ The control stopped at 54.1M (15:52; its checkpoint at the same budget 53275744)
 
 `fgself-240` stopped at 27.0M (21:19; the checkpoint at 239's budget: 26966747): its training games by count 15% against the AI, 42% against itself, 43% against the league (`--ai-share` counts launches); head to head 0.45 against 236's average (219 games) and 0.52 against 238/14.3M (166). The control (238 from 14279921) started 21:20. Built meanwhile: the plan toward superhuman play ([next experiments](../proposals/next-experiments.md)), the **handicap ladder** (`--eval-handicap 0.25,0.5 --eval-handicap-share`: evaluation matchups against insane with the policy gathering 25% or 50% less; rated as "insane AI vs -25%" / "-50%"; bursts play 40% of their AI matchups with it), and the videos' ruleset line.
 
-The control stopped at 41.1M (22:49; the checkpoint at the same budget 41109888). **burst-240** (22:50-23:36): 240's end as the current policy against 239's end, the control's end and 236's average; the handicap ladder's first use (40% of the AI matchups at -25% or -50% income).
+The control stopped at 41.1M (22:49; the checkpoint at the same budget 41109888). **burst-240** (22:50-23:36): 240's end as the current policy against 239's end, the control's end and 236's average; the handicap ladder's first use (40% of the AI matchups at -25% or -50% income). 923 games:
+
+| policy | rating | against insane, untaxed (races weighed alike) | agent at -25% income | at -50% | head to head of 240 against it |
+|---|---|---|---|---|---|
+| `fgself-236`'s average | **1,935 ±19** | 0.956 ±0.059 (57 games) | 0.44 (24) | 0.00 (24) | 0.424 (158) |
+| `fgself-238`/41.1M (the control) | 1,682 ±31 | 0.787 ±0.100 (69) | 0.23 (20) | 0.05 (20) | 0.525 (159) |
+| `fgself-240`/27.0M (`--ai-share 0.4`) | 1,679 ±29 | 0.632 ±0.122 (62) | 0.00 (16) | 0.00 (22) | |
+| `fgself-239`/26.9M (`--worker-value 3`) | 1,584 ±31 | 0.666 ±0.110 (64) | 0.36 (22) | 0.00 (24) | 0.668 (182) |
+
+**`fgself-239` not kept** (-98 rating against the control). **`fgself-240` not kept**: level with the control in rating and head to head (0.525), but 0.63 against insane, under the floor, and 0 of 16 at -25% income; more self-play alone trades the AI for itself. The handicap ladder works and has room: at -25% income the best policy wins 0.44, at -50% none wins (the fitted rungs: "insane AI vs -25%" 1,910 ±49, "vs -50%" ~2,490 ±145 from few games). 236's average read 0.956 untaxed a third time (pooled 0.952, 305 of 320).
+
+**The base does not hold its average's level when trained on**: 236's average 1,935; `fgself-238` from it 1,848 at 14.3M and 1,682 at 41.1M (0.896, then 0.787 against insane), about where single checkpoints sit (236's end 1,831). So ~100-250 rating points separate a weight average from the trajectory around it, more than any experiment since moved. Consequences: verdicts compare averages again (this burst compared ends, to fit four policies); and the policies the league and the evaluation use could be a running average of the weights (to build).
+
+**`fgself-241`** (23:42, from 236's average, code 3d006d1): **a league with history** (the plan's experiment 2): `--snapshot-every 400 --max-past 12 --pfsp-data 0.5`. `fgself-238`'s checkpoints at the same budget are its control (the same start; already run).
 
 **Check A** (2026-11-04 13:22, `scripts/blend_check.py`, CPU, for item 5: an EMA anchor, `--ref-ema`): blends of the anchor `fgself-100` (grown to `fgself-182`'s vocabulary and inputs, as a run grows it) and `fgself-182`/50150172, the anchor's weights moved 0-100% of the way (the EMA's own step at that share; the two are 0.12 apart, relative L2). The KL per own unit is the run's term (forward-all, KL(parent || blend); the orders' alone in brackets) on 18,433 steps of these games. 12 games each against the untaxed insane AI on (2)EchoIsles, real rules, a person's income, every blend on the same 12 matchups:
 
