@@ -16,7 +16,7 @@ Where the base stands: it wins with one hero and one tier-1 unit on one mine, ex
 |---|---|---|---|
 | Y1 | **The rating** (dashboard, Bradley-Terry on the Elo scale, insane at 1500) | progress among our own policies | built (ratings v8: one name per policy across bursts). Top: `fgself-236 avg swa-43-53` 1,943 ±22 |
 | Y2 | **Insane as a floor** | that a rating gain is not bought with a real loss | every burst; the floor is ~0.90, races weighed alike |
-| Y3 | **The handicap ladder**: insane against the agent at 75% and 50% of its income | a fixed scripted yardstick with room above 0.95 | to build: an evaluation-only tax on the agent's side (the curriculum's tax exists for the AI's side) |
+| Y3 | **The handicap ladder**: insane against the agent at 75% and 50% of its income | a fixed scripted yardstick with room above 0.95 | built 2026-11-20 (`--eval-handicap 0.25,0.5 --eval-handicap-share`; bursts play 40% of their AI matchups with it; rated as "insane AI vs -25%" / "-50%"); first read in the next burst |
 | Y4 | **Exploitability**: a fresh exploiter trains against the frozen base alone for a fixed budget; its win rate at the end | how easy the base is to beat for someone who studies it, which is what a strong person does | the main exploiter exists (`--exploiter-share`); to build: a short stand-alone run mode and its read |
 | Y5 | **Distance from people's play** (offline): expansion time, upgrades, army mix and supply at minutes 10/15/20 against the replays' distributions | which habits of strong play are missing; not a strength measure | to build: a script over episode rows and the replays' demonstrations |
 
