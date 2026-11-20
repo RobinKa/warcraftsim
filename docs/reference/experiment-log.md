@@ -2355,7 +2355,16 @@ The policy's own first hero followed the lesson (Far Seer 74-82% from 22-38%, Ar
 
 **`fgself-237`** (12:58, from `fgself-236`/27296274, code 28a4730): **race weights**, `--learner-races human:0.25,undead:0.25,orc:0.3,nightelf:0.2` (from 0.35/0.35/0.15/0.15, set at fgself-67 when orc was strong; audit 20: orc the weakest, the night elf AI the hardest). `fgself-236` goes on from 27296274 as the control; then a burst by race.
 Stopped at 26.1M (14:22): the race mix as set (orc 31% of the training games); its no-target training games against the real insane orc 0.84, human 0.86, undead 0.84, night elf 0.92 by 13:47; head to head 0.56 against 236's end (193 games) and 0.54 against 235's average (237). The control (236 from 27296274) started 14:22.
-The control stopped at 54.1M (15:52; its checkpoint at the same budget 53275744). **burst-237** (15:53-16:39): 237's end as the current policy (averages can break a race), against 236's end and both runs' averages, read by race.
+The control stopped at 54.1M (15:52; its checkpoint at the same budget 53275744). **burst-237** (15:53-16:39): 237's end as the current policy (averages can break a race), against 236's end and both runs' averages, read by race. 940 games:
+
+| policy | against insane (races weighed alike) | human | night elf | orc | undead | orc: Far Seer | human: Archmage |
+|---|---|---|---|---|---|---|---|
+| `fgself-236`'s average (the control: first hero weighted) | **0.955** ±0.042 | 1.00 | 0.90 | 1.00 | 0.92 | 68% | 73% |
+| `fgself-237`'s average (race weights) | 0.904 ±0.063 | 0.89 | 0.91 | 0.89 | 0.92 | 78% | 86% |
+| `fgself-236`/53.3M | 0.894 ±0.061 | 0.83 | 0.94 | 0.96 | 0.84 | 75% | 62% |
+| `fgself-237`/26.1M | 0.858 ±0.078 | 0.85 | 0.88 | 0.93 | 0.77 | 82% | 71% |
+
+237 minus 236: ends -0.036, averages -0.052 (n.s.); head to head 237's end 0.576 against 236's end (177 games), 0.430 against 236's average (179). **`fgself-237` not kept**: the race weights add nothing once the first hero is weighted (orc already 0.93-1.00). **236's average reads 0.955 against insane (91 of 95), no race broken: the best measured policy of the project's real-game line**, from one burst; the base goes on from it as **`fgself-238`** (16:43, code 287a26f).
 
 **Check A** (2026-11-04 13:22, `scripts/blend_check.py`, CPU, for item 5: an EMA anchor, `--ref-ema`): blends of the anchor `fgself-100` (grown to `fgself-182`'s vocabulary and inputs, as a run grows it) and `fgself-182`/50150172, the anchor's weights moved 0-100% of the way (the EMA's own step at that share; the two are 0.12 apart, relative L2). The KL per own unit is the run's term (forward-all, KL(parent || blend); the orders' alone in brackets) on 18,433 steps of these games. 12 games each against the untaxed insane AI on (2)EchoIsles, real rules, a person's income, every blend on the same 12 matchups:
 
