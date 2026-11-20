@@ -150,6 +150,8 @@ def run_config(run_dir: Path, host: str, games: int, start_update) -> tuple[dict
            "grpo_share": 0.0, "grpo_group": 4, "grpo_branch": [60.0, 480.0],  # (evaluation games never branch)
            "eval_map": "", "eval_costs": None,  # (its map is the evaluation games' already: --eval-map)
            "eval_vs": num("eval_vs", 0.0),  # (--eval-vs: the current policy against a listed checkpoint)
+           "eval_handicap": [float(x) for x in str(c.get("eval_handicap") or "").split(",") if x.strip()],  # (the
+           "eval_handicap_share": num("eval_handicap_share", 0.0),  # handicap ladder: --eval-handicap)
            "eval_heuristic": num("eval_heuristic", 0.0), "heuristic_race": c.get("heuristic_race") or "orc", "heuristic_share": 0.0, "heuristic_strategy": "default",  # (the
            # current policy against the hand-written player: --eval-heuristic)
            "eval_guide": num("eval_guide", 0.0), "guide_capable": True,  # (--eval-guide: current+zg, this worker's only)

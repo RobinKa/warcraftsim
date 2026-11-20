@@ -29,7 +29,7 @@ EQUAL = "insane AI, equal income"
 ANCHOR_RATING = 1500.0
 SCALE = 400.0 / math.log(10.0)  # Elo points per unit of log-strength
 PRIOR_GAMES = 1.0  # each player's virtual tie against the anchor: finite ratings for a few games
-CACHE = ".ratings-cache-v8.json"  # (v2: the "+shops" players; v3: Echo Isles runs only, hours from the creation; v4: the
+CACHE = ".ratings-cache-v9.json"  # (v2: the "+shops" players; v3: Echo Isles runs only, hours from the creation; v4: the
 # pairs' games by the hour they were played; v5: games at the doubled income against EQUAL; v6: no games of a policy
 # with the composition kinds' inputs played by a run without them, blind). Every game counts alike, however old (the user, 2026-10-25: a decay could
 # lose a good past policy); the top rated ones are played anew under today's rules by the evaluation worker's gauntlet
@@ -41,6 +41,7 @@ _CKPT = re.compile(r"(fgself-[\w.-]+)/(?:checkpoints/)?0*(\d+)\.pt")
 # ("fgself-236 avg swa-43-53"), and an evaluation burst's current policy is the checkpoint its burst.json names, not
 # "burst-237 h2": the same policy kept one rating across bursts, the user's "climb the rating")
 _AVG = re.compile(r"(fgself-[\w.-]+)/averaged/([\w.-]+)\.pt")
+_HANDICAP = re.compile(r"\(real, agent -(\d+)%\)")  # (selfplay --eval-handicap's opponent name)
 BURST = "burst.json"  # (a burst's {"current": the checkpoint it plays as "current", ...}: scripts/burst_prep.py)
 # a checkpoint the evaluation worker's gauntlet plays for a run's policy by the hour ("fgself-102/11882922" for
 # "fgself-102 h2": the run's last checkpoint saved in that hour), written by scripts/remote_eval.py: its games count
@@ -81,6 +82,9 @@ def players_of(row: dict, run: str, start: float, untrained=lambda run: False,
         b = named(key)
         if b is None:
             return None
+    elif "ai-insane" in opp and (m := _HANDICAP.search(opp)):  # (the handicap ladder: the insane AI against a policy
+        b = f"{ANCHOR} vs -{m.group(1)}%"                         # that gathers that much less: a player of its own)
+        key = key.split(" @-")[0]
     elif "ai-insane" in opp and "(real)" in opp:
         doubled = (row.get("slot_difficulty") or ("normal" if key == "current+human" else slot)) == "insane"
         b = EQUAL if doubled else ANCHOR

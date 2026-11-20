@@ -25,3 +25,15 @@ def test_material_counts_them():
     obs = SimpleNamespace(units=units, unit_array=None)
     assert trace.material_units(obs, values)[1] == 210
     assert trace.material_units(obs, trace.worker_valued(values, 3.0))[1] == 225 + 135
+
+
+def test_eval_handicap_draw():
+    """--eval-handicap: levels parsed; a matchup's level drawn with the share, none without levels or at share 0."""
+    import random
+    from warcraftsim.fullgame.selfplay import eval_handicap, handicap_levels
+    assert handicap_levels("0.25,0.5") == [0.25, 0.5] and handicap_levels("") == [] and handicap_levels("1.5,0.25") == [0.25]
+    rng = random.Random(0)
+    assert eval_handicap({"eval_handicap": [], "eval_handicap_share": 1.0}, rng) == 0.0
+    assert eval_handicap({"eval_handicap": [0.25], "eval_handicap_share": 0.0}, rng) == 0.0
+    got = [eval_handicap({"eval_handicap": [0.25, 0.5], "eval_handicap_share": 0.4}, rng) for _ in range(4000)]
+    assert abs(sum(g > 0 for g in got) / 4000 - 0.4) < 0.03 and set(got) == {0.0, 0.25, 0.5}

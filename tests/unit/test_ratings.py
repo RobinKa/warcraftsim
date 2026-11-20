@@ -68,3 +68,15 @@ def test_averages_and_bursts_keep_one_name():
     trained = lambda run: run != "fgself-236"  # (an averaged checkpoint's run read from its name, not the whole name)
     avg = {**row, "eval_key": "runs/fgself-236/averaged/swa-43-53.pt"}
     assert ratings.players_of(avg, "burst-x", 0.0, untrained=lambda r: r == "fgself-236 avg swa-43-53")[0] == "fgself-236 avg swa-43-53"
+
+
+def test_handicap_ladder_rows():
+    """--eval-handicap: a policy against the insane AI at 75% of its income plays "insane AI vs -25%", a player of its
+    own; the untaxed anchor's games are not touched."""
+    row = {"eval": True, "eval_key": "current @-25%", "opponent": "script:ai-insane (real, agent -25%)", "outcome": 1.0,
+           "time": 2e9, "handicap": 25}
+    assert ratings.players_of(row, "burst-x", 0.0, current="fgself-240/26000000") == ("fgself-240/26000000", "insane AI vs -25%")
+    ck = {**row, "eval_key": "runs/fgself-236/averaged/swa-43-53.pt @-50%", "opponent": "script:ai-insane (real, agent -50%)"}
+    assert ratings.players_of(ck, "burst-x", 0.0) == ("fgself-236 avg swa-43-53", "insane AI vs -50%")
+    plain = {**row, "eval_key": "current", "opponent": "script:ai-insane (real)"}
+    assert ratings.players_of(plain, "burst-x", 0.0, current="fgself-240/26000000")[1] == ratings.ANCHOR

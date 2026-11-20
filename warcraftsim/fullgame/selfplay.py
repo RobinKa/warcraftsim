@@ -1389,6 +1389,19 @@ def spells_cast(results: dict) -> dict:
     return out
 
 
+def handicap_levels(spec) -> list:
+    """--eval-handicap "0.25,0.5" -> [0.25, 0.5] (taxes on the policy's side in evaluation games against the AI)."""
+    return [float(x) for x in str(spec or "").split(",") if x.strip() and 0.0 < float(x) < 1.0]
+
+
+def eval_handicap(cfg: dict, rng) -> float:
+    """An evaluation matchup's handicap: with chance --eval-handicap-share one of --eval-handicap's levels, else 0."""
+    levels = cfg.get("eval_handicap") or []
+    if not levels or rng.random() >= cfg.get("eval_handicap_share", 0.0):
+        return 0.0
+    return float(rng.choice(levels))
+
+
 def hero_weights(spec) -> dict:
     """--first-hero-weights "Ofar:4,Hamg:4" -> {"Ofar": 4.0, "Hamg": 4.0} (the teacher's first-hero draw; others 1)."""
     out = {}
@@ -1617,6 +1630,7 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                 races[1 - side] = races[side]
         ai = _choose(rng, spec["launch"])  # {"kind": "agents"} or {"kind": "ai", "difficulty"[, "delay"]}
         versus = None  # (--eval-vs: an evaluation launch of the current policy against a listed checkpoint)
+        eval_tax = 0.0  # (--eval-handicap: this evaluation matchup's tax on the policy's side)
         # --heuristic-share / --eval-heuristic: the learner against the hand-written player (fullgame/heuristic.py),
         # its side in --heuristic-race; a training launch between agents, or an evaluation launch (eval_key "vs heuristic")
         heur = (not evaluating and ai["kind"] == "agents" and cfg.get("heuristic_share", 0.0) > 0
@@ -1649,8 +1663,9 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                     keys.insert(2, "current+zg")  # (--eval-guide: its target followed with guidance; the worker's only)
                 rng.shuffle(keys)
                 diff = rng.choice(cfg.get("eval_ai") or ["normal", "insane"])
-                paired = [(list(races), side, diff, key) for key in keys]
-            races, side, diff, eval_key = paired.pop(0)
+                htax = eval_handicap(cfg, rng)  # (--eval-handicap: the matchup's, for every policy in turn)
+                paired = [(list(races), side, diff, key, htax) for key in keys]
+            races, side, diff, eval_key, eval_tax = paired.pop(0)
             ai = {"kind": "ai", "difficulty": diff, "real": True}
         adv = agent_difficulty(cfg)  # (a person's income; with --opd-share the advisor's, protocol.ShadowAI)
         slots = [Agent(races[0], handicap=cfg["handicap"], difficulty=adv), Agent(races[1], handicap=cfg["handicap"], difficulty=adv)]
@@ -1742,6 +1757,11 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                     opp["advise"] = not real and rng.random() < cfg.get("opd_share", 0.0)
                     if evaluating and not versus and not heur and eval_key != "current":
                         opp["eval_key"] = eval_key
+                    if evaluating and eval_tax > 0 and ai["kind"] == "ai":  # (--eval-handicap: the policy gathers that
+                        # much less; a game of its own name and key, so the untaxed yardstick's readers leave it out)
+                        pct = int(round(100 * eval_tax))
+                        opp["name"] = opp["name"].replace(" (real)", f" (real, agent -{pct}%)")
+                        opp["tax"], opp["tax_side"], opp["eval_handicap"] = eval_tax, side, pct
                     if "shaping" in spec:  # (--shaping-anneal: the weight now, the game's for its whole length)
                         opp["shaping"] = spec["shaping"]
                     if curr:  # the curriculum's current knobs for this AI
@@ -3065,7 +3085,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"league_exploiter": opp["lx"], "opponent_kind": opp.get("vs_kind"),
             **({"exploiter_version": xv} if (xv := exploiter_version(keys.get(side))) is not None else {})}
            if opp.get("kind") == "lexploit" else {}),
-        **({} if train else {"eval": True, "eval_key": opp.get("eval_tag") or opp.get("eval_key") or "current"})}
+        **({} if train else {"eval": True, "eval_key": (opp.get("eval_tag") or opp.get("eval_key") or "current")
+                             + (f" @-{opp['eval_handicap']}%" if opp.get("eval_handicap") else ""),
+                             **({"handicap": opp["eval_handicap"]} if opp.get("eval_handicap") else {})})}
     if captured:  # (--late-capture: the state with how its game ended, the learner's line of late-states.jsonl)
         captured.update(winner=next((s for s in (0, 1) if outcome[s] > 0), None), end_minute=round(obs.game_time / 60.0, 2),
                         run=Path(cfg["run_dir"]).name, learner=side, opponent=opp["name"], time=round(time.time()))
@@ -5326,6 +5348,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--teach-floor-orders", default="attack,spells", help="the orders --teach-floor caps: attack (on a "
                     "unit), spells (the spell lesson's), halls (the expansion lesson's halls and haunted mine), army (the army lesson's "
                     "anti-air and tier units' train orders), upgrades (the upgrade lesson's weapon and armor research)")
+    ap.add_argument("--eval-handicap", default="", help="the handicap ladder: taxes on the policy's side in evaluation "
+                    "games against the AI, e.g. 0.25,0.5 (it gathers that much less; a fixed yardstick with room above "
+                    "the untaxed insane AI's ~0.95). Their rows: eval_key '<key> @-25%%', opponent '... (real, agent -25%%)'")
+    ap.add_argument("--eval-handicap-share", type=float, default=0.0, help="the share of the evaluation matchups against "
+                    "the AI played with one of --eval-handicap's levels (every policy plays the matchup at that level)")
     ap.add_argument("--worker-value", type=float, default=1.0, help="W: the shaping's material counts each worker W times "
                     "its cost, both sides' (killing the enemy's workers pays more, losing one's own costs more; audit 20: "
                     "long games were won where the AI's economy broke). 1: as before")
@@ -6297,6 +6324,7 @@ def main(argv: list[str] | None = None) -> int:
            "real_late_from": args.real_late_from,
            "late_states": [x for x in args.late_states.split(",") if x], "late_z": args.late_z,
            "eval_ai": [d for d in args.eval_ai.split(",") if d],
+           "eval_handicap": handicap_levels(args.eval_handicap), "eval_handicap_share": args.eval_handicap_share,
            "map_geometry": [fx.STARTS, fx.BIN_RANGE],
            "infer_entities": [int(x) for x in args.infer_entities.split(",")],
            "infer_past_entities": [int(x) for x in args.infer_past_entities.split(",")],
