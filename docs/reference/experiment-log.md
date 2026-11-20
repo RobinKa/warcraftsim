@@ -2366,6 +2366,8 @@ The control stopped at 54.1M (15:52; its checkpoint at the same budget 53275744)
 
 237 minus 236: ends -0.036, averages -0.052 (n.s.); head to head 237's end 0.576 against 236's end (177 games), 0.430 against 236's average (179). **`fgself-237` not kept**: the race weights add nothing once the first hero is weighted (orc already 0.93-1.00). **236's average reads 0.955 against insane (91 of 95), no race broken: the best measured policy of the project's real-game line**, from one burst; the base goes on from it as **`fgself-238`** (16:43, code 287a26f).
 
+**burst-confirm** (17:33-18:18): 236's average again, as the current policy against 236's end and 238's 14.3M, to confirm the 0.955 before it is treated as the level (`fgself-238` paused at 14279921 meanwhile). Built meanwhile: **`--worker-value W`** (`trace.worker_valued`, `tests/unit/test_worker_value.py`): the shaping's material counts each worker W times its cost, both sides' (audit 20's third proposal: long games were won where the AI's economy broke).
+
 **Check A** (2026-11-04 13:22, `scripts/blend_check.py`, CPU, for item 5: an EMA anchor, `--ref-ema`): blends of the anchor `fgself-100` (grown to `fgself-182`'s vocabulary and inputs, as a run grows it) and `fgself-182`/50150172, the anchor's weights moved 0-100% of the way (the EMA's own step at that share; the two are 0.12 apart, relative L2). The KL per own unit is the run's term (forward-all, KL(parent || blend); the orders' alone in brackets) on 18,433 steps of these games. 12 games each against the untaxed insane AI on (2)EchoIsles, real rules, a person's income, every blend on the same 12 matchups:
 
 | Blend | KL to `fgself-100` | KL to `fgself-182` | Won | Minutes | Supply at 5 / 10 min | Workers | Army | Gold |
