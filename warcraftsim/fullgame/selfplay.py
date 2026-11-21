@@ -68,7 +68,7 @@ from . import featnative
 from . import macros
 from . import techtree
 from .featnative import addr as _faddr, lib as _featlib, to_f16, to_f32_into as _to_f32_into
-from .trace import DEAD_FLAG, Production, material, research_material, research_values, trace_step, unit_values, worker_valued  # noqa: F401
+from .trace import DEAD_FLAG, Production, material, research_material, research_values, shaped_extras, trace_step, unit_values, worker_valued  # noqa: F401
 from .play import unit_rows
 from .model import (FullGameNet, act, adapt_config, anchor_kl, arch_key, evaluate, fine_head, load, point_parts,
                     pointer_label_ok, trained)
@@ -2723,8 +2723,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     # (--research-value: a late start's research levels, set up with no event, count as its placed units do)
     placed_research = ({s: dict(late_start["sides"][s].get("research") or {}) for s in (0, 1)}
                        if late_start is not None and cfg.get("research_value") else None)
-    mat = with_research(material(obs, values, cfg.get("hero_level_value", 0.0), cfg.get("worker_cap", 0),
-                                 cfg.get("mana_value", 0.0)), prod, cfg.get("research_value", 0.0), placed_research)
+    mat = with_research(shaped_extras(obs, values, material(obs, values, cfg.get("hero_level_value", 0.0),
+                                                              cfg.get("worker_cap", 0), cfg.get("mana_value", 0.0)),
+                                              cfg.get("hero_xp_value", 0.0), cfg.get("building_hp_value", 1.0)), prod, cfg.get("research_value", 0.0), placed_research)
     pot = shaped(obs, mat, cfg.get("float_penalty", 0.0))
     phi = {s: (pot[s] - pot[1 - s]) / scale for s in trajs}  # at the last recorded state
     ret = {s: 0.0 for s in trajs}
@@ -2953,8 +2954,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         for s, tk in trackers.items():  # (--z-modes: evaluation games too, their rows' report)
             p_ = obs.players.get(s)
             viol[s] = tk.step(rows_next, obs.events, p_.food_used if p_ is not None else 0, obs.game_time)
-        mat = with_research(material(obs, values, cfg.get("hero_level_value", 0.0), cfg.get("worker_cap", 0),
-                                     cfg.get("mana_value", 0.0)), prod, cfg.get("research_value", 0.0), placed_research)
+        mat = with_research(shaped_extras(obs, values, material(obs, values, cfg.get("hero_level_value", 0.0),
+                                                                  cfg.get("worker_cap", 0), cfg.get("mana_value", 0.0)),
+                                                  cfg.get("hero_xp_value", 0.0), cfg.get("building_hp_value", 1.0)), prod, cfg.get("research_value", 0.0), placed_research)
         pot = shaped(obs, mat, cfg.get("float_penalty", 0.0))
         if obs.game_over or t >= cfg["max_steps"]:
             break
@@ -5367,6 +5369,12 @@ def main(argv: list[str] | None = None) -> int:
                     "the untaxed insane AI's ~0.95). Their rows: eval_key '<key> @-25%%', opponent '... (real, agent -25%%)'")
     ap.add_argument("--eval-handicap-share", type=float, default=0.0, help="the share of the evaluation matchups against "
                     "the AI played with one of --eval-handicap's levels (every policy plays the matchup at that level)")
+    ap.add_argument("--hero-xp-value", type=float, default=0.0, help="V: the shaping's material counts each living hero's "
+                    "experience at V a point (creeping pays as it happens: a creep is neither side's material; the "
+                    "learner killed ~1 creep a game, the insane AI 3-8). 0: none")
+    ap.add_argument("--building-hp-value", type=float, default=1.0, help="W: a finished building's missing hit points "
+                    "count W of their share of its cost in the shaping's material (1: as before, damage pays at once; "
+                    "0: a building is worth its cost while it stands, so chipping one pays nothing until it falls)")
     ap.add_argument("--worker-value", type=float, default=1.0, help="W: the shaping's material counts each worker W times "
                     "its cost, both sides' (killing the enemy's workers pays more, losing one's own costs more; audit 20: "
                     "long games were won where the AI's economy broke). 1: as before")
@@ -6330,7 +6338,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "order_masks": args.order_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "hunt_lesson": args.hunt_lesson, "spell_lesson": args.spell_lesson, "attack_lesson": args.attack_lesson, "first_hero_weights": args.first_hero_weights, "worker_value": args.worker_value, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "order_masks": args.order_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "hunt_lesson": args.hunt_lesson, "spell_lesson": args.spell_lesson, "attack_lesson": args.attack_lesson, "first_hero_weights": args.first_hero_weights, "worker_value": args.worker_value, "hero_xp_value": args.hero_xp_value, "building_hp_value": args.building_hp_value, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "late_capture": args.late_capture, "late_minutes": [float(x) for x in args.late_minutes.split(",")], "late_from": args.late_from, "research_value": args.research_value, "real_agents": args.real_agents,

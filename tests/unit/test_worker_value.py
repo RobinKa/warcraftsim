@@ -46,3 +46,29 @@ def test_rules_line_for_the_videos():
     assert rules_line("echofast2").startswith("Echo Isles · echofast2 rules (costs ×0.5")
     assert rules_line("(2)EchoIsles", "late", {"minute": 11.6}).endswith("· late start (minute 12)")
     assert rules_line("echofast2", "base2").endswith("· scenario base2") and len(rules_line("echofast2", "base2")) <= 72
+
+
+def test_shaped_extras_xp_and_whole_buildings():
+    """--hero-xp-value: a living hero's experience counts; --building-hp-value 0: a finished building counts whole while
+    it stands (one under construction as before); both off: the material itself."""
+    import numpy as np
+    from warcraftsim.protocol import UnitFlags
+    assert (trace.STRUCTURE_FLAG, trace.CONSTRUCTING_FLAG, trace.HERO_FLAG, trace.DEAD_FLAG) == (
+        int(UnitFlags.STRUCTURE), int(UnitFlags.CONSTRUCTING), int(UnitFlags.HERO), int(UnitFlags.DEAD))
+    values = {code("Udea"): 425, code("unpl"): 255, code("uzig"): 150}
+    def unit(owner, typ, flags, hp, max_hp, xp=0):
+        return SimpleNamespace(owner=owner, type_id=int(code(typ)), flags=flags, hp=hp, max_hp=max_hp, hero_xp=xp, hero_level=1)
+    units = [unit(0, "Udea", trace.HERO_FLAG, 600, 600, xp=300), unit(0, "Udea", trace.HERO_FLAG | trace.DEAD_FLAG, 0, 600, xp=900),
+             unit(1, "unpl", trace.STRUCTURE_FLAG, 750, 1500), unit(1, "uzig", trace.STRUCTURE_FLAG | trace.CONSTRUCTING_FLAG, 100, 400)]
+    obs = SimpleNamespace(units=units, unit_array=None)
+    mat = trace.material_units(obs, values)
+    assert mat == {0: 425.0, 1: 255 * 0.5 + 150 * 0.25}
+    assert trace.shaped_extras(obs, values, mat) is mat
+    got = trace.shaped_extras(obs, values, mat, hero_xp=0.5, building_hp=0.0)
+    assert got[0] == 425.0 + 150.0 and got[1] == 255.0 + 150 * 0.25 and mat[0] == 425.0
+    # the native table's path: the same numbers (columns 1 type, 2 owner, 6 hp, 7 max hp, 11 flags, 15 xp)
+    ua = np.zeros((4, 31), np.int64)
+    for i, u in enumerate(units):
+        ua[i, [1, 2, 6, 7, 11, 15]] = [u.type_id, u.owner, u.hp, u.max_hp, u.flags, u.hero_xp]
+    got2 = trace.shaped_extras(SimpleNamespace(unit_array=ua, units=[]), values, mat, hero_xp=0.5, building_hp=0.0)
+    assert got2 == got
