@@ -2742,7 +2742,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                        if late_start is not None and cfg.get("research_value") else None)
     mat = with_research(shaped_extras(obs, values, material(obs, values, cfg.get("hero_level_value", 0.0),
                                                               cfg.get("worker_cap", 0), cfg.get("mana_value", 0.0)),
-                                              cfg.get("hero_xp_value", 0.0), cfg.get("building_hp_value", 1.0)), prod, cfg.get("research_value", 0.0), placed_research)
+                                              cfg.get("hero_xp_value", 0.0), cfg.get("building_hp_value", 1.0),
+                                              cfg.get("unit_hp_value", 1.0)), prod, cfg.get("research_value", 0.0), placed_research)
     pot = shaped(obs, mat, cfg.get("float_penalty", 0.0))
     phi = {s: (pot[s] - pot[1 - s]) / scale for s in trajs}  # at the last recorded state
     ret = {s: 0.0 for s in trajs}
@@ -2973,7 +2974,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             viol[s] = tk.step(rows_next, obs.events, p_.food_used if p_ is not None else 0, obs.game_time)
         mat = with_research(shaped_extras(obs, values, material(obs, values, cfg.get("hero_level_value", 0.0),
                                                                   cfg.get("worker_cap", 0), cfg.get("mana_value", 0.0)),
-                                                  cfg.get("hero_xp_value", 0.0), cfg.get("building_hp_value", 1.0)), prod, cfg.get("research_value", 0.0), placed_research)
+                                                  cfg.get("hero_xp_value", 0.0), cfg.get("building_hp_value", 1.0),
+                                              cfg.get("unit_hp_value", 1.0)), prod, cfg.get("research_value", 0.0), placed_research)
         pot = shaped(obs, mat, cfg.get("float_penalty", 0.0))
         if obs.game_over or t >= cfg["max_steps"]:
             break
@@ -5400,6 +5402,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--building-hp-value", type=float, default=1.0, help="W: a finished building's missing hit points "
                     "count W of their share of its cost in the shaping's material (1: as before, damage pays at once; "
                     "0: a building is worth its cost while it stands, so chipping one pays nothing until it falls)")
+    ap.add_argument("--unit-hp-value", type=float, default=1.0, help="W: as --building-hp-value for units and heroes (0: a "
+                    "unit is worth its cost until it dies: the kill pays, not the damage; the user, 2026-11-21: units left "
+                    "alive at low hit points)")
     ap.add_argument("--worker-value", type=float, default=1.0, help="W: the shaping's material counts each worker W times "
                     "its cost, both sides' (killing the enemy's workers pays more, losing one's own costs more; audit 20: "
                     "long games were won where the AI's economy broke). 1: as before")
@@ -6363,7 +6368,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "order_masks": args.order_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "hunt_lesson": args.hunt_lesson, "spell_lesson": args.spell_lesson, "attack_lesson": args.attack_lesson, "first_hero_weights": args.first_hero_weights, "worker_value": args.worker_value, "hero_xp_value": args.hero_xp_value, "eval_replay_every": args.eval_replay_every, "building_hp_value": args.building_hp_value, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "order_masks": args.order_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "hunt_lesson": args.hunt_lesson, "spell_lesson": args.spell_lesson, "attack_lesson": args.attack_lesson, "first_hero_weights": args.first_hero_weights, "worker_value": args.worker_value, "hero_xp_value": args.hero_xp_value, "eval_replay_every": args.eval_replay_every, "building_hp_value": args.building_hp_value, "unit_hp_value": args.unit_hp_value, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "late_capture": args.late_capture, "late_minutes": [float(x) for x in args.late_minutes.split(",")], "late_from": args.late_from, "research_value": args.research_value, "real_agents": args.real_agents,

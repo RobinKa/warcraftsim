@@ -237,15 +237,20 @@ MADE_FROM = {"ushd": "uaco"}
 STRUCTURE_FLAG, CONSTRUCTING_FLAG = 2, 8  # (protocol.UnitFlags.STRUCTURE, CONSTRUCTING; checked in the tests)
 
 
-def shaped_extras(obs, values: dict, mat: dict, hero_xp: float = 0.0, building_hp: float = 1.0) -> dict:
-    """The shaping's material `mat` with two terms that change what pays at once (the user, 2026-11-21: a death knight
-    harassing buildings instead of creeping; the learner killed ~1 creep a game where the insane AI killed 3-8):
+def shaped_extras(obs, values: dict, mat: dict, hero_xp: float = 0.0, building_hp: float = 1.0,
+                  unit_hp: float = 1.0) -> dict:
+    """The shaping's material `mat` with terms that change what pays at once (the user, 2026-11-21: a death knight
+    harassing buildings instead of creeping, and units left alive at low hit points; the learner killed ~1 creep a game
+    where the insane AI killed 3-8):
     `hero_xp` (--hero-xp-value V): each living hero's experience counts V a point, so creeping pays as it happens (a
-    creep is neither side's material, and a level counted nothing); `building_hp` (--building-hp-value W, 1 as before):
-    a finished building's missing hit points count only W of their share of its cost, so at 0 a building is worth its
-    cost while it stands and chipping it pays nothing until it falls (damage had paid cost x the hit points taken, at
-    once). Both are part of the potential: what is best stays the same, the feedback moves."""
-    if not hero_xp and building_hp == 1.0:
+    creep is neither side's material, and a level counted nothing);
+    `building_hp` (--building-hp-value W, 1 as before): a finished building's missing hit points count only W of their
+    share of its cost, so at 0 a building is worth its cost while it stands and chipping it pays nothing until it falls
+    (damage had paid cost x the hit points taken, at once);
+    `unit_hp` (--unit-hp-value W, 1 as before): the same for units and heroes: at 0 a unit is worth its cost until it
+    dies, so the kill pays, not the damage (a unit at a tenth of its hit points had only a tenth of its cost left to win).
+    All are part of the potential: what is best stays the same, the feedback moves."""
+    if not hero_xp and building_hp == 1.0 and unit_hp == 1.0:
         return mat
     out = dict(mat)
     ua = getattr(obs, "unit_array", None)
@@ -258,13 +263,14 @@ def shaped_extras(obs, values: dict, mat: dict, hero_xp: float = 0.0, building_h
             h = ua[live & ((ua[:, 11] & HERO_FLAG) > 0)]
             for p in (0, 1):
                 out[p] += hero_xp * float(h[h[:, 2] == p, 15].sum())  # (column 15: the hero's experience)
-        if building_hp != 1.0:
-            b = ua[live & ((ua[:, 11] & STRUCTURE_FLAG) > 0) & ((ua[:, 11] & CONSTRUCTING_FLAG) == 0)
-                   & (ua[:, 6] < ua[:, 7])]
+        if building_hp != 1.0 or unit_hp != 1.0:
+            b = ua[live & (ua[:, 6] < ua[:, 7])]  # (the damaged ones)
             if len(b):
-                gone = _type_values(values, b[:, 1]) * (1.0 - b[:, 6] / np.maximum(b[:, 7], 1))
+                struct = (b[:, 11] & STRUCTURE_FLAG) > 0
+                w = np.where(struct, np.where((b[:, 11] & CONSTRUCTING_FLAG) > 0, 0.0, 1.0 - building_hp), 1.0 - unit_hp)
+                gone = w * _type_values(values, b[:, 1]) * (1.0 - b[:, 6] / np.maximum(b[:, 7], 1))
                 for p in (0, 1):
-                    out[p] += (1.0 - building_hp) * float(gone[b[:, 2] == p].sum())
+                    out[p] += float(gone[b[:, 2] == p].sum())
         return out
     for u in obs.units:
         f = int(u.flags)
@@ -272,8 +278,10 @@ def shaped_extras(obs, values: dict, mat: dict, hero_xp: float = 0.0, building_h
             continue
         if hero_xp and f & HERO_FLAG:
             out[u.owner] += hero_xp * float(getattr(u, "hero_xp", 0) or 0)
-        if building_hp != 1.0 and f & STRUCTURE_FLAG and not f & CONSTRUCTING_FLAG and 0 < u.max_hp and u.hp < u.max_hp:
-            out[u.owner] += (1.0 - building_hp) * values.get(str(u.type_id), 0) * (1.0 - u.hp / u.max_hp)
+        if 0 < u.max_hp and u.hp < u.max_hp:
+            w = (0.0 if f & CONSTRUCTING_FLAG else 1.0 - building_hp) if f & STRUCTURE_FLAG else 1.0 - unit_hp
+            if w:
+                out[u.owner] += w * values.get(str(u.type_id), 0) * (1.0 - u.hp / u.max_hp)
     return out
 
 

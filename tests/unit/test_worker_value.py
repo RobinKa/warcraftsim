@@ -3,6 +3,8 @@ other type as it was; W 1 the table itself; one object a table and weight (the n
 
 from types import SimpleNamespace
 
+from pytest import approx as pytest_approx
+
 from warcraftsim.fullgame import trace
 
 
@@ -72,6 +74,19 @@ def test_shaped_extras_xp_and_whole_buildings():
         ua[i, [1, 2, 6, 7, 11, 15]] = [u.type_id, u.owner, u.hp, u.max_hp, u.flags, u.hero_xp]
     got2 = trace.shaped_extras(SimpleNamespace(unit_array=ua, units=[]), values, mat, hero_xp=0.5, building_hp=0.0)
     assert got2 == got
+    # --unit-hp-value 0: a hurt unit counts whole until it dies (a dead one nothing)
+    values2 = {**values, code("ugho"): 120}
+    hurt = units + [unit(1, "ugho", 0, 34, 340), unit(1, "ugho", trace.DEAD_FLAG, 0, 340)]
+    obs2 = SimpleNamespace(units=hurt, unit_array=None)
+    mat2 = trace.material_units(obs2, values2)
+    assert mat2[1] == pytest_approx(255 * 0.5 + 150 * 0.25 + 12.0)
+    whole = trace.shaped_extras(obs2, values2, mat2, unit_hp=0.0)
+    assert whole[1] == pytest_approx(255 * 0.5 + 150 * 0.25 + 120.0) and whole[0] == mat2[0]
+    ua2 = np.zeros((len(hurt), 31), np.int64)
+    for i, u in enumerate(hurt):
+        ua2[i, [1, 2, 6, 7, 11, 15]] = [u.type_id, u.owner, u.hp, u.max_hp, u.flags, u.hero_xp]
+    native = trace.shaped_extras(SimpleNamespace(unit_array=ua2, units=[]), values2, mat2, unit_hp=0.0, building_hp=0.0)
+    assert native[1] == pytest_approx(255.0 + 150 * 0.25 + 120.0)
 
 
 def test_replays_have_a_kind_and_evaluation_titles_name_the_policy(tmp_path):
