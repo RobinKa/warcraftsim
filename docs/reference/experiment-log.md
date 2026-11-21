@@ -2410,6 +2410,8 @@ Head to head 241's average 0.537 against the control's (188 games), 0.497 agains
 
 **`fgself-242`** (12:19, from 236's average, code 93ba0d7): **kills and creeping pay, damage does not**: `--hero-xp-value 0.5 --building-hp-value 0 --unit-hp-value 0`. Then **`fgself-243`**: 236's average as a fixed league member. One burst for both; 238's average is the control.
 
+`fgself-242` stopped at 27.0M (13:51): the value's loss stable (0.0009 against 0.0007); creeping not up (0.8-1.1 creeps a game, as the base); in its training games against insane past 10 minutes it lost more units (53 a game against 37) and won 0.64-0.70 (238: 0.80); head to head 0.32 against 236's average (216 games, 20% ties) and 0.39 against 238's (229). The burst decides. **`fgself-243`** (13:52, from 236's average, code 63793dc): 236's average as a fourth fixed league member.
+
 Merged today besides: the System tab's main machine (no tensor-core counter is readable without a driver option and root; labelled proxies), the ratings' handicap rungs drawn as the AI's.
 
 Next, two forks from 236's average back to back, then one burst (the user's asks of today): **A** the shaping that pays for kills and creeping (`--hero-xp-value 0.5 --building-hp-value 0 --unit-hp-value 0`); **B** 236's average as a fixed league member (`--league-add`: it is the strongest policy, 1,935, and no run trains against it; the fixed members are `fgself-130`, `-171` and `-197`'s peak, from October and early November).
