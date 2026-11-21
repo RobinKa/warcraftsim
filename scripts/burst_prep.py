@@ -28,7 +28,7 @@ def main(argv: list[str]) -> int:
     c = r["config"]
     c["eval_checkpoints"] = "[" + ", ".join(f"PosixPath('{e}')" for e in evals) + "]"
     c.update(eval_vs="0.4", eval_z="0", eval_heuristic="0", eval_human="0",
-             eval_handicap="0.25,0.5", eval_handicap_share="0.4")  # (the handicap ladder: 40% of the AI matchups)
+             eval_handicap="0.25,0.5", eval_handicap_share="0.4", eval_replay_every="1.5")  # (the handicap ladder: 40% of the AI matchups)
     (d / "run.json").write_text(json.dumps(r, indent=1))
     (d / "burst.json").write_text(json.dumps({"current": cur, "evals": evals}, indent=1))  # (the ratings' name for
     # "current": the checkpoint it is, dashboard/ratings.BURST)

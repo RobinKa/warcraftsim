@@ -1389,6 +1389,16 @@ def spells_cast(results: dict) -> dict:
     return out
 
 
+def played_by(opp: dict, version) -> str:
+    """Who plays a filmed game's first side, for its title: the current policy, or an evaluation's listed checkpoint by
+    its name ("fgself-236 avg swa-43-53", "fgself-238/41109888")."""
+    key = str(opp.get("eval_key") or "")
+    if key and not key.startswith("current"):
+        from ..dashboard.ratings import checkpoint_name
+        return checkpoint_name(key) or Path(key).stem
+    return f"policy v{version}"
+
+
 def rules_line(map_name: str, scenario: str | None = None, late_start: dict | None = None) -> str:
     """A filmed game's ruleset and start in words (duelmap.rules_label; a scenario's or a late start's after it)."""
     from ..data.duelmap import rules_label
@@ -1603,6 +1613,12 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
     spec_path = Path(cfg["run_dir"]) / "league_spec.json"
     name = f"fgsp{cfg['slot']}_{wid}_{k}"
     evaluating = k >= cfg["games_per_actor"]  # an evaluation slot (--eval-games-per-actor)
+    # --eval-replay-every M: an evaluation game's replay and trace saved too (each actor's first evaluation slot in turn,
+    # together one every M minutes; not rendered: the Replays page lists them, kind "eval", to render on request; the
+    # user, 2026-11-21: every video was a training game)
+    if evaluating and k == cfg["games_per_actor"] and cfg.get("eval_replay_every", 0.0) > 0:
+        films, period = True, cfg["eval_replay_every"] * 60 * cfg["actors"]
+        next_video = time.time() + wid * cfg["eval_replay_every"] * 60
     if evaluating and cfg.get("eval_map"):  # (--eval-map: its games on another map, with its costs and strategies)
         cfg = eval_map_cfg(cfg)
     paired: list[tuple] = []  # an evaluation slot's next launches: one matchup for every policy in turn
@@ -1799,7 +1815,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                                               "n": cfg["grpo_group"], "done": []})
                     if film:
                         next_video = time.time() + period
-                        film_game(g, ep, cfg, wid, render_q)
+                        film_game(g, ep, cfg, wid, None if evaluating else render_q)  # (an evaluation game: saved, not
+                        # rendered)
                     if n + 1 < per_launch:
                         due = films and time.time() >= next_video and ai["kind"] != "lexploit"
                         fresh = due or g._ended  # (a filmed game ended its process: the restart relaunches)
@@ -3119,10 +3136,13 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         ep["trace"] = {"steps": trace, "gamma": cfg["gamma"], "shared_noise": shared_noise, "outcome": {str(s): v for s, v in outcome.items()},
                        # (the video's panel: the value without the shaping's potential, overlay.FullGameOverlay)
                        "shaping": {"weight": shaping, "scale": scale, "penalty": cfg.get("float_penalty", 0.0)},
-                       "title": f"{Path(cfg['run_dir']).name} · policy v{infer.nets.version} · vs {who}",
+                       "title": f"{Path(cfg['run_dir']).name} · {played_by(opp, infer.nets.version)} · vs {who}",
+                       # (a training game or an evaluation game, and whose: the Replays page's filter)
+                       "kind": "train" if train else "eval",
                        # (the ruleset the game was played by, and how it started: the panel's line under the title;
                        # the user, 2026-11-20)
-                       "rules": rules_line(cfg["map"], scenario, late_start),
+                       "rules": rules_line(cfg["map"], scenario, late_start)
+                       + (f" · agent at -{opp['eval_handicap']}% income" if opp.get("eval_handicap") else ""),
                        # (the game's tax: the side losing that share of what it gathers, the AI's curriculum or an
                        # agent's balance; < 0 a bonus. The panel shows it beside that side's economy)
                        **({"tax": {"player": int(taxed), "share": float(opp["tax"])}} if taxed is not None and opp.get("tax") else {}),
@@ -3144,6 +3164,7 @@ def film_game(g, ep: dict, cfg: dict, wid: int, render_q) -> None:
     run_dir = Path(cfg["run_dir"])
     stem = f"game-{int(ep['time'])}-a{wid}"
     try:
+        (run_dir / "replays").mkdir(parents=True, exist_ok=True)  # (an evaluation burst's folder has none yet)
         replay = g.save_replay(run_dir / "replays" / f"{stem}.w3g")
     except Exception as e:  # noqa: BLE001
         print(f"video: replay not saved: {e}", flush=True)
@@ -3166,7 +3187,8 @@ def film_game(g, ep: dict, cfg: dict, wid: int, render_q) -> None:
            "outcome": ep["outcome"], "return": ep["return"], **calib,
            "sub": f"{ep['game_time'] / 60:.1f} game minutes · material lead {ep['material_lead']:+.2f} · return {ep['return']:+.2f}",
            "opponent": ep["opponent"], "game_time": ep["game_time"]}
-    render_q.put((g.setup, str(replay), stem, trace, row, time.time()))
+    if render_q is not None:  # (None: saved for the Replays page only, --eval-replay-every)
+        render_q.put((g.setup, str(replay), stem, trace, row, time.time()))
 
 
 def render_main(cfg: dict, render_q, stop) -> None:
@@ -5369,6 +5391,9 @@ def main(argv: list[str] | None = None) -> int:
                     "the untaxed insane AI's ~0.95). Their rows: eval_key '<key> @-25%%', opponent '... (real, agent -25%%)'")
     ap.add_argument("--eval-handicap-share", type=float, default=0.0, help="the share of the evaluation matchups against "
                     "the AI played with one of --eval-handicap's levels (every policy plays the matchup at that level)")
+    ap.add_argument("--eval-replay-every", type=float, default=0.0, help="M: an evaluation game's replay and trace saved "
+                    "every M minutes (not rendered: the dashboard's Replays page lists them as kind 'eval', to render on "
+                    "request). 0: none, as before")
     ap.add_argument("--hero-xp-value", type=float, default=0.0, help="V: the shaping's material counts each living hero's "
                     "experience at V a point (creeping pays as it happens: a creep is neither side's material; the "
                     "learner killed ~1 creep a game, the insane AI 3-8). 0: none")
@@ -6338,7 +6363,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "order_masks": args.order_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "hunt_lesson": args.hunt_lesson, "spell_lesson": args.spell_lesson, "attack_lesson": args.attack_lesson, "first_hero_weights": args.first_hero_weights, "worker_value": args.worker_value, "hero_xp_value": args.hero_xp_value, "building_hp_value": args.building_hp_value, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "order_masks": args.order_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "hunt_lesson": args.hunt_lesson, "spell_lesson": args.spell_lesson, "attack_lesson": args.attack_lesson, "first_hero_weights": args.first_hero_weights, "worker_value": args.worker_value, "hero_xp_value": args.hero_xp_value, "eval_replay_every": args.eval_replay_every, "building_hp_value": args.building_hp_value, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "late_capture": args.late_capture, "late_minutes": [float(x) for x in args.late_minutes.split(",")], "late_from": args.late_from, "research_value": args.research_value, "real_agents": args.real_agents,

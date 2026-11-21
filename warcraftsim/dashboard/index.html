@@ -2618,7 +2618,7 @@ ui.replays = { rows: [], total: 0, matched: 0, pending: 0, q: "", outcome: "all"
                loading: false, done: false, queue: [], msgs: {}, error: "" };
 try { ui.replays.speed = +localStorage.getItem("replaySpeed") || 1; } catch (e) { /* (the default) */ }
 const RL_PAGE = 60, RL_SPEEDS = [1, 2, 4, 8], rlActive = ["queued", "playing", "rendering"];
-const rlParams = (offset, limit) => { const R = ui.replays; return new URLSearchParams({ q: R.q, outcome: R.outcome, race: R.race, video: R.video, offset, limit }).toString(); };
+const rlParams = (offset, limit) => { const R = ui.replays; return new URLSearchParams({ q: R.q, outcome: R.outcome, race: R.race, video: R.video, kind: R.kind || "all", offset, limit }).toString(); };
 async function openReplayList(q) {
   state.view = "replays"; if (q !== undefined) ui.replays.q = q; setNav(); saveUrl(true);
   const m = document.getElementById("main"); m.dataset.run = ""; m.dataset.vframe = ""; m.dataset.rlframe = "";
@@ -2637,6 +2637,7 @@ function rlFrame() {  // the page's frame, once: its filters keep their focus wh
       <div class="vbar"><input type="search" id="rl-q" placeholder="search: fgself-174, undead, past:…" autocomplete="off">
         <div class="seg" id="rl-out"><button data-o="all">all</button><button data-o="win">wins</button><button data-o="loss">losses</button><button data-o="tie">ties</button></div>
         <div class="seg" id="rl-race"><button data-r="all">any race</button><button data-r="human">human</button><button data-r="orc">orc</button><button data-r="undead">undead</button><button data-r="nightelf">night elf</button></div>
+        <div class="seg" id="rl-kind"><button data-k="all">training and evaluation</button><button data-k="train">training games</button><button data-k="eval">evaluation games</button></div>
         <div class="seg" id="rl-vid"><button data-v="all">with or without video</button><button data-v="yes">has video</button><button data-v="no">no video</button></div>
         <span id="rl-count"></span></div>
       <div class="rl-choose"><span>render at</span><span class="seg" id="rl-speed">${RL_SPEEDS.map(v => `<button data-s="${v}">${v}×</button>`).join("")}</span>
@@ -2646,7 +2647,7 @@ function rlFrame() {  // the page's frame, once: its filters keep their focus wh
     const q = document.getElementById("rl-q"); q.value = R.q;
     q.oninput = () => { R.q = q.value; saveUrl(false); clearTimeout(R.typing); R.typing = setTimeout(() => rlLoad(true), 200); };
     const seg = (id, key, attr) => m.querySelectorAll(`#${id} button`).forEach(b => b.onclick = () => { R[key] = b.dataset[attr]; rlLoad(true); rlFrame(); });
-    seg("rl-out", "outcome", "o"); seg("rl-race", "race", "r"); seg("rl-vid", "video", "v");
+    seg("rl-out", "outcome", "o"); seg("rl-race", "race", "r"); seg("rl-vid", "video", "v"); seg("rl-kind", "kind", "k");
     m.querySelectorAll("#rl-speed button").forEach(b => b.onclick = () => { R.speed = +b.dataset.s; try { localStorage.setItem("replaySpeed", String(R.speed)); } catch (e) {} rlFrame(); });
     document.getElementById("rl-list").onclick = rlClick;
     fillHosts();
@@ -2654,6 +2655,7 @@ function rlFrame() {  // the page's frame, once: its filters keep their focus wh
   m.querySelectorAll("#rl-out button").forEach(b => b.classList.toggle("on", b.dataset.o === R.outcome));
   m.querySelectorAll("#rl-race button").forEach(b => b.classList.toggle("on", b.dataset.r === R.race));
   m.querySelectorAll("#rl-vid button").forEach(b => b.classList.toggle("on", b.dataset.v === R.video));
+  m.querySelectorAll("#rl-kind button").forEach(b => b.classList.toggle("on", b.dataset.k === (R.kind || "all")));
   m.querySelectorAll("#rl-speed button").forEach(b => b.classList.toggle("on", +b.dataset.s === R.speed));
   fillHosts();
 }
@@ -2700,7 +2702,7 @@ function rlDraw() {
     const vid = r.video ? `<a data-open="${esc(r.stem)}">video</a> · ${recBadge(r.speed)}` : "no video";
     return `<div class="rl-row" data-k="${esc(k)}" data-run="${esc(r.run)}" data-stem="${esc(r.stem)}">
       <div><span class="ep">${esc(races)}</span> <span class="${r.outcome > 0 ? "win" : r.outcome < 0 ? "loss" : ""}">${outcomeText(r.outcome)}</span>
-        <div class="sub">${esc(r.run)} · ${when(r.time)} · ${(r.game_time / 60).toFixed(1)} game min${who}</div></div>
+        <div class="sub">${r.kind === "eval" ? "evaluation game · " : ""}${esc(r.run)} · ${when(r.time)} · ${(r.game_time / 60).toFixed(1)} game min${who}</div></div>
       <div class="vid">${vid}</div>
       ${busy ? `<span class="state">${esc(a.state)}…</span>` : `<button class="rl-go" ${r.why ? "disabled" : ""} title="${r.why ? esc(r.why) : `record it at ${R.speed}×`}">Render</button>`}
       ${r.why ? `<div class="why">cannot be played back: ${esc(r.why)}</div>` : msg ? `<div class="why">${esc(msg)}</div>` : ""}</div>`;

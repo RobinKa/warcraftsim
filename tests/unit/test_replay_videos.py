@@ -59,7 +59,7 @@ def runs(tmp_path: Path, monkeypatch) -> Path:
 def test_summary_from_a_trace():
     r = summarize("game-100-a0", TRACE)
     assert r == {"stem": "game-100-a0", "time": 100, "races": ["orc", "human"], "names": ["learner", "built-in AI insane"],
-                 "title": TRACE["title"], "outcome": 1, "game_time": 90.0}
+                 "title": TRACE["title"], "outcome": 1, "game_time": 90.0, "kind": "train"}
 
 
 def test_index_list_filters_and_pages(runs, tmp_path):

@@ -72,3 +72,23 @@ def test_shaped_extras_xp_and_whole_buildings():
         ua[i, [1, 2, 6, 7, 11, 15]] = [u.type_id, u.owner, u.hp, u.max_hp, u.flags, u.hero_xp]
     got2 = trace.shaped_extras(SimpleNamespace(unit_array=ua, units=[]), values, mat, hero_xp=0.5, building_hp=0.0)
     assert got2 == got
+
+
+def test_replays_have_a_kind_and_evaluation_titles_name_the_policy(tmp_path):
+    """The Replays page's filter: a replay's kind from its trace ("eval": selfplay --eval-replay-every; older traces:
+    training games); an evaluation game's title names the policy that played it."""
+    from warcraftsim.dashboard import replays
+    from warcraftsim.fullgame.selfplay import played_by
+    tr = {"sides": [{"player": 0, "name": "learner (orc)"}, {"player": 1, "name": "built-in AI insane (human)"}],
+          "steps": [{"game_time": 600.0}], "outcome": {"0": 1.0}, "title": "burst-x · fgself-236 avg swa-43-53 · vs built-in AI"}
+    assert replays.summarize("game-1795000000-a0", tr)["kind"] == "train"
+    assert replays.summarize("game-1795000000-a0", {**tr, "kind": "eval"})["kind"] == "eval"
+    assert played_by({"eval_key": "runs/fgself-236/averaged/swa-43-53.pt"}, 7) == "fgself-236 avg swa-43-53"
+    assert played_by({"eval_key": "/x/runs/fgself-238/checkpoints/0000000041109888.pt"}, 7) == "fgself-238/41109888"
+    assert played_by({}, 7) == "policy v7" and played_by({"eval_key": "current+z"}, 7) == "policy v7"
+    ix = replays.ReplayIndex(tmp_path, tmp_path / "cache.json")
+    ix._loaded = True
+    ix.runs = {"r": {"mtime": 0, "rows": {"a": {**replays.summarize("game-1795000000-a0", tr)},
+                                           "b": {**replays.summarize("game-1795000001-a0", {**tr, "kind": "eval"})},
+                                           "c": {k: v for k, v in replays.summarize("game-1795000002-a0", tr).items() if k != "kind"}}}}
+    assert ix.listing(kind="eval")["matched"] == 1 and ix.listing(kind="train")["matched"] == 2 and ix.listing()["matched"] == 3

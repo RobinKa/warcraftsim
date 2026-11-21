@@ -35,6 +35,7 @@ def summarize(stem: str, trace: dict) -> dict:
     o = (trace.get("outcome") or {}).get(me)
     return {"stem": stem, "time": int(_NAME.fullmatch(stem).group(1)), "races": races, "names": names,
             "title": str(trace.get("title") or ""), "outcome": 0 if o is None else (o > 0) - (o < 0),
+            "kind": str(trace.get("kind") or "train"),  # ("eval": an evaluation game, selfplay --eval-replay-every)
             "game_time": round(float(steps[-1].get("game_time") or 0), 1) if steps else 0.0}
 
 
@@ -142,7 +143,7 @@ class ReplayIndex:
             self._save()
 
     def listing(self, q: str = "", outcome: str = "all", race: str = "all", video: str = "all", offset: int = 0,
-                limit: int = 100) -> dict:
+                limit: int = 100, kind: str = "all") -> dict:
         """The replays matching (every word of `q` in its run, title, names, races or outcome; outcome: win, loss, tie;
         race: the first side's; video: "yes", "no"), newest first, a page of them."""
         words = q.lower().split()
@@ -160,6 +161,8 @@ class ReplayIndex:
                     if race != "all" and (not r["races"] or r["races"][0] != race):
                         continue
                     if (video == "yes" and not has) or (video == "no" and has):
+                        continue
+                    if kind != "all" and r.get("kind", "train") != kind:  # (rows from before kinds: training games)
                         continue
                     if words:
                         hay = " ".join([run, r["title"], r["stem"], *map(str, r["names"]), *map(str, r["races"]),

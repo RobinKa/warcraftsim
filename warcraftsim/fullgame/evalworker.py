@@ -152,6 +152,7 @@ def run_config(run_dir: Path, host: str, games: int, start_update) -> tuple[dict
            "eval_vs": num("eval_vs", 0.0),  # (--eval-vs: the current policy against a listed checkpoint)
            "eval_handicap": [float(x) for x in str(c.get("eval_handicap") or "").split(",") if x.strip()],  # (the
            "eval_handicap_share": num("eval_handicap_share", 0.0),  # handicap ladder: --eval-handicap)
+           "eval_replay_every": num("eval_replay_every", 0.0),  # (--eval-replay-every: replays for the Replays page)
            "eval_heuristic": num("eval_heuristic", 0.0), "heuristic_race": c.get("heuristic_race") or "orc", "heuristic_share": 0.0, "heuristic_strategy": "default",  # (the
            # current policy against the hand-written player: --eval-heuristic)
            "eval_guide": num("eval_guide", 0.0), "guide_capable": True,  # (--eval-guide: current+zg, this worker's only)

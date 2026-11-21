@@ -798,9 +798,9 @@ class Dashboard:
         return self._replays
 
     def replays(self, q: str = "", outcome: str = "all", race: str = "all", video: str = "all", offset: int = 0,
-                limit: int = 100) -> dict:
+                limit: int = 100, kind: str = "all") -> dict:
         from ..fullgame import rerender
-        page = self.replay_index().listing(q, outcome, race, video, offset, limit)
+        page = self.replay_index().listing(q, outcome, race, video, offset, limit, kind)
         for r in page["rows"]:  # (a page's rows only: a few stats and a file's first bytes each)
             why = rerender.cannot_play(self.runs_dir / r["run"], r["stem"])
             if why:
@@ -1845,7 +1845,7 @@ def make_handler(dash: Dashboard, docs: Docs | None = None):
                     except ValueError:
                         return d
                 return self._json(dash.replays(one("q", ""), one("outcome", "all"), one("race", "all"), one("video", "all"),
-                                               num("offset", 0), num("limit", 100)))
+                                               num("offset", 0), num("limit", 100), one("kind", "all")))
             if path == "/api/challenges":
                 return self._json(dash.challenges())
             if path == "/api/renders":
