@@ -1354,6 +1354,24 @@ def test_league_keeps_fixed_opponents(tmp_path):
     assert [m.name for m in lg.past] == ["fixed:fgself-130/5534555.pt", "past:1", "past:4"]
 
 
+def test_league_fixed_opponents_by_pfsp(tmp_path):
+    """--league-add-pfsp: the fixed opponents' share goes to the ones that beat the learner (PFSP, floor 0.05); off: evenly,
+    as before."""
+    from warcraftsim.fullgame.selfplay import League, Member
+    lg = League(tmp_path, ["normal"], {"ai": 0.25, "self": 0.5, "past": 0.5}, max_past=4, pfsp="hard")
+    lg.fixed_share = 0.6
+    weak, strong = Member("fixed:a/1.pt", path="a.pt", steps=0), Member("fixed:b/2.pt", path="b.pt", steps=0)
+    weak.recent, strong.recent = [1.0] * 48, [0.0] * 48  # (smoothed: 0.98 -> the floor 0.05; 0.02 -> 0.96)
+    lg.past = [weak, strong, Member("past:1", path="1.pt", steps=1)]
+    even = {a["name"]: a["p"] for a in lg.spec()["agents"]}
+    assert abs(even["fixed:a/1.pt"] - 0.5 * 0.6 / 2) < 1e-12 and even["fixed:a/1.pt"] == even["fixed:b/2.pt"]
+    lg.fixed_pfsp = True
+    by = {a["name"]: a["p"] for a in lg.spec()["agents"]}
+    w = 0.98 ** 2
+    assert abs(by["fixed:b/2.pt"] - 0.5 * 0.6 * w / (w + 0.05)) < 1e-9 and abs(by["fixed:a/1.pt"] - 0.5 * 0.6 * 0.05 / (w + 0.05)) < 1e-9
+    assert abs(sum(by.values()) - sum(even.values())) < 1e-12 and by["past:1"] == even["past:1"]
+
+
 def test_league_fixed_opponents_share(tmp_path):
     """--league-add-share: the fixed opponents take their share of the past snapshots' games however they did."""
     from warcraftsim.fullgame.selfplay import League, Member

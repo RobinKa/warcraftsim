@@ -3621,8 +3621,13 @@ class League:
             fixed = [m for m in self.past if m.name.startswith("fixed:")]  # (--league-add: their share of the past's
             rest = [m for m in self.past if not m.name.startswith("fixed:")]  # games set, --league-add-share: by PFSP a
             f_share = getattr(self, "fixed_share", 0.25) if fixed and rest else 1.0 if fixed else 0.0  # fixed one won
-            agents += [{"name": m.name, "kind": "past", "path": m.path,  # 2 of 2 had 1.5% of the games: it beat us 58%)
-                        "p": self.shares["past"] * f_share / len(fixed)} for m in fixed]
+            if getattr(self, "fixed_pfsp", False) and fixed:  # (--league-add-pfsp: their share split by PFSP between
+                fw = [max(pfsp_weight(0.5 if (p := smoothed_rate(m)) is None else p, self.pfsp), 0.05) for m in fixed]
+                agents += [{"name": m.name, "kind": "past", "path": m.path,  # them: split evenly, the strongest of 4
+                            "p": self.shares["past"] * f_share * x / sum(fw)} for m, x in zip(fixed, fw)]  # had 1.2%
+            else:  # of fgself-243's games, the two it beats 84-92% as many)
+                agents += [{"name": m.name, "kind": "past", "path": m.path,  # 2 of 2 had 1.5% of the games: it beat us 58%)
+                            "p": self.shares["past"] * f_share / len(fixed)} for m in fixed]
             w = [max(pfsp_weight(0.5 if (p := smoothed_rate(m)) is None else p, self.pfsp), 0.05) for m in rest]
             # (2 of 2 won had weighed a snapshot 0 for good; audit 5. Unplayed: the smoothing's prior, a half: 1.0 had
             # weighed it 4 times an even one, and one game moved it ninefold; audit 11)
@@ -5712,6 +5717,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-past", type=int, default=12)
     ap.add_argument("--league-add-share", type=float, default=0.25, help="--league-add's opponents' share of the games "
                     "against past snapshots, split evenly between them (the rest: the other snapshots by PFSP)")
+    ap.add_argument("--league-add-pfsp", type=int, default=0, help="1: --league-add's opponents split their share by PFSP "
+                    "(the ones that beat the learner more: --pfsp's weighting, floor 0.05); 0: evenly")
     ap.add_argument("--league-add", type=Path, nargs="*", default=[], help="checkpoints the league keeps as opponents "
                     "for good (\"fixed:<run>/<steps>\": drawn as past snapshots are, by PFSP; never replaced by newer ones)")
     ap.add_argument("--league-from", help="a new run starts with this run's league (a name under --runs, or its directory): "
@@ -6291,6 +6298,7 @@ def main(argv: list[str] | None = None) -> int:
         # bare checkpoint had restarted fgself-154 with a fresh one, silently; audit 13)
         league.add_snapshot(first, 0)  # the clone itself (a fork: its start), a past opponent
     league.fixed_share = args.league_add_share
+    league.fixed_pfsp = bool(args.league_add_pfsp)
     for path in args.league_add:  # --league-add: opponents of the league's for good (newer snapshots replace them not)
         name = "fixed:" + "/".join(Path(path).parts[-3::2])
         if any(m.name == name for m in league.past):
