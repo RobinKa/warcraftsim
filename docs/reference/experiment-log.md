@@ -2393,6 +2393,8 @@ The control stopped at 41.1M (22:49; the checkpoint at the same budget 41109888)
 
 **`fgself-241`** (23:42, from 236's average, code 3d006d1): **a league with history** (the plan's experiment 2): `--snapshot-every 400 --max-past 12 --pfsp-data 0.5`. `fgself-238`'s checkpoints at the same budget are its control (the same start; already run).
 
+Stopped for the night (2026-11-21 00:33, the user's word) with `fgself-241` at 15.5M of its ~27M (its league's snapshots 3.3M steps apart, as meant); it finishes at the next start, then burst-241.
+
 **Check A** (2026-11-04 13:22, `scripts/blend_check.py`, CPU, for item 5: an EMA anchor, `--ref-ema`): blends of the anchor `fgself-100` (grown to `fgself-182`'s vocabulary and inputs, as a run grows it) and `fgself-182`/50150172, the anchor's weights moved 0-100% of the way (the EMA's own step at that share; the two are 0.12 apart, relative L2). The KL per own unit is the run's term (forward-all, KL(parent || blend); the orders' alone in brackets) on 18,433 steps of these games. 12 games each against the untaxed insane AI on (2)EchoIsles, real rules, a person's income, every blend on the same 12 matchups:
 
 | Blend | KL to `fgself-100` | KL to `fgself-182` | Won | Minutes | Supply at 5 / 10 min | Workers | Army | Gold |
