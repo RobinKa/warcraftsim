@@ -1703,7 +1703,9 @@ def _machine_split(episodes: list[dict], now: float, window: float = SPLIT_WINDO
 
 def _machines(hosts_dir: Path, cache: "_JsonlCache", now: float) -> list[dict]:
     """The machines of a run (scripts/host_stats.py: runs/hosts/<name>.jsonl) with a row in the last hour: the newest
-    row, the newest one where it answered (and when), and the last day's temperature, CPU and memory (<= 200 points)."""
+    row, the newest one where it answered (and when), and the last day's temperature, CPU and memory (<= 200 points),
+    and for this machine (its rows "local": read by host_stats.py here, with the GPU) the GPU's busy time and power too;
+    this machine first."""
     out = []
     for f in sorted(hosts_dir.glob("*.jsonl")) if hosts_dir.is_dir() else []:
         rows = cache.read(f)
@@ -1711,20 +1713,25 @@ def _machines(hosts_dir: Path, cache: "_JsonlCache", now: float) -> list[dict]:
             continue
         up = [r for r in rows[-3000:] if r.get("up")]
         recent = [r for r in up if r.get("time", 0) >= now - HOST_SPAN]
-        series = [{"time": r["time"], "temp": r.get("temp"), "cpu": r.get("cpu_busy"),
-                   "mem": None if r.get("mem_total") is None or r.get("mem_avail") is None else r["mem_total"] - r["mem_avail"]}
-                  for r in _downsample(recent, 200)]
+        series = []
+        for r in _downsample(recent, 200):
+            p = {"time": r["time"], "temp": r.get("temp"), "cpu": r.get("cpu_busy"),
+                 "mem": None if r.get("mem_total") is None or r.get("mem_avail") is None else r["mem_total"] - r["mem_avail"]}
+            if isinstance(r.get("gpu"), dict):
+                p["gpu"], p["gpu_w"] = r["gpu"].get("util"), r["gpu"].get("watts")
+            series.append(p)
         out.append({"name": f.stem, "last": rows[-1], "reading": up[-1] if up else None, "series": series})
-    return out
+    return sorted(out, key=lambda m: not m["last"].get("local"))  # (stable: the others by name)
 
 
 def _host_status(hosts_dir: Path, cache: "_JsonlCache", now: float) -> list[dict]:
-    """Every machine scripts/host_stats.py has looked at, for the header on every page: "up" (answered at the last look),
-    "down" (did not), "unknown" (no recent look: host_stats.py is not running, so nothing is known)."""
+    """Every other machine scripts/host_stats.py has looked at, for the header on every page: "up" (answered at the last
+    look), "down" (did not), "unknown" (no recent look: host_stats.py is not running, so nothing is known). Not this
+    machine (its rows "local": the one serving the page; the System tab shows it)."""
     out = []
     for f in sorted(hosts_dir.glob("*.jsonl")) if hosts_dir.is_dir() else []:
         rows = cache.read(f)
-        if not rows:
+        if not rows or rows[-1].get("local"):
             continue
         last = rows[-1]
         fresh = now - last.get("time", 0) <= HOST_FRESH

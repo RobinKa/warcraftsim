@@ -65,6 +65,12 @@ main { padding:14px 18px 40px; overflow:auto; min-height:0; }
 .mach dt { color:var(--muted); } .mach dd { margin:0; text-align:right; }
 .mach .hot { color:var(--bad); font-weight:600; }
 .mach .down { color:var(--bad); }
+.mach.main { grid-column:1 / -1; }  /* (this machine: its GPU and runs beside its CPU) */
+.mcols { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(250px,100%),1fr)); gap:4px 28px; }
+.mcols h4 { margin:2px 0 4px; font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.6px; }
+.mcols h4 span { text-transform:none; letter-spacing:0; font-weight:400; }
+.mcols > div > * + h4 { margin-top:10px; }
+.mach .mnote { font-size:11.5px; color:var(--muted); line-height:1.4; margin-top:6px; }
 .scroll { overflow-x:auto; }
 .scroll table { border:0; min-width:520px; }
 .blegend { display:flex; flex-wrap:wrap; gap:4px 14px; margin-top:8px; font-size:12px; color:var(--muted); }
@@ -2184,24 +2190,66 @@ function holdHeight(id, draw) {
   el.style.minHeight = el.offsetHeight + "px";
   try { draw(); } finally { el.style.minHeight = ""; }
 }
+// this machine (its rows "local": host_stats.py reads it in place, with its GPU through NVML) has a color of its own,
+// so the others keep theirs
+const LOCAL_COLOR = "#4cc38a";
+function machineColors(M) { let k = 0; return M.map(m => m.last.local ? LOCAL_COLOR : MACHINE_COLORS.filter(c => c !== LOCAL_COLOR)[k++ % (MACHINE_COLORS.length - 1)]); }
+// the inference calls' precision (selfplay --infer-precision) and whether their matrix multiplies run on the tensor cores
+const INFER_TENSOR = { "fp32": "FP32: not on the tensor cores", "tf32": "TF32: on the tensor cores",
+                       "bf16": "BF16: on the tensor cores", "bf16-mixed": "BF16 trunk, TF32 heads: on the tensor cores" };
+function machineCard(m) {
+  const r = m.reading || {}, l = m.last, up = l.up, hot = r.temp != null && r.temp >= 90;
+  const num = (v, dg = 0, u = "") => v == null ? "–" : v.toFixed(dg) + u;
+  const used = r.mem_total != null && r.mem_avail != null ? `${(r.mem_total - r.mem_avail).toFixed(1)} / ${r.mem_total.toFixed(1)} GB` : "–";
+  const state = up ? `<span style="color:var(--good)">up</span>` : `<span class="down">${m.reading ? "down · last seen " + ago(r.time) : "not answering"}</span>`;
+  const machine = `<dl>
+      <dt>CPU busy</dt><dd>${num(r.cpu_busy, 0, " %")}</dd><dt>Memory used</dt><dd>${used}</dd>
+      ${l.local && r.mem_games != null ? `<dt title="private resident memory (RssAnon): the learners; the processes below them and the evaluation workers (actors, Xvfb, Wine launchers); the games">of which</dt><dd><small>learner ${num(r.mem_learner, 1)} · its others ${num(r.mem_others, 1)} · games ${num(r.mem_games, 1)}</small></dd>` : ""}
+      <dt>Temperature</dt><dd class="${hot ? "hot" : ""}">${num(r.temp, 0, " °C")}</dd>
+      <dt>Clock</dt><dd>${r.mhz_mean != null ? `${(r.mhz_mean / 1000).toFixed(2)} GHz <small>(max ${(r.mhz_max / 1000).toFixed(2)})</small>` : "–"}</dd>
+      <dt>Games running</dt><dd>${num(r.games)}</dd>
+      <dt>Load</dt><dd>${r.load ? r.load.map(v => v.toFixed(1)).join(" ") : "–"}</dd>
+      <dt>Up for</dt><dd>${dur(r.uptime)}${r.profile ? ` <small>· ${esc(r.profile)}</small>` : ""}</dd></dl>`;
+  if (!l.local) return `<div class="panel mach"><h3>${esc(m.name)}<span>${state}</span></h3>${machine}</div>`;
+  const g = r.gpu;  // (null: no NVML where host_stats.py runs)
+  const gpu = !g ? `<div class="sub">no GPU readings (NVML: pynvml in the venv)</div>` : `<dl>
+      <dt>Busy</dt><dd title="the share of the time a kernel ran (NVML's samples since the last look, the mean)">${num(g.util, 0, " %")} <small>· memory bus ${num(g.mem_util, 0, " %")}</small></dd>
+      <dt>Memory</dt><dd>${g.mem_used != null ? `${g.mem_used.toFixed(1)} / ${g.mem_total.toFixed(1)} GB` : "–"}</dd>
+      <dt>Power</dt><dd title="the mean since the last look (the energy counter)">${g.watts != null ? `${g.watts.toFixed(0)} W` : "–"}${g.watts_limit ? ` <small>/ ${g.watts_limit} W limit</small>` : ""}</dd>
+      <dt>At the power limit</dt><dd title="the share of the readings since the last look (one every ~5 s) at which the power limit held the clocks down">${g.capped != null ? `${g.capped.toFixed(0)} %${g.capped_n ? ` <small>of ${g.capped_n} readings</small>` : ""}` : "–"}</dd>
+      <dt>Temperature</dt><dd class="${g.temp != null && g.temp >= 83 ? "hot" : ""}">${num(g.temp, 0, " °C")} <small>· fan ${num(g.fan, 0, " %")}</small></dd>
+      <dt>Clocks</dt><dd>${g.sm_mhz != null ? `${(g.sm_mhz / 1000).toFixed(2)} GHz` : "–"}${g.sm_mhz_max ? ` <small>(max ${(g.sm_mhz_max / 1000).toFixed(2)})</small>` : ""} <small>· memory ${g.mem_mhz != null ? (g.mem_mhz / 1000).toFixed(1) + " GHz" : "–"}</small></dd>
+      <dt>Held by</dt><dd>${g.throttle ? (g.throttle.filter(x => x !== "idle").map(esc).join(", ") || "nothing") : "–"}${g.pstate ? ` <small>· ${esc(g.pstate)}</small>` : ""}</dd>
+      ${(g.procs || []).map(p => `<dt title="pid ${p.pid}">${esc(p.name || String(p.pid))}</dt><dd>${num(p.mem, 1, " GB")}${p.sm != null ? ` <small>· ${p.sm}% of the time</small>` : ""}</dd>`).join("")}</dl>`;
+  const live = r.live || [], learner = live.find(x => x.kind === "learner");
+  const why = !g ? "" : g.gpm ? "NVML can measure them on this GPU (GPM), but host_stats.py does not read it yet."
+    : g.prof_admin_only === false ? "NVML's tensor metrics (GPM) need a Hopper or newer GPU. The profiling counters are open to this user now (RmProfilingAdminOnly 0), but host_stats.py has no reader for the GA102's counter (sm__pipe_tensor_cycles_active, CUPTI's PM sampling) yet."
+    : `NVML's tensor metrics (GPM) need a Hopper or newer GPU, and the GA102's own counter (sm__pipe_tensor_cycles_active, CUPTI's PM sampling) is ${g.prof_admin_only ? "for root only on this driver (RmProfilingAdminOnly 1)" : "behind the driver's profiling permission"}.`;
+  const tensor = !g ? "" : `<dl>
+      <dt>Counter</dt><dd>none readable here</dd>
+      <dt title="the tensor cores can work only while a kernel runs">At most</dt><dd>${num(g.util, 0, " %")} <small>of the time (proxy: the GPU's busy time)</small></dd>
+      ${learner && learner.update_share != null ? `<dt title="perf/train over perf/train + perf/rollout in train.jsonl's newest rows: the rest of its cycle is waiting for the games">Learner's update</dt><dd>${(100 * learner.update_share).toFixed(0)} % <small>of its cycle${learner.bf16 ? ", BF16 on the tensor cores" : learner.bf16 === false ? ", FP32: not on the tensor cores" : ""}</small></dd>` : ""}
+      ${learner && learner.infer_precision ? `<dt>Inference calls</dt><dd><small>${esc(INFER_TENSOR[learner.infer_precision] || learner.infer_precision)}</small></dd>` : ""}
+    </dl><div class="mnote">Proxies, not a measurement: ${why}</div>`;
+  const runs = live.length ? `<dl>${live.map(x => x.kind === "learner"
+      ? `<dt>${esc(x.run)}</dt><dd title="the learner's agent steps a second over train.jsonl's newest 2 minutes (every machine's training games)">${x.steps_per_s != null ? fmt(x.steps_per_s, 0) + " agent steps/s" : "–"} <small>· ${fmt(x.steps, 0)}${x.age > 120 ? ` · last update ${ago(Date.now() / 1000 - x.age)}` : ""}</small></dd>`
+      : `<dt>${esc(x.run)}</dt><dd><small>${esc(x.kind)}</small></dd>`).join("")}</dl>` : `<div class="sub">no learner running here</div>`;
+  return `<div class="panel mach main"><h3>${esc(m.name)} · this machine<span>${state}</span></h3><div class="mcols">
+      <div><h4>Machine</h4>${machine}</div>
+      <div><h4>GPU${g ? ` <span>${esc((g.name || "").replace(/^NVIDIA (GeForce )?/, ""))}</span>` : ""}</h4>${gpu}</div>
+      <div>${g ? `<h4>Tensor cores</h4>${tensor}` : ""}<h4>Running</h4>${runs}</div></div></div>`;
+}
 function renderMachines(d) {
   const el = document.getElementById("machines");
   if (!el) return;
   const M = d.machines || [], S = (d.split || []).filter(m => m.train || m.eval);
   if (!M.length && S.length < 2) { el.innerHTML = ""; return; }  // (one machine: nothing to split; no host rows: nothing to show)
-  const num = (v, dg = 0, u = "") => v == null ? "–" : v.toFixed(dg) + u;
-  const cards = M.map(m => { const r = m.reading || {}, l = m.last, up = l.up, hot = r.temp != null && r.temp >= 90;
-    const used = r.mem_total != null && r.mem_avail != null ? `${(r.mem_total - r.mem_avail).toFixed(1)} / ${r.mem_total.toFixed(1)} GB` : "–";
-    const state = up ? `<span style="color:var(--good)">up</span>` : `<span class="down">${m.reading ? "down · last seen " + ago(r.time) : "not answering"}</span>`;
-    return `<div class="panel mach"><h3>${esc(m.name)}<span>${state}</span></h3><dl>
-      <dt>CPU busy</dt><dd>${num(r.cpu_busy, 0, " %")}</dd><dt>Memory used</dt><dd>${used}</dd>
-      <dt>Temperature</dt><dd class="${hot ? "hot" : ""}">${num(r.temp, 0, " °C")}</dd>
-      <dt>Clock</dt><dd>${r.mhz_mean != null ? `${(r.mhz_mean / 1000).toFixed(2)} GHz <small>(max ${(r.mhz_max / 1000).toFixed(2)})</small>` : "–"}</dd>
-      <dt>Games running</dt><dd>${num(r.games)}</dd>
-      <dt>Load</dt><dd>${r.load ? r.load.map(v => v.toFixed(1)).join(" ") : "–"}</dd>
-      <dt>Up for</dt><dd>${dur(r.uptime)}${r.profile ? ` <small>· ${esc(r.profile)}</small>` : ""}</dd></dl></div>`; }).join("");
-  const line = f => M.map((m, i) => [m.name, MACHINE_COLORS[i % MACHINE_COLORS.length], m.series.map(p => [p.time, f(p)])]);
-  const leg = M.map((m, i) => `<span><i style="background:${MACHINE_COLORS[i % MACHINE_COLORS.length]}"></i>${esc(m.name)}</span>`).join("");
+  const cards = M.map(machineCard).join(""), colors = machineColors(M);
+  const line = f => M.map((m, i) => [m.name, colors[i], m.series.map(p => [p.time, f(p)])]);
+  const leg = M.map((m, i) => `<span><i style="background:${colors[i]}"></i>${esc(m.name)}</span>`).join("");
+  const G = M.map((m, i) => [m, colors[i]]).filter(([m]) => m.series.some(p => p.gpu != null || p.gpu_w != null));  // (this machine's)
+  const gline = f => G.map(([m, c]) => [m.name, c, m.series.map(p => [p.time, f(p)])]);
+  const limit = Math.max(0, ...G.map(([m]) => ((m.reading || {}).gpu || {}).watts_limit || 0));
   const row = m => `<tr><td>${esc(m.machine)}</td><td>${m.train_recent}</td><td>${m.eval_recent}</td><td>${fmt(m.steps_per_s_recent, 0)}</td>
       <td>${m.train}</td><td>${m.eval}</td><td>${fmt(m.steps_per_s, 0)}</td></tr>`;
   el.innerHTML = `<div class="bneck"><h3 style="margin:0 0 8px;font-size:12px;color:var(--muted)">Machines</h3>
@@ -2210,6 +2258,8 @@ function renderMachines(d) {
       <div class="panel"><h3>Temperature <span>°C, last 24 h</span></h3><div id="mc-temp"></div></div>
       <div class="panel"><h3>CPU busy <span>%, last 24 h</span></h3><div id="mc-cpu"></div></div>
       <div class="panel"><h3>Memory used <span>GB, last 24 h</span></h3><div id="mc-mem"></div></div>
+      ${G.length ? `<div class="panel"><h3>GPU busy <span>%, last 24 h</span></h3><div id="mc-gpu"></div></div>
+      <div class="panel"><h3>GPU power <span>W, last 24 h${limit ? `; the limit ${limit} W` : ""}</span></h3><div id="mc-gpuw"></div></div>` : ""}
     </div><div class="blegend" style="margin:0 0 10px">${leg}</div>` : ""}
     ${S.length ? `<div class="panel"><h3>Games by machine <span>training games' side-steps a second</span></h3><div class="scroll"><table>
       <tr><th>machine</th><th>training 30 min</th><th>evaluation 30 min</th><th>steps/s 30 min</th><th>training run</th><th>evaluation run</th><th>steps/s run</th></tr>
@@ -2217,6 +2267,10 @@ function renderMachines(d) {
   drawLines(document.getElementById("mc-temp"), { series: line(p => p.temp), mark: 90, unit: " °C", digits: 0 });
   drawLines(document.getElementById("mc-cpu"), { series: line(p => p.cpu), ymax: 100, unit: " %", digits: 0 });
   drawLines(document.getElementById("mc-mem"), { series: line(p => p.mem), unit: " GB", digits: 1 });
+  if (G.length) {
+    drawLines(document.getElementById("mc-gpu"), { series: gline(p => p.gpu), ymax: 100, unit: " %", digits: 0 });
+    drawLines(document.getElementById("mc-gpuw"), { series: gline(p => p.gpu_w), mark: limit || undefined, unit: " W", digits: 0 });
+  }
 }
 
 function renderBottleneck(d) {
