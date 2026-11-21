@@ -2416,6 +2416,17 @@ Head to head 241's average 0.537 against the control's (188 games), 0.497 agains
 
 `fgself-243` stopped at 27.2M (15:27). After the restart 236's average had 3.3% of the games (156; the learner scored 0.49 against it, 0.32 before) and `fgself-197`'s peak 5.6% (0.49): PFSP moved the share as the learner's record against the average rose. **burst-243** (15:28-16:14): the 17-27M averages of `fgself-243` and `fgself-242` against the control's (`fgself-238`) and 236's average.
 
+**Shut down 15:50 on the user's word, burst-243 half done** (462 of ~1,000 games, 22 of 46 minutes; the worker stopped, its rows kept). The half's reading, no verdict yet:
+
+| policy | rating | against insane, untaxed | creeps a game |
+|---|---|---|---|
+| `fgself-236`'s average (the start) | 1,903 ±12 | 1.00 (29 games) | 1.6 |
+| `fgself-238`'s average (the control) | 1,850 ±18 | 0.85 (27) | 1.1 |
+| `fgself-243`'s average (236's average in the league) | 1,805 ±27 (303 games) | 0.86 (29) | 0.2 |
+| `fgself-242`'s average (kills and creeping pay) | 1,775 ±37 (150 games) | 0.91 (35) | 0.8 |
+
+Head to head 243's average 0.424 against the control's (79 games), 0.397 against 236's (78), 0.546 against 242's (87). Both lean down against the control. To finish: the evaluation worker on `burst-243` again for the missing ~25 minutes, then the verdicts.
+
 Merged today besides: the System tab's main machine (no tensor-core counter is readable without a driver option and root; labelled proxies), the ratings' handicap rungs drawn as the AI's.
 
 Next, two forks from 236's average back to back, then one burst (the user's asks of today): **A** the shaping that pays for kills and creeping (`--hero-xp-value 0.5 --building-hp-value 0 --unit-hp-value 0`); **B** 236's average as a fixed league member (`--league-add`: it is the strongest policy, 1,935, and no run trains against it; the fixed members are `fgself-130`, `-171` and `-197`'s peak, from October and early November).
