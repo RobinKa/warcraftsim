@@ -240,6 +240,7 @@ class Ratings:
         for p in pair:
             m = self.state["meta"].setdefault(p, {"run": p.split()[0].split("/")[0] if p != ANCHOR else "",
                                                   "kind": ("anchor" if p == ANCHOR else "ai" if p == EQUAL
+                                                           or p.startswith(ANCHOR + " vs -")
                                                            else "heuristic" if p.startswith("heuristic:")
                                                            else "+z" if p.endswith("+z") or
                                                            p.endswith("+zg") else "checkpoint" if "/" in p else "current"),
@@ -309,6 +310,8 @@ class Ratings:
             info = sum(g * gamma[i] * gamma[j] / (gamma[i] + gamma[j]) ** 2 for j, g in nbr[i])
             v = var.get(i, 1.0 / max(info, 1e-12))
             m = self.state["meta"].get(name, {"run": "", "kind": "anchor", "first": 0, "last": 0})
+            if name.startswith(ANCHOR + " vs -"):  # (a handicap rung, "insane AI vs -50%": the AI's, not a run's policy;
+                m = {**m, "run": "", "kind": "ai"}  # the page had drawn it as a run's current policy, in green)
             out.append({"name": name, "rating": round(ANCHOR_RATING + SCALE * math.log(max(gamma[i], 1e-12)), 1),
                         "se": None if i == anchor else round(SCALE * math.sqrt(max(v, 1e-12)), 1),
                         "games": count[i], "score": round((wins[i] - 0.5 * PRIOR_GAMES * (1 if i != anchor else n - 1))
