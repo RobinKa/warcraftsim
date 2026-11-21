@@ -17,6 +17,9 @@ directory (bc eval of its checkpoints) shows with the run.
 Sweeps (/api/sweeps): the runs of one train.py launch, with runs/sweeps/<group>/sweep.json (how it
 was launched) and notes.md (its description; POST /api/sweeps/<group>/notes). Older sweeps get
 theirs rebuilt from their runs.
+A run's policies (/api/policies/<run>, policies.py): each of its checkpoints, weight averages and hours
+that was rated, with its records; the page opens one at /run/<run>?tab=checkpoints&ckpt=<id>. An evaluation
+burst (a folder with burst.json; its run.json a copy of another run's) is listed under its own folder's name.
 """
 
 from __future__ import annotations
@@ -763,20 +766,70 @@ class Dashboard:
         self._runs_cache: tuple[float, list[dict]] = (0.0, [])  # the list and the sweeps from one scan
         self._pages: dict[str, tuple[tuple, dict]] = {}  # a run's page, until its files change (run_stamp)
         self._ratings = None  # (ratings.Ratings: made, and its scans started, on the first request)
+        self._ratings_made = threading.Lock()
+        self.ratings_cache = os.environ.get("WARCRAFTSIM_RATINGS_CACHE")  # (its file; else in the runs' folder)
+        self._policies: dict[str, tuple[tuple, dict]] = {}  # a run's policies, until its files or the ratings change
         self._videos = None  # (videos.VideoIndex: made, and its thread started, on the first request)
         self._replays = None  # (replays.ReplayIndex: likewise)
         self.replay_cache = os.environ.get("WARCRAFTSIM_REPLAY_INDEX")  # (its file; else in the machine's cache)
 
+    def rated(self):
+        """The ratings (ratings.py): made on the first use, scanned by their thread at once and every 5 minutes."""
+        from . import ratings
+        with self._ratings_made:
+            if self._ratings is None:
+                self._ratings = ratings.Ratings(self.runs_dir, self.ratings_cache)
+                ratings.background(self._ratings)
+        return self._ratings
+
     def ratings(self) -> dict:
         """The policies' skill ratings from every run's evaluation games (ratings.py), scanned every 5 minutes."""
-        from . import ratings
-        if self._ratings is None:
-            self._ratings = ratings.Ratings(self.runs_dir)
-            with self._ratings.lock:
-                self._ratings.scan()
-            ratings.background(self._ratings)
-        with self._ratings.lock:
-            return self._ratings.table()
+        r = self.rated()
+        r.ready.wait()  # (the first time: a scan of every run's games)
+        view = r.view  # (made by the scan: no request waits for a fit or for a later scan)
+        if view is not None:
+            return view["table"]
+        with r.lock:
+            return r.table()
+
+    def policies(self, name: str) -> dict | None:
+        """A run's policies for its Checkpoints section (policies.py: each rated checkpoint, weight average and hour
+        with its records), kept until the run's files, the ratings or the replays change."""
+        from . import policies
+        d = self.runs_dir / name
+        if not name or d.parent != self.runs_dir or not (d / "run.json").exists():
+            return None
+        r = self.rated()
+        r.ready.wait()
+        view, index = r.view, self._replays  # (the replays' index only if the Replays page started it)
+        try:
+            averaged = (d / "averaged").stat().st_mtime_ns
+        except OSError:
+            averaged = 0
+        stamp = (self.run_stamp(d), (view or {}).get("updated"), averaged, index.updated if index else None)
+        cached = self._policies.get(name)
+        if cached and cached[0] == stamp:
+            return cached[1]
+        info = policies.own(d, json.loads((d / "run.json").read_text()))
+        info["notes"], info["title"] = self.notes(d), self.title(d)
+
+        def named(names: list[str]) -> dict[str, int]:  # (as the Replays page's search: every word of the name)
+            from .replays import WORDS
+            words = {n: n.lower().split() for n in names}
+            out = dict.fromkeys(names, 0)
+            with index.lock:
+                for run, rows in index.runs.items():
+                    for row in (rows.get("rows") or {}).values():
+                        hay = " ".join([run, row["title"], row["stem"], *map(str, row["names"]), *map(str, row["races"]),
+                                        WORDS[row["outcome"]]]).lower()
+                        for n, ws in words.items():
+                            out[n] += all(w in hay for w in ws)
+            return out
+        page = policies.listing(self.runs_dir, d, info, view, self.cache.read(d / "train.jsonl"), named if index else None)
+        self._policies[name] = (stamp, page)
+        while len(self._policies) > 32:
+            self._policies.pop(next(iter(self._policies)))
+        return page
 
     def video_index(self):
         """Every run's game videos with what happened in them (videos.py), filled in by a thread."""
@@ -1290,7 +1343,12 @@ class Dashboard:
         steps = info.get("init_steps")
         if steps is None and len(parts) > 1 and Path(parts[-1]).stem.isdigit():
             steps = int(Path(parts[-1]).stem)
-        return {"kind": "run", "name": parts[0], "steps": steps}
+        out = {"kind": "run", "name": parts[0], "steps": steps}
+        from . import ratings
+        pol = ratings.policy_of(ratings.checkpoint_name("/".join(parts)) or "")
+        if pol is not None and pol["run"] == parts[0]:  # (which of that run's policies: its place in its Checkpoints section)
+            out["policy"] = {"id": pol["id"], "kind": pol["kind"]}
+        return out
 
     def _lineage(self, runs: list[dict]) -> None:
         """Adds parent, children and notes to each run of the list."""
@@ -1375,7 +1433,7 @@ class Dashboard:
         cloning fits (the checkpoint they started from, the demonstrations they fit) and demonstration
         collections (the policy that played the takeover games). Nodes: {name, kind, track, status,
         result}; edges: {from, to, why}."""
-        runs = self.runs()
+        runs = [r for r in self.runs() if not r.get("burst")]  # (an evaluation burst: nothing comes from it)
         names = {r["name"] for r in runs}
         # a run's launches: each restart a node of its own, after the run's (the inputs that came in
         # there, its name and note)
@@ -1487,9 +1545,11 @@ class Dashboard:
         return {"nodes": nodes, "edges": unique}
 
     def runs(self) -> list[dict]:
+        from . import policies
         out = []
         if not self.runs_dir.exists():
             return out
+        now = time.time()
         for d in self.runs_dir.iterdir():
             info_file = d / "run.json"
             if not info_file.exists():
@@ -1498,6 +1558,20 @@ class Dashboard:
                 info = json.loads(info_file.read_text())
             except json.JSONDecodeError:
                 continue
+            info = policies.own(d, info, now)  # (an evaluation burst: its folder's name, not the copied run's)
+            if info.get("burst"):  # its own numbers: its rated games, its policy's record against the insane AI
+                # (from the ratings' last scan, never waited for: none yet, and the card shows its policy alone)
+                seen = (self.rated().view or {}).get("bursts", {}).get(d.name) or {}
+                mine = next((r for r in seen.get("rows", []) if r["name"] == info["burst"]["policy"]), {})
+                info["burst"].update({k: seen.get(k) for k in ("games", "first", "last")}, insane=next(
+                    (o["record"] for o in mine.get("opponents", []) if o["kind"] == "anchor"), None))
+                if not info["burst"]["evals"]:  # (a burst.json written afterwards names none: those its games name)
+                    info["burst"]["evals"] = [{"name": r["name"], "run": r["run"], "id": r["policy"], "kind": r["kind"]}
+                                              for r in seen.get("rows", []) if r["name"] != info["burst"]["policy"]]
+            elif isinstance(info.get("resumes"), list) and info["resumes"]:  # (the list leaves the restarts out:
+                last = info["resumes"][-1]                                    # how many, and the latest one's words)
+                info["launches"] = {"n": len(info["resumes"]) + 1, "title": last.get("title") or "", "time": last.get("time"),
+                                    "steps": last.get("steps")}
             files = [d / "run.json", *sorted(d.glob("*.jsonl"))]
             stamp = tuple((f.name, f.stat().st_mtime) for f in files if f.exists())
             cached = self._summaries.get(d)
@@ -1533,11 +1607,12 @@ class Dashboard:
         return out
 
     def _runs_from(self, name: str) -> list[dict]:
-        """The runs started from a checkpoint of `name` (a run, or bc/<dataset>)."""
+        """The runs started from a checkpoint of `name` (a run, or bc/<dataset>), and the bursts that play one."""
+        from . import policies
         out = []
         for d in self.runs_dir.iterdir():
             try:
-                info = json.loads((d / "run.json").read_text())
+                info = policies.own(d, json.loads((d / "run.json").read_text()))
             except (FileNotFoundError, NotADirectoryError, json.JSONDecodeError):
                 continue
             if _parent_key(self.parent(info)) == name:
@@ -1596,11 +1671,14 @@ class Dashboard:
                                   for m in page["media"]]}
 
     def _run_page(self, name: str, d: Path) -> dict:
-        info = json.loads((d / "run.json").read_text())
+        from . import policies
+        info = policies.own(d, json.loads((d / "run.json").read_text()))  # (a burst: its folder's, not the copied run's)
         info["notes"], info["title"] = self.notes(d), self.title(d)
         info["spaces"] = _spaces(info, d, self.runs_dir)
         info["parent"] = self.parent(info)
-        info["children"] = sorted(r["name"] for r in self._runs_from(name))
+        after = self._runs_from(name)
+        info["children"] = sorted(r["name"] for r in after if not r.get("burst"))
+        info["bursts"] = sorted(r["name"] for r in after if r.get("burst"))
         if "launch" not in info:
             info["launch"] = {"run_command": _rebuilt_command(info), "rebuilt": True}
         train_rows = self.cache.read(d / "train.jsonl")
@@ -1650,6 +1728,8 @@ class Dashboard:
             "production": production,
             "matchups": matchups,
             "sparse": sparse,
+            # its start and each restart as a stretch of its own, with that stretch's evaluation record (policies.py)
+            "launches": policies.launches(info, train_rows, episodes) if fullgame and not info.get("burst") else None,
             "checkpoints": _checkpoints(d, self.runs_dir.parent, evals, league,
                                         {"current.pt": "the weights the actors play with"}),
             "calibration": calibration,
@@ -1831,6 +1911,9 @@ def make_handler(dash: Dashboard, docs: Docs | None = None):
                 return self._json(dash.run_list())
             if path == "/api/sweeps":
                 return self._json(dash.sweeps())
+            if path.startswith("/api/policies/"):  # (a run's rated checkpoints, weight averages and hours)
+                data = dash.policies(path[len("/api/policies/"):])
+                return self._json(data) if data else self._json({"error": "no such run"}, 404)
             if path.startswith("/api/runs/"):
                 data = dash.run(path[len("/api/runs/"):])
                 return self._json(data) if data else self._json({"error": "no such run"}, 404)

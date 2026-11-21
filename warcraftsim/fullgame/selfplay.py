@@ -6200,8 +6200,9 @@ def main(argv: list[str] | None = None) -> int:
                                                        **({"title": args.title} if args.title else {}),
                                                        "inputs": info["inputs"], "argv": info["launch"]["argv"],
                                                        "git": info["launch"]["git"], "code": info["launch"]["code"]}],
-                    first_launch=old.get("first_launch") or {k: old.get("launch", {}).get(k) for k in ("git", "code")})
-        # (each resume's code with it, and the first launch's kept: launch.git is the latest one's; audit 17)
+                    first_launch=old.get("first_launch") or {k: old.get("launch", {}).get(k) for k in ("git", "code", "argv")})
+        # (each resume's code with it, and the first launch's kept: launch.git is the latest one's; audit 17. Its
+        # command line too: the dashboard shows a restart's flags against the launch before, and the first's was lost)
 
     def save_info():
         try:  # notes written on the restarts since (by hand, in run.json) stay

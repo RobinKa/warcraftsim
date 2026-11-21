@@ -291,6 +291,37 @@ table.mu td.tot { outline:1px solid var(--line); }
 .cks .tag.lg { background:#1f3a44; color:#39c5cf; } .cks .tag.ev { background:#1e3a2c; color:var(--good); }
 .cks button, .cks a.dl { background:var(--panel); border:1px solid var(--line); border-radius:5px; color:var(--text);
   padding:1px 7px; font:inherit; font-size:11.5px; cursor:pointer; text-decoration:none; margin-right:4px; }
+/* a run's Checkpoints section: its launches, its rated policies one by one (the one opened: its records), a burst's table */
+.pol h3.sec { margin:0 0 8px; font-size:13px; display:flex; flex-wrap:wrap; gap:4px 12px; align-items:baseline; }
+.pol h3.sec > span { color:var(--muted); font-weight:400; font-size:12px; }
+.pol .lgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(400px,100%),1fr)); gap:10px; margin-bottom:18px; }
+.pol .launch h3 b { color:var(--text); font-weight:600; }
+.pol .launch .ln { font-size:12px; opacity:.85; margin:-2px 0 8px; overflow-wrap:anywhere; }
+.pol .kv { margin:0; } .pol .kv span.new b { color:var(--good); } .pol .kv span.gone { text-decoration:line-through; }
+.pol .sideways { overflow-x:auto; margin-bottom:18px; }
+.pol .tag { font-size:11px; padding:1px 6px; border-radius:9px; background:#2d3743; color:var(--muted); margin-left:6px; white-space:nowrap; }
+.pol .tag.fk { background:#1e3a2c; color:var(--good); } .pol .tag.bu { background:#3a2f1a; color:var(--accent); }
+.pol i.dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:7px; }
+table.pols > tbody > tr.polrow > td { white-space:nowrap; } .pol small { color:var(--muted); }
+table.pols > tbody > tr.polrow > td:first-child { white-space:normal; min-width:190px; }
+table.pols > tbody > tr.polrow > td:first-child b { white-space:nowrap; }
+table.pols small.lt { display:inline-block; max-width:150px; overflow:hidden; text-overflow:ellipsis; vertical-align:bottom; }
+table.pols tr.polrow { cursor:pointer; scroll-margin-top:64px; }
+table.pols tr.polrow:hover td { background:var(--panel2); }
+table.pols tr.polrow.sel td { background:var(--panel2); border-bottom-color:transparent; }
+table.pols tr.polrow.sel td:first-child, table.pols tr.poldetail > td { box-shadow:inset 3px 0 0 var(--accent); }
+table.pols tr.poldetail > td { background:#12171d; padding:12px 12px 14px 14px; }
+/* (a narrow screen: the table scrolls sideways, the opened policy's records stay in view at the screen's width) */
+table.pols .pd { position:sticky; left:14px; max-width:calc(100vw - 46px); }
+.pol .pdgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(460px,100%),1fr)); gap:10px; margin-top:10px; }
+.pol .pdgrid .panel { min-width:0; overflow-x:auto; }
+.pol .pdgrid table { background:none; border:0; } .pol .pdgrid table.runs td, .pol .pdgrid table.runs th { padding:3px 8px; }
+.pol .pdhead { margin:14px 0 0; font-size:13px; } .pol .pdhead:first-of-type { margin-top:12px; }
+.pol .psub { color:var(--muted); font-size:11.5px; margin:-4px 0 8px; }
+.pol dl.facts button, .pol dl.facts a.dl { background:var(--panel); border:1px solid var(--line); border-radius:5px; color:var(--text);
+  padding:1px 7px; font:inherit; font-size:11.5px; cursor:pointer; text-decoration:none; margin-left:4px; }
+.pol .burstbox { margin-bottom:18px; } .pol .burstbox td { vertical-align:top; }
+.badge.burst { background:#3a2f1a; color:var(--accent); }
 table.runs td.opts { font-family:ui-monospace, monospace; font-size:11.5px; }
 .pr-item { display:inline-block; margin:1px 8px 1px 0; white-space:nowrap; }
 table.runs tr.shown td { background:var(--panel2); }
@@ -562,6 +593,8 @@ function urlFor() {
     if (state.compare.size) q.set("compare", [...state.compare].join(","));
     const kind = runTabKind();
     if (state.view === "run" && ui.tabs && ui.tabs[kind] && ui.tabs[kind] !== "overview") q.set("tab", ui.tabs[kind]);
+    // (the policy opened in the run's Checkpoints section: a checkpoint's steps, a weight average's name, "h3")
+    if (state.view === "run" && ui.tabs && ui.tabs[kind] === "checkpoints" && ui.ck.id && ui.ck.run === state.selected) q.set("ckpt", ui.ck.id);
   }
   return path + (q.toString() ? "?" + q.toString() : "");
 }
@@ -571,8 +604,12 @@ function saveUrl(push = false) {
   if (url === location.pathname + location.search && !location.hash) return;
   if (push && !navigating) history.pushState(null, "", url); else history.replaceState(null, "", url);
 }
+// a run's Checkpoints section: the policy opened there (of run `run`: `id`), each run's listing (GET /api/policies/<run>)
+ui.ck = { run: null, id: null, scroll: false, data: {}, ver: {}, loading: null, all: false,
+          kinds: { average: true, checkpoint: true, hour: true } };
 (() => {
   const u = parseUrl(), h = u.q;
+  if (u.view === "run" && h.get("ckpt")) { ui.ck.run = u.name; ui.ck.id = h.get("ckpt"); ui.ck.scroll = true; }
   if (u.view === "run") state.selected = u.name;
   if (u.view === "sweep") { state.view = "sweep"; state.sweep = u.name; }
   if (u.view === "docs") state.view = "docs";
@@ -610,7 +647,7 @@ function dur(s) {
   return Math.floor(s / 3600) + "h " + Math.round((s % 3600) / 60) + "m";
 }
 function badge(status) {
-  const cls = status === "training" ? "training" : status.startsWith("failed") ? "failed" : status === "finished" ? "finished" : "";
+  const cls = status === "training" || status === "playing" ? "training" : status.startsWith("failed") ? "failed" : status === "finished" ? "finished" : "";
   return `<span class="badge ${cls}">${status}</span>`;
 }
 function dashSvg(dash, color = "#d7dee6") {
@@ -970,11 +1007,13 @@ function openSweep(group) { document.body.classList.remove("drawer"); state.view
 // runs and the one shown)
 const RUN_TYPES = [["training", "training", "reinforcement learning on the micro tasks"],
                    ["selfplay", "self-play", "reinforcement learning on whole games (fullgame/selfplay.py)"],
+                   ["burst", "bursts", "evaluation bursts: one policy against listed checkpoints and the insane AI (scripts/burst_prep.py)"],
                    ["match", "matches", "two policies against each other (warcraftsim.match)"],
                    ["bc", "BC micro", "behavior cloning of the micro scripts"],
                    ["fullbc", "BC whole game", "behavior cloning of the built-in AI (fullgame/bc.py)"],
                    ["collect", "demos", "demonstration collections: the built-in AI against itself (fullgame/collect.py)"]];
 function runType(r) {
+  if (r.burst) return "burst";
   if (r.kind === "collect") return "collect";
   if (r.kind === "bc") return r.task === "fullgame" ? "fullbc" : "bc";
   if (r.kind === "match") return "match";
@@ -989,6 +1028,7 @@ const typeShown = r => !runUI.types.size || runUI.types.has(runType(r));
 function listedRuns() {
   const words = runUI.filter.trim().toLowerCase().split(/\s+/).filter(Boolean);  // every word must match
   const text = r => [r.name, r.task, r.sweep ? r.sweep.options || "base" : "", r.title || "", r.notes || "",
+                     r.burst ? `burst ${r.burst.policy || ""}` : "", r.launches ? r.launches.title || "" : "",
                      r.parent ? `${r.parent.name} ${parentShort(r.parent)}` : ""].join(" ").toLowerCase();
   return state.runs.filter(r => typeShown(r) && (!words.length || words.every(w => text(r).includes(w)))
     && (!runUI.only || state.compare.has(r.name) || r.name === state.selected));
@@ -1039,13 +1079,23 @@ function runCard(r, inSweep) {
     <div class="m"><span title="${esc(r.task)}">${esc(r.task)}</span><span>clone ${winText(s)}</span></div>
     <div class="m"><span>${fmt(s.episodes || 0, 0)} demos · script ${s.script_win_rate != null ? (100 * s.script_win_rate).toFixed(0) + "%" : "–"}</span><span>${(r.children || []).length} runs</span></div>${r.notes && r.notes.trim() ? `
     <div class="note" title="${esc(r.notes.trim())}">${esc(r.notes.trim().split("\n")[0])}</div>` : ""}</div>`;
+  // an evaluation burst (its folder's burst.json): the policy it plays, its own games and when, the checkpoints it lists.
+  // Its run.json is a copy of that policy's run's: it had shown as one more entry with that run's name and card.
+  if (r.burst) { const b = r.burst, rec = b.insane, n = rec ? rec[0] + rec[1] + rec[2] : 0;
+    return `<div class="run ${state.view === "run" && r.name === state.selected ? "sel" : ""}" data-run="${esc(r.name)}">
+    <div class="n"><span><span class="badge burst" style="margin-right:6px">BURST</span>${esc(r.name)}</span>${badge(r.status)}</div>
+    <div class="m"><span title="the policy it plays as its current one: ${esc(b.policy || b.current)}">${esc(b.policy || b.current || "?")}</span><span title="${n ? `against the untaxed insane AI: ${rec[0]} won, ${rec[1]} tied, ${rec[2]} lost` : ""}">${n ? `insane ${(100 * rec[0] / n).toFixed(0)}%` : ""}</span></div>
+    <div class="m"><span>${b.games ? `${fmt(b.games, 0)} rated games in ${dur(b.last - b.first)}` : `${fmt(s.episodes || 0, 0)} games`}</span><span>${ago(b.last || r.created)}</span></div>${(b.evals || []).length ? `
+    <div class="from" title="the checkpoints it lists: each against the insane AI, and head to head against its policy">vs ${esc(b.evals.map(e => e.name).join(", "))}</div>` : ""}${r.notes && r.notes.trim() ? `
+    <div class="note" title="${esc(r.notes.trim())}">${esc(r.notes.trim().split("\n")[0])}</div>` : ""}</div>`; }
   return `<div class="run ${state.view === "run" && r.name === state.selected ? "sel" : ""}" data-run="${esc(r.name)}">
     <div class="n"><span><input type="checkbox" data-cmp="${esc(r.name)}" ${state.compare.has(r.name) ? "checked" : ""}>${esc(r.name)}</span>${badge(r.status)}</div>${inSweep ? `
     <div class="m"><span title="${esc(r.sweep.options || "base")}" style="font-family:ui-monospace,monospace;font-size:11.5px">${esc(r.sweep.options || "base options")}</span><span>win ${winText(s)}</span></div>
     <div class="m"><span>${fmt(s.agent_steps || 0, 0)} steps</span><span>${ago(s.updated)}</span></div>` : `
     <div class="m"><span title="${esc(r.task)} · ${r.envs} games">${r.kind === "match" && r.players ? `<span class="badge bc" style="background:#1f3a44;color:#39c5cf">MATCH</span> ${esc(r.players.A.name)} vs ${esc(r.players.B.name)}` : `${esc(r.task)} · ${r.envs} games`}</span><span>${r.kind === "match" ? "A " : "win "}${winText(s)}</span></div>
-    <div class="m"><span>${r.kind === "match" ? `${fmt(s.episodes || 0, 0)} episodes` : `${fmt(s.agent_steps || 0, 0)} steps`}</span><span>${ago(s.updated)}</span></div>`}${r.parent && !(inSweep && inSweep.sameParent) ? `
-    <div class="from" title="started from ${esc(parentText(r.parent))}">← ${esc(parentShort(r.parent))}</div>` : ""}${r.notes && r.notes.trim() ? `
+    <div class="m"><span>${r.kind === "match" ? `${fmt(s.episodes || 0, 0)} episodes` : `${fmt(s.agent_steps || 0, 0)} steps`}</span><span>${ago(s.updated)}</span></div>`}${r.launches ? `
+    <div class="from" title="restarted ${r.launches.n - 1} time${r.launches.n > 2 ? "s" : ""}, the latest at ${fmt(r.launches.steps || 0, 0)} steps (its Checkpoints tab: each launch)">↻ launch ${r.launches.n}${r.launches.title ? ": " + esc(r.launches.title) : ""}</div>` : ""}${r.parent && !(inSweep && inSweep.sameParent) ? `
+    <div class="from" title="started from ${esc(parentText(r.parent))}">← ${esc(parentShort(r.parent))}${r.parent.policy && r.parent.policy.kind === "average" ? " · " + esc(polLabel(r.parent.policy.kind, r.parent.policy.id)) : ""}</div>` : ""}${r.notes && r.notes.trim() ? `
     <div class="note" title="${esc(r.notes.trim())}">${esc(r.notes.trim().split("\n")[0])}</div>` : ""}</div>`;
 }
 function sweepStatus(runs) {  // the most telling status of a sweep's runs
@@ -1401,7 +1451,7 @@ function renderMain() {
         ["replays", "Replays", `<div id="media"></div>`],
         ["episodes", "Episodes", `<div id="episodes"></div>`],
         ["evals", "Evaluations", `<div style="color:var(--muted);margin-bottom:8px">bc eval of its checkpoints</div><div id="evals"></div>`],
-        ["checkpoints", "Checkpoints", `<div id="checkpoints"></div>`],
+        ["checkpoints", "Checkpoints", `<div id="policies" class="pol"></div><div id="checkpoints"></div>`],
         ["spaces", "Spaces", `<div id="spaces"></div>`],
         ["launch", "Launch &amp; config", `<div id="launch"></div>`],
       ]);
@@ -1414,6 +1464,7 @@ function renderMain() {
   }
   renderLineage(d);
   renderCheckpoints(d);
+  renderPolicies(d);
   renderProduction(d);
   holdHeight("machines", () => renderMachines(d));
   holdHeight("bottleneck", () => renderBottleneck(d));
@@ -1436,6 +1487,17 @@ function renderMain() {
       const b = document.getElementById("tab-" + id);
       if (b) { b.style.display = "none"; if (b.classList.contains("on")) showTab("run", "overview"); }
     }
+  } else if (info.burst) {  // an evaluation burst: the policy it plays and its games (no trainer: its Checkpoints tab has the table)
+    const b = run.burst || info.burst, D = ratingsForRun(), p = D && D.players.find(x => x.name === b.policy), e = p ? 1.96 * (p.se || 0) : 0;
+    document.getElementById("cards").innerHTML = [
+      ["Status", esc(info.status)],
+      ["Plays", b.run ? goPolicy(b.run, b.id, b.policy) : esc(b.current || "?")],
+      ["Against", (b.evals || []).length ? b.evals.map(x => x.run ? goPolicy(x.run, x.id, x.name) : esc(x.name)).join("<br>") : "the insane AI"],
+      ["Games", fmt(Math.max(s.episodes || 0, (run.burst || {}).games || 0), 0)],
+      ["Real game", info.real_game ? `${(100 * info.real_game.wins).toFixed(0)}% <small>won · ${(100 * info.real_game.ties).toFixed(0)}% tied · its policy's last ${info.real_game.games} games against the untaxed insane AI</small>` : "–"],
+      ["Rating", p ? `${Math.round(p.rating)} <small>(95% ${Math.round(p.rating - e)}–${Math.round(p.rating + e)}) · ${esc(p.name)}, ${p.games} rated games in all</small>` : D ? "– <small>not rated yet</small>" : "–"],
+    ].map(([k, v]) => `<div class="card${WIDE_CARDS.has(k) || k === "Plays" || k === "Against" ? " wide" : ""}"><div class="k">${k}</div><div class="v"${k === "Plays" || k === "Against" ? ` style="font-size:14px"` : ""}>${v}</div></div>`).join("");
+    bindGo(document.getElementById("cards"));
   } else
   document.getElementById("cards").innerHTML = [
     ["Status", `${info.status}`, `<div class="progress"><div style="width:${(100 * progress).toFixed(1)}%"></div></div>`],
@@ -1455,7 +1517,7 @@ function renderMain() {
         const show = ["current", "+z"].map(k => mine.find(p => p.kind === k)).filter(Boolean);
         if (!show.length) return "– <small>no rated games yet</small>";
         return show.map(p => { const e = 1.96 * (p.se || 0), rk = ranks.get(p.name);
-          return `${Math.round(p.rating)} <small>(95% ${Math.round(p.rating - e)}–${Math.round(p.rating + e)}) · ${esc(p.name)}, ${p.games} games${rk ? ` · rank ${rk.rank} (${rk.lo}–${rk.hi}) of ${pool.length}` : ""}</small>`; }).join("<br>"); })()],
+          return `${Math.round(p.rating)} <small>(95% ${Math.round(p.rating - e)}–${Math.round(p.rating + e)}) · ${p.policy ? goPolicy(p.run, p.policy, p.name) : esc(p.name)}, ${p.games} games${rk ? ` · rank ${rk.rank} (${rk.lo}–${rk.hi}) of ${pool.length}` : ""}</small>`; }).join("<br>"); })()],
       ["KL anchor", anchorCard(info)],
       ["Games", `${info.envs}${+(info.config || {}).remote_games ? ` <small>here + ${+info.config.remote_games} slots on another machine</small>` : " <small>at once</small>"}`],
       ["Trained", dur(info.trained_seconds || elapsed) + (info.resumes ? ` <small>${info.resumes.length + 1} sessions</small>` : "")],
@@ -1466,6 +1528,7 @@ function renderMain() {
       ["GPU", last["util/gpu_percent"] !== undefined ? `${fmt(last["util/gpu_percent"], 0)}% <small>${fmt(last["util/vram_used_gb"], 1)} GB</small>` : "–"],
     ]),
   ].map(([k, v, x = ""]) => `<div class="card${WIDE_CARDS.has(k) ? " wide" : ""}"><div class="k">${k}</div><div class="v">${v}</div>${x}</div>`).join("");
+  bindGo(document.getElementById("cards"));  // (the Rating card's policy: its place in the Checkpoints tab)
 
   // runs shown: the selected one (solid) and the compared ones (other line styles)
   const shown = [state.selected, ...[...state.compare].filter(n => n !== state.selected && state.data[n])];
@@ -1573,6 +1636,7 @@ function showTab(kind, id, quiet) {
   // charts in a hidden tab have no size: drawn when shown
   document.querySelectorAll(`.pane[data-pane="${id}"] canvas:not(.overlay)`).forEach(c => drawChart(c.id));
   if (id === "replays" && state.data[state.selected]) renderReplays(state.data[state.selected]);  // (its viewer: now)
+  if (id === "checkpoints" && kind === "run" && state.data[state.selected]) renderPolicies(state.data[state.selected]);  // (its listing: asked for now)
   if (!quiet) saveUrl(true);  // (a tab is a page: back returns to the one before)
 }
 // a tab's count (e.g. evaluations); `keep`: shown also at zero (else the tab hides)
@@ -2808,13 +2872,14 @@ function rlQueueRow(r) {
 }
 
 // ---- the Ratings view: skill ratings from every run's evaluation games (GET /api/ratings, dashboard/ratings.py) ----
-ui.ratings = { data: null, kinds: { checkpoint: true, current: true, "+z": false, anchor: true, ai: true }, min: 30, all: false, sort: "rating" };
+ui.ratings = { data: null, kinds: { checkpoint: true, average: true, current: true, "+z": false, anchor: true, ai: true }, min: 30, all: false, sort: "rating" };
 const ratingsUrl = () => "/api/ratings";
 // the table's order: the rating, either end of its 95% interval (a cautious or a hopeful ranking), games, last played
 const RATING_SORTS = { rating: ["rating", p => p.rating], low: ["95% low end", p => p.rating - 1.96 * (p.se || 0)],
                        high: ["95% high end", p => p.rating + 1.96 * (p.se || 0)], games: ["games", p => p.games],
                        last: ["last played", p => p.last || 0] };
-const RATING_KINDS = { checkpoint: ["a checkpoint", "#539bf5"], current: ["a run's policy, by the hour", "#4cc38a"],
+const RATING_KINDS = { checkpoint: ["a checkpoint", "#539bf5"], average: ["a weight average of a run's checkpoints", "#b083f0"],
+                       current: ["a run's policy, by the hour", "#4cc38a"],
                        "+z": ["with a target strategy", "#e0a33a"], anchor: ["the insane AI (1500)", "#d7dee6"],
                        ai: ["the insane AI against a policy at its double income (before 2026-10-26)", "#9aa4ae"] };
 // each policy's rank by rating among `players` and its 95% interval: ratings drawn from their estimates (normal, mean the
@@ -2840,12 +2905,16 @@ function ratingRanks(players) {
   return out;
 }
 const rankText = r => r ? `${r.rank} <small>(${r.lo === r.hi ? r.lo : `${r.lo}–${r.hi}`})</small>` : "–";
+// a click on a rated policy: its run's page at that policy (the Checkpoints tab: its records, where it lies in the run)
+const openRated = p => p.policy ? openPolicy(p.run, p.policy) : openRun(p.run);
 // the ratings for a run's page (its Rating card): loaded once, again after 10 minutes, without opening the tab
 function ratingsForRun() {
   const R = ui.ratings;
   if ((!R.data || Date.now() - (R.fetched || 0) > 600e3) && !R.loading) {
     R.loading = true;
-    getJSON(ratingsUrl()).then(d => { R.data = d; R.fetched = Date.now(); }).catch(() => {}).finally(() => { R.loading = false; });
+    getJSON(ratingsUrl()).then(d => { const first = !R.data; R.data = d; R.fetched = Date.now();
+      // (a finished run's page is not drawn again by the refreshes: its Rating card had stayed "–" until another page was opened)
+      if (first && state.view === "run" && state.data[state.selected]) renderMain(); }).catch(() => {}).finally(() => { R.loading = false; });
   }
   return R.data;
 }
@@ -2868,13 +2937,13 @@ function renderRatings() {
   const toggles = Object.entries(RATING_KINDS).map(([k, [label, c]]) =>
     `<label class="rk"><input type="checkbox" data-kind="${k}" ${R.kinds[k] ? "checked" : ""}><i style="background:${c}"></i>${label}</label>`).join("");
   m.innerHTML = `<div class="ratings"><h2>Skill ratings</h2>
-    <p class="sub">A Bradley–Terry fit on the Elo scale over ${D.games.toLocaleString()} evaluation games in the real game (Echo Isles, the game's rules): each policy's games against the insane AI, which is 1500, and its head-to-head games against frozen checkpoints. Until 2026-10-26 the policies played at the insane AI's double income (an agent slot took insane's difficulty); those games count against a player of their own (\"insane AI, equal income\"), the anchor's are at a person's income. A run's policy is rated by the hour since the run started (h0, h1, …). Bars: 95% intervals. Ties count half. The evaluation worker's gauntlet plays the top rated policies against the current one again, under today's rules: "last played" says how fresh a rating is.</p>
+    <p class="sub">A Bradley–Terry fit on the Elo scale over ${D.games.toLocaleString()} evaluation games in the real game (Echo Isles, the game's rules): each policy's games against the insane AI, which is 1500, and its head-to-head games against frozen checkpoints. Until 2026-10-26 the policies played at the insane AI's double income (an agent slot took insane's difficulty); those games count against a player of their own (\"insane AI, equal income\"), the anchor's are at a person's income. A run's policy is rated by the hour since the run started (h0, h1, …). Bars: 95% intervals. Ties count half. A click on a policy opens its run's Checkpoints tab at it: its record against each opponent, and where it lies in the run. The evaluation worker's gauntlet plays the top rated policies against the current one again, under today's rules: "last played" says how fresh a rating is.</p>
     <div class="bar">${toggles}<label>at least <input id="rmin" type="number" min="1" value="${R.min}" style="width:4.5em"> games</label>
       <label><input type="checkbox" id="rall" ${R.all ? "checked" : ""}> all ${shown.length}</label>
       <label>sort by <select id="rsort">${Object.entries(RATING_SORTS).map(([k, [label]]) => `<option value="${k}" ${R.sort === k ? "selected" : ""}>${label}</option>`).join("")}</select></label></div>
     <div class="rplot" id="rplot"></div><div class="tip" id="rtip"></div>
     <table class="rtable"><tr><th title="the rank by rating, and its 95% interval (ratings drawn from their uncertainty)">rank (95%)</th><th>policy</th><th data-sort="rating">rating</th><th>95% <span data-sort="low">low</span> – <span data-sort="high">high</span></th><th data-sort="games">games</th><th>score</th><th data-sort="last">last played</th></tr>
-    ${rows.map((p, i) => `<tr data-run="${esc(p.run || "")}"${p.last && Date.now() / 1000 - p.last > 86400 && p.kind !== "anchor" ? ` style="opacity:.55" title="not played for a day or more: rated under older rules (the gauntlet replays the top ones)"` : ""}><td>${rankText(ranks.get(p.name))}</td><td><i style="background:${RATING_KINDS[p.kind][1]}"></i>${esc(p.name)}</td>
+    ${rows.map((p, i) => `<tr data-run="${esc(p.run || "")}" data-i="${i}"${p.last && Date.now() / 1000 - p.last > 86400 && p.kind !== "anchor" ? ` style="opacity:.55" title="not played for a day or more: rated under older rules (the gauntlet replays the top ones)"` : ""}><td>${rankText(ranks.get(p.name))}</td><td><i style="background:${RATING_KINDS[p.kind][1]}"></i>${esc(p.name)}</td>
       <td><b>${Math.round(p.rating)}</b></td><td>${ci(p)}</td><td>${p.games}</td><td>${(100 * p.score).toFixed(0)}%</td><td>${date(p.last)}</td></tr>`).join("")}</table></div>`;
   // the plot: one row per policy, its rating a dot, its 95% interval a line; the anchor's rating a dashed line
   const W = Math.max(320, m.querySelector(".ratings").clientWidth), rowH = 18, padL = Math.min(190, W * 0.38), padR = 16, top = 22;
@@ -2898,9 +2967,9 @@ function renderRatings() {
       const rk = ranks.get(p.name);
       tip.innerHTML = `<b>${esc(p.name)}</b><br>rating ${Math.round(p.rating)} (95%: ${ci(p)})${rk ? `<br>rank ${rk.rank} (95%: ${rk.lo}–${rk.hi})` : ""}<br>${p.games} games, scored ${(100 * p.score).toFixed(0)}%<br>${date(p.first)} – ${date(p.last)}`; };
     g.onpointerleave = () => { tip.style.display = "none"; };
-    if (p.run) g.onclick = () => openRun(p.run);
+    if (p.run) g.onclick = () => openRated(p);
   });
-  m.querySelectorAll("tr[data-run]").forEach(tr => { if (tr.dataset.run) tr.onclick = () => openRun(tr.dataset.run); });
+  m.querySelectorAll("tr[data-run]").forEach(tr => { if (tr.dataset.run) tr.onclick = () => openRated(rows[+tr.dataset.i]); });
   m.querySelectorAll("input[data-kind]").forEach(cb => cb.onchange = () => { R.kinds[cb.dataset.kind] = cb.checked; renderRatings(); });
   document.getElementById("rmin").onchange = ev => { R.min = Math.max(1, +ev.target.value || 1); renderRatings(); };
   document.getElementById("rall").onchange = ev => { R.all = ev.target.checked; renderRatings(); };
@@ -3251,14 +3320,15 @@ function panZoom(box, inner, start = null, onChange = null) {
 function renderCheckpoints(d) {
   const el = document.getElementById("checkpoints"); if (!el) return;
   const cks = d.checkpoints || [];
-  setTabCount("checkpoints", cks.length, false);
+  // (a whole-game run's tab stays without files too: its rated policies and launches are there; renderPolicies)
+  setTabCount("checkpoints", cks.length, d.info.trainer === "fullgame" && d.kind !== "bc");
   const key = cks.map(c => c.file + c.time + JSON.stringify(c.league || "") + JSON.stringify(c.eval || "")).join("|");
   if (el.dataset.key === key) return;  // unchanged: keeps the scroll position
   el.dataset.key = key;
   const pct = v => v == null ? "–" : (100 * v).toFixed(0) + "%";
   const mb = b => b >= 1e6 ? (b / 1e6).toFixed(1) + " MB" : (b / 1e3).toFixed(0) + " kB";
   const base = `/files/${encodeURIComponent(d.info.name).replace(/%2F/g, "/")}/`;
-  el.innerHTML = cks.length ? `<div style="color:var(--muted);margin-bottom:8px">${cks.length} saved, newest first. Paths are relative to the repository.</div>
+  el.innerHTML = cks.length ? `<div style="color:var(--muted);margin-bottom:8px">${d.info.trainer === "fullgame" && d.kind !== "bc" ? "The files: " : ""}${cks.length} saved, newest first. Paths are relative to the repository.</div>
     <table class="runs cks"><tr><th>checkpoint</th><th>saved</th><th>size</th><th></th><th></th></tr>` +
     cks.map((c, i) => `<tr><td><b>${c.steps != null ? fmt(c.steps, 0) + " steps" : esc(c.file)}</b>${i === 0 && c.steps != null ? ` <span class="tag">latest</span>` : ""}
         <div class="role">${c.role ? esc(c.role) + " · " : ""}<code>${esc(c.file)}</code></div></td>
@@ -3274,6 +3344,204 @@ function renderCheckpoints(d) {
   });
 }
 
+// ---- a whole-game run's Checkpoints tab, above its files: its launches (its start and each restart as a stretch of its
+// own), and its rated policies one by one: each checkpoint, weight average and hour of the run that was rated, started
+// from or played by a burst (GET /api/policies/<run>, dashboard/policies.py). The one opened is in the address:
+// /run/<run>?tab=checkpoints&ckpt=<a checkpoint's steps | a weight average's name | h<hour>>; a burst's page: its table ----
+const POLICY_KINDS = { average: ["weight averages", "#b083f0"], checkpoint: ["checkpoints", "#539bf5"], hour: ["the run's policy by the hour", "#4cc38a"] };
+const POLICY_VARIANTS = { "+z": "with a target strategy", "+zg": "with a target strategy, guided",
+                          "+human": "from a slot at a person's income against the AI's double",
+                          "+shops": "in games with the neutral buildings' wares, which it was not trained with" };
+const dayTime = t => t ? new Date(t * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "–";
+const exact = v => v == null ? "–" : Math.round(v).toLocaleString("en-US");
+// a record [won, tied, lost]: as text, its games won (against the AI: the yardstick), its score (head to head: a tie half)
+const wtl = r => `${r[0]}–${r[1]}–${r[2]}`;
+const wonOf = r => { const n = r[0] + r[1] + r[2]; return n ? (100 * r[0] / n).toFixed(0) + "%" : "–"; };
+const scoreOf = r => { const n = r[0] + r[1] + r[2]; return n ? (100 * (r[0] + 0.5 * r[1]) / n).toFixed(0) + "%" : "–"; };
+// a policy's name in parts, as dashboard/ratings.py names them ("fgself-236/53275744", "fgself-236 avg swa-43-53", "fgself-238 h3")
+function policyRef(name) {
+  const m = String(name).match(/^([\w.-]+?)(?:\/(\d+)| avg ([\w.-]+)| h(\d+))( \+\w+)?$/);
+  return m ? goPolicy(m[1], m[2] ?? m[3] ?? "h" + m[4], name) : esc(name);
+}
+function openPolicy(run, id) {  // a run's page at one of its policies
+  const C = ui.ck; C.run = run; C.id = id; C.scroll = true;
+  ui.tabs.run = "checkpoints";
+  if (state.view === "run" && state.selected === run && document.getElementById("policies")) { showTab("run", "checkpoints", true); saveUrl(true); }
+  else openRun(run);
+}
+function loadPolicies(run) {  // the run's listing, again when it changed (its ETag); one request at a time
+  const C = ui.ck; if (C.loading === run) return;
+  C.loading = run;
+  const seen = {};
+  getJSON("/api/policies/" + encPath(run), seen).then(P => {
+    const had = C.data[run]; C.data[run] = P;
+    if (seen.same && had) return;
+    C.ver[run] = (C.ver[run] || 0) + 1;
+    if (state.view === "run" && state.selected === run && state.data[run]) renderPolicies(state.data[run], true);
+  }).catch(() => {}).finally(() => { if (C.loading === run) C.loading = null; });
+}
+function launchesHtml(L, run) {
+  if (!L.length) return "";
+  const C = ui.ck, shown = C.all || L.length <= 6 ? L : L.slice(-6);
+  const flag = f => f.from == null ? `<span class="new" title="new in this launch">${esc(f.flag)} <b>${esc(f.to)}</b></span>`
+    : f.to == null ? `<span class="gone" title="given to the launch before (${esc(f.from) || "a bare flag"}), not to this one">${esc(f.flag)} ${esc(f.from)}</span>`
+    : `<span title="the launch before: ${esc(f.from)}">${esc(f.flag)} ${esc(f.from)} → <b>${esc(f.to)}</b></span>`;
+  const card = s => { const n = s.insane ? s.insane[0] + s.insane[1] + s.insane[2] : 0, vs = Object.entries(s.vs || {});
+    const evals = [n ? `insane AI: won <b>${wonOf(s.insane)}</b> <small>${wtl(s.insane)} of ${n} games</small>` : "",
+                   ...vs.map(([name, r]) => `vs ${policyRef(name)}: <b>${scoreOf(r)}</b> <small>${wtl(r)}</small>`)].filter(Boolean);
+    const rows = [
+      ["ran", s.end ? `${dur(s.trained)} <small>until ${dayTime(s.end)}</small>` : `<small>no trainer's line yet</small>`],
+      ["steps", `<span title="${exact(s.steps)} to ${exact(s.to_steps)}">${fmt(s.steps, 0)} → ${fmt(s.to_steps, 0)}</span> <small>+${fmt(Math.max(0, (s.to_steps || 0) - s.steps), 0)}</small>`],
+      ["code", s.commit ? `<code>${esc(s.commit)}</code> <small title="${esc(s.subject)}">${esc(s.subject.length > 96 ? s.subject.slice(0, 95) + "…" : s.subject)}</small>${s.dirty ? ` <span class="loss">(uncommitted changes)</span>` : ""}` : `<small>not recorded</small>`],
+      ...(s.index ? [["flags", s.flags == null ? `<small>not known: the command line of the launch before was not kept</small>`
+        : s.flags.length ? `<div class="kv">${s.flags.map(flag).join("")}</div>` : `<small>the same as the launch before</small>`]] : []),
+      ...(s.checkpoint ? [["went on from", `${s.rolled_back_to ? `<span class="loss">rolled back to</span> ${esc(String(s.rolled_back_to).split("/").pop())}` : `checkpoint ${exact(parseInt(s.checkpoint, 10))}`}`]] : []),
+      ["evaluation", evals.length ? evals.join("<br>") : `<small>no evaluation games of the current policy in its time</small>`],
+      ["training games", exact(s.games)],
+    ];
+    return `<div class="panel launch"><h3><span><b>launch ${s.index + 1}</b>${s.title ? " · " + esc(s.title) : ""}</span><span>${dayTime(s.time)}</span></h3>
+      ${s.note ? `<div class="ln">${esc(s.note)}</div>` : ""}<dl class="facts">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl></div>`; };
+  return `<h3 class="sec">Launches<span>the run's start and each restart as a stretch of its own: what it was, its code and flags against the launch before, the evaluation games of its own time (the current policy: the yardstick against the untaxed insane AI in games won, head to head as a score with ties half)</span>
+      ${L.length > 6 ? `<button class="copy" data-alllaunches>${C.all ? "the last 6" : `all ${L.length}`}</button>` : ""}</h3>
+    <div class="lgrid">${shown.map(card).join("")}</div>`;
+}
+function burstHtml(P, info) {  // a burst's page: what was played in its folder, by policy
+  const b = info.burst; if (!b) return "";
+  const B = P && P.burst, rows = B ? B.rows : [];
+  const ref = x => x.run ? goPolicy(x.run, x.policy || x.id, x.name) : esc(x.name);
+  const listed = (b.evals || []).length ? b.evals : rows.filter(r => r.name !== b.policy);  // (a burst.json that names none: those its games name)
+  const cell = (o, half) => `<b>${half ? scoreOf(o.record) : wonOf(o.record)}</b> <small>${wtl(o.record)}</small>`;
+  return `<div class="panel burstbox"><h3><span>Evaluation burst</span><span>${B && B.games ? `${exact(B.games)} rated games · ${dayTime(B.first)} – ${dayTime(B.last)} (${dur(B.last - B.first)})` : P ? "no rated games yet" : "loading…"}${b.host ? ` · played by ${esc(b.host)}` : ""}</span></h3>
+    <div class="psub" style="margin-top:0">Its current policy is ${b.run ? goPolicy(b.run, b.id, b.policy) : esc(b.current)}${listed.length ? `; listed: ${listed.map(ref).join(", ")}` : ""}.
+      Each plays the insane AI and its handicap rungs; the current one plays each listed one head to head. The games count for these policies' ratings under their own names: a click opens one in its run.${b.note ? ` <i>${esc(b.note)}</i>` : ""}</div>
+    ${rows.length ? `<div class="sideways" style="margin:0"><table class="runs"><tr><th>policy</th><th title="over all its rated games, not this burst's alone">rating (95%)</th><th>insane AI, untaxed: won</th><th>handicap rungs: won</th><th>head to head: score, ties half</th></tr>${rows.map(r => {
+      const anchor = r.opponents.find(o => o.kind === "anchor"), rungs = r.opponents.filter(o => o.kind === "ai"),
+            h2h = r.opponents.filter(o => !["anchor", "ai", "heuristic"].includes(o.kind)), e = 1.96 * (r.se || 0);
+      return `<tr><td>${goPolicy(r.run, r.policy, r.name)}${r.name === b.policy ? ` <span class="tag bu">current</span>` : ""}</td>
+        <td>${r.rating != null ? `<b>${Math.round(r.rating)}</b> <small>${Math.round(r.rating - e)}–${Math.round(r.rating + e)}</small>` : "–"}</td>
+        <td>${anchor ? cell(anchor) : "–"}</td><td>${rungs.map(o => `${esc(o.name.replace("insane AI vs ", "at "))}: ${cell(o)}`).join("<br>") || "–"}</td>
+        <td>${h2h.map(o => `vs ${ref(o)}: ${cell(o, true)}`).join("<br>") || "–"}</td></tr>`; }).join("")}</table></div>` : ""}</div>`;
+}
+function ratedHtml(r) {  // one name a policy was rated under: its rating, then its records by opponent and where they were played
+  const e = 1.96 * (r.se || 0), anchor = r.opponents.find(o => o.kind === "anchor"), rungs = r.opponents.filter(o => o.kind === "ai" || o.kind === "heuristic"),
+        h2h = r.opponents.filter(o => !["anchor", "ai", "heuristic"].includes(o.kind));
+  const rung = o => o.kind === "heuristic" ? `the hand-written player (${o.name.slice("heuristic:".length)})`
+    : o.name.startsWith("insane AI vs -") ? `insane AI, the policy at ${o.name.slice("insane AI vs ".length).replace("-", "−")} income`
+    : o.name === "insane AI, equal income" ? "insane AI, the policy at its double income (before 2026-10-26)" : o.name;
+  const cells = (rec, half) => `<td class="win">${rec[0]}</td><td>${rec[1]}</td><td class="loss">${rec[2]}</td><td><b>${half ? scoreOf(rec) : wonOf(rec)}</b></td>`;
+  const rating = o => o.rating != null ? Math.round(o.rating) : "–";
+  const panels = [];
+  if (anchor) panels.push(`<div class="panel"><h3>Against the insane AI<span>won ${wonOf(anchor.record)} · ${wtl(anchor.record)} won–tied–lost</span></h3>
+    <div class="psub">untaxed, the policy at a person's income: the ratings' anchor (1500). Rows: the policy's race; columns: the AI's.</div>${anchor.races ? muTable(anchor.races) : ""}</div>`);
+  if (rungs.length) panels.push(`<div class="panel"><h3>Handicap rungs and other yardsticks<span>games won</span></h3>
+    <table class="runs"><tr><th>against</th><th>its rating</th><th>won</th><th>tied</th><th>lost</th><th>won</th></tr>
+    ${rungs.map(o => `<tr><td style="white-space:normal">${esc(rung(o))}</td><td>${rating(o)}</td>${cells(o.record)}</tr>`).join("")}</table></div>`);
+  if (h2h.length) panels.push(`<div class="panel"><h3>Head to head<span>its record against each; score: a tie half</span></h3>
+    <table class="runs"><tr><th>opponent</th><th>its rating</th><th>won</th><th>tied</th><th>lost</th><th>score</th></tr>
+    ${h2h.map(o => `<tr><td>${o.run ? goPolicy(o.run, o.policy, o.name) : esc(o.name)}</td><td>${rating(o)}</td>${cells(o.record, true)}</tr>`).join("")}</table></div>`);
+  if (r.played_by.length) panels.push(`<div class="panel"><h3>Played in<span>the runs and bursts whose games these are</span></h3>
+    <table class="runs"><tr><th>run</th><th>its games</th><th>that run's rated games</th></tr>
+    ${r.played_by.map(x => `<tr><td>${go(x.run)}${x.burst ? ` <span class="tag bu">burst</span>` : ""}</td><td>${x.games}</td><td>${dayTime(x.first)} – ${dayTime(x.last)}</td></tr>`).join("")}</table></div>`);
+  return `<div class="pdhead"><b>${esc(r.name)}</b>${POLICY_VARIANTS[r.variant] ? ` <small>${POLICY_VARIANTS[r.variant]}</small>` : ""}${r.rating != null
+      ? ` · rated <b>${Math.round(r.rating)}</b> <small>95% ${Math.round(r.rating - e)}–${Math.round(r.rating + e)}</small> · ${exact(r.games)} games, scored ${(100 * (r.score || 0)).toFixed(0)}% <small>(ties half) · ${dayTime(r.first)} – ${dayTime(r.last)}</small>` : ""}</div>
+    <div class="pdgrid">${panels.join("")}</div>`;
+}
+function policyDetail(p, L, run) {  // the policy opened: where it lies in the run, what was made of it, then its records
+  const facts = [], range = (a, b) => a == null ? "–" : `${exact(a)} – ${exact(b)}`;
+  if (p.kind === "checkpoint") facts.push(["Steps", exact(p.steps)]);
+  if (p.kind === "average") facts.push(["Averages", `${p.n != null ? `${p.n} checkpoints` : "the checkpoints"} of steps ${range(p.from_steps, p.to_steps)} <small>(scripts/average_checkpoints.py)</small>`]);
+  if (p.kind === "hour") {
+    facts.push(["Hour", `${dayTime(p.from_time)} – ${dayTime(p.to_time)} <small>the run's policy as it trained, hour ${esc(p.id.slice(1))} since the run was created: no single checkpoint</small>`]);
+    facts.push(["Steps", p.from_steps != null ? range(p.from_steps, p.to_steps) : `<small>no trainer's log of that time</small>`]);
+    const cs = p.checkpoints, known = cs.filter(c => c.rated);  // (many in a fast hour: the listed ones by name, the rest counted)
+    facts.push(["Checkpoints saved in it", !cs.length ? `<small>none on this machine</small>`
+      : cs.length <= 8 ? cs.map(c => c.rated ? goPolicy(run, String(c.steps), exact(c.steps)) : exact(c.steps)).join(", ")
+      : `${cs.length}, ${exact(cs[0].steps)} to ${exact(cs[cs.length - 1].steps)}${known.length ? `; listed above: ${known.map(c => goPolicy(run, String(c.steps), exact(c.steps))).join(", ")}` : ""} <small>(the files' table below has each)</small>`]);
+    if ((p.aliases || []).length) facts.push(["Gauntlet", `played again later as ${p.aliases.map(a => esc(a.name)).join(", ")} <small>(those games count for this hour)</small>`]);
+  } else facts.push(["Saved", p.saved ? `${dayTime(p.saved)}${p.saved_by === "trainer log" ? ` <small>when the trainer's log reached its steps: the file is not on this machine</small>` : ""}`
+    : `<small>not known: no file here, no trainer's log of its steps</small>`]);
+  if (p.launch != null && L.length) facts.push(["Launch", `${p.launch + 1} of ${L.length}${L[p.launch] && L[p.launch].title ? ` · ${esc(L[p.launch].title)}` : ""}`]);
+  if (p.path) facts.push(["File", `<code>${esc(p.path)}</code><button data-copy="${esc(p.path)}">copy path</button><a class="dl" href="/files/${encPath(run)}/${p.file.split("/").map(encodeURIComponent).join("/")}" download>download</a>`]);
+  if ((p.forked_by || []).length) facts.push(["Started from it", p.forked_by.map(go).join(", ")]);
+  if ((p.anchor_of || []).length) facts.push(["KL anchor of", p.anchor_of.map(go).join(", ")]);
+  if ((p.bursts || []).length) facts.push(["Bursts of it", p.bursts.map(go).join(", ")]);
+  if ((p.listed_in || []).length) facts.push(["Listed in bursts", p.listed_in.map(go).join(", ")]);
+  const rp = p.replays || {};
+  facts.push(["Replays", `<a class="go" data-replays="${esc(rp.q || run)}">${p.kind === "hour" ? "this run's replays" : rp.count != null ? `${rp.count} replay${rp.count === 1 ? "" : "s"} name it` : "search the Replays page for it"}</a>
+    <small>${p.kind === "hour" ? "(a run's own games are titled by the policy's update, not by the hour)" : "(an evaluation game's title names the listed checkpoint that played it)"}</small>`]);
+  return `<dl class="facts">${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>` + (p.rated.length ? p.rated.map(ratedHtml).join("")
+    : `<div class="pdhead"><small>no rated games: listed because a run started from it or anchors on it, a burst names it, or it is a weight average on disk</small></div>`);
+}
+function policiesHtml(P, L, sel, run) {
+  const C = ui.ck, head = `<h3 class="sec">Rated policies<span>each checkpoint, weight average and hour of this run that was rated, started from, anchored on or played by a burst, the newest first; a click opens one</span></h3>`;
+  if (!P) return head + `<div class="empty">loading… (after the dashboard starts: the ratings' first scan of every run's games)</div>`;
+  const counts = {}; for (const p of P.policies) counts[p.kind] = (counts[p.kind] || 0) + 1;
+  const toggles = Object.entries(POLICY_KINDS).map(([k, [label, c]]) =>
+    `<label style="cursor:pointer"><input type="checkbox" data-pkind="${k}" ${C.kinds[k] ? "checked" : ""} style="accent-color:var(--accent)"> <i class="dot" style="background:${c};margin-right:4px"></i>${label} <small>${counts[k] || 0}</small></label>`).join("");
+  if (!P.policies.length) return head + `<div class="empty" style="padding:14px">none: no evaluation game names a policy of this run${P.rated ? "" : " (the ratings are not there yet)"}</div>`;
+  const row = p => { const r = p.rated[0], e = r ? 1.96 * (r.se || 0) : 0, anchor = r && r.opponents.find(o => o.kind === "anchor");
+    const tags = [(p.forked_by || []).length ? `<span class="tag fk" title="started from it: ${esc(p.forked_by.join(", "))}">${p.forked_by.length} fork${p.forked_by.length > 1 ? "s" : ""}</span>` : "",
+                  (p.bursts || []).length ? `<span class="tag bu" title="its bursts: ${esc(p.bursts.join(", "))}">${p.bursts.length} burst${p.bursts.length > 1 ? "s" : ""}</span>` : "",
+                  (p.anchor_of || []).length ? `<span class="tag" title="the KL anchor of ${esc(p.anchor_of.join(", "))}">anchor of ${p.anchor_of.length}</span>` : "",
+                  p.rated.length > 1 ? `<span class="tag" title="rated as ${esc(p.rated.map(x => x.name).join(", "))}">${p.rated.length} ratings</span>` : ""].join("");
+    const steps = p.kind === "checkpoint" ? exact(p.steps)
+      : p.from_steps != null ? `<span title="${exact(p.from_steps)} to ${exact(p.to_steps)}">${fmt(p.from_steps, 0)} – ${fmt(p.to_steps, 0)}</span>${p.n ? ` <small>${p.n} checkpoints</small>` : ""}` : "–";
+    const launch = p.launch == null || !L.length ? "–" : `${p.launch + 1}${L.length > 1 && L[p.launch] && L[p.launch].title ? ` <small class="lt" title="${esc(L[p.launch].title)}">${esc(L[p.launch].title)}</small>` : ""}`;
+    return `<tr class="polrow${p.id === sel ? " sel" : ""}" data-pol="${esc(p.id)}"><td><i class="dot" style="background:${POLICY_KINDS[p.kind][1]}"></i><b>${esc(p.label)}</b>${tags}</td>
+      <td>${steps}</td><td${p.kind === "hour" ? ` title="the hour from then: the run's policy as it trained"` : ""}>${p.kind === "hour" ? `${dayTime(p.from_time)} <small>+1 h</small>` : dayTime(p.saved)}</td><td>${launch}</td>
+      <td>${r && r.rating != null ? `<b>${Math.round(r.rating)}</b> <small>${Math.round(r.rating - e)}–${Math.round(r.rating + e)}</small>` : `<small>not rated</small>`}</td><td>${r ? exact(r.games) : "–"}</td>
+      <td>${anchor ? `${wonOf(anchor.record)} <small>${wtl(anchor.record)}</small>` : "–"}</td><td>${r ? dayTime(r.last) : "–"}</td></tr>` +
+      (p.id === sel ? `<tr class="poldetail"><td colspan="8"><div class="pd">${policyDetail(p, L, run)}</div></td></tr>` : ""); };
+  return head + `<div class="mu-bar">${toggles}${sel && !P.policies.some(p => p.id === sel) ? `<span class="loss">no policy “${esc(sel)}” among them</span>` : ""}</div>
+    <div class="sideways"><table class="runs pols"><tr><th>policy</th><th>steps</th><th>saved</th><th>launch</th><th>rating (95%)</th><th>rated games</th><th title="untaxed, the policy at a person's income: games won, and won–tied–lost">vs insane AI</th><th>last played</th></tr>
+    ${P.policies.filter(p => C.kinds[p.kind]).map(row).join("")}</table></div>`;
+}
+function renderPolicies(d, fresh) {
+  const el = document.getElementById("policies"); if (!el || !d || d.info.trainer !== "fullgame") return;
+  const info = d.info, run = info.name, C = ui.ck;
+  if (el.offsetParent === null) return;  // (its tab hidden: asked for and drawn when the tab is shown; showTab)
+  if (!fresh) loadPolicies(run);
+  if (el.dataset.run !== run) {  // the section's frame, once per run: each part drawn anew only when it changed
+    el.dataset.run = run;
+    el.innerHTML = `<div data-part="burst"></div><div data-part="launches"></div><div data-part="list"></div>`;
+  }
+  const P = C.data[run], L = d.launches || [], sel = C.run === run ? C.id : null;
+  const chosen = P && sel ? P.policies.find(p => p.id === sel) : null;
+  if (chosen && !C.kinds[chosen.kind]) C.kinds[chosen.kind] = true;  // (the one asked for is shown, whatever is ticked)
+  const part = (name, key, html) => {
+    const box = el.querySelector(`[data-part="${name}"]`), k = JSON.stringify(key);
+    if (box.dataset.key === k) return null;
+    box.dataset.key = k; box.innerHTML = html();
+    bindGo(box);
+    return box;
+  };
+  part("burst", [C.ver[run] || 0, info.burst || null], () => burstHtml(P, info));
+  const lb = part("launches", [C.all, L], () => launchesHtml(L, run));
+  if (lb) lb.querySelectorAll("[data-alllaunches]").forEach(b => b.onclick = () => { C.all = !C.all; renderPolicies(d, true); });
+  // (a burst has no policies of its own: the ones it plays are their runs')
+  const box = part("list", [C.ver[run] || 0, sel, C.kinds, L.map(s => s.title)], () => info.burst && !(P && P.policies.length) ? "" : policiesHtml(P, L, sel, run));
+  if (box) {
+    box.querySelectorAll("tr.polrow").forEach(tr => tr.onclick = () => {
+      const id = tr.dataset.pol, open = C.run === run && C.id === id;
+      C.run = run; C.id = open ? null : id; C.scroll = false;
+      saveUrl(false); renderPolicies(d, true);
+    });
+    box.querySelectorAll("[data-pkind]").forEach(cb => cb.onchange = () => { C.kinds[cb.dataset.pkind] = cb.checked; renderPolicies(d, true); });
+    box.querySelectorAll("[data-replays]").forEach(a => a.onclick = ev => { ev.stopPropagation(); openReplayList(a.dataset.replays); });
+    box.querySelectorAll("tr.poldetail").forEach(tr => tr.onclick = ev => ev.stopPropagation());
+    box.querySelectorAll("[data-copy]").forEach(b => b.onclick = async ev => {
+      ev.stopPropagation();
+      const t = b.textContent;
+      try { await navigator.clipboard.writeText(b.dataset.copy); b.textContent = "copied"; } catch (e) { b.textContent = "select it"; }
+      setTimeout(() => b.textContent = t, 1500);
+    });
+  }
+  if (C.scroll && chosen) {  // (a link to it, or the address: brought into view once)
+    const row = el.querySelector("tr.polrow.sel");
+    if (row) { row.scrollIntoView({ block: "start" }); C.scroll = false; }
+  }
+}
+
 // ---- notes, lineage, launch ---------------------------------------------------------------------
 function esc(t) { return String(t ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]); }
 function parentShort(p) { return p.kind === "bc" ? `BC ${p.policy || p.name}` : p.name; }
@@ -3284,9 +3552,13 @@ function parentText(p) {
 }
 const go = n => `<a class="go" data-go="${esc(n)}">${esc(n)}</a>`;
 const goSweep = g => `<a class="go" data-gosweep="${esc(g)}">${esc(g)}</a>`;
+// a link to one policy of a run: its place in the run's Checkpoints tab (openPolicy)
+const goPolicy = (run, id, text) => `<a class="go" data-pol-run="${esc(run)}" data-pol-id="${esc(id)}">${esc(text)}</a>`;
+const polLabel = (kind, id) => kind === "average" ? `average ${id}` : kind === "hour" ? `hour ${String(id).slice(1)}` : `checkpoint ${(+id).toLocaleString("en-US")}`;
 function bindGo(root) {
-  root.querySelectorAll("[data-go]").forEach(a => a.onclick = () => openRun(a.dataset.go));
+  root.querySelectorAll("[data-go]").forEach(a => a.onclick = ev => { ev.stopPropagation(); openRun(a.dataset.go); });
   root.querySelectorAll("[data-gosweep]").forEach(a => a.onclick = () => openSweep(a.dataset.gosweep));
+  root.querySelectorAll("[data-pol-id]").forEach(a => a.onclick = ev => { ev.stopPropagation(); openPolicy(a.dataset.polRun, a.dataset.polId); });
 }
 // a run's few words above its notes (summary.txt): what it changed, the subtitle of its box in the lineage
 const SUMMARY_FIELD = `<input id="runsummary" maxlength="120" placeholder="what it changes, in a few words (summary.txt: its box in the lineage)">`;
@@ -3338,7 +3610,8 @@ function renderLineage(d) {
     return;
   }
   if (!p) rows.push(["Started from", "scratch (random weights)"]);
-  else if (p.kind === "run") rows.push(["Started from", `${go(p.name)}${p.steps != null ? ` at ${fmt(p.steps, 0)} steps` : ""}`]);
+  else if (p.kind === "run") rows.push([info.burst ? "Plays" : "Started from", go(p.name) + (p.policy  // (which of its policies: a link to it)
+    ? ` · ${goPolicy(p.name, p.policy.id, polLabel(p.policy.kind, p.policy.id))}` : p.steps != null ? ` at ${fmt(p.steps, 0)} steps` : "")]);
   else if (p.kind === "bc") rows.push(["Started from", `behavior cloning of <b>${esc(p.policy || "?")}</b> on ${esc(p.task || "?")}` +
     (p.episodes ? ` (${fmt(p.episodes, 0)} episodes; the script wins ${(100 * (p.win_rate || 0)).toFixed(0)}%)` : "") +
     ` · ${go("bc/" + p.name)}`]);
@@ -3349,7 +3622,7 @@ function renderLineage(d) {
     seen.add(q.name); const r = state.runs.find(r => r.name === q.name); if (!r) break;
     q = r.parent; if (q) chain.push(q.kind === "run" ? go(q.name) : esc(parentShort(q)));
   }
-  if (chain.length) rows.push(["Before that", chain.join(" ← ")]);
+  if (chain.length && !info.burst) rows.push(["Before that", chain.join(" ← ")]);
   if (info.sweep) {
     const sib = [];
     for (let k = 1; k <= info.sweep.of; k++) { const n = `${info.sweep.group}-${k}`; sib.push(n === info.name ? `<b>${k}</b>` : `<a class="go" data-go="${esc(n)}">${k}</a>`); }
@@ -3357,7 +3630,10 @@ function renderLineage(d) {
     const about = g && g.notes && g.notes.trim() ? `<br><span style="color:var(--muted)">${esc(g.notes.trim().split("\n")[0])}</span>` : "";
     rows.push(["Sweep", `${goSweep(info.sweep.group)} ${info.sweep.index}/${info.sweep.of}: <code>${esc(info.sweep.options || "base options")}</code> · runs ${sib.join(" ")}${about}`]);
   }
-  rows.push(["Continued by", info.children && info.children.length ? info.children.map(go).join(", ") : "–"]);
+  if (info.burst) rows.push(["Listed", (((state.runs.find(r => r.name === info.name) || {}).burst || info.burst).evals || [])  // (the list's: those its games name too)
+    .map(x => x.run ? goPolicy(x.run, x.id, x.name) : esc(x.name)).join(", ") || "–"]);
+  else rows.push(["Continued by", info.children && info.children.length ? info.children.map(go).join(", ") : "–"]);
+  if (info.bursts && info.bursts.length) rows.push(["Evaluation bursts", info.bursts.map(go).join(", ")]);  // (those that play one of its policies)
   rows.push(["Task", esc(info.task)]);
   const el = document.getElementById("lineage");
   el.innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
@@ -3448,6 +3724,7 @@ window.addEventListener("popstate", async () => {
     else {
       const t = u.q.get("tab");
       if (t) ui.tabs.run = ui.tabs.bc = ui.tabs.collect = ui.tabs.fullbc = t; else ui.tabs.run = ui.tabs.bc = ui.tabs.collect = ui.tabs.fullbc = "overview";
+      if (u.view === "run") { ui.ck.run = u.name; ui.ck.id = u.q.get("ckpt"); ui.ck.scroll = !!ui.ck.id; }  // (the policy opened there)
       if (u.view === "sweep") { state.view = "sweep"; state.sweep = u.name; setNav(); selectionChanged(); }
       else {
         const name = u.name || state.selected;
