@@ -2703,7 +2703,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                                      and opp.get("kind") in ("self", "past", "exploiter"))),
                             spells=float(cfg.get("spell_lesson", 0.0) or 0.0),
                             attacks=float(cfg.get("attack_lesson", 0.0) or 0.0),
-                            hero_weights=hero_weights(cfg.get("first_hero_weights", "")))
+                            hero_weights=hero_weights(cfg.get("first_hero_weights", "")),
+                            creep_cap=int(cfg.get("creep_lesson_cap", 0) or 0),
+                            creep_until=float(cfg.get("creep_lesson_until", 0.0) or 0.0))
                  for s in trajs if keys[s] == "current"}
                 if cfg.get("teach") and replay is None else {})
     # --teach-heuristic: a target drawn from the hand-written player's games (strategy.from_demos names the strategy) is
@@ -2840,6 +2842,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             # lost 40-90% of them every other step; audit 6)
             if tc.spells > 0:  # (--spell-lesson: the units' buffs from every step's events, immolation's state)
                 tc.note_buffs(obs.events)
+            if tc.creep_cap > 0:  # (--creep-lesson-cap: the creeps the side has killed this game)
+                tc.creeps_killed = prod.creeps.get(s, 0) if isinstance(prod.creeps, dict) else prod.creeps[s]
             if s in spans and trajs[s].steps:
                 av, oix = sts[s].get("avail"), bots[s].enc.order_index
                 can = (None if av is None else  # (the units the policy could train now: the army mix teaches only those)
@@ -5371,6 +5375,11 @@ def main(argv: list[str] | None = None) -> int:
                     "minutes (times --lesson-time-scale), healthy heroes, 6+ army units and no enemy army near its halls: "
                     "the heroes and the army near them attack-move to the nearest camp they are 2x stronger than (0-2 "
                     "creeps a game, the AI 13-20); 2: the heroes only")
+    ap.add_argument("--creep-lesson-cap", type=int, default=0, help="--creep-lesson: none for the rest of a game once the "
+                    "side has killed this many creeps (0: no cap: ~13 lessons a game, the army left for the camps whatever "
+                    "else went on, fgself-245)")
+    ap.add_argument("--creep-lesson-until", type=float, default=0.0, help="--creep-lesson: none after this many game "
+                    "seconds (times --lesson-time-scale; 0: all game)")
     ap.add_argument("--lesson-time-scale", type=float, default=0.0, help="audit 16's lessons' game times scaled (0: "
                     "teacher.pace, 0.5 on faster rules such as echofast2, else 1)")
     ap.add_argument("--hunt-lesson", type=int, default=0, help="1 (with --teach): the hunt lesson: no enemy building in "

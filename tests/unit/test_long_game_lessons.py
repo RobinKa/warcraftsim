@@ -126,3 +126,17 @@ def test_lessons_label_the_step():
     y, _ = enc.step_labels(view, st, label_rows(0, out), me, np.zeros((0, 5), np.int64), {}, taught=True)
     got = {i: int(y["y_order"][st["index"][i]]) for i in (10, 11, 50, 30)}
     assert got == {10: 1, 11: 2, 50: 3, 30: 3}  # (riflemen at the barracks, the weapons, the heroes' and army's attack)
+
+
+def test_creep_lesson_cap_and_until():
+    """--creep-lesson-cap K: none once the side has killed K creeps this game (the game loop sets creeps_killed);
+    --creep-lesson-until S: none after S game seconds (times the pace); neither set: as before."""
+    def given(killed=0, now=300.0, **kw):
+        tc = Teacher(0, "human", random.Random(0), creep=True, pace=0.5, **kw)
+        tc.busy, tc.levels, tc.creeps_killed = set(), {}, killed
+        return [c for c in tc.commands(_creep_rows(), PLAYER, now, 100) if isinstance(c, PointOrder)]
+    assert given(killed=9) and given(now=2000.0)  # (no cap, no limit)
+    assert given(killed=2, creep_cap=3) and given(killed=3, creep_cap=3) == [] and given(killed=7, creep_cap=3) == []
+    assert given(now=230.0, creep_until=480.0) and given(now=240.0, creep_until=480.0)  # (480 s x 0.5: to 240 s)
+    assert given(now=241.0, creep_until=480.0) == []
+

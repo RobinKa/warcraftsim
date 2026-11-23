@@ -203,13 +203,18 @@ class Teacher:
                  lumber: bool = False, burrows: bool = False, main_low: float = 0.0, mine_full: float = 12500.0,
                  saturation: bool = False, revive: bool = False, militia: bool = False, army: bool = False,
                  upgrades: bool = False, creep: int = 0, pace: float = 1.0, hunt: int = 0, spells: float = 0.0,
-                 attacks: float = 0.0, hero_weights: dict | None = None):
+                 attacks: float = 0.0, hero_weights: dict | None = None, creep_cap: int = 0, creep_until: float = 0.0):
         """`target` (the side's target strategy, if it has one): its tavern hero is the one taught, and none when it
         has none (another hero would break a narrow target). `target_hero` (--teach 2): its first hero from the altar
         taught too, when that is its first hero (the builder taught it only once due: the policy had made another one
         ~10-20 s before, and the second needs a tier; 25-37% of the first heroes were the target's, chance among 3-4)."""
         from .neutral import TAVERN_HEROES
         self.side = side
+        # --creep-lesson-cap K, --creep-lesson-until S: the creep lesson stops for the game once the side has killed K
+        # creeps (`creeps_killed`: the game loop's count, set before each step's lessons) and after S game seconds
+        # (times `pace`). Without them it went on all game, ~13 a game, also while the side crept by itself, and the army
+        # left for the camps whatever else went on (fgself-245: 4-5 creeps a game, 0.10 against insane)
+        self.creep_cap, self.creep_until, self.creeps_killed = int(creep_cap), float(creep_until), 0
         self.lumber = lumber  # (--teach 3: the lumber lesson)
         self.burrows = burrows and race == "orc"  # (--teach 4: the burrows' stand-down)
         self.saturation = saturation and race != "undead"  # (--saturation-lesson: undead's acolytes cannot chop, and
@@ -367,6 +372,8 @@ class Teacher:
                 and self._look("upgrade", t)):
             out += self._upgrade(rows, t)
         if (self.creep_lesson and n_live and n_army >= CREEP_ARMY and now >= CREEP_FROM * self.pace
+                and (self.creep_until <= 0 or now <= self.creep_until * self.pace)  # (--creep-lesson-until: early only)
+                and (self.creep_cap <= 0 or self.creeps_killed < self.creep_cap)  # (--creep-lesson-cap: not once it creeps)
                 and t - self.last.get("creep", -GAP) >= GAP and self._look("creep", t)):
             out += self._creep(rows, player, live, t)
         if self.hunt and self._look("hunt", t):
