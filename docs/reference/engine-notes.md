@@ -105,6 +105,28 @@ Before the mailbox, actions went through a file the harness loaded with `Preload
   * A hall's next tier is refused while it trains workers: the queue is cancelled first.
   * A dead hero is revived with REVIVE (852039) targeted at an altar of the player's; its training order is refused. The game takes the revival ~7 s after the death, at 0.4 of its gold plus 0.1 per level past the first (at most 4× and 700, no lumber: MiscGame's `Revive*`), a tavern hero too.
   * The first hero is free (`PLAYER_STATE_RESOURCE_HERO_TOKENS`); the tavern stands in the fog at the start, so a Buy is refused until the tavern has been seen.
+  * A right-click on a point (smart, 851971, as a point order) is refused for a peasant and a footman alike; on a unit it is taken. The order 851973 (in the vocabulary from the built-in AI's games, on a unit and on a point) is refused on a point, an enemy building and an own unit (`scripts/order_probe.py --only smart`, 2026-11-23). The policy sends ~10-15 smart-on-a-point orders a game for its workers, ~95% refused, and 1.5-6 of 851973.
+* **Orders given again and again** (`scripts/order_probe.py`, 2026-11-23: units made on open ground on Echo Isles, the engine alone). The policy picks every unit's order every 0.5 s step, and the game does not treat an order it has just been given as nothing:
+  * **An attack-move given again starts the unit's swing over.** An attacker next to an enemy barracks, its hit points lost in 30 s, summed over four places (`--only balanced`: each way of ordering in each place once, the places agree within a few points):
+
+    | attacker | attack-moved once | again every step | again every 2 steps | every step, to points around |
+    |---|---|---|---|---|
+    | footman | 593 | **0** | 497 | **0** |
+    | archer | 368 | **0** | 264 | **0** |
+    | crypt fiend | 461 | **0** | 461 | **0** |
+    | death knight | 749 | 224 | 678 | 139 |
+    | archmage | 695 | 339 | 554 | 309 |
+    | grunt | 806 | 587 | 686 | 569 |
+    | mountain king | 810 | 657 | 719 | 656 |
+    | demon hunter | 1,386 | 1,173 | 1,334 | 1,152 |
+    | far seer | 665 | 593 | 598 | 599 |
+    | rifleman | 457 | 455 | 452 | 453 |
+
+    A unit whose swing takes about half a second or more to land never lands it when the order comes again every step. An attack on the unit itself given again every step costs nothing (a footman 148 against 148, a death knight 181 against 184, single trials), and a move and an attack-move in turn every step deals 0-30%. `--order-masks` bit 8 leaves out an attack-move for a unit that reads "attack" already and whose last attack-move went to within 256 of the new point.
+  * A move given again every step walks ~10% slower (a footman 778 short of a 7,600 walk the one moved once had finished; bit 8 leaves those out too).
+  * **A cast is cut off by the next order.** A lich in range of its target, ordered to cast frost nova and attack-moved one step later: no nova, no mana spent (176 damage left alone). An archmage's blizzard followed by a move one step later dealt 132 against 369. In the base policy's games the casts the game took did take effect (waterelemental 6 of 6, frost nova 5 of 5, flame strike 5 of 5, spirit wolf 6 of 6 in `scripts/habit_probe.py`'s games): it rarely orders a caster again within two steps. No mask.
+  * **A point above the map.** An order to y 5,992 at the left base (the old point bins' top edge, below) is taken: the footman and the peasant walked ~1,700 north to (-3,984, 4,641), the map's edge, and stood there.
+* **The old point bins' edge** (2026-11-23). The point bins were grown from the duel maps' 128 to Echo Isles' 352 (`scripts/grow_bins.py`). On the duel maps everything beyond the range was clamped to its edge bins, and the policy kept those bins' share: of the base policy's attack-moves 5.5% go to the old top edge bin (y = the start's + 3,048 = 5,992; Echo Isles' camera ends at 4,864), 0.1% anywhere else outside the old range. Every policy of the line sends 2-16% of its attack-moves, moves and patrols there (22-240 a side-game), a hero mostly, often in a fight (an enemy within 900 in 30-80% of them), and its unit walks north until its next order (median 7 steps later, a quarter 20 or more). Dropped by the agent, a probe game's policy asked for them 405 times where it had sent ~50: it uses the place. A third of the base policy's ziggurats are aimed at that bin (49% over all policies): no blight within the harness's reach, so the game refuses them (undead's second most refused order, 13-17 a game). `--order-masks` bit 16 leaves those builds out before they take the step's money; the units' orders there are left as they are.
 * **Wine and D-Bus** (2026-10-24). Each prefix's device manager (`winedevice.exe`, mountmgr) asks the udisks service over the system D-Bus for every disk (`GetManagedObjects`) about 0.4 times a second; with 57 prefixes the service took ~1.5 cores. The games run with `DBUS_SYSTEM_BUS_ADDRESS` pointing nowhere (`runtime.wine.wine_env`).
 * **Linux system calls from the game** (2026-10-24, `--game-cuts` 131072). GE-Proton's Wine runs the game as a 32-bit Linux process, so the shim can make the step sync's TCP connection with `int 0x80` (socket, connect, read, write) and skip Winsock and its wineserver requests; it falls back to Winsock when that fails.
 * **Same pages across games** (2026-10-24). Of a game's ~346 MB (almost all private heap under Wine), ~225 MB are identical page for page with other games' (the same map, tables and code): the kernel's same-page merging (`prctl(PR_SET_MEMORY_MERGE)`) saved ~1 GB of 4 games' ~1.4 GB in a test.

@@ -701,13 +701,70 @@ def set_econ_masks(v) -> None:
 # obs-full's buff events; the robo-goblin's morph and its way back by form, model.load). Bit 4 (with --valid-mask): a
 # skill learned only by a hero type that has it (herodata.order_needs: an unknown type, a hexed hero's critter, a
 # summoned clockwerk goblin learned anything). 0: none, everything as before
+# Bits 8 and 16 (bug finder 11, 2026-11-23; play.BCAgent.commands alone: no mask in the network, the order is not
+# sent, "what it did" as the agent's other checks). Bit 8, REPEAT_ORDERS: an attack-move or a move for a unit that
+# reads that order already, to within REPEAT_NEAR of the point its last order of that kind went to. The game starts a
+# unit's swing over at every new attack-move: attack-moved again every step (0.5 s) at an enemy barracks, a footman,
+# an archer and a crypt fiend dealt no damage at all in 30 s, a death knight 30% of what one attack-move deals, an
+# archmage 49%, a grunt 73%, a mountain king 81%, a far seer 89%, a rifleman all of it; every second step 72-100%
+# (scripts/order_probe.py --only balanced; docs/reference/engine-notes.md); a move given again every step walked
+# ~10% slower.
+# The policy picks every unit's order every step: in target games with an expansion the camp lesson's heroes are
+# attack-moved at the natural's camp every step for 50-300 s (110-155 repeats a side-game in fgself-241/249/250's
+# replays, 264 of a probe game's 532 attack-moves, 152 with a creep in reach; ~1 a game without a target). The
+# --macros creep order had this guard ("not again to a unit attack-moving already"); --macros-off creep lost it.
+# Bit 16, EDGE_ORDERS: a building aimed outside the map (MAP_BOUNDS and EDGE_MARGIN). The point bins were grown from
+# the duel maps' 128 to Echo Isles' 352 (scripts/grow_bins.py) and the old range's top edge bin, where everything
+# farther north was clamped, kept its share: y = the start's + 3048, 1,100 above Echo Isles' camera bound. A third
+# of the base policy's ziggurats are aimed there (no blight within the harness's reach: refused, undead's second
+# most refused order, 13-17 a game, after taking its cost from the step's budget and its kind's one build a step).
+# (2-16% of every policy's attack-moves, moves and patrols go to that bin too, 22-240 a side-game: the unit walks
+# ~1,700 north of its base to the map's edge and stands. Those the game takes and the policy has learned what they
+# do: dropped, a probe game's policy asked 405 times for what it had sent ~50 times. Left as they are)
 ORDER_MASKS = int(os.environ.get("WARCRAFTSIM_ORDER_MASKS", "0") or 0)
+REPEAT_ORDERS, EDGE_ORDERS = 8, 16  # (ORDER_MASKS' bits)
+REPEAT_NEAR = 256.0  # (world units: ~5 point bins, the policy's own scatter around one place)
+EDGE_MARGIN = 512.0  # (the playable area past the camera's bounds)
+# the map's camera bounds (x0, y0, x1, y1; map_bounds), None: unknown, no order is outside
+MAP_BOUNDS: tuple[float, float, float, float] | None = None
 
 
 def set_order_masks(v) -> None:
     global ORDER_MASKS
     ORDER_MASKS = int(v or 0)
     os.environ["WARCRAFTSIM_ORDER_MASKS"] = str(ORDER_MASKS)
+
+
+def map_bounds(path) -> tuple[float, float, float, float]:
+    """A map's camera bounds as (x0, y0, x1, y1), for set_bounds."""
+    from ..data.mpq import MpqArchive
+    from ..data.w3i import parse_w3i
+
+    with MpqArchive(path) as m:
+        info = parse_w3i(m.read("war3map.w3i"))
+    xs, ys = info.camera_bounds[0::2], info.camera_bounds[1::2]
+    return float(min(xs)), float(min(ys)), float(max(xs)), float(max(ys))
+
+
+def set_bounds(b) -> None:
+    """The map's camera bounds (map_bounds; None: unknown), for --order-masks bit 16; from the environment too
+    (processes started anew)."""
+    global MAP_BOUNDS
+    MAP_BOUNDS = tuple(float(v) for v in b) if b else None
+    if MAP_BOUNDS is None:
+        os.environ.pop("WARCRAFTSIM_MAP_BOUNDS", None)
+    else:
+        os.environ["WARCRAFTSIM_MAP_BOUNDS"] = ",".join(str(v) for v in MAP_BOUNDS)
+
+
+if os.environ.get("WARCRAFTSIM_MAP_BOUNDS"):
+    set_bounds([float(v) for v in os.environ["WARCRAFTSIM_MAP_BOUNDS"].split(",")])
+
+
+def outside_map(x: float, y: float) -> bool:
+    """Whether a point lies outside the map (its camera bounds and EDGE_MARGIN around them); False without bounds."""
+    b = MAP_BOUNDS
+    return b is not None and not (b[0] - EDGE_MARGIN <= x <= b[2] + EDGE_MARGIN and b[1] - EDGE_MARGIN <= y <= b[3] + EDGE_MARGIN)
 
 
 _KINDS: dict | None = None

@@ -207,6 +207,7 @@ def worker_main(wid: int, cfg: dict, games: int, keys: dict, host: str, q, stop)
         threading.Thread(target=_follow_gauntlet, args=(cfg, stop), daemon=True).start()
     fx.ACTIVE_F = cfg["features"]
     fx.set_geometry(*cfg["map_geometry"])
+    fx.set_bounds(cfg.get("map_bounds"))  # (--order-masks bit 16: the map's bounds; None without it)
     fx.set_z(cfg.get("z_dim", 0))
     fx.set_inputs(cfg.get("inputs", 1), bool(cfg.get("privileged")))
     fx.set_masks(cfg.get("tech_mask", 0), cfg.get("valid_mask", 0))
@@ -333,7 +334,10 @@ def main(argv: list[str] | None = None) -> int:
     if parse_duel_name(cfg["map"]) is None:  # (as selfplay.main: another map's frame; set_geometry exports it)
         from ..data.mapbuild import stock_map_path
         fx.set_geometry(*fx.map_geometry(stock_map_path(cfg["map"])))
+        if cfg.get("order_masks", 0) & fx.EDGE_ORDERS:  # (--order-masks bit 16, as selfplay.main)
+            fx.set_bounds(fx.map_bounds(stock_map_path(cfg["map"])))
     cfg["map_geometry"] = [fx.STARTS, fx.BIN_RANGE]
+    cfg["map_bounds"] = list(fx.MAP_BOUNDS) if fx.MAP_BOUNDS else None
     if a.maps:  # (the frame stays the run's evaluation map's: the policy's)
         from . import mapframe
         cfg["eval_map_pool"] = mapframe.parse_pool(a.maps, cfg["map"])

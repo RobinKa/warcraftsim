@@ -3097,7 +3097,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({k: getattr(bots[side], k) for k in ("militia_back", "militia_skipped", "stood_down_n") if getattr(bots[side], k, 0)}
            if side in bots else {}),
         **({"over_budget": bots[side].over_budget} if side in bots and getattr(bots[side], "over_budget", 0) else {}),
-        **{k: getattr(bots[side], k) for k in ("full_queue", "upgrading_refused", "loaded_orders", "frame_orders")
+        **{k: getattr(bots[side], k) for k in ("full_queue", "upgrading_refused", "loaded_orders", "frame_orders",
+                                                 "repeat_orders", "edge_orders")  # (--order-masks bits 8, 16)
            if side in bots and getattr(bots[side], k, 0)},  # (the agent's orders not sent, by why; audit 11)
         **({"refused_ctx": bots[side].refused_ctx} if side in bots and getattr(bots[side], "refused_ctx", None) else {}),
         # the orders the game refused (the learner's side): their share, and the kinds refused most (audit 4: never measured)
@@ -3292,6 +3293,7 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
     _pin(cfg, "games")
     fx.ACTIVE_F = cfg.get("features", fx.F)  # (a spawned process: the learner's setting, --features)
     fx.set_geometry(*cfg.get("map_geometry", (fx.STARTS, fx.BIN_RANGE)))  # (and the map's frame)
+    fx.set_bounds(cfg.get("map_bounds"))  # (--order-masks bit 16: the map's bounds; None without it)
     fx.set_z(cfg.get("z_dim", 0))  # (and the global vector's strategy block)
     fx.set_inputs(cfg.get("inputs", 1), bool(cfg.get("privileged")))  # (and the inputs: --inputs, the masks, --opsd-*)
     fx.set_masks(cfg.get("tech_mask", 0), cfg.get("valid_mask", 0))
@@ -5545,7 +5547,12 @@ def main(argv: list[str] | None = None) -> int:
                     "state (immolation, mana shield on while on, off while off: --obs-full's buff events; the "
                     "robo-goblin's morph and its way back by form). Bit 4 (with --valid-mask): a skill learned only by "
                     "a hero type that has it (an unknown type, a hexed hero, a summoned clockwerk goblin had learned "
-                    "any). 0: none, as before")
+                    "any). Bit 8 (the agent's, not the network's): an attack-move or a move for a unit that reads that "
+                    "order already, to within 256 of the point its last one went to, is not sent (the game starts the "
+                    "unit's swing over at every new order: attack-moved every step a footman, an archer and a crypt "
+                    "fiend never hit, a death knight dealt 30%%; scripts/order_probe.py). Bit 16 (the agent's): a building aimed outside the "
+                    "map is not sent (the old point bins' top edge, 1,100 above Echo Isles: a third of the ziggurats, "
+                    "refused after taking their cost from the step's budget). 0: none, as before")
     ap.add_argument("--z-workers", type=int, default=0, help="with --z-build: the builder also orders (taught: labels) "
                     "the race's worker at an idle hall while the side has fewer than its target's workers (its start's "
                     "plus the strategy's trained ones, \"n\"; at most features.worker_cap for its mines), after the due "
@@ -6078,6 +6085,9 @@ def main(argv: list[str] | None = None) -> int:
         from ..data.mapbuild import stock_map_path    # and point targets (features.set_geometry; the actors
         fx.set_geometry(*fx.map_geometry(stock_map_path(args.map)))  # inherit it through the environment)
         print(f"map frame: starts {fx.STARTS}, point bins over +-{fx.BIN_RANGE:g} ({fx.BINS})", flush=True)
+        if args.order_masks & fx.EDGE_ORDERS:  # (--order-masks bit 16: buildings aimed outside the map are not sent)
+            fx.set_bounds(fx.map_bounds(stock_map_path(args.map)))
+            print(f"map bounds: {fx.MAP_BOUNDS} (buildings aimed more than {fx.EDGE_MARGIN:g} outside: not sent)", flush=True)
     map_pool = None
     if args.map_pool:  # (--map-pool: checked here, drawn by each launch, game_loop)
         from . import mapframe
@@ -6165,7 +6175,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"--teach-floor {args.teach_floor}: {int(TEACH_FLOOR[0].sum())} order classes' labels capped", flush=True)
     global TEACH_FLOOR_PLACE
     TEACH_FLOOR_PLACE = None
-    if args.teach_floor > 0:  # (--teach-floor-orders moves: the attack-move's lessons floored with their place)
+    if args.teach_floor > 0 or args.teach_floor_place > 0:  # (--teach-floor-orders moves: the attack-move's lessons
+        # floored with their place; with --teach-floor-place alone too: at --teach-floor 0 it had been ignored and the
+        # attack-move's lessons pushed without a limit, as before the flag; no run had that pair; bug finder 11)
         pm = floor_place_classes(vocab, tuple(g for g in args.teach_floor_orders.split(",") if g))
         if pm is not None:
             place = args.teach_floor_place or args.teach_floor
@@ -6492,7 +6504,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "order_masks": args.order_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "hunt_lesson": args.hunt_lesson, "spell_lesson": args.spell_lesson, "attack_lesson": args.attack_lesson, "first_hero_weights": args.first_hero_weights, "worker_value": args.worker_value, "hero_xp_value": args.hero_xp_value, "eval_replay_every": args.eval_replay_every, "building_hp_value": args.building_hp_value, "unit_hp_value": args.unit_hp_value, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "order_masks": args.order_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "creep_lesson_cap": args.creep_lesson_cap, "creep_lesson_until": args.creep_lesson_until, "hunt_lesson": args.hunt_lesson, "spell_lesson": args.spell_lesson, "attack_lesson": args.attack_lesson, "first_hero_weights": args.first_hero_weights, "worker_value": args.worker_value, "hero_xp_value": args.hero_xp_value, "eval_replay_every": args.eval_replay_every, "building_hp_value": args.building_hp_value, "unit_hp_value": args.unit_hp_value, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "late_capture": args.late_capture, "late_minutes": [float(x) for x in args.late_minutes.split(",")], "late_from": args.late_from, "research_value": args.research_value, "real_agents": args.real_agents,
@@ -6501,7 +6513,7 @@ def main(argv: list[str] | None = None) -> int:
            "late_states": [x for x in args.late_states.split(",") if x], "late_z": args.late_z,
            "eval_ai": [d for d in args.eval_ai.split(",") if d],
            "eval_handicap": handicap_levels(args.eval_handicap), "eval_handicap_share": args.eval_handicap_share,
-           "map_geometry": [fx.STARTS, fx.BIN_RANGE],
+           "map_geometry": [fx.STARTS, fx.BIN_RANGE], "map_bounds": list(fx.MAP_BOUNDS) if fx.MAP_BOUNDS else None,
            "infer_entities": [int(x) for x in args.infer_entities.split(",")],
            "infer_past_entities": [int(x) for x in args.infer_past_entities.split(",")],
            "infer_rows": list(infer_rows(args.infer_rows, 64)), "infer_precision": args.infer_precision,
