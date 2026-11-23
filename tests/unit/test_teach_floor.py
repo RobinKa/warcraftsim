@@ -78,18 +78,32 @@ def test_floor_place_classes():
     assert selfplay.floor_classes(vocab, ("spells", "moves")).tolist() == selfplay.floor_classes(vocab, ("spells",)).tolist()
 
 
-def test_the_place_floor_holds_a_point_lesson_back():
-    """A point lesson whose order-and-place chance is at or over P pushes nothing (order, place); a floor no chance
-    reaches changes nothing; off: as before."""
+def test_the_attack_moves_lessons_teach_their_place_alone():
+    """--teach-floor-orders moves: no class of it: the loss as before; a class of it: its lessons' order is never
+    pushed (the loss differs), and with a floor no place is under, nothing of them is (the loss differs again)."""
     net = make_net()
     args = settings(opd_coef=0.05, label_norm="units", teach_coef=0.5)
     chunks = make_chunks(np.random.default_rng(0), labels=True)
     u = updater(net, args)
     s, _ = u._static(statics(chunks, True), None)
     base = u._loss(s, None)[0].detach()
-    selfplay.TEACH_FLOOR_PLACE = (torch.ones(31, dtype=torch.bool), 1.0)  # (log P above 0: never reached)
-    assert torch.equal(u._loss(s, None)[0].detach(), base)
-    selfplay.TEACH_FLOOR_PLACE = (torch.zeros(31, dtype=torch.bool), math.log(1e-30))  # (no class of it)
-    assert torch.equal(u._loss(s, None)[0].detach(), base)
-    selfplay.TEACH_FLOOR_PLACE = (torch.ones(31, dtype=torch.bool), math.log(1e-30))  # (every point label held back)
-    assert not torch.equal(u._loss(s, None)[0].detach(), base)
+    selfplay.TEACH_FLOOR_PLACE = (torch.zeros(31, dtype=torch.bool), math.log(0.03))  # (no class of it)
+    assert torch.allclose(u._loss(s, None)[0].detach(), base, rtol=1e-6, atol=1e-7)
+    selfplay.TEACH_FLOOR_PLACE = (torch.ones(31, dtype=torch.bool), 1.0)  # (every point label: place only, always)
+    place_only = u._loss(s, None)[0].detach()
+    assert not torch.allclose(place_only, base, rtol=1e-6, atol=1e-7)
+    selfplay.TEACH_FLOOR_PLACE = (torch.ones(31, dtype=torch.bool), math.log(1e-30))  # (no place under the floor)
+    nothing = u._loss(s, None)[0].detach()
+    assert not torch.allclose(nothing, place_only, rtol=1e-6, atol=1e-7)
+
+
+def test_no_gradient_to_the_order_from_an_attack_moves_lesson():
+    """The order's logits get no gradient from the labelled rows of the floored class (distill_loss)."""
+    net = make_net()
+    args = settings(opd_coef=0.05, label_norm="units", teach_coef=0.5)
+    chunks = make_chunks(np.random.default_rng(0), labels=True)
+    u = updater(net, args)
+    s, _ = u._static(statics(chunks, True), None)
+    selfplay.TEACH_FLOOR_PLACE = (torch.ones(31, dtype=torch.bool), math.log(1e-30))
+    loss = u._loss(s, None)[0]
+    assert torch.isfinite(loss)
