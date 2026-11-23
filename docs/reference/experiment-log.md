@@ -2427,6 +2427,25 @@ Head to head 241's average 0.537 against the control's (188 games), 0.497 agains
 
 Head to head 243's average 0.424 against the control's (79 games), 0.397 against 236's (78), 0.546 against 242's (87). Both lean down against the control. To finish: the evaluation worker on `burst-243` again for the missing ~25 minutes, then the verdicts.
 
+### 2026-11-23
+
+**burst-243 finished** (10:07-10:36, the second sitting; 1,005 games in all):
+
+| policy | rating | against insane, untaxed | agent at -25% income | creeps a game |
+|---|---|---|---|---|
+| `fgself-236`'s average (the start) | 1,909 ±12 | 0.986 ±0.026 (72 games) | 0.71 (29) | 1.1 |
+| `fgself-238`'s average (the control) | 1,859 ±17 | 0.891 ±0.073 (73) | 0.62 (24) | 0.8 |
+| `fgself-243`'s average (236's average in the league) | 1,829 ±19 | 0.900 ±0.069 (73) | 0.38 (29) | 0.7 |
+| `fgself-242`'s average (kills and creeping pay, damage does not) | 1,790 ±28 | 0.893 ±0.072 (71) | 0.29 (35) | 0.7 |
+
+Head to head 243's average 0.454 against the control's (186 games), 0.388 against 236's (206), 0.554 against 242's (139). No race broken in any.
+
+- **`fgself-242`: not kept.** 69 rating points under the control, and creeping did not rise (0.7 creeps a game against 0.8). The reward alone does not make the heroes creep: the policy almost never walks an army to a camp, and a reward cannot pay for what does not happen. Which of the three flags cost the strength is open (`--hero-xp-value 0.5` alone is queued, behind the league line).
+- **`fgself-243`: not kept.** 30 points under the control (within the errors, leaning down), 0.454 head to head, 0.38 against 0.62 at -25% income. At 3.3% of the games (1.2% for its first 15M) the strongest policy as a fixed opponent does not lift the learner; the league's snapshots as running averages (plan 1b's league half) is the same idea and is not built.
+- **Every continuation from 236's average sits below it, the control too**: 1,859 ±17 against 1,909 ±12, 0.89 against 0.99 against insane. Burst-241 had the control's average level with its start (1,879 ±32); with ~1,230 games it is 50 under. The one continuation at its start's level is `fgself-241`'s average, the league with history (1,898 ±20: +39 ±26 on the control).
+
+**`fgself-244`** (10:37, from 236's average, code 47a87bc): **the main exploiter in a league with history** (the plan's experiment 3): `--exploiter-share 0.1` with `--snapshot-every 400 --max-past 12 --pfsp-data 0.5`. Controls: 241's 17-27M average (the history alone) and 238's (neither).
+
 Merged today besides: the System tab's main machine (no tensor-core counter is readable without a driver option and root; labelled proxies), the ratings' handicap rungs drawn as the AI's.
 
 Next, two forks from 236's average back to back, then one burst (the user's asks of today): **A** the shaping that pays for kills and creeping (`--hero-xp-value 0.5 --building-hp-value 0 --unit-hp-value 0`); **B** 236's average as a fixed league member (`--league-add`: it is the strongest policy, 1,935, and no run trains against it; the fixed members are `fgself-130`, `-171` and `-197`'s peak, from October and early November).
