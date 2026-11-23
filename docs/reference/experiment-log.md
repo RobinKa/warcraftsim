@@ -2524,6 +2524,22 @@ Head to head 248's average 0.397 against the control's (219 games), 0.378 agains
 5. The harvesters moved off their work and sent back in target games (the ghoul's second habit; peasants and wisps too): it follows the bank's gold (under ~150 the move comes; at 500 it does not) and fades with time; no single target item causes it. The float penalty on lumber that cannot be spent is suspected, untested.
 6. Smaller: orders always refused (smart on a point, 10 a game), a cast cut off by the next order (rare in the base's play), `--teach-floor-place` ignored at `--teach-floor 0` (fixed), `selfplay_fork --set` reads "start" as the start weights only in flags that take paths (fixed).
 
+**burst-250** (1,018 games; every policy played with `--econ-masks 511`):
+
+| policy | rating | against insane, untaxed | agent at -25% income |
+|---|---|---|---|
+| `fgself-250`'s average (the repaired exploiter) | 1,914 ±19 | 0.837 ±0.083 (83 games; undead 0.64 of 28) | 0.40 (24) |
+| `fgself-236`'s average (the start) | 1,890 ±9 | 0.897 ±0.074 (80) | 0.41 (22) |
+| `fgself-249`'s average (the ghoul fix) | 1,888 ±27 | 0.925 ±0.059 (78) | 0.48 (21) |
+| `fgself-241`'s average (the league's history) | 1,878 ±11 | 0.867 ±0.077 (71) | 0.47 (17) |
+
+Head to head 250's average **0.583 against 236's** (168 games), 0.560 against 241's (174), 0.537 against 249's (190); 31 ties in 532 head-to-head games (5.8%).
+
+- **`fgself-249` (the ghoul fix): kept.** Level with the recipe without it (1,888 ±27 against 1,878 ±11), 0.925 against insane. `--econ-masks 511` is in the base recipe.
+- **`fgself-250` (the main exploiter, repaired): kept provisionally.** The highest rating so far and the first policy to beat 236's average head to head beyond chance (0.583 of 168); against its control 249 it is +26 ±33 in rating and 0.537 head to head, inside the errors. Against insane it is lower (0.837; undead 18 of 28), under the 0.90 floor: with the exploiter a tenth of the launches leave the AI's games, and the policy shifts toward beating policies. A second run with it (`fgself-251`) is the check, and undead against insane is watched.
+
+**`fgself-251`** (22:41, from 236's average, code fa29191): 250's recipe with **`--order-masks 31`** (bug finder 11's fixes: a repeated attack-move or move is not sent; a building aimed outside the map is not sent). Control: 250's average. Then `fgself-252`: the same with the hunt lesson under the place floor (the user's tie).
+
 **The undead's starting ghoul moves back and forth** (the user, from `fgself-245`'s videos): not the creep lesson. The policy orders it "move (point)" and "smart (tree)" on alternating steps, 40-67 moves in the first two minutes, in games against the built-in AI with a target strategy, since `fgself-236` (also in 238, 241, 244; none without a target in the few replays). Cause open: an agent probes it (one game on the CPU, with and without a target).
 
 **The ghoul's back and forth: found, a fix merged** (15:12; `scripts/ghoul_probe.py`, a live game with `fgself-236`'s average on the CPU). A harvester right-clicked onto a tree ("smart (tree)", the tree order the policy gives a free ghoul) reads as current order `smart` for its whole first trip (a ghoul, peasant or peon 12-15 s; a wisp for as long as it stays), not `harvest`. In that state the policy answers with "move (point)" (0.86-0.93 in a target game; the move hangs on the target's items part), the move frees the ghoul, and the free ghoul gets "smart (tree)" again (0.92-0.97): a two-step cycle, learned in `fgself-236` (before it right-clicks drew no moves). Reading `harvest` the same policy leaves it alone. Not the lumber lesson (no label given), not a mask (the same 15 orders allowed throughout). In 240 steps of a target game: 61-76 moves and 40-60 lumber. Without a target 0-8 moves and 120-160 lumber: evaluation games are mildly affected. Peasants and peons have no such habit; wisps a little.
