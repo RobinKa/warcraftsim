@@ -2492,6 +2492,21 @@ Built `--teach-floor-orders moves` (a59688a): the attack-move's lessons are floo
 
 Built during the burst: `--exploiter-adam start` (bfd685c): the exploiter starts over with the Adam state its starting weights were saved with, set in place (kept as `exploiter.start.adam` for resumes). Next, two forks back to back with one burst: the ghoul fix alone (`--econ-masks 511`), then with the main exploiter repaired (`--exploiter-share 0.1 --exploiter-adam start --exploiter-reset 0.6`).
 
+**burst-248** (948 games):
+
+| policy | rating | against insane, untaxed | creeps a game | agent at -25% income |
+|---|---|---|---|---|
+| `fgself-236`'s average (the start) | 1,896 ±10 | 0.931 ±0.052 (62 games) | 0.7 | 0.35 (24) |
+| `fgself-241`'s average (the control) | 1,885 ±13 | 0.924 ±0.062 (71) | 0.9 | 0.45 (22) |
+| `fgself-244`'s average | 1,868 ±16 | 0.842 ±0.102 (53) | 1.1 | 0.32 (25) |
+| `fgself-248`'s average (the creep lesson's place + experience pays) | 1,802 ±18 | 0.769 ±0.102 (65; human 0.53 of 15) | 0.8 | 0.26 (21) |
+
+Head to head 248's average 0.397 against the control's (219 games), 0.378 against 236's (164), 0.418 against 244's (147).
+
+**`fgself-248`: not kept**, and the creep line rests. 83 rating points under the control, and in evaluation games it creeps no more than the base (0.8 creeps a game against 0.9): what the lesson held up early in training faded. Two runs with `--hero-xp-value 0.5` now stand 69 and 83 points under their controls (`fgself-242` with the kill-only shaping, `fgself-248` with the floored lesson): the experience reward is the part they share and the likely cost; neither it nor the floored lesson has run alone. What the line gave: lessons on a common order must not push the order (`--teach-floor-orders moves`), and the creep lesson without that floor destroys a policy in 20 minutes.
+
+**`fgself-249`** (18:25, from 236's average, code a4b5c4d): **the ghoul fix alone**: `--econ-masks 511` on the league's history. Control: 241's average. Then `fgself-250`: the same with the main exploiter repaired; one burst for both.
+
 **The undead's starting ghoul moves back and forth** (the user, from `fgself-245`'s videos): not the creep lesson. The policy orders it "move (point)" and "smart (tree)" on alternating steps, 40-67 moves in the first two minutes, in games against the built-in AI with a target strategy, since `fgself-236` (also in 238, 241, 244; none without a target in the few replays). Cause open: an agent probes it (one game on the CPU, with and without a target).
 
 **The ghoul's back and forth: found, a fix merged** (15:12; `scripts/ghoul_probe.py`, a live game with `fgself-236`'s average on the CPU). A harvester right-clicked onto a tree ("smart (tree)", the tree order the policy gives a free ghoul) reads as current order `smart` for its whole first trip (a ghoul, peasant or peon 12-15 s; a wisp for as long as it stays), not `harvest`. In that state the policy answers with "move (point)" (0.86-0.93 in a target game; the move hangs on the target's items part), the move frees the ghoul, and the free ghoul gets "smart (tree)" again (0.92-0.97): a two-step cycle, learned in `fgself-236` (before it right-clicks drew no moves). Reading `harvest` the same policy leaves it alone. Not the lumber lesson (no label given), not a mask (the same 15 orders allowed throughout). In 240 steps of a target game: 61-76 moves and 40-60 lumber. Without a target 0-8 moves and 120-160 lumber: evaluation games are mildly affected. Peasants and peons have no such habit; wisps a little.
