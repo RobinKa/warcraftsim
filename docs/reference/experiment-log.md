@@ -2446,6 +2446,8 @@ Head to head 243's average 0.454 against the control's (186 games), 0.388 agains
 
 **`fgself-244`** (10:37, from 236's average, code 47a87bc): **the main exploiter in a league with history** (the plan's experiment 3): `--exploiter-share 0.1` with `--snapshot-every 400 --max-past 12 --pfsp-data 0.5`. Controls: 241's 17-27M average (the history alone) and 238's (neither).
 
+`fgself-244` stopped at 27.0M (12:19; ~5,000 steps a second, ~6% under a run without the exploiter). **The exploiter never beat the main policy**: three attempts of 300 updates (~1.2M steps each) ended at 0.39-0.40 against it and started over on the time limit, the fourth stood at 0.46; so none of its snapshots joined the league (they join when it wins 0.7). What the run tested is the league's history plus ~20% of the main's games against a weaker copy that trains against it (the main scored 0.54). **burst-244** (12:19-13:06): its 17-27M average against 241's (the history alone), 238's (the control) and 236's (the start).
+
 Merged today besides: the System tab's main machine (no tensor-core counter is readable without a driver option and root; labelled proxies), the ratings' handicap rungs drawn as the AI's.
 
 Next, two forks from 236's average back to back, then one burst (the user's asks of today): **A** the shaping that pays for kills and creeping (`--hero-xp-value 0.5 --building-hp-value 0 --unit-hp-value 0`); **B** 236's average as a fixed league member (`--league-add`: it is the strongest policy, 1,935, and no run trains against it; the fixed members are `fgself-130`, `-171` and `-197`'s peak, from October and early November).
