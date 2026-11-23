@@ -5467,7 +5467,11 @@ def main(argv: list[str] | None = None) -> int:
                     "Bit 64 (View.futile; audit 17): orders the game refuses: a harvest at full (or just refused) haunted "
                     "and entangled mines, Death Coil and Holy Light on targets they can't take, a burrowed crypt fiend's "
                     "or stone gargoyle's orders but its way back (by type), an item slot's use with no item there usable "
-                    "without a target (and sent as the item's use: the slot's order is refused)")
+                    "without a target (and sent as the item's use: the slot's order is refused). Bit 256 (features."
+                    "TREE_HARVEST): a peasant's, peon's, ghoul's or wisp's right-click on a tree sent as the harvest "
+                    "order: right-clicked, the game shows its current order as smart for its whole first trip, no "
+                    "harvester to the agent, and the policy moved it away and sent it back every step (undead's first "
+                    "ghoul in target games: scripts/ghoul_probe.py)")
     ap.add_argument("--order-masks", type=int, default=0, help="orders the game refuses, masked (ordermasks.py; bug "
                     "finder 10: fgself-225's refused orders). Bit 1: a unit-target spell's or ability's target only on "
                     "the entities its AbilityData targs1 lets it take (its side, the caster itself, a building, air or "
