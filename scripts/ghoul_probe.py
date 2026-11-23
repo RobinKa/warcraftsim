@@ -47,6 +47,15 @@ What it found (fgself-236's averaged weights swa-43-53, fgself-245's settings, u
     right-click's.
   * fgself-247's weights at 5.9M steps (2 target games each way): the ghoul reads "smart" in 15-27 steps only (the
     policy gives "harvest (tree)" more), move 0.72-0.77 there; 20 and 33 moves without the bit, 16 and 20 with it.
+  * the second habit, looked at again (bug finder 11, the same weights, fgself-249's settings with the bit, 3 target
+    games): it is not the builder's reserve (while a due item waits for gold the ghoul reading "harvest" gets a move
+    with 0.00 in 18 steps; with nothing due 0.14-0.18, 22 and 27 moves in ~150 steps), not one item of the target
+    (--counter now takes each item out alone: 0.48-0.58 where it is 0.56 as is; all of them out 0.03), not the bank's
+    lumber (0 or 500: 0.54, 0.48) nor the food. It follows the bank's gold: under ~150 the move comes (0.2-0.95, steps
+    48-132 of a game), at 150-500 it does not (0.00-0.08; the gold set to 500: 0.08), and the time (set to 300 s:
+    0.13). What fits and is not shown: the shaping's float penalty (0.5 of the bank: a trip's 20 lumber -0.0025 at
+    once, paid back when spent), lumber brought while gold is short cannot be spent, and the targets' games are where
+    the policy is short of gold early. The test is a fork with the penalty on gold alone.
 """
 from __future__ import annotations
 
@@ -286,6 +295,12 @@ class Probe:
         parts = (("items", 0, strat.ZDIM), ("modes", strat.ZDIM, zmodes.MDIM), ("mix", strat.ZDIM + zmodes.MDIM, strat.SLOTS))
         for name, at, w in parts if net.config["z"] >= strat.ZDIM + zmodes.MDIM + strat.SLOTS else ():
             out[f"target without its {name}"] = probs(glob=with_glob(z0 + at, w, 0.0))
+        # each of the target's items taken out alone (strategy.vector: slot k made, its time in the second half; out:
+        # not made, never): which item the choice hangs on (the slots' items: the pool's list for the race)
+        for k in torch.nonzero(glob[0, z0:z0 + strat.SLOTS] > 0.5).flatten().tolist():
+            g2 = glob.clone()
+            g2[:, z0 + k], g2[:, z0 + strat.SLOTS + k] = 0.0, 1.0
+            out[f"target without slot {k}"] = probs(glob=g2)
         out["bank lumber 0"] = probs(glob=with_glob(1, 1, 0.0))
         out["bank lumber 500"] = probs(glob=with_glob(1, 1, 0.5))
         out["bank gold 500"] = probs(glob=with_glob(0, 1, 0.5))
