@@ -2470,6 +2470,16 @@ Built `--creep-lesson-cap K` (the lesson stops for the game once the side has ki
 
 **`fgself-246`** (14:00, from 236's average, code c31efd2): **the creep lesson capped**: `--creep-lesson 1 --creep-lesson-cap 4 --creep-lesson-until 480 --hero-xp-value 0.5` on the league's history. Control: 241's average.
 
+**`fgself-246`: collapsed too, stopped at 7.2M** (14:29): 0.05-0.13 against insane, head to head 0.12-0.16, 4.0-4.8 creeps a game, 14.5 creep lessons a game in its first 20 minutes (the cap holds a game's lessons back only once four creeps are dead).
+
+**The cause** (the user: "the army seems to keep moving to a creep camp that's already dead"): in `fgself-245`'s replay of 13:38 the army got 1,655 attack-moves to one camp's cell between minutes 2 and 18 (978 in two minutes) and hundreds to three other camps' cells. The lesson's loss has three parts: the order, the pointer and the place (`--teach-point 0.5`: the point's bins given the order). An attack-move is a common order, so its lesson pushes almost only the place, with no limit, and the place head is shared by every attack-move: within minutes every attack-move went to the lesson's cells, camp alive or not, and the army no longer went to the enemy.
+
+Built `--teach-floor-orders moves` (a59688a): the attack-move's lessons are floored with their place: a lesson pushes its order and its point only while the unit's chance of that order at that cell is under `--teach-floor` (0.005), as the spell lesson's floor on a spell. Off: as before.
+
+**`fgself-247`** (14:32, from 236's average, code a59688a): `fgself-246`'s flags with `--teach-floor-orders spells,moves`. Control: 241's average.
+
+**The undead's starting ghoul moves back and forth** (the user, from `fgself-245`'s videos): not the creep lesson. The policy orders it "move (point)" and "smart (tree)" on alternating steps, 40-67 moves in the first two minutes, in games against the built-in AI with a target strategy, since `fgself-236` (also in 238, 241, 244; none without a target in the few replays). Cause open: an agent probes it (one game on the CPU, with and without a target).
+
 Merged today besides: the System tab's main machine (no tensor-core counter is readable without a driver option and root; labelled proxies), the ratings' handicap rungs drawn as the AI's.
 
 Next, two forks from 236's average back to back, then one burst (the user's asks of today): **A** the shaping that pays for kills and creeping (`--hero-xp-value 0.5 --building-hp-value 0 --unit-hp-value 0`); **B** 236's average as a fixed league member (`--league-add`: it is the strongest policy, 1,935, and no run trains against it; the fixed members are `fgself-130`, `-171` and `-197`'s peak, from October and early November).

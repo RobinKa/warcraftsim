@@ -9,7 +9,7 @@ warcraftsim trains agents on the real Warcraft III 1.29, headless under Wine. Py
 | Micro fights | 91% against the scripted opponent. League self-play: 82%, and 79% against the 91% policy. | `--trainer torch` |
 | Whole game, `duelrush` (2-minute games) | **79%** against the built-in AI, all 16 matchups. | `fgself-10` |
 | Whole game, `duelfast` (6-minute games) | **80%** of its games against the insane AI won. Every matchup is above the AI's own record. | `fgself-51` |
-| **The real game on Echo Isles** (the game's own rules, no handicap, a person's income) | **0.951 against the insane AI** (250 of 263 games over two evaluation bursts, every race 0.90-1.00): `fgself-236`'s weight average. `fgself-236`'s end checkpoint read 0.845 over two bursts. It can give every order a melee player can, and it sees what a player sees. | the top-rated policy: `fgself-236 avg swa-43-53` (rating 1,935, insane at 1,500); rating ~1,904 ±14 after the ratings counted its head-to-head games); running: `fgself-246`, a capped creep lesson with a reward for hero experience, on the league's history |
+| **The real game on Echo Isles** (the game's own rules, no handicap, a person's income) | **0.951 against the insane AI** (250 of 263 games over two evaluation bursts, every race 0.90-1.00): `fgself-236`'s weight average. `fgself-236`'s end checkpoint read 0.845 over two bursts. It can give every order a melee player can, and it sees what a player sees. | the top-rated policy: `fgself-236 avg swa-43-53` (rating 1,935, insane at 1,500); rating ~1,904 ±14 after the ratings counted its head-to-head games); running: `fgself-247`, a creep lesson floored with its place and a reward for hero experience, on the league's history |
 
 ## How a run is judged
 
