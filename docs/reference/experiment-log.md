@@ -2478,6 +2478,12 @@ Built `--teach-floor-orders moves` (a59688a): the attack-move's lessons are floo
 
 **`fgself-247`** (14:32, from 236's average, code a59688a): `fgself-246`'s flags with `--teach-floor-orders spells,moves`. Control: 241's average.
 
+**`fgself-247`: collapsed as well, stopped at 5.5M** (15:00): 0.18 against insane, head to head 0.16-0.18, but no creeping this time (0.8 creeps a game) and 24 creep lessons a game. The place was held back; the order was not: the lesson's rows also sit in the labels' loss (`--opd-coef`), which pushed the attack-move itself, floor or no floor. The army gave 1.4-3.3 attack-moves a step (`fgself-241`: 0.15-0.2; `fgself-245`: 0.7-2.3, so the order's push was part of all three collapses), re-ordering its units out of their fights (27 kills a game against 60, 64 units lost against 38).
+
+`--teach-floor-orders moves` changed (837a63f): an attack-move's lesson **teaches its place alone**, and only while that cell's chance given an attack-move is under `--teach-floor-place`; its order is never pushed, in neither loss. How often the army attack-moves is left to the policy.
+
+**`fgself-248`** (15:03, from 236's average, code 837a63f): `fgself-247`'s flags with `--teach-floor-place 0.03`. The last try of the creep lesson today. Control: 241's average.
+
 **The undead's starting ghoul moves back and forth** (the user, from `fgself-245`'s videos): not the creep lesson. The policy orders it "move (point)" and "smart (tree)" on alternating steps, 40-67 moves in the first two minutes, in games against the built-in AI with a target strategy, since `fgself-236` (also in 238, 241, 244; none without a target in the few replays). Cause open: an agent probes it (one game on the CPU, with and without a target).
 
 Merged today besides: the System tab's main machine (no tensor-core counter is readable without a driver option and root; labelled proxies), the ratings' handicap rungs drawn as the AI's.
