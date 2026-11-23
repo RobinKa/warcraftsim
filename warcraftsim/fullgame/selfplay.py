@@ -3097,7 +3097,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({k: getattr(bots[side], k) for k in ("militia_back", "militia_skipped", "stood_down_n") if getattr(bots[side], k, 0)}
            if side in bots else {}),
         **({"over_budget": bots[side].over_budget} if side in bots and getattr(bots[side], "over_budget", 0) else {}),
-        **{k: getattr(bots[side], k) for k in ("full_queue", "upgrading_refused", "loaded_orders", "frame_orders")
+        **{k: getattr(bots[side], k) for k in ("full_queue", "upgrading_refused", "loaded_orders", "frame_orders",
+                                                 "repeat_orders", "edge_orders")  # (--order-masks bits 8, 16)
            if side in bots and getattr(bots[side], k, 0)},  # (the agent's orders not sent, by why; audit 11)
         **({"refused_ctx": bots[side].refused_ctx} if side in bots and getattr(bots[side], "refused_ctx", None) else {}),
         # the orders the game refused (the learner's side): their share, and the kinds refused most (audit 4: never measured)
@@ -3292,6 +3293,7 @@ def actor_main(wid: int, cfg: dict, out_q, stop, render_q, conns: list | None = 
     _pin(cfg, "games")
     fx.ACTIVE_F = cfg.get("features", fx.F)  # (a spawned process: the learner's setting, --features)
     fx.set_geometry(*cfg.get("map_geometry", (fx.STARTS, fx.BIN_RANGE)))  # (and the map's frame)
+    fx.set_bounds(cfg.get("map_bounds"))  # (--order-masks bit 16: the map's bounds; None without it)
     fx.set_z(cfg.get("z_dim", 0))  # (and the global vector's strategy block)
     fx.set_inputs(cfg.get("inputs", 1), bool(cfg.get("privileged")))  # (and the inputs: --inputs, the masks, --opsd-*)
     fx.set_masks(cfg.get("tech_mask", 0), cfg.get("valid_mask", 0))
@@ -5545,7 +5547,12 @@ def main(argv: list[str] | None = None) -> int:
                     "state (immolation, mana shield on while on, off while off: --obs-full's buff events; the "
                     "robo-goblin's morph and its way back by form). Bit 4 (with --valid-mask): a skill learned only by "
                     "a hero type that has it (an unknown type, a hexed hero, a summoned clockwerk goblin had learned "
-                    "any). 0: none, as before")
+                    "any). Bit 8 (the agent's, not the network's): an attack-move or a move for a unit that reads that "
+                    "order already, to within 256 of the point its last one went to, is not sent (the game starts the "
+                    "unit's swing over at every new order: attack-moved every step a footman, an archer and a crypt "
+                    "fiend never hit, a death knight dealt 30%%; scripts/order_probe.py). Bit 16 (the agent's): a building aimed outside the "
+                    "map is not sent (the old point bins' top edge, 1,100 above Echo Isles: a third of the ziggurats, "
+                    "refused after taking their cost from the step's budget). 0: none, as before")
     ap.add_argument("--z-workers", type=int, default=0, help="with --z-build: the builder also orders (taught: labels) "
                     "the race's worker at an idle hall while the side has fewer than its target's workers (its start's "
                     "plus the strategy's trained ones, \"n\"; at most features.worker_cap for its mines), after the due "
@@ -6078,6 +6085,9 @@ def main(argv: list[str] | None = None) -> int:
         from ..data.mapbuild import stock_map_path    # and point targets (features.set_geometry; the actors
         fx.set_geometry(*fx.map_geometry(stock_map_path(args.map)))  # inherit it through the environment)
         print(f"map frame: starts {fx.STARTS}, point bins over +-{fx.BIN_RANGE:g} ({fx.BINS})", flush=True)
+        if args.order_masks & fx.EDGE_ORDERS:  # (--order-masks bit 16: buildings aimed outside the map are not sent)
+            fx.set_bounds(fx.map_bounds(stock_map_path(args.map)))
+            print(f"map bounds: {fx.MAP_BOUNDS} (buildings aimed more than {fx.EDGE_MARGIN:g} outside: not sent)", flush=True)
     map_pool = None
     if args.map_pool:  # (--map-pool: checked here, drawn by each launch, game_loop)
         from . import mapframe
@@ -6503,7 +6513,7 @@ def main(argv: list[str] | None = None) -> int:
            "late_states": [x for x in args.late_states.split(",") if x], "late_z": args.late_z,
            "eval_ai": [d for d in args.eval_ai.split(",") if d],
            "eval_handicap": handicap_levels(args.eval_handicap), "eval_handicap_share": args.eval_handicap_share,
-           "map_geometry": [fx.STARTS, fx.BIN_RANGE],
+           "map_geometry": [fx.STARTS, fx.BIN_RANGE], "map_bounds": list(fx.MAP_BOUNDS) if fx.MAP_BOUNDS else None,
            "infer_entities": [int(x) for x in args.infer_entities.split(",")],
            "infer_past_entities": [int(x) for x in args.infer_past_entities.split(",")],
            "infer_rows": list(infer_rows(args.infer_rows, 64)), "infer_precision": args.infer_precision,

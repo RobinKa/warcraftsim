@@ -194,6 +194,7 @@ class BCAgent:
         self.h = None  # the memory core's state (FullGameNet.memory)
         self.building_since: dict[int, int] = {}  # worker -> the step it started its building order
         self.buying_since: dict[int, int] = {}  # unit -> the step it was sent to buy (protocol.Buy: on its way)
+        self.last_point: dict[int, tuple] = {}  # unit -> (order, x, y) of its attack-move or move (--order-masks bit 8)
         self.t = 0
         if self.full is not None:  # (--full-vocab: the cooldowns and autocasts, a new game's; the view's mask reads them)
             self.cooling.clear()
@@ -232,6 +233,15 @@ class BCAgent:
                                        and (getattr(c, "building", None) in EXPAND_HALLS.values() or getattr(c, "order", None) == HAUNT)
                                        for c, ok in zip(cmds, results)):  # blocked for its 60 s; audit 8)
             self.view.expanding = None
+        if fx.ORDER_MASKS & fx.REPEAT_ORDERS:  # (--order-masks bit 8: each unit's attack-move or move the game took,
+            last = self.__dict__.setdefault("last_point", {})  # until its next order of another kind; commands())
+            for c, ok in zip(cmds, results):
+                unit = getattr(c, "unit", None)
+                if ok and unit is not None:
+                    if isinstance(c, PointOrder) and c.order in (ATTACK, fx.MOVE):
+                        last[unit] = (c.order, float(c.x), float(c.y))
+                    else:
+                        last.pop(unit, None)
         buying = getattr(self, "buying_since", {})
         tally = self.__dict__.setdefault("order_results", {})  # (per kind of order: sent, refused; the episode row)
         ctx = self.__dict__.setdefault("refused_ctx", [])  # (the first refused orders' context: the episode row)
@@ -483,6 +493,15 @@ class BCAgent:
                     self.last_sent.append((oid, kind))
                     out.append(c2)
                 continue
+            if kind == fx.POINT and fx.ORDER_MASKS & fx.REPEAT_ORDERS and oid in (ATTACK, fx.MOVE) and current == oid:
+                # (--order-masks bit 8: the unit reads that order, given for this place: again, the game starts its swing
+                # over; not sent, what it did)
+                was = self.__dict__.get("last_point", {}).get(unit)
+                if was is not None and was[0] == oid:
+                    px, py = fx.bins_world(int(bx[i]), int(by[i]), self.view.sign)
+                    if (px - was[1]) ** 2 + (py - was[2]) ** 2 <= fx.REPEAT_NEAR ** 2:
+                        self.repeat_orders = getattr(self, "repeat_orders", 0) + 1
+                        continue
             self.last_sent.append((oid, kind))
             if kind == fx.IMMEDIATE and oid == MIX:  # (--macros: the building trains its target's army mix)
                 unit_code = _macros().mix_choice(getattr(self.view, "mix_target", None) or {}, getattr(self.view, "mix_have", {}),
@@ -541,6 +560,9 @@ class BCAgent:
                 x, y = fx.bins_world(int(bx[i]), int(by[i]), self.view.sign)
                 if oid < TYPE_CODE:
                     out.append(PointOrder(unit, oid, x, y))
+                elif fx.ORDER_MASKS & fx.EDGE_ORDERS and self._home_map() and fx.outside_map(x, y):
+                    # (--order-masks bit 16: a building outside the map, refused wherever the harness tries around it:
+                    self.edge_orders = getattr(self, "edge_orders", 0) + 1  # not sent, its money left in the step's budget)
                 elif oid not in built and not (oid in ONE_OF and self._has_building(oid)) and pay(c):  # (each unit
                     built.add(oid)  # samples its own order: 2-3 workers had built one building in a step, and a second
                     out.append(Build(unit, oid, x, y))  # altar, war mill or graveyard came in 24-52% of short won games;
@@ -1062,6 +1084,12 @@ class BCAgent:
         gold, lumber = int(enc.costs[k][0]), int(enc.costs[k][1])  # (each it costs, at least 1: a damaged farm refused
         return (gold == 0 or int(me[2]) >= 1) and (lumber == 0 or int(me[3]) >= 1)  # with 1000 gold and no lumber, and
         # with 5 lumber and no gold; audit 11)
+
+    def _home_map(self) -> bool:
+        """Whether the game is played on the map features.MAP_BOUNDS is of: its player's start is one of the frame's two
+        (features.STARTS; a --map-pool launch on another map is not, nor a game whose start is unknown)."""
+        start = getattr(self.view, "start", None)
+        return start is not None and any(abs(start[0] - sx) < 1.0 and abs(start[1] - sy) < 1.0 for sx, sy in fx.STARTS)
 
     def committed(self, unit: int) -> bool:
         """A worker busy with a building order (features.building) for less than BUILD_COMMIT_STEPS, or a unit
