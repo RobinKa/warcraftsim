@@ -609,7 +609,8 @@ class BCAgent:
                     out.append(TargetOrder(unit, oid, int(target[fx.C_ID])))
             elif kind == fx.TREE and self.trees:
                 x, y = fx.bins_world(int(bx[i]), int(by[i]), self.view.sign)
-                out.append(TargetDestructable(unit, oid, self._nearest_tree(x, y)))
+                # (--econ-masks bit 256: a harvester's right-click on a tree as the harvest order, features.TREE_HARVEST)
+                out.append(TargetDestructable(unit, fx.tree_order(oid, int(sel[i, fx.C_TYPE])), self._nearest_tree(x, y)))
             if len(out) > len(self.sent_resources):  # (aligned with out: accepted() pairs them; a tier's queue cancels
                 self.sent_resources += [None] * (len(out) - len(self.sent_resources) - 1) + [res]  # before it: none;
                 # one entry for its seven commands had paired the step's later orders with others' resources; audit 4)

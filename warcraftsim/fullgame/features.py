@@ -638,6 +638,31 @@ TARGETED_ITEMS = frozenset(int.from_bytes(c.encode(), "big") for c in (
     "ritd", "tgrh", "tcas", "tbak", "tbar", "tbsm", "tfar", "tlum", "tsct", "tsot"))
 
 
+# --econ-masks bit 256 (play.BCAgent.commands; 2026-11-23, the user saw undead's first ghoul flip between "move (point)"
+# and "smart (tree)" every step in the replays: 40-67 moves in the first 240 steps of most undead target games against
+# the built-in AI since fgself-236): a right-click on a tree ("smart (tree)", the tree order fgself-236's policy gives a
+# free ghoul) by a unit that harvests lumber (LUMBER_TYPES) is sent as the harvest order. The game shows a right-clicked
+# harvester's current order as "smart" for its whole first trip (a peasant, a peon and a ghoul 12-15 s, until the first
+# load is in; a wisp for as long as it stays at the tree), and "harvest" at once after the harvest order (the same
+# lumber either way: scripts/ghoul_probe.py --engine). "smart" is none of HARVESTING, so the unit was no harvester to
+# `redundant` (its repeated tree orders went out, each to the tree nearest another sampled point), and the policy
+# answers that state with a move: the ghoul sent to the trees and reading "smart" got "move (point)" with 0.86-0.93 in
+# a target game (0.1-0.5 without one, beside "harvest (tree)"), which clears what the view says it harvests, and the
+# ghoul then free got "smart (tree)" again with 0.92-0.97. Reading "harvest" the same policy mostly leaves it alone.
+# In 3 target games of 240 steps (fgself-236's averaged weights against insane): 61-76 moves and 40-60 lumber without
+# the bit, 23-27 moves and 100 lumber with it (2 games without a target: 0 and 8 moves, 160 and 120 lumber). What
+# stays: in a target game's first ~80 s the policy also moves a ghoul away that reads "harvest" (0.1-0.8 a step from
+# ~20 s on, none after ~80 s; with the strategy block zeroed 0.01), and sends it back at once
+TREE_HARVEST = int(os.environ.get("WARCRAFTSIM_ECON_MASK", "0") or 0) & 256 > 0
+LUMBER_TYPES = frozenset(int.from_bytes(c.encode(), "big") for c in ("hpea", "opeo", "ugho", "ewsp"))
+
+
+def tree_order(order: int, unit_type: int) -> int:
+    """The order sent for an order class on a tree (kind TREE) given by a unit of `unit_type`: with TREE_HARVEST a
+    lumber harvester's right-click as the harvest order; else `order` itself."""
+    return HARVEST if TREE_HARVEST and order == SMART and unit_type in LUMBER_TYPES else order
+
+
 def item_use_now(item: int, hero: np.ndarray) -> bool:
     """FUTILE_MASK: whether the item (its type id: 0 none) in a hero's slot has a use the game takes now without a
     target (play.BCAgent sends it as the item's use, protocol.UseItem): usable (herodata.item_table), not one of
@@ -656,9 +681,12 @@ def set_econ_masks(v) -> None:
     """--econ-masks: bit 1 the economy masks (ECON_MASK), bit 2 the revival's reserve (REVIVE_RESERVE: a dead hero the
     altar would take now keeps its revival's gold from the player's other paid orders, View.step), bit 4 night elf's
     lower worker allowance (NE_LEAN), bits 8, 16, 32 the Detonate, repair and call to arms masks (View.chores), bit 64
-    the orders the game refuses (FUTILE_MASK: View.futile; model.prune_allowed's morphed forms)."""
+    the orders the game refuses (FUTILE_MASK: View.futile; model.prune_allowed's morphed forms), bit 256 a harvester's
+    right-click on a tree sent as the harvest order (TREE_HARVEST: play.BCAgent.commands)."""
     global ECON_MASK, REVIVE_RESERVE, NE_LEAN, DETONATE_MASK, REPAIR_MASK, MILITIA_MASK, FUTILE_MASK, BURROW_MASK
+    global TREE_HARVEST
     v = int(v or 0)
+    TREE_HARVEST = bool(v & 256)
     BURROW_MASK = bool(v & 128)  # (bit 128: orc's burrows, View.chores and play.BCAgent)
     ECON_MASK, REVIVE_RESERVE, NE_LEAN = bool(v & 1), bool(v & 2), bool(v & 4)
     DETONATE_MASK, REPAIR_MASK, MILITIA_MASK, FUTILE_MASK = bool(v & 8), bool(v & 16), bool(v & 32), bool(v & 64)
