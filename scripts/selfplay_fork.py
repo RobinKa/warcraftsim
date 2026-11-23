@@ -32,6 +32,24 @@ def as_read(p: Path) -> str:
     return str(Path("runs") / p.relative_to(runs)) if p.is_relative_to(runs) else str(p)
 
 
+def path_flags(src: str) -> set[str]:
+    """selfplay's flags that take paths (its type=Path ones, from its source): eval-checkpoints, league-add, ref2..."""
+    return set(re.findall(r'add_argument\("--([a-z0-9][a-z0-9-]*)", type=Path', src))
+
+
+def set_words(k: str, v: str, start: str, paths: set[str]) -> list[str]:
+    """A --set value's words for flag `k`. "start" is the fork's start weights only in a flag that takes paths
+    (`paths`); in any other flag it stays the word, with a note (--set exploiter-adam=start was launched as
+    --exploiter-adam <the checkpoint>, which the parser refused: the value was renamed; 2026-11-23)."""
+    words = v.split()
+    if k in paths:
+        return [start if x == "start" else x for x in words]
+    if "start" in words:
+        print(f'note: --set {k}: "start" kept as the word (the start weights only in the flags that take paths: '
+              f'{", ".join(sorted(paths))})', flush=True)
+    return words
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("parent")
@@ -40,7 +58,7 @@ def main() -> None:
     ap.add_argument("--title", default="", help="the change in a few words (summary.txt: the lineage's line for it)")
     ap.add_argument("--league", help="the run whose league the new one starts with (default: the parent's; none: "
                     "its own)")
-    ap.add_argument("--set", action="append", default=[], help="flag=value (without the dashes); flag= drops it; \"start\" in a value: the fork's start weights (e.g. eval-checkpoints=start runs/fgself-130/...)")
+    ap.add_argument("--set", action="append", default=[], help="flag=value (without the dashes); flag= drops it; \"start\" in the value of a flag that takes paths: the fork's start weights (e.g. eval-checkpoints=start runs/fgself-130/...; in any other flag it is the word itself)")
     ap.add_argument("--weights", help="the parent's checkpoint to start from (default: its latest)")
     add_launch_args(ap)
     args = ap.parse_args()
@@ -64,12 +82,15 @@ def main() -> None:
             flags[-1].append(w)
     flags = [f for f in flags if f[0] not in ("--name", "--note", "--title", "--resume", "--resume-weights",
                                                "--start-weights", "--league-from")]
+    src = next((p for p in (Path(code) / "warcraftsim" / "fullgame" / "selfplay.py",  # (the launch's own code: its
+                            ROOT / "warcraftsim" / "fullgame" / "selfplay.py") if p.exists()), None)  # flags)
+    paths = path_flags(src.read_text()) if src is not None else set()
     for s in args.set:
         k, _, v = s.partition("=")
         flags = [f for f in flags if f[0] != f"--{k}"]
-        if v:  # ("start" in a value: the fork's start weights, as chosen after the parent stopped and saved its last;
-            # a checkpoint named before that had been an older one: fgself-159's eval list; audit 17)
-            flags.append([f"--{k}", *[as_read(weights) if x == "start" else x for x in v.split()]])
+        if v:  # ("start" in a path flag's value: the fork's start weights, as chosen after the parent stopped and saved
+            # its last; a checkpoint named before that had been an older one: fgself-159's eval list; audit 17)
+            flags.append([f"--{k}", *set_words(k, v, as_read(weights), paths)])
     argv = [sys.executable, "-m", "warcraftsim.fullgame.selfplay", "--name", args.child,
             *[w for f in flags for w in f], "--start-weights", as_read(weights), f"--note={args.note}",
             *([f"--title={args.title}"] if args.title else []),
