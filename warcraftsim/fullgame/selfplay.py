@@ -1895,9 +1895,10 @@ RENDER_NICE = 10  # (the run's video renderer: frame-stepped, so a lower priorit
 # 32 threads from the niced games, 6% of the machine)
 TEACH_POINT = 0.5  # (--teach-point: the teacher's lessons' place in its loss, distill_loss)
 TEACH_FLOOR = None  # (--teach-floor P: (the floored order classes [O+1] on the learner's device, log P); main sets it)
+TEACH_FLOOR_PLACE = None  # (--teach-floor-orders moves: (the attack-move's class [O+1], log P): floored with its place)
 
 
-FLOOR_GROUPS = ("attack", "spells", "halls", "army", "upgrades")
+FLOOR_GROUPS = ("attack", "spells", "halls", "army", "upgrades", "moves")
 
 
 def floor_classes(vocab: dict, groups=("attack", "spells")) -> torch.Tensor:
@@ -1926,6 +1927,22 @@ def floor_classes(vocab: dict, groups=("attack", "spells")) -> torch.Tensor:
     m = torch.zeros(len(vocab["orders"]) + 1, dtype=torch.bool)
     for i, (oid, kind) in enumerate(vocab["orders"]):
         m[i + 1] = (int(oid), int(kind)) in forms or int(oid) in oids
+    return m
+
+
+def floor_place_classes(vocab: dict, groups=()) -> torch.Tensor | None:
+    """--teach-floor-orders moves: the order classes [O+1] whose lessons are floored with their place: the attack-move
+    (the creep lesson's, the expansion lesson's camp, the hunt lesson's). Such a lesson pushes its order and its point
+    only while the unit's chance of that order at that point is under P (distill_loss). An attack-move is a common
+    order, so a floor on the order alone never holds its lesson back, and the place's loss pulled every attack-move to
+    the lesson's cells: fgself-245/246's armies walked to the camps' spots all game, dead camps too, 1,655 orders to one
+    cell in a game, 0.05-0.13 against insane. None without the group."""
+    from .teacher import ATTACK
+    if "moves" not in groups:
+        return None
+    m = torch.zeros(len(vocab["orders"]) + 1, dtype=torch.bool)
+    for i, (oid, kind) in enumerate(vocab["orders"]):
+        m[i + 1] = (int(oid), int(kind)) == (ATTACK, fx.POINT)
     return m
 
 
@@ -3928,7 +3945,8 @@ def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast, teach_scale: fl
     own = mb["own"] & mb["y_has"][:, None]
     y = mb["y_order"]
     lp = torch.log_softmax(ev["logits"].float(), -1)
-    lp_y = teach_floored(lp.gather(-1, y.unsqueeze(-1)).squeeze(-1), y)
+    lp_raw = lp.gather(-1, y.unsqueeze(-1)).squeeze(-1)
+    lp_y = teach_floored(lp_raw, y)
     every = (own & (lp_y > -1e4)).float()  # (an order the unit can't get now: none of its business)
     if "y_only" in mb:  # (--z-build-labels: those steps label only the units the builder ordered, and each
         own = own & ((y > 0) | ~mb["y_only"][:, None])  # counts as one of all the step's own units: averaged over
@@ -3941,9 +3959,17 @@ def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast, teach_scale: fl
     # (masked means, not boolean indexing: every index or any() was a wait for the GPU)
     share = ok.sum() / denom
     l_ptr = _masked_ce(ptr, mb["y_ptr"], pointer_label_ok(net, ptr, mb["y_ptr"], ok)) * share  # (--order-masks 1)
-    l_pt = _masked_ce(xl, y_x, ok) + _masked_ce(yl, y_y, ok)
+    keep = None  # (--teach-floor-orders moves: a point lesson at or over the floor, order and place together: no push)
+    if TEACH_FLOOR_PLACE is not None:
+        pm, lfp = TEACH_FLOOR_PLACE
+        with torch.no_grad():
+            jl = (lp_raw + torch.log_softmax(xl.float(), -1).gather(-1, y_x.clamp(min=0).unsqueeze(-1)).squeeze(-1)
+                  + torch.log_softmax(yl.float(), -1).gather(-1, y_y.clamp(min=0).unsqueeze(-1)).squeeze(-1))
+            keep = (~(pm[y] & (y_x >= 0) & (jl >= lfp))).float()
+    ok_pt = ok if keep is None else ok * keep
+    l_pt = _masked_ce(xl, y_x, ok_pt) + _masked_ce(yl, y_y, ok_pt)
     if y_f is not None and fine_head(net):  # (the sub-cell given the labels' bins)
-        l_pt = l_pt + _masked_ce(net.fine_logits(z, y_x, y_y), y_f, ok)
+        l_pt = l_pt + _masked_ce(net.fine_logits(z, y_x, y_y), y_f, ok_pt)
     l_pt = l_pt * share
     with torch.no_grad():
         issued = ok * (y > 0)
@@ -3952,6 +3978,8 @@ def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast, teach_scale: fl
     teach = torch.zeros((), device=out.device)
     if teach_scale and "y_teach" in mb:  # (the heuristic teacher's lessons: rare, their own weight, --teach-coef)
         tm = (mb["y_teach"] & mb["own"] & (lp_y > -1e4)).float()
+        if keep is not None:
+            tm = tm * keep
         # (a lesson's place too, as the labels' l_pt: the hall at the natural, the camp's attack-move, the altar's spot,
         # the tree to chop. Without it a point lesson's order had --teach-coef and its place only --opd-coef's share
         # of l_pt, ~10-20x less: the policy learned "build a hall" and built it at home; bug finder 2026-11-10)
@@ -5401,7 +5429,8 @@ def main(argv: list[str] | None = None) -> int:
                     "lesson spread the order to every unit). 0: no floor")
     ap.add_argument("--teach-floor-orders", default="attack,spells", help="the orders --teach-floor caps: attack (on a "
                     "unit), spells (the spell lesson's), halls (the expansion lesson's halls and haunted mine), army (the army lesson's "
-                    "anti-air and tier units' train orders), upgrades (the upgrade lesson's weapon and armor research)")
+                    "anti-air and tier units' train orders), upgrades (the upgrade lesson's weapon and armor research), moves (the "
+                    "attack-move's lessons, the creep lesson's: floored with their place, order and point together)")
     ap.add_argument("--eval-handicap", default="", help="the handicap ladder: taxes on the policy's side in evaluation "
                     "games against the AI, e.g. 0.25,0.5 (it gathers that much less; a fixed yardstick with room above "
                     "the untaxed insane AI's ~0.95). Their rows: eval_key '<key> @-25%%', opponent '... (real, agent -25%%)'")
@@ -6091,6 +6120,13 @@ def main(argv: list[str] | None = None) -> int:
         TEACH_FLOOR = (floor_classes(vocab, tuple(g for g in args.teach_floor_orders.split(",") if g)).to(device),
                        math.log(args.teach_floor))
         print(f"--teach-floor {args.teach_floor}: {int(TEACH_FLOOR[0].sum())} order classes' labels capped", flush=True)
+    global TEACH_FLOOR_PLACE
+    TEACH_FLOOR_PLACE = None
+    if args.teach_floor > 0:  # (--teach-floor-orders moves: the attack-move's lessons floored with their place)
+        pm = floor_place_classes(vocab, tuple(g for g in args.teach_floor_orders.split(",") if g))
+        if pm is not None:
+            TEACH_FLOOR_PLACE = (pm.to(device), math.log(args.teach_floor))
+            print(f"--teach-floor {args.teach_floor}: the attack-move's lessons capped with their place", flush=True)
     if args.start_weights and not args.resume:  # a new run from another run's checkpoint (--init stays the anchor)
         start, _ = load(args.start_weights, device, None if args.memory < 0 else bool(args.memory), vocab=vocab if fx.NEUTRAL else None)
         if arch_key(start.config) != arch_key(net.config):  # a grown network (scripts/grow_model.py): its own

@@ -18,9 +18,9 @@ BLIZZARD = 852089
 
 @pytest.fixture(autouse=True)
 def no_floor():
-    selfplay.TEACH_FLOOR = None
+    selfplay.TEACH_FLOOR = selfplay.TEACH_FLOOR_PLACE = None
     yield
-    selfplay.TEACH_FLOOR = None
+    selfplay.TEACH_FLOOR = selfplay.TEACH_FLOOR_PLACE = None
 
 
 def test_floor_classes():
@@ -66,4 +66,30 @@ def test_the_update_runs_with_it_and_a_floor_of_one_changes_nothing():
     selfplay.TEACH_FLOOR = (torch.ones(31, dtype=torch.bool), 0.0)  # (P = 1: log-chances are never above it)
     assert torch.equal(u._loss(s, None)[0].detach(), base)
     selfplay.TEACH_FLOOR = (torch.ones(31, dtype=torch.bool), math.log(1e-9))  # (every label capped: no push)
+    assert not torch.equal(u._loss(s, None)[0].detach(), base)
+
+
+def test_floor_place_classes():
+    """--teach-floor-orders moves: the attack-move's class alone, and not among the order-level floor's."""
+    vocab = {"orders": [[851986, fx.POINT], [ATTACK, fx.POINT], [ATTACK, fx.UNIT], [BLIZZARD, fx.POINT]]}
+    assert selfplay.floor_place_classes(vocab, ("spells",)) is None
+    assert selfplay.floor_place_classes(vocab, ("spells", "moves")).tolist() == [False, False, True, False, False]
+    assert selfplay.floor_classes(vocab, ("moves",)).tolist() == [False] * 5
+    assert selfplay.floor_classes(vocab, ("spells", "moves")).tolist() == selfplay.floor_classes(vocab, ("spells",)).tolist()
+
+
+def test_the_place_floor_holds_a_point_lesson_back():
+    """A point lesson whose order-and-place chance is at or over P pushes nothing (order, place); a floor no chance
+    reaches changes nothing; off: as before."""
+    net = make_net()
+    args = settings(opd_coef=0.05, label_norm="units", teach_coef=0.5)
+    chunks = make_chunks(np.random.default_rng(0), labels=True)
+    u = updater(net, args)
+    s, _ = u._static(statics(chunks, True), None)
+    base = u._loss(s, None)[0].detach()
+    selfplay.TEACH_FLOOR_PLACE = (torch.ones(31, dtype=torch.bool), 1.0)  # (log P above 0: never reached)
+    assert torch.equal(u._loss(s, None)[0].detach(), base)
+    selfplay.TEACH_FLOOR_PLACE = (torch.zeros(31, dtype=torch.bool), math.log(1e-30))  # (no class of it)
+    assert torch.equal(u._loss(s, None)[0].detach(), base)
+    selfplay.TEACH_FLOOR_PLACE = (torch.ones(31, dtype=torch.bool), math.log(1e-30))  # (every point label held back)
     assert not torch.equal(u._loss(s, None)[0].detach(), base)
