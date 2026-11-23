@@ -2464,6 +2464,12 @@ Head to head 244's average 0.483 against 241's (148 games), 0.558 against the co
 
 **`fgself-245`** (13:09, from 236's average, code d2b6db7): **a creep lesson, and experience pays**: `--creep-lesson 1 --hero-xp-value 0.5` on the league's history. The reward alone did not make the heroes creep (`fgself-242`); the lesson (audit 16's, never in a kept base) brings the heroes and the army near them to a camp they outmatch, the reward pays for the experience. Control: 241's average. Watch creeps a game (~1; the insane AI 3-8).
 
+**`fgself-245`: collapsed, stopped at 13.2M** (13:57). It crept: 4.0-4.7 creeps a game in its training games against insane (241: 0.8). But the lesson went on all game, 8-13 a game, also while the side crept by itself, and the army left for the camps whatever else went on: 0.10-0.18 against insane (241: 0.81), 68-71 units lost a game (38), 21-27 kills (60), head to head 0.09 against 241's average and 0.08 against 236's (160 games each), `ref_kl` 0.67 (0.14). The lesson can make the heroes creep; without a limit it takes the army over (as the attack lesson without a floor, `fgself-218`).
+
+Built `--creep-lesson-cap K` (the lesson stops for the game once the side has killed K creeps: a policy that creeps by itself gets none) and `--creep-lesson-until S` (none after S game seconds); off: as before (c31efd2).
+
+**`fgself-246`** (14:00, from 236's average, code c31efd2): **the creep lesson capped**: `--creep-lesson 1 --creep-lesson-cap 4 --creep-lesson-until 480 --hero-xp-value 0.5` on the league's history. Control: 241's average.
+
 Merged today besides: the System tab's main machine (no tensor-core counter is readable without a driver option and root; labelled proxies), the ratings' handicap rungs drawn as the AI's.
 
 Next, two forks from 236's average back to back, then one burst (the user's asks of today): **A** the shaping that pays for kills and creeping (`--hero-xp-value 0.5 --building-hp-value 0 --unit-hp-value 0`); **B** 236's average as a fixed league member (`--league-add`: it is the strongest policy, 1,935, and no run trains against it; the fixed members are `fgself-130`, `-171` and `-197`'s peak, from October and early November).
