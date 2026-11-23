@@ -2448,6 +2448,22 @@ Head to head 243's average 0.454 against the control's (186 games), 0.388 agains
 
 `fgself-244` stopped at 27.0M (12:19; ~5,000 steps a second, ~6% under a run without the exploiter). **The exploiter never beat the main policy**: three attempts of 300 updates (~1.2M steps each) ended at 0.39-0.40 against it and started over on the time limit, the fourth stood at 0.46; so none of its snapshots joined the league (they join when it wins 0.7). What the run tested is the league's history plus ~20% of the main's games against a weaker copy that trains against it (the main scored 0.54). **burst-244** (12:19-13:06): its 17-27M average against 241's (the history alone), 238's (the control) and 236's (the start).
 
+**burst-244** (986 games):
+
+| policy | rating | against insane, untaxed | agent at -25% income |
+|---|---|---|---|
+| `fgself-236`'s average (the start) | 1,910 ±11 | 0.885 ±0.072 (63 games) | 0.35 (26) |
+| `fgself-241`'s average (the league's history) | 1,899 ±16 | 0.962 ±0.041 (70) | 0.48 (23) |
+| `fgself-244`'s average (the history + the exploiter) | 1,887 ±18 | 0.837 ±0.081 (75) | 0.40 (25) |
+| `fgself-238`'s average (the control) | 1,858 ±15 | 0.900 ±0.070 (70) | 0.42 (19) |
+
+Head to head 244's average 0.483 against 241's (148 games), 0.558 against the control's (208), 0.492 against 236's (177).
+
+- **`fgself-244` (the main exploiter): not kept.** Level with the history alone (-12 ±24). The exploiter never worked: it starts over from the run's starting weights with Adam's state zeroed (the fresh-Adam damage known from forks) and fell to 0.39-0.40 against the main policy. Before the exploiter line goes on: its restarts take the start's Adam state, and it joins the league below 0.7.
+- **The league's history is adopted into the base recipe** (`--snapshot-every 400 --max-past 12 --pfsp-data 0.5`): two runs with it stand above the control, `fgself-241` by 41 ±22 and `fgself-244` by 29 ±23 (0.558 head to head), and hold the level of the start, which the control does not. The control for runs with it is 241's average.
+
+**`fgself-245`** (13:09, from 236's average, code d2b6db7): **a creep lesson, and experience pays**: `--creep-lesson 1 --hero-xp-value 0.5` on the league's history. The reward alone did not make the heroes creep (`fgself-242`); the lesson (audit 16's, never in a kept base) brings the heroes and the army near them to a camp they outmatch, the reward pays for the experience. Control: 241's average. Watch creeps a game (~1; the insane AI 3-8).
+
 Merged today besides: the System tab's main machine (no tensor-core counter is readable without a driver option and root; labelled proxies), the ratings' handicap rungs drawn as the AI's.
 
 Next, two forks from 236's average back to back, then one burst (the user's asks of today): **A** the shaping that pays for kills and creeping (`--hero-xp-value 0.5 --building-hp-value 0 --unit-hp-value 0`); **B** 236's average as a fixed league member (`--league-add`: it is the strongest policy, 1,935, and no run trains against it; the fixed members are `fgself-130`, `-171` and `-197`'s peak, from October and early November).
