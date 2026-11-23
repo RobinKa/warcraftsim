@@ -5018,6 +5018,28 @@ def run_start_state(run_dir: Path, net: FullGameNet, device) -> dict | None:
     return {k: v.detach().to(device=own[k].device, dtype=own[k].dtype).clone() for k, v in state.items()}
 
 
+def adam_snapshot(opt) -> list[dict]:
+    """An optimizer's state per parameter, in the parameters' order (copies): what adam_restore puts back."""
+    return [{k: (v.detach().clone() if isinstance(v, torch.Tensor) else v) for k, v in opt.state.get(q, {}).items()}
+            for g in opt.param_groups for q in g["params"]]
+
+
+def adam_restore(opt, snapshot: list[dict]) -> None:
+    """`opt`'s state set to `snapshot` (adam_snapshot of an optimizer over the same parameters) in place: the CUDA
+    graphs keep its tensors' addresses. --exploiter-adam start: an exploiter starts over with the Adam state its
+    starting weights were saved with. With the state zeroed it fell from the start's level to 0.39-0.40 against the
+    learner in each of its three lives (fgself-244): the first steps of a fresh Adam on trained weights are the
+    damage forks without an .adam file showed."""
+    params = [q for g in opt.param_groups for q in g["params"]]
+    for q, saved in zip(params, snapshot):
+        st = opt.state[q]
+        for k, v in saved.items():
+            if isinstance(v, torch.Tensor) and isinstance(st.get(k), torch.Tensor):
+                st[k].copy_(v)
+            else:
+                st[k] = v.detach().clone() if isinstance(v, torch.Tensor) else v
+
+
 def save_exploiter_opt(xopt, run_dir: Path, version: int, since: int) -> None:
     """The exploiter's Adam state (exploiter.adam, with its weights' version and its updates since its restart): written
     with the run's checkpoints and at its stop; a resume takes it back when it is of exploiter.pt's life
@@ -5685,6 +5707,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--exploiter-reset", type=float, default=0.7,
                     help="the exploiter's score against the learner (its last 50 games) at which its weights join the "
                          "league and it starts over from the run's starting weights")
+    ap.add_argument("--exploiter-adam", choices=("fresh", "start"), default="fresh", help="the exploiter's Adam state when "
+                    "it starts over: fresh (zeroed), or start: the one the run's starting weights were saved with (zeroed, "
+                    "it fell to 0.39-0.40 against the learner in every life of fgself-244)")
     ap.add_argument("--exploiter-timeout", type=int, default=300, help="updates after which it starts over anyway")
     ap.add_argument("--exploiter-publish", type=int, default=8,
                     help="the exploiter's updates between the versions new games play (and at a restart): a version a "
@@ -6390,6 +6415,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.obs_fade > 0 and net.config.get("obsfull") and not obs_fade_on:
         print("--obs-fade: the start network already sees the new entity kinds (its bias ~0): no fade", flush=True)
     x_update = x_since = 0  # the exploiter's updates (its weights' version), and since its last restart
+    x_adam0 = None  # (--exploiter-adam start: the Adam state its starting weights were saved with, adam_snapshot)
     if x_init is not None and resumed is not None:  # (the exploiters' restarts from the run's starting weights: on a
         got = run_start_state(run_dir, net, device)    # resume `net` held --init's when x_init was taken, and the
         if got is not None:                            # exploiter had started over from the anchor's, fgself-100's
@@ -6405,6 +6431,31 @@ def main(argv: list[str] | None = None) -> int:
             x_update, x_since = xck["version"], xck.get("since", 0)
             if load_exploiter_opt(xopt, run_dir, x_update, x_since, device, args.lr):
                 print(f"the exploiter's Adam state from exploiter.adam (version {x_update})", flush=True)
+        if args.exploiter_adam == "start":  # (the start's Adam state: the exploiter's at each of its starts)
+            kept = run_dir / "exploiter.start.adam"  # (the start's, kept for the resumes: the checkpoints' .adam
+            tmp = torch.optim.Adam(xnet.parameters(), lr=args.lr, eps=1e-5, capturable=graphed, **adam_kw)  # files go)
+            got = False
+            if resumed is None:
+                src = args.start_weights
+                got = (src is not None and Path(src).with_suffix(".adam").exists()
+                       and load_optimizer(tmp, src, device, args.lr, xnet))
+                if got:
+                    torch.save(tmp.state_dict(), kept)
+            elif kept.exists():
+                flags = [(g.get("capturable", False), g.get("fused")) for g in tmp.param_groups]
+                tmp.load_state_dict(torch.load(kept, map_location=device, weights_only=False))
+                for g, (c, f) in zip(tmp.param_groups, flags):
+                    g["lr"], g["capturable"], g["fused"] = args.lr, c, f
+                got = True
+            if got:
+                x_adam0 = adam_snapshot(tmp)
+                if x_since == 0:  # (a new life: from them; one resumed went on with exploiter.adam above)
+                    xopt.load_state_dict(tmp.state_dict())
+                print("--exploiter-adam start: the exploiter starts over with the Adam state of the run's starting "
+                      "weights", flush=True)
+            else:
+                print("--exploiter-adam start: no Adam state with the run's starting weights: a fresh one", flush=True)
+            del tmp
         publish(xnet, x_update, run_dir, "exploiter.pt", since=x_since)  # (its "since" kept: a second resume reads it)
         league.exploiter_path = publish_exploiter(xnet, x_update, run_dir, vocab)
         league.exploiter_life = x_update - x_since
@@ -6614,7 +6665,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"exploiter restarts after {x_since} updates (its score against the learner: "
                   f"{'-' if score is None else f'{score:.2f}'})", flush=True)
             xnet.load_state_dict(x_init)  # (in place: the graphs keep their weights' addresses)
-            if x_updater is not None:  # (Adam's state zeroed in place, alike: a fresh optimizer)
+            if x_adam0 is not None:  # (--exploiter-adam start: the start's Adam state, in place)
+                adam_restore(xopt, x_adam0)
+            elif x_updater is not None:  # (Adam's state zeroed in place, alike: a fresh optimizer)
                 for st in xopt.state.values():
                     for v in st.values():
                         if isinstance(v, torch.Tensor):
