@@ -1896,9 +1896,10 @@ RENDER_NICE = 10  # (the run's video renderer: frame-stepped, so a lower priorit
 TEACH_POINT = 0.5  # (--teach-point: the teacher's lessons' place in its loss, distill_loss)
 TEACH_FLOOR = None  # (--teach-floor P: (the floored order classes [O+1] on the learner's device, log P); main sets it)
 TEACH_FLOOR_PLACE = None  # (--teach-floor-orders moves: (the attack-move's class [O+1], log P): floored with its place)
+TEACH_FLOOR_POINTER = None  # (--teach-floor-orders harvest: (the harvest on a unit's class [O+1], log P): with its pointer)
 
 
-FLOOR_GROUPS = ("attack", "spells", "halls", "army", "upgrades", "moves")
+FLOOR_GROUPS = ("attack", "spells", "halls", "army", "upgrades", "moves", "harvest")
 
 
 def floor_classes(vocab: dict, groups=("attack", "spells")) -> torch.Tensor:
@@ -1944,6 +1945,21 @@ def floor_place_classes(vocab: dict, groups=()) -> torch.Tensor | None:
     m = torch.zeros(len(vocab["orders"]) + 1, dtype=torch.bool)
     for i, (oid, kind) in enumerate(vocab["orders"]):
         m[i + 1] = (int(oid), int(kind)) == (ATTACK, fx.POINT)
+    return m
+
+
+def floor_pointer_classes(vocab: dict, groups=()) -> torch.Tensor | None:
+    """--teach-floor-orders harvest: the order classes [O+1] whose lessons teach their pointer alone, under a floor: the
+    harvest order on a unit (a gold mine: the expansion lesson's workers sent to the new mine). Harvest is a common
+    order, as the attack-move (floor_place_classes): such a lesson never pushes the order, and pushes its pointer (which
+    mine) only while the pointer's chance given the harvest order is under --teach-floor-pointer (distill_loss). None
+    without the group."""
+    from .teacher import HARVEST
+    if "harvest" not in groups:
+        return None
+    m = torch.zeros(len(vocab["orders"]) + 1, dtype=torch.bool)
+    for i, (oid, kind) in enumerate(vocab["orders"]):
+        m[i + 1] = (int(oid), int(kind)) == (HARVEST, fx.UNIT)
     return m
 
 
@@ -2723,7 +2739,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                             attacks=float(cfg.get("attack_lesson", 0.0) or 0.0),
                             hero_weights=hero_weights(cfg.get("first_hero_weights", "")),
                             creep_cap=int(cfg.get("creep_lesson_cap", 0) or 0),
-                            creep_until=float(cfg.get("creep_lesson_until", 0.0) or 0.0))
+                            creep_until=float(cfg.get("creep_lesson_until", 0.0) or 0.0),
+                            expand_from=float(cfg.get("expand_lesson_from", 0.0) or 0.0),
+                            expand_share=float(cfg.get("expand_lesson_share", 1.0)))
                  for s in trajs if keys[s] == "current"}
                 if cfg.get("teach") and replay is None else {})
     # --teach-heuristic: a target drawn from the hand-written player's games (strategy.from_demos names the strategy) is
@@ -3963,13 +3981,27 @@ def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast, teach_scale: fl
     if TEACH_FLOOR_PLACE is not None:
         mv = (TEACH_FLOOR_PLACE[0][y] & (y_x >= 0)).float()
         ok = ok * (1 - mv)
+    # --teach-floor-orders harvest: the same for a harvest on a unit and its pointer (`hv`: such a label): which mine is
+    # taught, only while that mine's chance given the harvest order is under the floor; the order never (a worker's
+    # commonest order: the expansion lesson's workers must not make every worker harvest again every step)
+    hv = None
+    if TEACH_FLOOR_POINTER is not None:
+        hv = (TEACH_FLOOR_POINTER[0][y] & (mb["y_ptr"] >= 0)).float()
+        ok = ok * (1 - hv)
     denom = every.sum().clamp(min=1)
     l_order = -(lp_y * ok).sum() / denom
     ptr, xl, z = net.target_logits(ev["g"], ev["u"], mb["mask"], y, mb["ent"], mb.get("type"))  # (the caller's autocast)
     yl = net.y_logits(z, y_x)
     # (masked means, not boolean indexing: every index or any() was a wait for the GPU)
     share = ok.sum() / denom
-    l_ptr = _masked_ce(ptr, mb["y_ptr"], pointer_label_ok(net, ptr, mb["y_ptr"], ok)) * share  # (--order-masks 1)
+    ok_ptr, push_h = ok, None
+    if hv is not None:  # (the harvest lessons whose mine is under the floor: the pointer's loss alone)
+        with torch.no_grad():
+            pp = torch.log_softmax(ptr.float(), -1).gather(-1, mb["y_ptr"].clamp(min=0).long().unsqueeze(-1)).squeeze(-1)
+            push_h = hv * (pp < TEACH_FLOOR_POINTER[1]).float()
+        ok_ptr = ok + ok_all * push_h
+    l_ptr = (_masked_ce(ptr, mb["y_ptr"], pointer_label_ok(net, ptr, mb["y_ptr"], ok_ptr))  # (--order-masks 1)
+             * (share if hv is None else ok_ptr.sum() / denom))  # (the pointer's own rows' share)
     ok_pt, push = ok, None
     if mv is not None:  # (the attack-move's lessons whose place is under the floor: the place's loss alone)
         with torch.no_grad():
@@ -3989,9 +4021,14 @@ def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast, teach_scale: fl
     if teach_scale and "y_teach" in mb:  # (the heuristic teacher's lessons: rare, their own weight, --teach-coef)
         tm = (mb["y_teach"] & mb["own"] & (lp_y > -1e4)).float()
         tm_p = tm  # (the lessons whose place is taught: all, but of the attack-move's only those under the floor)
+        tm_all = tm
         if mv is not None:
             tm_p = tm * (1 - mv) + tm * push
             tm = tm * (1 - mv)
+        tm_q = tm  # (the lessons whose pointer is taught: all, but of the harvest's only those under the floor)
+        if hv is not None:
+            tm = tm * (1 - hv)
+            tm_q = tm + tm_all * push_h
         # (a lesson's place too, as the labels' l_pt: the hall at the natural, the camp's attack-move, the altar's spot,
         # the tree to chop. Without it a point lesson's order had --teach-coef and its place only --opd-coef's share
         # of l_pt, ~10-20x less: the policy learned "build a hall" and built it at home; bug finder 2026-11-10)
@@ -4001,15 +4038,16 @@ def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast, teach_scale: fl
             t_pt = _masked_ce(xl, y_x, tm_p) + _masked_ce(yl, y_y, tm_p)
             if y_f is not None and fine_head(net):
                 t_pt = t_pt + _masked_ce(net.fine_logits(z, y_x, y_y), y_f, tm_p)
-        if norm == "units" and mv is not None:  # (the place's mean over its own lessons, `tm_p`)
-            teach = (-(lp_y * tm).sum() + _masked_ce(ptr, mb["y_ptr"], pointer_label_ok(net, ptr, mb["y_ptr"], tm)) * tm.sum()
+        if norm == "units" and (mv is not None or hv is not None):  # (the place's mean over its own lessons, `tm_p`,
+            # the pointer's over `tm_q`)
+            teach = (-(lp_y * tm).sum() + _masked_ce(ptr, mb["y_ptr"], pointer_label_ok(net, ptr, mb["y_ptr"], tm_q)) * tm_q.sum()
                      + TEACH_POINT * t_pt * tm_p.sum()) / denom
         elif norm == "units":
             teach = (-(lp_y * tm).sum() + (_masked_ce(ptr, mb["y_ptr"], pointer_label_ok(net, ptr, mb["y_ptr"], tm))
                      + TEACH_POINT * t_pt) * tm.sum()) / denom
         else:
             teach = (-(lp_y * tm).sum() / tm.sum().clamp(min=1)
-                     + _masked_ce(ptr, mb["y_ptr"], pointer_label_ok(net, ptr, mb["y_ptr"], tm)) + TEACH_POINT * t_pt)
+                     + _masked_ce(ptr, mb["y_ptr"], pointer_label_ok(net, ptr, mb["y_ptr"], tm_q)) + TEACH_POINT * t_pt)
         out = out + teach_scale * teach
     return out, acc, teach.detach()
 
@@ -5485,9 +5523,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--teach-floor-orders", default="attack,spells", help="the orders --teach-floor caps: attack (on a "
                     "unit), spells (the spell lesson's), halls (the expansion lesson's halls and haunted mine), army (the army lesson's "
                     "anti-air and tier units' train orders), upgrades (the upgrade lesson's weapon and armor research), moves (the "
-                    "attack-move's lessons, the creep lesson's: the place alone is taught, under --teach-floor-place; the order never)")
+                    "attack-move's lessons, the creep lesson's: the place alone is taught, under --teach-floor-place; the order never), "
+                    "harvest (a harvest on a unit, the expansion lesson's workers: which mine alone is taught, under "
+                    "--teach-floor-pointer; the order never)")
     ap.add_argument("--teach-floor-place", type=float, default=0.0, help="--teach-floor-orders moves: the floor on an "
                     "attack-move lesson's place, its point's chance given an attack-move (0: --teach-floor's)")
+    ap.add_argument("--teach-floor-pointer", type=float, default=0.0, help="--teach-floor-orders harvest: the floor on a "
+                    "harvest lesson's mine, its pointer's chance given the harvest order (0: --teach-floor-place's, else "
+                    "--teach-floor's)")
     ap.add_argument("--eval-handicap", default="", help="the handicap ladder: taxes on the policy's side in evaluation "
                     "games against the AI, e.g. 0.25,0.5 (it gathers that much less; a fixed yardstick with room above "
                     "the untaxed insane AI's ~0.95). Their rows: eval_key '<key> @-25%%', opponent '... (real, agent -25%%)'")
@@ -5540,6 +5583,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--expand-lesson", type=float, default=0.0, help="the teacher's expansion lessons (--teach) in every "
                     "game, a target's or not, once the main gold mine holds less than this share of a full one (0: only a "
                     "target's due expansion; audit 15: on echofast2 the main ran dry at 12-13 minutes, unexpanded)")
+    ap.add_argument("--expand-lesson-from", type=float, default=0.0, help="S: in a game without a target the teacher's "
+                    "expansion lessons from game second S (a real game's; times the teacher's pace on faster rules), once "
+                    "the side has a living hero and 6 army units and no enemy army in sight near its halls, then for the "
+                    "rest of the game: the camp (the heroes and the army near them, when twice its strength), the hall, "
+                    "the workers (teacher.Teacher._early_camp, _early_workers; scripts/expand_probe.py). 0: none. Meant "
+                    "with --teach-floor-orders halls,moves,harvest")
+    ap.add_argument("--expand-lesson-share", type=float, default=1.0, help="--expand-lesson-from: the share of the "
+                    "sides without a target that get it (drawn a side a game)")
     ap.add_argument("--econ-masks", type=int, default=0, help="bit 1: mask a tech building's build order (features."
                     "ECON_TECH: a slaughterhouse, a sanctum, a workshop...) while a copy the player has is idle (making "
                     "nothing, under construction, or a worker on its way), and the worker's train order once the "
@@ -6202,6 +6253,14 @@ def main(argv: list[str] | None = None) -> int:
             place = args.teach_floor_place or args.teach_floor
             TEACH_FLOOR_PLACE = (pm.to(device), math.log(place))
             print(f"--teach-floor-orders moves: the attack-move's lessons teach their place alone, under {place}", flush=True)
+    global TEACH_FLOOR_POINTER
+    TEACH_FLOOR_POINTER = None
+    if args.teach_floor > 0 or args.teach_floor_place > 0 or args.teach_floor_pointer > 0:  # (--teach-floor-orders harvest)
+        hm = floor_pointer_classes(vocab, tuple(g for g in args.teach_floor_orders.split(",") if g))
+        if hm is not None:
+            pointer = args.teach_floor_pointer or args.teach_floor_place or args.teach_floor
+            TEACH_FLOOR_POINTER = (hm.to(device), math.log(pointer))
+            print(f"--teach-floor-orders harvest: a harvest lesson teaches its mine alone, under {pointer}", flush=True)
     if args.start_weights and not args.resume:  # a new run from another run's checkpoint (--init stays the anchor)
         start, _ = load(args.start_weights, device, None if args.memory < 0 else bool(args.memory), vocab=vocab if fx.NEUTRAL else None)
         if arch_key(start.config) != arch_key(net.config):  # a grown network (scripts/grow_model.py): its own
@@ -6523,7 +6582,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "order_masks": args.order_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "creep_lesson_cap": args.creep_lesson_cap, "creep_lesson_until": args.creep_lesson_until, "hunt_lesson": args.hunt_lesson, "spell_lesson": args.spell_lesson, "attack_lesson": args.attack_lesson, "first_hero_weights": args.first_hero_weights, "worker_value": args.worker_value, "hero_xp_value": args.hero_xp_value, "eval_replay_every": args.eval_replay_every, "building_hp_value": args.building_hp_value, "unit_hp_value": args.unit_hp_value, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "order_masks": args.order_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "expand_lesson_from": args.expand_lesson_from, "expand_lesson_share": args.expand_lesson_share, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "creep_lesson_cap": args.creep_lesson_cap, "creep_lesson_until": args.creep_lesson_until, "hunt_lesson": args.hunt_lesson, "spell_lesson": args.spell_lesson, "attack_lesson": args.attack_lesson, "first_hero_weights": args.first_hero_weights, "worker_value": args.worker_value, "hero_xp_value": args.hero_xp_value, "eval_replay_every": args.eval_replay_every, "building_hp_value": args.building_hp_value, "unit_hp_value": args.unit_hp_value, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "late_capture": args.late_capture, "late_minutes": [float(x) for x in args.late_minutes.split(",")], "late_from": args.late_from, "research_value": args.research_value, "real_agents": args.real_agents,

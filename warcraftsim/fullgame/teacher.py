@@ -115,6 +115,10 @@ WORKER_CODES, ALTAR_CODES, MINE_CODES = fx.codes(WORKERS), fx.codes(ALTARS), fx.
 EXPAND_SPOTS = {(-4864, -3200): (100, 800), (4352, -3200): (-300, 700)}
 NATURAL_FROM_START = 1500.0  # (the main mine is nearer its start)
 LOW_EVERY = 20  # (--expand-lesson: the main mine looked at every 20 steps, 10 s)
+# --expand-lesson-from: the army units the side needs beside a living hero, and how many times the natural's camp's
+# strength its heroes and the army near them must have (scripts/expand_probe.py's table)
+EARLY_ARMY, EARLY_MARGIN = 6, 2.0
+EARLY_MINERS = 5  # (its workers lesson: until so many work the natural's mine, and the main's gold keeps so many)
 CAMP_NEAR = 900.0  # creeps this near the natural mine guard it
 HARVEST = 852018
 REPAIR = 852024  # (a human builder's current order while it constructs, play.constructing)
@@ -203,7 +207,8 @@ class Teacher:
                  lumber: bool = False, burrows: bool = False, main_low: float = 0.0, mine_full: float = 12500.0,
                  saturation: bool = False, revive: bool = False, militia: bool = False, army: bool = False,
                  upgrades: bool = False, creep: int = 0, pace: float = 1.0, hunt: int = 0, spells: float = 0.0,
-                 attacks: float = 0.0, hero_weights: dict | None = None, creep_cap: int = 0, creep_until: float = 0.0):
+                 attacks: float = 0.0, hero_weights: dict | None = None, creep_cap: int = 0, creep_until: float = 0.0,
+                 expand_from: float = 0.0, expand_share: float = 1.0):
         """`target` (the side's target strategy, if it has one): its tavern hero is the one taught, and none when it
         has none (another hero would break a narrow target). `target_hero` (--teach 2): its first hero from the altar
         taught too, when that is its first hero (the builder taught it only once due: the policy had made another one
@@ -279,6 +284,14 @@ class Teacher:
         army = {c: v for c, v in ((target or {}).get("n") or {}).items() if is_army(c) and v > 0}
         total = sum(army.values())
         self.mix = {c: v / total for c, v in army.items()} if total else {}  # (its target's army mix)
+        # --expand-lesson-from S (a game without a target; a share --expand-lesson-share of them, drawn last and only
+        # with the flag: the draws above are as before): the expansion lessons from game second S (times `pace`) once
+        # the side has a living hero and EARLY_ARMY army units and no enemy army in sight within BASE_SAFE of its halls
+        # (_early). 0: none
+        self.expand_from = 0.0
+        if target is None and expand_from > 0 and (expand_share >= 1.0 or rng.random() < expand_share):
+            self.expand_from = float(expand_from)
+        self._safe_t, self._safe, self.expand_on = -LOOK, False, False
 
     def _due(self, kind: str, t: int, counted: str | None = None) -> bool:
         """Whether a lesson of `kind` may be given now (and it is counted, as `counted`: one hero's of many kinds)."""
@@ -356,6 +369,13 @@ class Teacher:
                     out.append(Buy(hid, int(m[fx.C_ID]), PORTAL))
         if (self.expand_at is not None and now >= self.expand_at) or self._main_low(rows, player, t):
             out += self._expansion(rows, player, t)
+        elif self.expand_from > 0 and now >= self.expand_from * self.pace and self._base_safe(rows, t):
+            # (--expand-lesson-from: on for the rest of the game once it has had a living hero and EARLY_ARMY army units
+            # at a safe moment. Asked for at every step, the hall was never taught: the camp cost a unit, 5 were left)
+            if not self.expand_on and n_live >= 1 and n_army >= EARLY_ARMY:
+                self.expand_on = True
+            if self.expand_on:
+                out += self._expansion(rows, player, t, early=live)
         if self.mix and now >= MIX_FROM:
             out += self._mix(n_army, zip(mc[1], counts), done, t)
         eco = getattr(self, "economy", None)  # (short, the choppers' ids, the trees: play_one's, from the builder)
@@ -889,9 +909,83 @@ class Teacher:
         self._low = bool(d[i] < NATURAL_FROM_START and m[i, fx.C_RESOURCE] < self.main_low * self.mine_full)
         return self._low
 
-    def _expansion(self, rows: np.ndarray, player, t: int) -> list:
+    def _base_safe(self, rows: np.ndarray, t: int) -> bool:
+        """--expand-lesson-from: no enemy army unit the side sees within BASE_SAFE of one of its finished halls (the
+        creep lesson's test; looked at every LOOK steps)."""
+        if 0 <= t - self._safe_t < LOOK:
+            return self._safe
+        self._safe_t = t
+        side, fl = self.side, rows[:, fx.C_FLAGS]
+        alive = fx.own_alive(rows, side)
+        halls = alive[fx.isin(alive[:, fx.C_TYPE], HALL_CODES) & (alive[:, fx.C_FLAGS] & fx.CONSTRUCTING == 0)]
+        enemy = rows[(rows[:, fx.C_OWNER] == 1 - side) & (fl & (fx.DEAD | fx.STRUCTURE | fx.WORKER) == 0)
+                     & ((rows[:, fx.C_VIS] >> side) & 1 > 0)]
+        self._safe = not (len(enemy) and len(halls)
+                          and (np.hypot(enemy[:, None, fx.C_X] - halls[None, :, fx.C_X],
+                                        enemy[:, None, fx.C_Y] - halls[None, :, fx.C_Y]) < BASE_SAFE).any())
+        return self._safe
+
+    def _early_camp(self, rows: np.ndarray, live: list, mx: float, my: float, t: int) -> list:
+        """--expand-lesson-from: the natural's camp (the creeps within CAMP_NEAR of its mine at mx, my): the side's living
+        heroes and the army within ESCORT of them attack-move to the creeps' middle, while every hero is above CREEP_HP
+        of its hit points and the group is EARLY_MARGIN times the camp's strength (the creep lesson's measure, _power).
+        (The target's camp lesson names the heroes alone; scripts/expand_probe.py: who clears the camp, and at what cost.)"""
+        hs = [(live[j], live[j + 2], live[j + 3]) for j in range(0, len(live), HF)]
+        if not hs or any(hp <= CREEP_HP * max(top, 1) for _, hp, top in hs):
+            return []
+        camp = rows[(rows[:, fx.C_OWNER] == 12) & (rows[:, fx.C_FLAGS] & (fx.DEAD | fx.STRUCTURE) == 0)]
+        camp = camp[np.hypot(camp[:, fx.C_X] - mx, camp[:, fx.C_Y] - my) < CAMP_NEAR]
+        if not len(camp):
+            return []
+        army = _army_of(fx.own_alive(rows, self.side))
+        heroes = rows[[int(i) for i, _, _ in hs]]
+        hx, hy = float(heroes[:, fx.C_X].mean()), float(heroes[:, fx.C_Y].mean())
+        group = np.concatenate([heroes, army[np.hypot(army[:, fx.C_X] - hx, army[:, fx.C_Y] - hy) < ESCORT]])
+        if _power(group) < EARLY_MARGIN * _power(camp) or not self._due("expansion: its camp", t):
+            return []
+        cx, cy = float(camp[:, fx.C_X].mean()), float(camp[:, fx.C_Y].mean())
+        return [PointOrder(int(u), ATTACK, cx, cy) for u in group[:, fx.C_ID].tolist()]
+
+    def _early_workers(self, rows: np.ndarray, mx: float, my: float, mine_id: int, t: int) -> list:
+        """--expand-lesson-from: the taken natural's workers. While fewer than EARLY_MINERS of the side's workers work its
+        mine (within 900 of it, harvesting or inside it), up to 3 others harvest it, the nearest first of: those with no
+        order (the hall's builder stands beside it), then the choppers (the view's, `economy`), then the gold workers
+        elsewhere past EARLY_MINERS (the main keeps its five). (The target's lesson sends the three nearest, whatever
+        they do, until 4 workers are within 900: carried out by a scripted side it emptied the main's mine, 4 of its 5,
+        and the gold a minute went from 600 to 720 with 6 at the natural; scripts/expand_probe.py.)"""
+        if t - self.last.get("expansion: workers", -GAP) < GAP:
+            return []
+        alive = fx.own_alive(rows, self.side)
+        w = alive[fx.isin(alive[:, fx.C_TYPE], WORKER_CODES) & (alive[:, fx.C_FLAGS] & LOADED == 0)]
+        if not len(w):
+            return []
+        d = np.hypot(w[:, fx.C_X] - mx, w[:, fx.C_Y] - my)
+        inside = w[:, fx.C_FLAGS] & HIDDEN > 0
+        working = inside | fx.isin(w[:, fx.C_ORDER], fx._MINING)
+        at = (d < 900.0) & working
+        need = EARLY_MINERS - int(at.sum())
+        if need <= 0:
+            return []
+        eco = getattr(self, "economy", None)
+        chop = np.isin(w[:, fx.C_ID], list(eco[1])) if eco is not None and eco[1] else np.zeros(len(w), bool)
+        free = ~inside & ~at & _free(w)
+        gold = working & ~chop & ~at  # (the gold workers elsewhere, those inside their mine too)
+        spare = max(int(gold.sum()) - EARLY_MINERS, 0)
+        near = np.argsort(d, kind="stable")
+        idle = [int(i) for i in near if free[i] and w[i, fx.C_ORDER] == 0]
+        chopping = [int(i) for i in near if free[i] and chop[i] and working[i]]
+        surplus = [int(i) for i in near if free[i] and gold[i]][:min(spare, need)]
+        # (the gold workers past the main's five count as on their way: sent before, they read "harvest" on the walk.
+        # New ones only for the rest; with none to send, the surplus itself: a main with more than five on its gold)
+        pick = ((idle + chopping)[:max(need - spare, 0)] or surplus)[:3]
+        if not pick or not self._due("expansion: workers", t):
+            return []
+        return [TargetOrder(int(w[i, fx.C_ID]), HARVEST, mine_id) for i in pick]
+
+    def _expansion(self, rows: np.ndarray, player, t: int, early: list | None = None) -> list:
         """The next step of taking the natural expansion: clearing its camp, the hall (undead: the haunted mine), the
-        workers that mine there."""
+        workers that mine there. `early` (--expand-lesson-from, a game without a target): its living heroes' facts; the
+        camp's lesson is then _early_camp's."""
         sx, sy = getattr(player, "start_x", None), getattr(player, "start_y", None)
         if sx is None:
             return []
@@ -917,12 +1011,16 @@ class Teacher:
             if self.race == "nightelf" and not has_target:
                 return []  # (its tree of life entangles the mine first)
             mine_id = target_id if has_target else nat_id
+            if early is not None:  # (--expand-lesson-from: who goes, and until 5 work it)
+                return self._early_workers(rows, mx, my, mine_id, t)
             pick = e[16:16 + n_pick]  # (the three nearest outside 900)
             return ([TargetOrder(w, HARVEST, mine_id) for w in pick]
                     if n_pick and self._due("expansion: workers", t) else [])
         if creeps:  # (guarded. Sending the whole army to clear it every 10 s (fgself-123) lost the games that had
             # an expansion due, 13% won to 32%. With --macros: its heroes, while the army is 6 units or more, are shown
             # the creep order (the policy decides who goes with them))
+            if early is not None:  # (--expand-lesson-from: its own camp lesson, the heroes with the army near them)
+                return self._early_camp(rows, early, mx, my, t)
             if not fx.MACROS or n_army < 6 or not n_heroes or not self._due("expansion: its camp", t):
                 return []
             if "creep" in fx.MACROS_OFF:  # (--macros-off creep: the heroes attack-move to the camp themselves, to its
@@ -934,6 +1032,11 @@ class Teacher:
             return [ImmediateOrder(h, creep) for h in e[EH:EH + n_heroes]]
         if not n_workers:
             return []
+        if early is not None:  # (--expand-lesson-from: a worker on its way to build it, its order the hall's type or
+            # the haunted mine's: no second builder. Carried out, three peasants left the main's gold for one hall)
+            own = fx.own_alive(rows, self.side)
+            if (own[:, fx.C_ORDER] == (HAUNTED if self.race == "undead" else hall)).any():
+                return []
         can = getattr(self, "can", None)
         if (can is not None and not (fx.MACROS and "expand" not in fx.MACROS_OFF)  # (the hall's own build order: only
                 and not any(can(c, k) for c in (("ugol",) if self.race == "undead" else (HALL[self.race],))

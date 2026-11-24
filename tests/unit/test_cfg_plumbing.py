@@ -48,3 +48,18 @@ def test_play_one_hands_the_cap_to_the_teacher():
     body = SRC[SRC.index("def play_one("):SRC.index("def film_game(")]
     assert 'creep_cap=int(cfg.get("creep_lesson_cap", 0) or 0)' in body
     assert 'creep_until=float(cfg.get("creep_lesson_until", 0.0) or 0.0)' in body
+
+
+def test_the_early_expansion_lessons_reach_the_games():
+    """--expand-lesson-from and --expand-lesson-share: in the actors' cfg, and from there in play_one's teachers."""
+    assert {"expand_lesson_from", "expand_lesson_share"} <= _cfg_written()
+    assert '"expand_lesson_from": args.expand_lesson_from' in SRC and '"expand_lesson_share": args.expand_lesson_share' in SRC
+    body = SRC[SRC.index("def play_one("):SRC.index("def film_game(")]
+    assert 'expand_from=float(cfg.get("expand_lesson_from", 0.0) or 0.0)' in body
+    assert 'expand_share=float(cfg.get("expand_lesson_share", 1.0))' in body
+
+
+def test_the_harvest_floor_reaches_the_loss():
+    """--teach-floor-pointer and the "harvest" group set selfplay.TEACH_FLOOR_POINTER in main (the learner's own: no cfg)."""
+    assert "TEACH_FLOOR_POINTER = (hm.to(device), math.log(pointer))" in SRC
+    assert "pointer = args.teach_floor_pointer or args.teach_floor_place or args.teach_floor" in SRC

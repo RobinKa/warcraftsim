@@ -18,9 +18,9 @@ BLIZZARD = 852089
 
 @pytest.fixture(autouse=True)
 def no_floor():
-    selfplay.TEACH_FLOOR = selfplay.TEACH_FLOOR_PLACE = None
+    selfplay.TEACH_FLOOR = selfplay.TEACH_FLOOR_PLACE = selfplay.TEACH_FLOOR_POINTER = None
     yield
-    selfplay.TEACH_FLOOR = selfplay.TEACH_FLOOR_PLACE = None
+    selfplay.TEACH_FLOOR = selfplay.TEACH_FLOOR_PLACE = selfplay.TEACH_FLOOR_POINTER = None
 
 
 def test_floor_classes():
@@ -107,3 +107,115 @@ def test_no_gradient_to_the_order_from_an_attack_moves_lesson():
     selfplay.TEACH_FLOOR_PLACE = (torch.ones(31, dtype=torch.bool), math.log(1e-30))
     loss = u._loss(s, None)[0]
     assert torch.isfinite(loss)
+
+
+# --teach-floor-orders harvest: a harvest lesson (the expansion lesson's workers) teaches its mine alone, under a floor
+
+HARVEST = 852018
+
+
+def test_floor_pointer_classes():
+    """The harvest order on a unit alone (not a tree's), and not among the order-level floor's or the place's."""
+    vocab = {"orders": [[851986, fx.POINT], [HARVEST, fx.UNIT], [HARVEST, fx.TREE], [ATTACK, fx.POINT], [851971, fx.UNIT]]}
+    assert selfplay.floor_pointer_classes(vocab, ("spells", "moves")) is None
+    assert selfplay.floor_pointer_classes(vocab, ("moves", "harvest")).tolist() == [False, False, True, False, False, False]
+    assert selfplay.floor_classes(vocab, ("harvest",)).tolist() == [False] * 6
+    assert selfplay.floor_place_classes(vocab, ("harvest",)) is None
+    assert selfplay.floor_place_classes(vocab, ("moves", "harvest")).tolist() == [False, False, False, False, True, False]
+
+
+def test_the_update_with_a_harvest_floor():
+    """No class of it: the loss as before; every unit-target label of it: another loss (the order no longer pushed), and
+    with a floor no pointer is under, another again (nothing of them pushed)."""
+    net = make_net()
+    args = settings(opd_coef=0.05, label_norm="units", teach_coef=0.5)
+    chunks = make_chunks(np.random.default_rng(0), labels=True)
+    u = updater(net, args)
+    s, _ = u._static(statics(chunks, True), None)
+    base = u._loss(s, None)[0].detach()
+    selfplay.TEACH_FLOOR_POINTER = (torch.zeros(31, dtype=torch.bool), math.log(0.25))  # (no class of it)
+    assert torch.equal(u._loss(s, None)[0].detach(), base)
+    selfplay.TEACH_FLOOR_POINTER = (torch.ones(31, dtype=torch.bool), 1.0)  # (every pointer label: the pointer only, always)
+    pointer_only = u._loss(s, None)[0].detach()
+    assert not torch.allclose(pointer_only, base, rtol=1e-6, atol=1e-7)
+    selfplay.TEACH_FLOOR_POINTER = (torch.ones(31, dtype=torch.bool), math.log(1e-30))  # (no pointer under the floor)
+    nothing = u._loss(s, None)[0].detach()
+    assert not torch.allclose(nothing, pointer_only, rtol=1e-6, atol=1e-7)
+
+
+UNIT_ORDER = 12  # (an order on a unit in _lesson's network: the harvest's stand-in)
+
+
+def _lesson(teach: bool = True):
+    """One labelled unit in a batch of two steps: an order on a unit with its pointer (test_teach_loss's batch)."""
+    from warcraftsim.fullgame.model import FullGameNet, evaluate
+    B, E, O = 2, 6, 3
+    torch.manual_seed(0)
+    net = FullGameNet(n_types=8, n_cur=4, n_orders=30, G=12, d=32, layers=1, dropout=0.0, bins=40).eval()
+    net.allowed[:] = True
+    net.order_kind[10:20] = fx.UNIT
+    net.order_kind[20:] = fx.POINT
+    g = torch.Generator().manual_seed(1)
+    ent = torch.randn(B, E, fx.F, generator=g)
+    typ = torch.randint(1, 8, (B, E), generator=g)
+    mask = torch.ones(B, E, dtype=torch.bool)
+    n_own = torch.full((B,), O)
+    zeros = torch.zeros(B, O, dtype=torch.long)
+    ev = evaluate(net, ent, typ, torch.zeros(B, E, dtype=torch.long), mask, torch.randn(B, 12, generator=g), n_own, zeros, zeros,
+                  zeros, zeros)
+    ev["logits"].retain_grad()
+    y_order = torch.zeros(B, O, dtype=torch.long)
+    y_order[0, 0] = UNIT_ORDER
+    y_ptr = torch.full((B, O), -1, dtype=torch.long)
+    y_ptr[0, 0] = 4
+    none = torch.full((B, O), -1, dtype=torch.long)
+    mb = {"own": torch.arange(O)[None].expand(B, O) < n_own[:, None], "y_has": torch.tensor([True, False]), "y_order": y_order,
+          "y_ptr": y_ptr, "y_x": none, "y_y": none.clone(), "y_only": torch.tensor([True, False]),
+          "y_teach": (y_order > 0) & teach, "mask": mask, "ent": ent}
+    return ev, mb, net
+
+
+def _floor(on: bool, p: float):
+    m = torch.zeros(31, dtype=torch.bool)
+    m[UNIT_ORDER] = on
+    return m, math.log(p)
+
+
+@pytest.mark.parametrize("norm", ["units", "lessons"])
+@pytest.mark.parametrize("teach", [True, False])
+def test_a_harvest_lesson_teaches_its_mine_alone(norm, teach):
+    """The labelled order's logits get no gradient from a lesson of the floored class; the pointer's head does while the
+    mine's chance given the order is under the floor, and nothing does once it is over. Off, or another class: as before."""
+    def grads(floor):
+        selfplay.TEACH_FLOOR_POINTER = floor
+        ev, mb, net = _lesson(teach)
+        out, _, t = selfplay.distill_loss(net, ev, mb, None, teach_scale=10.0, norm=norm)
+        net.zero_grad()
+        if out.requires_grad:
+            out.backward()
+        g_order = ev["logits"].grad
+        g_ptr = net.query.weight.grad
+        return (float(out.detach()), float(t), 0.0 if g_order is None else float(g_order.abs().sum()),
+                0.0 if g_ptr is None else float(g_ptr.abs().sum()))
+    off = grads(None)
+    assert off[2] > 0 and off[3] > 0  # (as before: the order and the pointer pushed)
+    assert grads(_floor(False, 0.25)) == off  # (another class floored: the same numbers)
+    under = grads(_floor(True, 1.0))  # (the mine's chance is under 1: the pointer alone)
+    assert under[2] == 0.0 and under[3] > 0 and under[0] < off[0]
+    over = grads(_floor(True, 1e-30))  # (over the floor: nothing)
+    assert over == (0.0, 0.0, 0.0, 0.0)
+    if teach:
+        assert under[1] > 0  # (the teacher's term is the pointer's)
+
+
+def test_the_harvest_floor_is_the_pointer_s_chance_given_the_order():
+    """Pushed exactly while log P(mine | harvest) is under the floor."""
+    ev, mb, net = _lesson()
+    with torch.no_grad():
+        ptr, _, _ = net.target_logits(ev["g"], ev["u"], mb["mask"], mb["y_order"], mb["ent"], None)
+        p = float(torch.softmax(ptr[0, 0].float(), -1)[4])
+    for floor, pushed in ((p * 1.05, True), (p * 0.95, False)):
+        selfplay.TEACH_FLOOR_POINTER = _floor(True, floor)
+        ev, mb, net = _lesson()
+        out, _, _ = selfplay.distill_loss(net, ev, mb, None, teach_scale=10.0, norm="units")
+        assert (float(out.detach()) > 0) is pushed
