@@ -155,6 +155,27 @@ def test_on_for_the_rest_of_the_game_then_the_hall_by_one_builder():
     assert len(_lessons(tc, cleared, now=480.0, t=1220)) == 1
 
 
+def test_the_builder_is_no_gold_worker_when_another_can_go():
+    """The hall's builder: a worker without work or a chopper before one of the main's gold workers, however near."""
+    gold = [_unit(10 + k, 0, -5000, 2000 + 10 * k, "hpea", W, order=HARVEST) for k in range(5)]  # (the nearest to the natural)
+    chopper, idle = _unit(20, 0, -5600, 3600, "hpea", W, order=HARVEST), _unit(21, 0, -5700, 3700, "hpea", W)
+    tc = _teacher()
+    _lessons(tc, _rows())
+    tc.economy = (False, {20}, {})
+    out = _lessons(tc, _rows(army=5, camp=False, workers=gold + [chopper, idle]), now=470.0, t=1200)
+    assert len(out) == 1 and isinstance(out[0], Build) and out[0].unit == 20  # (the chopper, nearer than the idle one)
+    tc = _teacher()
+    _lessons(tc, _rows())
+    out = _lessons(tc, _rows(army=5, camp=False, workers=gold + [idle]), now=470.0, t=1200)
+    assert out[0].unit == 21
+    ud = _teacher("undead")
+    _lessons(ud, _rows("undead"))
+    aco = [_unit(10 + k, 0, -5000, 2000 + 10 * k, "uaco", W, order=HARVEST) for k in range(5)]
+    spare = _unit(21, 0, -5700, 3700, "uaco", W)
+    out = _lessons(ud, _rows("undead", camp=False, workers=aco + [spare]), now=470.0, t=1200)
+    assert out == [TargetOrder(21, code("ugol"), 51)]
+
+
 def test_the_hall_s_cost_is_kept_while_it_is_due():
     """--expand-lesson-reserve N: with the early hall due (the camp gone, the natural free, no builder on its way) the
     view's reserve is the hall's class and cost, for N steps a game; not before, not while a builder walks, not off."""
@@ -187,6 +208,37 @@ def test_the_hall_s_cost_is_kept_while_it_is_due():
     assert not tc2.hall_due  # (an enemy army near its halls: not due, nothing kept)
 
 
+def test_a_side_without_lessons_keeps_the_cost_too():
+    """Teacher.saving (an evaluation game's side, a past opponent's): hall_due as commands() sets it, nothing taught."""
+    costs = np.zeros((4, 3), np.int64)
+    costs[2] = (385, 205, 0)
+    enc = SimpleNamespace(order_index={(code("htow"), fx.POINT): 2}, costs=costs)
+    cleared = _rows(army=5, camp=False)
+    sv = _teacher(expand_reserve=100)
+    sv.saving(cleared, _player(), 470.0, 1200)
+    assert not sv.hall_due and not sv.expand_on  # (never had a hero and six)
+    sv.saving(_rows(), _player(), 350.0, 1190)
+    assert not sv.expand_on  # (before S)
+    sv.saving(_rows(), _player(), 400.0, 1200)
+    assert sv.expand_on and not sv.hall_due  # (on; its camp stands)
+    sv.saving(cleared, _player(), 470.0, 1300)
+    assert sv.hall_due and sv.hall_reserve(enc) == (2, 385, 205)
+    raid = np.concatenate([cleared, _unit(91, 1, -5000, 2600, "ogru", vis=1)[None]])
+    sv.saving(raid, _player(), 480.0, 1310)
+    assert not sv.hall_due and sv.hall_reserve(enc) is None
+    done = np.concatenate([cleared, _unit(70, 0, -4764, -2400, "htow", S)[None]])
+    sv.saving(done, _player(), 490.0, 1320)
+    assert not sv.hall_due  # (taken)
+    target = _teacher(expand_reserve=100, target={"t": {"hbar": 60.0}, "n": {}})
+    target.saving(_rows(), _player(), 400.0, 1200)
+    target.saving(cleared, _player(), 470.0, 1300)
+    assert not target.hall_due  # (a target's side: its builder's business)
+    off = Teacher(0, "human", random.Random(0), None, expand_reserve=100)
+    off.saving(_rows(), _player(), 400.0, 1200)
+    off.saving(cleared, _player(), 470.0, 1300)
+    assert not off.hall_due  # (no --expand-lesson-from)
+
+
 def test_undead_haunts_with_one_acolyte():
     tc = _teacher("undead")
     assert len(_lessons(tc, _rows("undead"))) == 7
@@ -197,11 +249,14 @@ def test_undead_haunts_with_one_acolyte():
     walking[walking[:, fx.C_ID] == 12, fx.C_ORDER] = code("ugol")
     assert _lessons(tc, walking, now=480.0, t=1220) == []
     unseen = cleared.copy()
-    unseen[unseen[:, fx.C_ID] == 51, fx.C_VIS] = 2  # (the mine out of its sight: no pointer could name it, no lesson)
-    assert _lessons(tc, unseen, now=480.0, t=1220) == []
+    unseen[unseen[:, fx.C_ID] == 51, fx.C_VIS] = 2  # (the mine out of its sight: no pointer could name it: walked there
+    out = _lessons(tc, unseen, now=480.0, t=1220)   # first, as a target's lesson has it; a move's lesson, floored by
+    assert out == [PointOrder(out[0].unit, fx.MOVE, float(NAT[0]), float(NAT[1]))] and tc.hall_due  # the "workers" group)
     target = Teacher(0, "undead", random.Random(0), {"t": {"ugol": 300.0}})
     out = target.commands(unseen, _player(), 480.0, 1220)
-    assert len(out) == 1 and isinstance(out[0], PointOrder) and out[0].order == fx.MOVE  # (a target's: walked there, as before)
+    assert len(out) == 1 and isinstance(out[0], PointOrder) and out[0].order == fx.MOVE  # (a target's: as before)
+    spare = np.concatenate([unseen, _unit(25, 0, -5700, 3700, "uaco", W)[None]])  # (an acolyte without work walks, not a miner)
+    assert _lessons(tc, spare, now=490.0, t=1240) == [PointOrder(25, fx.MOVE, float(NAT[0]), float(NAT[1]))]
 
 
 def _taken(workers, extra=()):
@@ -244,6 +299,10 @@ def test_the_workers_idle_first_then_choppers_and_the_main_keeps_five():
     standing = [_unit(20 + k, 0, -4700, -2500 + 20 * k, "hpea", W) for k in range(5)]
     out = _lessons(tc, _taken(gold + standing), now=650.0, t=1600)
     assert out == [TargetOrder(20 + k, HARVEST, 51) for k in range(3)]
+    # (the mine out of its sight: no pointer can name it; the nearest of them walks to it first)
+    dark = _taken(gold + standing)
+    dark[dark[:, fx.C_ID] == 51, fx.C_VIS] = 2
+    assert _lessons(tc, dark, now=660.0, t=1620) == [PointOrder(20, fx.MOVE, float(NAT[0]), float(NAT[1]))]
 
 
 def test_a_worker_more_only_when_the_policy_could_and_the_hall_is_free():

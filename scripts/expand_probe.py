@@ -21,6 +21,59 @@ policy  The trained policy on the CPU plays a real game without a target (the ru
         order (against the floors: would the lesson push?). And whether the policy expands by itself. --follow 1: the
         labelled units are given the lessons' orders (the labels' classes, bins and pointers through the agent's own
         command path) and left alone until the next lesson: what the policy's game looks like when it does as taught.
+        --scenario natural: the camp cleared at the first step (a share of the training games). --reserve N:
+        --expand-lesson-reserve. --lessons 0: no lessons, as an evaluation game (the reserve's rule alone).
+
+What it found (2026-11-24; the engine's own facts are in docs/reference/engine-notes.md).
+
+engine, the final lessons carried out (a level-1 hero without skills and 6 of the race's first unit at 360 s; the script's
+workers 5 on gold and 2 on lumber, undead 5 and 3 spare, as the policy's; the other side idle), each race from each start:
+    race, start     camp dead (units lost)  hall begun, done  at the new mine  gold a minute before -> after
+    human, left     461 s (1 of 6)          491 s, 615 s      5 (and 1 idle)   600 -> 1,060 (the main at 4: below)
+    human, right    461 s (1)               488 s, 612 s      5 (and 1 idle)   600 -> 1,200
+    orc, left       455 s (0)               485 s, 635 s      5 (and 1 idle)   600 -> 1,170
+    orc, right      454 s (0)               481 s, 631 s      5 (and 1 idle)   600 -> 1,200
+    undead, left    405 s (1)               432 s, 532 s      5                600 -> 1,200
+    undead, right   398 s (0)               426 s, 526 s      5 (1 at home)    600 -> 1,200
+    night elf, left 460 s (0)               481 s, 601 s      5                600 -> 1,200
+    night elf, right 460 s (1)              480 s, 600 s      5                600 -> 1,200
+  Every order was taken (the hall's at people's spot lands at (-4736, -2368) and (4032, -2496)). Five minutes from the
+  trigger to the second mine's income. What the first versions got wrong, and the fixes in teacher.py:
+  * the trigger asked for at every step: the camp cost a unit, 5 were left, no hall was ever taught (now: on for the game)
+  * a hero alone dies at the camp, at level 1 and 3, all four races (the target games' camp lesson names the heroes
+    alone); a hero and 2 units: human and orc lose everything; and 3: cleared with the hero at a quarter of its hit points;
+    twice the camp's strength (4-6 units): 0-1 lost (now: the heroes and the army near them, twice its strength)
+  * a second and third builder labelled while the first walked (now: none while one is on its way), and the builder one of
+    the main's gold workers (now: a worker without work or a chopper first)
+  * the workers' lesson sent the three nearest whatever they did: 4 of the main's 5 gold workers; 600 -> 720 a minute.
+    And it counted whoever stood within 900: workers trained there stood idle (now: until five work the mine, the main
+    keeps five, two choppers stay; a wisp in an entangled mine counts)
+  * the policy has 7-11 workers: a second mine's have to be trained (now: "expansion: a worker")
+  * a human gold peasant walks to the new town hall by itself and helps (the game's doing): 120 gold a minute less meanwhile
+
+policy (fgself-252's 17-27M average on the CPU, fgself-253's settings, no target, against the insane AI, --from 360):
+  * plain games, 8 (two a race): the trigger is on at 360 s in all (9-14 army units, a hero of level 2-3 at 7-68% of its
+    hit points; 7-11 workers; 50-430 gold in the bank). The camp's lesson is given 3, 0 / 1, 2 / 0, 0 / 4, 13 times
+    (human / orc / undead / night elf): in 57-100% of the steps a hero is dead or under 60%. At the labelled steps the
+    policy's chance of an attack-move is 0.0002-0.017 a unit and of the camp's cell given one 0.0000-0.0006: under the
+    place's floor every time, so the lesson would push the place; the order it never pushes. No expansion by itself (a
+    tree of life begun once beside the standing camp). 5 of the 8 games are won before minute 10.
+  * doing as taught (--follow 1), plain: human 5 and orc 6 lessons followed (night elf none given), the heroes never
+    within 1,000 of the camp: the walk is 35-40 s and the hero is under 60% again before it ends. The camp is not
+    cleared in the policy's games against the insane AI.
+  * the camp cleared (--scenario natural): the hall is due from 360 s to the end and its cost is in the bank in 0 of
+    720, 0 of 360, 0 of 720 and 65 of 720 steps: no hall lesson but night elf's 4. The policy banks nothing.
+  * with the hall's cost kept (--reserve 360), no follow: human and night elf build the hall by themselves at 516 and 586 s,
+    orc gets 11 lessons (its chance of the order 0.0008 a step, of the place given it 0.68) and does not, undead never
+    has the 220 lumber. Without lessons (--lessons 0, an evaluation game's rules): human, orc and night elf build it by
+    themselves at 516, 472 and 425 s; then one worker mines there, or none, and the human's gold a minute is 480 where
+    it was 600 (its builder gone from the main): the hall alone brings nothing.
+  * with the cost kept and doing as taught: human: hall at 505 s, done 646 s, 4 workers trained, 5 at the new mine at
+    13 minutes, 870 gold in the last minute with the new workers still arriving (600 before; 360-400 while the hall
+    went up), won at 13.8 minutes (the same game without: not over at 12). Night elf: the tree at 446 s, done 566 s, won at 10.7 minutes before its wisps mined. Orc: won at 8.6
+    minutes with the hall half built. The labels' chances there: the hall's order 0.002-0.009 a step and its place
+    0.33-0.85; a harvest 0.26 and the new mine given it 0.02-0.14 (under the pointer's floor: pushed); a worker's
+    training 0.00003-0.0001 (under the order's floor: pushed).
 """
 from __future__ import annotations
 
@@ -230,8 +283,8 @@ def engine(a) -> int:
                         grp = rows[np.isin(rows[:, fx.C_ID], [x.unit for x in lessons])]
                         cr = rows[np.isin(rows[:, fx.C_ID], list(camp))]
                         power = (round(tm._power(grp), 1), round(tm._power(cr), 1))
-                elif isinstance(c, TargetOrder) and c.order == HARVEST:
-                    k = "workers"
+                elif (isinstance(c, TargetOrder) and c.order == HARVEST) or (isinstance(c, PointOrder) and hall_done is not None):
+                    k = "workers"  # (the harvest, or the walk to a mine out of its sight)
                     first_workers = now if first_workers is None else first_workers
                     eco.job[c.unit] = "natural"
                 elif isinstance(c, ImmediateOrder):  # (a worker more, at the hall nearest the natural)
@@ -590,10 +643,16 @@ def policy(a) -> int:
                 kind = KINDS[1]
             elif isinstance(c, TargetOrder) and c.order == HARVEST and KINDS[2] in fired and c.target in ids:
                 kind = KINDS[2]
+            elif isinstance(c, PointOrder) and c.order == MOVE and KINDS[2] in fired:  # (to a mine out of its sight)
+                kind = KINDS[2]
             elif isinstance(c, ImmediateOrder) and c.order == worker_t and KINDS[3] in fired:
                 kind = KINDS[3]
             if kind is not None:
                 probe.now_lessons.append((kind, c))
+        watch(self, rows, player, now, t, can)
+        return out
+
+    def watch(self, rows, player, now, t, can):
         # the side's state, the natural's, and whether the hall could be paid (the lesson's own test is the mask's)
         sx, sy = player.start_x, player.start_y
         alive = fx.own_alive(rows, side)
@@ -656,8 +715,20 @@ def policy(a) -> int:
                         "taught": {k.split(": ")[1]: v for k, v in self.taught.items() if k in KINDS}}
                 probe.minute.append(line)
                 print("  " + json.dumps(line), flush=True)
-        return out
     tm.Teacher.commands = lessons
+
+    t_saving = tm.Teacher.saving
+
+    def saving(self, rows, player, now, t):  # (--lessons 0: a side without lessons, the reserve's rule alone)
+        if self.side == side:
+            probe.state["reserved"] = self.reserved
+        t_saving(self, rows, player, now, t)
+        if self.side == side and player is not None:
+            av = probe.mine.get("avail") if probe.mine is not None else None
+            oix = probe.bot.enc.order_index
+            watch(self, rows, player, now, t, None if av is None else
+                  lambda u, k=fx.IMMEDIATE: (c := oix.get((fourcc(u), k))) is not None and bool(av[c]))
+    tm.Teacher.saving = saving
 
     m_labels = sp.merge_labels
 
@@ -682,7 +753,23 @@ def policy(a) -> int:
         opp["name"] = f"script:ai-{a.ai or 'insane'}"  # (a "(real)" launch has no scenario)
     with GameInstance(setup, name=f"expandprobe{a.name}", timeout=600) as g:
         obs = g.start()
-        ep = sp.play_one(g, obs, cfg, vocab, races, side, opp, probe, probe, 0, record=False, train=True)
+        if a.scenario == "natural" and not a.lessons:  # (a game without lessons has no scenario: its camps cleared here)
+            from warcraftsim.fullgame import scenarios
+
+            class First:
+                """The game with the scenario's commands added to its first step's."""
+
+                def __init__(self, game, extra):
+                    self.game, self.extra = game, extra
+
+                def step(self, cmds=None):
+                    cmds, self.extra = list(cmds or []) + self.extra, []
+                    return self.game.step(cmds)
+
+                def __getattr__(self, name):
+                    return getattr(self.game, name)
+            g = First(g, scenarios.commands("natural", obs, side, races, random.Random(a.seed)))
+        ep = sp.play_one(g, obs, cfg, vocab, races, side, opp, probe, probe, 0, record=False, train=bool(a.lessons))
     # the summary: per lesson kind, its dose and the policy's chances against the floors
     s, prod = probe.state, ep.get("prod") or {}
     if s.get("ratios"):  # (its heroes' group against the camp, when healthy and safe: the lowest, the median, the highest)
@@ -754,6 +841,8 @@ def main() -> int:
     ap.add_argument("--pointer-floor", type=float, default=0.0, help="policy: --teach-floor-pointer (0: the run's place floor)")
     ap.add_argument("--scenario", default="", help="policy: the game starts in this scenario (natural: its camp cleared)")
     ap.add_argument("--reserve", type=int, default=0, help="policy: --expand-lesson-reserve (steps a game the hall's cost is kept)")
+    ap.add_argument("--lessons", type=int, default=1, help="policy: 0: a game without lessons, as an evaluation game (the reserve's "
+                    "rule alone: play_one's savers)")
     ap.add_argument("--set", nargs="*", default=[], help="policy: settings changed for this game: key=value")
     ap.add_argument("--json", type=Path)
     ap.add_argument("--name", default="")

@@ -1947,14 +1947,15 @@ def expand_lesson_from(cfg: dict, late_start: dict | None) -> float:
 def floor_lesson_classes(vocab: dict, groups=()) -> torch.Tensor | None:
     """--teach-floor-orders workers: the order classes [O+1] floored at --teach-floor on the heuristic teacher's own
     lessons only (the rows marked "y_teach"; distill_loss): the races' workers' train orders, the early expansion
-    lesson's worker for the new mine (--expand-lesson-from). A target's builder labels the same orders (--z-workers:
-    the target's worker count), and those keep their push: floored by class, as floor_classes' groups are, a target
-    game's workers would be capped with them. None without the group."""
+    lesson's worker for the new mine (--expand-lesson-from), and a move at a point, the expansion lesson's acolyte
+    walking to a mine it does not see (the teacher's only move). A target's builder labels the train orders too
+    (--z-workers: the target's worker count), and those keep their push: floored by class, as floor_classes' groups
+    are, a target game's workers would be capped with them. None without the group."""
     from .neutral import fourcc
     from .teacher import RACE_WORKER
     if "workers" not in groups:
         return None
-    forms = {(fourcc(w), fx.IMMEDIATE) for w in RACE_WORKER.values()}
+    forms = {(fourcc(w), fx.IMMEDIATE) for w in RACE_WORKER.values()} | {(fx.MOVE, fx.POINT)}
     m = torch.zeros(len(vocab["orders"]) + 1, dtype=torch.bool)
     for i, (oid, kind) in enumerate(vocab["orders"]):
         m[i + 1] = (int(oid), int(kind)) in forms
@@ -2775,6 +2776,15 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                             expand_reserve=int(cfg.get("expand_lesson_reserve", 0) or 0))
                  for s in trajs if keys[s] == "current"}
                 if cfg.get("teach") and replay is None else {})
+    # --expand-lesson-reserve is a rule of the agent's, not a lesson: the agent sides without lessons (an evaluation
+    # game's, a past opponent's) keep the due hall's cost too (teacher.Teacher.saving: no labels). Kept in training games
+    # alone it would be a help the policy has only there: it banks nothing by itself (scripts/expand_probe.py)
+    savers = ({s: Teacher(s, races[s], random.Random(), zs.get(s), pace=cfg.get("lesson_time_scale") or teacher_pace(cfg["map"]),
+                          expand_from=expand_lesson_from(cfg, late_start),
+                          expand_share=float(cfg.get("expand_lesson_share", 1.0)),
+                          expand_reserve=int(cfg.get("expand_lesson_reserve", 0) or 0))
+               for s in bots if s not in teachers}
+              if cfg.get("expand_lesson_reserve") and cfg.get("expand_lesson_from") and replay is None else {})
     # --teach-heuristic: a target drawn from the hand-written player's games (strategy.from_demos names the strategy) is
     # taught by that strategy itself: a HeuristicAgent of it shadows the side, never carried out, and its macro orders
     # (builds, training, research, tiers) label the side's steps as the teacher's lessons do
@@ -2859,8 +2869,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         for s, b in builders.items():  # (--z-build: the agent's orders leave the target's next item's cost)
             if s in bots:
                 bots[s].view.reserve = b.reserve
-        for s, tc in teachers.items():  # (--expand-lesson-reserve: the early hall's cost kept while its lesson is due; a
-            if tc.expand_reserve and s in bots and s not in builders:  # game without a target has no builder)
+        for s, tc in (*teachers.items(), *savers.items()):  # (--expand-lesson-reserve: the early hall's cost kept while it
+            if tc.expand_reserve and s in bots and s not in builders:  # is due; a game without a target has no builder)
                 bots[s].view.reserve = tc.hall_reserve(bots[s].enc)
         sts = {s: bot.observe(obs, t, rows) for s, bot in bots.items()}
         if capture_at is not None or record:  # (the research so far: --late-capture's state, a video's upgrades)
@@ -2941,6 +2951,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                     av = sts[s].get("avail")  # (the lessons that teach: labelled, and an order the policy could give)
                     tc.kept = getattr(tc, "kept", 0) + int(((y["y_order"] > 0) & (np.asarray(av)[y["y_order"]] if av is not None
                                                                                    else True)).sum())
+        for s, tc in savers.items():  # (--expand-lesson-reserve without lessons: whether the hall is due, for the next step)
+            if s in spans:
+                tc.saving(rows, obs.players.get(s), obs.game_time, t)
         for s, ha in hteach.items():  # (--teach-heuristic: the strategy's own macro orders as lessons)
             if s in spans and trajs[s].steps and obs.players.get(s) is not None:
                 ha.observe(obs, t)
@@ -5562,9 +5575,9 @@ def main(argv: list[str] | None = None) -> int:
                     "anti-air and tier units' train orders), upgrades (the upgrade lesson's weapon and armor research), moves (the "
                     "attack-move's lessons, the creep lesson's: the place alone is taught, under --teach-floor-place; the order never), "
                     "harvest (a harvest on a unit, the expansion lesson's workers: which mine alone is taught, under "
-                    "--teach-floor-pointer; the order never), workers (the races' workers' train orders on the "
-                    "teacher's own lessons: the early expansion lesson's worker for the new mine; a target builder's "
-                    "labels of them are not capped)")
+                    "--teach-floor-pointer; the order never), workers (the races' workers' train orders and a move at a "
+                    "point on the teacher's own lessons: the early expansion lesson's worker for the new mine, an "
+                    "acolyte's walk to a mine it does not see; a target builder's labels of them are not capped)")
     ap.add_argument("--teach-floor-place", type=float, default=0.0, help="--teach-floor-orders moves: the floor on an "
                     "attack-move lesson's place, its point's chance given an attack-move (0: --teach-floor's)")
     ap.add_argument("--teach-floor-pointer", type=float, default=0.0, help="--teach-floor-orders harvest: the floor on a "

@@ -60,6 +60,11 @@ def test_the_early_expansion_lessons_reach_the_games():
     assert 'expand_share=float(cfg.get("expand_lesson_share", 1.0))' in body
     assert 'expand_reserve=int(cfg.get("expand_lesson_reserve", 0) or 0)' in body
     assert "bots[s].view.reserve = tc.hall_reserve(bots[s].enc)" in body  # (--expand-lesson-reserve: before the step's view)
+    assert "tc.saving(rows, obs.players.get(s), obs.game_time, t)" in body  # (the sides without lessons: the same rule)
+    # (and the evaluation worker's games: its cfg is made from run.json, key by key)
+    worker = (paths.REPO_ROOT / "warcraftsim" / "fullgame" / "evalworker.py").read_text()
+    for key in ("expand_lesson_from", "expand_lesson_share", "expand_lesson_reserve", "lesson_time_scale"):
+        assert f'"{key}": num("{key}"' in worker
     from warcraftsim.fullgame.selfplay import expand_lesson_from
     cfg = {"map": "(2)EchoIsles", "expand_lesson_from": 360.0}
     assert expand_lesson_from({"map": "(2)EchoIsles"}, None) == 0.0 and expand_lesson_from(cfg, None) == 360.0

@@ -43,11 +43,13 @@ def test_floor_groups():
     assert selfplay.floor_classes(up, ("upgrades",)).tolist() == [False, True, True, False]
     # ("workers": the races' workers' train orders, the early expansion lesson's "a worker": floored on the teacher's own
     # lessons only, floor_lesson_classes, so not among the classes floored whoever labels them)
+    # (and a move at a point: the teacher's only move, undead's acolyte walking to a mine it does not see)
     w = {"orders": [[code("hpea"), fx.IMMEDIATE], [code("hfoo"), fx.IMMEDIATE], [code("uaco"), fx.IMMEDIATE], [code("ewsp"), fx.POINT],
-                    [code("opeo"), fx.IMMEDIATE], [code("ewsp"), fx.IMMEDIATE]]}
-    assert selfplay.floor_lesson_classes(w, ("workers",)).tolist() == [False, True, False, True, False, True, True]
+                    [code("opeo"), fx.IMMEDIATE], [code("ewsp"), fx.IMMEDIATE], [fx.MOVE, fx.POINT], [fx.MOVE, fx.UNIT]]}
+    assert selfplay.floor_lesson_classes(w, ("workers",)).tolist() == [False, True, False, True, False, True, True, True, False]
     assert selfplay.floor_lesson_classes(w, ("army", "halls", "moves", "harvest")) is None
-    assert selfplay.floor_classes(w, ("workers", "army", "halls", "moves", "harvest")).tolist() == [False] * 7
+    assert selfplay.floor_classes(w, ("workers", "army", "halls", "moves", "harvest")).tolist() == [False] * 9
+    assert selfplay.floor_place_classes(w, ("workers", "moves")).tolist() == [False] * 9  # (the attack-move's alone)
 
 
 def test_capped_only_for_the_floored_classes():

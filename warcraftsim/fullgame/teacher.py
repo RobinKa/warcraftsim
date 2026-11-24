@@ -25,6 +25,17 @@ selfplay --teach 1 (needs --neutral 1: the orders it teaches are the neutral bui
                    hall where people put theirs (undead: an acolyte haunts the mine), then three workers go to mine there.
                    (No policy had ever expanded: 0% of its games, people 81% of Echo Isles'. Night elves: the agent
                    has a tree of life entangle the mine, play.BCAgent._entangle, and the workers then mine that.)
+    an early expansion:  (--expand-lesson-from S, a game without a target) from game second S (times `pace`), once the
+                   side has had a living hero and EARLY_ARMY army units with no enemy army in sight within BASE_SAFE of
+                   its halls, for the rest of the game: the camp (its heroes and the army within ESCORT of them
+                   attack-move to it while twice its strength and every hero above CREEP_HP; at the camp down to
+                   EARLY_FIGHT_HP and its strength), the hall by one worker that is no gold worker (undead: the haunt,
+                   or the walk to a mine it does not see), then its workers until EARLY_MINERS work the new mine (those
+                   without work, choppers past EARLY_CHOPPERS, the main keeps its five; a walk first to a mine out of
+                   sight) and a worker more trained at the hall nearest it while it is short. --expand-lesson-reserve N
+                   keeps the due hall's cost from the side's other paid orders (N steps a game; `saving` for the sides
+                   without lessons): the policy banks nothing by itself. scripts/expand_probe.py has what each of
+                   these was measured on, in the engine and with the trained policy.
 
     lumber:        (--teach 3) a target's next item short of lumber (the builder's) and fewer than CHOPPERS on lumber: the race's
                    chopper (undead: a ghoul) nearest the tree nearest its hall harvests it (the policy had all but stopped
@@ -937,6 +948,21 @@ class Teacher:
                                         enemy[:, None, fx.C_Y] - halls[None, :, fx.C_Y]) < BASE_SAFE).any())
         return self._safe
 
+    def saving(self, rows: np.ndarray, player, now: float, t: int) -> None:
+        """--expand-lesson-reserve for a side without lessons (an evaluation game's, a past opponent's: the reserve is a
+        rule of the agent's, the same in every game of the run): `hall_due` as commands() sets it, nothing taught."""
+        self.hall_due = False
+        if (player is None or rows.shape[1] < fx.ROW_COLS or self.expand_from <= 0 or self.reserved >= self.expand_reserve
+                or now < self.expand_from * self.pace or not self._base_safe(rows, t)):
+            return
+        if not self.expand_on:  # (commands()'s counts: its living heroes, its units that are no building, worker or hero)
+            fl = fx.own_alive(rows, self.side)[:, fx.C_FLAGS]
+            if (fl & fx.HERO > 0).any() and int((fl & (fx.STRUCTURE | fx.WORKER | fx.HERO) == 0).sum()) >= EARLY_ARMY:
+                self.expand_on = True
+        if self.expand_on:
+            self.can = None
+            self._expansion(rows, player, t, early=[])
+
     def hall_reserve(self, enc) -> tuple | None:
         """--expand-lesson-reserve: (the hall's order class, its gold, its lumber) for the view's `reserve` while the early
         hall is due and the game's steps of it are not used up, else None. `enc`: the side's encoder (its order classes
@@ -958,7 +984,7 @@ class Teacher:
         the lessons ended as the hero took its first hits, and the policy, doing as taught, left a camp half dead.
         (The target's camp lesson names the heroes alone; scripts/expand_probe.py: who clears the camp, and at what cost.)"""
         hs = [(live[j], live[j + 2], live[j + 3]) for j in range(0, len(live), HF)]
-        if not hs:
+        if not hs or t - self.last.get("expansion: its camp", -GAP) < GAP:  # (looked at only when a lesson may be given)
             return []
         camp = rows[(rows[:, fx.C_OWNER] == 12) & (rows[:, fx.C_FLAGS] & (fx.DEAD | fx.STRUCTURE) == 0)]
         camp = camp[np.hypot(camp[:, fx.C_X] - mx, camp[:, fx.C_Y] - my) < CAMP_NEAR]
@@ -1018,7 +1044,13 @@ class Teacher:
         pick = (send or surplus)[:3]
         out = []
         if pick and due and self._due("expansion: workers", t):
-            out = [TargetOrder(int(w[i, fx.C_ID]), HARVEST, mine_id) for i in pick]
+            m = rows[rows[:, fx.C_ID] == mine_id]
+            if len(m) and (int(m[0, fx.C_VIS]) >> self.side) & 1:
+                out = [TargetOrder(int(w[i, fx.C_ID]), HARVEST, mine_id) for i in pick]
+            else:  # (the mine out of its sight, 800 from the new hall: no pointer can name it and the label was dropped,
+                # 3 of 3 in a game of the policy's own town hall. The nearest of them walks to it first, as undead's
+                # acolyte to the mine it will haunt: a move's lesson, floored by --teach-floor-orders workers)
+                out = [PointOrder(int(w[pick[0], fx.C_ID]), fx.MOVE, mx, my)]
         if need - spare - len(send) > 0:  # (still short with all of them sent: one more is trained)
             out += self._early_train(alive, mx, my, t)
         return out
@@ -1094,11 +1126,6 @@ class Teacher:
             own = fx.own_alive(rows, self.side)
             if (own[:, fx.C_ORDER] == (HAUNTED if self.race == "undead" else hall)).any():
                 return []
-            if self.race == "undead":  # (the haunt only with the mine in its sight, where the policy's pointer can name
-                # it. The target's lesson walks an acolyte there first: a move's lesson, which no floor holds)
-                m = rows[rows[:, fx.C_ID] == nat_id]
-                if not len(m) or not (int(m[0, fx.C_VIS]) >> self.side) & 1:
-                    return []
             self.hall_due = True  # (--expand-lesson-reserve: its cost kept from the next step on, hall_reserve)
         can = getattr(self, "can", None)
         if (can is not None and not (fx.MACROS and "expand" not in fx.MACROS_OFF)  # (the hall's own build order: only
@@ -1111,10 +1138,15 @@ class Teacher:
             # is its own business, macros.py; --macros-off expand: the hall's own build order below, where people put theirs)
             return [ImmediateOrder(nearest, fx._mod("macros").EXPAND)]
         if self.race == "undead":  # (an acolyte haunts the mine: its gold, no hall needed)
+            if early is not None:
+                spare = self._spare_workers(fx.own_alive(rows, self.side))
+                if len(spare):  # (--expand-lesson-from: an acolyte without work rather than one of the mine's five)
+                    nearest = int(spare[int(np.argmin(np.hypot(spare[:, fx.C_X] - mx, spare[:, fx.C_Y] - my))), fx.C_ID])
             m = rows[rows[:, fx.C_ID] == nat_id]
             if not len(m) or not (int(m[0, fx.C_VIS]) >> self.side) & 1:  # (a mine it has not in sight: the label had
                 return [PointOrder(nearest, fx.MOVE, mx, my)]  # no target and was dropped, 0 of 40 kept: the acolyte
-            return [TargetOrder(nearest, HAUNTED, nat_id)]      # walks there first; audit 13)
+            return [TargetOrder(nearest, HAUNTED, nat_id)]      # walks there first; audit 13. A move's lesson: with
+            # --teach-floor-orders workers its order is pushed only under --teach-floor, selfplay.floor_lesson_classes)
         ox, oy = EXPAND_SPOTS.get((int(round(mx)), int(round(my))), (None, None))
         if ox is None:  # (another map's: 750 toward its start)
             n = max(float(np.hypot(sx - mx, sy - my)), 1.0)
@@ -1122,10 +1154,21 @@ class Teacher:
         x, y = mx + ox, my + oy
         alive = fx.own_alive(rows, self.side)
         workers = alive[fx.isin(alive[:, fx.C_TYPE], WORKER_CODES) & (alive[:, fx.C_FLAGS] & HIDDEN == 0) & _free(alive)]
+        if early is not None:  # (--expand-lesson-from: a worker without work or a chopper rather than one of the main's
+            spare = self._spare_workers(alive)  # gold workers: the nearest free one, carried out, was one of its five in
+            workers = spare if len(spare) else workers  # 2 of 4 games, 120 gold a minute less while the hall went up)
         if not len(workers):
             return []
         w = workers[int(np.argmin(np.hypot(workers[:, fx.C_X] - x, workers[:, fx.C_Y] - y)))]
         return [Build(int(w[fx.C_ID]), hall, x, y)]
+
+    def _spare_workers(self, alive: np.ndarray) -> np.ndarray:
+        """--expand-lesson-from: the side's workers that are no gold workers (rows of `alive`): those with no order, and
+        the view's choppers (`economy`); not inside a mine or a burrow, not on their way to build."""
+        w = alive[fx.isin(alive[:, fx.C_TYPE], WORKER_CODES) & (alive[:, fx.C_FLAGS] & (HIDDEN | LOADED) == 0) & _free(alive)]
+        eco = getattr(self, "economy", None)
+        chop = np.isin(w[:, fx.C_ID], list(eco[1])) if eco is not None and eco[1] else np.zeros(len(w), bool)
+        return w[(w[:, fx.C_ORDER] == 0) | chop]
 
 
 def _free(alive: np.ndarray) -> np.ndarray:
