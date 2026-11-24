@@ -2643,6 +2643,23 @@ Head to head 255's average 0.412 against 252's (193 games), 0.511 against 250's,
 
 `fgself-257` stopped at 27.0M (22:55). In training: about 6 creep lessons a game (capped as meant); creeps a game past minute 10 without a target 1.7-2.1 by quarter hour (252: 1.56 on the same measure); against insane without a target 0.87, 0.73, 0.72, 0.78, 0.83, 0.89 (back at the start's level); head to head 0.321 against 252's average at 11.6M. **burst-257** (22:55-23:41).
 
+**burst-257** (996 games):
+
+| policy | rating | against insane, untaxed | creeps a game (insane games past 10 min) |
+|---|---|---|---|
+| `fgself-252`'s average (the control) | 1,893 ±11 | 0.963 ±0.040 (78 games) | 1.13 |
+| `fgself-236`'s average | 1,879 ±8 | 0.908 ±0.064 (73) | 1.05 |
+| `fgself-250`'s average | 1,879 ±11 | 0.840 ±0.080 (69) | 0.67 |
+| `fgself-257`'s average (the creep lesson as meant) | 1,860 ±17 | 0.799 ±0.084 (85; night elf 0.68, undead 0.75) | 0.96 |
+
+Head to head 257's average 0.515 against 252's (131 games).
+
+**`fgself-257` (the creep lesson as meant): not kept.** It does not creep more in evaluation (0.96 a game against the control's 1.13) and stands 33 under it, weaker against insane. With its cap the lesson does no damage it can show and teaches nothing that lasts. **The creep line closes**: uncapped it takes the army over, capped it fades.
+
+Built during the burst: `--ref-kl-units macro` (85c71c1): the anchor's KL over workers and buildings only.
+
+**`fgself-258`** (23:45, code 85c71c1): **the anchor on workers and buildings only**: from 252's average, `--ref-kl-units macro`. Control: 252's average.
+
 **The undead's starting ghoul moves back and forth** (the user, from `fgself-245`'s videos): not the creep lesson. The policy orders it "move (point)" and "smart (tree)" on alternating steps, 40-67 moves in the first two minutes, in games against the built-in AI with a target strategy, since `fgself-236` (also in 238, 241, 244; none without a target in the few replays). Cause open: an agent probes it (one game on the CPU, with and without a target).
 
 **The ghoul's back and forth: found, a fix merged** (15:12; `scripts/ghoul_probe.py`, a live game with `fgself-236`'s average on the CPU). A harvester right-clicked onto a tree ("smart (tree)", the tree order the policy gives a free ghoul) reads as current order `smart` for its whole first trip (a ghoul, peasant or peon 12-15 s; a wisp for as long as it stays), not `harvest`. In that state the policy answers with "move (point)" (0.86-0.93 in a target game; the move hangs on the target's items part), the move frees the ghoul, and the free ghoul gets "smart (tree)" again (0.92-0.97): a two-step cycle, learned in `fgself-236` (before it right-clicks drew no moves). Reading `harvest` the same policy leaves it alone. Not the lumber lesson (no label given), not a mask (the same 15 orders allowed throughout). In 240 steps of a target game: 61-76 moves and 40-60 lumber. Without a target 0-8 moves and 120-160 lumber: evaluation games are mildly affected. Peasants and peons have no such habit; wisps a little.
