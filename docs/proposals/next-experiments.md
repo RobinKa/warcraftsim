@@ -213,3 +213,16 @@ Last: `--lr 6e-5` alone; `--z-modes 0` (needs code).
 | D | Done: the side ahead camps at the dead main (`--hunt-lesson`, built; not yet trained) | Run 1 |
 
 Nothing gets deleted meanwhile ([simplify](simplify.md)).
+
+## Bold ideas for a big jump in rating (2026-11-24, the user's question)
+
+What the numbers say first. The best policies have stood at ~1,890-1,914 since 2026-11-20. Without a target the policy takes a second base in 0-3% of its games (with a target that asks for one: 14-28%); from a two-base start it gathers ~690 gold a minute against ~480 from one base (+40%). Against insane a quarter of the income is the difference between scoring ~0.93 and ~0.45. Its heroes kill ~1 creep a game (the AI 3-8). `fgself-250` is the first run whose average beats the average it started from head to head (0.583).
+
+1. **Generations** (cheap, first): fork the next run from the best average of the last one, on the recipe that made `fgself-250` (the league's history, the working exploiter), again and again. If each generation beats the one before as 250 beat 236 (+~60 head to head), the rating climbs by itself; if the second does not, we know the gain does not compound. One run and one burst a generation.
+2. **A second base** (the largest single prize): the policy can expand when told, and does not choose to. Every earlier try taught "clear the natural's camp" with an attack-move lesson that pushed without a limit and, as bug finder 11 showed, gave the heroes an attack-move every step at that camp, which lets them deal 0-30% of their damage: the camp did not die, so the hall was never built. With the repeated order no longer sent and the lessons floored: the three steps (the camp, the hall, the workers) taught in games without a target, each under its floor, with the income of a second mine in the reward for a time. Judged by expansions in evaluation games and by the rating.
+3. **Stronger heroes**: the creep lesson as it was meant (early only, until the first camps are dead), then items (a capped lesson for a healing item and a town portal's use). Hero levels decide mid-game fights.
+4. **A larger network by distillation**: today's has 3.3M weights. A 4x wider one trained to copy the best average on its own games, then trained on. Slower to train and to play; whether capacity limits the play is not known: the cheapest evidence is whether the copy alone, at equal strength, learns what the small one does not (a second base, the targets).
+5. **No reward for a stand-off**: a tie at 40 minutes counts as a loss for both (or for the side ahead), so a tower fortress is no safe result; with the rows' new record of what is left at a tie.
+6. **A strategy chosen per matchup**: the policy picks its own target by what wins (a small head over the pool, trained on outcomes), once following a target costs less than it does now (0.51 against insane with a target, 0.85 without).
+
+Order: 1 runs now (it is the next fork anyway); 2 is the main build; 3 as queued; 5 is small and rides along; 4 and 6 wait for 1 and 2.
