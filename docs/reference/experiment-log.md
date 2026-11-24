@@ -2556,6 +2556,25 @@ Head to head 250's average **0.583 against 236's** (168 games), 0.560 against 24
 - In games past 25 minutes the undead side has made 8 nerubian towers on average (every ziggurat upgraded), in ties and decided games alike, and 44% of those long undead games tie. In two thirds of all ties one side leads by more than 2,000 material and does not finish.
 - Reading, not yet shown: the common tie is a tower fortress nobody breaks (the shaping counts every unit lost against the towers), not a hidden base. To show it the rows need what each side has left at the end of a tie.
 
+Tied games' rows now carry what each side has left (`left`: its buildings by type, how many the other side sees, its army and workers; d6fd4f8).
+
+**burst-252** (989 games; every policy played with `--econ-masks 511 --order-masks 31`; a rating's ± here and above is one standard error, a share's ± a 95% interval):
+
+| policy | rating | against insane, untaxed | agent at -25% income |
+|---|---|---|---|
+| `fgself-250`'s average | 1,887 ±14 (1,599 games) | 0.891 ±0.072 (80) | 0.47 (20) |
+| `fgself-236`'s average | 1,885 ±9 | 0.911 ±0.068 (74) | 0.56 (31) |
+| `fgself-252`'s average (the hunt lesson) | 1,882 ±18 | 0.855 ±0.089 (67) | 0.46 (37) |
+| `fgself-251`'s average (the order fixes) | 1,828 ±27 (274 games) | 0.841 ±0.079 (72; human 0.68 of 20) | 0.34 (32) |
+
+Head to head 252's average 0.576 against 250's (157 games), 0.547 against 251's (158), 0.472 against 236's (197). Its head-to-head ties: 44 of 512 (8.6%); **42 of the 246 games with undead on a side, 2 of the 266 without**.
+
+- **`fgself-252` (the hunt lesson): the lesson is not kept as a cure** (ties as before, in training and here), the run is level with 250's and 236's averages. The ties are undead's: the lesson's case is rare.
+- **`fgself-251` (the order fixes): open.** Its average stands 59 under 250's (two standard errors), while `fgself-252`, which has the same fixes, is level. The fixes stay in the recipe on 252's result; one run of the two was low.
+- **The level holds, it does not climb**: 250's average, rated on 1,599 games now, is 1,887, not 1,914: level with 236's (1,885), as 252's is. The recipe (history, exploiter) keeps a continuation at its start's level, which the plain one lost; no policy is above 236's average beyond the errors.
+
+**`fgself-253`** (13:18, code ac21108): **generation 2**: from `fgself-252`'s average, with its league and exactly its recipe. Does its own average beat its start? Controls: 252's and 236's averages.
+
 **The undead's starting ghoul moves back and forth** (the user, from `fgself-245`'s videos): not the creep lesson. The policy orders it "move (point)" and "smart (tree)" on alternating steps, 40-67 moves in the first two minutes, in games against the built-in AI with a target strategy, since `fgself-236` (also in 238, 241, 244; none without a target in the few replays). Cause open: an agent probes it (one game on the CPU, with and without a target).
 
 **The ghoul's back and forth: found, a fix merged** (15:12; `scripts/ghoul_probe.py`, a live game with `fgself-236`'s average on the CPU). A harvester right-clicked onto a tree ("smart (tree)", the tree order the policy gives a free ghoul) reads as current order `smart` for its whole first trip (a ghoul, peasant or peon 12-15 s; a wisp for as long as it stays), not `harvest`. In that state the policy answers with "move (point)" (0.86-0.93 in a target game; the move hangs on the target's items part), the move frees the ghoul, and the free ghoul gets "smart (tree)" again (0.92-0.97): a two-step cycle, learned in `fgself-236` (before it right-clicks drew no moves). Reading `harvest` the same policy leaves it alone. Not the lumber lesson (no label given), not a mask (the same 15 orders allowed throughout). In 240 steps of a target game: 61-76 moves and 40-60 lumber. Without a target 0-8 moves and 120-160 lumber: evaluation games are mildly affected. Peasants and peons have no such habit; wisps a little.
