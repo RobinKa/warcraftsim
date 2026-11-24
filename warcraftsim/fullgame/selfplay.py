@@ -3079,6 +3079,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"taught": teachers[side].taught, "taught_kept": getattr(teachers[side], "kept", 0)} if side in teachers else {}),
         **({"hunt_lessons": teachers[side].hunt_lessons, "hunt_found_at": teachers[side].hunt_found_at}
            if side in teachers and cfg.get("hunt_lesson") else {}),  # (--hunt-lesson; found_at: game seconds, or None)
+        **({"left": left_at_tie(unit_rows(obs, t))} if outcome[side] == 0 else {}),  # (a tie: what each side has left)
         **({"buy_orders": bots[side].bought, "buys": dict(getattr(bots[side], "buys", {}))}
            if side in bots and getattr(bots[side], "bought", 0) else {}),
         **({k: dict(getattr(bots[side], k, {})) for k in ("shop_bought", "merchant_bought", "item_uses", "items_gone")}
@@ -5018,6 +5019,24 @@ def run_start_state(run_dir: Path, net: FullGameNet, device) -> dict | None:
     if set(state) != set(own) or any(tuple(state[k].shape) != tuple(own[k].shape) for k in own):
         return None
     return {k: v.detach().to(device=own[k].device, dtype=own[k].dtype).clone() for k, v in state.items()}
+
+
+def left_at_tie(rows: np.ndarray) -> dict:
+    """What each side has left when a game ends undecided (the episode row's "left"): its living buildings by type, how
+    many of them the other side sees at that moment, its army (heroes with it) and its workers. Why a tie did not end:
+    a base the other side never found (buildings, none seen), or one it sees and does not take (81% of the ties of
+    fgself-251/252 had undead on a side, with eight nerubian towers in the long games)."""
+    out, fl = {}, rows[:, fx.C_FLAGS]
+    for s in (0, 1):
+        own = rows[(rows[:, fx.C_OWNER] == s) & (fl & fx.DEAD == 0)]
+        f = own[:, fx.C_FLAGS]
+        b = own[f & fx.STRUCTURE > 0]
+        types: dict = {}
+        for c in b[:, fx.C_TYPE].tolist():
+            types[fx.rawcode(int(c))] = types.get(fx.rawcode(int(c)), 0) + 1
+        out[str(s)] = {"buildings": types, "seen": int(((b[:, fx.C_VIS] >> (1 - s)) & 1).sum()),
+                       "army": int((f & (fx.STRUCTURE | fx.WORKER) == 0).sum()), "workers": int((f & fx.WORKER > 0).sum())}
+    return out
 
 
 def adam_snapshot(opt) -> list[dict]:
