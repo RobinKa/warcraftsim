@@ -2593,6 +2593,21 @@ Built `--hunt-press S` (the hunt lesson from game second S with wider conditions
 
 `fgself-253` (generation 2) stopped at 27.0M (15:00); its 17-27M average is built. **burst-253** (15:01-15:47): its average against its start (252's average), 250's and 236's.
 
+**burst-253** (962 games):
+
+| policy | rating | against insane, untaxed | agent at -25% income |
+|---|---|---|---|
+| `fgself-252`'s average (generation 1) | 1,895 ±14 | 0.944 ±0.063 (65 games) | 0.58 (18) |
+| `fgself-250`'s average | 1,891 ±13 | 0.936 ±0.063 (61) | 0.37 (19) |
+| `fgself-236`'s average | 1,887 ±8 | 0.891 ±0.085 (58) | 0.46 (24) |
+| `fgself-253`'s average (generation 2, from 252's) | 1,847 ±17 | 0.896 ±0.083 (58) | 0.38 (20) |
+
+Head to head 253's average 0.436 against its start (181 games), 0.431 against 250's, 0.437 against 236's.
+
+**Generations do not compound: `fgself-253` not kept.** Trained from 252's average on the same recipe and league, its own average stands 48 under its start (2 standard errors) and loses to it head to head. The recipe holds a level from a start it did not make (`fgself-250`, `252`: level with 236's, the plain continuation ~30-50 lower), and a second turn of it does not climb. The plateau at ~1,890 is the recipe's, not the start's. Bold idea 1 is closed; the jump has to come from what the policy can do (a second base, hero power), not from more of the same self-play.
+
+**`fgself-254`** (16:08, code 27e56d3): **the second base**: from 252's average with its league and recipe, plus `--expand-lesson-from 360 --expand-lesson-share 1 --expand-lesson-reserve 360 --teach-floor-orders spells,moves,halls,harvest,workers`. Control: 252's average.
+
 **The undead's starting ghoul moves back and forth** (the user, from `fgself-245`'s videos): not the creep lesson. The policy orders it "move (point)" and "smart (tree)" on alternating steps, 40-67 moves in the first two minutes, in games against the built-in AI with a target strategy, since `fgself-236` (also in 238, 241, 244; none without a target in the few replays). Cause open: an agent probes it (one game on the CPU, with and without a target).
 
 **The ghoul's back and forth: found, a fix merged** (15:12; `scripts/ghoul_probe.py`, a live game with `fgself-236`'s average on the CPU). A harvester right-clicked onto a tree ("smart (tree)", the tree order the policy gives a free ghoul) reads as current order `smart` for its whole first trip (a ghoul, peasant or peon 12-15 s; a wisp for as long as it stays), not `harvest`. In that state the policy answers with "move (point)" (0.86-0.93 in a target game; the move hangs on the target's items part), the move frees the ghoul, and the free ghoul gets "smart (tree)" again (0.92-0.97): a two-step cycle, learned in `fgself-236` (before it right-clicks drew no moves). Reading `harvest` the same policy leaves it alone. Not the lumber lesson (no label given), not a mask (the same 15 orders allowed throughout). In 240 steps of a target game: 61-76 moves and 40-60 lumber. Without a target 0-8 moves and 120-160 lumber: evaluation games are mildly affected. Peasants and peons have no such habit; wisps a little.
