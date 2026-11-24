@@ -30,8 +30,11 @@ def main(argv: list[str] | None = None) -> int:
         path = a.runs / a.run / name
         if not path.exists():
             continue
-        for line in path.open():
-            row = json.loads(line)
+        for line in path.open(errors="replace"):
+            try:  # (a power-off left a block of NUL bytes in fgself-252's episodes-remote.jsonl; such a line is skipped)
+                row = json.loads(line.strip("\x00 \n"))
+            except ValueError:
+                continue
             if row.get("eval") and row.get("time", 0) >= a.since:
                 games[row.get("eval_key", "current")].append((row["time"], row["outcome"]))
                 if "ai-" in str(row.get("opponent", "")):
