@@ -224,7 +224,7 @@ class Teacher:
                  upgrades: bool = False, creep: int = 0, pace: float = 1.0, hunt: int = 0, spells: float = 0.0,
                  attacks: float = 0.0, hero_weights: dict | None = None, creep_cap: int = 0, creep_until: float = 0.0,
                  hunt_press: float = 0.0, expand_from: float = 0.0, expand_share: float = 1.0,
-                 expand_reserve: int = 0):
+                 expand_reserve: int = 0, expand_until: float = 0.0):
         """`target` (the side's target strategy, if it has one): its tavern hero is the one taught, and none when it
         has none (another hero would break a narrow target). `target_hero` (--teach 2): its first hero from the altar
         taught too, when that is its first hero (the builder taught it only once due: the policy had made another one
@@ -321,6 +321,11 @@ class Teacher:
         # lesson is given only on the steps the policy could pay for it, and the policy banks nothing: with the camp
         # cleared for it, fgself-252's average had the cost in the bank in 65 of 2,520 due steps (scripts/expand_probe.py)
         self.expand_reserve, self.reserved, self.hall_due = int(expand_reserve), 0, False
+        # --expand-lesson-until S: no camp or hall lesson and nothing kept for the hall after game second S (times the
+        # pace); a hall already standing still gets its workers. fgself-254 expanded at 15.7 minutes on average and
+        # lost to insane 0.41-0.66: the hall's money and the new mine's workers came out of the army while the AI
+        # attacked, and the income came after the game was decided
+        self.expand_until, self._now = float(expand_until), 0.0
 
     def _due(self, kind: str, t: int, counted: str | None = None) -> bool:
         """Whether a lesson of `kind` may be given now (and it is counted, as `counted`: one hero's of many kinds)."""
@@ -400,6 +405,7 @@ class Teacher:
         if (self.expand_at is not None and now >= self.expand_at) or self._main_low(rows, player, t):
             out += self._expansion(rows, player, t)
         elif self.expand_from > 0:
+            self._now = now  # (--expand-lesson-until: _expansion's clock)
             if now >= self.expand_from * self.pace and self._base_safe(rows, t):
                 # (--expand-lesson-from: on for the rest of the game once it has had a living hero and EARLY_ARMY army
                 # units at a safe moment. Asked for at every step, the hall was never taught: the camp cost a unit, 5
@@ -978,6 +984,7 @@ class Teacher:
                 self.expand_on = True
         if self.expand_on:
             self.can = None
+            self._now = now
             self._expansion(rows, player, t, early=[])
 
     def hall_reserve(self, enc) -> tuple | None:
@@ -1122,6 +1129,8 @@ class Teacher:
             pick = e[16:16 + n_pick]  # (the three nearest outside 900)
             return ([TargetOrder(w, HARVEST, mine_id) for w in pick]
                     if n_pick and self._due("expansion: workers", t) else [])
+        if early is not None and self.expand_until > 0 and self._now > self.expand_until * self.pace:
+            return []  # (--expand-lesson-until: too late for a camp or a hall; a hall taken got its workers above)
         if creeps:  # (guarded. Sending the whole army to clear it every 10 s (fgself-123) lost the games that had
             # an expansion due, 13% won to 32%. With --macros: its heroes, while the army is 6 units or more, are shown
             # the creep order (the policy decides who goes with them))

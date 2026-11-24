@@ -1944,6 +1944,16 @@ def expand_lesson_from(cfg: dict, late_start: dict | None) -> float:
     return s
 
 
+def expand_lesson_until(cfg: dict, late_start: dict | None) -> float:
+    """--expand-lesson-until for a game's teachers: S (0: no limit). In a late start what is left of S then (a second at
+    least: a state from past S has no early expansion lessons), as expand_lesson_from."""
+    s = float(cfg.get("expand_lesson_until", 0.0) or 0.0)
+    if s > 0 and late_start is not None and late_start.get("minute"):
+        pace = cfg.get("lesson_time_scale") or teacher_pace(cfg["map"])
+        s = max(s - 60.0 * float(late_start["minute"]) / pace, 1.0)
+    return s
+
+
 def floor_lesson_classes(vocab: dict, groups=()) -> torch.Tensor | None:
     """--teach-floor-orders workers: the order classes [O+1] floored at --teach-floor on the heuristic teacher's own
     lessons only (the rows marked "y_teach"; distill_loss): the races' workers' train orders, the early expansion
@@ -2774,7 +2784,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                             creep_until=float(cfg.get("creep_lesson_until", 0.0) or 0.0),
                             expand_from=expand_lesson_from(cfg, late_start),
                             expand_share=float(cfg.get("expand_lesson_share", 1.0)),
-                            expand_reserve=int(cfg.get("expand_lesson_reserve", 0) or 0))
+                            expand_reserve=int(cfg.get("expand_lesson_reserve", 0) or 0),
+                            expand_until=expand_lesson_until(cfg, late_start))
                  for s in trajs if keys[s] == "current"}
                 if cfg.get("teach") and replay is None else {})
     # --expand-lesson-reserve is a rule of the agent's, not a lesson: the agent sides without lessons (an evaluation
@@ -2783,7 +2794,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
     savers = ({s: Teacher(s, races[s], random.Random(), zs.get(s), pace=cfg.get("lesson_time_scale") or teacher_pace(cfg["map"]),
                           expand_from=expand_lesson_from(cfg, late_start),
                           expand_share=float(cfg.get("expand_lesson_share", 1.0)),
-                          expand_reserve=int(cfg.get("expand_lesson_reserve", 0) or 0))
+                          expand_reserve=int(cfg.get("expand_lesson_reserve", 0) or 0),
+                          expand_until=expand_lesson_until(cfg, late_start))
                for s in bots if s not in teachers}
               if cfg.get("expand_lesson_reserve") and cfg.get("expand_lesson_from") and replay is None else {})
     # --teach-heuristic: a target drawn from the hand-written player's games (strategy.from_demos names the strategy) is
@@ -5650,6 +5662,10 @@ def main(argv: list[str] | None = None) -> int:
                     "minute. Meant with --teach-floor-orders halls,moves,harvest,workers")
     ap.add_argument("--expand-lesson-share", type=float, default=1.0, help="--expand-lesson-from: the share of the "
                     "sides without a target that get it (drawn a side a game)")
+    ap.add_argument("--expand-lesson-until", type=float, default=0.0, help="--expand-lesson-from: no camp or hall lesson, and "
+                    "nothing kept for the hall, after this game second (times the lessons' pace; a hall taken still gets "
+                    "its workers). 0: no limit (fgself-254 expanded at 15.7 minutes and lost to insane: the money came "
+                    "out of the army while the AI attacked, the income after the game was decided)")
     ap.add_argument("--expand-lesson-reserve", type=int, default=0, help="--expand-lesson-from: while the hall is due "
                     "(the natural free, its camp gone, no builder on its way) its cost is kept from the side's other "
                     "paid orders, as a target's builder keeps its next item's (the view's reserve), for this many steps "
@@ -6654,7 +6670,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "order_masks": args.order_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "expand_lesson_from": args.expand_lesson_from, "expand_lesson_share": args.expand_lesson_share, "expand_lesson_reserve": args.expand_lesson_reserve, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "creep_lesson_cap": args.creep_lesson_cap, "creep_lesson_until": args.creep_lesson_until, "hunt_press": args.hunt_press, "hunt_lesson": args.hunt_lesson, "spell_lesson": args.spell_lesson, "attack_lesson": args.attack_lesson, "first_hero_weights": args.first_hero_weights, "worker_value": args.worker_value, "hero_xp_value": args.hero_xp_value, "eval_replay_every": args.eval_replay_every, "building_hp_value": args.building_hp_value, "unit_hp_value": args.unit_hp_value, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "order_masks": args.order_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "expand_lesson_from": args.expand_lesson_from, "expand_lesson_share": args.expand_lesson_share, "expand_lesson_reserve": args.expand_lesson_reserve, "expand_lesson_until": args.expand_lesson_until, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "creep_lesson_cap": args.creep_lesson_cap, "creep_lesson_until": args.creep_lesson_until, "hunt_press": args.hunt_press, "hunt_lesson": args.hunt_lesson, "spell_lesson": args.spell_lesson, "attack_lesson": args.attack_lesson, "first_hero_weights": args.first_hero_weights, "worker_value": args.worker_value, "hero_xp_value": args.hero_xp_value, "eval_replay_every": args.eval_replay_every, "building_hp_value": args.building_hp_value, "unit_hp_value": args.unit_hp_value, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "late_capture": args.late_capture, "late_minutes": [float(x) for x in args.late_minutes.split(",")], "late_from": args.late_from, "research_value": args.research_value, "real_agents": args.real_agents,

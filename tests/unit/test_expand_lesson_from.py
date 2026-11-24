@@ -363,3 +363,25 @@ def test_the_target_s_lessons_are_as_they_were():
 @pytest.mark.parametrize("race", ["human", "orc", "undead", "nightelf"])
 def test_every_race_gets_its_camp_lesson(race):
     assert len(_lessons(_teacher(race), _rows(race))) == 7
+
+
+def test_until():
+    """--expand-lesson-until S: no camp or hall lesson and nothing kept after S game seconds (times the pace); off: as
+    before; a hall taken still gets its workers (the workers' lesson is above the limit's check)."""
+    costs = np.zeros((4, 3), np.int64)
+    costs[2] = (385, 205, 0)
+    enc = SimpleNamespace(order_index={(code("htow"), fx.POINT): 2}, costs=costs)
+    tc = _teacher(expand_until=600.0, expand_reserve=10)
+    assert len(_lessons(tc, _rows())) == 7  # (the camp, before S)
+    late = _teacher(expand_until=600.0, expand_reserve=10)
+    late.expand_on = True
+    assert _lessons(late, _rows(), now=700.0, t=1000) == []  # (the camp, after S: none)
+    cleared = _rows(army=5, camp=False)
+    assert len(_lessons(tc, cleared, now=470.0, t=1200)) == 1 and tc.hall_due  # (the hall, before S)
+    assert tc.hall_reserve(enc) == (2, 385, 205)
+    tc2 = _teacher(expand_until=600.0, expand_reserve=10)
+    _lessons(tc2, _rows())
+    assert _lessons(tc2, cleared, now=650.0, t=1300) == [] and not tc2.hall_due and tc2.hall_reserve(enc) is None
+    off = _teacher(expand_reserve=10)
+    _lessons(off, _rows())
+    assert len(_lessons(off, cleared, now=650.0, t=1300)) == 1  # (no limit: as before)
