@@ -2622,6 +2622,21 @@ Head to head 253's average 0.436 against its start (181 games), 0.431 against 25
 
 Built during the burst: `--expand-lesson-until S` (2237735): no camp or hall lesson, and nothing kept for the hall, after game second S; a hall already taken still gets its workers. When `fgself-254`'s halls came: against agents, in games it won at a median of 7.1 minutes (a quarter by 4.0), in games it lost or tied at 9.5; against insane at 14-15 minutes either way (the AI's pressure keeps the base unsafe until then), when they did not pay. Next try of the second base: `--expand-lesson-until 660`.
 
+**burst-255** (908 games):
+
+| policy | rating | against insane, untaxed | agent at -25% income |
+|---|---|---|---|
+| `fgself-252`'s average (the control) | 1,894 ±12 | 0.908 ±0.079 (56 games) | 0.53 (16) |
+| `fgself-250`'s average | 1,884 ±12 | 0.921 ±0.063 (62) | 0.61 (14) |
+| `fgself-236`'s average | 1,882 ±8 | 0.920 ±0.072 (55) | 0.50 (12) |
+| `fgself-255`'s average (the press) | 1,859 ±17 | 0.869 ±0.086 (61) | 0.56 (16) |
+
+Head to head 255's average 0.412 against 252's (193 games), 0.511 against 250's, 0.471 against 236's. **Its head-to-head games tied 13.9% (70 of 505; 21-22 minutes long), the earlier bursts' 9.3%**; 68 of the 70 ties had buildings out of the other side's sight at the end.
+
+**`fgself-255` (the press): not kept.** Ties up, not down; 35 under the control. A lesson that sends the army to the enemy's buildings does not finish games the policy cannot finish: the tied games end with a handful of units and the last buildings unseen, and a lesson drawn from what the side knows does not find them. The ties stay a symptom of the spent, one-mine games.
+
+**`fgself-256`** (20:26, code 756bf9d): **the second base, early or not at all**: `fgself-254`'s flags with `--expand-lesson-until 660`, from 252's average. Control: 252's average.
+
 **The undead's starting ghoul moves back and forth** (the user, from `fgself-245`'s videos): not the creep lesson. The policy orders it "move (point)" and "smart (tree)" on alternating steps, 40-67 moves in the first two minutes, in games against the built-in AI with a target strategy, since `fgself-236` (also in 238, 241, 244; none without a target in the few replays). Cause open: an agent probes it (one game on the CPU, with and without a target).
 
 **The ghoul's back and forth: found, a fix merged** (15:12; `scripts/ghoul_probe.py`, a live game with `fgself-236`'s average on the CPU). A harvester right-clicked onto a tree ("smart (tree)", the tree order the policy gives a free ghoul) reads as current order `smart` for its whole first trip (a ghoul, peasant or peon 12-15 s; a wisp for as long as it stays), not `harvest`. In that state the policy answers with "move (point)" (0.86-0.93 in a target game; the move hangs on the target's items part), the move frees the ghoul, and the free ghoul gets "smart (tree)" again (0.92-0.97): a two-step cycle, learned in `fgself-236` (before it right-clicks drew no moves). Reading `harvest` the same policy leaves it alone. Not the lumber lesson (no label given), not a mask (the same 15 orders allowed throughout). In 240 steps of a target game: 61-76 moves and 40-60 lumber. Without a target 0-8 moves and 120-160 lumber: evaluation games are mildly affected. Peasants and peons have no such habit; wisps a little.
