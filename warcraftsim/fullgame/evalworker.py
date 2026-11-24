@@ -137,6 +137,9 @@ def run_config(run_dir: Path, host: str, games: int, start_update) -> tuple[dict
            "order_masks": num("order_masks", 0, int),  # (--order-masks: the view's toggles; model.load the networks')
            "value_tax": num("value_tax", 0, int),  # (--value-tax: the rows' width; the taxes zeros in evaluation games)
            "eval_human": num("eval_human", 0, int),
+           # (--expand-lesson-reserve: a rule of the agent's, the same in the evaluation games: play_one's savers. No lessons)
+           "expand_lesson_from": num("expand_lesson_from", 0.0), "expand_lesson_share": num("expand_lesson_share", 1.0),
+           "expand_lesson_reserve": num("expand_lesson_reserve", 0, int), "lesson_time_scale": num("lesson_time_scale", 0.0),
            "privileged": num("opsd_share", 0.0) > 0 or num("opsd_coef", 0.0) > 0,  # (the networks' channels only)
            "scenarios": [], "scenario_share": 0.0,  # (training games only)
            "eval_ai": [d for d in c.get("eval_ai", "normal,insane").split(",") if d],
