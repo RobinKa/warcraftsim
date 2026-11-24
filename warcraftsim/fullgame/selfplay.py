@@ -2722,6 +2722,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                             spells=float(cfg.get("spell_lesson", 0.0) or 0.0),
                             attacks=float(cfg.get("attack_lesson", 0.0) or 0.0),
                             hero_weights=hero_weights(cfg.get("first_hero_weights", "")),
+                            hunt_press=float(cfg.get("hunt_press", 0.0) or 0.0),
                             creep_cap=int(cfg.get("creep_lesson_cap", 0) or 0),
                             creep_until=float(cfg.get("creep_lesson_until", 0.0) or 0.0))
                  for s in trajs if keys[s] == "current"}
@@ -5458,6 +5459,11 @@ def main(argv: list[str] | None = None) -> int:
                     "minutes (times --lesson-time-scale), healthy heroes, 6+ army units and no enemy army near its halls: "
                     "the heroes and the army near them attack-move to the nearest camp they are 2x stronger than (0-2 "
                     "creeps a game, the AI 13-20); 2: the heroes only")
+    ap.add_argument("--hunt-press", type=float, default=0.0, help="--hunt-lesson: from this game second the lesson presses: "
+                    "an army of 4 and no enemy army unit seen for 45 s are enough (whatever it cleared, enemy buildings "
+                    "in view too), the whole army goes to the nearest enemy building it knows, else a mine not seen "
+                    "lately, else the enemy's start (0: the hunt lesson's own conditions, which met 8%% of the games "
+                    "between agents; a side far ahead called its army home again and again)")
     ap.add_argument("--creep-lesson-cap", type=int, default=0, help="--creep-lesson: none for the rest of a game once the "
                     "side has killed this many creeps (0: no cap: ~13 lessons a game, the army left for the camps whatever "
                     "else went on, fgself-245)")
@@ -6523,7 +6529,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "order_masks": args.order_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "creep_lesson_cap": args.creep_lesson_cap, "creep_lesson_until": args.creep_lesson_until, "hunt_lesson": args.hunt_lesson, "spell_lesson": args.spell_lesson, "attack_lesson": args.attack_lesson, "first_hero_weights": args.first_hero_weights, "worker_value": args.worker_value, "hero_xp_value": args.hero_xp_value, "eval_replay_every": args.eval_replay_every, "building_hp_value": args.building_hp_value, "unit_hp_value": args.unit_hp_value, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "order_masks": args.order_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "creep_lesson_cap": args.creep_lesson_cap, "creep_lesson_until": args.creep_lesson_until, "hunt_press": args.hunt_press, "hunt_lesson": args.hunt_lesson, "spell_lesson": args.spell_lesson, "attack_lesson": args.attack_lesson, "first_hero_weights": args.first_hero_weights, "worker_value": args.worker_value, "hero_xp_value": args.hero_xp_value, "eval_replay_every": args.eval_replay_every, "building_hp_value": args.building_hp_value, "unit_hp_value": args.unit_hp_value, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "late_capture": args.late_capture, "late_minutes": [float(x) for x in args.late_minutes.split(",")], "late_from": args.late_from, "research_value": args.research_value, "real_agents": args.real_agents,

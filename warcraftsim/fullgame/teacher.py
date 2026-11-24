@@ -168,6 +168,7 @@ CAMP_JOIN = 550.0  # (creeps this near each other: one camp, heuristic.CAMP_JOIN
 # --hunt-lesson
 HUNT_QUIET, HUNT_CLEARED, HUNT_ARMY, HUNT_STALE = 120.0, 3, 6, 240.0  # (game seconds: walking is not sped up on faster rules)
 HUNT_GAP, HUNT_SAME_MINE, HUNT_FOUND_NEAR = 60, 400.0, 1500.0  # (GAP's steps: one attack-move lasts a long walk)
+PRESS_QUIET, PRESS_ARMY = 45.0, 4  # (--hunt-press: no enemy army unit seen this long, an army of this many)
 # --spell-lesson: the spells taught, by how: "area" at a clump of enemy units (a point spell: blizzard, flame strike, the
 # lines of shockwave, impale, carrion swarm and breath of fire), "nova" around the hero, "toggle" (immolation), "hero" on
 # the nearest enemy hero in reach (mana burn's with mana to burn), as people cast those. Not the spells the policy casts
@@ -203,7 +204,8 @@ class Teacher:
                  lumber: bool = False, burrows: bool = False, main_low: float = 0.0, mine_full: float = 12500.0,
                  saturation: bool = False, revive: bool = False, militia: bool = False, army: bool = False,
                  upgrades: bool = False, creep: int = 0, pace: float = 1.0, hunt: int = 0, spells: float = 0.0,
-                 attacks: float = 0.0, hero_weights: dict | None = None, creep_cap: int = 0, creep_until: float = 0.0):
+                 attacks: float = 0.0, hero_weights: dict | None = None, creep_cap: int = 0, creep_until: float = 0.0,
+                 hunt_press: float = 0.0):
         """`target` (the side's target strategy, if it has one): its tavern hero is the one taught, and none when it
         has none (another hero would break a narrow target). `target_hero` (--teach 2): its first hero from the altar
         taught too, when that is its first hero (the builder taught it only once due: the policy had made another one
@@ -227,6 +229,13 @@ class Teacher:
         self.pace, self.air = pace, 0  # (air: the most enemy air units seen at once)
         # --hunt-lesson: its own record of what it saw (no hidden information; the network has only its memory)
         self.hunt = hunt
+        # --hunt-press S: from game second S the hunt lesson presses: an army of PRESS_ARMY and no enemy army unit seen
+        # for PRESS_QUIET seconds are enough, whatever it has cleared and with enemy buildings in view too, and the
+        # whole army goes: to the nearest enemy building it knows, else a mine not seen lately, else the enemy's start.
+        # The hunt lesson's own conditions (six units, three buildings seen gone, none in view) met 8% of the games
+        # between agents and none of the common ties: a side far ahead whose army is called home again and again
+        # (fgself-253's orc mirror: 3-4 times the material from minute 15, the win at minute 39 of 40)
+        self.hunt_press = float(hunt_press)
         self.hunt_known: dict = {}  # (an enemy building it saw and has not seen gone: id -> x, y)
         self.hunt_gone = 0  # (how many of them it saw gone)
         self.hunt_contact = 0.0  # (when it last saw an enemy army unit)
@@ -679,19 +688,27 @@ class Teacher:
             if any(np.hypot(x - a, y - b) < HUNT_FOUND_NEAR for x, y in base[:, [fx.C_X, fx.C_Y]].tolist()
                    for a, b in self.hunt_points):
                 self.hunt_found_at = round(now)
-        if (in_view or self.hunt_gone < HUNT_CLEARED or now - self.hunt_contact < HUNT_QUIET
-                or t - self.last.get("hunt", -HUNT_GAP) < HUNT_GAP):
+        press = self.hunt_press > 0 and now >= self.hunt_press  # (--hunt-press: its own, wider conditions)
+        if t - self.last.get("hunt", -HUNT_GAP) < HUNT_GAP:
+            return []
+        if press:
+            if now - self.hunt_contact < PRESS_QUIET:
+                return []
+        elif in_view or self.hunt_gone < HUNT_CLEARED or now - self.hunt_contact < HUNT_QUIET:
             return []
         army = _army_of(fx.own_alive(rows, side))
-        if len(army) < HUNT_ARMY:
+        if len(army) < (PRESS_ARMY if press else HUNT_ARMY):
             return []
         ax, ay = float(army[:, fx.C_X].mean()), float(army[:, fx.C_Y].mean())
         places = list(self.hunt_known.values()) or [p for p, at in self.hunt_mines.items() if now - at >= HUNT_STALE]
+        if press and not places and len(ox):  # (nothing known: the enemy's start, the frame's start farther from its own)
+            hx, hy = float(ox.mean()), float(oy.mean())
+            places = [max(fx.STARTS, key=lambda p: np.hypot(p[0] - hx, p[1] - hy))]
         if not places or not self._due("hunt", t):
             return []
         px, py = min(places, key=lambda p: np.hypot(p[0] - ax, p[1] - ay))
         d = np.hypot(army[:, fx.C_X] - px, army[:, fx.C_Y] - py)
-        party = army[np.argsort(d, kind="stable")[:max(HUNT_ARMY, (len(army) + 1) // 2)]]
+        party = army[np.argsort(d, kind="stable")[:len(army) if press else max(HUNT_ARMY, (len(army) + 1) // 2)]]
         self.hunt_lessons += 1
         self.hunt_points.append((px, py))
         return [PointOrder(int(u), ATTACK, float(px), float(py)) for u in party[:, fx.C_ID].tolist()]

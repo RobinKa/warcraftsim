@@ -217,3 +217,37 @@ def test_flag_default_is_off_and_every_row_field_with_it():
     src = inspect.getsource(selfplay)
     assert 'add_argument("--hunt-lesson", type=int, default=0' in src
     assert 'if side in teachers and cfg.get("hunt_lesson") else {}' in src
+
+
+def test_press():
+    """--hunt-press S: from S game seconds an army of 4 and 45 s without an enemy army unit in view are enough: the whole
+    army attack-moves to the nearest enemy building it knows (in view too), else the enemy's start; before S, with an
+    enemy army unit seen lately, or with the flag off: the hunt lesson's own conditions."""
+    def presser(press=600.0):
+        tc = Teacher(0, "human", random.Random(0), hunt=1, hunt_press=press)
+        tc.first, tc.pick = None, None
+        return tc
+    rows = _rows(at=(0, 0), n=5, extra=[_main(0), _main(1)])  # (its 5 footmen mid-map; two enemy buildings in view)
+    assert _hunts(presser().commands(rows, PLAYER, 500.0, 100)) == []           # (before S)
+    assert _hunts(presser(0.0).commands(rows, PLAYER, 700.0, 100)) == []        # (off: buildings in view, nothing cleared)
+    out = _hunts(presser().commands(rows, PLAYER, 700.0, 100))
+    assert len(out) == 5 and {(c.x, c.y) for c in out} == {(float(ENEMY_MAIN[0]), float(ENEMY_MAIN[1]))}  # (the whole army)
+    grunt = _unit(400, 1, 300, 0, "ogru", vis=1)
+    tc = presser()
+    assert _hunts(tc.commands(_rows(at=(0, 0), n=5, extra=[_main(0), grunt]), PLAYER, 700.0, 100)) == []  # (an enemy unit)
+    assert _hunts(tc.commands(rows, PLAYER, 730.0, 160)) == []                  # (30 s after it)
+    assert len(_hunts(tc.commands(rows, PLAYER, 750.0, 200))) == 5              # (50 s after it)
+    assert _hunts(presser().commands(_rows(at=(0, 0), n=3, extra=[_main(0)]), PLAYER, 700.0, 100)) == []  # (3 units)
+    old = fx.STARTS
+    try:
+        fx.STARTS = ((-5000.0, 3000.0), (5000.0, 3000.0))
+        seen_all = [_unit(100 + k, 15, x, y, "ngol", S, vis=1) for k, (x, y) in enumerate((HOME, OWN_NATURAL, ENEMY_MAIN, ENEMY_NATURAL))]
+        bare = np.stack([_unit(1, 0, *HOME, "htow", S), *[_unit(30 + k, 0, 20 * k, 0, "hfoo") for k in range(5)], *seen_all])
+        tc = presser()
+        tc.commands(bare, PLAYER, 590.0, 60)     # (the mines' first look: all in sight now? no: only those near its units)
+        tc.hunt_mines = {p: 700.0 for p in tc.hunt_mines}  # (every mine seen lately, no building known)
+        out = _hunts(tc.commands(bare, PLAYER, 700.0, 200))
+        assert len(out) == 5 and {(c.x, c.y) for c in out} == {(5000.0, 3000.0)}  # (the enemy's start)
+    finally:
+        fx.STARTS = old
+
