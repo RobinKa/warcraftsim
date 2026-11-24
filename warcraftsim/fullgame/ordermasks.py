@@ -61,6 +61,7 @@ SKIP_NAMES = frozenset({"smart", "attack", "attackonce", "move", "patrol", "harv
 # the entity features the rules read (features.entities: the side one-hot, then the flags)
 CH_OWN, CH_ENEMY, CH_NEUTRAL = 0, 1, 2
 CH_HERO, CH_STRUCT, CH_FLYING = (9 + fx.FLAG_BITS.index(b) for b in (1, 2, 2048))
+CH_WORKER = 9 + fx.FLAG_BITS.index(4)  # (selfplay.anchor_units: --ref-kl-units macro)
 
 
 def targs_rule(targs: str) -> int:

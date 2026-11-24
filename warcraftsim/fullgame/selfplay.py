@@ -4353,6 +4353,21 @@ def parts_pass(net: FullGameNet, chunks: list[list[dict]], args, device) -> dict
 ANCHOR2: list = []  # (--ref2: a second KL anchor's network, set by main; none without it)
 
 
+REF_KL_UNITS = "all"  # (--ref-kl-units: main sets it)
+
+
+def anchor_units(ent, own):
+    """--ref-kl-units macro: `own` [N, O] kept only for the units that are workers or buildings (their features' flag
+    channels): the anchor's KL then pulls on production and economy alone, the army and the heroes free (the anchor
+    probe, 2026-11-24: 73% of the term was on army units and heroes, the anchor's known value on macro). "all": `own`."""
+    if REF_KL_UNITS == "all":
+        return own
+    from . import ordermasks as om
+    O = own.shape[1]
+    w = ((ent[:, :O, om.CH_STRUCT] > 0.5) | (ent[:, :O, om.CH_WORKER] > 0.5)).to(own.dtype)
+    return own * w
+
+
 def second_anchor_kl(ev: dict, b: dict, own, n_units, seq, args):
     """--ref2: the KL term towards the second anchor (--ref2-kl-mode), per unit summed over the units as the first
     anchor's; None without one."""
@@ -4440,7 +4455,7 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
                                       mb["order"], mb["tgt"], mb["bx"], mb["by"], mb["avail"],
                                       seq=seq if ref.memory else None)
                 kl = anchor_kl(ev, ev_ref, getattr(args, "ref_kl_mode", "reverse"))
-                ref_kl = (kl * own).sum() / n_units
+                ref_kl = (kl * anchor_units(mb["ent"], own)).sum() / n_units  # (--ref-kl-units)
                 # also while the value warms up: it shares the network's trunk, so training it alone
                 # moved the policy too (the KL to the clone doubled in the first five updates)
                 loss = loss + args.ref_kl * ref_kl
@@ -4715,7 +4730,8 @@ class GraphedUpdate:
                 with torch.no_grad():
                     ev_ref = evaluate(ref, s["ent"], s["type"], s["cur"], s["mask"], s["glob"], s["n_own"],
                                       s["order"], s["tgt"], s["bx"], s["by"], s.get("avail"), seq=seq if ref.memory else None)
-                ref_kl = (anchor_kl(ev, ev_ref, getattr(args, "ref_kl_mode", "reverse")) * own).sum() / n_units
+                ref_kl = (anchor_kl(ev, ev_ref, getattr(args, "ref_kl_mode", "reverse"))
+                          * anchor_units(s["ent"], own)).sum() / n_units  # (--ref-kl-units)
                 loss = loss + args.ref_kl * ref_kl
             out["loss/ref_kl"] = ref_kl
             ref2_kl = second_anchor_kl(ev, s, own, n_units, seq, args)
@@ -5988,6 +6004,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--ref2-kl", type=float, default=0.0, help="--ref2's KL term's weight (0: none)")
     ap.add_argument("--ref2-kl-mode", default="forward-acting", choices=["reverse", "forward", "forward-all", "forward-acting"],
                     help="--ref2's term's direction and heads, as --ref-kl-mode")
+    ap.add_argument("--ref-kl-units", default="all", choices=["all", "macro"], help="the units the anchor's KL term "
+                    "takes: all, or macro (workers and buildings only: the army and the heroes free of the anchor; the "
+                    "anchor probe found 73%% of the term on them and the anchor's known value on production)")
     ap.add_argument("--ref-kl-mode", default="reverse", choices=["reverse", "forward", "forward-all", "forward-acting"],
                     help="that term's direction and heads (model.anchor_kl): reverse KL over the orders (as before), "
                          "forward KL over the orders (AlphaStar's direction: rare orders keep their weight), "
@@ -6158,6 +6177,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--note", default="", help="the run's notes (notes.md); with --resume, why it was restarted (the "
                                                 "restart's marker on the dashboard's charts)")
     args = ap.parse_args(argv)
+    global REF_KL_UNITS
+    REF_KL_UNITS = args.ref_kl_units  # (--ref-kl-units: anchor_units, both update paths)
     global TEACH_POINT
     TEACH_POINT = float(args.teach_point)  # (--teach-point: distill_loss)
     if exploiter_launch_share(args.exploiter_share, args.league_exploiters, args.league_exploiter_share) >= 1.0:
