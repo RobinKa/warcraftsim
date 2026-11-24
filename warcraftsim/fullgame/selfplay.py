@@ -1897,9 +1897,10 @@ TEACH_POINT = 0.5  # (--teach-point: the teacher's lessons' place in its loss, d
 TEACH_FLOOR = None  # (--teach-floor P: (the floored order classes [O+1] on the learner's device, log P); main sets it)
 TEACH_FLOOR_PLACE = None  # (--teach-floor-orders moves: (the attack-move's class [O+1], log P): floored with its place)
 TEACH_FLOOR_POINTER = None  # (--teach-floor-orders harvest: (the harvest on a unit's class [O+1], log P): with its pointer)
+TEACH_FLOOR_LESSONS = None  # (--teach-floor-orders workers: (the workers' train classes [O+1], log P): the teacher's rows only)
 
 
-FLOOR_GROUPS = ("attack", "spells", "halls", "army", "upgrades", "moves", "harvest")
+FLOOR_GROUPS = ("attack", "spells", "halls", "army", "upgrades", "moves", "harvest", "workers")
 
 
 def floor_classes(vocab: dict, groups=("attack", "spells")) -> torch.Tensor:
@@ -1907,7 +1908,8 @@ def floor_classes(vocab: dict, groups=("attack", "spells")) -> torch.Tensor:
     lesson's spells (teacher.SPELL_LESSONS, immolation's on and off) in any form the vocabulary has them, "halls" the
     expansion lesson's halls (a town hall, great hall or tree of life built at a point; a haunted gold mine on a mine),
     "army" the army lesson's units (teacher.ANTI_AIR, TIER_UNITS: their train orders), "upgrades" the upgrade lesson's
-    weapon and armor research (teacher.UPGRADES)."""
+    weapon and armor research (teacher.UPGRADES). ("moves", "harvest" and "workers": floor_place_classes,
+    floor_pointer_classes, floor_lesson_classes.)"""
     from .teacher import ANTI_AIR, ATTACK, HALL, SPELL_LESSONS, TIER_UNITS, TOGGLES, UPGRADES, _spell_tables
     from .neutral import fourcc
     bad = set(groups) - set(FLOOR_GROUPS)
@@ -1928,6 +1930,34 @@ def floor_classes(vocab: dict, groups=("attack", "spells")) -> torch.Tensor:
     m = torch.zeros(len(vocab["orders"]) + 1, dtype=torch.bool)
     for i, (oid, kind) in enumerate(vocab["orders"]):
         m[i + 1] = (int(oid), int(kind)) in forms or int(oid) in oids
+    return m
+
+
+def expand_lesson_from(cfg: dict, late_start: dict | None) -> float:
+    """--expand-lesson-from for a game's teachers: S (0: none). In a late start, whose clock starts at 0 at the captured
+    game's minute, what is left of S then (a second at least): S is a game second of the game the state is from, and
+    a state from minute 8-16 is past it. (A two-base start's state has no minute: S as it is.)"""
+    s = float(cfg.get("expand_lesson_from", 0.0) or 0.0)
+    if s > 0 and late_start is not None and late_start.get("minute"):
+        pace = cfg.get("lesson_time_scale") or teacher_pace(cfg["map"])
+        s = max(s - 60.0 * float(late_start["minute"]) / pace, 1.0)
+    return s
+
+
+def floor_lesson_classes(vocab: dict, groups=()) -> torch.Tensor | None:
+    """--teach-floor-orders workers: the order classes [O+1] floored at --teach-floor on the heuristic teacher's own
+    lessons only (the rows marked "y_teach"; distill_loss): the races' workers' train orders, the early expansion
+    lesson's worker for the new mine (--expand-lesson-from). A target's builder labels the same orders (--z-workers:
+    the target's worker count), and those keep their push: floored by class, as floor_classes' groups are, a target
+    game's workers would be capped with them. None without the group."""
+    from .neutral import fourcc
+    from .teacher import RACE_WORKER
+    if "workers" not in groups:
+        return None
+    forms = {(fourcc(w), fx.IMMEDIATE) for w in RACE_WORKER.values()}
+    m = torch.zeros(len(vocab["orders"]) + 1, dtype=torch.bool)
+    for i, (oid, kind) in enumerate(vocab["orders"]):
+        m[i + 1] = (int(oid), int(kind)) in forms
     return m
 
 
@@ -2740,8 +2770,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                             hero_weights=hero_weights(cfg.get("first_hero_weights", "")),
                             creep_cap=int(cfg.get("creep_lesson_cap", 0) or 0),
                             creep_until=float(cfg.get("creep_lesson_until", 0.0) or 0.0),
-                            expand_from=float(cfg.get("expand_lesson_from", 0.0) or 0.0),
-                            expand_share=float(cfg.get("expand_lesson_share", 1.0)))
+                            expand_from=expand_lesson_from(cfg, late_start),
+                            expand_share=float(cfg.get("expand_lesson_share", 1.0)),
+                            expand_reserve=int(cfg.get("expand_lesson_reserve", 0) or 0))
                  for s in trajs if keys[s] == "current"}
                 if cfg.get("teach") and replay is None else {})
     # --teach-heuristic: a target drawn from the hand-written player's games (strategy.from_demos names the strategy) is
@@ -2828,6 +2859,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         for s, b in builders.items():  # (--z-build: the agent's orders leave the target's next item's cost)
             if s in bots:
                 bots[s].view.reserve = b.reserve
+        for s, tc in teachers.items():  # (--expand-lesson-reserve: the early hall's cost kept while its lesson is due; a
+            if tc.expand_reserve and s in bots and s not in builders:  # game without a target has no builder)
+                bots[s].view.reserve = tc.hall_reserve(bots[s].enc)
         sts = {s: bot.observe(obs, t, rows) for s, bot in bots.items()}
         if capture_at is not None or record:  # (the research so far: --late-capture's state, a video's upgrades)
             late_game.note_research(research_seen, obs.events, rows)
@@ -3968,6 +4002,9 @@ def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast, teach_scale: fl
     y = mb["y_order"]
     lp = torch.log_softmax(ev["logits"].float(), -1)
     lp_y = teach_floored(lp.gather(-1, y.unsqueeze(-1)).squeeze(-1), y)
+    if TEACH_FLOOR_LESSONS is not None and "y_teach" in mb:  # (--teach-floor-orders workers: the floor on the teacher's
+        # own lessons of these classes, floor_lesson_classes; a builder's label of the same order keeps its push)
+        lp_y = torch.where(TEACH_FLOOR_LESSONS[0][y] & mb["y_teach"], lp_y.clamp(max=TEACH_FLOOR_LESSONS[1]), lp_y)
     every = (own & (lp_y > -1e4)).float()  # (an order the unit can't get now: none of its business)
     if "y_only" in mb:  # (--z-build-labels: those steps label only the units the builder ordered, and each
         own = own & ((y > 0) | ~mb["y_only"][:, None])  # counts as one of all the step's own units: averaged over
@@ -5525,7 +5562,9 @@ def main(argv: list[str] | None = None) -> int:
                     "anti-air and tier units' train orders), upgrades (the upgrade lesson's weapon and armor research), moves (the "
                     "attack-move's lessons, the creep lesson's: the place alone is taught, under --teach-floor-place; the order never), "
                     "harvest (a harvest on a unit, the expansion lesson's workers: which mine alone is taught, under "
-                    "--teach-floor-pointer; the order never)")
+                    "--teach-floor-pointer; the order never), workers (the races' workers' train orders on the "
+                    "teacher's own lessons: the early expansion lesson's worker for the new mine; a target builder's "
+                    "labels of them are not capped)")
     ap.add_argument("--teach-floor-place", type=float, default=0.0, help="--teach-floor-orders moves: the floor on an "
                     "attack-move lesson's place, its point's chance given an attack-move (0: --teach-floor's)")
     ap.add_argument("--teach-floor-pointer", type=float, default=0.0, help="--teach-floor-orders harvest: the floor on a "
@@ -5587,10 +5626,16 @@ def main(argv: list[str] | None = None) -> int:
                     "expansion lessons from game second S (a real game's; times the teacher's pace on faster rules), once "
                     "the side has a living hero and 6 army units and no enemy army in sight near its halls, then for the "
                     "rest of the game: the camp (the heroes and the army near them, when twice its strength), the hall, "
-                    "the workers (teacher.Teacher._early_camp, _early_workers; scripts/expand_probe.py). 0: none. Meant "
-                    "with --teach-floor-orders halls,moves,harvest")
+                    "the workers sent there and trained for it (teacher.Teacher._early_camp, _early_workers, _early_train; "
+                    "scripts/expand_probe.py). 0: none. In a late start (its clock starts at 0) S less the state's "
+                    "minute. Meant with --teach-floor-orders halls,moves,harvest,workers")
     ap.add_argument("--expand-lesson-share", type=float, default=1.0, help="--expand-lesson-from: the share of the "
                     "sides without a target that get it (drawn a side a game)")
+    ap.add_argument("--expand-lesson-reserve", type=int, default=0, help="--expand-lesson-from: while the hall is due "
+                    "(the natural free, its camp gone, no builder on its way) its cost is kept from the side's other "
+                    "paid orders, as a target's builder keeps its next item's (the view's reserve), for this many steps "
+                    "a game at most. The hall's lesson is given only when the policy could pay for it, and it banks "
+                    "nothing: 65 of 2,520 due steps (scripts/expand_probe.py). 0: nothing kept")
     ap.add_argument("--econ-masks", type=int, default=0, help="bit 1: mask a tech building's build order (features."
                     "ECON_TECH: a slaughterhouse, a sanctum, a workshop...) while a copy the player has is idle (making "
                     "nothing, under construction, or a worker on its way), and the worker's train order once the "
@@ -6243,6 +6288,14 @@ def main(argv: list[str] | None = None) -> int:
         TEACH_FLOOR = (floor_classes(vocab, tuple(g for g in args.teach_floor_orders.split(",") if g)).to(device),
                        math.log(args.teach_floor))
         print(f"--teach-floor {args.teach_floor}: {int(TEACH_FLOOR[0].sum())} order classes' labels capped", flush=True)
+    global TEACH_FLOOR_LESSONS
+    TEACH_FLOOR_LESSONS = None
+    if args.teach_floor > 0:  # (--teach-floor-orders workers: floored on the teacher's own lessons only)
+        lm = floor_lesson_classes(vocab, tuple(g for g in args.teach_floor_orders.split(",") if g))
+        if lm is not None:
+            TEACH_FLOOR_LESSONS = (lm.to(device), math.log(args.teach_floor))
+            print(f"--teach-floor-orders workers: the teacher's lessons of {int(lm.sum())} train orders capped at "
+                  f"{args.teach_floor}", flush=True)
     global TEACH_FLOOR_PLACE
     TEACH_FLOOR_PLACE = None
     if args.teach_floor > 0 or args.teach_floor_place > 0:  # (--teach-floor-orders moves: the attack-move's lessons
@@ -6582,7 +6635,7 @@ def main(argv: list[str] | None = None) -> int:
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
            "features": args.features, "eval_checkpoints": [str(c) for c in args.eval_checkpoints or []],
-           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "order_masks": args.order_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "expand_lesson_from": args.expand_lesson_from, "expand_lesson_share": args.expand_lesson_share, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "creep_lesson_cap": args.creep_lesson_cap, "creep_lesson_until": args.creep_lesson_until, "hunt_lesson": args.hunt_lesson, "spell_lesson": args.spell_lesson, "attack_lesson": args.attack_lesson, "first_hero_weights": args.first_hero_weights, "worker_value": args.worker_value, "hero_xp_value": args.hero_xp_value, "eval_replay_every": args.eval_replay_every, "building_hp_value": args.building_hp_value, "unit_hp_value": args.unit_hp_value, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
+           "inputs": args.inputs, "tech_mask": args.tech_mask, "valid_mask": args.valid_mask, "neutral": args.neutral, "macros": args.macros, "spells": args.spells, "shop_items": args.shop_items, "full_vocab": args.full_vocab, "obs_full": args.obs_full, "fine_points": args.fine_points, "macros_off": args.macros_off, "econ_masks": args.econ_masks, "order_masks": args.order_masks, "value_tax": args.value_tax, "expand_lesson": args.expand_lesson, "expand_lesson_from": args.expand_lesson_from, "expand_lesson_share": args.expand_lesson_share, "expand_lesson_reserve": args.expand_lesson_reserve, "saturation_lesson": args.saturation_lesson, "z_decided": args.z_decided, "burrow_lesson": args.burrow_lesson, "militia_lesson": args.militia_lesson, "army_lesson": args.army_lesson, "upgrade_lesson": args.upgrade_lesson, "creep_lesson": args.creep_lesson, "creep_lesson_cap": args.creep_lesson_cap, "creep_lesson_until": args.creep_lesson_until, "hunt_lesson": args.hunt_lesson, "spell_lesson": args.spell_lesson, "attack_lesson": args.attack_lesson, "first_hero_weights": args.first_hero_weights, "worker_value": args.worker_value, "hero_xp_value": args.hero_xp_value, "eval_replay_every": args.eval_replay_every, "building_hp_value": args.building_hp_value, "unit_hp_value": args.unit_hp_value, "lesson_time_scale": args.lesson_time_scale, "revive_lesson": args.revive_lesson, "eval_human": args.eval_human, "teach": args.teach, "privileged": args.opsd_share > 0 or args.opsd_coef > 0,
            "opsd_share": args.opsd_share, "opsd_coef": args.opsd_coef,
            "scenarios": [x for x in args.scenarios.split(",") if x], "scenario_share": args.scenario_share,
            "late_capture": args.late_capture, "late_minutes": [float(x) for x in args.late_minutes.split(",")], "late_from": args.late_from, "research_value": args.research_value, "real_agents": args.real_agents,

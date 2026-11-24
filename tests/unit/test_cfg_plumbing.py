@@ -52,14 +52,26 @@ def test_play_one_hands_the_cap_to_the_teacher():
 
 def test_the_early_expansion_lessons_reach_the_games():
     """--expand-lesson-from and --expand-lesson-share: in the actors' cfg, and from there in play_one's teachers."""
-    assert {"expand_lesson_from", "expand_lesson_share"} <= _cfg_written()
+    assert {"expand_lesson_from", "expand_lesson_share", "expand_lesson_reserve"} <= _cfg_written()
     assert '"expand_lesson_from": args.expand_lesson_from' in SRC and '"expand_lesson_share": args.expand_lesson_share' in SRC
+    assert '"expand_lesson_reserve": args.expand_lesson_reserve' in SRC
     body = SRC[SRC.index("def play_one("):SRC.index("def film_game(")]
-    assert 'expand_from=float(cfg.get("expand_lesson_from", 0.0) or 0.0)' in body
+    assert "expand_from=expand_lesson_from(cfg, late_start)" in body
     assert 'expand_share=float(cfg.get("expand_lesson_share", 1.0))' in body
+    assert 'expand_reserve=int(cfg.get("expand_lesson_reserve", 0) or 0)' in body
+    assert "bots[s].view.reserve = tc.hall_reserve(bots[s].enc)" in body  # (--expand-lesson-reserve: before the step's view)
+    from warcraftsim.fullgame.selfplay import expand_lesson_from
+    cfg = {"map": "(2)EchoIsles", "expand_lesson_from": 360.0}
+    assert expand_lesson_from({"map": "(2)EchoIsles"}, None) == 0.0 and expand_lesson_from(cfg, None) == 360.0
+    assert expand_lesson_from(cfg, {"sides": []}) == 360.0  # (a two-base start's state: no minute)
+    assert expand_lesson_from(cfg, {"minute": 2.0}) == 240.0  # (a late start: its clock starts at 0 at minute 2)
+    assert expand_lesson_from(cfg, {"minute": 12.0}) == 1.0  # (past S: from its first second, not off)
+    assert expand_lesson_from({"map": "(2)EchoIsles", "expand_lesson_from": 0.0}, {"minute": 12.0}) == 0.0
+    assert expand_lesson_from({**cfg, "lesson_time_scale": 0.5}, {"minute": 2.0}) == 120.0  # (S x 0.5 = 180 s, 120 s in: 60 s x 2)
 
 
 def test_the_harvest_floor_reaches_the_loss():
     """--teach-floor-pointer and the "harvest" group set selfplay.TEACH_FLOOR_POINTER in main (the learner's own: no cfg)."""
     assert "TEACH_FLOOR_POINTER = (hm.to(device), math.log(pointer))" in SRC
     assert "pointer = args.teach_floor_pointer or args.teach_floor_place or args.teach_floor" in SRC
+    assert "TEACH_FLOOR_LESSONS = (lm.to(device), math.log(args.teach_floor))" in SRC  # (the "workers" group)

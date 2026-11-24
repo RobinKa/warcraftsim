@@ -2,7 +2,7 @@
 without a target), checked in the game itself (2026-11-24). Real Echo Isles, ONE game at a time, no learner, no GPU.
 
     python scripts/expand_probe.py engine --race human [--from 360] [--army 6] [--hero-level 1] [--camp group|heroes]
-        [--minutes 14] [--refill 1] [--seed 1] [--ai insane]
+        [--minutes 14] [--lumber 2] [--side 1] [--seed 1] [--ai insane]
     python scripts/expand_probe.py policy --race human --weights runs/fgself-252/averaged/swa-17-27.pt --run runs/fgself-253
         [--from 360] [--minutes 12] [--follow 0|1] [--opp orc] [--ai insane] [--seed 1] [--json out.json]
 
@@ -13,8 +13,8 @@ engine  No policy. A scripted side (its workers on the main's gold and lumber, i
         (undead: the haunt), the workers' harvest. The other side gives no orders (--ai: the built-in AI plays it).
         Per game: the camp (dead when, units lost, the heroes' hit points), the hall (order taken, started, finished,
         where), the workers at the natural, the gold gathered a minute before and after. --camp heroes: the camp
-        lesson's orders for the heroes alone (the target games' camp lesson). --refill 1: once the natural stands the
-        script also trains workers until both mines have 5 (not a lesson's: what the second base is worth filled).
+        lesson's orders for the heroes alone (the target games' camp lesson). --lumber N: the script's choppers beside
+        its 5 gold workers (7: a one-base economy of 12; 2: the trained policy's 7 workers). --side 1: the right start.
 policy  The trained policy on the CPU plays a real game without a target (the run's settings from its run.json, read
         only; selfplay.play_one with its teachers), --expand-lesson-from on. Logged per lesson step: how many units it
         labels, and the policy's chance of the labelled order, of the place given the order, of the pointer given the
@@ -67,12 +67,11 @@ def army_spec(spec: str, race: str) -> list[str]:
 
 
 class Economy:
-    """The scripted side's economy: 5 workers on the main's gold, ON_LUMBER on the trees (undead: its ghoul; SPARE idle
-    acolytes), the hall training until it has them. --refill: once the natural stands, workers trained until both mines
-    have 5."""
+    """The scripted side's economy: 5 workers on the main's gold, `lumber` on the trees (undead: its ghoul; SPARE idle
+    acolytes), its hall training until it has them. A worker it did not ask for (a lesson's) is left to the lessons."""
 
-    def __init__(self, obs, side: int, race: str, refill: bool):
-        self.side, self.race, self.refill = side, race, refill
+    def __init__(self, obs, side: int, race: str, lumber: int):
+        self.side, self.race, self.lumber = side, race, lumber
         p = obs.players[side]
         self.start = (p.start_x, p.start_y)
         self.worker = WORKER[race]
@@ -81,8 +80,7 @@ class Economy:
         self.asked = -100
         self.trees = sorted(obs.destructables or [], key=lambda d: (d.x - p.start_x) ** 2 + (d.y - p.start_y) ** 2)
         self.next_tree = 0
-        self.natural_mine = None  # (the id of the mine its natural's workers harvest: the probe sets it)
-        self.natural_hall = None
+        self.done = False
 
     def main_mine(self, obs):
         want = OWN_MINE.get(self.race, "ngol")
@@ -102,18 +100,17 @@ class Economy:
         for u in workers:
             if u.id in self.job:
                 continue
-            if self.pending:
-                self.pending -= 1
+            if t > 1 and not self.pending:  # (not the script's: a lesson's worker)
+                self.job[u.id] = "taught"
+                continue
+            self.pending = max(self.pending - 1, 0)
             if count["gold"] < 5 and mine is not None:
                 self.job[u.id] = "gold"
                 out.append(TargetOrder(u.id, HARVEST, mine.id))
-            elif count["lumber"] < ON_LUMBER[self.race] and self.trees:
+            elif count["lumber"] < self.lumber and self.trees:
                 self.job[u.id] = "lumber"
                 out.append(TargetDestructable(u.id, HARVEST, self.trees[self.next_tree % len(self.trees)].id))
                 self.next_tree += 2
-            elif self.refill and self.natural_mine is not None and count["natural"] < 5:
-                self.job[u.id] = "natural"
-                out.append(TargetOrder(u.id, HARVEST, self.natural_mine))
             else:
                 self.job[u.id] = "spare"
             count[self.job[u.id]] += 1
@@ -123,17 +120,17 @@ class Economy:
             from warcraftsim.protocol import Spawn
             sx, sy = self.start
             out += [Spawn(side, FARM[self.race], sx + (700.0 if sx < 0 else -700.0), sy - 500.0 + 350.0 * k) for k in range(3)]
-        want = 5 + ON_LUMBER[self.race] + SPARE.get(self.race, 0)
-        if self.refill and self.natural_mine is not None:
-            want = len(workers) + (5 - count["gold"]) + (5 - count["natural"])
+        want = 5 + self.lumber + SPARE.get(self.race, 0)
         p = obs.players[side]
         halls = [u for u in own if u.is_structure and u.type in ("htow", "hkee", "ogre", "ostr", "unpl", "unp1", "etol", "etoa")
                  and not int(u.flags) & 8]
-        if len(workers) + self.pending < want and halls and p.gold >= 90 and p.food_used < p.food_cap and t - self.asked >= 4:
-            hall = halls[-1] if (self.refill and count["gold"] >= 5 and len(halls) > 1) else halls[0]
-            out.append(ImmediateOrder(hall.id, fourcc(self.worker)))
+        mine_ = sum(1 for j in self.job.values() if j in ("gold", "lumber", "spare", "builder", "natural"))
+        if mine_ + self.pending < want and not self.done and halls and p.gold >= 90 and p.food_used < p.food_cap and t - self.asked >= 4:
+            out.append(ImmediateOrder(halls[0].id, fourcc(self.worker)))
             self.pending += 1
             self.asked = t
+        elif mine_ >= want:
+            self.done = True  # (its count reached once: no more of the script's)
         return out
 
 
@@ -142,7 +139,7 @@ def engine(a) -> int:
     from warcraftsim.fullgame import features as fx
     from warcraftsim.fullgame import teacher as tm
     from warcraftsim.fullgame.play import unit_rows
-    from warcraftsim.protocol import Build, PointOrder, Spawn, SpawnHero, TargetOrder
+    from warcraftsim.protocol import Build, ImmediateOrder, PointOrder, Spawn, SpawnHero, TargetOrder
     from warcraftsim.runtime.instance import Agent, BuiltinAI, GameInstance, GameSetup
     fx.set_neutral(2)
     fx.set_macros(3)
@@ -171,7 +168,8 @@ def engine(a) -> int:
         nat = min(mines, key=lambda u: math.hypot(u.x - sx, u.y - sy))
         camp = {u.id: u.type for u in obs.units if u.owner == 12 and math.hypot(u.x - nat.x, u.y - nat.y) < 900}
         out["natural"], out["camp_units"] = (nat.x, nat.y), sorted(camp.values())
-        eco = Economy(obs, side, race, bool(a.refill))
+        eco = Economy(obs, side, race, ON_LUMBER[race] if a.lumber is None else (0 if race == "undead" else a.lumber))
+        busy_until: dict[int, int] = {}  # (a hall a lesson's worker trains at: busy 15 s, as the view's `busy`)
         tc = tm.Teacher(side, race, random.Random(a.seed), None, expand_from=a.start, pace=1.0)
         tc.first = tc.pick = None  # (the expansion's lessons alone)
         army: dict[int, str] = {}
@@ -219,6 +217,7 @@ def engine(a) -> int:
                         entangle_t = t
             can = lambda code, kind=0, p=p: (p.gold >= table[code].gold and p.lumber >= table[code].lumber)  # noqa: E731
             tc.economy = (False, {i for i, j in eco.job.items() if j == "lumber"}, {})  # (the choppers, as the view's)
+            tc.busy = {h for h, until in busy_until.items() if t < until}
             lessons = tc.commands(rows, p, now, t, can) if spawned and army else []
             if a.camp == "heroes":  # (the camp's attack-move for the heroes alone)
                 lessons = [c for c in lessons if not (isinstance(c, PointOrder) and c.order == ATTACK
@@ -235,6 +234,9 @@ def engine(a) -> int:
                     k = "workers"
                     first_workers = now if first_workers is None else first_workers
                     eco.job[c.unit] = "natural"
+                elif isinstance(c, ImmediateOrder):  # (a worker more, at the hall nearest the natural)
+                    k = "train"
+                    busy_until[c.unit] = t + 30
                 else:
                     k = "hall"
                     first_hall = now if first_hall is None else first_hall
@@ -251,7 +253,7 @@ def engine(a) -> int:
             obs = g.step(cmds)
             t += 1
             for k, ok in zip(cmds_kind, obs.command_results):
-                if k in ("camp", "hall", "workers", "entangle", "spawn"):
+                if k in ("camp", "hall", "workers", "train", "entangle", "spawn"):
                     ev["taken" if ok else "refused"][k] += 1
             # what became of it
             units = {u.id: u for u in obs.units}
@@ -271,12 +273,6 @@ def engine(a) -> int:
                 hall_seen, hall_xy = now, (taken[0].x, taken[0].y)
             if taken and hall_done is None and not int(taken[0].flags) & 8:
                 hall_done = now
-            own_mine = next((u for u in holds if u.type in ("ugol", "egol") and not int(u.flags) & 8), None)
-            if hall_done is not None and eco.natural_mine is None:
-                if race in OWN_MINE:
-                    eco.natural_mine = own_mine.id if own_mine is not None else None
-                else:
-                    eco.natural_mine = nat.id
             if t % 120 == 0:
                 ws = [u for u in obs.units if u.owner == side and u.alive and u.type == WORKER[race]]
                 near = [u for u in ws if math.hypot(u.x - nat.x, u.y - nat.y) < 900]
@@ -330,8 +326,406 @@ def engine(a) -> int:
     return 0
 
 
+KINDS = ("expansion: its camp", "expansion: the hall", "expansion: workers", "expansion: a worker")
+
+
+class PolicyProbe:
+    """The policy game's stand-ins (the inference, the learner's queue), the lessons' labels against the policy's own
+    chances, and with --follow the lessons carried out through the agent's own command path."""
+
+    def __init__(self, net, vocab: dict, side: int, seed: int, follow: bool, floors: dict):
+        import torch
+        from warcraftsim.fullgame import features as fx
+        self.net, self.vocab, self.side, self.follow, self.floors = net, vocab, side, follow, floors
+        self.gen = torch.Generator().manual_seed(seed)
+        self.names = {int(k): v for k, v in (vocab.get("order_names") or {}).items()}
+        self.orders = [(0, 0)] + [tuple(o) for o in vocab["orders"]]
+        self.labels = ["none"] + [fx.order_label(o, k, self.names) for o, k in self.orders[1:]]
+        self.seen: dict = {}  # (the step's states and their tensors, by the state's id)
+        self.mine = None  # (the probed side's state of the step)
+        self.label_side = None  # (the side whose lessons are being labelled)
+        self.now_lessons: list = []  # (the step's expansion lessons: (kind, command))
+        self.records: list = []  # (a labelled unit of an expansion lesson: its kind and the policy's chances)
+        self.steps: list = []  # (a lesson step: kind, t, units named, labels kept)
+        self.hold: dict = {}  # (--follow: unit -> [class, target id, x bin, y bin, the step it is free again, given])
+        self.bot = None
+        self.t = 0
+        self.own: dict = {}  # (what the policy did by itself: counts)
+        self.minute: list = []
+        self.state: dict = {}
+
+    def put(self, msg: dict) -> None:
+        pass
+
+    def request(self, items: list) -> list:
+        self.seen = {}
+        return [self.forward(st) for _, st in items]
+
+    def _tensors(self, st: dict):
+        import torch
+        from warcraftsim.fullgame import features as fx
+        n = st["n"]
+        ent = torch.from_numpy(np.asarray(st["ent"], np.float32)[None, :n])
+        typ = torch.from_numpy(np.asarray(st["type"], np.int64)[None, :n])
+        cur = torch.from_numpy(np.asarray(st["cur"], np.int64)[None, :n])
+        mask = torch.ones(1, n, dtype=torch.bool)
+        glob = torch.from_numpy(np.asarray(st["glob"], np.float32)[None])
+        n_own = torch.tensor([min(st["n_own"], fx.MAX_OWN)])
+        avail = torch.from_numpy(np.asarray(st["avail"], bool)[None]) if st.get("avail") is not None else None
+        h = torch.from_numpy(np.asarray(st["h"], np.float32)[None]) if st.get("h") is not None else None
+        return ent, typ, cur, mask, glob, n_own, avail, h
+
+    def forward(self, st: dict) -> dict:
+        import torch
+        from warcraftsim.fullgame.model import act
+        tensors = self._tensors(st)
+        ent, typ, cur, mask, glob, n_own, avail, h = tensors
+        shared = torch.tensor([bool(st.get("shared_noise"))])
+        with torch.no_grad():
+            out = act(self.net, ent, typ, cur, mask, glob, n_own, avail, h, generator=self.gen, shared=shared)
+        o = int(n_own[0])
+        res = {"order": out["order"][0, :o].numpy().astype(np.int64), "tgt": out["tgt"][0, :o].numpy().astype(np.int64),
+               "bx": out["bx"][0, :o].numpy().astype(np.int64), "by": out["by"][0, :o].numpy().astype(np.int64),
+               "logp": out["logp"][0, :o].numpy().copy(), "value": float(out["value"][0]),
+               "entropy": float(out["entropy"][0]), "version": 0}
+        if self.net.memory:
+            res["h"] = out["h"][0].numpy().copy()
+        self.seen[id(st)] = (st, tensors)  # (each side's of the step: the probed side's is `mine`, BCAgent.observe's)
+        return res
+
+    def on_labels(self, y: dict) -> None:
+        """The step's lessons' labels (the encoder's, as the learner gets them) against the policy's chances in the state
+        it acted in: of the labelled order, of the place given that order (the cell, and the 5 x 5 cells around it), of
+        the pointer given it."""
+        import torch
+        from warcraftsim.fullgame import features as fx
+        from warcraftsim.fullgame.model import point_parts
+        last = self.seen.get(id(self.mine)) if self.mine is not None else None
+        if not self.now_lessons or last is None:
+            return
+        st, (ent, typ, cur, mask, glob, n_own, avail, h) = last
+        net = self.net
+        O = min(fx.MAX_OWN, ent.shape[1])
+        yo = torch.from_numpy(np.asarray(y["y_order"][:O], np.int64))[None]
+        yx, yy, _ = point_parts(torch.from_numpy(np.asarray(y["y_x"][:O], np.int64))[None],
+                                torch.from_numpy(np.asarray(y["y_y"][:O], np.int64))[None])
+        with torch.no_grad():
+            g, u = net.encode(ent, typ, cur, mask, glob)
+            g, _ = net.context(g, h)
+            lg = net.order_logits(g, u[:, :O], typ, n_own, avail=avail, ent=ent, emask=mask if net.omask else None)
+            p_order = torch.softmax(lg[0].float(), -1)
+            ptr, xl, z = net.target_logits(g, u, mask, yo, ent, typ)
+            lp_x = torch.log_softmax(xl[0].float(), -1)
+            lp_y = torch.log_softmax(net.y_logits(z, yx)[0].float(), -1)
+            p_ptr = torch.softmax(ptr[0].float(), -1)
+        index, sel = st["index"], st["sel"]
+        seen = Counter()
+        for kind, c in self.now_lessons:
+            seen[kind] += 1
+            k = index.get(int(c.unit))
+            rec = {"kind": kind, "t": self.t, "unit": fx.rawcode(int(sel[k, fx.C_TYPE])) if k is not None else None, "kept": False}
+            self.records.append(rec)
+            if k is None or k >= O or int(y["y_order"][k]) <= 0:
+                continue  # (no label: not among its units, an order the vocabulary lacks, or one the encoder dropped)
+            cls = int(y["y_order"][k])
+            rec.update(kept=True, order=self.labels[cls], open=bool(avail is None or avail[0, cls]),
+                       p_order=float(p_order[k, cls]), p_none=float(p_order[k, 0]))
+            if int(y["y_x"][k]) >= 0:
+                bx, by = int(yx[0, k]), int(yy[0, k])
+                rec["p_place"] = float(torch.exp(lp_x[k, bx] + lp_y[k, by]))
+                near = 0.0
+                with torch.no_grad():  # (the 5 x 5 cells around it: the policy's own scatter)
+                    for dx in range(-2, 3):
+                        if not 0 <= bx + dx < lp_x.shape[-1]:
+                            continue
+                        ly = torch.log_softmax(net.y_logits(z, torch.full_like(yx, bx + dx))[0, k].float(), -1)
+                        lo, hi = max(by - 2, 0), min(by + 3, ly.shape[-1])
+                        near += float(torch.exp(lp_x[k, bx + dx]) * torch.exp(ly[lo:hi]).sum())
+                rec["p_near"] = near
+                rec["place"] = [round(v) for v in fx.bins_world(int(y["y_x"][k]), int(y["y_y"][k]), self.bot.view.sign)]
+            if int(y["y_ptr"][k]) >= 0:
+                j = int(y["y_ptr"][k])
+                rec["p_ptr"] = float(p_ptr[k, j])
+                rec["target"] = fx.rawcode(int(sel[j, fx.C_TYPE]))
+                rec["target_id"] = int(sel[j, fx.C_ID])
+            if self.follow:  # (the label itself, given at the next step through the agent's own command path)
+                self.hold[int(c.unit)] = [cls, rec.get("target_id"), int(y["y_x"][k]), int(y["y_y"][k]), self.t + 20, False]
+        for kind, n in seen.items():
+            self.steps.append({"kind": kind, "t": self.t, "units": n,
+                               "kept": sum(1 for r in self.records[-len(self.now_lessons):] if r["kind"] == kind and r["kept"])})
+        self.now_lessons = []
+
+
 def policy(a) -> int:
-    raise SystemExit("policy: not yet")
+    import torch
+    torch.set_num_threads(2)
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from ghoul_probe import run_cfg
+    from warcraftsim.data.mapbuild import stock_map_path
+    from warcraftsim.data.objects import unit_table
+    from warcraftsim.fullgame import features as fx
+    from warcraftsim.fullgame import selfplay as sp
+    from warcraftsim.fullgame import strategy as strat
+    from warcraftsim.fullgame import teacher as tm
+    from warcraftsim.fullgame.model import load
+    from warcraftsim.fullgame.play import BCAgent
+    from warcraftsim.protocol import Build, ImmediateOrder, PointOrder, TargetOrder
+    from warcraftsim.runtime.instance import Agent, BuiltinAI, GameInstance, GameSetup
+    if a.weights is None or a.run is None:
+        raise SystemExit("policy: --weights and --run")
+    vocab = json.loads((a.run / "vocab.json").read_text())
+    run = json.loads((a.run / "run.json").read_text())["config"]
+    over = dict(kv.split("=", 1) for kv in a.set)
+    over.setdefault("z_share", 0.0)  # (a game without a target)
+    over["max_steps"] = int(a.minutes * 120)
+    over["max_minutes"] = a.minutes + 1.0
+    cfg = run_cfg(a.run, vocab, over)
+    cfg["expand_lesson_from"], cfg["expand_lesson_share"] = float(a.start), float(a.share)
+    cfg["expand_lesson_reserve"] = int(a.reserve)
+    import tempfile
+    cfg["run_dir"] = tempfile.mkdtemp(prefix="expandprobe")  # (nothing of this game goes into the run's folder)
+    fx.ACTIVE_F = cfg["features"]
+    fx.set_inputs(cfg["inputs"], bool(cfg["privileged"]))
+    fx.set_masks(cfg["tech_mask"], cfg["valid_mask"])
+    fx.set_neutral(cfg["neutral"])
+    fx.set_macros(int(cfg["macros"] or 0))
+    fx.set_spells(int(cfg["spells"] or 0))
+    fx.set_shop_items(int(cfg["shop_items"] or 0))
+    fx.set_full_vocab(int(cfg["full_vocab"] or 0))
+    fx.set_obs_full(int(cfg["obs_full"] or 0))
+    fx.set_fine(int(cfg["fine_points"] or 0))
+    fx.set_macros_off(str(cfg["macros_off"] or "").split(","))
+    fx.set_econ_masks(cfg["econ_masks"])
+    fx.set_order_masks(cfg["order_masks"])
+    fx.set_value_tax(cfg["value_tax"])
+    if (width := strat.block_width(cfg["z_modes"], cfg["z_mix"], cfg["z_comp"], cfg["z_shop"])):
+        fx.set_z(width)
+    fx.set_geometry(*fx.map_geometry(stock_map_path(cfg["map"])))
+    net, _ = load(a.weights, "cpu", vocab=vocab)
+    fx.set_z(net.config.get("z", 0))
+    random.seed(a.seed)
+    torch.manual_seed(a.seed)
+    side, race = a.side, a.race
+
+    def num(key, default):
+        v = run.get(key)
+        return default if v in (None, "None", "") else float(v)
+    floors = {"order": num("teach_floor", 0.0), "place": num("teach_floor_place", 0.0) or num("teach_floor", 0.0)}
+    floors["pointer"] = a.pointer_floor or floors["place"]
+    probe = PolicyProbe(net, vocab, side, a.seed, bool(a.follow), floors)
+    table = unit_table()
+    hall_code = "ugol" if race == "undead" else tm.HALL[race]
+    cost = (table[hall_code].gold, table[hall_code].lumber)
+    worker_t = fourcc(WORKER[race])
+
+    # the wrappers: the agent (the probed side's), the teacher's lessons, the labels
+    b_begin, b_commands, b_observe = BCAgent.begin, BCAgent.commands, BCAgent.observe
+
+    def begin(self, obs, races):
+        b_begin(self, obs, races)
+        if self.player == side:
+            probe.bot = self
+
+    def observe(self, obs, t, rows=None):
+        st = b_observe(self, obs, t, rows)
+        if self.player == side:
+            probe.t, probe.mine = t, st
+        return st
+
+    def commands(self, st, order, tgt, bx, by):
+        if self.player == side and probe.hold:
+            order, tgt, bx, by = (np.array(v).copy() for v in (order, tgt, bx, by))
+            index = st["index"]
+            for uid, h in list(probe.hold.items()):
+                k = index.get(uid)
+                if k is None or k >= len(order) or probe.t > h[4]:
+                    del probe.hold[uid]
+                    continue
+                if not h[5]:  # (the lesson's order, once; its pointer by the unit it named)
+                    j = index.get(h[1]) if h[1] is not None else 0
+                    if j is None:
+                        del probe.hold[uid]
+                        continue
+                    order[k], tgt[k], bx[k], by[k] = h[0], j, max(h[2], 0), max(h[3], 0)
+                    h[5] = True
+                    probe.own["followed " + probe.labels[h[0]]] = probe.own.get("followed " + probe.labels[h[0]], 0) + 1
+                else:  # (then left alone until the next lesson, or 10 s)
+                    order[k] = 0
+        out = b_commands(self, st, order, tgt, bx, by)
+        if self.player == side:
+            nat = probe.state.get("nat")
+            for c in out:
+                if isinstance(c, Build) and c.building in tm.HALL_CODES.tolist():
+                    probe.own["hall builds sent"] = probe.own.get("hall builds sent", 0) + 1
+                    probe.own.setdefault("hall builds at", []).append((probe.t, round(c.x), round(c.y)))
+                elif isinstance(c, TargetOrder) and c.order == tm.HAUNTED:
+                    probe.own["haunts sent"] = probe.own.get("haunts sent", 0) + 1
+                elif isinstance(c, TargetOrder) and c.order == HARVEST and nat is not None and c.target in nat["mine_ids"]:
+                    probe.own["harvests sent to the natural"] = probe.own.get("harvests sent to the natural", 0) + 1
+                elif isinstance(c, PointOrder) and c.order == ATTACK and nat is not None \
+                        and math.hypot(c.x - nat["x"], c.y - nat["y"]) < 1000:
+                    probe.own["attack-moves sent to the natural"] = probe.own.get("attack-moves sent to the natural", 0) + 1
+        return out
+    BCAgent.begin, BCAgent.commands, BCAgent.observe = begin, commands, observe
+
+    t_commands = tm.Teacher.commands
+
+    def lessons(self, rows, player, now, t, can=None, pickers=()):
+        before = dict(self.taught)
+        if self.side == side:
+            probe.state["reserved"] = self.reserved  # (--expand-lesson-reserve: the steps the hall's cost was kept)
+        out = t_commands(self, rows, player, now, t, can, pickers)
+        if self.side != side:
+            return out
+        fired = [k for k in KINDS if self.taught.get(k, 0) > before.get(k, 0)]
+        ids = set(rows[:, fx.C_ID].tolist())
+        probe.now_lessons = []
+        for c in out:
+            kind = None
+            if isinstance(c, PointOrder) and c.order == ATTACK and KINDS[0] in fired:
+                kind = KINDS[0]
+            elif KINDS[1] in fired and (isinstance(c, Build) and c.building in tm.HALL_CODES.tolist()
+                                        or isinstance(c, TargetOrder) and c.order == tm.HAUNTED
+                                        or isinstance(c, PointOrder) and c.order == MOVE):
+                kind = KINDS[1]
+            elif isinstance(c, TargetOrder) and c.order == HARVEST and KINDS[2] in fired and c.target in ids:
+                kind = KINDS[2]
+            elif isinstance(c, ImmediateOrder) and c.order == worker_t and KINDS[3] in fired:
+                kind = KINDS[3]
+            if kind is not None:
+                probe.now_lessons.append((kind, c))
+        # the side's state, the natural's, and whether the hall could be paid (the lesson's own test is the mask's)
+        sx, sy = player.start_x, player.start_y
+        alive = fx.own_alive(rows, side)
+        e = tm._expansion_facts(rows, alive, sx, sy)
+        s = probe.state
+        if e[0] >= 0:
+            mx, my = float(e[2]), float(e[3])
+            mines = rows[fx.isin(rows[:, fx.C_TYPE], tm.MINE_CODES)]
+            s["nat"] = {"x": mx, "y": my, "mine_ids": set(mines[np.hypot(mines[:, fx.C_X] - mx, mines[:, fx.C_Y] - my) < 300, fx.C_ID].tolist())}
+            camp, taken = bool(e[10]), bool(e[5])
+            if self.expand_on and s.get("on_at") is None:
+                army = tm._army_of(alive)
+                heroes = alive[alive[:, fx.C_FLAGS] & fx.HERO > 0]
+                s["on_at"] = round(now)
+                s["at_trigger"] = {"army": Counter(fx.rawcode(int(v)) for v in army[:, fx.C_TYPE].tolist()).most_common(),
+                                   "heroes": [(fx.rawcode(int(h[fx.C_TYPE])), int(h[fx.C_HLEVEL]), int(h[fx.C_HP]), int(h[fx.C_MAXHP])) for h in heroes],
+                                   "workers": int((alive[:, fx.C_TYPE] == worker_t).sum()), "gold": player.gold, "lumber": player.lumber,
+                                   "food": (player.food_used, player.food_cap)}
+            if taken and s.get("taken_at") is None:
+                s["taken_at"] = round(now)
+            if not camp and s.get("camp_gone_at") is None:
+                s["camp_gone_at"] = round(now)
+            if self.expand_on and not camp and not taken:
+                s["hall_steps"] = s.get("hall_steps", 0) + 1
+                s["hall_steps_paid"] = s.get("hall_steps_paid", 0) + int(player.gold >= cost[0] and player.lumber >= cost[1])
+                s["hall_steps_open"] = s.get("hall_steps_open", 0) + int(can is not None and any(can(hall_code, k) for k in (fx.POINT, fx.UNIT)))
+            if self.expand_on and camp:
+                s["camp_steps"] = s.get("camp_steps", 0) + 1
+                why = "a lesson could be given"  # (why the camp's lesson was not: the teacher's own tests, again)
+                heroes = alive[alive[:, fx.C_FLAGS] & fx.HERO > 0]
+                creeps = rows[(rows[:, fx.C_OWNER] == 12) & (rows[:, fx.C_FLAGS] & (fx.DEAD | fx.STRUCTURE) == 0)]
+                creeps = creeps[np.hypot(creeps[:, fx.C_X] - mx, creeps[:, fx.C_Y] - my) < tm.CAMP_NEAR]
+                if not self._safe:
+                    why = "an enemy army near its halls"
+                elif not len(heroes):
+                    why = "no living hero"
+                else:
+                    hx, hy = float(heroes[:, fx.C_X].mean()), float(heroes[:, fx.C_Y].mean())
+                    fight = np.hypot(hx - float(creeps[:, fx.C_X].mean()), hy - float(creeps[:, fx.C_Y].mean())) < tm.EARLY_FIGHT
+                    low, margin = (tm.EARLY_FIGHT_HP, 1.0) if fight else (tm.CREEP_HP, tm.EARLY_MARGIN)
+                    s["camp_fight_steps"] = s.get("camp_fight_steps", 0) + int(fight)
+                    if (heroes[:, fx.C_HP] <= low * np.maximum(heroes[:, fx.C_MAXHP], 1)).any():
+                        why = "a hero low on hit points (under 60%, 30% in the fight)"
+                    else:
+                        army = tm._army_of(alive)
+                        group = np.concatenate([heroes, army[np.hypot(army[:, fx.C_X] - hx, army[:, fx.C_Y] - hy) < tm.ESCORT]])
+                        ratio = tm._power(group) / max(tm._power(creeps), 1e-6)
+                        s.setdefault("ratios", []).append(round(ratio, 2))
+                        if ratio < margin:
+                            why = "too weak for the camp (under twice its strength, its strength in the fight)"
+                s.setdefault("camp_why", Counter())[why] += 1
+            if t % 120 == 0:
+                army = tm._army_of(alive)
+                ws = alive[alive[:, fx.C_TYPE] == worker_t]
+                near = ws[np.hypot(ws[:, fx.C_X] - mx, ws[:, fx.C_Y] - my) < 900]
+                heroes = alive[alive[:, fx.C_FLAGS] & fx.HERO > 0]
+                line = {"min": round(now / 60, 1), "gold": player.gold, "lumber": player.lumber, "gathered": player.gold_gathered,
+                        "food": player.food_used, "army": len(army), "heroes": [int(h[fx.C_HLEVEL]) for h in heroes], "workers": len(ws),
+                        "at_natural": len(near), "camp": camp, "taken": taken, "on": bool(self.expand_on),
+                        "taught": {k.split(": ")[1]: v for k, v in self.taught.items() if k in KINDS}}
+                probe.minute.append(line)
+                print("  " + json.dumps(line), flush=True)
+        return out
+    tm.Teacher.commands = lessons
+
+    m_labels = sp.merge_labels
+
+    def merge(step, y, teach=False):
+        if teach:
+            probe.on_labels(y)
+        return m_labels(step, y, teach)
+    sp.merge_labels = merge
+
+    races = [a.opp, a.opp]
+    races[side] = race
+    slots = [None, None]
+    slots[side] = Agent(race, handicap=cfg["handicap"], difficulty="normal")
+    slots[1 - side] = BuiltinAI(a.opp, a.ai or "insane", handicap=cfg["handicap"])
+    setup = GameSetup(map=cfg["map"], slots=slots, step_seconds=cfg["step_seconds"], max_game_seconds=cfg["max_minutes"] * 60,
+                      victory="decisive", window=(320, 240), draw=False, wait_floor_ms=cfg["wait_floor_ms"], native_obs=True,
+                      nice=19, d3d_thread=False, render_threads=0, warm_spare=False, cuts=cfg.get("game_cuts") or None,
+                      obs_full=bool(cfg.get("obs_full")), seed=a.seed, **({"shim_dir": a.shim} if a.shim else {}))
+    opp = {"name": f"script:ai-{a.ai or 'insane'} (real)", "kind": "ai", "advise": False}
+    if a.scenario:  # (--scenario natural: the camp cleared at the first step, as a share of the training games start)
+        cfg["scenarios"], cfg["scenario_share"] = [a.scenario], 1.0
+        opp["name"] = f"script:ai-{a.ai or 'insane'}"  # (a "(real)" launch has no scenario)
+    with GameInstance(setup, name=f"expandprobe{a.name}", timeout=600) as g:
+        obs = g.start()
+        ep = sp.play_one(g, obs, cfg, vocab, races, side, opp, probe, probe, 0, record=False, train=True)
+    # the summary: per lesson kind, its dose and the policy's chances against the floors
+    s, prod = probe.state, ep.get("prod") or {}
+    if s.get("ratios"):  # (its heroes' group against the camp, when healthy and safe: the lowest, the median, the highest)
+        s["ratios"] = [min(s["ratios"]), float(np.median(s["ratios"])), max(s["ratios"])]
+    if "camp_why" in s:
+        s["camp_why"] = dict(s["camp_why"])
+    out = {"race": race, "opp": a.opp, "seed": a.seed, "follow": a.follow, "from": a.start, "floors": floors, "scenario": ep.get("scenario"),
+           "state": {k: v for k, v in s.items() if k != "nat"}, "own": probe.own, "minutes": probe.minute,
+           "outcome": ep.get("outcome"), "game_time": ep.get("game_time"), "taught": ep.get("taught"), "taught_kept": ep.get("taught_kept"),
+           "expansions": prod.get("expansions"), "expansion_t": prod.get("expansion_t"), "kinds": {}}
+    med = lambda v: float(np.median(v)) if len(v) else None  # noqa: E731
+    for kind in KINDS:
+        rs = [r for r in probe.records if r["kind"] == kind]
+        kept = [r for r in rs if r["kept"]]
+        po = [r["p_order"] for r in kept]
+        pp = [r["p_place"] for r in kept if "p_place" in r]
+        pn = [r["p_near"] for r in kept if "p_near" in r]
+        pq = [r["p_ptr"] for r in kept if "p_ptr" in r]
+        out["kinds"][kind] = {
+            "lesson_steps": sum(1 for x in probe.steps if x["kind"] == kind), "unit_labels": len(rs), "kept": len(kept),
+            "open": sum(1 for r in kept if r["open"]), "orders": Counter(r["order"] for r in kept).most_common(3),
+            "p_order_median": med(po), "p_order_mean": float(np.mean(po)) if po else None,
+            "under_order_floor": sum(1 for v in po if v < floors["order"]),
+            "p_place_median": med(pp), "p_place_near_median": med(pn), "under_place_floor": sum(1 for v in pp if v < floors["place"]),
+            "p_ptr_median": med(pq), "under_pointer_floor": sum(1 for v in pq if v < floors["pointer"]), "with_place": len(pp),
+            "with_pointer": len(pq), "first_t": min((r["t"] for r in rs), default=None)}
+    print(f"RESULT {race} vs {a.opp} ({a.ai or 'insane'}) seed {a.seed} follow {a.follow} scenario {ep.get('scenario')}: outcome {ep.get('outcome')} at "
+          f"{(ep.get('game_time') or 0) / 60:.1f} min; trigger on at {s.get('on_at')} s with {s.get('at_trigger')}; camp gone at "
+          f"{s.get('camp_gone_at')} s, natural taken at {s.get('taken_at')} s; steps with the camp standing {s.get('camp_steps', 0)} "
+          f"({s.get('camp_why')}; its group's strength to the camp's {s.get('ratios')}), "
+          f"with the hall due {s.get('hall_steps', 0)} (its cost in the bank {s.get('hall_steps_paid', 0)}, its order open "
+          f"{s.get('hall_steps_open', 0)}, kept for it {s.get('reserved', 0)} steps); the policy's own: {probe.own}; expansions "
+          f"{prod.get('expansions')} at {prod.get('expansion_t')}; "
+          f"taught {ep.get('taught')} kept {ep.get('taught_kept')}", flush=True)
+    for kind, v in out["kinds"].items():
+        print(f"  {kind}: {v}", flush=True)
+    got = [(m["min"], m["gathered"], m["workers"], m["at_natural"]) for m in probe.minute]
+    out["gold_a_minute"] = [(b[0], b[1] - a_[1], b[2], b[3]) for a_, b in zip(got, got[1:])]
+    print(f"  gold gathered in the minute up to (minute, gold, its workers, those at the natural): {out['gold_a_minute']}", flush=True)
+    if a.json:
+        with open(a.json, "a") as f:
+            f.write(json.dumps(out, default=str) + "\n")
+    return 0
 
 
 def main() -> int:
@@ -350,12 +744,16 @@ def main() -> int:
     ap.add_argument("--camp", default="group", choices=("group", "heroes"), help="engine: who carries out the camp's lesson")
     ap.add_argument("--margin", type=float, default=None, help="engine: teacher.EARLY_MARGIN for this game")
     ap.add_argument("--need", type=int, default=None, help="engine: teacher.EARLY_ARMY for this game (a smaller army's test)")
-    ap.add_argument("--refill", type=int, default=0)
+    ap.add_argument("--lumber", type=int, default=None, help="engine: the script's workers on lumber beside the mine's 5 (default "
+                    "7: a one-base economy of 12; 2: the trained policy's 7 workers)")
     ap.add_argument("--debug", type=int, default=0)
     ap.add_argument("--weights", type=Path)
     ap.add_argument("--run", type=Path)
     ap.add_argument("--follow", type=int, default=0)
     ap.add_argument("--share", type=float, default=1.0)
+    ap.add_argument("--pointer-floor", type=float, default=0.0, help="policy: --teach-floor-pointer (0: the run's place floor)")
+    ap.add_argument("--scenario", default="", help="policy: the game starts in this scenario (natural: its camp cleared)")
+    ap.add_argument("--reserve", type=int, default=0, help="policy: --expand-lesson-reserve (steps a game the hall's cost is kept)")
     ap.add_argument("--set", nargs="*", default=[], help="policy: settings changed for this game: key=value")
     ap.add_argument("--json", type=Path)
     ap.add_argument("--name", default="")

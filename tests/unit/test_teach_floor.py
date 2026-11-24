@@ -18,9 +18,9 @@ BLIZZARD = 852089
 
 @pytest.fixture(autouse=True)
 def no_floor():
-    selfplay.TEACH_FLOOR = selfplay.TEACH_FLOOR_PLACE = selfplay.TEACH_FLOOR_POINTER = None
+    selfplay.TEACH_FLOOR = selfplay.TEACH_FLOOR_PLACE = selfplay.TEACH_FLOOR_POINTER = selfplay.TEACH_FLOOR_LESSONS = None
     yield
-    selfplay.TEACH_FLOOR = selfplay.TEACH_FLOOR_PLACE = selfplay.TEACH_FLOOR_POINTER = None
+    selfplay.TEACH_FLOOR = selfplay.TEACH_FLOOR_PLACE = selfplay.TEACH_FLOOR_POINTER = selfplay.TEACH_FLOOR_LESSONS = None
 
 
 def test_floor_classes():
@@ -41,6 +41,13 @@ def test_floor_groups():
     assert selfplay.floor_classes(army, ("army",)).tolist() == [False, True, False, False]
     up = {"orders": [[code("Rhme"), fx.IMMEDIATE], [code("Rhar"), fx.IMMEDIATE], [code("Rhpm"), fx.IMMEDIATE]]}
     assert selfplay.floor_classes(up, ("upgrades",)).tolist() == [False, True, True, False]
+    # ("workers": the races' workers' train orders, the early expansion lesson's "a worker": floored on the teacher's own
+    # lessons only, floor_lesson_classes, so not among the classes floored whoever labels them)
+    w = {"orders": [[code("hpea"), fx.IMMEDIATE], [code("hfoo"), fx.IMMEDIATE], [code("uaco"), fx.IMMEDIATE], [code("ewsp"), fx.POINT],
+                    [code("opeo"), fx.IMMEDIATE], [code("ewsp"), fx.IMMEDIATE]]}
+    assert selfplay.floor_lesson_classes(w, ("workers",)).tolist() == [False, True, False, True, False, True, True]
+    assert selfplay.floor_lesson_classes(w, ("army", "halls", "moves", "harvest")) is None
+    assert selfplay.floor_classes(w, ("workers", "army", "halls", "moves", "harvest")).tolist() == [False] * 7
 
 
 def test_capped_only_for_the_floored_classes():
@@ -146,8 +153,9 @@ def test_the_update_with_a_harvest_floor():
 UNIT_ORDER = 12  # (an order on a unit in _lesson's network: the harvest's stand-in)
 
 
-def _lesson(teach: bool = True):
-    """One labelled unit in a batch of two steps: an order on a unit with its pointer (test_teach_loss's batch)."""
+def _lesson(teach: bool = True, order: int = UNIT_ORDER, ptr: int | None = 4):
+    """One labelled unit in a batch of two steps: an order on a unit with its pointer (test_teach_loss's batch), or
+    another order without one."""
     from warcraftsim.fullgame.model import FullGameNet, evaluate
     B, E, O = 2, 6, 3
     torch.manual_seed(0)
@@ -165,9 +173,10 @@ def _lesson(teach: bool = True):
                   zeros, zeros)
     ev["logits"].retain_grad()
     y_order = torch.zeros(B, O, dtype=torch.long)
-    y_order[0, 0] = UNIT_ORDER
+    y_order[0, 0] = order
     y_ptr = torch.full((B, O), -1, dtype=torch.long)
-    y_ptr[0, 0] = 4
+    if ptr is not None:
+        y_ptr[0, 0] = ptr
     none = torch.full((B, O), -1, dtype=torch.long)
     mb = {"own": torch.arange(O)[None].expand(B, O) < n_own[:, None], "y_has": torch.tensor([True, False]), "y_order": y_order,
           "y_ptr": y_ptr, "y_x": none, "y_y": none.clone(), "y_only": torch.tensor([True, False]),
@@ -206,6 +215,32 @@ def test_a_harvest_lesson_teaches_its_mine_alone(norm, teach):
     assert over == (0.0, 0.0, 0.0, 0.0)
     if teach:
         assert under[1] > 0  # (the teacher's term is the pointer's)
+
+
+def test_the_workers_floor_is_on_the_teacher_s_lessons_only():
+    """--teach-floor-orders workers: a teacher's lesson of a floored class pushes its order only under the floor; a
+    builder's label of the same class (no "y_teach") as before."""
+    def push(teach, floor):
+        selfplay.TEACH_FLOOR_LESSONS = floor
+        ev, mb, net = _lesson(teach, order=5, ptr=None)
+        out, _, _ = selfplay.distill_loss(net, ev, mb, None, teach_scale=10.0, norm="units")
+        if out.requires_grad:
+            out.backward()
+        g = ev["logits"].grad
+        return 0.0 if g is None else float(g.abs().sum())
+    m = torch.zeros(31, dtype=torch.bool)
+    m[5] = True
+    over = (m, math.log(1e-30))  # (any chance is over it)
+    try:
+        assert push(True, None) > 0 and push(False, None) > 0
+        assert push(True, over) == 0.0  # (the teacher's lesson: no push over the floor)
+        assert push(False, over) == push(False, None)  # (a builder's label: as before)
+        assert push(True, (m, 0.0)) == push(True, None)  # (a floor of 1: every chance is under it)
+        other = torch.zeros(31, dtype=torch.bool)
+        other[6] = True
+        assert push(True, (other, math.log(1e-30))) == push(True, None)  # (another class)
+    finally:
+        selfplay.TEACH_FLOOR_LESSONS = None
 
 
 def test_the_harvest_floor_is_the_pointer_s_chance_given_the_order():
