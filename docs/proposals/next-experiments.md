@@ -226,3 +226,22 @@ What the numbers say first. The best policies have stood at ~1,890-1,914 since 2
 6. **A strategy chosen per matchup**: the policy picks its own target by what wins (a small head over the pool, trained on outcomes), once following a target costs less than it does now (0.51 against insane with a target, 0.85 without).
 
 Order: 1 runs now (it is the next fork anyway); 2 is the main build; 3 as queued; 5 is small and rides along; 4 and 6 wait for 1 and 2.
+
+## What the losses say (2026-11-25, the user's ask: only bold changes that can lift the rating a lot)
+
+Pooled from bursts 250-257 (4,873 evaluation games of the ~1,860-1,895 policies: 1,386 against the untaxed insane AI, 439 at -25% income, 466 at -50%, 2,582 head to head). Policy / AI, means:
+
+| games | n | minutes | heroes | workers made | army made | research | tier | gold gathered | creeps | expansions |
+|---|---|---|---|---|---|---|---|---|---|---|
+| untaxed, won | 1,227 | 12.6 | 1.0 / 1.1 | 6.5 / 19.4 | 30 / 22 | 1.1 / 1.2 | 1.3 / 1.4 | 6.5k / 10.7k | 0.7 / 2.0 | 0 / 0 |
+| untaxed, lost | 149 | 24.6 | 1.1 / 2.7 | 7.8 / 13.2 | 59 / 43 | 1.5 / 16.9 | 1.6 / 2.9 | 11.2k / 22.7k | 1.1 / 17.6 | 0.01 / 0.6 |
+| -25%, won | 202 | 16.1 | 1.0 / 1.1 | 7.0 / 24.6 | 30 / 29 | 1.2 / 1.3 | 1.3 / 1.4 | 8.6k / 12.9k | 0.6 / 5.2 | 0 / 0.07 |
+| -25%, lost | 229 | 21.3 | 1.0 / 2.6 | 7.5 / 11.4 | 38 / 38 | 0.9 / 14.5 | 1.3 / 2.8 | 10.0k / 20.4k | 0.6 / 16.5 | 0 / 0.5 |
+
+**The policy is one strategy: a tier-1 rush with one hero and ~7 workers.** Every game, won or lost, it has one hero, stays at tier 1 (rarely 2), researches one thing, never expands. It wins when the rush breaks the AI by minute ~8 (the material lead turns positive at minute 6-8 in won games); when it does not, the game goes long and the AI out-develops it: three heroes, tier 3, ~16 upgrades, twice the gold, a second base, 17 creeps. It has no answer then. At -25% income the rush works half the time (0.47); night elf as the AI is the worst opponent (human 0/14, undead 1/24 at -25%; 0.76-0.78 untaxed).
+
+**Why training keeps it there**: against the AI the curriculum sits at its floor (no tax) and the learner wins 0.92 of those games without a target (12.6 minutes); the league is rushers like it. Nothing in training punishes the rush except the target games, whose play does not carry over to games without one. Every lesson since has tried to bolt one late-game skill (creeping, a second base, pressing) onto a rush policy, and each either collapsed or faded.
+
+**The bold change: train against an AI the rush does not beat.** `--curriculum-below learner` (built, fe95255): the curriculum goes below zero and taxes the learner's income, as the evaluation's handicap rungs do, keeping the curriculum games at ~50%. At -25% the rush fails half the time and the AI reaches the long game: the policy has to hold, tech and take more heroes to win, and every win there counts on the rungs, which are rated players (1,907 and ~2,500). `fgself-85`'s bonus to the AI's income did not work (the insane AI with 90% more still lost ~85%: the rush killed it first); a tax on the learner slows the rush itself. Next after burst-258, from 252's average: `--curriculum-below learner --curriculum-floor -0.6`.
+
+Others that would be bold, if this does not move: the same pressure in games between agents (a stronger tax on the favourite: `--win-balance` above 0.5); a target strategy chosen per matchup for evaluation games (the with-target play develops, at 0.51-0.57 against insane); a larger network (tried at 8 layers in October: level).
