@@ -6382,6 +6382,15 @@ def main(argv: list[str] | None = None) -> int:
             pointer = args.teach_floor_pointer or args.teach_floor_place or args.teach_floor
             TEACH_FLOOR_POINTER = (hm.to(device), math.log(pointer))
             print(f"--teach-floor-orders harvest: a harvest lesson teaches its mine alone, under {pointer}", flush=True)
+    if args.resume:  # (a resumed grown network: its own shapes)
+        cks = sorted((run_dir / "checkpoints").glob("[0-9]*.pt"))
+        src = args.resume_weights if args.resume_weights else (cks[-1] if cks else None)
+        if src is not None:
+            cfg_saved = torch.load(src, map_location="cpu", weights_only=False).get("config")
+            if cfg_saved is not None and arch_key(cfg_saved) != arch_key(net.config):  # (fgself-260, 10 layers: the
+                net, _ = load(src, device, None if args.memory < 0 else bool(args.memory),  # resume built --init's 5
+                              vocab=vocab if fx.NEUTRAL else None)  # and failed on the checkpoint's layers 5-9)
+                print(f"resume: the network's shapes from {Path(src).name} (not --init's)", flush=True)
     if args.start_weights and not args.resume:  # a new run from another run's checkpoint (--init stays the anchor)
         start, _ = load(args.start_weights, device, None if args.memory < 0 else bool(args.memory), vocab=vocab if fx.NEUTRAL else None)
         if arch_key(start.config) != arch_key(net.config):  # a grown network (scripts/grow_model.py): its own
