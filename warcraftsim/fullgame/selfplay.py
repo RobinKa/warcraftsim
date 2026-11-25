@@ -5264,12 +5264,22 @@ class LeagueExploiters:
     Files, run_dir/league-exploiters/<i>/: <version>.pt each version games play (publish, the newest 40), state.pt its
     weights and counts after every update (a resume's), adam.pt its moments with the run's checkpoints."""
 
-    def __init__(self, n: int, slot: FullGameNet, opt, start: dict, run_dir: Path, vocab: dict, updater=None):
+    def __init__(self, n: int, slot: FullGameNet, opt, start: dict, run_dir: Path, vocab: dict, updater=None,
+                 adam0: list | None = None):
         self.slot, self.opt, self.updater = slot, opt, updater
         self.start, self.run_dir, self.vocab = start, Path(run_dir), vocab
         self.params = list(slot.parameters())
-        self.nets = [{"state": _tensor_copy(start), "adam": None, "buf": [], "chunks": [], "version": 0, "since": 0,
-                      "age": 0, "life": 0, "stats": {}} for _ in range(n)]
+        # (--exploiter-adam saved: each life starts with the Adam state of the run's starting weights, adam_snapshot's
+        # list in the parameters' order; None: zeroed, the fresh-Adam damage the main exploiter had, fgself-244)
+        self.adam0 = adam0
+        self.nets = [{"state": _tensor_copy(start), "adam": self._fresh_adam(), "buf": [], "chunks": [], "version": 0,
+                      "since": 0, "age": 0, "life": 0, "stats": {}} for _ in range(n)]
+
+    def _fresh_adam(self) -> dict | None:
+        """A new life's moments: the start's (--exploiter-adam saved), else None (zeroed at swap_in)."""
+        if not self.adam0:
+            return None
+        return {k: _tensor_copy(st) for k, st in enumerate(self.adam0) if st}
 
     def dir(self, i: int) -> Path:
         d = self.run_dir / "league-exploiters" / str(i)
@@ -5349,7 +5359,7 @@ class LeagueExploiters:
         x = self.nets[i]
         for k, v in self.start.items():
             x["state"][k].copy_(v)
-        x["adam"], x["age"], x["since"], x["life"] = None, 0, 0, x["version"]
+        x["adam"], x["age"], x["since"], x["life"] = self._fresh_adam(), 0, 0, x["version"]
 
     def _model(self, i: int) -> dict:
         return {k: v.detach().cpu() for k, v in self.nets[i]["state"].items()}
@@ -6684,7 +6694,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.league_exploiters > 0:  # (not `slot`: the run's own, claim_slot's, goes to the actors)
         lx_net = copy.deepcopy(net)
         lx_opt = torch.optim.Adam(lx_net.parameters(), lr=args.lr, eps=1e-5, capturable=graphed, **adam_kw)
-        lxs = LeagueExploiters(args.league_exploiters, lx_net, lx_opt, x_init, run_dir, vocab)
+        lxs = LeagueExploiters(args.league_exploiters, lx_net, lx_opt, x_init, run_dir, vocab, adam0=x_adam0)
+        if x_adam0 is not None:
+            print("--exploiter-adam saved: the league exploiters start each life with the starting weights' Adam state", flush=True)
         for li, lxn in enumerate(lxs.nets):
             if resumed is not None and lxs.load(li, device):
                 print(f"league exploiter {li}: version {lxn['version']} ({lxn['since']} updates since it joined, "
