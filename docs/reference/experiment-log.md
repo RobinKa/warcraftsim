@@ -2710,6 +2710,23 @@ Head to head 260's average 0.512 against 252's (164 games), **0.618 against 236'
 
 - **`fgself-260` (the larger network): leaning up, not proven.** The highest rating of any policy, +24 ±21 over its start's average, but inside the errors; head to head level with its start, clearly ahead of 236's. Its long games are no better (1 hero, tier 1.6, won 0.26): the same rush, a little sharper. Speed ~3,500-5,000 steps a second (close to 5 layers); GPU memory near full (two crashes, both in the gradient-noise measurement; off for 10-layer runs). Continued to ~54M (17:17): does a larger network keep gaining with training?
 - `fgself-260` continued 17:17-19:34 to 53.9M (~3,300 steps a second, GPU 18.6-18.9 GB, the noise measurement off, no crash). In training against insane without a target 0.73-0.88 by quarter hour; its raw policy over the whole run 0.492 head to head against 252's average (622 games) and 0.497 against 236's (589). **burst-260b** (19:35-20:21): its 44-54M average against its 17-27M one, 252's and 236's.
+
+**burst-260b** (833 games):
+
+| policy | rating | against insane, untaxed | agent at -25% income |
+|---|---|---|---|
+| `fgself-260`'s 17-27M average (10 layers) | 1,910 ±16 | 0.903 ±0.081 (58 games) | 0.50 (24) |
+| `fgself-252`'s average (5 layers) | 1,888 ±9 | 0.979 ±0.039 (57) | 0.53 (17) |
+| `fgself-260`'s 44-54M average | 1,888 ±18 | 0.901 ±0.075 (66) | 0.44 (18) |
+| `fgself-236`'s average | 1,876 ±7 | 0.921 ±0.066 (63) | 0.64 (14) |
+
+Head to head the 44-54M average 0.459 against its own 17-27M one (133 games), 0.449 against 252's (156), 0.580 against 236's (150).
+
+**The larger network does not keep gaining.** Its second half stands level with 252's and below its first half: the same as the 5-layer generations. The 17-27M average stays +22 ±18 over 252's (two bursts now: 1,905 and 1,910), leaning up and not proven; the play is the same. The 10-layer line rests.
+
+Built: league exploiters start each life with the starting weights' Adam state under `--exploiter-adam saved` (7ffa6ad; zeroed, they would have had the main exploiter's old damage).
+
+**`fgself-261`** (20:26, code 7ffa6ad): **league exploiters**: from 252's average with its league and recipe, plus `--league-exploiters 2` (each in 5% of the launches against an opponent drawn from the whole league by PFSP; joining at 0.7). Control: 252's average.
 - **`fgself-259` (the learner taxed against the AI): not kept.** Level with the control (1,856 ±29, few games), its -25% rung 0.50 against 0.43, its long games won 0.47 against 0.30, but no more heroes, tech or research in them. The pressure did not change what it builds.
 - The box's game service had exited at 15:55: pointed at the run's previous commit, its code was refused (the learner had relaunched on a newer one). The box must get the commit the launch line names.
 
