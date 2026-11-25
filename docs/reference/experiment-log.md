@@ -2697,6 +2697,21 @@ The larger network is next, before the burst (the user: "try a larger network ju
 
 `fgself-260` stopped at 27.0M (16:25); its 17-27M average (32 checkpoints, 10 layers) is built. **burst-260** (16:26-17:12): 260's and 259's averages against 252's and 236's.
 
+**burst-260** (863 games):
+
+| policy | rating | against insane, untaxed | agent at -25% income | long games against the AI (> 15 min): won |
+|---|---|---|---|---|
+| `fgself-260`'s average (10 layers) | 1,905 ±19 | 0.850 ±0.115 (67 games) | 0.25 (20) | 0.26 (43) |
+| `fgself-252`'s average (the control) | 1,881 ±9 | 0.857 ±0.097 (63) | 0.43 (23) | 0.30 (37) |
+| `fgself-236`'s average | 1,875 ±7 | 0.887 ±0.078 (70) | 0.55 (20) | 0.47 (38) |
+| `fgself-259`'s average (the learner taxed against the AI) | 1,856 ±29 (251 games) | 0.874 ±0.088 (66) | 0.50 (20) | 0.47 (36) |
+
+Head to head 260's average 0.512 against 252's (164 games), **0.618 against 236's** (131), 0.578 against 259's (153).
+
+- **`fgself-260` (the larger network): leaning up, not proven.** The highest rating of any policy, +24 ±21 over its start's average, but inside the errors; head to head level with its start, clearly ahead of 236's. Its long games are no better (1 hero, tier 1.6, won 0.26): the same rush, a little sharper. Speed ~3,500-5,000 steps a second (close to 5 layers); GPU memory near full (two crashes, both in the gradient-noise measurement; off for 10-layer runs). Continued to ~54M (17:17): does a larger network keep gaining with training?
+- **`fgself-259` (the learner taxed against the AI): not kept.** Level with the control (1,856 ±29, few games), its -25% rung 0.50 against 0.43, its long games won 0.47 against 0.30, but no more heroes, tech or research in them. The pressure did not change what it builds.
+- The box's game service had exited at 15:55: pointed at the run's previous commit, its code was refused (the learner had relaunched on a newer one). The box must get the commit the launch line names.
+
 **The undead's starting ghoul moves back and forth** (the user, from `fgself-245`'s videos): not the creep lesson. The policy orders it "move (point)" and "smart (tree)" on alternating steps, 40-67 moves in the first two minutes, in games against the built-in AI with a target strategy, since `fgself-236` (also in 238, 241, 244; none without a target in the few replays). Cause open: an agent probes it (one game on the CPU, with and without a target).
 
 **The ghoul's back and forth: found, a fix merged** (15:12; `scripts/ghoul_probe.py`, a live game with `fgself-236`'s average on the CPU). A harvester right-clicked onto a tree ("smart (tree)", the tree order the policy gives a free ghoul) reads as current order `smart` for its whole first trip (a ghoul, peasant or peon 12-15 s; a wisp for as long as it stays), not `harvest`. In that state the policy answers with "move (point)" (0.86-0.93 in a target game; the move hangs on the target's items part), the move frees the ghoul, and the free ghoul gets "smart (tree)" again (0.92-0.97): a two-step cycle, learned in `fgself-236` (before it right-clicks drew no moves). Reading `harvest` the same policy leaves it alone. Not the lumber lesson (no label given), not a mask (the same 15 orders allowed throughout). In 240 steps of a target game: 61-76 moves and 40-60 lumber. Without a target 0-8 moves and 120-160 lumber: evaluation games are mildly affected. Peasants and peons have no such habit; wisps a little.
