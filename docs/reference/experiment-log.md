@@ -2670,6 +2670,21 @@ Built during the burst: `--ref-kl-units macro` (85c71c1): the anchor's KL over w
 
 **The loss analysis** (the user: only bold changes that can lift the rating a lot; `docs/proposals/next-experiments.md`, "What the losses say"): the policy plays one strategy, a tier-1 rush with one hero and ~7 workers, in every game; it wins when the rush breaks the AI by minute ~8 and loses every long game out-developed (the AI with 2.7 heroes, tier 2.9, ~16 upgrades, twice the gold, a second base). In training the curriculum against the AI sat at its floor and the learner won 0.92 of those games without a target. Built: `--curriculum-below learner` (fe95255): below zero the curriculum taxes the learner's income, as the evaluation's rungs, to keep those games near 50%. Next after the burst.
 
+**burst-258** (976 games):
+
+| policy | rating | against insane, untaxed | agent at -25% income |
+|---|---|---|---|
+| `fgself-252`'s average (the control) | 1,882 ±10 | 0.885 ±0.090 (66 games) | 0.38 (24) |
+| `fgself-250`'s average | 1,879 ±11 | 0.916 ±0.063 (58) | 0.48 (25) |
+| `fgself-236`'s average | 1,877 ±7 | 0.852 ±0.092 (60) | 0.37 (31) |
+| `fgself-258`'s average (the anchor on workers and buildings only) | 1,778 ±16 | 0.785 ±0.109 (61) | 0.21 (21) |
+
+Head to head 258's average 0.396 against 252's (225 games), 0.329 against 250's, 0.369 against 236's.
+
+**`fgself-258`: not kept, clearly worse** (-104). Freed from the anchor, the army's play got worse: the anchor holds the army up as well as the macro, timing and all. The anchor stays whole.
+
+**`fgself-259`** (11:21, code efc5a51): **an AI the rush does not beat**: from 252's average with its league and recipe, plus `--curriculum-below learner --curriculum-floor -0.6`. Control: 252's average.
+
 **The undead's starting ghoul moves back and forth** (the user, from `fgself-245`'s videos): not the creep lesson. The policy orders it "move (point)" and "smart (tree)" on alternating steps, 40-67 moves in the first two minutes, in games against the built-in AI with a target strategy, since `fgself-236` (also in 238, 241, 244; none without a target in the few replays). Cause open: an agent probes it (one game on the CPU, with and without a target).
 
 **The ghoul's back and forth: found, a fix merged** (15:12; `scripts/ghoul_probe.py`, a live game with `fgself-236`'s average on the CPU). A harvester right-clicked onto a tree ("smart (tree)", the tree order the policy gives a free ghoul) reads as current order `smart` for its whole first trip (a ghoul, peasant or peon 12-15 s; a wisp for as long as it stays), not `harvest`. In that state the policy answers with "move (point)" (0.86-0.93 in a target game; the move hangs on the target's items part), the move frees the ghoul, and the free ghoul gets "smart (tree)" again (0.92-0.97): a two-step cycle, learned in `fgself-236` (before it right-clicks drew no moves). Reading `harvest` the same policy leaves it alone. Not the lumber lesson (no label given), not a mask (the same 15 orders allowed throughout). In 240 steps of a target game: 61-76 moves and 40-60 lumber. Without a target 0-8 moves and 120-160 lumber: evaluation games are mildly affected. Peasants and peons have no such habit; wisps a little.
