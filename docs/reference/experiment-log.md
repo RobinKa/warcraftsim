@@ -2729,6 +2729,21 @@ Built: league exploiters start each life with the starting weights' Adam state u
 **`fgself-261`** (20:26, code 7ffa6ad): **league exploiters**: from 252's average with its league and recipe, plus `--league-exploiters 2` (each in 5% of the launches against an opponent drawn from the whole league by PFSP; joining at 0.7). Control: 252's average.
 
 `fgself-261` in training (20:26-22:40, ~3,500-3,800 steps a second, GPU memory 22.7-23.9 of 23.5 GB): both league exploiters trained and joined the league once each (their scores against the league 0.44 and 0.54, against the main policy 0.58 and 0.82); the main exploiter 0.37-0.69 against the main (11 restarts). The main policy against insane without a target 0.76-0.92 by quarter hour, head to head 0.446 against 252's average (270 games). Stopped at 27.0M (22:40); **burst-261** (22:41-23:27): its 17-27M average against 252's, 260's 17-27M and 236's.
+
+**burst-261** (964 games):
+
+| policy | rating | against insane, untaxed | agent at -25% income |
+|---|---|---|---|
+| `fgself-261`'s average (league exploiters) | 1,909 ±16 | 0.892 ±0.066 (90 games) | 0.67 (24) |
+| `fgself-260`'s 17-27M average (10 layers) | 1,899 ±14 | 0.866 ±0.070 (84) | 0.43 (21) |
+| `fgself-252`'s average (the control) | 1,889 ±8 | 0.915 ±0.073 (68) | 0.80 (20) |
+| `fgself-236`'s average | 1,876 ±7 | 0.918 ±0.068 (72) | 0.42 (24) |
+
+Head to head 261's average **0.565 against 252's** (162 games), 0.515 against 260's, 0.503 against 236's.
+
+**`fgself-261` (league exploiters): leaning up, not proven** (+20 ±18; head to head 0.565, ~1.7 standard errors). With `fgself-260`'s first half (+22 ±18 in two bursts) the two leaning gains of the day. Its play in long games is unchanged (1 hero, tier 1.5). The league exploiters fill the league over time (AlphaStar ran them for weeks): continued to ~54M at 23:31.
+
+Where today ends: the bold tries on the training setup each hold the plateau's level or lean up by ~20 (the learner's tax level; 10 layers +22 at 27M and no more after; league exploiters +20), none past the errors, and none changes the strategy (a one-hero tier-1 rush in every game). Next to scope with the user: the reward. The shaping's material potential pays for army now and nothing for research, hero levels or saved gold; a potential from a win-probability estimate would value tech and heroes by what they win.
 - **`fgself-259` (the learner taxed against the AI): not kept.** Level with the control (1,856 ±29, few games), its -25% rung 0.50 against 0.43, its long games won 0.47 against 0.30, but no more heroes, tech or research in them. The pressure did not change what it builds.
 - The box's game service had exited at 15:55: pointed at the run's previous commit, its code was refused (the learner had relaunched on a newer one). The box must get the commit the launch line names.
 
