@@ -1383,3 +1383,14 @@ def test_league_fixed_opponents_share(tmp_path):
     agents = {a["name"]: a["p"] for a in lg.spec()["agents"]}
     assert abs(agents["fixed:fgself-130/5534555.pt"] - 0.5 * 0.25) < 1e-9
     assert abs(sum(v for k, v in agents.items() if k.startswith("past:")) - 0.5 * 0.75) < 1e-9
+
+
+def test_curriculum_below_zero_taxes_the_learner():
+    """--curriculum-below learner: a level below 0 taxes the learner's income (its side), not a bonus to the AI's;
+    above 0, and with the default, as before."""
+    from warcraftsim.fullgame.selfplay import curriculum_tax
+    assert curriculum_tax(0.3, {}, 1) == {"tax": 0.3}
+    assert curriculum_tax(-0.27, {}, 1) == {"tax": -0.27}                                # (a bonus to the AI, as before)
+    assert curriculum_tax(-0.27, {"curriculum_below": "ai"}, 1) == {"tax": -0.27}
+    assert curriculum_tax(-0.27, {"curriculum_below": "learner"}, 1) == {"tax": 0.27, "tax_side": 1}
+    assert curriculum_tax(0.3, {"curriculum_below": "learner"}, 0) == {"tax": 0.3}     # (above 0: the AI's)

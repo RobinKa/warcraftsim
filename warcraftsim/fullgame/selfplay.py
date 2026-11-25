@@ -1415,6 +1415,14 @@ def handicap_levels(spec) -> list:
     return [float(x) for x in str(spec or "").split(",") if x.strip() and 0.0 < float(x) < 1.0]
 
 
+def curriculum_tax(tax: float, cfg: dict, side: int) -> dict:
+    """The opponent's tax fields for a curriculum game at the level's `tax` (League.knobs): > 0 the AI's income taxed;
+    < 0 a bonus to the AI's income, or with --curriculum-below learner the learner's (`side`) income taxed by -tax."""
+    if tax < 0 and cfg.get("curriculum_below") == "learner":
+        return {"tax": -tax, "tax_side": side}
+    return {"tax": tax}
+
+
 def eval_handicap(cfg: dict, rng) -> float:
     """An evaluation matchup's handicap: with chance --eval-handicap-share one of --eval-handicap's levels, else 0."""
     levels = cfg.get("eval_handicap") or []
@@ -1797,8 +1805,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                         opp["curriculum"] = now.get("level", 0.0)
                         if late:
                             opp["start"] = int(round(now.get("delay", 0.0) / cfg["step_seconds"]))
-                        if now.get("tax", 0.0) != 0:  # (< 0: a bonus, --curriculum-floor)
-                            opp["tax"] = now["tax"]
+                        if now.get("tax", 0.0) != 0:  # (< 0: a bonus, --curriculum-floor; or the learner's tax)
+                            opp.update(curriculum_tax(now["tax"], cfg, side))
                     # a video: the first game of a launch (its replay then holds just this game)
                     film = films and fresh and time.time() >= next_video and ai["kind"] != "lexploit"  # (a league
                     # exploiter's game: no video of the learner's)
@@ -3137,7 +3145,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         "gold": prod.row(side, obs)["gold"], "opponent_gold": prod.row(1 - side, obs)["gold"],  # (this game's)
         "orders": bots[side].issued if side in bots else 0,
         **({"curriculum": opp["curriculum"], "handicap": g.setup.slots[side].handicap,
-            "ai_delay": opp.get("start", 0) * cfg["step_seconds"], "ai_tax": opp.get("tax", 0.0)}
+            "ai_delay": opp.get("start", 0) * cfg["step_seconds"], "ai_tax": (-opp.get("tax", 0.0) if opp.get("tax_side") == side else opp.get("tax", 0.0))}
            if "curriculum" in opp else {}),
         # games between agents: the share of the learner's income taken (< 0: of the opponent's)
         **({"balance_tax": opp["tax"] if opp["tax_side"] == side else -opp["tax"]} if "tax_side" in opp else {}),
@@ -5936,6 +5944,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--curriculum-delay", type=float, default=120.0,
                     help="the knob at level 1: the AI's late start (seconds; modes hp and delay) or the share of "
                          "its income taken (mode tax, e.g. 0.9)")
+    ap.add_argument("--curriculum-below", default="ai", choices=("ai", "learner"), help="mode tax, a level below 0 (--curriculum-floor): "
+                    "ai: a bonus to the AI's income (fgself-85: the insane AI with 90%% more still lost ~85%%: the rush wins "
+                    "before income matters); learner: the learner's income taxed by -level x --curriculum-delay, as the "
+                    "evaluation's handicap rungs (at -25%% the best policies win ~0.5 and lose the long games they reach)")
     ap.add_argument("--curriculum-floor", type=float, default=0.0,
                     help="mode tax: the lowest level; below 0 the tax becomes a bonus to the AI's income (its share "
                          "the level times --curriculum-delay), so a learner that keeps winning meets a richer AI")
@@ -6686,7 +6698,7 @@ def main(argv: list[str] | None = None) -> int:
            "actors": args.actors, "values": unit_values(), "shaping": args.shaping, "shaping_scale": args.shaping_scale,
            "shaping_decay": args.shaping_decay,
            "tie_break": args.tie_break, "tie_value": args.tie_value, "compile": bool(args.compile), "native_obs": bool(args.native_obs),
-           "real_share": args.real_share, "real_map": args.real_map, "infer_batch": 64, "infer_streams": args.infer_streams, "infer_pipeline": args.infer_pipeline,
+           "real_share": args.real_share, "curriculum_below": args.curriculum_below, "real_map": args.real_map, "infer_batch": 64, "infer_streams": args.infer_streams, "infer_pipeline": args.infer_pipeline,
            "infer_fuse": args.infer_fuse, "game_cuts": args.game_cuts, "shared_noise": args.shared_noise,
            "unit_credit": args.unit_credit, "unit_gamma": args.unit_gamma, "upgo": args.upgo,
            "hero_level_value": args.hero_level_value,
