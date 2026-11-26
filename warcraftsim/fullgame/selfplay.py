@@ -1962,6 +1962,29 @@ def expand_lesson_until(cfg: dict, late_start: dict | None) -> float:
     return s
 
 
+def creep_lesson_until(cfg: dict, late_start: dict | None) -> float:
+    """--creep-lesson-until for a game's teachers: S (0: all game; the teacher's limit is S times its pace). In a late
+    start what is left of S then (a second at least: a state from past S has no creep lessons), as expand_lesson_until.
+    Taken as it was, a late start from minute 8-16 had its creep lessons for S more seconds of its own clock (fgself-257,
+    "the creep lesson as meant", --creep-lesson-until 480: 5,810 of its lessons in late starts, all past minute 8)."""
+    s = float(cfg.get("creep_lesson_until", 0.0) or 0.0)
+    if s > 0 and late_start is not None and late_start.get("minute"):
+        pace = cfg.get("lesson_time_scale") or teacher_pace(cfg["map"])
+        s = max(s - 60.0 * float(late_start["minute"]) / pace, 1.0)
+    return s
+
+
+def hunt_press_from(cfg: dict, late_start: dict | None) -> float:
+    """--hunt-press for a game's teachers: S (0: none; the teacher's own game second, no pace). In a late start what is
+    left of S then (a second at least: a state from past S presses from its start). Taken as it was, a late start from
+    minute 8-16 pressed only from S seconds of its own clock, game minute 20-28 at S 720 (fgself-255: a quarter of its
+    training games were late starts, the long games the press was for)."""
+    s = float(cfg.get("hunt_press", 0.0) or 0.0)
+    if s > 0 and late_start is not None and late_start.get("minute"):
+        s = max(s - 60.0 * float(late_start["minute"]), 1.0)
+    return s
+
+
 def floor_lesson_classes(vocab: dict, groups=()) -> torch.Tensor | None:
     """--teach-floor-orders workers: the order classes [O+1] floored at --teach-floor on the heuristic teacher's own
     lessons only (the rows marked "y_teach"; distill_loss): the races' workers' train orders, the early expansion
@@ -2787,9 +2810,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                             spells=float(cfg.get("spell_lesson", 0.0) or 0.0),
                             attacks=float(cfg.get("attack_lesson", 0.0) or 0.0),
                             hero_weights=hero_weights(cfg.get("first_hero_weights", "")),
-                            hunt_press=float(cfg.get("hunt_press", 0.0) or 0.0),
+                            hunt_press=hunt_press_from(cfg, late_start),
                             creep_cap=int(cfg.get("creep_lesson_cap", 0) or 0),
-                            creep_until=float(cfg.get("creep_lesson_until", 0.0) or 0.0),
+                            creep_until=creep_lesson_until(cfg, late_start),
                             expand_from=expand_lesson_from(cfg, late_start),
                             expand_share=float(cfg.get("expand_lesson_share", 1.0)),
                             expand_reserve=int(cfg.get("expand_lesson_reserve", 0) or 0),
