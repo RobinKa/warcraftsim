@@ -5051,6 +5051,72 @@ class EmaAnchor:
         return path.name
 
 
+class ActEma:
+    """--act-ema H: the games play an exponential moving average of the weights instead of the raw ones (the literature
+    note of 2026-11-26, idea 1: a run's raw policy rates 100-250 below its own weight average, so every training game, its
+    own sides, the self-play opponent and the league's snapshots, was played by a policy far weaker than the one judged).
+    After each update every floating weight and buffer of `act` moves 1 - 0.5 ** (steps / H) of the way to the learner's
+    (a half-life of H agent steps); the others are copied. `act` is what publish() sends to the games (current.pt), so
+    the behaviour log-probabilities and values the games record, PPO's ratio and GAE, are the average's; the league's
+    snapshots are its weights. Saved with every checkpoint as averaged/ema-<steps>.pt (the ratings: "<run> avg ema-...")
+    and taken up again on a resume; a fork starts it from its starting weights."""
+
+    def __init__(self, net: FullGameNet, half_life: float):
+        self.net, self.half_life = net, float(half_life)
+        self.act = type(net)(**net.config).to(next(net.parameters()).device).eval()
+        self.act.load_state_dict(net.state_dict())
+        for q in self.act.parameters():
+            q.requires_grad_(False)
+        sa, sn = self.act.state_dict(), net.state_dict()  # (views of the modules' own tensors: in place updates them)
+        self.fa = [sa[k] for k in sa if sa[k].is_floating_point()]
+        self.fn = [sn[k] for k in sa if sa[k].is_floating_point()]
+        self.oa = [sa[k] for k in sa if not sa[k].is_floating_point()]
+        self.on = [sn[k] for k in sa if not sa[k].is_floating_point()]
+
+    @torch.no_grad()
+    def step(self, steps: int) -> float:
+        """The average a step towards the learner's weights after an update of `steps` agent steps -> the share moved."""
+        tau = 1.0 - 0.5 ** (max(int(steps), 0) / self.half_life)
+        if self.fa:
+            torch._foreach_lerp_(self.fa, self.fn, tau)
+        for a, n in zip(self.oa, self.on):
+            a.copy_(n)
+        return tau
+
+    @torch.no_grad()
+    def distance(self) -> float:
+        """How far the average is from the learner's weights, over their norm (L2 over all floating weights)."""
+        if not self.fa:
+            return 0.0
+        d = torch.stack(torch._foreach_norm(torch._foreach_sub(self.fa, self.fn))).norm()
+        return float(d / torch.stack(torch._foreach_norm(self.fn)).norm().clamp_min(1e-12))
+
+    @staticmethod
+    def path(run_dir: Path, checkpoint: str | Path) -> Path:
+        """The average's file beside a checkpoint: averaged/ema-<the checkpoint's steps>.pt."""
+        return Path(run_dir) / "averaged" / f"ema-{Path(checkpoint).stem}.pt"
+
+    def save(self, run_dir: Path, vocab: dict, agent_steps: int, update: int) -> Path:
+        dest = self.path(run_dir, f"{agent_steps:016d}.pt")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_name(dest.name + ".tmp")
+        torch.save({"model": {k: v.detach().cpu() for k, v in self.act.state_dict().items()}, "config": self.act.config,
+                    "vocab": vocab, "agent_steps": agent_steps, "update": update, "act_ema": self.half_life}, tmp)
+        tmp.replace(dest)
+        return dest
+
+    def resume(self, run_dir: Path, checkpoint: str | Path | None) -> Path | None:
+        """The average as it was at `checkpoint` (a resume) -> its file; None (none saved: it starts from the weights)."""
+        if checkpoint is None:
+            return None
+        src = self.path(run_dir, checkpoint)
+        if not src.exists():
+            return None
+        self.act.load_state_dict(torch.load(src, map_location=next(self.act.parameters()).device,
+                                            weights_only=False)["model"])
+        return src
+
+
 def save_checkpoint(path: Path, net: FullGameNet, opt, vocab: dict, agent_steps: int, update: int, keep_opt: int = 3,
                     ema: EmaAnchor | None = None) -> None:
     """A checkpoint, and Adam's state next to it (<steps>.adam; the newest `keep_opt` kept): a fork or a
@@ -6197,6 +6263,10 @@ def main(argv: list[str] | None = None) -> int:
                     "this share of the way to the policy's (an anchor from --init that follows slowly: a half-life of "
                     "ln 2 / this updates, 0.000115 ~6,000; EmaAnchor). Saved with each checkpoint (<steps>.ref) and taken "
                     "up again on a resume; a fork (a new run) starts it from --init again. 0: the anchor stays --init")
+    ap.add_argument("--act-ema", type=float, default=0.0, help="the games play an exponential moving average of the "
+                    "weights with this half-life in agent steps (ActEma; e.g. 3500000, about the 17-27M average's mean "
+                    "age), not the raw weights: the behaviour policy of PPO's ratio and GAE, the self-play opponent and "
+                    "the league's snapshots are the average's. Saved as averaged/ema-<steps>.pt with each checkpoint. 0: off")
     ap.add_argument("--worker-cap", type=int, default=0, help="the shaping's material counts a player's workers only as "
                     "much as this many (0: all; trace.material)")
     ap.add_argument("--shaping-anneal", type=int, default=0, help="updates over which the shaping's weight falls to 0 "
@@ -6651,7 +6721,13 @@ def main(argv: list[str] | None = None) -> int:
         league.past.insert(0, Member(name, path=str(path), steps=0))
         print(f"league: {name} added for good", flush=True)
     league.write()
-    publish(net, resumed["update"] if resumed else 0, run_dir)
+    act = None  # --act-ema: the average the games play (from the start's weights; a resume's as it was saved)
+    if args.act_ema > 0:
+        act = ActEma(net, args.act_ema)
+        got = act.resume(run_dir, resumed.get("checkpoint") if resumed else None)
+        print(f"--act-ema: the games play a moving average of the weights (half-life {args.act_ema:,.0f} agent steps), "
+              f"{'from ' + str(got) if got else 'from the weights'}", flush=True)
+    publish(act.act if act is not None else net, resumed["update"] if resumed else 0, run_dir)
     # --obs-fade / --memory-fade: only for a network that has never seen the new entities. A fork of a run that faded them in
     # (its start weights' bias near 0) had them hidden again from its update 0 for the fade's length (every fork of
     # fgself-197 spent ~600 updates nearly blind to corpses, items and area spells; 2026-11-10)
@@ -7056,17 +7132,23 @@ def main(argv: list[str] | None = None) -> int:
             stats.update(part_stats)
             if net.config.get("ghost"):
                 stats["memory/ghost_bias"] = float(net.ghost_bias)
+            if act is not None:  # --act-ema: the average a step towards the updated weights, then the games get it
+                stats["act_ema/tau"] = act.step(len(steps))
+                stats["act_ema/distance"] = act.distance()
             update += 1
             agent_steps += len(steps)
-            publish(net, update, run_dir)
+            publish(act.act if act is not None else net, update, run_dir)
             if native is not None:
                 native.loop.learner_busy = 0
             if update % args.snapshot_every == 0:
                 path = run_dir / "checkpoints" / f"{agent_steps:016d}.pt"
                 save_checkpoint(path, net, opt, vocab, agent_steps, update, ema=ema)
-                league.add_snapshot(path, agent_steps)
+                # (--act-ema: the league's snapshot is the average the games played, not the raw weights)
+                league.add_snapshot(act.save(run_dir, vocab, agent_steps, update) if act is not None else path, agent_steps)
             elif update % args.checkpoint_every == 0:
                 save_checkpoint(run_dir / "checkpoints" / f"{agent_steps:016d}.pt", net, opt, vocab, agent_steps, update, ema=ema)
+                if act is not None:
+                    act.save(run_dir, vocab, agent_steps, update)
             if xopt is not None and (update % args.snapshot_every == 0 or update % args.checkpoint_every == 0):
                 save_exploiter_opt(xopt, run_dir, x_update, x_since)  # (a resume's exploiter goes on with its moments)
             if lxs is not None and (update % args.snapshot_every == 0 or update % args.checkpoint_every == 0):
@@ -7106,6 +7188,8 @@ def main(argv: list[str] | None = None) -> int:
         info["finished"] = time.time()
         save_info()
         save_checkpoint(run_dir / "checkpoints" / f"{agent_steps:016d}.pt", net, opt, vocab, agent_steps, update, ema=ema)
+        if act is not None:  # (--act-ema: the average beside it, for the resume)
+            act.save(run_dir, vocab, agent_steps, update)
         if xopt is not None:
             try:
                 save_exploiter_opt(xopt, run_dir, x_update, x_since)
