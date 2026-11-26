@@ -189,3 +189,10 @@ def test_variances_without_lapack():
         h = a @ a.T + n * np.eye(n)
         assert np.allclose(ratings._inverse_diagonal(h), np.diag(np.linalg.inv(h)), rtol=1e-10)
     assert ratings._inverse_diagonal(np.array([[1.0, 2.0], [2.0, 1.0]])) is None  # (not positive definite)
+
+
+def test_soup_names():
+    from warcraftsim.dashboard.ratings import checkpoint_name, policy_of
+    assert checkpoint_name("runs/fullgame/soups/soup-2026-11-26.pt") == "soup avg soup-2026-11-26"
+    assert checkpoint_name("vs soups/soup-2026-11-26.pt") == "soup avg soup-2026-11-26"
+    assert policy_of("soup avg soup-2026-11-26")["kind"] == "average"

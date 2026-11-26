@@ -2774,6 +2774,25 @@ Head to head the 44-53M average 0.455 against its own 17-27M one (168 games), 0.
 **League exploiters do not keep paying.** The second half falls back to (below) the start's level, as the 10-layer network's and the generations' did. **The pattern of the week**: every fork from a strong average leans up ~+20 in its first 17-27M average (250, 260, 261: 1,905-1,914) and gives it back with more training (253, 260's and 261's second halves: 1,847-1,888). The first window's lean is likely the average's own lift on a policy that has barely moved from its start, not the change.
 
 **`fgself-263`** (13:10, code eebdf7c): half the shaping (`--shaping 0.25`), from 252's average; control: that average. A cheap run of the user's line (other shaping without a model) while the next big step is chosen.
+
+`fgself-263` ran to 27.0M: in training its play was unchanged (development past 10 min as 252's, 0.82-0.88 against insane without a target), its raw head to head 0.427 against 252's average. Its 17-27M average (31 checkpoints) went into **burst-soup** with the model soup.
+
+**The model soup** (2026-11-26, the user: "big changes only"): `scripts/soup.py` averages the 17-27M averages of ten runs from one family (`fgself-241, 244, 249, 250, 252, 253, 255, 257, 259, 261`; all 5 layers, one config) into `runs/fullgame/soups/soup-2026-11-26.pt`. **burst-soup** (14:52-15:37, 1,049 games; the dashboard names soups `soup avg <name>` since this burst):
+
+| policy | rating | against insane, untaxed | agent at -25% income |
+|---|---|---|---|
+| the soup | 1,923 ±17 | 0.915 ±0.061 (76 games) | 0.50 (22) |
+| `fgself-261`'s 17-27M average | 1,920 ±13 | 0.985 ±0.024 (87) | 0.41 (16) |
+| `fgself-260`'s 17-27M average | 1,906 ±14 | — | — |
+| `fgself-252`'s average | 1,895 ±7 | 0.956 ±0.049 (81) | 0.52 (21) |
+| `fgself-236`'s average | 1,883 ±6 | — | — |
+| `fgself-263`'s 17-27M average | 1,796 ±23 | 0.877 ±0.074 (82) | 0.14 (21) |
+
+Head to head the soup 0.549 against 252's average (184 games), 0.519 against 261's (189), 0.661 against 263's (174).
+
+**The soup leans up, not proven**: +28 ±18 over 252's average (1.5 standard errors), level with 261's first window. Averaging ten runs' averages costs nothing (they share one basin) and lands where the best of them is; it is no big jump.
+
+**`fgself-263` (half the shaping) NOT KEPT: -99 ±24**, the largest fall of any change this month; at -25% income it won 0.14 against 0.50. The material shaping carries much of the policy's strength: with less of it the policy trades worse. So the dense reward is a strong lever, which is the case for a better dense reward (the win-probability shaping) over taking it away.
 - **`fgself-259` (the learner taxed against the AI): not kept.** Level with the control (1,856 ±29, few games), its -25% rung 0.50 against 0.43, its long games won 0.47 against 0.30, but no more heroes, tech or research in them. The pressure did not change what it builds.
 - The box's game service had exited at 15:55: pointed at the run's previous commit, its code was refused (the learner had relaunched on a newer one). The box must get the commit the launch line names.
 

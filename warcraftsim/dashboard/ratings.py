@@ -50,6 +50,8 @@ _AVG = re.compile(r"(fgself-[\w.-]+)/averaged/([\w.-]+)\.pt")
 # head-to-head opponent that is a weight average is rated: selfplay tags the game "vs fgself-236/swa-43-53.pt", the
 # run and the file's name without its folder, which read as no checkpoint, so 8,366 such games had been dropped)
 _VS_AVG = re.compile(r"vs (fgself-[\w.-]+)/([\w.-]+)\.pt")
+_SOUP = re.compile(r"(?:^|/|vs )soups/([\w.-]+)\.pt")  # (a model soup, the mean of several runs' averages:
+# scripts/soup.py, runs/fullgame/soups/; "soup avg <name>", an average of its own)
 _HANDICAP = re.compile(r"\(real, agent -(\d+)%\)")  # (selfplay --eval-handicap's opponent name)
 # a policy's name in parts: "fgself-236/53275744" (a checkpoint), "fgself-236 avg swa-43-53" (a weight average),
 # "fgself-238 h3" (a run's policy in its hour 3), each with " +shops", " +z", " +zg" or " +human" after it or not
@@ -68,6 +70,9 @@ def checkpoint_name(path: str) -> str | None:
     a = _AVG.search(path)
     if a:
         return f"{a.group(1)} avg {a.group(2)}"
+    u = _SOUP.search(path)
+    if u:
+        return f"soup avg {u.group(1)}"
     m = _CKPT.search(path)
     if m:
         return f"{m.group(1)}/{m.group(2)}"
