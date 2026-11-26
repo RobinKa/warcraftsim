@@ -2758,6 +2758,22 @@ Resumed 09:49 (12.3M) to its budget: against insane without a target 0.75-0.77 b
 **`fgself-261` resumed** (10:38, from 34.1M toward ~54M): do the league exploiters keep paying as the league fills?
 
 `fgself-261` continued at ~3,400 steps a second, GPU memory 24.1 GB (its limit): the league exploiters joined twice each (four of their snapshots in the league), the main policy 0.78-0.87 against insane without a target, head to head 0.477 against 252's average over the run (561 games). **It died at ~53.5M (12:15) on a GPU out-of-memory** in the eager pass that measures the gradient noise's terms: with two league exploiters the GPU is as full as with 10 layers (future runs of either: `--noise-scale 0 --noise-terms 0`). Its 44-54M average is the 30 checkpoints 44.1-53.4M. **burst-261b** (12:19-13:05): that average against its 17-27M one, 252's and 236's.
+
+**burst-261b** (989 games):
+
+| policy | rating | against insane, untaxed | agent at -25% income |
+|---|---|---|---|
+| `fgself-261`'s 17-27M average | 1,912 ±15 | 0.926 ±0.057 (65 games) | 0.64 (25) |
+| `fgself-260`'s 17-27M average (10 layers) | 1,900 ±14 | — | — |
+| `fgself-252`'s average | 1,889 ±8 | 0.932 ±0.054 (77) | 0.52 (31) |
+| `fgself-236`'s average | 1,879 ±6 | 0.926 ±0.062 (79) | 0.70 (27) |
+| `fgself-261`'s 44-53M average | 1,872 ±17 | 0.909 ±0.070 (68) | 0.54 (26) |
+
+Head to head the 44-53M average 0.455 against its own 17-27M one (168 games), 0.484 against 252's (160).
+
+**League exploiters do not keep paying.** The second half falls back to (below) the start's level, as the 10-layer network's and the generations' did. **The pattern of the week**: every fork from a strong average leans up ~+20 in its first 17-27M average (250, 260, 261: 1,905-1,914) and gives it back with more training (253, 260's and 261's second halves: 1,847-1,888). The first window's lean is likely the average's own lift on a policy that has barely moved from its start, not the change.
+
+**`fgself-263`** (13:10, code eebdf7c): half the shaping (`--shaping 0.25`), from 252's average; control: that average. A cheap run of the user's line (other shaping without a model) while the next big step is chosen.
 - **`fgself-259` (the learner taxed against the AI): not kept.** Level with the control (1,856 ±29, few games), its -25% rung 0.50 against 0.43, its long games won 0.47 against 0.30, but no more heroes, tech or research in them. The pressure did not change what it builds.
 - The box's game service had exited at 15:55: pointed at the run's previous commit, its code was refused (the learner had relaunched on a newer one). The box must get the commit the launch line names.
 
