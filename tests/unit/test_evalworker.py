@@ -222,3 +222,26 @@ def test_worker_plays_at_the_runs_inference_precision(tmp_path):
     src = (paths.REPO_ROOT / "warcraftsim" / "fullgame" / "evalworker.py").read_text()
     body = src[src.index("def worker_main("):src.index("def _follow_gauntlet(")]
     assert '**precision_flags(cfg.get("infer_precision"))' in body
+
+
+def test_the_savers_rule_has_its_settings_here(tmp_path):
+    """--expand-lesson-reserve is a rule of the agent's in evaluation games too (play_one's savers): every setting the
+    savers and their helpers read reaches the worker's cfg (bug finder 12: --expand-lesson-until was missing, and
+    fgself-256's games here kept the hall's cost past its 660 s while the run's own evaluation games stopped)."""
+    import re
+
+    from warcraftsim.fullgame import selfplay
+    src = (paths.REPO_ROOT / "warcraftsim" / "fullgame" / "selfplay.py").read_text()
+    body = src[src.index("    savers = ("):src.index("    # --teach-heuristic: a target drawn")]
+    helpers = "".join(src[src.index(f"def {f}("):src.index("\n\n\ndef ", src.index(f"def {f}("))]
+                      for f in ("expand_lesson_from", "expand_lesson_until"))
+    read = set(re.findall(r'cfg(?:\.get\(|\[)"([a-z_0-9]+)"', body + helpers))
+    assert {"expand_lesson_from", "expand_lesson_until", "expand_lesson_reserve"} <= read
+    run = _run(tmp_path)
+    data = json.loads((run / "run.json").read_text())
+    data["config"].update(expand_lesson_from="360.0", expand_lesson_share="1.0", expand_lesson_reserve="360",
+                          expand_lesson_until="660.0")
+    (run / "run.json").write_text(json.dumps(data))
+    cfg, _ = evalworker.run_config(run, "laptop", 2, 0)
+    assert read - set(cfg) == set()
+    assert cfg["expand_lesson_until"] == 660.0 and selfplay.expand_lesson_until(cfg, None) == 660.0

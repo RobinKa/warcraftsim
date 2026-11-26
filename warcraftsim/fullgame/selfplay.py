@@ -1962,6 +1962,29 @@ def expand_lesson_until(cfg: dict, late_start: dict | None) -> float:
     return s
 
 
+def creep_lesson_until(cfg: dict, late_start: dict | None) -> float:
+    """--creep-lesson-until for a game's teachers: S (0: all game; the teacher's limit is S times its pace). In a late
+    start what is left of S then (a second at least: a state from past S has no creep lessons), as expand_lesson_until.
+    Taken as it was, a late start from minute 8-16 had its creep lessons for S more seconds of its own clock (fgself-257,
+    "the creep lesson as meant", --creep-lesson-until 480: 5,810 of its lessons in late starts, all past minute 8)."""
+    s = float(cfg.get("creep_lesson_until", 0.0) or 0.0)
+    if s > 0 and late_start is not None and late_start.get("minute"):
+        pace = cfg.get("lesson_time_scale") or teacher_pace(cfg["map"])
+        s = max(s - 60.0 * float(late_start["minute"]) / pace, 1.0)
+    return s
+
+
+def hunt_press_from(cfg: dict, late_start: dict | None) -> float:
+    """--hunt-press for a game's teachers: S (0: none; the teacher's own game second, no pace). In a late start what is
+    left of S then (a second at least: a state from past S presses from its start). Taken as it was, a late start from
+    minute 8-16 pressed only from S seconds of its own clock, game minute 20-28 at S 720 (fgself-255: a quarter of its
+    training games were late starts, the long games the press was for)."""
+    s = float(cfg.get("hunt_press", 0.0) or 0.0)
+    if s > 0 and late_start is not None and late_start.get("minute"):
+        s = max(s - 60.0 * float(late_start["minute"]), 1.0)
+    return s
+
+
 def floor_lesson_classes(vocab: dict, groups=()) -> torch.Tensor | None:
     """--teach-floor-orders workers: the order classes [O+1] floored at --teach-floor on the heuristic teacher's own
     lessons only (the rows marked "y_teach"; distill_loss): the races' workers' train orders, the early expansion
@@ -2787,9 +2810,9 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
                             spells=float(cfg.get("spell_lesson", 0.0) or 0.0),
                             attacks=float(cfg.get("attack_lesson", 0.0) or 0.0),
                             hero_weights=hero_weights(cfg.get("first_hero_weights", "")),
-                            hunt_press=float(cfg.get("hunt_press", 0.0) or 0.0),
+                            hunt_press=hunt_press_from(cfg, late_start),
                             creep_cap=int(cfg.get("creep_lesson_cap", 0) or 0),
-                            creep_until=float(cfg.get("creep_lesson_until", 0.0) or 0.0),
+                            creep_until=creep_lesson_until(cfg, late_start),
                             expand_from=expand_lesson_from(cfg, late_start),
                             expand_share=float(cfg.get("expand_lesson_share", 1.0)),
                             expand_reserve=int(cfg.get("expand_lesson_reserve", 0) or 0),
@@ -6661,31 +6684,35 @@ def main(argv: list[str] | None = None) -> int:
             x_update, x_since = xck["version"], xck.get("since", 0)
             if load_exploiter_opt(xopt, run_dir, x_update, x_since, device, args.lr):
                 print(f"the exploiter's Adam state from exploiter.adam (version {x_update})", flush=True)
-        if args.exploiter_adam == "saved":  # (the start's Adam state: the exploiter's at each of its starts)
-            kept = run_dir / "exploiter.start.adam"  # (the start's, kept for the resumes: the checkpoints' .adam
-            tmp = torch.optim.Adam(xnet.parameters(), lr=args.lr, eps=1e-5, capturable=graphed, **adam_kw)  # files go)
-            got = False
-            if resumed is None:
-                src = args.start_weights
-                got = (src is not None and Path(src).with_suffix(".adam").exists()
-                       and load_optimizer(tmp, src, device, args.lr, xnet))
-                if got:
-                    torch.save(tmp.state_dict(), kept)
-            elif kept.exists():
-                flags = [(g.get("capturable", False), g.get("fused")) for g in tmp.param_groups]
-                tmp.load_state_dict(torch.load(kept, map_location=device, weights_only=False))
-                for g, (c, f) in zip(tmp.param_groups, flags):
-                    g["lr"], g["capturable"], g["fused"] = args.lr, c, f
-                got = True
+    if args.exploiter_adam == "saved" and x_init is not None:  # (the start's Adam state: the exploiters' at each of
+        # their starts, the main exploiter's and the league exploiters'. Under `xnet` alone it was read only with
+        # --exploiter-share: --league-exploiters without it had zeroed moments every life, silently; bug finder 12)
+        kept = run_dir / "exploiter.start.adam"  # (the start's, kept for the resumes: the checkpoints' .adam files go)
+        holder = xnet if xnet is not None else net  # (the same shapes: only the optimizer's state is read)
+        tmp = torch.optim.Adam(holder.parameters(), lr=args.lr, eps=1e-5, capturable=graphed, **adam_kw)
+        got = False
+        if resumed is None:
+            src = args.start_weights
+            got = (src is not None and Path(src).with_suffix(".adam").exists()
+                   and load_optimizer(tmp, src, device, args.lr, holder))
             if got:
-                x_adam0 = adam_snapshot(tmp)
-                if x_since == 0:  # (a new life: from them; one resumed went on with exploiter.adam above)
-                    xopt.load_state_dict(tmp.state_dict())
-                print("--exploiter-adam saved: the exploiter starts over with the Adam state of the run's starting "
-                      "weights", flush=True)
-            else:
-                print("--exploiter-adam saved: no Adam state with the run's starting weights: a fresh one", flush=True)
-            del tmp
+                torch.save(tmp.state_dict(), kept)
+        elif kept.exists():
+            flags = [(g.get("capturable", False), g.get("fused")) for g in tmp.param_groups]
+            tmp.load_state_dict(torch.load(kept, map_location=device, weights_only=False))
+            for g, (c, f) in zip(tmp.param_groups, flags):
+                g["lr"], g["capturable"], g["fused"] = args.lr, c, f
+            got = True
+        if got:
+            x_adam0 = adam_snapshot(tmp)
+            if xnet is not None and x_since == 0:  # (a new life: from them; one resumed went on with exploiter.adam)
+                xopt.load_state_dict(tmp.state_dict())
+            print("--exploiter-adam saved: the exploiters start over with the Adam state of the run's starting "
+                  "weights", flush=True)
+        else:
+            print("--exploiter-adam saved: no Adam state with the run's starting weights: a fresh one", flush=True)
+        del tmp
+    if xnet is not None:
         publish(xnet, x_update, run_dir, "exploiter.pt", since=x_since)  # (its "since" kept: a second resume reads it)
         league.exploiter_path = publish_exploiter(xnet, x_update, run_dir, vocab)
         league.exploiter_life = x_update - x_since

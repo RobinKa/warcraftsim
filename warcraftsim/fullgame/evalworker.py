@@ -140,6 +140,9 @@ def run_config(run_dir: Path, host: str, games: int, start_update) -> tuple[dict
            # (--expand-lesson-reserve: a rule of the agent's, the same in the evaluation games: play_one's savers. No lessons)
            "expand_lesson_from": num("expand_lesson_from", 0.0), "expand_lesson_share": num("expand_lesson_share", 1.0),
            "expand_lesson_reserve": num("expand_lesson_reserve", 0, int), "lesson_time_scale": num("lesson_time_scale", 0.0),
+           # (--expand-lesson-until: nothing kept for the hall after it, the savers' rule too; missing here, fgself-256's
+           # games on the laptop kept the hall's cost past its 660 s while the run's own evaluation games stopped)
+           "expand_lesson_until": num("expand_lesson_until", 0.0),
            "privileged": num("opsd_share", 0.0) > 0 or num("opsd_coef", 0.0) > 0,  # (the networks' channels only)
            "scenarios": [], "scenario_share": 0.0,  # (training games only)
            "eval_ai": [d for d in c.get("eval_ai", "normal,insane").split(",") if d],
