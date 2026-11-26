@@ -3000,3 +3000,16 @@ Win rates against the other races, 96 games each unless noted. What a walking wo
 * lr 0.01 (tuned on `footmen2`) is far too high with 15 action heads: the KL per update was 1.0-1.5 (clip fraction 0.9) and the win rate peaked at 29%. The KL at a given lr grows with the number of heads (≈0.15 with 6, 0.3 with 9, 1.0+ with 15); lr 0.003 keeps it at 0.03-0.14.
 * Action masks: before masks, 94% of the from-scratch policy's casts on `mirror_mix_abil_hp400` were impossible. With them, it reached 39% at 0.9M steps against 35% without.
 * Updates per epoch are `replay_ratio × batch / minibatch`. With the minibatch equal to the batch (the old default), there was one update per epoch and learning was slow: `footmen2` reached 61% wins in 1M steps, against 97% with 16 updates.
+
+**`fgself-264`** (15:47-17:30, code f7960e8): the soup with twice the shaping (`--shaping 1.0`). In training it developed more than any run this week (past 10 minutes: tier 1.75, 3.5 researches, 8.8 workers against 252's 1.60, 2.2, 7.7) while its games against insane without a target slid from 0.90 to 0.72-0.79. **burst-264** (931 games):
+
+| policy | rating | against insane, untaxed | agent at -25% income | long games (past 15 min): tier, research, won |
+|---|---|---|---|---|
+| the soup | 1,919 ±13 | 0.938 ±0.049 (73) | 0.29 (24) | 1.48, 1.1, 0.27 (31) |
+| `fgself-261`'s 17-27M average | 1,910 ±11 | 0.857 ±0.119 (74) | 0.39 (18) | 1.48, 1.2, 0.39 (40) |
+| `fgself-252`'s average | 1,892 ±7 | 0.881 ±0.063 (68) | 0.39 (18) | 1.33, 1.1, 0.40 (51) |
+| `fgself-264`'s 17-27M average | 1,845 ±14 | 0.859 ±0.082 (84) | 0.38 (25) | 1.86, 2.6, 0.54 (57) |
+
+Head to head 0.413 against the soup (144), 0.441 against 252's average (161). **NOT KEPT (-74 against the soup).** Twice the shaping develops more and wins more of the long games (0.54 against 0.27-0.40), but loses more of the rest: the material weight 0.5 sits at the top of a narrow peak (0.25: -99, 1.0: -74). (The ratings did not count the soup's games in a burst where it is an evaluation (tag `vs fullgame/soup-...pt`) until 0a78884; burst-264's and burst-soup's rows were re-read: the soup 1,919 ±13 over 1,340 games.)
+
+**`fgself-265`** (18:27, code 0a78884): **anchored on the soup**. The KL anchor (`--init`, forward KL 0.01 on every step) moves from `fgself-100` to the soup, which is also the start; 252's league and recipe; control: the soup. Its KL to the anchor starts at ~0.0007 (against ~0.11 to `fgself-100`). Its burst also rates `fgself-260`'s 27-36M average (the user asked about `fgself-260 h4`, the top of the ratings at 1,944 ±25: that hour's live policy, 202 of its 221 games head to head with the 236 and 252 averages; the hour's 28 checkpoints averaged).
