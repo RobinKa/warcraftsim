@@ -349,8 +349,10 @@ class Ratings:
         return changed
 
     def _neutral(self, run: str) -> int:
-        """A run's --neutral (0: none, or no run.json)."""
+        """A run's --neutral (0: none, or no run.json; a soup's: its runs', all with the wares)."""
         cache = self.__dict__.setdefault("_neutrals", {})
+        if run == "soup":  # (scripts/soup.py's "soup avg <name>": the mean of runs that bought from the shops; with
+            return 2       # 0 its games as an evaluation were a "+shops" player of their own)
         if run not in cache:
             try:
                 cache[run] = int(json.loads((self.runs_dir / run / "run.json").read_text()).get("config", {}).get("neutral") or 0)

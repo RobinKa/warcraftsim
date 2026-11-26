@@ -198,3 +198,8 @@ def test_soup_names():
     assert checkpoint_name("vs fullgame/soup-2026-11-26.pt") == "soup avg soup-2026-11-26"
     assert checkpoint_name("vs fullgame/other.pt") is None
     assert policy_of("soup avg soup-2026-11-26")["kind"] == "average"
+
+
+def test_soup_is_trained_on_shops(tmp_path):
+    from warcraftsim.dashboard.ratings import Ratings
+    assert Ratings(tmp_path)._neutral("soup") > 0
