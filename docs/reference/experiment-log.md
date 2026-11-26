@@ -3013,3 +3013,25 @@ Win rates against the other races, 96 games each unless noted. What a walking wo
 Head to head 0.413 against the soup (144), 0.441 against 252's average (161). **NOT KEPT (-74 against the soup).** Twice the shaping develops more and wins more of the long games (0.54 against 0.27-0.40), but loses more of the rest: the material weight 0.5 sits at the top of a narrow peak (0.25: -99, 1.0: -74). (The ratings did not count the soup's games in a burst where it is an evaluation (tag `vs fullgame/soup-...pt`) until 0a78884; burst-264's and burst-soup's rows were re-read: the soup 1,919 ±13 over 1,340 games.)
 
 **`fgself-265`** (18:27, code 0a78884): **anchored on the soup**. The KL anchor (`--init`, forward KL 0.01 on every step) moves from `fgself-100` to the soup, which is also the start; 252's league and recipe; control: the soup. Its KL to the anchor starts at ~0.0007 (against ~0.11 to `fgself-100`). Its burst also rates `fgself-260`'s 27-36M average (the user asked about `fgself-260 h4`, the top of the ratings at 1,944 ±25: that hour's live policy, 202 of its 221 games head to head with the 236 and 252 averages; the hour's 28 checkpoints averaged).
+
+**burst-265** (20:07-20:53, 966 games), read after **a clean rebuild of the ratings** (21:00: the soup's games as an evaluation had been a "+shops" player of their own, the run name "soup" having no run.json, fixed 7e3d572; and the hand edits of the cache earlier today had counted the other policies' games of burst-soup and burst-264 twice; the old cache kept as `runs/.ratings-cache-v10.before-rescan-2026-11-26.json`; the rebuild takes 24 s):
+
+| policy | rating | against insane, untaxed (this burst) | agent at -25% income | long games: tier, research, won |
+|---|---|---|---|---|
+| `fgself-260`'s 27-36M average (10 layers) | 1,925 ±28 | 0.848 ±0.122 (67) | 0.42 (12) | 1.55, 1.3, 0.26 (44) |
+| the soup | 1,903 ±12 | 0.888 ±0.089 (84) | 0.60 (10) | 1.38, 1.0, 0.27 (26) |
+| `fgself-261`'s 17-27M average | 1,903 ±12 | — | — | — |
+| `fgself-252`'s average | 1,882 ±7 | 0.945 ±0.042 (76) | 0.21 (14) | 1.44, 1.0, 0.32 (41) |
+| `fgself-265`'s 17-27M average | 1,877 ±19 | 0.799 ±0.102 (80) | 0.41 (17) | 1.45, 0.6, 0.23 (40) |
+| `fgself-264`'s 17-27M average | 1,843 ±17 | — | — | — |
+| `fgself-263`'s 17-27M average | 1,785 ±25 | — | — | — |
+
+Head to head 265's average 0.510 against the soup (154), 0.520 against 252's (151), 0.405 against 260's 27-36M average (190).
+
+**`fgself-265` (anchored on the soup) NOT KEPT** (-26 ±23 against the soup; against insane human 0.67, undead 0.62). Anchoring on the strongest policy instead of October's does not lift the plateau: **the anchor hypothesis is not supported**, the anchor line rests.
+
+**The user's `fgself-260 h4`** (1,937 ±25, the 10-layer run's live policy in its fifth hour): that hour's 28 checkpoints averaged rate **1,925 ±28**, the best average so far but within the errors of the soup (+22 ±31); 260's other windows 1,897 (17-27M) and 1,882 (44-54M). Likely a high point of a noisy run, possibly the 10-layer network's real level.
+
+After the rebuild **the soup is +21 ±14 over 252's average**, level with 261's first window.
+
+**`fgself-266`** (21:01, code 7e3d572): the 10-layer network from 260's 27-36M average (Adam from 260's last), 260's recipe (`--noise-scale 0 --noise-terms 0`): does that window hold or climb? A filler run while the user decides on the fresh lineage. Controls: that average and the soup.
