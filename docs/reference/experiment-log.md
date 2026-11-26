@@ -2744,6 +2744,12 @@ Head to head 261's average **0.565 against 252's** (162 games), 0.515 against 26
 **`fgself-261` (league exploiters): leaning up, not proven** (+20 ±18; head to head 0.565, ~1.7 standard errors). With `fgself-260`'s first half (+22 ±18 in two bursts) the two leaning gains of the day. Its play in long games is unchanged (1 hero, tier 1.5). The league exploiters fill the league over time (AlphaStar ran them for weeks): continued to ~54M at 23:31.
 
 Where today ends: the bold tries on the training setup each hold the plateau's level or lean up by ~20 (the learner's tax level; 10 layers +22 at 27M and no more after; league exploiters +20), none past the errors, and none changes the strategy (a one-hero tier-1 rush in every game). Next to scope with the user: the reward. The shaping's material potential pays for army now and nothing for research, hero levels or saved gold; a potential from a win-probability estimate would value tech and heroes by what they win.
+
+### 2026-11-26
+
+`fgself-261`'s continuation stopped at 34.1M (00:08) for the user's ask (resumable: its 17-27M result stands).
+
+**`fgself-262`** (00:08, code d1a79a7): **net-worth shaping** (the user: "try different reward shaping without an extra model first"). The potential was the material lead minus half of each side's bank (`--float-penalty 0.5`), research at nothing: buying a unit raised it by 1.5x the unit's cost, an upgrade by 0.5x, holding gold lowered it. Net worth needs no new code: `--float-penalty -1` counts the bank at face value and `--research-value 1` finished research at its cost. Spending is then neutral whatever it buys (a unit, an upgrade, a hall, saving for one), mining raises the potential (income and workers pay), and only combat's trades move it otherwise. From 252's average with its league and recipe; control: that average.
 - **`fgself-259` (the learner taxed against the AI): not kept.** Level with the control (1,856 ±29, few games), its -25% rung 0.50 against 0.43, its long games won 0.47 against 0.30, but no more heroes, tech or research in them. The pressure did not change what it builds.
 - The box's game service had exited at 15:55: pointed at the run's previous commit, its code was refused (the learner had relaunched on a newer one). The box must get the commit the launch line names.
 
