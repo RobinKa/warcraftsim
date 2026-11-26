@@ -195,4 +195,6 @@ def test_soup_names():
     from warcraftsim.dashboard.ratings import checkpoint_name, policy_of
     assert checkpoint_name("runs/fullgame/soups/soup-2026-11-26.pt") == "soup avg soup-2026-11-26"
     assert checkpoint_name("vs soups/soup-2026-11-26.pt") == "soup avg soup-2026-11-26"
+    assert checkpoint_name("vs fullgame/soup-2026-11-26.pt") == "soup avg soup-2026-11-26"
+    assert checkpoint_name("vs fullgame/other.pt") is None
     assert policy_of("soup avg soup-2026-11-26")["kind"] == "average"
