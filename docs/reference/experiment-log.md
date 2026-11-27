@@ -3056,3 +3056,16 @@ After the rebuild **the soup is +21 ±14 over 252's average**, level with 261's 
 Head to head the EMA 0.503 against the soup (186), 0.483 against 267's own 17-27M average (174), 0.564 against 252's (164). **At 27M the EMA is level with the soup** (+11 ±21) and as good as the run's weight average over the same window: the moving average does what the averaging after the fact did, while the games play it. The test is the continuation: `fgself-267` resumed at 00:01 (27.0M, its EMA and Adam from the stop) toward ~54M; kill if the EMA at 54M is not above the soup.
 
 **Shut down** on the user's word (2026-11-27 00:55) with `fgself-267` stopped at 35.8M (its EMA `averaged/ema-0000000035765898.pt` and Adam saved): resume toward ~54M, then burst-267b (the EMA at 54M against the soup, the EMA at 27M and the 44-54M average).
+
+**burst-267b** (2026-11-27 11:38-12:29, 931 games; read with `scripts/ops.py burst`, built today on the user's request to script the routine checks):
+
+| policy | rating | against insane, untaxed | -25% | long games: tier, research, won |
+|---|---|---|---|---|
+| `fgself-267`'s EMA at 53.9M | 1,923 ±19 | 0.966 ±0.036 (56) | 0.52 (31) | 1.69, 1.2, 0.85 (13) |
+| `fgself-267`'s EMA at 27.0M | 1,922 ±16 | 0.921 ±0.073 (55) | 0.73 (22) | 1.57, 1.1, 0.64 (14) |
+| `fgself-267`'s 44-54M average (raw) | 1,914 ±29 | 0.983 ±0.026 (58) | 0.44 (24) | 1.67, 1.8, 0.88 (12) |
+| the soup | 1,910 ±10 | 0.927 ±0.060 (61) | 0.37 (26) | 1.56, 1.0, 0.56 (9) |
+
+Head to head the EMA at 54M 0.492 against the soup (179), 0.508 against itself at 27M (183), 0.528 against the 44-54M average (162).
+
+**Acting with the average: level, no climb (+13 ±21 over the soup at 54M), but no fall-back either.** Every fork from a strong average this week gave its lean back by 44-54M (`fgself-260`'s 1,882, 261's 1,867-1,872, 253's -48); 267's second half holds where its first was (EMA 1,923 at 54M as at 27M, its raw 44-54M average 1,914). One run and within the errors, but the shape matches the noisy-executor reading in part: acting with the average stops the slide, it does not lift the level. By the kill criterion it is not a climb. **`--act-ema 3500000` stays in the recipe** (it costs nothing and the games' policy is the one we judge). `fgself-267` continues toward ~81M (12:33; a background `ops.py budget` makes burst-267c at 80.9M): does it hold or slowly climb past 54M? Meanwhile the next build: the literature note's idea 3, conditioned exploiters (ROA-Star).
