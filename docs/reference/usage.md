@@ -327,6 +327,27 @@ scripts/selfplay_fork.py fgself-155 fgself-156 --note "..." --dry-run    # prepa
 python -m warcraftsim.codepin list                       # the launches' checkouts, which processes use them
 ```
 
+The routine checks, one short command each with compact output (`scripts/ops.py`, since 2026-11-27; `--root DIR` before the subcommand reads another tree's `runs/`):
+
+```bash
+scripts/ops.py status fgself-267 [--since HH:MM] [--vs runs/fullgame/soups/soup-2026-11-26.pt ...]
+    # disk, RAM, GPU memory, kernel Xid/MCE/OOM lines; learner PID, the box's service, the box's wrong-code refusals
+    # (all / this launch); train.jsonl: steps, the last row's age (STALE > 120 s), SPS, the losses' means, the
+    # exploiter's league keys; training games against the real AI without a target by quarter hour since the last
+    # launch (race-balanced too); development past 10 min; head_to_head.py's lines for each --vs
+scripts/ops.py burst burst-267 [--no-ratings]
+    # the worker; per policy: untaxed insane as a race-balanced mean ±1.96 SE and by race, the handicap rungs, the
+    # current policy's head-to-head with it, its rating; long games (>15 min) against insane; the rungs' and top ratings
+scripts/ops.py budget fgself-267 --at 54e6 --burst burst-267b --avg-from 27e6 --eval <ckpt> ... [--current ema] [--dry-run]
+    # (in the background) waits for the first checkpoint >= --at (exit 1 if the learner goes first), stops the learner
+    # and the box, averages --avg-from..that checkpoint into averaged/swa-<a>-<b>.pt, burst_prep.py (current: the
+    # average, or with --current ema the checkpoint's EMA and the average among the evals), starts the evalworker
+    # detached and prints its PID; --dry-run prints the commands
+scripts/ops.py fork-check fgself-268
+    # after a fork or resume: this launch's log notes (Adam's state, act-ema, note, Traceback, argument errors), the
+    # box's refusals, the launch's code and the box's command (RUN=... scripts/box_games.sh <commit> 8 8: printed)
+```
+
 **Each launch runs its own commit's code** (`warcraftsim/codepin.py`, since 2026-10-26). `selfplay_fork.py` and `selfplay_restart.py` check out the launch's commit (this tree's HEAD; `--commit REV`, for a restart `--commit launch`: the run's last launch's) as a detached git worktree in `~/wc3/code/<commit[:12]>` (`WARCRAFTSIM_CODE`), build its shim (`make -C shim`, minhook from this tree's submodule) and native libraries there, and only then stop the old run and start the learner in that folder (working directory and `PYTHONPATH`). Its actors (spawned: the learner's folder and `sys.path`) and its games' shim are that commit's too, so this tree can change, be merged into or rebuilt while a run is live: nothing it imports later comes from here (before, the learner imported a module that changed under it, and crashed). In the checkout:
 
 * `runs` is a link to this tree's `runs/`: the run's data (run folders, the league, checkpoints, episodes) stays here; the learner resolves it, so the paths it writes (`league.json`, `exploiter.json`) are this tree's and outlive the checkout. `build/stormlib` and `build/pjass` link to this tree's (third-party tools).
