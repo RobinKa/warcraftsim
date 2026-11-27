@@ -3043,3 +3043,14 @@ After the rebuild **the soup is +21 ±14 over 252's average**, level with 261's 
 **`--act-ema H`** (built, 9e37577): the games play an exponential moving average of the weights (half-life H agent steps; `ActEma`), so PPO's behaviour policy, GAE's values, the self-play opponent and the league's snapshots are the average's; saved as `averaged/ema-<steps>.pt` with each checkpoint (the ratings name it `<run> avg ema-<steps>`), taken up on a resume. The laptop's evaluation still plays the newest raw checkpoint (the raw policy's level, for the gap).
 
 **`fgself-266`** (10 layers from 260's best window) stopped at 4.8M for it (resumable). **`fgself-267`** (21:27, code 9e37577): **the games play the average**, `--act-ema 3500000` (about the 17-27M average's mean age), from the soup with 252's league and recipe. First updates: the average moves 0.16% of the way per update, its distance to the raw weights grows (0.05% after 15 updates), the clip binds on 0.3% of units. Judge: the EMA at ~27M and ~54M and the run's 17-27M average against the soup; kill at 54M if the EMA is not above the soup.
+
+**burst-267** (2026-11-26 23:10-23:56, 1,021 games):
+
+| policy | rating | against insane, untaxed | agent at -25% income | long games: tier, research, won |
+|---|---|---|---|---|
+| `fgself-267`'s EMA at 27.0M (the weights the games played) | 1,918 ±18 | 0.935 ±0.047 (87 games) | 0.68 (20) | 1.41, 0.9, 0.51 (51) |
+| `fgself-267`'s 17-27M average (raw checkpoints) | 1,916 ±28 | 0.934 ±0.050 (82) | 0.29 (14) | 1.47, 1.0, 0.47 (47) |
+| the soup | 1,907 ±11 | 0.906 ±0.062 (84) | 0.50 (18) | 1.39, 0.8, 0.35 (46) |
+| `fgself-252`'s average | 1,883 ±7 | 0.886 ±0.066 (87) | 0.33 (9) | 1.38, 1.1, 0.47 (47) |
+
+Head to head the EMA 0.503 against the soup (186), 0.483 against 267's own 17-27M average (174), 0.564 against 252's (164). **At 27M the EMA is level with the soup** (+11 ±21) and as good as the run's weight average over the same window: the moving average does what the averaging after the fact did, while the games play it. The test is the continuation: `fgself-267` resumed at 00:01 (27.0M, its EMA and Adam from the stop) toward ~54M; kill if the EMA at 54M is not above the soup.
