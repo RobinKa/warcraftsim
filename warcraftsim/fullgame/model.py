@@ -31,6 +31,11 @@ def _order_temp_default(state, prefix, *_):
 
 
 VALID_BITS = 20  # (unit_valid's bits: what herodata.order_needs can ask of a unit, 0..19)
+# --value-bins' defaults: the returns' range and the Gaussian's width in bins. A state's return is about
+# gamma^(T-t) * outcome - shaping * phi_t (the shaping telescopes: its potential, the material lead over
+# --shaping-scale, comes back at the end); fgself-267/268's 51,000 games ended with leads of -10.6..+10.4, values
+# -5.2..+4.9 (99.8% within -3.3..+3.5) at --shaping 0.5: [-6, 6] clips none of them
+VALUE_MIN, VALUE_MAX, VALUE_SIGMA = -6.0, 6.0, 0.75
 
 
 class FullGameNet(nn.Module):
@@ -40,7 +45,8 @@ class FullGameNet(nn.Module):
                  layers: int = 3, dropout: float = 0.0, memory: bool = False, target_temperature: float = 1.0,
                  priv: int = 0, order_temperature: float = 1.0, bins: int = 128, z: int = 0, gx: int = 0,
                  valid: int = 0, vparts: int = 0, ghost: bool = False, privileged: bool = False, fine: int = 0,
-                 vtax: int = 0, vmana: int = 0, obsfull: int = 0, omask: int = 0):
+                 vtax: int = 0, vmana: int = 0, obsfull: int = 0, omask: int = 0, vbins: int = 0,
+                 vmin: float = VALUE_MIN, vmax: float = VALUE_MAX, vsigma: float = VALUE_SIGMA):
         super().__init__()
         if obsfull and fx.OBS_FULL != int(obsfull):  # (--obs-full: its block travels in the config, so the features'
             fx.set_obs_full(int(obsfull))             # width is the network's in any process that builds it)
@@ -51,7 +57,9 @@ class FullGameNet(nn.Module):
                            **({"vparts": vparts} if vparts else {}), **({"ghost": True} if ghost else {}),
                            **({"privileged": True} if privileged else {}), **({"fine": int(fine)} if fine > 1 else {}),
                            **({"vtax": int(vtax)} if vtax else {}), **({"vmana": 1} if vmana else {}),
-                           **({"obsfull": int(obsfull)} if obsfull else {}), **({"omask": int(omask)} if omask else {}))
+                           **({"obsfull": int(obsfull)} if obsfull else {}), **({"omask": int(omask)} if omask else {}),
+                           **({"vbins": int(vbins), "vmin": float(vmin), "vmax": float(vmax), "vsigma": float(vsigma)}
+                              if vbins else {}))
         if vmana:  # (--full-vocab's mask bits travel in the config: the actors' networks are built from it and a state
             # dict, never by set_valid, and a bit only the learner checks is a -1e9 log-probability in the update)
             from .fullvocab import mana_steps
@@ -95,7 +103,21 @@ class FullGameNet(nn.Module):
         # the value of the state for reinforcement learning (fullgame/selfplay.py; behavior cloning
         # leaves it untrained)
         # (--reward-parts: one value per reward, outcome, shaping, strategy; the value is their sum)
-        self.value_head = nn.Sequential(nn.Linear(d, d), nn.ReLU(), nn.Linear(d, max(1, int(vparts))))
+        # (--value-bins K: HL-Gauss, Farebrother et al. 2024, "Stop Regressing": K logits per part over K bins uniform on
+        # [vmin, vmax], trained by cross-entropy on the return's Gaussian-smoothed histogram (hl_gauss_target); the value
+        # every consumer reads, the actors' GAE and UPGO among them, is its expectation over the bins' centres, as a
+        # scalar per part as before. The centres and edges are derived from the config: buffers, not saved)
+        self.vbins = int(vbins)
+        if self.vbins == 1:
+            raise ValueError("vbins: 0 (a scalar value) or at least 2 bins")
+        self.value_head = nn.Sequential(nn.Linear(d, d), nn.ReLU(), nn.Linear(d, max(1, int(vparts)) * max(1, self.vbins)))
+        if self.vbins:
+            if not float(vmax) > float(vmin) or not float(vsigma) > 0:
+                raise ValueError(f"value bins over [{vmin}, {vmax}] with sigma {vsigma}: need vmax > vmin, sigma > 0")
+            edges = torch.linspace(float(vmin), float(vmax), self.vbins + 1)
+            self.register_buffer("value_edges", edges, persistent=False)
+            self.register_buffer("value_centers", (edges[:-1] + edges[1:]) / 2, persistent=False)
+            self.value_sigma = float(vsigma) * (float(vmax) - float(vmin)) / self.vbins  # (in the returns' units)
         if privileged:  # (a privileged view, the global vector's last flag: the policy reads the privileged block too;
             # zero at first)
             self.priv_pol = nn.Sequential(nn.Linear(self.priv - self.vtax, d), nn.ReLU(), nn.Linear(d, d))
@@ -378,14 +400,28 @@ class FullGameNet(nn.Module):
         h = z + self.fine_x(x.clamp(min=0).long()) + self.fine_y(y.clamp(min=0).long())
         return self.point_f(h) / self.target_temp
 
-    def value_parts(self, g, glob=None):
-        """[N, parts] (one: the value)."""
+    def value_out(self, g, glob=None):
+        """(the value per part [N, parts], with --value-bins the logits [N, parts, bins] it is the expectation of, else
+        None). The bins' head in fp32 (autocast off: a bf16 logit near 30 rounds to steps of 0.125, and the expectation
+        weighs bins whose logits differ by less); without bins the head as before."""
         if self.priv and glob is not None:  # (the privileged block: what the player does not see)
             p = glob[..., -self.priv:].to(g.dtype)
             g = g + self.priv_proj(p[..., :self.priv - self.vtax])
             if self.vtax:  # (--value-tax: and the game's taxes)
                 g = g + self.tax_proj(p[..., self.priv - self.vtax:])
-        return self.value_head(g)
+        if not self.vbins:
+            return self.value_head(g), None
+        with torch.autocast(g.device.type, enabled=False):
+            lg = self.value_head(g.float()).float().unflatten(-1, (-1, self.vbins))
+            return (torch.softmax(lg, -1) * self.value_centers).sum(-1), lg
+
+    def value_parts(self, g, glob=None):
+        """[N, parts] (one: the value; --value-bins: the expectation over the bins)."""
+        return self.value_out(g, glob)[0]
+
+    def value_logits(self, g, glob=None):
+        """--value-bins: the value's logits [N, parts, bins] (None without bins)."""
+        return self.value_out(g, glob)[1]
 
     def value(self, g, glob=None):
         return self.value_parts(g, glob).sum(-1)
@@ -555,10 +591,11 @@ def evaluate(net: FullGameNet, ent, typ, cur, mask, glob, n_own, order, tgt, bx,
     if fl is not None:
         lp_pt = lp_pt + _logp(fl, f.clamp(min=0))
     logp = _logp(logits, order) + uses_ptr * _logp(ptr, tgt) + uses_pt * lp_pt
-    vp = net.value_parts(g, glob)
+    vp, vl = net.value_out(g, glob)  # (--value-bins: "vlogits" [N, parts, bins] for the loss, the value their expectation)
     return {"logp": logp, "entropy": _entropy(logits), "logits": logits, "value": vp.sum(-1), "g": g, "u": u,
             "ptr": ptr, "xl": xl, "yl": yl, "uses_ptr": uses_ptr, "uses_pt": uses_pt,
-            **({"fl": fl} if fl is not None else {}), **({"vparts": vp} if net.config.get("vparts") else {})}
+            **({"fl": fl} if fl is not None else {}), **({"vparts": vp} if net.config.get("vparts") else {}),
+            **({"vlogits": vl} if vl is not None else {})}
 
 
 def anchor_kl(ev: dict, ev_ref: dict, mode: str = "reverse"):
@@ -857,11 +894,80 @@ def prune_allowed(net: FullGameNet, vocab: dict) -> int:
     return n
 
 
+VALUE_INIT_WIDTH = 0.5  # (--value-init-width: the binned head's first histograms' width, the returns' units: bin_value)
+
+
+def hl_gauss_target(y: torch.Tensor, edges: torch.Tensor, sigma: float) -> torch.Tensor:
+    """HL-Gauss's target (Farebrother et al., ICML 2024): the return `y` [...] as a histogram over the bins between
+    `edges` [K + 1] -> [..., K], summing to 1: a Gaussian of width `sigma` (the returns' units) around y clipped to the
+    edges' span, integrated over each bin (its CDF's differences) and renormalized to the span. Its mean is y while y
+    is 4 sigma or more inside the span (at 3 sigma 0.004 sigma short); nearer an edge the Gaussian is cut there and its
+    mean falls inside (by ~0.9 sigma at the edge itself). Static shapes, no host syncs: the CUDA-graph update computes it."""
+    y = torch.clamp(y.float(), min=edges[0], max=edges[-1])
+    cdf = torch.special.erf((edges - y.unsqueeze(-1)) * (1.0 / (math.sqrt(2.0) * float(sigma))))
+    return (cdf[..., 1:] - cdf[..., :-1]) / (cdf[..., -1:] - cdf[..., :1])
+
+
+def value_ce(net: FullGameNet, logits: torch.Tensor, ret: torch.Tensor) -> torch.Tensor:
+    """--value-bins: HL-Gauss's cross-entropy per step [N] of the value's `logits` [N, parts, bins] (evaluate's
+    "vlogits") against the returns `ret`, [N] (one part) or [N, parts]; summed over the parts as the squared errors are."""
+    y = ret if ret.dim() == logits.dim() - 1 else ret.unsqueeze(-1)
+    t = hl_gauss_target(y, net.value_edges, net.value_sigma)
+    return -(t * torch.log_softmax(logits.float(), -1)).sum(-1).sum(-1)
+
+
+def gaussian_logits(w: torch.Tensor, b: torch.Tensor, centers: torch.Tensor, width: float) -> tuple:
+    """The logit layer whose softmax over the bins' `centers` [K] is a Gaussian of `width` around the scalar layer's
+    value (w [P, d], b [P]: v = w h + b per part) for every input h: logit_k = (c_k v - c_k^2 / 2) / width^2, which is
+    -(c_k - v)^2 / (2 width^2) plus v^2 / (2 width^2), the same for every bin (softmax drops it), so the layer is linear
+    in h -> (weight [P * K, d], bias [P * K]), part by part."""
+    c, s2 = centers.to(w), float(width) ** 2
+    W = (c[None, :, None] * w[:, None, :] / s2).reshape(-1, w.shape[1])
+    B = ((c[None, :] * b[:, None] - c[None, :] ** 2 / 2) / s2).reshape(-1)
+    return W, B
+
+
+def bin_value(net: FullGameNet, bins: int, vmin: float = VALUE_MIN, vmax: float = VALUE_MAX, sigma: float = VALUE_SIGMA,
+              width: float = VALUE_INIT_WIDTH) -> FullGameNet:
+    """--value-bins: `net`'s scalar value head as HL-Gauss's `bins` logits per part -> a new network (`net` itself when
+    it has these bins already; other bins: ValueError). The hidden layer as it was; the last layer gaussian_logits' of
+    the old one, so the expected value the actors' GAE reads is the old value from the first step, state by state (to
+    ~1e-4 while |v| <= vmax - 4 width, 2e-3 at 3 width: the edge cuts the Gaussian; fgself-267/268's values were 99.8%
+    within +-3.5, at width 0.5 inside 4). Zero logits instead (uniform: every value the
+    range's centre) would have the advantages without the outcome for the first ~100 updates: with lambda 0.95 the
+    value learns ~20 steps back per update, the games are ~1,900 steps long. `width` against the HL-Gauss target's sigma
+    (0.089 at 101 bins on [-6, 6]): a head as sharp as the target would need logit gaps of ~63 for a second mode one
+    return away, which Adam's ~lr-sized steps would take thousands of updates to make; at 0.5 the gap is 2. For this
+    layer the cross-entropy's gradient into its input is exactly the squared error's times 1 / width^2:
+    sum_k (p_k - t_k) W_k = w (E_p[c] - E_t[c]) / width^2 (--vf-coef 0.5 * width^2 pulls on the trunk as before)."""
+    want = {"vbins": int(bins), "vmin": float(vmin), "vmax": float(vmax), "vsigma": float(sigma)}
+    if net.vbins:
+        have = {k: net.config.get(k) for k in want}
+        if have != want:
+            raise ValueError(f"a network with value bins {have}, not {want}")
+        return net
+    if not float(width) > 0:
+        raise ValueError(f"value bins' first width {width}: above 0")
+    new = FullGameNet(**{**net.config, **want}).to(net.order_kind.device)
+    state = net.state_dict()
+    w, b = state.pop("value_head.2.weight"), state.pop("value_head.2.bias")
+    missing, unexpected = new.load_state_dict(state, strict=False)
+    if unexpected or set(missing) != {"value_head.2.weight", "value_head.2.bias"}:
+        raise RuntimeError(f"bin_value: missing {missing}, unexpected {unexpected}")
+    with torch.no_grad():
+        W, B = gaussian_logits(w.double(), b.double(), new.value_centers.double(), width)
+        new.value_head[2].weight.copy_(W)
+        new.value_head[2].bias.copy_(B)
+    return new.train(net.training)
+
+
 def split_value(net: FullGameNet, parts: int) -> FullGameNet:
     """--reward-parts: `net`'s value head with one output per reward (the first is the old value, the others zero:
     their sum plays as before) -> a new network."""
     if net.config.get("vparts", 0) >= parts:
         return net
+    if net.vbins:  # (selfplay refuses the pair: the exploiters' batches have no returns per part to fit histograms to)
+        raise ValueError("--reward-parts with --value-bins: not supported")
     config = {**net.config, "vparts": parts}
     new = FullGameNet(**config).to(net.order_kind.device)
     state = net.state_dict()
