@@ -1127,9 +1127,20 @@ class Teacher:
             mine_id = target_id if has_target else nat_id
             if early is not None:  # (--expand-lesson-from: who goes, and until 5 work it)
                 return self._early_workers(rows, mx, my, mine_id, t)
-            pick = e[16:16 + n_pick]  # (the three nearest outside 900)
-            return ([TargetOrder(w, HARVEST, mine_id) for w in pick]
-                    if n_pick and self._due("expansion: workers", t) else [])
+            if not n_pick or t - self.last.get("expansion: workers", -GAP) < GAP:
+                return []
+            # (the three nearest outside 900, as the facts' pick, of the workers the agent would send: not on their way
+            # to build or at a frame (_free), not in a burrow (LOADED). The facts' pick took those too, and the agent
+            # sends no order to either (play.BCAgent.committed, its LOADED test): a label of an order never carried out,
+            # each GAP while the mine was short. The game without a target's lesson leaves them out, _early_workers)
+            alive = fx.own_alive(rows, self.side)
+            w = alive[fx.isin(alive[:, fx.C_TYPE], WORKER_CODES) & (alive[:, fx.C_FLAGS] & (HIDDEN | LOADED) == 0)
+                      & _free(alive)]
+            d = np.hypot(w[:, fx.C_X] - mx, w[:, fx.C_Y] - my)
+            far = np.flatnonzero(~(d < 900.0))
+            pick = w[far[np.argsort(d[far], kind="stable")[:3]], fx.C_ID].tolist()
+            return ([TargetOrder(int(u), HARVEST, mine_id) for u in pick]
+                    if pick and self._due("expansion: workers", t) else [])
         if early is not None and self.expand_until > 0 and self._now > self.expand_until * self.pace:
             return []  # (--expand-lesson-until: too late for a camp or a hall; a hall taken got its workers above)
         if creeps:  # (guarded. Sending the whole army to clear it every 10 s (fgself-123) lost the games that had

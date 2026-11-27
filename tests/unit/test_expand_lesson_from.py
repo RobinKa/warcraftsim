@@ -454,3 +454,24 @@ def test_the_target_hall_has_one_builder(race):
     finally:
         fx.set_macros(False)
         fx.set_macros_off([])
+
+
+def test_the_target_workers_are_ones_the_agent_sends():
+    """A target game's taken natural: its workers lesson names the three nearest outside 900 that the agent would send,
+    not a builder (on its way, or at a frame: play.BCAgent.committed) nor a peon in a burrow (LOADED): their labels were
+    of orders never carried out."""
+    gold = [_unit(10 + k, 0, -5400, 3300 + 10 * k, "hpea", W, order=HARVEST) for k in range(5)]
+    for busy in (dict(order=tm.REPAIR), dict(order=code("hbar"))):  # (at a frame; walking to build)
+        builder = [_unit(20, 0, -4900, 1500, "hpea", W, **busy)]  # (nearer the natural than the main's five)
+        tc = Teacher(0, "human", random.Random(0), {"t": {"htow": 300.0}, "n": {}})
+        out = tc.commands(_taken(gold + builder), _player(), 600.0, 1500)
+        assert out == [TargetOrder(u, HARVEST, 51) for u in (10, 11, 12)] and tc.taught == {"expansion: workers": 1}
+    burrowed = [_unit(20, 0, -4900, 1500, "opeo", W | tm.LOADED)]
+    peons = [_unit(10 + k, 0, -5400, 3300 + 10 * k, "opeo", W, order=HARVEST) for k in range(5)]
+    tc = Teacher(0, "orc", random.Random(0), {"t": {"ogre": 300.0}, "n": {}})
+    out = tc.commands(_rows("orc", camp=False, workers=peons + burrowed, extra=[_unit(70, 0, -4764, -2400, "ogre", S)]),
+                      _player(), 600.0, 1500)
+    assert out == [TargetOrder(u, HARVEST, 51) for u in (10, 11, 12)]
+    free = [_unit(20, 0, -4900, 1500, "hpea", W)]  # (a worker without an order there: it goes first, as before)
+    tc = Teacher(0, "human", random.Random(0), {"t": {"htow": 300.0}, "n": {}})
+    assert tc.commands(_taken(gold + free), _player(), 600.0, 1500) == [TargetOrder(u, HARVEST, 51) for u in (20, 10, 11)]
