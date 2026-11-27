@@ -151,6 +151,12 @@ BURROW_SAFE = 1500.0
 MILITIA_SAFE = fx.MILITIA_NEAR  # (--militia-lesson: no enemy unit this near the militia or a hall)
 NEAR_MERCHANT = 2500.0
 ENEMY_NEAR = 800.0  # (an item lesson waits while an enemy unit is this near the hero: a fight)
+# the heal items the game calls a "Non-Combat Consumable" (Units\ItemStrings.txt: their regeneration ends when the unit is
+# attacked): the potion lesson gives them only with no enemy unit it sees within ENEMY_NEAR of the hero. Under 40% of
+# its hit points a hero is mostly in a fight, and the lesson had taught them there: fgself-267's orc late starts (people's
+# orc heroes carry salves) had up to 24 such lessons a game, and the policy's salve uses a minute rose with them, 4.9
+# with none to 31.6 with 6 or more (0.5 salves used up a game)
+NON_COMBAT = frozenset(fourcc(c) for c in ("hslv", "sreg", "rej1", "rej2", "rej3", "rej4", "rej5", "rej6"))
 USESLOT = 852008
 ATTACK = 851983  # (attack-move)
 # --attack-lesson: attacks on a unit where attack-move picks last (the engine's target priority, UnitData prio: a worker
@@ -394,6 +400,14 @@ class Teacher:
             if hp < 0.4 * max(maxhp, 1):
                 table = fx._mod("herodata").item_table()
                 heal = [k for k, it in enumerate(items) if it and table.get(it, (0, 0, 0, 0))[1]]
+                if any(items[k] in NON_COMBAT for k in heal):  # (a non-combat consumable only out of a fight: NON_COMBAT)
+                    h = rows[i]
+                    if enemies is None:
+                        enemies = rows[(rows[:, fx.C_OWNER] == 1 - self.side)
+                                       & (rows[:, fx.C_FLAGS] & (fx.DEAD | fx.STRUCTURE) == 0)
+                                       & ((rows[:, fx.C_VIS] >> self.side) & 1 == 1)]
+                    if (np.hypot(enemies[:, fx.C_X] - h[fx.C_X], enemies[:, fx.C_Y] - h[fx.C_Y]) < ENEMY_NEAR).any():
+                        heal = [k for k in heal if items[k] not in NON_COMBAT]
                 if heal and self._due(f"potion {hid}", t, "potion"):
                     out.append(ImmediateOrder(hid, USESLOT + heal[0]))
             # a town portal from the goblin merchant
