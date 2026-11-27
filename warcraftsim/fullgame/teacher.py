@@ -1158,11 +1158,15 @@ class Teacher:
             return [ImmediateOrder(h, creep) for h in e[EH:EH + n_heroes]]
         if not n_workers:
             return []
-        if early is not None:  # (--expand-lesson-from: a worker on its way to build it, its order the hall's type or
-            # the haunted mine's: no second builder. Carried out, three peasants left the main's gold for one hall)
-            own = fx.own_alive(rows, self.side)
-            if (own[:, fx.C_ORDER] == (HAUNTED if self.race == "undead" else hall)).any():
-                return []
+        # (a worker on its way to build it, its order the hall's type or the haunted mine's: no second builder. Carried
+        # out, three peasants left the main's gold for one hall (--expand-lesson-from). A target game's lesson had no such
+        # test, and _free leaves the walking builder out of its choice, so each GAP while it walked another worker was
+        # taught to build the same hall: one ~30 s walk to Echo Isles' natural takes 3 GAPs, the money for a second hall
+        # permitting)
+        own = fx.own_alive(rows, self.side)
+        if (own[:, fx.C_ORDER] == (HAUNTED if self.race == "undead" else hall)).any():
+            return []
+        if early is not None:
             self.hall_due = True  # (--expand-lesson-reserve: its cost kept from the next step on, hall_reserve)
         can = getattr(self, "can", None)
         if (can is not None and not (fx.MACROS and "expand" not in fx.MACROS_OFF)  # (the hall's own build order: only

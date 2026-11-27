@@ -348,13 +348,13 @@ def test_wisps_in_the_entangled_mine_count_and_burrowed_peons_do_not():
 
 
 def test_the_target_s_lessons_are_as_they_were():
-    """A target's due expansion: the three nearest workers whatever they do, and a second builder's label (unchanged)."""
+    """A target's due expansion: the three nearest workers whatever they do (unchanged), and no second builder's label
+    (since 2026-11-27, as the game without a target's: test_the_target_hall_has_one_builder)."""
     tc = Teacher(0, "human", random.Random(0), {"t": {"htow": 300.0}}, expand_from=360.0)
     cleared = _rows(camp=False)
     walking = cleared.copy()
     walking[walking[:, fx.C_ID] == 12, fx.C_ORDER] = code("htow")
-    out = tc.commands(walking, _player(), 470.0, 1200)
-    assert len(out) == 1 and isinstance(out[0], Build)  # (another worker: the target's lesson has no such test)
+    assert tc.commands(walking, _player(), 470.0, 1200) == []  # (one on its way: no other worker)
     gold = [_unit(10 + k, 0, -5400, 3300 + 10 * k, "hpea", W, order=HARVEST) for k in range(5)]
     out = tc.commands(_taken(gold), _player(), 600.0, 1500)
     assert len(out) == 3 and all(c.unit in range(10, 15) for c in out)  # (the main's own gold workers)
@@ -426,6 +426,31 @@ def test_the_target_camp_lesson_waits_for_a_safe_base():
         fx.set_macros_off(["expand"])  # (the creep macro's form: the same test)
         tc = Teacher(0, "human", random.Random(0), {"t": {"htow": 300.0}, "n": {}})
         assert not [c for c in _lessons(tc, _rows(extra=raid)) if isinstance(c, ImmediateOrder)]
+    finally:
+        fx.set_macros(False)
+        fx.set_macros_off([])
+
+
+@pytest.mark.parametrize("race", ["human", "orc", "nightelf"])
+def test_the_target_hall_has_one_builder(race):
+    """A target game's hall lesson while a worker walks to build it (its order the hall's type): none, as the game
+    without a target's. It had taught another worker each GAP (_free leaves the walking one out of its choice)."""
+    fx.set_macros(True)
+    fx.set_macros_off(["creep", "expand"])
+    try:
+        hall = tm.HALL[race]
+        tc = Teacher(0, race, random.Random(0), {"t": {hall: 300.0}, "n": {}})
+        rows = _rows(race, camp=False)
+        first = [c for c in _lessons(tc, rows) if isinstance(c, Build) and c.building == code(hall)]
+        assert len(first) == 1
+        walk = rows.copy()
+        k = walk[:, fx.C_ID] == first[0].unit
+        walk[k, fx.C_ORDER], walk[k, fx.C_X], walk[k, fx.C_Y] = code(hall), -5000, 0  # (did as taught: half way there)
+        assert not [c for c in _lessons(tc, walk, now=410.0, t=1000 + tm.GAP) if isinstance(c, Build)]
+        assert tc.taught == {"expansion: the hall": 1}
+        walk = walk.copy()  # (a step's own rows: features.own_alive keeps a step's by the array)
+        walk[k, fx.C_ORDER] = HARVEST  # (turned back: the lesson again)
+        assert len([c for c in _lessons(tc, walk, now=420.0, t=1000 + 2 * tm.GAP) if isinstance(c, Build)]) == 1
     finally:
         fx.set_macros(False)
         fx.set_macros_off([])
