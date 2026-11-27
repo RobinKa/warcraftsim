@@ -741,7 +741,7 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--at", required=True, help="the budget in agent steps (54e6, 54M)")
     g.add_argument("--burst", required=True, help="the burst's name (runs/<name> must not exist)")
     g.add_argument("--avg-from", required=True, help="the average's first checkpoint's steps (inclusive; 27e6)")
-    g.add_argument("--eval", nargs="*", default=[], help="the burst's other policies (checkpoint paths)")
+    g.add_argument("--eval", nargs="*", action="extend", default=[], help="the burst's other policies (checkpoint paths; several after one --eval, or --eval repeated: all are kept)")
     g.add_argument("--current", choices=("swa", "ema"), default="swa",
                    help="the burst's current: the new average (swa) or the checkpoint's EMA (the average joins the evals)")
     g.add_argument("--games", type=int, default=64)

@@ -218,3 +218,21 @@ def test_budget_dry_run_reports_problems(tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 1
     assert "PROBLEM: runs/burst-9 exists" in out and "PROBLEM: no evals" in out and "--avg-from must be below" in out
+
+
+def test_budget_eval_repeated_keeps_all(tmp_path, capsys):
+    import importlib.util
+    import sys
+    spec = importlib.util.spec_from_file_location("ops_cli", Path(__file__).resolve().parents[2] / "scripts" / "ops.py")
+    ops = importlib.util.module_from_spec(spec)
+    sys.modules["ops_cli"] = ops
+    spec.loader.exec_module(ops)
+    (tmp_path / "runs" / "r" / "checkpoints").mkdir(parents=True)
+    try:
+        ops.main(["--root", str(tmp_path), "budget", "r", "--at", "1e6", "--burst", "b", "--avg-from", "0",
+                  "--eval", "x.pt", "--eval", "y.pt", "z.pt", "--dry-run"])
+    except SystemExit:
+        pass
+    out = capsys.readouterr().out
+    line = next(ln for ln in out.splitlines() if "burst_prep.py" in ln)
+    assert "x.pt" in line and "y.pt" in line and "z.pt" in line
