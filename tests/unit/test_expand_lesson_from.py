@@ -407,3 +407,25 @@ def test_the_target_camp_lesson_is_guarded_too():
     finally:
         fx.set_macros(False)
         fx.set_macros_off([])
+
+
+def test_the_target_camp_lesson_waits_for_a_safe_base():
+    """A target game's camp lesson, as the game without a target's (whose caller tests _base_safe) and _creep: nothing
+    while an enemy army unit it sees stands within BASE_SAFE of its halls. With _early_camp's tests alone the heroes and
+    the army beside a raid in its main were sent ~5,500 to the natural's camp."""
+    fx.set_macros(True)
+    fx.set_macros_off(["creep", "expand"])
+    try:
+        def camp(rows):
+            tc = Teacher(0, "human", random.Random(0), {"t": {"htow": 300.0}, "n": {}})
+            return [c for c in _lessons(tc, rows) if isinstance(c, PointOrder) and c.order == ATTACK]
+        raid = [_unit(91 + k, 1, -5000, 2600 + 30 * k, "ogru", vis=1) for k in range(4)]  # (seen, in its main)
+        assert camp(_rows(extra=raid)) == []
+        assert len(camp(_rows(extra=[_unit(91 + k, 1, -5000, 2600 + 30 * k, "ogru", vis=2) for k in range(4)]))) == 7  # (unseen)
+        assert len(camp(_rows(extra=[_unit(91 + k, 1, 3000, 2600 + 30 * k, "ogru", vis=1) for k in range(4)]))) == 7  # (far)
+        fx.set_macros_off(["expand"])  # (the creep macro's form: the same test)
+        tc = Teacher(0, "human", random.Random(0), {"t": {"htow": 300.0}, "n": {}})
+        assert not [c for c in _lessons(tc, _rows(extra=raid)) if isinstance(c, ImmediateOrder)]
+    finally:
+        fx.set_macros(False)
+        fx.set_macros_off([])

@@ -1139,6 +1139,12 @@ class Teacher:
                 return self._early_camp(rows, early, mx, my, t)
             if not fx.MACROS or n_army < 6 or not n_heroes:
                 return []
+            if not self._base_safe(rows, t):  # (and, as the no-target game's camp and _creep, no enemy army unit it sees
+                # within BASE_SAFE of its halls: 2026-11-27's fix gave the target game _early_camp's tests but not the
+                # base's, which its caller makes in the game without a target, so the heroes and the army beside them in
+                # a raided main were still sent ~5,500 to the natural's camp; at minutes 8-16 of fgself-201's own games
+                # an enemy army unit stood within 2,500 of a hall in 38% of the sides' states)
+                return []
             if "creep" in fx.MACROS_OFF:  # (--macros-off creep: _early_camp's lesson, the heroes with the army within
                 # ESCORT of them, while every hero is above CREEP_HP and the group twice the camp's strength. It had sent
                 # the heroes ALONE every GAP steps with no check of either (the user, 2026-11-27: a night elf's heroes
