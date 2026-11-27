@@ -385,3 +385,25 @@ def test_until():
     off = _teacher(expand_reserve=10)
     _lessons(off, _rows())
     assert len(_lessons(off, cleared, now=650.0, t=1300)) == 1  # (no limit: as before)
+
+
+def test_the_target_camp_lesson_is_guarded_too():
+    """A target game whose hall is due (--macros-off creep): the camp lesson is _early_camp's, the heroes with the army
+    near them while strong and healthy. It had sent the heroes alone every GAP steps with no check (the user saw a night
+    elf's heroes die at the natural's camp, its archers elsewhere)."""
+    fx.set_macros(True)
+    fx.set_macros_off(["creep", "expand"])
+    try:
+        def tc():
+            return Teacher(0, "human", random.Random(0), {"t": {"htow": 300.0}, "n": {}})
+        cx, cy = float(NAT[0] + 150), float(NAT[1] + 300)
+        rows = _rows()
+        assert ([c for c in _lessons(tc(), rows) if isinstance(c, PointOrder) and c.order == ATTACK]
+                == [PointOrder(i, ATTACK, cx, cy) for i in [40] + [30 + k for k in range(6)]])  # (the hero and its army)
+        far = _rows()
+        far[np.isin(far[:, fx.C_ID], [30 + k for k in range(6)]), fx.C_X] = 4000  # (the army away: the hero alone is weak)
+        assert not [c for c in _lessons(tc(), far) if isinstance(c, PointOrder) and c.order == ATTACK]
+        assert not [c for c in _lessons(tc(), _rows(hero_hp=200)) if isinstance(c, PointOrder) and c.order == ATTACK]
+    finally:
+        fx.set_macros(False)
+        fx.set_macros_off([])

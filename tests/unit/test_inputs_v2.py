@@ -846,7 +846,8 @@ def test_expand_macro(v2):
         assert Teacher(0, "human", random.Random(0), {"t": {"htow": 300.0}}).commands(np.stack(guarded + [pal]), player, 320.0, 1) == []
         fx.set_macros_off(["creep", "expand"])  # (--macros-off: the lessons' low-level orders, the macros masked)
         c = Teacher(0, "human", random.Random(0), {"t": {"htow": 300.0}}).commands(np.stack(guarded + [pal] + army), player, 320.0, 1)
-        assert len(c) == 1 and isinstance(c[0], PointOrder) and c[0].order == 851983 and c[0].unit == 80  # (attack-move)
+        assert len(c) == 6 and all(isinstance(o, PointOrder) and o.order == 851983 for o in c) and c[0].unit == 80  # (attack-
+        # move: the hero with the army near it, _early_camp's lesson; the hero alone until 2026-11-27)
         c = Teacher(0, "human", random.Random(0), {"t": {"htow": 300.0}}).commands(np.stack(home), player, 320.0, 1)
         assert len(c) == 1 and isinstance(c[0], Build) and c[0].building == code("htow")  # (the hall itself)
     finally:

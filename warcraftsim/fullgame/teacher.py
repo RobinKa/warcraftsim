@@ -403,6 +403,7 @@ class Teacher:
                     out.append(Buy(hid, int(m[fx.C_ID]), PORTAL))
         self.hall_due = False  # (--expand-lesson-reserve: set again below while the early hall is due)
         if (self.expand_at is not None and now >= self.expand_at) or self._main_low(rows, player, t):
+            self._live = live  # (the target's camp lesson: its heroes' facts, as _early_camp reads them)
             out += self._expansion(rows, player, t)
         elif self.expand_from > 0:
             self._now = now  # (--expand-lesson-until: _expansion's clock)
@@ -1136,13 +1137,17 @@ class Teacher:
             # the creep order (the policy decides who goes with them))
             if early is not None:  # (--expand-lesson-from: its own camp lesson, the heroes with the army near them)
                 return self._early_camp(rows, early, mx, my, t)
-            if not fx.MACROS or n_army < 6 or not n_heroes or not self._due("expansion: its camp", t):
+            if not fx.MACROS or n_army < 6 or not n_heroes:
                 return []
-            if "creep" in fx.MACROS_OFF:  # (--macros-off creep: the heroes attack-move to the camp themselves, to its
-                near = rows[(rows[:, fx.C_OWNER] == 12) & (rows[:, fx.C_FLAGS] & fx.DEAD == 0)]  # creeps' middle)
-                near = near[np.hypot(near[:, fx.C_X] - mx, near[:, fx.C_Y] - my) < CAMP_NEAR]
-                cx, cy = float(near[:, fx.C_X].mean()), float(near[:, fx.C_Y].mean())
-                return [PointOrder(h, ATTACK, cx, cy) for h in e[EH:EH + n_heroes]]
+            if "creep" in fx.MACROS_OFF:  # (--macros-off creep: _early_camp's lesson, the heroes with the army within
+                # ESCORT of them, while every hero is above CREEP_HP and the group twice the camp's strength. It had sent
+                # the heroes ALONE every GAP steps with no check of either (the user, 2026-11-27: a night elf's heroes
+                # walked into the natural's camp to die while its archers were elsewhere; fgself-267: 13.5% of its
+                # training games had these lessons, up to 100 a game, and the target games with them won 0.53 against
+                # the real AI, 0.78 without)
+                return self._early_camp(rows, getattr(self, "_live", []), mx, my, t)  # (its own _due)
+            if not self._due("expansion: its camp", t):
+                return []
             creep = fx._mod("macros").CREEP
             return [ImmediateOrder(h, creep) for h in e[EH:EH + n_heroes]]
         if not n_workers:
