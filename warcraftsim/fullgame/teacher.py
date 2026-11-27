@@ -151,6 +151,12 @@ BURROW_SAFE = 1500.0
 MILITIA_SAFE = fx.MILITIA_NEAR  # (--militia-lesson: no enemy unit this near the militia or a hall)
 NEAR_MERCHANT = 2500.0
 ENEMY_NEAR = 800.0  # (an item lesson waits while an enemy unit is this near the hero: a fight)
+# the heal items the game calls a "Non-Combat Consumable" (Units\ItemStrings.txt: their regeneration ends when the unit is
+# attacked): the potion lesson gives them only with no enemy unit it sees within ENEMY_NEAR of the hero. Under 40% of
+# its hit points a hero is mostly in a fight, and the lesson had taught them there: fgself-267's orc late starts (people's
+# orc heroes carry salves) had up to 24 such lessons a game, and the policy's salve uses a minute rose with them, 4.9
+# with none to 31.6 with 6 or more (0.5 salves used up a game)
+NON_COMBAT = frozenset(fourcc(c) for c in ("hslv", "sreg", "rej1", "rej2", "rej3", "rej4", "rej5", "rej6"))
 USESLOT = 852008
 ATTACK = 851983  # (attack-move)
 # --attack-lesson: attacks on a unit where attack-move picks last (the engine's target priority, UnitData prio: a worker
@@ -394,6 +400,14 @@ class Teacher:
             if hp < 0.4 * max(maxhp, 1):
                 table = fx._mod("herodata").item_table()
                 heal = [k for k, it in enumerate(items) if it and table.get(it, (0, 0, 0, 0))[1]]
+                if any(items[k] in NON_COMBAT for k in heal):  # (a non-combat consumable only out of a fight: NON_COMBAT)
+                    h = rows[i]
+                    if enemies is None:
+                        enemies = rows[(rows[:, fx.C_OWNER] == 1 - self.side)
+                                       & (rows[:, fx.C_FLAGS] & (fx.DEAD | fx.STRUCTURE) == 0)
+                                       & ((rows[:, fx.C_VIS] >> self.side) & 1 == 1)]
+                    if (np.hypot(enemies[:, fx.C_X] - h[fx.C_X], enemies[:, fx.C_Y] - h[fx.C_Y]) < ENEMY_NEAR).any():
+                        heal = [k for k in heal if items[k] not in NON_COMBAT]
                 if heal and self._due(f"potion {hid}", t, "potion"):
                     out.append(ImmediateOrder(hid, USESLOT + heal[0]))
             # a town portal from the goblin merchant
@@ -1127,9 +1141,20 @@ class Teacher:
             mine_id = target_id if has_target else nat_id
             if early is not None:  # (--expand-lesson-from: who goes, and until 5 work it)
                 return self._early_workers(rows, mx, my, mine_id, t)
-            pick = e[16:16 + n_pick]  # (the three nearest outside 900)
-            return ([TargetOrder(w, HARVEST, mine_id) for w in pick]
-                    if n_pick and self._due("expansion: workers", t) else [])
+            if not n_pick or t - self.last.get("expansion: workers", -GAP) < GAP:
+                return []
+            # (the three nearest outside 900, as the facts' pick, of the workers the agent would send: not on their way
+            # to build or at a frame (_free), not in a burrow (LOADED). The facts' pick took those too, and the agent
+            # sends no order to either (play.BCAgent.committed, its LOADED test): a label of an order never carried out,
+            # each GAP while the mine was short. The game without a target's lesson leaves them out, _early_workers)
+            alive = fx.own_alive(rows, self.side)
+            w = alive[fx.isin(alive[:, fx.C_TYPE], WORKER_CODES) & (alive[:, fx.C_FLAGS] & (HIDDEN | LOADED) == 0)
+                      & _free(alive)]
+            d = np.hypot(w[:, fx.C_X] - mx, w[:, fx.C_Y] - my)
+            far = np.flatnonzero(~(d < 900.0))
+            pick = w[far[np.argsort(d[far], kind="stable")[:3]], fx.C_ID].tolist()
+            return ([TargetOrder(int(u), HARVEST, mine_id) for u in pick]
+                    if pick and self._due("expansion: workers", t) else [])
         if early is not None and self.expand_until > 0 and self._now > self.expand_until * self.pace:
             return []  # (--expand-lesson-until: too late for a camp or a hall; a hall taken got its workers above)
         if creeps:  # (guarded. Sending the whole army to clear it every 10 s (fgself-123) lost the games that had
@@ -1138,6 +1163,12 @@ class Teacher:
             if early is not None:  # (--expand-lesson-from: its own camp lesson, the heroes with the army near them)
                 return self._early_camp(rows, early, mx, my, t)
             if not fx.MACROS or n_army < 6 or not n_heroes:
+                return []
+            if not self._base_safe(rows, t):  # (and, as the no-target game's camp and _creep, no enemy army unit it sees
+                # within BASE_SAFE of its halls: 2026-11-27's fix gave the target game _early_camp's tests but not the
+                # base's, which its caller makes in the game without a target, so the heroes and the army beside them in
+                # a raided main were still sent ~5,500 to the natural's camp; at minutes 8-16 of fgself-201's own games
+                # an enemy army unit stood within 2,500 of a hall in 38% of the sides' states)
                 return []
             if "creep" in fx.MACROS_OFF:  # (--macros-off creep: _early_camp's lesson, the heroes with the army within
                 # ESCORT of them, while every hero is above CREEP_HP and the group twice the camp's strength. It had sent
@@ -1152,11 +1183,15 @@ class Teacher:
             return [ImmediateOrder(h, creep) for h in e[EH:EH + n_heroes]]
         if not n_workers:
             return []
-        if early is not None:  # (--expand-lesson-from: a worker on its way to build it, its order the hall's type or
-            # the haunted mine's: no second builder. Carried out, three peasants left the main's gold for one hall)
-            own = fx.own_alive(rows, self.side)
-            if (own[:, fx.C_ORDER] == (HAUNTED if self.race == "undead" else hall)).any():
-                return []
+        # (a worker on its way to build it, its order the hall's type or the haunted mine's: no second builder. Carried
+        # out, three peasants left the main's gold for one hall (--expand-lesson-from). A target game's lesson had no such
+        # test, and _free leaves the walking builder out of its choice, so each GAP while it walked another worker was
+        # taught to build the same hall: one ~30 s walk to Echo Isles' natural takes 3 GAPs, the money for a second hall
+        # permitting)
+        own = fx.own_alive(rows, self.side)
+        if (own[:, fx.C_ORDER] == (HAUNTED if self.race == "undead" else hall)).any():
+            return []
+        if early is not None:
             self.hall_due = True  # (--expand-lesson-reserve: its cost kept from the next step on, hall_reserve)
         can = getattr(self, "can", None)
         if (can is not None and not (fx.MACROS and "expand" not in fx.MACROS_OFF)  # (the hall's own build order: only

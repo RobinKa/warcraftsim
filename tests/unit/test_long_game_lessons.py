@@ -140,3 +140,25 @@ def test_creep_lesson_cap_and_until():
     assert given(now=230.0, creep_until=480.0) and given(now=240.0, creep_until=480.0)  # (480 s x 0.5: to 240 s)
     assert given(now=241.0, creep_until=480.0) == []
 
+
+
+def test_potion_lesson_keeps_non_combat_consumables_out_of_fights():
+    """The potion lesson (a hero under 40% of its hit points drinks what heals): a "Non-Combat Consumable" (a salve, a
+    scroll of regeneration, a replenishment potion: its regeneration ends at the next hit) only with no enemy unit it
+    sees within ENEMY_NEAR; a potion of healing in a fight as before."""
+    def hero(*items):
+        h = _unit(40, 0, -1500, 0, "Ofar", fx.HERO, hp=100, maxhp=400, level=3)
+        for k, it in enumerate(items):
+            h[fx.C_ITEM0 + k] = code(it)
+        return h
+    near = _unit(90, 1, -1300, 0, "hfoo", vis=1)  # (seen, 200 away: a fight)
+
+    def potion(*extra, items=("hslv",)):
+        return [c for c in _orders(_base(extra=[hero(*items), *extra]))[1] if c.unit == 40]
+    assert potion() == [ImmediateOrder(40, tm.USESLOT)]  # (out of a fight: the salve)
+    assert potion(near) == []
+    assert potion(_unit(90, 1, -1300, 0, "hfoo", vis=2)) == [ImmediateOrder(40, tm.USESLOT)]  # (unseen)
+    assert potion(_unit(90, 1, 1000, 0, "hfoo", vis=1)) == [ImmediateOrder(40, tm.USESLOT)]  # (far)
+    assert potion(near, items=("hslv", "phea")) == [ImmediateOrder(40, tm.USESLOT + 1)]  # (in a fight: the potion)
+    assert potion(near, items=("phea",)) == [ImmediateOrder(40, tm.USESLOT)]
+    assert potion(near, items=("sreg", "rej3")) == []
