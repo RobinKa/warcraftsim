@@ -70,8 +70,8 @@ from . import techtree
 from .featnative import addr as _faddr, lib as _featlib, to_f16, to_f32_into as _to_f32_into
 from .trace import DEAD_FLAG, Production, material, research_material, research_values, shaped_extras, trace_step, unit_values, worker_valued  # noqa: F401
 from .play import unit_rows
-from .model import (FullGameNet, act, adapt_config, anchor_kl, arch_key, evaluate, fine_head, load, point_parts,
-                    pointer_label_ok, trained)
+from .model import (VALUE_INIT_WIDTH, VALUE_MAX, VALUE_MIN, VALUE_SIGMA, FullGameNet, act, adapt_config, anchor_kl,
+                    arch_key, evaluate, fine_head, load, point_parts, pointer_label_ok, trained, value_ce)
 from .teacher import Teacher, lumber_short, pace as teacher_pace
 from ..native import unit_from_row
 from .neutral import MERCENARIES as _MERCENARIES
@@ -4501,6 +4501,29 @@ def second_anchor_kl(ev: dict, b: dict, own, n_units, seq, args):
     return (anchor_kl(ev, ev2, args.ref2_kl_mode) * own).sum() / n_units
 
 
+def bins_value_loss(net: FullGameNet, ev: dict, ret: torch.Tensor, valid: torch.Tensor | None = None) -> tuple:
+    """--value-bins: the value's loss, HL-Gauss's cross-entropy (model.value_ce) mean over the steps (`valid` [N]: the
+    padding steps out) -> (the loss, its statistics: "value/mse" the expectation's squared error, as loss/value was
+    without bins; "value/width" the histograms' spread, the returns' units: near a Gaussian of this width the
+    cross-entropy pulls on the trunk as a squared error times 1 / width^2; "value/clipped" the returns outside the bins'
+    span, which the target clips). No host syncs: the CUDA-graph update calls it."""
+    lg = ev["vlogits"]
+    ce = value_ce(net, lg, ret)
+    with torch.no_grad():
+        y = ret.float() if ret.dim() == lg.dim() - 1 else ret.float().unsqueeze(-1)  # [N, parts]
+        p = torch.softmax(lg.float(), -1)
+        c = net.value_centers
+        m = (p * c).sum(-1)
+        width = ((p * c * c).sum(-1) - m * m).clamp(min=0).sqrt().mean(-1)
+        se = ((m - y) ** 2).sum(-1)
+        clipped = ((y < net.value_edges[0]) | (y > net.value_edges[-1])).float().mean(-1)
+    if valid is None:
+        return ce.mean(), {"value/mse": 0.5 * se.mean(), "value/width": width.mean(), "value/clipped": clipped.mean()}
+    n = valid.sum().clamp(min=1)
+    mean = lambda x: (x * valid).sum() / n  # noqa: E731
+    return mean(ce), {"value/mse": 0.5 * mean(se), "value/width": mean(width), "value/clipped": mean(clipped)}
+
+
 def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict], args, warmup: bool, device,
                chunks: list[list[dict]] | None = None, bc_iter=None, measure: bool = False, terms: bool = False) -> dict:
     """PPO epochs over the steps; for a network with memory over sequences cut from `chunks` (the
@@ -4558,13 +4581,18 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
             log_ratio = (ev["logp"] - mb["logp"]) * own
             ratio = log_ratio.exp()
             pg = -(torch.min(ratio * adv, ratio.clamp(1 - args.clip, 1 + args.clip) * adv) * own).sum() / n_units
-            se = (((ev["vparts"].float() - mb["ret_parts"]) ** 2).sum(-1) if "ret_parts" in mb and "vparts" in ev
-                  else (ev["value"] - mb["ret"]) ** 2)  # (--reward-parts: each part's value its own return)
-            if "valid" in mb:  # (the padding steps: no units, no value target)
-                valid = mb["valid"].float()
-                v_loss = 0.5 * (se * valid).sum() / valid.sum()
+            vstats = {}
+            if "vlogits" in ev:  # (--value-bins: HL-Gauss's cross-entropy; the value itself, as above, its expectation)
+                v_loss, vstats = bins_value_loss(net, ev, mb["ret_parts"] if "ret_parts" in mb and "vparts" in ev
+                                                 else mb["ret"], mb["valid"].float() if "valid" in mb else None)
             else:
-                v_loss = 0.5 * se.mean()
+                se = (((ev["vparts"].float() - mb["ret_parts"]) ** 2).sum(-1) if "ret_parts" in mb and "vparts" in ev
+                      else (ev["value"] - mb["ret"]) ** 2)  # (--reward-parts: each part's value its own return)
+                if "valid" in mb:  # (the padding steps: no units, no value target)
+                    valid = mb["valid"].float()
+                    v_loss = 0.5 * (se * valid).sum() / valid.sum()
+                else:
+                    v_loss = 0.5 * se.mean()
             entropy = (ev["entropy"] * own).sum() / n_units
             loss = args.vf_coef * v_loss - args.ent_coef * entropy
             if not warmup:
@@ -4630,7 +4658,7 @@ def ppo_update(net: FullGameNet, ref: FullGameNet | None, opt, steps: list[dict]
                 approx_kl = (((ratio - 1) - log_ratio) * own).sum() / n_units
                 clipfrac = (((ratio - 1).abs() > args.clip).float() * own).sum() / n_units
             for k, v in (("loss/policy", pg), ("loss/value", v_loss), ("loss/entropy", entropy), ("loss/kl", approx_kl),
-                         ("loss/clipfrac", clipfrac), ("loss/ref_kl", ref_kl), ("grad_norm", gn)):
+                         ("loss/clipfrac", clipfrac), ("loss/ref_kl", ref_kl), ("grad_norm", gn), *vstats.items()):
                 stats.setdefault(k, []).append(v.detach())
     net.eval()
     if meter is not None:
@@ -4840,12 +4868,17 @@ class GraphedUpdate:
             ratio = log_ratio.exp()
             pg = -(torch.min(ratio * adv, ratio.clamp(1 - args.clip, 1 + args.clip) * adv) * own).sum() / n_units
             valid = s["valid"].float()
-            se = (((ev["vparts"].float() - s["ret_parts"]) ** 2).sum(-1) if "ret_parts" in s and "vparts" in ev
-                  else (value - s["ret"]) ** 2)  # (--reward-parts: each part's value its own return)
-            v_loss = 0.5 * (se * valid).sum() / valid.sum().clamp(min=1)
+            vstats = {}
+            if "vlogits" in ev:  # (--value-bins: HL-Gauss's cross-entropy; static shapes, no syncs)
+                v_loss, vstats = bins_value_loss(net, ev, s["ret_parts"] if "ret_parts" in s and "vparts" in ev
+                                                 else s["ret"], valid)
+            else:
+                se = (((ev["vparts"].float() - s["ret_parts"]) ** 2).sum(-1) if "ret_parts" in s and "vparts" in ev
+                      else (value - s["ret"]) ** 2)  # (--reward-parts: each part's value its own return)
+                v_loss = 0.5 * (se * valid).sum() / valid.sum().clamp(min=1)
             entropy = (ev["entropy"] * own).sum() / n_units
             loss = args.vf_coef * v_loss - args.ent_coef * entropy + self.pg_coef * pg
-            out = {"loss/policy": pg, "loss/value": v_loss, "loss/entropy": entropy}
+            out = {"loss/policy": pg, "loss/value": v_loss, "loss/entropy": entropy, **vstats}
             ref_kl = torch.zeros((), device=self.device)
             if ref is not None and args.ref_kl > 0:
                 with torch.no_grad():
@@ -5272,6 +5305,15 @@ def load_optimizer(opt, checkpoint: Path, device, lr: float, net: FullGameNet | 
                 grown = grow_glob(v, net.config, gx_old, z_old, G_old)
                 if grown.shape == w.shape:  # (else padded at the end, below)
                     opt.state[w][k] = grown
+    head = net.value_head[-1] if net is not None and getattr(net, "vbins", 0) else None
+    for p in head.parameters() if head is not None else ():  # (--value-bins over a scalar head's state, a fork: the
+        st = opt.state.get(p, {})  # binned layer is new (model.bin_value), its moments from zero and its step 0 as a
+        if any(torch.is_tensor(v) and v.dim() > 0 and v.shape != p.shape for v in st.values()):  # fresh Adam's; padded
+            for k, v in list(st.items()):  # below, its first bin's row would have had the scalar's moments)
+                if torch.is_tensor(v):
+                    st[k] = torch.zeros_like(p) if v.dim() > 0 else torch.zeros_like(v)
+                elif isinstance(v, (int, float)):
+                    st[k] = type(v)(0)
     for g in opt.param_groups:  # inputs added since (model.load: columns at the end of a weight): their state zeros
         for p in g["params"]:
             for k, v in opt.state.get(p, {}).items():
@@ -5756,6 +5798,21 @@ def git_info() -> dict:
         return {"commit": commit, "subject": subject, "dirty": dirty}
     except Exception:  # noqa: BLE001
         return {}
+
+
+def value_bins_error(args) -> str | None:
+    """--value-bins' flags: what is wrong with them (main's ap.error), None when nothing is."""
+    if not args.value_bins:
+        return None
+    if args.value_bins < 2:
+        return f"--value-bins {args.value_bins}: 0 (a scalar value) or at least 2 bins"
+    if not args.value_max > args.value_min:
+        return f"--value-min {args.value_min} --value-max {args.value_max}: the span's top above its bottom"
+    if not args.value_sigma > 0 or not args.value_init_width > 0:
+        return "--value-sigma and --value-init-width: above 0"
+    if args.reward_parts:
+        return "--value-bins with --reward-parts: not supported (the exploiters' batches have no returns per part)"
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -6311,6 +6368,21 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--lam", type=float, default=0.95)
     ap.add_argument("--clip", type=float, default=0.2)
     ap.add_argument("--vf-coef", type=float, default=0.5)
+    ap.add_argument("--value-bins", type=int, default=0, help="HL-Gauss (Farebrother et al. 2024, 'Stop Regressing'): the "
+                    "value head's K logits over K bins uniform on [--value-min, --value-max], trained by cross-entropy on "
+                    "the return's Gaussian-smoothed histogram; the value the actors' GAE, UPGO and the statistics read is "
+                    "its expectation (0: the scalar value and its squared error, as before). A scalar policy's head is "
+                    "converted at the start (model.bin_value: its expected value the old one, state by state); a network "
+                    "with bins keeps them. Not with --reward-parts")
+    ap.add_argument("--value-min", type=float, default=VALUE_MIN, help="--value-bins: the bins' span, the returns' "
+                    "units; returns outside are clipped (train.jsonl's value/clipped). A return is about gamma^(T-t) * "
+                    "outcome - shaping * phi_t: fgself-267/268's ended within -5.2..+4.9 at --shaping 0.5")
+    ap.add_argument("--value-max", type=float, default=VALUE_MAX, help="--value-bins: the bins' span's top")
+    ap.add_argument("--value-sigma", type=float, default=VALUE_SIGMA, help="--value-bins: the target Gaussian's width, in "
+                    "bin widths")
+    ap.add_argument("--value-init-width", type=float, default=VALUE_INIT_WIDTH, help="--value-bins on a scalar head: "
+                    "the first histograms' width (the returns' units), Gaussians around the old value; the cross-entropy "
+                    "then pulls on the trunk as the squared error did times 1 / width^2 (--vf-coef 0.5 * width^2: as before)")
     ap.add_argument("--ent-coef", type=float, default=0.0)
     ap.add_argument("--ref-kl", type=float, default=0.05, help="the KL term towards the initial (cloned) policy")
     ap.add_argument("--ref2", type=Path, default=None, help="a second KL anchor beside --init (a checkpoint of the run's "
@@ -6534,6 +6606,8 @@ def main(argv: list[str] | None = None) -> int:
               + ("; WARNING: no late start until a listed file has some" if not sum(got.values()) else ""), flush=True)
     if args.learner_intake and not args.update_pause_ms > 0:
         ap.error("--learner-intake reads the actors' queue in the update's pauses: --update-pause-ms above 0")
+    if value_bins_error(args):
+        ap.error(value_bins_error(args))
     fx.ACTIVE_F = args.features  # (the cloning loss's data workers fork from here: they inherit it)
     os.environ["WARCRAFTSIM_FEATURES"] = str(args.features)  # (and processes started anew: actors, videos)
     if args.valid_mask and args.inputs < 2:
@@ -6741,9 +6815,31 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--ref-ema moves the KL anchor: it needs --ref-kl above 0, and not --ref-update")
     if args.z_pool and not fx.ZDIM:
         raise SystemExit("--z-pool needs a network with a strategy block: scripts/grow_strategy.py")
+    if net.vbins and not args.value_bins:  # (a fork of a run with --value-bins, or its resume: its histograms, as before)
+        args.value_bins, args.value_min, args.value_max, args.value_sigma = (
+            net.vbins, net.config["vmin"], net.config["vmax"], net.config["vsigma"])
+    if args.value_bins and args.reward_parts:  # (the exploiters' batches have no returns per part to fit histograms to)
+        raise SystemExit("--value-bins with --reward-parts: not supported")
     if args.reward_parts:  # (a value per reward: the old value is the first, the others start at zero)
         from .model import split_value
         net = split_value(net, len(PART_NAMES))
+    if args.value_bins:  # (HL-Gauss: model.bin_value; the anchor's value head is never read, it stays as it is)
+        from .model import bin_value
+        was = bool(net.vbins)
+        try:
+            net = bin_value(net, args.value_bins, args.value_min, args.value_max, args.value_sigma, args.value_init_width)
+        except ValueError as e:
+            raise SystemExit(f"--value-bins: {e}") from e
+        if args.ref_update > 0 and ref is not None and arch_key(ref.config) != arch_key(net.config):
+            raise SystemExit("--ref-update copies the policy into the anchor: with --value-bins it needs --init with "
+                             "the same value bins")
+        print(f"--value-bins {net.vbins}: HL-Gauss over [{net.config['vmin']}, {net.config['vmax']}], sigma "
+              f"{net.value_sigma:.4f} ({net.config['vsigma']} bins)" + ("" if was else
+              f"; the scalar value's head converted (Gaussians of width {args.value_init_width} around its value)"),
+              flush=True)
+        if min(-net.config["vmin"], net.config["vmax"]) < 1 + 10 * args.shaping:
+            print(f"note: --shaping {args.shaping}: returns may reach +-{1 + 10 * args.shaping:g} (material leads of ~10 "
+                  f"x --shaping-scale), past the bins' span", flush=True)
     if not args.fine_points and net.fine:  # (a fork of a run with --fine-points: its policy's sub-cells, as before)
         args.fine_points = net.fine
     if args.fine_points > 1:  # --fine-points: the policy's fine head (model.grow_fine: a prior at first); the anchor
