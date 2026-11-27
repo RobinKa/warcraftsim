@@ -268,3 +268,11 @@ Half the material shaping cost 99 rating points and net worth (`fgself-262`) cos
 
 
 **Outcomes (2026-11-26 evening)**: twice the shaping (`fgself-264`) -74 (develops more, loses more: 0.5 is a narrow peak); anchored on the soup (`fgself-265`) -26: the anchor hypothesis is not supported. The plateau (~1,880-1,925 for every average since 2026-11-20) has now held against the shaping weight both ways, the anchor's target, a soup, generations, depth, league exploiters, a learner tax, net worth and six lessons. **What is left is the bold bet**: a fresh lineage on today's full setup (asked the user 2026-11-26 21:05).
+
+## Conditioned exploiters (2026-11-27; the literature note's idea 3, ROA-Star)
+
+**Why**: acting with the average (`fgself-267`) stopped the fall-back but not the plateau, so the noisy-executor reading explains only part of it. The other reading: the training objective is saturated. The league is rushers like the learner, and the exploiters (main and league) are unconditioned copies of it that find the same rush; ROA-Star (NeurIPS 2023) found AlphaStar's unconditioned exploiters stop working late in training, and fixed it with exploiters that each play one strategy for their whole life.
+
+**Build (first half, exploitative)**: `--exploiter-z life`: at each life's start the main exploiter draws one strategy per matchup (16; `strategy.sample`, winners first) and plays every game of that life with it as its target (z); its snapshots that join the league keep their strategies, so the league gains players of fixed, different styles that were trained to beat the main. `--exploiter-reset-to main`: a new life starts from the main's latest weights and Adam state (ROA-Star's exploitative exploiters), not the run's start. On top of the recipe (league history, `--act-ema`). Judge: rating against the control (the soup / `fgself-267`'s EMA), the exploiter's lives that reach the reset score, and the league's spread of styles.
+
+**Later (second half)**: an explorative exploiter on the styles the main plays worst (two bases, tier 3, air) with a first-mistake curriculum reward; the opponent-model head with a scouting reward.
