@@ -3054,3 +3054,5 @@ After the rebuild **the soup is +21 ±14 over 252's average**, level with 261's 
 | `fgself-252`'s average | 1,883 ±7 | 0.886 ±0.066 (87) | 0.33 (9) | 1.38, 1.1, 0.47 (47) |
 
 Head to head the EMA 0.503 against the soup (186), 0.483 against 267's own 17-27M average (174), 0.564 against 252's (164). **At 27M the EMA is level with the soup** (+11 ±21) and as good as the run's weight average over the same window: the moving average does what the averaging after the fact did, while the games play it. The test is the continuation: `fgself-267` resumed at 00:01 (27.0M, its EMA and Adam from the stop) toward ~54M; kill if the EMA at 54M is not above the soup.
+
+**Shut down** on the user's word (2026-11-27 00:55) with `fgself-267` stopped at 35.8M (its EMA `averaged/ema-0000000035765898.pt` and Adam saved): resume toward ~54M, then burst-267b (the EMA at 54M against the soup, the EMA at 27M and the 44-54M average).
