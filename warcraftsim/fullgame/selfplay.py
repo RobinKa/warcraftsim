@@ -1772,6 +1772,8 @@ def game_loop(wid: int, k: int, cfg: dict, infer: Inference, out_q, stop, render
                            else {"name": f"eval-vs:{versus}", "kind": "past", "path": versus,
                                  "eval_tag": "vs " + "/".join(Path(versus).parts[-3::2])} if versus
                            else dict(_choose(rng, spec["agents"])))
+                    if not evaluating:  # (--exploiter-z life: its life strategies, the opponent side's targets)
+                        with_life_z(spec, opp)
                     if agents_only and not versus and not heur:  # races apart: the stronger one's income taxed (League.balance)
                         taxed, share = balance_tax(spec, races)
                         if cfg.get("win_balance"):  # (the model's cap: the races' balance until it is fitted)
@@ -1855,6 +1857,72 @@ def heuristic_strategy(cfg: dict, race: str, rng: random.Random) -> str:
     if spec == "random":
         return rng.choice(strategies(race) or [""])
     return spec if spec in STRATEGIES and STRATEGIES[spec].race == race else ""
+
+
+def life_matchup(race: str, opp: str) -> str:
+    """--exploiter-z life: a life map's key, the player's race against its opponent's ("human/orc")."""
+    return f"{race}/{opp}"
+
+
+def z_short(st: dict | None) -> str:
+    """A strategy's short name: its signature (narrow strategies: heroes|army), else its source and first items."""
+    if not st:
+        return ""
+    if st.get("sig"):
+        return str(st["sig"])
+    first = sorted((st.get("t") or {}).items(), key=itemgetter(1))[:4]
+    return f"{st.get('src', '?')}:" + "+".join(c for c, _ in first)
+
+
+def with_life_z(spec: dict, opp: dict) -> dict:
+    """--exploiter-z life: a game's opponent with its life strategies (`opp["z_map"]`, one per matchup) when the league's
+    spec has a map under its name ("z_maps": the main exploiter's current life as "exploiter", and each exploiter
+    snapshot that joined the league with its own life's): the main exploiter's games, a past member's, and a league
+    exploiter's against either. Its side plays them as targets in play_one (life_strategy). Rides in the spec, which
+    every machine's games read (the remote machines' too: no file of the run's needed there)."""
+    got = (spec.get("z_maps") or {}).get(opp.get("name"))
+    if got and opp.get("kind") in ("exploiter", "past", "lexploit"):
+        opp["z_map"] = got
+    return opp
+
+
+def life_strategy(opp: dict, races: list[str], s: int, side: int) -> dict | None:
+    """--exploiter-z life: side `s`'s target from its player's life strategies (opp["z_map"], with_life_z), the one for
+    its matchup. Only the opponent's side has one (1 - side: the main exploiter, an exploiter snapshot in the league,
+    or in a league exploiter's game its opponent); None for any other side, without a map, or for a matchup it lacks."""
+    zmap = opp.get("z_map")
+    if not zmap or s != 1 - side:
+        return None
+    return zmap.get(life_matchup(races[s], races[1 - s]))
+
+
+def side_strategy(cfg: dict, pool: dict, key: str, s: int, side: int, races: list[str], opp: dict, record: bool,
+                  rng) -> dict | None:
+    """The strategy a training game's side `s` (played by `key`) plays toward, unscaled; None: none. The learner's
+    current sides --z-share of their games (a filmed game's learner always), drawn for their matchup (winners first);
+    --exploiter-z life: the opponent's side with a life map (the main exploiter, an exploiter snapshot that joined the
+    league) its life's strategy for the matchup, in every game (life_strategy)."""
+    if key == "current":
+        if rng.random() < cfg.get("z_share", 0.5) or (record and s == side):
+            return strat.sample(pool, races[s], races[1 - s], rng, bool(cfg.get("z_winners", 1)), cfg.get("z_src", ""))
+        return None
+    return life_strategy(opp, races, s, side)
+
+
+def target_sides(cfg: dict, pool: dict | None, keys: dict, trained, side: int, races: list[str], opp: dict,
+                 record: bool, rng):
+    """play_one's target draw in a training game: (side, strategy) for each policy side with a target (`keys`: the
+    policies' keys by side; `trained`: the sides with a trajectory), lazily, side by side: the caller draws each one's
+    modes before the next side's strategy (the draws' order as before). A current side without a trajectory (a league
+    exploiter's opponent) none; without a pool (an evaluation game) none."""
+    if pool is None:
+        return
+    for s in sorted(keys):
+        if keys[s] == "current" and s not in trained:
+            continue
+        st = side_strategy(cfg, pool, keys[s], s, side, races, opp, record, rng)
+        if st is not None:
+            yield s, st
 
 
 _POOLS: dict[str, dict] = {}
@@ -2671,14 +2739,13 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             m["workers"] = float(min(m["workers"], fx.worker_cap(race, 1)))
         return m
     pool = strategy_pool(cfg) if train else None
-    for s in trajs if pool is not None and replay is None else ():
-        if keys[s] == "current" and (random.random() < cfg.get("z_share", 0.5) or (record and s == side)):  # (not the
-            # exploiter's sides; a filmed game's learner always: its video shows how it plays a target)
-            st = strat.sample(pool, races[s], races[1 - s], random, bool(cfg.get("z_winners", 1)), cfg.get("z_src", ""))
-            if st is not None:
-                zm[s] = draw_modes(races[s])
-                zs[s] = target(cfg, bots[s].view, strat.scaled(st, cfg.get("z_time_scale", 1.0)), pool, races[s], vocab,
-                               zm[s])
+    # (target_sides, side_strategy: the learner's trained sides --z-share of their games, a filmed game's learner
+    # always: its video shows how it plays a target; --exploiter-z life: the opponent's side with a life map, the main
+    # exploiter's or an exploiter snapshot's, always, trained or not. The learner's untrained sides (a league exploiter's
+    # opponent): none)
+    for s, st in target_sides(cfg, pool, keys, trajs, side, races, opp, record, random) if replay is None else ():
+        zm[s] = draw_modes(races[s])
+        zs[s] = target(cfg, bots[s].view, strat.scaled(st, cfg.get("z_time_scale", 1.0)), pool, races[s], vocab, zm[s])
     if opp.get("eval_key") in ("current+z", "current+zg"):  # (--eval-z: the current policy's evaluation games with a target, AlphaStar's
         pool = strategy_pool(cfg)              # z at test time: drawn as in training, winners of the matchup first)
         st = strat.sample(pool, races[side], races[1 - side], random, True, cfg.get("z_src", "")) if pool else None
@@ -3246,6 +3313,12 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         # (the exploiter's version that played: a game begun before its restart is not the new one's, League.recorded)
         **({"exploiter_version": xv} if opp.get("kind") == "exploiter" and (xv := exploiter_version(keys.get(1 - side)))
            is not None else {}),
+        # (--exploiter-z life: the opponent's side played its life's strategy, the main exploiter's or an exploiter
+        # snapshot's: its short name and what it missed of it by the end. The row's "z" stays the learner's side's alone)
+        **({"opp_z": z_short(zs[1 - side]),
+            "opp_z_miss": strat.mismatch(made[1 - side], zs[1 - side], strat.scored(pool, races[1 - side], zs[1 - side]),
+                                         obs.game_time)}
+           if opp.get("z_map") and (1 - side) in zs and keys.get(1 - side) != "current" else {}),
         # (--league-exploiters: the row is the league exploiter's, at `side`; its version, and what it played)
         **({"league_exploiter": opp["lx"], "opponent_kind": opp.get("vs_kind"),
             **({"exploiter_version": xv} if (xv := exploiter_version(keys.get(side))) is not None else {})}
@@ -3565,6 +3638,10 @@ class League:
         # first game: none of fgself-193's 705 games on the box was one)
         self.exploiter_path: str | None = None
         self.exploiter_life = 0  # (the version its current life began with: games of an earlier one count for none)
+        # (--exploiter-z life: its current life's strategies, one per matchup, the spec's z_maps["exploiter"]; and the
+        # lives drawn in the run)
+        self.exploiter_z: dict | None = None
+        self.exploiter_z_lives = 0
         self.lx = [LeagueExploiterRecord(i) for i in range(league_exploiters)]  # (--league-exploiters)
         self.lx_share = league_exploiter_share if league_exploiters > 0 else 0.0
         if exploiter_launch_share(exploiter_share, league_exploiters, league_exploiter_share) >= 1.0:
@@ -3641,8 +3718,12 @@ class League:
         old = m is self.exploiter and e.get("exploiter_version", self.exploiter_life) < self.exploiter_life
         return None if taxed or pulled or scen or old else m
 
-    def add_snapshot(self, path: Path, steps: int, name: str | None = None) -> None:
-        self.past.append(Member(name or f"past:{steps}", path=str(path), steps=steps))
+    def add_snapshot(self, path: Path, steps: int, name: str | None = None, z_path: Path | None = None,
+                     z_map: dict | None = None) -> None:
+        """`z_path`, `z_map` (--exploiter-z life: an exploiter snapshot's life strategies): its side plays them as its
+        targets in every game it plays (the spec's z_maps, with_life_z)."""
+        self.past.append(Member(name or f"past:{steps}", path=str(path), steps=steps,
+                                z_path=str(z_path) if z_path else None, z_map=z_map or None))
         movable = [i for i, m in enumerate(self.past) if not kept_for_good(m.name)]  # (--league-add's: for good)
         if len(movable) > self.max_past:  # keep the first (the clone) and the newest
             del self.past[movable[1]]
@@ -3663,6 +3744,7 @@ class League:
                 m = self.scripts.get(row["name"]) or self.real[row["name"]]
             elif row.get("path") and Path(row["path"]).exists():
                 m = Member(row["name"], path=row["path"], steps=row.get("steps", 0))
+                with_z_file(m, row.get("z_file"))  # (--exploiter-z life: an exploiter snapshot's strategies)
                 self.past.append(m)
             else:
                 continue
@@ -3703,6 +3785,7 @@ class League:
                 continue
             kind, _, rest = row["name"].partition(":")
             m = Member(row["name"] if "/" in rest else f"{kind}:{run}/{rest}", path=row["path"], steps=row.get("steps", 0))
+            with_z_file(m, row.get("z_file"))  # (--exploiter-z life: an exploiter snapshot keeps its strategies)
             m.wins, m.losses, m.draws = row.get("wins", 0.0), row.get("losses", 0.0), row.get("draws", 0.0)
             m.recent = list(row.get("recent") or [])
             self.past.append(m)
@@ -3769,7 +3852,12 @@ class League:
             agents += [{"name": m.name, "kind": "past", "path": m.path, "p": self.shares["past"] * (1 - f_share) * x / total}
                        for m, x in zip(rest, w)]
         model = self.win_balance.coef() if self.win_balance is not None else None
+        # (--exploiter-z life: the life strategies by the player's name, the opponent's in its games: with_life_z)
+        z_maps = {m.name: m.z_map for m in self.past if m.z_map}
+        if self.exploiter is not None and self.exploiter_z:
+            z_maps["exploiter"] = self.exploiter_z
         return {"launch": launch, "agents": agents, **({"balance": self.balance_taxes()} if self.balance else {}),
+                **({"z_maps": z_maps} if z_maps else {}),
                 **({"exploiter": self.exploiter_path} if self.exploiter is not None and self.exploiter_path else {}),
                 **({"league_exploiters": [{"index": x.index, "path": x.path, "opponents": self.lx_opponents(x.index)}
                                           for x in self.lx]} if self.lx else {}),
@@ -3830,7 +3918,7 @@ class League:
             p = m.win_rate()
             return {"name": m.name, "steps": m.steps, "games": m.games, "wins": m.wins, "losses": m.losses,
                     "draws": m.draws, "win_rate": p, "weight": share.get(m.name) if m.path else None,
-                    "path": m.path, "recent": m.recent}
+                    "path": m.path, "recent": m.recent, **({"z_file": m.z_path} if m.z_path else {})}
         summary = {"pfsp": self.pfsp, "members": [row(m) for m in [*self.scripts.values(), *self.real.values(), *self.past]],
                    "self": row(self.self_member), "level": {f"{n}|{r}": v for (n, r), v in self.level.items()},
                    "balance": self.balance,
@@ -3877,6 +3965,8 @@ class League:
             out[f"league/lexploiter{x.index}_resets"] = x.resets
         if self.lx:
             out["league/lexploiter_members"] = sum(1 for m in self.past if m.name.startswith(LX_PREFIX))
+        if any(m.z_map for m in self.past):  # (--exploiter-z life: the members that play their life's strategies)
+            out["league/z_members"] = sum(1 for m in self.past if m.z_map)
         return out
 
 
@@ -5275,6 +5365,107 @@ def adam_restore(opt, snapshot: list[dict]) -> None:
                 st[k] = v.detach().clone() if isinstance(v, torch.Tensor) else v
 
 
+def adam_copy(src, dst) -> None:
+    """`src`'s Adam state into `dst` (an optimizer over parameters of the same shapes, in the same order), in place where
+    `dst` has the tensor: the CUDA graphs keep its addresses. A parameter `src` has no state for (never stepped) gets
+    `dst`'s zeroed, a fresh Adam's. --exploiter-reset-to main: a new exploiter life with the main's moments."""
+    dparams = [(q, bool(g.get("capturable") or g.get("fused"))) for g in dst.param_groups for q in g["params"]]
+    sparams = [q for g in src.param_groups for q in g["params"]]
+    if len(dparams) != len(sparams) or any(tuple(q.shape) != tuple(p.shape) for (q, _), p in zip(dparams, sparams)):
+        raise ValueError("adam_copy: the optimizers' parameters differ")
+    for (q, on_device), p in zip(dparams, sparams):
+        saved, st = src.state.get(p, {}), dst.state[q]
+        if not saved:
+            for v in st.values():
+                if isinstance(v, torch.Tensor):
+                    v.zero_()
+            continue
+        for k, v in saved.items():
+            if isinstance(v, torch.Tensor) and isinstance(st.get(k), torch.Tensor) and st[k].shape == v.shape:
+                st[k].copy_(v)
+            elif isinstance(v, torch.Tensor):  # (a step count where `dst` keeps it: on the device for a capturable or
+                st[k] = v.detach().to(q.device if (k != "step" or on_device) else "cpu").clone()  # fused one)
+            else:
+                st[k] = v
+
+
+def exploiter_from_main(xnet, xopt, net, opt) -> None:
+    """--exploiter-reset-to main (ROA-Star's exploitative exploiters): a new exploiter life from the main network's
+    latest weights (`net`'s state; with --act-ema the trained weights, not the average the games play) and its Adam
+    state (`opt`'s), copied in place: the exploiter's CUDA graphs keep their tensors' addresses. On the learner's
+    stream, as publish() reads the weights after an update and the start's reset copies x_init (no device-wide
+    synchronize: the inference loop's work in this process goes on)."""
+    xnet.load_state_dict(net.state_dict())
+    adam_copy(opt, xopt)
+
+
+LIFE_Z_FILE = "exploiter.z.json"  # (--exploiter-z life: the main exploiter's current life's strategies, in run_dir)
+
+
+def draw_life_z(pool: dict, rng: random.Random, src: str = "") -> dict[str, dict]:
+    """--exploiter-z life: one strategy per matchup (the exploiter's race against its opponent's: 16), drawn as the
+    learner's targets are (strategy.sample: winners of the matchup first; `src`: --z-src), copies of the pool's."""
+    out = {}
+    for a in strat.RACES:
+        for b in strat.RACES:
+            st = strat.sample(pool, a, b, rng, winners=True, src=src)
+            if st is not None:
+                out[life_matchup(a, b)] = json.loads(json.dumps(st))
+    return out
+
+
+def save_life_z(path: Path, zmap: dict, life: int, lives: int = 0, steps: int = 0) -> Path:
+    """A life's strategies as a file (exploiter.z.json for the current life; checkpoints/exploiter-<steps>.z.json beside
+    a snapshot that joined the league): `life` the exploiter's version it began with, `lives` the run's lives drawn."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps({"life": int(life), "lives": int(lives), "steps": int(steps), "map": zmap}))
+    tmp.replace(path)
+    return path
+
+
+def load_life_z(path) -> dict | None:
+    """save_life_z's file ({"life", "lives", "steps", "map"}), None when missing or unreadable."""
+    try:
+        got = json.loads(Path(path).read_text())
+    except (OSError, ValueError, TypeError):
+        return None
+    return got if isinstance(got, dict) and isinstance(got.get("map"), dict) else None
+
+
+def with_z_file(m: Member, path: str | None) -> Member:
+    """A league member's life strategies from its file (league.json's "z_file": an exploiter snapshot's,
+    --exploiter-z life); a file gone leaves it without, as before (said once)."""
+    if not path:
+        return m
+    got = load_life_z(path)
+    if got is None:
+        print(f"note: {m.name}: its life strategies ({path}) are gone: it plays without targets", flush=True)
+        return m
+    m.z_path, m.z_map = str(path), got["map"] or None
+    return m
+
+
+def start_life_z(run_dir: Path, pool: dict, life: int, steps: int, seed: str, src: str = "",
+                 keep: bool = True) -> tuple[dict, int, bool]:
+    """--exploiter-z life: the main exploiter's strategies for its life that began at version `life` -> (map, the run's
+    lives drawn, whether drawn now). `keep` (the learner's start): the saved map when it is that life's (a resume keeps
+    it); else, and at every restart, a new draw (seeded by the run and the life), saved as exploiter.z.json."""
+    path = Path(run_dir) / LIFE_Z_FILE
+    saved = load_life_z(path)
+    if keep and saved is not None and saved.get("life") == life and saved["map"]:
+        return saved["map"], int(saved.get("lives", 1)), False
+    lives = int(saved.get("lives", 0)) + 1 if saved is not None else 1
+    zmap = draw_life_z(pool, random.Random(f"{seed}/exploiter-z/{life}"), src)
+    save_life_z(path, zmap, life, lives, steps)
+    return zmap, lives, True
+
+
+def life_z_line(zmap: dict, life: int) -> str:
+    """The console's line for a new life's strategies."""
+    return (f"exploiter life from version {life}: its targets ({len(zmap)} matchups) "
+            + ", ".join(f"{k} {z_short(v)}" for k, v in zmap.items()))
+
+
 def save_exploiter_opt(xopt, run_dir: Path, version: int, since: int) -> None:
     """The exploiter's Adam state (exploiter.adam, with its weights' version and its updates since its restart): written
     with the run's checkpoints and at its stop; a resume takes it back when it is of exploiter.pt's life
@@ -5991,6 +6182,18 @@ def main(argv: list[str] | None = None) -> int:
                     "it starts over: fresh (zeroed), or saved: the one the run's starting weights were saved with (zeroed, "
                     "it fell to 0.39-0.40 against the learner in every life of fgself-244)")
     ap.add_argument("--exploiter-timeout", type=int, default=300, help="updates after which it starts over anyway")
+    ap.add_argument("--exploiter-z", choices=("off", "life"), default="off",
+                    help="life (ROA-Star's conditioned exploiters; needs --exploiter-share and --z-pool): at each of "
+                         "its lives' starts the main exploiter draws one strategy per matchup (16, winners first, "
+                         "--z-src) and plays every game of that life toward it as its target (its own of the "
+                         "matchup, as the learner's targets are built: modes, --z-time-scale); a resume keeps the "
+                         "life's (exploiter.z.json). Its snapshots that join the league keep theirs "
+                         "(checkpoints/exploiter-<steps>.z.json): every game against them gives their side those "
+                         "targets. Episode rows: opp_z, opp_z_miss. off: none")
+    ap.add_argument("--exploiter-reset-to", choices=("start", "main"), default="start",
+                    help="where a new main exploiter life starts (its launch and each restart): start, the run's "
+                         "starting weights (with --exploiter-adam's Adam state); main, the main network's latest "
+                         "weights and its Adam state (ROA-Star's exploitative exploiters)")
     ap.add_argument("--exploiter-publish", type=int, default=8,
                     help="the exploiter's updates between the versions new games play (and at a restart): a version a "
                          "game is each another network for the inference loop to run; one every update (~18 s) "
@@ -6299,6 +6502,10 @@ def main(argv: list[str] | None = None) -> int:
     if exploiter_launch_share(args.exploiter_share, args.league_exploiters, args.league_exploiter_share) >= 1.0:
         ap.error("--exploiter-share plus --league-exploiters x --league-exploiter-share must stay below 1 (the "
                  "agents' and the built-in AI's launches get what is left)")
+    if args.exploiter_z == "life" and not (args.exploiter_share > 0 and args.z_pool):
+        ap.error("--exploiter-z life needs --exploiter-share above 0 and --z-pool")
+    if args.exploiter_reset_to == "main" and not args.exploiter_share > 0:
+        ap.error("--exploiter-reset-to main needs --exploiter-share above 0 (the main exploiter's lives)")
     if args.opd_share > 0 and args.opd_difficulty == "insane":
         ap.error("--opd-difficulty insane doubles the learner's income (agent_difficulty)")
     if "late" in args.scenarios.split(",") and not args.late_states:
@@ -6788,10 +6995,18 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print("--exploiter-adam saved: no Adam state with the run's starting weights: a fresh one", flush=True)
         del tmp
+    if xnet is not None and args.exploiter_reset_to == "main" and x_since == 0:  # (a new life, at the launch or an
+        exploiter_from_main(xnet, xopt, net, opt)  # exploiter new at this resume: the main's weights and Adam state)
+        print("--exploiter-reset-to main: the exploiter's life starts from the main's weights and Adam state", flush=True)
     if xnet is not None:
         publish(xnet, x_update, run_dir, "exploiter.pt", since=x_since)  # (its "since" kept: a second resume reads it)
         league.exploiter_path = publish_exploiter(xnet, x_update, run_dir, vocab)
         league.exploiter_life = x_update - x_since
+        if args.exploiter_z == "life":  # (its life's strategies: a resume keeps the life's, else a new draw)
+            league.exploiter_z, league.exploiter_z_lives, drawn = start_life_z(
+                run_dir, strategy_pool({"z_pool": str(args.z_pool), **({"z_shop": args.z_shop} if args.z_shop else {})}),
+                league.exploiter_life, resumed["steps"] if resumed else 0, f"{args.seed}/{args.name}", args.z_src)
+            print(("" if drawn else "(kept) ") + life_z_line(league.exploiter_z, league.exploiter_life), flush=True)
         league.write()  # (the spec names it before any game starts, the remote machines' too)
     lxs = None  # --league-exploiters: their networks, trained in turn in one slot (LeagueExploiters)
     if args.league_exploiters > 0:  # (not `slot`: the run's own, claim_slot's, goes to the actors)
@@ -6996,23 +7211,34 @@ def main(argv: list[str] | None = None) -> int:
                 path = run_dir / "checkpoints" / f"exploiter-{agent_steps:016d}.pt"
                 torch.save({"model": xnet.state_dict(), "config": xnet.config, "vocab": vocab, "agent_steps": agent_steps,
                             "update": x_update}, path)
-                league.add_snapshot(path, agent_steps, name=f"exploiter:{agent_steps}")
+                # (--exploiter-z life: it keeps its life's strategies in the league, the file beside its checkpoint)
+                zp = (save_life_z(path.with_suffix(".z.json"), league.exploiter_z, league.exploiter_life,
+                                  league.exploiter_z_lives, agent_steps) if league.exploiter_z else None)
+                league.add_snapshot(path, agent_steps, name=f"exploiter:{agent_steps}", z_path=zp,
+                                    z_map=league.exploiter_z)
             print(f"exploiter restarts after {x_since} updates (its score against the learner: "
                   f"{'-' if score is None else f'{score:.2f}'})", flush=True)
-            xnet.load_state_dict(x_init)  # (in place: the graphs keep their weights' addresses)
-            if x_adam0 is not None:  # (--exploiter-adam saved: the start's Adam state, in place)
-                adam_restore(xopt, x_adam0)
-            elif x_updater is not None:  # (Adam's state zeroed in place, alike: a fresh optimizer)
-                for st in xopt.state.values():
-                    for v in st.values():
-                        if isinstance(v, torch.Tensor):
-                            v.zero_()
+            if args.exploiter_reset_to == "main":  # (the main's latest weights and Adam state, in place)
+                exploiter_from_main(xnet, xopt, net, opt)
             else:
-                xopt = torch.optim.Adam(xnet.parameters(), lr=args.lr, eps=1e-5)
+                xnet.load_state_dict(x_init)  # (in place: the graphs keep their weights' addresses)
+                if x_adam0 is not None:  # (--exploiter-adam saved: the start's Adam state, in place)
+                    adam_restore(xopt, x_adam0)
+                elif x_updater is not None:  # (Adam's state zeroed in place, alike: a fresh optimizer)
+                    for st in xopt.state.values():
+                        for v in st.values():
+                            if isinstance(v, torch.Tensor):
+                                v.zero_()
+                else:
+                    xopt = torch.optim.Adam(xnet.parameters(), lr=args.lr, eps=1e-5)
             xm.recent = []
             league.exploiter_resets += 1
             x_since = 0
             league.exploiter_life = x_update  # (its first version, published below)
+            if args.exploiter_z == "life":  # (a new life: new strategies, in the spec with its first version below)
+                league.exploiter_z, league.exploiter_z_lives, _ = start_life_z(
+                    run_dir, strategy_pool(cfg), x_update, agent_steps, f"{args.seed}/{args.name}", args.z_src, keep=False)
+                print(life_z_line(league.exploiter_z, x_update), flush=True)
         torch.save({"model": {k: v.detach().cpu() for k, v in xnet.state_dict().items()}, "config": xnet.config,
                     "version": x_update, "since": x_since}, run_dir / "exploiter.pt.tmp")
         (run_dir / "exploiter.pt.tmp").replace(run_dir / "exploiter.pt")
@@ -7163,6 +7389,9 @@ def main(argv: list[str] | None = None) -> int:
             if x_stats:  # the exploiter's last update
                 stats.update({f"exploiter/{k.split('/')[-1]}": v for k, v in x_stats.items()})
                 stats["exploiter/updates"] = x_update
+            if league.exploiter_z is not None:  # (--exploiter-z life: the lives drawn so far, the current one's map)
+                stats["exploiter/z_life"] = league.exploiter_z_lives
+                stats["exploiter/z_matchups"] = len(league.exploiter_z)
             for li, lxn in enumerate(lxs.nets if lxs is not None else ()):  # (--league-exploiters: each one's last update)
                 stats.update({f"lexploiter{li}/{k.split('/')[-1]}": v for k, v in lxn["stats"].items()})
                 stats[f"lexploiter{li}/updates"] = lxn["version"]

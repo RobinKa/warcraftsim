@@ -35,6 +35,10 @@ class Member:
     losses: float = 0.0
     draws: float = 0.0
     recent: list = field(default_factory=list)  # the learner's last results against it (1 / 0.5 / 0)
+    # (fullgame --exploiter-z life: an exploiter snapshot's life strategies, one per matchup, its side's targets in every
+    # game it plays: the file beside its checkpoint, and its map as read from there)
+    z_path: str | None = field(default=None, compare=False)
+    z_map: dict | None = field(default=None, repr=False, compare=False)
 
     @property
     def games(self) -> float:
