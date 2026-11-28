@@ -18,7 +18,7 @@ import json
 import math
 import queue
 import random
-from collections import Counter
+from collections import Counter, deque
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -120,6 +120,17 @@ ENTANGLE = 852147  # a tree of life's entangle gold mine (tested 2026-10-23: giv
 # nearer and the mine is entangled ~9 s on)
 TREES_OF_LIFE = [int.from_bytes(c.encode(), "big") for c in ("etol", "etoa", "etoe")]
 NGOL, EGOL = int.from_bytes(b"ngol", "big"), int.from_bytes(b"egol", "big")
+# the episode row's hero deaths (BCAgent._watch_heroes, _hero_death; weakness analysis 2026-11-28, section 2: the policy's
+# hero died first in 49 of 58 losses, 57 of 141 deaths at level 1, and the traces could not say why)
+HERO_TRACK_S, HERO_HP_EVERY = 10.0, 2.0  # (its hit points over the last 10 s, a share every 2 s)
+HERO_NEAR, HERO_HALL_NEAR, HERO_DEATHS_MAX = 1200.0, 1500.0, 40  # (the armies around it; a hall near; records a game)
+CREEP_OWNER = 12  # (neutral hostile)
+ILLUSION = 512  # (UnitFlags.ILLUSION)
+HALL_CODES = fx.codes(int.from_bytes(c.encode(), "big") for c in (
+    "htow", "hkee", "hcas", "ogre", "ostr", "ofrt", "unpl", "unp1", "unp2", "etol", "etoa", "etoe"))
+PORTAL_ITEM = int.from_bytes(b"stwp", "big")
+HEAL_ITEMS = frozenset(int.from_bytes(c.encode(), "big") for c in (  # (shopitems.HEALS, the creeps' drops, the
+    "phea", "pghe", "hslv", "sreg", "shea", "pres", "hlst", "rej1", "rej2", "rej3", "rej4", "rej5", "rej6"))  # teacher's)
 # (as features.isin's sorted arrays: per step)
 TREE_CODES, ALTAR_CODES, MINED_CODES = fx.codes(TREES_OF_LIFE), fx.codes(ALTARS), fx.codes(MINED_BY.values())
 HARVESTING_CODES = fx.codes(list(fx.HARVESTING) + [fx.SMART])
@@ -195,6 +206,8 @@ class BCAgent:
         self.building_since: dict[int, int] = {}  # worker -> the step it started its building order
         self.buying_since: dict[int, int] = {}  # unit -> the step it was sent to buy (protocol.Buy: on its way)
         self.last_point: dict[int, tuple] = {}  # unit -> (order, x, y) of its attack-move or move (--order-masks bit 8)
+        self._hero_rows: dict[int, deque] = {}  # hero -> its rows of the last 10 s (_watch_heroes)
+        self.hero_deaths: list[dict] = []  # (the game's: the episode row's)
         self.t = 0
         if self.full is not None:  # (--full-vocab: the cooldowns and autocasts, a new game's; the view's mask reads them)
             self.cooling.clear()
@@ -327,6 +340,8 @@ class BCAgent:
         # money not kept; its full price had been, audit 11)
         self.view.hiring_heroes = frozenset(hiring.values())  # counts as a hero: the masks' hero count, audit 10)
         st = self.view.step(rows, me, events, t, opp)
+        self._watch_heroes(rows, obs.events, getattr(obs, "game_time", t * self.view.step_seconds))  # (the episode
+        # row's hero deaths: logging only)
         # the workers busy with a building order (features.building), and since when (the view's own entities' workers
         # on a building order, repairing, and its frames, when featnative made them: View._marks)
         # (a human builder's current order while it constructs is "repair", not the building's: recorded games, 9,464 of
@@ -997,6 +1012,74 @@ class BCAgent:
                     out.append(cmd)
                     self.gold_full_engine = getattr(self, "gold_full_engine", 0) + 1
         return out
+
+    def _watch_heroes(self, rows: np.ndarray, events, now: float) -> None:
+        """Each living hero of the player's: its rows of the last HERO_TRACK_S seconds; one alive at the step before and
+        dead now (its row dead, as a dead hero stays in the rows until revived, or its death event) has died: its record
+        in hero_deaths (the episode row's; no behaviour changes): _hero_death."""
+        own = fx.own_alive(rows, self.player)
+        heroes = own[own[:, fx.C_FLAGS] & fx.HERO > 0].tolist() if len(own) else []
+        hist = self.__dict__.setdefault("_hero_rows", {})
+        alive = {r[fx.C_ID]: r for r in heroes}
+        gone = [h for h in hist if h not in alive]
+        if gone:
+            killers = {int(e.a): int(e.b) for e in events if int(e.kind) == int(EventKind.DEATH)}
+            dead = set(rows[(rows[:, fx.C_FLAGS] & fx.DEAD > 0) & fx.isin(rows[:, fx.C_ID], fx.codes(gone)), fx.C_ID].tolist())
+            deaths = self.__dict__.setdefault("hero_deaths", [])
+            for h in gone:
+                past = hist.pop(h)
+                if (h in dead or h in killers) and len(deaths) < HERO_DEATHS_MAX:
+                    deaths.append(self._hero_death(rows, past, killers.get(h), now))
+        keep = max(1, int(round(HERO_TRACK_S / max(self.view.step_seconds if self.view is not None else 0.5, 1e-3)))) + 1
+        for h, r in alive.items():
+            past = hist.get(h)
+            if past is None:
+                past = hist[h] = deque(maxlen=keep)
+            past.append(r)
+
+    def _hero_death(self, rows: np.ndarray, past, killer: int | None, now: float) -> dict:
+        """A hero's death record (game second `now`, the step its death was seen): its type and level; its hit points'
+        share every HERO_HP_EVERY seconds over the last HERO_TRACK_S (oldest first; the last its last row alive); the
+        player's and the enemy's army units within HERO_NEAR of where it last stood ([count, material]: the units'
+        cost, gold + lumber; heroes count, workers, buildings and illusions not; the true state, seen or not), creeps
+        there likewise; the nearest hall of the player's (its distance; near_hall: within HERO_HALL_NEAR); the player's
+        army's centre (its units but heroes, anywhere): its distance and size; whether it held a town portal or a
+        healing item (tp, heal: unused, as it died with them); the killer's type."""
+        last = past[-1]
+        x, y, hid, p = last[fx.C_X], last[fx.C_Y], last[fx.C_ID], self.player
+        step_s = self.view.step_seconds if self.view is not None else 0.5
+        every = max(1, int(round(HERO_HP_EVERY / max(step_s, 1e-3))))
+        seq = list(past)
+        hp = [round(r[fx.C_HP] / max(r[fx.C_MAXHP], 1), 2) for r in seq[::-1][::every][::-1]]
+        live = rows[rows[:, fx.C_FLAGS] & (fx.DEAD | fx.STRUCTURE | ILLUSION) == 0]
+        near = (live[:, fx.C_X] - x) ** 2 + (live[:, fx.C_Y] - y) ** 2 <= HERO_NEAR ** 2
+        army = (live[:, fx.C_FLAGS] & fx.WORKER == 0) & (live[:, fx.C_ID] != hid)
+        owner = live[:, fx.C_OWNER]
+        values = self.__dict__.get("unit_values") or {}
+
+        def side(mask) -> list:
+            types = live[mask, fx.C_TYPE].tolist()
+            return [len(types), int(sum(values.get(str(t), 0) for t in types))]
+        rec = {"s": round(float(now), 1), "hero": fx.rawcode(int(last[fx.C_TYPE])), "lvl": int(last[fx.C_HLEVEL]),
+               "hp": hp, "own": side(near & army & (owner == p)), "enemy": side(near & army & (owner == 1 - p))}
+        creeps = side(near & (owner == CREEP_OWNER))
+        if creeps[0]:
+            rec["creeps"] = creeps
+        own_all = rows[rows[:, fx.C_OWNER] == p]
+        halls = own_all[fx.isin(own_all[:, fx.C_TYPE], HALL_CODES) & (own_all[:, fx.C_FLAGS] & fx.DEAD == 0)]
+        d = np.hypot(halls[:, fx.C_X] - x, halls[:, fx.C_Y] - y) if len(halls) else None
+        rec["hall_d"] = int(d.min()) if d is not None else None
+        rec["near_hall"] = bool(d is not None and d.min() <= HERO_HALL_NEAR)
+        mine = live[(owner == p) & (live[:, fx.C_FLAGS] & (fx.WORKER | fx.HERO) == 0)]
+        rec["army_n"] = len(mine)
+        rec["army_d"] = (int(math.hypot(float(mine[:, fx.C_X].mean()) - x, float(mine[:, fx.C_Y].mean()) - y))
+                         if len(mine) else None)
+        items = [v for v in last[fx.C_ITEM0:fx.C_ITEM0 + 6] if v] if len(last) > fx.C_ITEM0 + 5 else []
+        rec["tp"] = PORTAL_ITEM in items
+        rec["heal"] = any(v in HEAL_ITEMS for v in items)
+        k = rows[rows[:, fx.C_ID] == killer] if killer else rows[:0]
+        rec["killer"] = fx.rawcode(int(k[0, fx.C_TYPE])) if len(k) else None
+        return rec
 
     def _refusal(self, c, key: str, rows: np.ndarray) -> list:
         """A refused order's context: [its kind, the unit's type, flags and current order, the target's type, whose

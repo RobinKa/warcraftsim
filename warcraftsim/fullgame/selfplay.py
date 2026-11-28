@@ -2701,6 +2701,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         bot = BCAgent(None, vocab, s, None, costs=cfg.get("costs_array"),  # (a research at its next level's cost: the
                       steps=research_steps(vocab, cfg["map"]) if cfg.get("costs_array") is not None else None)  # map's)
         bot.enc.mine_full = 12500.0 * mine_scale(cfg["map"])
+        bot.unit_values = cfg.get("values")  # (its hero deaths' armies around them: their cost, the episode row's)
         bot.begin(obs, race_ix)
         bots[s] = bot
         keys[s] = policy_key(cfg, opp, s, side)
@@ -3275,6 +3276,8 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
             "gold_full_lumber": getattr(bots[side], "gold_full_lumber", 0),
             "gold_full_steps": getattr(bots[side].view, "gold_full_steps", 0)}
            if side in bots and fx.GOLD_CAP and races[side] in fx.GOLD_CAP_WORKERS else {}),
+        # (each of the learner's hero deaths: play.BCAgent._hero_death's record; logging only)
+        **({"hero_deaths": bots[side].hero_deaths} if side in bots and getattr(bots[side], "hero_deaths", None) else {}),
         # (--order-masks 2: the toggle classes the view's mask turned off, summed over the game's steps)
         **({"toggles_masked": bots[side].view.toggles.masked}
            if side in bots and getattr(getattr(bots[side], "view", None), "toggles", None) is not None else {}),
