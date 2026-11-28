@@ -121,12 +121,36 @@ class NativeServer:
         keys = [m["path"] for m in json.loads(league.read_text()).get("members", []) if m.get("path")] if league.exists() else []
         # (and the evaluation checkpoints: each architecture gets its slots here, a grown network's anchor and
         # older checkpoints another than the current one's)
-        warm_inference(self.nets, self.infer, self.past, self.swap, keys + list(cfg.get("eval_checkpoints") or []))
-        print(f"native inference: graphs captured in {time.time() - t0:.0f} s", flush=True)
+        keys = keys + list(cfg.get("eval_checkpoints") or [])
+        # --infer-past-stack S: each architecture's past snapshots in S stacked slots, a round's calls of it one call
+        # (paststack.PastStack), instead of --infer-past-slots' network copies with a call each
+        self.stack = int(cfg.get("infer_past_stack", 0) or 0)
+        self.stacks: dict[str, object] = {}  # architecture -> its PastStack
+        warm_inference(self.nets, self.infer, self.past, self.swap, keys, past_slots=not self.stack)
+        if self.stack:
+            self._warm_stacks(keys, prec, fuse)
+        print(f"native inference: graphs captured in {time.time() - t0:.0f} s"
+              + (f" ({len(self.stacks)} architectures' past snapshots in stacks of {self.stack})" if self.stack else ""),
+              flush=True)
         self.arch_ids: dict[str, int] = {}
         self.kept: dict[str, tuple] = {}  # past snapshots' weights the loop copies from (kept alive here)
         self.stats_path = Path(cfg["run_dir"]) / "inference.jsonl"
         self.loop = self._build()
+
+    def _warm_stacks(self, keys: list, prec: dict, fuse: bool) -> None:
+        """--infer-past-stack: a PastStack for each architecture among the current network and `keys` (their slots start
+        with that architecture's first network's weights), every shape's graph captured."""
+        from .paststack import PastStack, stack_rows
+        archs: dict[str, object] = {}
+        for key in [None, *keys]:
+            src = self.nets.current if key is None else self.nets.get(key)
+            archs.setdefault(arch_key(src.config), src)
+        rows = stack_rows(self.cfg.get("infer_past_stack_rows") or "", 16)
+        for arch, src in archs.items():
+            ps = PastStack(src, self.stack, self.device, rows=rows, entities=tuple(self.cfg.get("infer_past_entities", (64,))),
+                           fuse=fuse, generator=self.generator, capture_mode="thread_local", **prec)
+            ps.warm()
+            self.stacks[arch] = ps
 
     def _width(self, net, E: int) -> int:
         d = net.config["d"] if net.memory else 0
@@ -157,6 +181,11 @@ class NativeServer:
                 for E in self.past.entities:
                     x, graph, out = pg[(B, self._width(slot_net, E))]
                     loop.add_slot_shape(a, k, B, E, x.shape[1], out.shape[1], graph, x.data_ptr(), out.data_ptr())
+        for arch, ps in self.stacks.items():  # (--infer-past-stack)
+            a = self.arch_ids.setdefault(arch, len(self.arch_ids))
+            loop.add_stack(a, ps.S, list(ps.rows), list(ps.entities), [ps.dst(s) for s in range(ps.S)], self._stream())
+            for (B, E), (x, graph, out) in sorted(ps.graphs.items()):
+                loop.add_stack_shape(a, B, E, x.shape[1], out.shape[1], graph, x.data_ptr(), out.data_ptr())
         loop.set_callbacks(self._reload, self._snapshot, self._stats)
         loop.period = self.cfg.get("infer_period", 0.0)
         loop.past_period = self.cfg.get("infer_past_period", 0.0)
@@ -204,6 +233,7 @@ class NativeServer:
                                 "past_rows_per_call": round(s["past_rows"] / max(s["past"], 1), 2),
                                 "past_held_ms": round(1000 * s["held_wait"] / max(s["held_rows"], 1), 2),
                                 "past_swaps_per_s": round(s["swaps"] / dt, 1),
+                                **({"past_stacked_per_s": round(s["stacked"] / dt, 1)} if self.stack else {}),
                                 "calls_by_entities": s["wide"], "calls_by_rows": s["nrows"],
                                 # rounds launched while the learner was idle / in its update: latency and GPU time
                                 **{f"{k}_{ph}": round(1000 * s[k][i] / max(s["n"][i], 1), 2)

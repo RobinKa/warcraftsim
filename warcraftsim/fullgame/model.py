@@ -236,7 +236,7 @@ class FullGameNet(nn.Module):
             bits = torch.cat([bits, e[..., it:it + 6 * fx.HERO_ITEM_F:fx.HERO_ITEM_F] > 0.5]  # inside a graph's capture)
                              + [(mana >= s - 0.5).unsqueeze(-1) for s in self.valid_mana], -1)
         need = self.valid_need[typ.long()]
-        ok = torch.ones(need.shape, dtype=torch.bool, device=need.device)
+        ok = torch.ones_like(need, dtype=torch.bool)  # (like `need`: under torch.func.vmap a stacked slot's, --infer-past-stack)
         for j in range(bits.shape[-1]):
             ok &= ~((need == j) & ~bits[..., j:j + 1])
         return ok
@@ -265,7 +265,12 @@ class FullGameNet(nn.Module):
                 pad = torch.where(pad, torch.full_like(kb, float("-inf")), kb)
             else:
                 pad = pad + kb
-        out = self.transformer(tok, src_key_padding_mask=pad)
+        if self.transformer.layers[0].self_attn.batch_first:
+            out = self.transformer(tok, src_key_padding_mask=pad)
+        else:  # (paststack.PastStack's network: the tokens [L, N, d] in memory. Under torch.func.vmap a linear layer folds
+            # a contiguous input's leading dimensions into rows; the attention's transposed [L, N, d] view it does not, and
+            # the batched weights were copied once per token: S x L copies of each in-projection's)
+            out = self.transformer(tok.transpose(0, 1).contiguous(), src_key_padding_mask=pad).transpose(0, 1)
         return out[:, 0], out[:, 1:]
 
     def context(self, g, h=None):
@@ -314,9 +319,9 @@ class FullGameNet(nn.Module):
         if avail is not None:  # [N, n_orders]: what the player can pay for now
             allowed &= avail[:, None, :].bool()
         if ent is not None and self.config.get("valid"):
-            allowed[..., self.valid_cols] &= self.unit_valid(ent[:, :O], typ[:, :O])
+            allowed = _and_cols(allowed, self.valid_cols, self.unit_valid(ent[:, :O], typ[:, :O]))
         if self.omask and ent is not None and emask is not None:
-            allowed[..., self.ptr_cols] &= self.target_any(ent, typ, self._targetable(emask, ent), O)
+            allowed = _and_cols(allowed, self.ptr_cols, self.target_any(ent, typ, self._targetable(emask, ent), O))
         allowed[..., 0] = True  # no order: always
         return logits.masked_fill(~allowed, NEG)
 
@@ -432,6 +437,13 @@ class FullGameNet(nn.Module):
         return kind == fx.UNIT, (kind == fx.POINT) | (kind == fx.TREE)
 
 
+def _and_cols(allowed, cols, ok):
+    """allowed [..., C] (bool) with its columns `cols` [K] (distinct) and-ed with ok [..., K]: `allowed[..., cols] &= ok`
+    as a scatter, the same booleans. (The indexed in-place form fails under torch.func.vmap with a stacked slot's `cols`,
+    --infer-past-stack: advanced indexing after an ellipsis puts the indexed dimension first there.)"""
+    return allowed & torch.ones_like(allowed).scatter(-1, cols.expand(ok.shape), ok)
+
+
 def arch_key(config: dict) -> str:
     """Networks that can share an inference slot (their weights copied in): the same shapes; the target
     temperature is a buffer and comes with the weights, and dropout does nothing at inference."""
@@ -454,19 +466,42 @@ def _logp(logits, x):
     return torch.log_softmax(logits.float(), -1).gather(-1, x.long().unsqueeze(-1)).squeeze(-1)
 
 
-def _gumbel_argmax(logits, generator=None, shared=None):
+def _gumbel_argmax(logits, generator=None, shared=None, noise=None):
     """A sample from softmax(logits): the argmax of logits plus Gumbel noise (fewer kernels and no
     Python bookkeeping, unlike torch.distributions; the network calls are latency-bound). `generator`:
     a random generator of the caller's (an inference thread next to a learner's: graph captures).
     `shared` [N] (bool): those rows' units [N, O, C] draw with one noise vector for all of them (common
     random numbers): each unit's own distribution is unchanged, but units that want about the same
-    choose the same (one target point for a group: with a draw each, a group's points scattered)."""
-    u = torch.rand(logits.shape, device=logits.device, generator=generator)
-    if shared is not None:
-        one = torch.rand((logits.shape[0], 1) + tuple(logits.shape[2:]), device=logits.device, generator=generator)
-        u = torch.where(shared.view((-1,) + (1,) * (logits.dim() - 1)), one.expand_as(u), u)
-    u = u.clamp_(1e-10, 1.0 - 1e-7)
+    choose the same (one target point for a group: with a draw each, a group's points scattered).
+    `noise` (u [N, O, C], one [N, 1, C] or None): the uniform draws, made by the caller (noise_shapes; --infer-past-stack
+    draws them outside torch.func.vmap, where torch.compile cannot trace a draw from a generator), used as these would be."""
+    if noise is None:
+        u = torch.rand(logits.shape, device=logits.device, generator=generator)
+        if shared is not None:
+            one = torch.rand((logits.shape[0], 1) + tuple(logits.shape[2:]), device=logits.device, generator=generator)
+            u = torch.where(shared.view((-1,) + (1,) * (logits.dim() - 1)), one.expand_as(u), u)
+        u = u.clamp_(1e-10, 1.0 - 1e-7)
+    else:
+        u, one = noise
+        if shared is not None:
+            u = torch.where(shared.view((-1,) + (1,) * (logits.dim() - 1)), one.expand_as(u), u)
+        u = u.clamp(1e-10, 1.0 - 1e-7)
     return (logits.float() - torch.log(-torch.log(u))).argmax(-1)
+
+
+NOISE_ROLES = ("order", "tgt", "x", "y", "fine")  # (act's draws, in its order: noise_shapes)
+
+
+def noise_shapes(net: "FullGameNet", N: int, E: int) -> dict[str, tuple]:
+    """act's draws for N rows of E entities -> {role: (u's shape, one's shape)}: the order's (one: unused, there is no
+    shared draw for it), the target unit's, the point's x and y, and with a fine head of features.FINE's size its
+    sub-cell (fine_head). For act(noise=...): each role's (u, one) drawn uniform on [0, 1)."""
+    O = min(fx.MAX_OWN, E)
+    out = {"order": ((N, O, net.config["n_orders"]), (N, 1, net.config["n_orders"])), "tgt": ((N, O, E), (N, 1, E)),
+           "x": ((N, O, net.bins), (N, 1, net.bins)), "y": ((N, O, net.bins), (N, 1, net.bins))}
+    if fine_head(net):
+        out["fine"] = ((N, O, fx.FINE * fx.FINE), (N, 1, fx.FINE * fx.FINE))
+    return out
 
 
 def _entropy(logits):
@@ -523,7 +558,7 @@ def _in_fp32(device_type: str | None, fn, *args, **kw):
 
 
 def act(net: FullGameNet, ent, typ, cur, mask, glob, n_own, avail=None, h=None, generator=None, shared=None,
-        guide=None, heads_fp32: bool = False) -> dict:
+        guide=None, heads_fp32: bool = False, noise: dict | None = None) -> dict:
     """Sample every own unit's order and targets (the first O = min(MAX_OWN, E) entities; the
     orders each unit type got in the demonstrations). -> order, tgt, bx, by (point indices: sample_points), logp [N, O] (the
     action's log-probability per unit: order, plus the targets that order uses; 0 for padding)
@@ -537,7 +572,9 @@ def act(net: FullGameNet, ent, typ, cur, mask, glob, n_own, avail=None, h=None, 
     `heads_fp32` (--infer-precision bf16-mixed): in a bf16 autocast region only the trunk (the encoders, the transformer,
     the memory core) in bf16, every head (the order; the target's conditioning, query, key and pointer; the point's x
     and y; the value) in fp32 (_in_fp32): bf16 rounds its outputs, a logit near 30 (the point and pointer heads' are) to
-    steps of 0.125-0.25 and a value near 0.5 to 0.004. Without autocast it changes nothing."""
+    steps of 0.125-0.25 and a value near 0.5 to 0.004. Without autocast it changes nothing.
+    `noise` ({role: (u, one)} of noise_shapes' shapes; None: drawn here from `generator`): the sampling's uniform draws
+    made by the caller (--infer-past-stack: outside torch.func.vmap); the same samples as these draws would give here."""
     h_in = h
     g, u = net.encode(ent, typ, cur, mask, glob)
     g, h = net.context(g, h)
@@ -554,11 +591,15 @@ def act(net: FullGameNet, ent, typ, cur, mask, glob, n_own, avail=None, h=None, 
         free = _in_fp32(heads32, net.order_logits, g0, u0[:, :O], typ, n_own, avail=avail, ent=ent, emask=emask)
         w = guide.to(logits.dtype)[:, None, None]
         logits = torch.where(w != 1, free + w * (logits - free), logits)
-    def sample(lg):
-        return _gumbel_argmax(lg, generator, shared)
+    roles = iter(NOISE_ROLES[1:])  # (the targets' draws in order: the unit, x, y, the sub-cell)
+
+    def sample(lg):  # (without `noise` the call as before: a sampler swapped in by a study or a test takes three)
+        if noise is None:
+            return _gumbel_argmax(lg, generator, shared)
+        return _gumbel_argmax(lg, generator, shared, noise[next(roles)])
     # (the order itself with a draw of its own per unit: one draw for all made a side's similar units take a rare
     # order together or not at all: every worker builds a farm, or none does; the A/B of 2026-10-12)
-    order = _gumbel_argmax(logits, generator)
+    order = _gumbel_argmax(logits, generator) if noise is None else _gumbel_argmax(logits, generator, None, noise["order"])
     ptr, xl, z = _in_fp32(heads32, net.target_logits, g, u, mask, order, ent, typ)
     tgt = sample(ptr)
     bx, by, lp_pt = _in_fp32(heads32, sample_points, net, z, xl, sample)  # (with --fine-points: point indices, the

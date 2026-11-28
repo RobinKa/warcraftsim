@@ -8,6 +8,11 @@
 // Python is called (with the GIL) only to reload the current network, to load a new past snapshot, and
 // for the statistics.
 //
+// --infer-past-stack (paststack.PastStack): an architecture's past slots as ONE call. Its S slots' weights are stacked
+// ([S, ...]) and one graph per shape (B rows per slot, E entities) runs every slot's rows at once (torch.func.vmap), slot
+// s's rows at s * B .. of its input and output: a round's past snapshots of that architecture are one replay (or a few,
+// when more snapshots than slots or more rows than its largest B come), not one each.
+//
 // A request (multiprocessing's send_bytes: a 4-byte big-endian length, then):
 //   u32 request id, u8 count, then count x {u16 entities, u16 own units, u32 row, u16 key length, key}
 // A reply: u32 request id, u8 count, then count x {i32 version, u16 O, u16 memory width}
@@ -42,6 +47,7 @@ namespace {
 
 struct Shape {
     int B = 0, E = 0, W = 0, cols = 0;
+    int S = 1;  // (a stacked call's slots: its input and output have S * B rows)
     at::cuda::CUDAGraph* graph = nullptr;
     float* x_dev = nullptr;
     float* out_dev = nullptr;
@@ -92,6 +98,14 @@ struct Call {
     float* hout;
     std::vector<Item> items;
     int version;
+    std::vector<int> pos;  // (a stacked call's: each item's row in the output; empty: the i-th item's is row i)
+};
+
+struct Stack {  // --infer-past-stack: an architecture's slots as one call
+    int arch = -1, S = 0;
+    Group call;                                              // its shapes (B: rows per slot), stream and events
+    std::vector<std::vector<std::pair<void*, size_t>>> dst;  // per slot: its weights' and buffers' places
+    std::vector<std::string> holding;                        // per slot: the snapshot in it
 };
 
 struct Pending {
@@ -145,6 +159,7 @@ class Loop {
     std::vector<int> fds;
     Group live;
     std::vector<std::vector<Group>> past;  // [arch][slot]
+    std::vector<std::unique_ptr<Stack>> stacks;  // [arch] (--infer-past-stack; null: that architecture's slots, `past`)
     int past_max_batch = 16;
     double period = 0.004;
     double past_period = 0;  // (--infer-past-period-ms: a past network's calls at most this often, see PastHold)
@@ -180,6 +195,7 @@ class Loop {
     long st_n[2] = {0, 0};
     long st_rounds = 0, st_calls = 0, st_past = 0, st_rows = 0, st_ents = 0, st_ents_max = 0;
     long st_past_rows = 0, st_swaps = 0;  // (a past network's weights copied into a slot)
+    long st_stacked = 0;  // (--infer-past-stack: stacked calls)
     // calls by their widest row (8 entities a bin) and their rows (8 a bin), [0] the current network's, [1] past ones':
     // what the padding of --infer-entities and the batch sizes cost, from the run itself
     static constexpr int WIDE_BINS = 20, ROWS_BINS = 8;
@@ -194,6 +210,21 @@ class Loop {
             pool.push_back(p);
         }
         return pool[k];
+    }
+
+    // A stacked call's input buffer: its rows valid inputs from the start (one entity in view, every order available),
+    // as the rows of slots nobody asks for in a round are copied with the rest, and computed, unread.
+    float* host_rows(std::vector<float*>& pool, size_t k, const Shape& s) {
+        const bool fresh = pool.size() <= k;
+        float* p = host(pool, k, size_t(s.S) * s.B * s.W);
+        if (fresh) {
+            const int a_mask = s.E * F + G + 2 * s.E, a_avail = s.E * F + G + 3 * s.E + 1;
+            for (int r = 0; r < s.S * s.B; r++) {
+                p[size_t(r) * s.W + a_mask] = 1.0f;
+                std::fill(p + size_t(r) * s.W + a_avail, p + size_t(r) * s.W + a_avail + NO, 1.0f);
+            }
+        }
+        return p;
     }
 
     Shape* pick(Group& g, int rows, int widest) {
@@ -279,6 +310,7 @@ class Loop {
         s["idle"] = st_idle;
         s["past_rows"] = st_past_rows;
         s["swaps"] = st_swaps;
+        s["stacked"] = st_stacked;
         s["held_rows"] = hold_.rows_out;
         s["held_wait"] = hold_.waited;
         s["wide"] = st_wide;
@@ -286,7 +318,7 @@ class Loop {
         stats_fn(s);
         st_t = now();
         st_rounds = st_calls = st_past = st_rows = st_ents = st_ents_max = 0;
-        st_past_rows = st_swaps = 0;
+        st_past_rows = st_swaps = st_stacked = 0;
         hold_.rows_out = 0, hold_.waited = 0;
         st_wide = {};
         st_nrows = {};
@@ -313,7 +345,8 @@ class Loop {
             const int width = d ? cols - 5 * O - 2 : 0;
             for (size_t i = 0; i < c.items.size(); i++) {
                 const Item& it = c.items[i];
-                std::memcpy(out + size_t(it.row) * out_w, c.hout + i * cols, sizeof(float) * cols);
+                const size_t at = c.pos.empty() ? i : size_t(c.pos[i]);
+                std::memcpy(out + size_t(it.row) * out_w, c.hout + at * cols, sizeof(float) * cols);
                 it.request->answers[it.k] = {c.version, O, width};
                 it.request->left--;  // (here, not at the launch: an earlier round's completion must not answer a
             }                        // request whose held row is on the GPU in a later one)
@@ -362,6 +395,104 @@ class Loop {
             C10_CUDA_CHECK(e);
         }
         return true;
+    }
+
+    // --infer-past-stack: a round's snapshots of one architecture into the stack's slots (one held keeps its slot; the
+    // others take an empty one, else one no snapshot of this pass holds, their weights copied in on the stack's stream),
+    // then one stacked call per chunk of rows (B: the most rows a slot has in it, padded to the shapes' buckets). More
+    // snapshots than slots: another pass after this one, its copies queued behind this pass's calls on the same stream.
+    void launch_stack(Stack& st, std::vector<std::pair<std::string, std::vector<Item>*>>& keys, Pending& round,
+                      std::vector<Group*>& used, std::map<Shape*, int>& nth, int bank) {
+        Group* g = &st.call;
+        c10::cuda::CUDAStreamGuard guard(*g->stream);
+        if (std::find(used.begin(), used.end(), g) == used.end()) {
+            used.push_back(g);
+            cudaEvent_t ev = bank_event(g->start_ev[bank], cudaEventDefault);
+            C10_CUDA_CHECK(cudaEventRecord(ev, g->stream->stream()));
+            round.starts.push_back(ev);
+        }
+        const int bmax = g->buckets.empty() ? 1 : g->buckets.back();
+        auto todo = keys;
+        while (!todo.empty()) {
+            std::vector<int> seat(todo.size(), -1);
+            std::vector<bool> taken(st.S, false);
+            for (size_t j = 0; j < todo.size(); j++)  // (those held first: no other snapshot takes their slot)
+                for (int s = 0; s < st.S; s++)
+                    if (!taken[s] && st.holding[s] == todo[j].first) { seat[j] = s; taken[s] = true; break; }
+            for (size_t j = 0; j < todo.size(); j++) {
+                if (seat[j] >= 0) continue;
+                int pick_ = -1;
+                for (int s = 0; s < st.S && pick_ < 0; s++)
+                    if (!taken[s] && st.holding[s].empty()) pick_ = s;
+                for (int s = 0; s < st.S && pick_ < 0; s++)
+                    if (!taken[s]) pick_ = s;
+                if (pick_ < 0) continue;  // (no slot left in this pass: the next one)
+                seat[j] = pick_;
+                taken[pick_] = true;
+                Snapshot* snap = snapshot(todo[j].first);
+                for (size_t i = 0; i < st.dst[pick_].size() && i < snap->src.size(); i++)
+                    C10_CUDA_CHECK(cudaMemcpyAsync(st.dst[pick_][i].first, snap->src[i].first, st.dst[pick_][i].second,
+                                                   cudaMemcpyDeviceToDevice, g->stream->stream()));
+                st.holding[pick_] = todo[j].first;
+                st_swaps++;
+            }
+            size_t most = 0;
+            for (size_t j = 0; j < todo.size(); j++)
+                if (seat[j] >= 0) most = std::max(most, todo[j].second->size());
+            for (size_t a = 0; a < most; a += bmax) {
+                int rows = 0, widest = 1;
+                for (size_t j = 0; j < todo.size(); j++) {
+                    if (seat[j] < 0 || todo[j].second->size() <= a) continue;
+                    const auto& items = *todo[j].second;
+                    const size_t n = std::min(items.size() - a, size_t(bmax));
+                    rows = std::max(rows, int(n));
+                    for (size_t i = a; i < a + n; i++) widest = std::max(widest, items[i].n);
+                }
+                Shape* s = pick(*g, rows, widest);
+                Call call{g, s, nullptr, {}, -1, {}};
+                int top = 0;  // (the rows copied: up to the last used slot's)
+                float* hin = s ? host_rows(s->hin[bank], size_t(nth[s]), *s) : nullptr;
+                for (size_t j = 0; j < todo.size(); j++) {
+                    if (seat[j] < 0 || todo[j].second->size() <= a) continue;
+                    const auto& items = *todo[j].second;
+                    std::vector<Item> part(items.begin() + a, items.begin() + std::min(items.size(), a + size_t(bmax)));
+                    if (!s) {  // (no graph for it: no answer, version -2)
+                        for (auto& it : part) it.request->left--;
+                        continue;
+                    }
+                    gather(*s, hin + size_t(seat[j]) * s->B * s->W, part);
+                    for (size_t i = 0; i < part.size(); i++) {
+                        call.items.push_back(part[i]);
+                        call.pos.push_back(seat[j] * s->B + int(i));
+                        st_ents += part[i].n;
+                    }
+                    top = std::max(top, (seat[j] + 1) * s->B);
+                }
+                if (!s || call.items.empty()) continue;
+                const int k = nth[s]++;
+                float* hout = host(s->hout[bank], size_t(k), size_t(s->S) * s->B * s->cols);
+                C10_CUDA_CHECK(cudaMemcpyAsync(s->x_dev, hin, sizeof(float) * size_t(top) * s->W, cudaMemcpyHostToDevice,
+                                               g->stream->stream()));
+                s->graph->replay();
+                C10_CUDA_CHECK(cudaMemcpyAsync(hout, s->out_dev, sizeof(float) * size_t(top) * s->cols,
+                                               cudaMemcpyDeviceToHost, g->stream->stream()));
+                call.hout = hout;
+                const long n = long(call.items.size());
+                round.calls.push_back(std::move(call));
+                st_calls++;
+                st_past++;
+                st_stacked++;
+                st_rows += n;
+                st_past_rows += n;
+                st_ents_max += widest;
+                st_wide[1][std::min(WIDE_BINS - 1, (widest - 1) / 8)]++;
+                st_nrows[1][std::min(ROWS_BINS - 1, int(n - 1) / 8)]++;
+            }
+            std::vector<std::pair<std::string, std::vector<Item>*>> later;
+            for (size_t j = 0; j < todo.size(); j++)
+                if (seat[j] < 0) later.push_back(todo[j]);
+            todo.swap(later);
+        }
     }
 
     // Event-driven: rounds in flight (up to BANKS - 1) are answered as their GPU work finishes, and new
@@ -473,6 +604,7 @@ class Loop {
             std::vector<Group*> used;
             std::vector<std::pair<Group*, int>> taken;  // (slot group, how often taken this round)
             std::map<Shape*, int> nth;
+            std::vector<std::pair<Stack*, std::vector<std::pair<std::string, std::vector<Item>*>>>> stacked;
             for (auto& [key, items] : groups) {
                 Group* g = nullptr;
                 Snapshot* snap = nullptr;
@@ -480,6 +612,16 @@ class Loop {
                     g = &live;
                 } else {
                     snap = snapshot(key);
+                    if (snap->arch >= 0 && size_t(snap->arch) < stacks.size() && stacks[snap->arch]) {  // (after the
+                        Stack* st = stacks[snap->arch].get();                                         // loop: one call)
+                        auto at = std::find_if(stacked.begin(), stacked.end(), [&](auto& e) { return e.first == st; });
+                        if (at == stacked.end()) {
+                            stacked.push_back({st, {}});
+                            at = stacked.end() - 1;
+                        }
+                        at->second.push_back({key, &items});
+                        continue;
+                    }
                     auto& slots = past.at(snap->arch);
                     Group* held = nullptr; Group* empty = nullptr; Group* free_ = nullptr;
                     for (auto& s : slots) {
@@ -527,7 +669,7 @@ class Loop {
                     s->graph->replay();
                     C10_CUDA_CHECK(cudaMemcpyAsync(hout, s->out_dev, sizeof(float) * used * s->cols,
                                                    cudaMemcpyDeviceToHost, g->stream->stream()));
-                    round->calls.push_back({g, s, hout, std::move(part), g == &live ? version : -1});
+                    round->calls.push_back({g, s, hout, std::move(part), g == &live ? version : -1, {}});
                     st_calls++;
                     st_past += g != &live;
                     st_rows += round->calls.back().items.size();
@@ -538,6 +680,7 @@ class Loop {
                     st_nrows[g != &live][std::min(ROWS_BINS - 1, (int(round->calls.back().items.size()) - 1) / 8)]++;
                 }
             }
+            for (auto& [st, keys] : stacked) launch_stack(*st, keys, *round, used, nth, bank);
             for (Group* g : used) {
                 cudaEvent_t ev = bank_event(g->end_ev[bank], cudaEventBlockingSync);  // (timed: see starts)
                 C10_CUDA_CHECK(cudaEventRecord(ev, g->stream->stream()));
@@ -603,6 +746,29 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         }, py::arg("arch"), py::arg("max_batch"), py::arg("buckets"), py::arg("widths"), py::arg("dst"), py::arg("stream") = 0)
         .def("add_slot_shape", [](Loop& l, int arch, int slot, int B, int E, int W, int cols, py::object g, uintptr_t x,
                                   uintptr_t o) { add_shape(l.past.at(arch).at(slot), B, E, W, cols, g, x, o); })
+        .def("add_stack", [](Loop& l, int arch, int S, std::vector<int> buckets, std::vector<int> widths,
+                             std::vector<std::vector<std::pair<uintptr_t, size_t>>> dst, uintptr_t stream) {
+            if (arch < 0 || S < 1 || int(dst.size()) != S) throw std::runtime_error("add_stack: one place list per slot");
+            if (int(l.stacks.size()) <= arch) l.stacks.resize(arch + 1);
+            auto st = std::make_unique<Stack>();
+            st->arch = arch, st->S = S;
+            st->call.arch = arch, st->call.max_batch = buckets.empty() ? 1 : buckets.back();
+            st->call.buckets = buckets, st->call.widths = widths;
+            st->call.stream = std::make_unique<c10::cuda::CUDAStream>(make_stream(stream));
+            for (auto& places : dst) {
+                st->dst.emplace_back();
+                for (auto& [p, n] : places) st->dst.back().emplace_back(reinterpret_cast<void*>(p), n);
+            }
+            st->holding.assign(S, std::string());
+            l.stacks[arch] = std::move(st);
+        }, py::arg("arch"), py::arg("S"), py::arg("buckets"), py::arg("widths"), py::arg("dst"), py::arg("stream") = 0)
+        .def("add_stack_shape", [](Loop& l, int arch, int B, int E, int W, int cols, py::object g, uintptr_t x,
+                                   uintptr_t o) {
+            auto& st = l.stacks.at(arch);
+            if (!st) throw std::runtime_error("add_stack_shape: no stack for that architecture");
+            add_shape(st->call, B, E, W, cols, g, x, o);
+            st->call.shapes.back().S = st->S;
+        })
         .def("set_callbacks", [](Loop& l, py::object reload, py::object snapshot, py::object stats) {
             l.reload_fn = reload, l.snapshot_fn = snapshot, l.stats_fn = stats;
         })

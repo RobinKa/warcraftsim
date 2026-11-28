@@ -200,6 +200,37 @@ def matmul_precision(tf32: bool):
         b.cuda.matmul.fp32_precision, b.mkldnn.matmul.fp32_precision = old[1], old[2]
 
 
+def packed_call(net: FullGameNet, x: torch.Tensor, G: int, NO: int, d: int, bf16: bool, generator, guided: bool,
+                mixed: bool, noise: dict | None = None) -> torch.Tensor:
+    """The network's act() from one packed input [B, W] (Inference._launch's rows) to one packed output [B, cols]: its
+    calls' function (Inference._fn; paststack.PastStack's per slot). `noise`: act's draws made by the caller (model.act)."""
+    # one tensor in and one out: each copy to or from the GPU is a driver call of its own
+    # (seven inputs were seven, seven outputs seven waits)
+    B = x.shape[0]
+    E = (x.shape[1] - G - 1 - NO - d) // (fx.F + 3)
+    a = E * fx.F
+    ent, glob = x[:, :a].reshape(B, E, fx.F), x[:, a:a + G]
+    a += G
+    typ, cur, mask = x[:, a:a + E].long(), x[:, a + E:a + 2 * E].long(), x[:, a + 2 * E:a + 3 * E] > 0.5
+    a += 3 * E
+    n_own, avail = x[:, a].long(), x[:, a + 1:a + 1 + NO] > 0.5
+    # (class 0, "none", always available, carries flags: 2 marks a shared-noise game's row; with guide,
+    # + 10 * round(10 * w) a guidance weight w)
+    flag = x[:, a + 1]
+    tens = torch.floor(flag / 10.0) if guided else torch.zeros_like(flag)
+    shared = flag - 10.0 * tens > 1.5
+    guide = torch.where(tens > 0, tens / 10.0, torch.ones_like(tens)) if guided else None
+    # (cache_enabled False: each call casts the weights it reads, so weights copied into them, a reloaded
+    # network's or a past snapshot's into its slot, are what the graph computes with)
+    with torch.autocast(x.device.type, dtype=torch.bfloat16, enabled=bf16, cache_enabled=False):
+        out = act(net, ent, typ, cur, mask, glob, n_own, avail, x[:, a + 1 + NO:] if d else None,
+                  generator=generator, shared=shared, guide=guide, heads_fp32=mixed,
+                  **({"noise": noise} if noise is not None else {}))
+    return torch.cat([out["order"].float(), out["tgt"].float(), out["bx"].float(), out["by"].float(),
+                      out["logp"].float(), out["value"].float()[:, None], out["entropy"].float()[:, None]]
+                     + ([out["h"].float()] if d else []), 1)
+
+
 class Inference:
     """Batches the network calls of an actor's agents (one per game side) on the GPU."""
 
@@ -308,30 +339,7 @@ class Inference:
             bf16, gen, guided, mixed = self.bf16, self.generator, self.guide, self.mixed
 
             def packed_act(x):
-                # one tensor in and one out: each copy to or from the GPU is a driver call of its own
-                # (seven inputs were seven, seven outputs seven waits)
-                B = x.shape[0]
-                E = (x.shape[1] - G - 1 - NO - d) // (fx.F + 3)
-                a = E * fx.F
-                ent, glob = x[:, :a].reshape(B, E, fx.F), x[:, a:a + G]
-                a += G
-                typ, cur, mask = x[:, a:a + E].long(), x[:, a + E:a + 2 * E].long(), x[:, a + 2 * E:a + 3 * E] > 0.5
-                a += 3 * E
-                n_own, avail = x[:, a].long(), x[:, a + 1:a + 1 + NO] > 0.5
-                # (class 0, "none", always available, carries flags: 2 marks a shared-noise game's row; with guide,
-                # + 10 * round(10 * w) a guidance weight w)
-                flag = x[:, a + 1]
-                tens = torch.floor(flag / 10.0) if guided else torch.zeros_like(flag)
-                shared = flag - 10.0 * tens > 1.5
-                guide = torch.where(tens > 0, tens / 10.0, torch.ones_like(tens)) if guided else None
-                # (cache_enabled False: each call casts the weights it reads, so weights copied into them, a reloaded
-                # network's or a past snapshot's into its slot, are what the graph computes with)
-                with torch.autocast(x.device.type, dtype=torch.bfloat16, enabled=bf16, cache_enabled=False):
-                    out = act(ref(), ent, typ, cur, mask, glob, n_own, avail, x[:, a + 1 + NO:] if d else None,
-                              generator=gen, shared=shared, guide=guide, heads_fp32=mixed)
-                return torch.cat([out["order"].float(), out["tgt"].float(), out["bx"].float(), out["by"].float(),
-                                  out["logp"].float(), out["value"].float()[:, None], out["entropy"].float()[:, None]]
-                                 + ([out["h"].float()] if d else []), 1)
+                return packed_call(ref(), x, G, NO, d, bf16, gen, guided, mixed)
             if self.fuse:  # (compiled at the shape's first calls, before its graph's capture)
                 packed_act = torch.compile(packed_act, dynamic=False)
             self._fns[net] = packed_act
@@ -725,9 +733,11 @@ def launch_round(groups: dict, nets: Nets, infer: Inference, past: Inference, sw
     return calls, used
 
 
-def warm_inference(nets: Nets, infer: Inference, past: Inference, swap: PastNet, keys: list[str]) -> None:
+def warm_inference(nets: Nets, infer: Inference, past: Inference, swap: PastNet, keys: list[str],
+                   past_slots: bool = True) -> None:
     """Capture every shape's graph now (the current network's; each past snapshot slot's, for each
-    architecture among `keys`): an inference thread next to the learner must not capture later."""
+    architecture among `keys`): an inference thread next to the learner must not capture later. `past_slots` False
+    (--infer-past-stack: the past snapshots' stacks capture their own, NativeServer): the current network's alone."""
     def dummy(n: int, G: int) -> dict:
         return {"n": n, "n_own": 1, "ent": np.zeros((n, fx.F), np.float32), "type": np.zeros(n, np.int64),
                 "cur": np.zeros(n, np.int64), "glob": np.zeros(G, np.float32), "avail": None, "h": None}
@@ -739,7 +749,7 @@ def warm_inference(nets: Nets, infer: Inference, past: Inference, swap: PastNet,
             infer._launch(net, [dummy(E, G)] * B)
             infer.wait()
     archs: dict[str, FullGameNet] = {}
-    for key in [None, *keys]:
+    for key in [None, *keys] if past_slots else ():
         src = net if key is None else nets.get(key)
         archs.setdefault(arch_key(src.config), src)
     for src in archs.values():
@@ -4184,17 +4194,37 @@ def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast, teach_scale: fl
         ok = ok * (1 - hv)
     denom = every.sum().clamp(min=1)
     l_order = -(lp_y * ok).sum() / denom
-    ptr, xl, z = net.target_logits(ev["g"], ev["u"], mb["mask"], y, mb["ent"], mb.get("type"))  # (the caller's autocast)
-    yl = net.y_logits(z, y_x)
     # (masked means, not boolean indexing: every index or any() was a wait for the GPU)
     share = ok.sum() / denom
+    with torch.no_grad():
+        issued = ok * (y > 0)
+        acc = ((lp[..., 1:].argmax(-1) + 1 == y) * issued).sum() / issued.sum().clamp(min=1)
+    g_, u_, mask_, ent_, typ_ = ev["g"], ev["u"], mb["mask"], mb["ent"], mb.get("type")
+    y_ptr, y_teach, own_units = mb["y_ptr"], mb.get("y_teach"), mb["own"]
+    if "lab_idx" in mb:  # (--update-label-rows: the labelled steps alone through the target heads below. Every term from
+        # here on weighs the other steps 0 (their `ok`, the floors' masks and the teacher's lessons are 0 off the labelled
+        # steps), so the sums are the same, in another order; the padding indices, `lab_ok` False, weigh 0 too)
+        rows, keep = mb["lab_idx"], mb["lab_ok"]
+
+        def pick(t):
+            return None if t is None else t.index_select(0, rows)
+        kf = keep.float()[:, None]
+        g_, u_, mask_, ent_, typ_ = pick(g_), pick(u_), pick(mask_), pick(ent_), pick(typ_)
+        y, y_x, y_y, y_f, y_ptr, lp_y = pick(y), pick(y_x), pick(y_y), pick(y_f), pick(y_ptr), pick(lp_y)
+        ok, ok_all = pick(ok) * kf, pick(ok_all) * kf
+        mv = None if mv is None else pick(mv) * kf
+        hv = None if hv is None else pick(hv) * kf
+        y_teach = None if y_teach is None else pick(y_teach) & keep[:, None]
+        own_units = pick(own_units) & keep[:, None]
+    ptr, xl, z = net.target_logits(g_, u_, mask_, y, ent_, typ_)  # (the caller's autocast)
+    yl = net.y_logits(z, y_x)
     ok_ptr, push_h = ok, None
     if hv is not None:  # (the harvest lessons whose mine is under the floor: the pointer's loss alone)
         with torch.no_grad():
-            pp = torch.log_softmax(ptr.float(), -1).gather(-1, mb["y_ptr"].clamp(min=0).long().unsqueeze(-1)).squeeze(-1)
+            pp = torch.log_softmax(ptr.float(), -1).gather(-1, y_ptr.clamp(min=0).long().unsqueeze(-1)).squeeze(-1)
             push_h = hv * (pp < TEACH_FLOOR_POINTER[1]).float()
         ok_ptr = ok + ok_all * push_h
-    l_ptr = (_masked_ce(ptr, mb["y_ptr"], pointer_label_ok(net, ptr, mb["y_ptr"], ok_ptr))  # (--order-masks 1)
+    l_ptr = (_masked_ce(ptr, y_ptr, pointer_label_ok(net, ptr, y_ptr, ok_ptr))  # (--order-masks 1)
              * (share if hv is None else ok_ptr.sum() / denom))  # (the pointer's own rows' share)
     ok_pt, push = ok, None
     if mv is not None:  # (the attack-move's lessons whose place is under the floor: the place's loss alone)
@@ -4207,13 +4237,10 @@ def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast, teach_scale: fl
     if y_f is not None and fine_head(net):  # (the sub-cell given the labels' bins)
         l_pt = l_pt + _masked_ce(net.fine_logits(z, y_x, y_y), y_f, ok_pt)
     l_pt = l_pt * (share if mv is None else ok_pt.sum() / denom)  # (the place's own rows' share)
-    with torch.no_grad():
-        issued = ok * (y > 0)
-        acc = ((lp[..., 1:].argmax(-1) + 1 == y) * issued).sum() / issued.sum().clamp(min=1)
     out = l_order + l_ptr + 0.5 * l_pt
     teach = torch.zeros((), device=out.device)
-    if teach_scale and "y_teach" in mb:  # (the heuristic teacher's lessons: rare, their own weight, --teach-coef)
-        tm = (mb["y_teach"] & mb["own"] & (lp_y > -1e4)).float()
+    if teach_scale and y_teach is not None:  # (the heuristic teacher's lessons: rare, their own weight, --teach-coef)
+        tm = (y_teach & own_units & (lp_y > -1e4)).float()
         tm_p = tm  # (the lessons whose place is taught: all, but of the attack-move's only those under the floor)
         tm_all = tm
         if mv is not None:
@@ -4234,14 +4261,14 @@ def distill_loss(net: FullGameNet, ev: dict, mb: dict, autocast, teach_scale: fl
                 t_pt = t_pt + _masked_ce(net.fine_logits(z, y_x, y_y), y_f, tm_p)
         if norm == "units" and (mv is not None or hv is not None):  # (the place's mean over its own lessons, `tm_p`,
             # the pointer's over `tm_q`)
-            teach = (-(lp_y * tm).sum() + _masked_ce(ptr, mb["y_ptr"], pointer_label_ok(net, ptr, mb["y_ptr"], tm_q)) * tm_q.sum()
+            teach = (-(lp_y * tm).sum() + _masked_ce(ptr, y_ptr, pointer_label_ok(net, ptr, y_ptr, tm_q)) * tm_q.sum()
                      + TEACH_POINT * t_pt * tm_p.sum()) / denom
         elif norm == "units":
-            teach = (-(lp_y * tm).sum() + (_masked_ce(ptr, mb["y_ptr"], pointer_label_ok(net, ptr, mb["y_ptr"], tm))
+            teach = (-(lp_y * tm).sum() + (_masked_ce(ptr, y_ptr, pointer_label_ok(net, ptr, y_ptr, tm))
                      + TEACH_POINT * t_pt) * tm.sum()) / denom
         else:
             teach = (-(lp_y * tm).sum() / tm.sum().clamp(min=1)
-                     + _masked_ce(ptr, mb["y_ptr"], pointer_label_ok(net, ptr, mb["y_ptr"], tm_q)) + TEACH_POINT * t_pt)
+                     + _masked_ce(ptr, y_ptr, pointer_label_ok(net, ptr, y_ptr, tm_q)) + TEACH_POINT * t_pt)
         out = out + teach_scale * teach
     return out, acc, teach.detach()
 
@@ -4784,6 +4811,20 @@ class Intake:
         return out
 
 
+def with_label_rows(mb: dict, seqs: list[list[dict]], B: int, T: int, K: int, device) -> bool:
+    """--update-label-rows K: the minibatch's labelled steps' rows (collate_seq's: sequence-major, B sequences of T)
+    as mb["lab_idx"] [K] (the rest padded with 0) and mb["lab_ok"] [K] (which are real), when at most K have labels;
+    distill_loss then runs the labels' target heads on those rows alone. More: nothing added (the whole minibatch, as
+    before) -> whether added."""
+    seqs = list(seqs) + [[]] * (B - len(seqs))
+    rows = np.flatnonzero([t < len(q) and "y_order" in q[t] for q in seqs for t in range(T)])
+    if len(rows) > K:
+        return False
+    mb["lab_idx"] = to_device(np.pad(rows, (0, K - len(rows))).astype(np.int64), device)
+    mb["lab_ok"] = to_device(np.arange(K) < len(rows), device)
+    return True
+
+
 class GraphedUpdate:
     """The update's minibatch step (every forward pass, the losses, the backward pass, the gradient's
     clip and Adam's step) as CUDA graphs, one per shape: the minibatch's entities padded to WIDTHS,
@@ -5045,11 +5086,14 @@ class GraphedUpdate:
         seqs = pieces(chunks, args.seq_len)
         per_mb = max(1, args.minibatch // args.seq_len)
         labels = getattr(args, "opd_coef", 0.0) > 0
+        K = int(getattr(args, "update_label_rows", 0) or 0) if labels else 0
         for _ in range(epochs):
             widths = np.array([max(s["n"] for s in q) for q in seqs])
             for idx in minibatches(widths, per_mb, args.pad_groups):
                 width = _width(int(widths[idx].max()), self.widths)
                 mb = collate_seq([seqs[i] for i in idx], device, width=width, B=per_mb, T=args.seq_len, labels=labels)
+                if K:  # (--update-label-rows: the labelled steps' rows, as collate_seq lays the steps out)
+                    with_label_rows(mb, [seqs[i] for i in idx], per_mb, args.seq_len, K, device)
                 b = None
                 if bc_iter is not None and args.bc_coef > 0:
                     b = dict(next(bc_iter))
@@ -6506,6 +6550,17 @@ def main(argv: list[str] | None = None) -> int:
                                                                   "side by side, a CUDA stream each")
     ap.add_argument("--infer-past-slots", type=int, default=4, help="past snapshots a round runs side by side "
                                                                      "(a network copy each)")
+    ap.add_argument("--update-label-rows", type=int, default=0, help="the CUDA-graph update runs the labels' target heads "
+                    "(distill_loss: the pointer, x and y given the teacher's orders) on a minibatch's labelled steps alone "
+                    "when at most this many of its steps have labels (else on all, as before): the same losses in another "
+                    "summation order; ~1%% of steps carry labels, the heads ran on all 256 rows (~5%% of an update's FLOPs). "
+                    "0: off")
+    ap.add_argument("--infer-past-stack", type=int, default=0, help="with --infer-native: each architecture's past "
+                    "snapshots in this many stacked slots, a round's calls of them ONE call (paststack.py: the slots' "
+                    "weights stacked, torch.func.vmap; ~85%% of the calls were past snapshots' at ~1.5 rows each); 0: "
+                    "--infer-past-slots' network copies, a call each, as before")
+    ap.add_argument("--infer-past-stack-rows", default="", help="--infer-past-stack: the rows per slot its calls pad to "
+                    "(each slot's rows; more in a round: several calls); empty: 1,2,4")
     ap.add_argument("--infer-past-period-ms", type=float, default=0.0, help="a past snapshot's calls at most this often per "
                     "network, so that its rows batch up (a game against one waits at most this much longer, the current "
                     "network's calls keep every round; 0: every round)")
@@ -6873,6 +6928,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.update_grad_fuse and not (graphed and args.update_fuse):
         raise SystemExit("--update-grad-fuse is GraphedUpdate's, and needs --update-fuse (eager it would be slower)")
     update_widths(args.update_widths)  # (a mistake in them stops the run here)
+    if args.update_label_rows < 0:
+        raise SystemExit("--update-label-rows: a number of steps (0: off)")
+    if args.infer_past_stack:  # (the stacks are the C++ loop's: NativeServer)
+        if args.infer_past_stack < 0 or not (args.central_inference and args.infer_native):
+            raise SystemExit("--infer-past-stack: a number of slots, with --central-inference 1 --infer-native 1")
+        from .paststack import stack_rows
+        stack_rows(args.infer_past_stack_rows, 16)
     infer_rows(args.infer_rows, 64)  # (likewise: before the games start)
     # (--adam-fused: one kernel for all the weights where the foreach path launches one per operation; it reads the step
     # count on the GPU and takes the addresses by value, so a CUDA graph replays it: ATen/native/cuda/fused_adam_utils.cuh)
@@ -7169,6 +7231,7 @@ def main(argv: list[str] | None = None) -> int:
            "infer_past_entities": [int(x) for x in args.infer_past_entities.split(",")],
            "infer_rows": list(infer_rows(args.infer_rows, 64)), "infer_precision": args.infer_precision,
            "infer_past_slots": args.infer_past_slots, "infer_past_period": args.infer_past_period_ms / 1000.0,
+           "infer_past_stack": args.infer_past_stack, "infer_past_stack_rows": args.infer_past_stack_rows,
            "game_nice": args.game_nice, "pairs": args.pairs,
            "exploiter_share": args.exploiter_share, "float_penalty": args.float_penalty,
            "infer_period": args.infer_period_ms / 1000.0,
