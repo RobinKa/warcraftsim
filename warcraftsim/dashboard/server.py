@@ -1318,6 +1318,8 @@ class Dashboard:
             src = (_read_json(path.with_suffix(".json")) or {}).get("from") if path.suffix == ".pt" else None
             if not src:
                 break
+            if isinstance(src, list):  # (a model soup, scripts/soup.py: the mean of several runs' averages, no one
+                return {"kind": "file", "name": str(init)}  # parent; its "from" a list had failed every run listing)
             init, path = src, (Path(src) if Path(src).is_absolute() else self.runs_dir.parent / src)
         try:
             parts = path.resolve().relative_to(self.runs_dir.resolve()).parts
@@ -1455,6 +1457,8 @@ class Dashboard:
             if side is not None and depth < 8 and side.exists():  # a derived checkpoint (grown, a variant: its
                 try:                                                # sidecar names the one it came from)
                     src = json.loads(side.read_text()).get("from")
+                    if isinstance(src, list):  # (a model soup: several runs, no one node)
+                        return None
                     if src:
                         return node_of(src, depth + 1)
                 except (OSError, ValueError):

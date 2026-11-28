@@ -98,3 +98,18 @@ def test_summary_titles_a_lineage_box(tmp_path):
     assert d.set_title("a", "  more\n games ") and (runs / "a" / "summary.txt").read_text() == "more games\n"
     assert d.set_title("a", "") and not (runs / "a" / "summary.txt").exists()
     assert not d.set_title("../a", "x") and not d.set_title("nope", "x") and not d.set_title("b", "x" * 200)
+
+
+def test_a_run_from_a_model_soup_has_no_one_parent(tmp_path):
+    """A model soup's sidecar names several runs ("from": a list, scripts/soup.py): the parent and the lineage's node take
+    it as no one run; it had failed every run listing (TypeError in Path) and the Runs tab did not load."""
+    import json as j
+
+    from warcraftsim.dashboard.server import Dashboard
+    runs = tmp_path / "runs"
+    (runs / "fullgame" / "soups").mkdir(parents=True)
+    (runs / "fullgame" / "soups" / "soup-x.json").write_text(j.dumps({"how": "model soup", "from": ["runs/a/averaged/s.pt",
+                                                                                                  "runs/b/averaged/s.pt"]}))
+    (runs / "fullgame" / "soups" / "soup-x.pt").write_bytes(b"")
+    d = Dashboard(runs)
+    assert d.parent({"init_from": "runs/fullgame/soups/soup-x.pt"}) == {"kind": "file", "name": "runs/fullgame/soups/soup-x.pt"}
