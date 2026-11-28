@@ -2701,6 +2701,7 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         bot = BCAgent(None, vocab, s, None, costs=cfg.get("costs_array"),  # (a research at its next level's cost: the
                       steps=research_steps(vocab, cfg["map"]) if cfg.get("costs_array") is not None else None)  # map's)
         bot.enc.mine_full = 12500.0 * mine_scale(cfg["map"])
+        bot.unit_values = cfg.get("values")  # (its hero deaths' armies around them: their cost, the episode row's)
         bot.begin(obs, race_ix)
         bots[s] = bot
         keys[s] = policy_key(cfg, opp, s, side)
@@ -3268,6 +3269,15 @@ def play_one(g, obs, cfg: dict, vocab: dict, races: list[str], side: int, opp: d
         **({"noop_repairs": bots[side].noop_repairs} if side in bots and getattr(bots[side], "noop_repairs", 0) else {}),
         **({"frame_cancels": bots[side].frame_cancels} if side in bots and getattr(bots[side], "frame_cancels", 0) else {}),
         **({"futile_orders": bots[side].futile_orders} if side in bots and getattr(bots[side], "futile_orders", 0) else {}),
+        # (--econ-masks bit 512: the gold orders not sent at a full mine, the engine's workers sent to the trees from one,
+        # the lumber harvests sent instead of either, and the steps the harvest class was masked: human and orc)
+        **({"gold_full_masked": getattr(bots[side], "gold_full_masked", 0),
+            "gold_full_engine": getattr(bots[side], "gold_full_engine", 0),
+            "gold_full_lumber": getattr(bots[side], "gold_full_lumber", 0),
+            "gold_full_steps": getattr(bots[side].view, "gold_full_steps", 0)}
+           if side in bots and fx.GOLD_CAP and races[side] in fx.GOLD_CAP_WORKERS else {}),
+        # (each of the learner's hero deaths: play.BCAgent._hero_death's record; logging only)
+        **({"hero_deaths": bots[side].hero_deaths} if side in bots and getattr(bots[side], "hero_deaths", None) else {}),
         # (--order-masks 2: the toggle classes the view's mask turned off, summed over the game's steps)
         **({"toggles_masked": bots[side].view.toggles.masked}
            if side in bots and getattr(getattr(bots[side], "view", None), "toggles", None) is not None else {}),
@@ -6059,7 +6069,14 @@ def main(argv: list[str] | None = None) -> int:
                     "TREE_HARVEST): a peasant's, peon's, ghoul's or wisp's right-click on a tree sent as the harvest "
                     "order: right-clicked, the game shows its current order as smart for its whole first trip, no "
                     "harvester to the agent, and the policy moved it away and sent it back every step (undead's first "
-                    "ghoul in target games: scripts/ghoul_probe.py)")
+                    "ghoul in target games: scripts/ghoul_probe.py). Bit 512 (features.GOLD_CAP; the weakness analysis "
+                    "of 2026-11-28: human and orc stacked 7-12 workers on one mine): human's and orc's gold mines take "
+                    "5 gold workers (6 while one walks there from 1,000 or farther: teacher.SATURATED). A gold harvest "
+                    "or a worker's right-click on a full mine is not sent, the worker harvests the tree nearest the "
+                    "mine's hall instead (one chopping already: nothing); the harvest order class is masked while every "
+                    "mine a hall of the player's works is full; a worker the computer slot's engine sends to a full "
+                    "mine by itself (a new or idle one) goes to the trees too. Episode rows: gold_full_masked, "
+                    "gold_full_engine, gold_full_lumber, gold_full_steps")
     ap.add_argument("--order-masks", type=int, default=0, help="orders the game refuses, masked (ordermasks.py; bug "
                     "finder 10: fgself-225's refused orders). Bit 1: a unit-target spell's or ability's target only on "
                     "the entities its AbilityData targs1 lets it take (its side, the caster itself, a building, air or "
