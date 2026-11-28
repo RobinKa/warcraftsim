@@ -405,6 +405,21 @@ def test_tech_mask_research_gated_orders(v2):
     assert ok.tolist() == [True, True, True, True, True, True]
 
 
+def test_tech_mask_headhunters_gone_with_the_berserker_upgrade(v2):
+    """The berserker upgrade turns the headhunters: the barracks trains berserkers from then on and the game refuses its
+    headhunter order (bug finder 13: ~148 refused a game in fgself-271's orc games with the upgrade, ~2 without)."""
+    from warcraftsim.fullgame.techtree import tree
+    tree()
+    vocab = {**VOCAB, "orders": [[code("ohun"), fx.IMMEDIATE], [code("otbk"), fx.IMMEDIATE], [code("ogru"), fx.IMMEDIATE]]}
+    base = frozenset({"ogre", "obar", "oalt", "ofor", "otto", "ostr", "osld", "ovln", "obea", "otrb"})
+    ok = fx.TechMask(vocab, "orc").allowed(base, {}, frozenset(), frozenset())
+    assert ok.tolist() == [True, True, False, True]  # (headhunters, no berserkers yet)
+    ok = fx.TechMask(vocab, "orc").allowed(base, {"Robk": 1}, frozenset(), frozenset())
+    assert ok.tolist() == [True, False, True, True]  # (berserkers only; grunts as before)
+    ok = fx.TechMask(vocab, "orc").allowed(base, {}, frozenset(), frozenset({"Robk"}))
+    assert ok.tolist() == [True, True, False, True]  # (under way: headhunters still train)
+
+
 def test_one_of_buildings_once(v2):
     """Each unit samples its own order: a building of a kind once a step, and a second altar (or upgrade building, or
     shop) never while one stands, is a frame or a worker is on its way to build it (audit 8)."""

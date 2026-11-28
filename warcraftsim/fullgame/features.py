@@ -1542,6 +1542,11 @@ Encoder._paid = lambda self, rows, st, me, trees: _paid_orders(self, rows, st, m
 # berserker upgrade turns the headhunters, ~59 refused a game as orc), and abilities a research teaches (footmen's
 # defend ~23 a game, crypt fiends' burrow ~31 and web ~9)
 UNIT_RESEARCH = {"otbk": "Robk"}
+# and the unit that upgrade replaces: once the berserker upgrade is done the barracks trains berserkers instead of
+# headhunters, and the game refuses every headhunter order (bug finder 13: fgself-271's orc games with the upgrade sent
+# ~148 refused "train ohun" a game, 29,732 in 205 games against ~2 a game in the others; fgself-267 and 269 alike, 82 and
+# 95), so the barracks stood idle on them. Masked from the research's first level on
+UNIT_REPLACED = {"ohun": "Robk"}
 ABILITY_RESEARCH = {852055: "Rhde", 852056: "Rhde", 852533: "Rubu", 852534: "Rubu", 852211: "Ruwb", 852212: "Ruwb",
                     852213: "Ruwb"}  # (defend, undefend, burrow, unburrow, web, webon, weboff)
 
@@ -1631,7 +1636,8 @@ class TechMask:
                 ok[c] = len(heroes) < 3 and code not in heroes and not lacking(code, len(heroes))
             else:
                 ok[c] = (not lacking(code, 0) and code not in researching
-                         and (code not in UNIT_RESEARCH or levels.get(UNIT_RESEARCH[code], 0) > 0))
+                         and (code not in UNIT_RESEARCH or levels.get(UNIT_RESEARCH[code], 0) > 0)
+                         and (code not in UNIT_REPLACED or levels.get(UNIT_REPLACED[code], 0) == 0))
         for c, (r, a) in self.abilities:  # (at its level: inner fire, polymorph, bloodlust need level 2; audit 11)
             ok[c] = levels.get(r, 0) >= a
         if self.full_needs:  # (--full-vocab: a research at its level, a building finished; "-": another race's shop; "!":
