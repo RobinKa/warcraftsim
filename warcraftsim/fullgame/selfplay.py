@@ -200,6 +200,37 @@ def matmul_precision(tf32: bool):
         b.cuda.matmul.fp32_precision, b.mkldnn.matmul.fp32_precision = old[1], old[2]
 
 
+def packed_call(net: FullGameNet, x: torch.Tensor, G: int, NO: int, d: int, bf16: bool, generator, guided: bool,
+                mixed: bool, noise: dict | None = None) -> torch.Tensor:
+    """The network's act() from one packed input [B, W] (Inference._launch's rows) to one packed output [B, cols]: its
+    calls' function (Inference._fn; paststack.PastStack's per slot). `noise`: act's draws made by the caller (model.act)."""
+    # one tensor in and one out: each copy to or from the GPU is a driver call of its own
+    # (seven inputs were seven, seven outputs seven waits)
+    B = x.shape[0]
+    E = (x.shape[1] - G - 1 - NO - d) // (fx.F + 3)
+    a = E * fx.F
+    ent, glob = x[:, :a].reshape(B, E, fx.F), x[:, a:a + G]
+    a += G
+    typ, cur, mask = x[:, a:a + E].long(), x[:, a + E:a + 2 * E].long(), x[:, a + 2 * E:a + 3 * E] > 0.5
+    a += 3 * E
+    n_own, avail = x[:, a].long(), x[:, a + 1:a + 1 + NO] > 0.5
+    # (class 0, "none", always available, carries flags: 2 marks a shared-noise game's row; with guide,
+    # + 10 * round(10 * w) a guidance weight w)
+    flag = x[:, a + 1]
+    tens = torch.floor(flag / 10.0) if guided else torch.zeros_like(flag)
+    shared = flag - 10.0 * tens > 1.5
+    guide = torch.where(tens > 0, tens / 10.0, torch.ones_like(tens)) if guided else None
+    # (cache_enabled False: each call casts the weights it reads, so weights copied into them, a reloaded
+    # network's or a past snapshot's into its slot, are what the graph computes with)
+    with torch.autocast(x.device.type, dtype=torch.bfloat16, enabled=bf16, cache_enabled=False):
+        out = act(net, ent, typ, cur, mask, glob, n_own, avail, x[:, a + 1 + NO:] if d else None,
+                  generator=generator, shared=shared, guide=guide, heads_fp32=mixed,
+                  **({"noise": noise} if noise is not None else {}))
+    return torch.cat([out["order"].float(), out["tgt"].float(), out["bx"].float(), out["by"].float(),
+                      out["logp"].float(), out["value"].float()[:, None], out["entropy"].float()[:, None]]
+                     + ([out["h"].float()] if d else []), 1)
+
+
 class Inference:
     """Batches the network calls of an actor's agents (one per game side) on the GPU."""
 
@@ -308,30 +339,7 @@ class Inference:
             bf16, gen, guided, mixed = self.bf16, self.generator, self.guide, self.mixed
 
             def packed_act(x):
-                # one tensor in and one out: each copy to or from the GPU is a driver call of its own
-                # (seven inputs were seven, seven outputs seven waits)
-                B = x.shape[0]
-                E = (x.shape[1] - G - 1 - NO - d) // (fx.F + 3)
-                a = E * fx.F
-                ent, glob = x[:, :a].reshape(B, E, fx.F), x[:, a:a + G]
-                a += G
-                typ, cur, mask = x[:, a:a + E].long(), x[:, a + E:a + 2 * E].long(), x[:, a + 2 * E:a + 3 * E] > 0.5
-                a += 3 * E
-                n_own, avail = x[:, a].long(), x[:, a + 1:a + 1 + NO] > 0.5
-                # (class 0, "none", always available, carries flags: 2 marks a shared-noise game's row; with guide,
-                # + 10 * round(10 * w) a guidance weight w)
-                flag = x[:, a + 1]
-                tens = torch.floor(flag / 10.0) if guided else torch.zeros_like(flag)
-                shared = flag - 10.0 * tens > 1.5
-                guide = torch.where(tens > 0, tens / 10.0, torch.ones_like(tens)) if guided else None
-                # (cache_enabled False: each call casts the weights it reads, so weights copied into them, a reloaded
-                # network's or a past snapshot's into its slot, are what the graph computes with)
-                with torch.autocast(x.device.type, dtype=torch.bfloat16, enabled=bf16, cache_enabled=False):
-                    out = act(ref(), ent, typ, cur, mask, glob, n_own, avail, x[:, a + 1 + NO:] if d else None,
-                              generator=gen, shared=shared, guide=guide, heads_fp32=mixed)
-                return torch.cat([out["order"].float(), out["tgt"].float(), out["bx"].float(), out["by"].float(),
-                                  out["logp"].float(), out["value"].float()[:, None], out["entropy"].float()[:, None]]
-                                 + ([out["h"].float()] if d else []), 1)
+                return packed_call(ref(), x, G, NO, d, bf16, gen, guided, mixed)
             if self.fuse:  # (compiled at the shape's first calls, before its graph's capture)
                 packed_act = torch.compile(packed_act, dynamic=False)
             self._fns[net] = packed_act
@@ -725,9 +733,11 @@ def launch_round(groups: dict, nets: Nets, infer: Inference, past: Inference, sw
     return calls, used
 
 
-def warm_inference(nets: Nets, infer: Inference, past: Inference, swap: PastNet, keys: list[str]) -> None:
+def warm_inference(nets: Nets, infer: Inference, past: Inference, swap: PastNet, keys: list[str],
+                   past_slots: bool = True) -> None:
     """Capture every shape's graph now (the current network's; each past snapshot slot's, for each
-    architecture among `keys`): an inference thread next to the learner must not capture later."""
+    architecture among `keys`): an inference thread next to the learner must not capture later. `past_slots` False
+    (--infer-past-stack: the past snapshots' stacks capture their own, NativeServer): the current network's alone."""
     def dummy(n: int, G: int) -> dict:
         return {"n": n, "n_own": 1, "ent": np.zeros((n, fx.F), np.float32), "type": np.zeros(n, np.int64),
                 "cur": np.zeros(n, np.int64), "glob": np.zeros(G, np.float32), "avail": None, "h": None}
@@ -739,7 +749,7 @@ def warm_inference(nets: Nets, infer: Inference, past: Inference, swap: PastNet,
             infer._launch(net, [dummy(E, G)] * B)
             infer.wait()
     archs: dict[str, FullGameNet] = {}
-    for key in [None, *keys]:
+    for key in [None, *keys] if past_slots else ():
         src = net if key is None else nets.get(key)
         archs.setdefault(arch_key(src.config), src)
     for src in archs.values():
@@ -6506,6 +6516,12 @@ def main(argv: list[str] | None = None) -> int:
                                                                   "side by side, a CUDA stream each")
     ap.add_argument("--infer-past-slots", type=int, default=4, help="past snapshots a round runs side by side "
                                                                      "(a network copy each)")
+    ap.add_argument("--infer-past-stack", type=int, default=0, help="with --infer-native: each architecture's past "
+                    "snapshots in this many stacked slots, a round's calls of them ONE call (paststack.py: the slots' "
+                    "weights stacked, torch.func.vmap; ~85%% of the calls were past snapshots' at ~1.5 rows each); 0: "
+                    "--infer-past-slots' network copies, a call each, as before")
+    ap.add_argument("--infer-past-stack-rows", default="", help="--infer-past-stack: the rows per slot its calls pad to "
+                    "(each slot's rows; more in a round: several calls); empty: 1,2,4")
     ap.add_argument("--infer-past-period-ms", type=float, default=0.0, help="a past snapshot's calls at most this often per "
                     "network, so that its rows batch up (a game against one waits at most this much longer, the current "
                     "network's calls keep every round; 0: every round)")
@@ -6873,6 +6889,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.update_grad_fuse and not (graphed and args.update_fuse):
         raise SystemExit("--update-grad-fuse is GraphedUpdate's, and needs --update-fuse (eager it would be slower)")
     update_widths(args.update_widths)  # (a mistake in them stops the run here)
+    if args.infer_past_stack:  # (the stacks are the C++ loop's: NativeServer)
+        if args.infer_past_stack < 0 or not (args.central_inference and args.infer_native):
+            raise SystemExit("--infer-past-stack: a number of slots, with --central-inference 1 --infer-native 1")
+        from .paststack import stack_rows
+        stack_rows(args.infer_past_stack_rows, 16)
     infer_rows(args.infer_rows, 64)  # (likewise: before the games start)
     # (--adam-fused: one kernel for all the weights where the foreach path launches one per operation; it reads the step
     # count on the GPU and takes the addresses by value, so a CUDA graph replays it: ATen/native/cuda/fused_adam_utils.cuh)
@@ -7169,6 +7190,7 @@ def main(argv: list[str] | None = None) -> int:
            "infer_past_entities": [int(x) for x in args.infer_past_entities.split(",")],
            "infer_rows": list(infer_rows(args.infer_rows, 64)), "infer_precision": args.infer_precision,
            "infer_past_slots": args.infer_past_slots, "infer_past_period": args.infer_past_period_ms / 1000.0,
+           "infer_past_stack": args.infer_past_stack, "infer_past_stack_rows": args.infer_past_stack_rows,
            "game_nice": args.game_nice, "pairs": args.pairs,
            "exploiter_share": args.exploiter_share, "float_penalty": args.float_penalty,
            "infer_period": args.infer_period_ms / 1000.0,
