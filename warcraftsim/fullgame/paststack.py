@@ -203,7 +203,7 @@ class PastStack:
             out = self._core_fn()(self.params, self.buffers, x.view(S, B, x.shape[1]), noise)
         finally:
             torch.backends.mha.set_fastpath_enabled(fast)
-        return out.reshape(S * B, out.shape[-1])
+        return out.reshape(S * B, out.shape[-1]).contiguous()  # (the C++ loop copies its rows out by address)
 
     def graph(self, B: int, E: int) -> tuple:
         """The call's CUDA graph for B rows per slot and E entities: (its input [S * B, W], the graph, its output). The

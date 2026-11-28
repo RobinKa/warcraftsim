@@ -1,7 +1,7 @@
 """The 10-layer recipe's GPU costs, measured between runs (the GPU to itself), for the speed-ups of 2026-11-28.
 
     python3 scripts/bench_speed10.py flops   --run runs/fgself-271            # (CPU, meta tensors: FLOPs by part)
-    python3 scripts/bench_speed10.py update  --run runs/fgself-271 [--profile 25] [--variants "base:;aligned:update_widths=32|40|48|56|63|80|96|127"]
+    python3 scripts/bench_speed10.py update  --run runs/fgself-271 [--profile 25] [--variants "base:;aligned:update_widths=32|40|48|56|63|80|96|127;labelrows:update_label_rows=32"]
     python3 scripts/bench_speed10.py past    --run runs/fgself-271 [--slots 10 --stack-rows 1,2,4]
     python3 scripts/bench_speed10.py buckets --run runs/fgself-271 [--sets "32,48,64,96;31,47,63,95,127;32,48,64,96,112"]
     python3 scripts/bench_speed10.py concurrent --run runs/fgself-271 [--seconds 60]
@@ -166,7 +166,8 @@ def update_args(c: dict, over: dict) -> types.SimpleNamespace:
         upgo=f("upgo", 1.0), unit_credit=f("unit_credit", 0.0), max_grad_norm=f("max_grad_norm", 1.0),
         update_fuse=c.get("update_fuse", "default") or "", update_grad_fuse=int(f("update_grad_fuse", 0)),
         update_widths=c.get("update_widths", ""), update_pause_ms=0.0, bc_coef=0.0, opsd_coef=0.0, ref2_kl=0.0,
-        label_w=1.0, adam_fused=int(f("adam_fused", 1)), ref_layers=5, layers=0)
+        label_w=1.0, adam_fused=int(f("adam_fused", 1)), update_label_rows=int(f("update_label_rows", 0)), ref_layers=5,
+        layers=0)
     for k, v in over.items():
         old = getattr(a, k, None)
         setattr(a, k, type(old)(v) if isinstance(old, (int, float)) and not isinstance(old, bool) else v)
@@ -672,9 +673,9 @@ def main() -> int:
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--steps", type=int, default=8192, help="update: steps a batch")
     ap.add_argument("--updates", type=int, default=5, help="update: timed updates (after the first)")
-    ap.add_argument("--variants", default="base:;aligned:update_widths=32|40|48|56|63|80|96|127",
+    ap.add_argument("--variants", default="base:;aligned:update_widths=32|40|48|56|63|80|96|127;labelrows:update_label_rows=32",
                     help="update: name:setting=value,... ; separated (| for a value's commas): e.g. noref:ref_layers=0, "
-                         "nolabels:opd_coef=0, five:layers=5")
+                         "nolabels:opd_coef=0, five:layers=5, both:update_widths=32|40|48|56|63|80|96|127,update_label_rows=32")
     ap.add_argument("--profile", type=int, default=0, help="update: the first variant's top N kernels (torch.profiler)")
     ap.add_argument("--ent-mean", type=float, default=53.0, help="steps' entity count (fgself-271's rows: ~53)")
     ap.add_argument("--ent-sd", type=float, default=16.0)
