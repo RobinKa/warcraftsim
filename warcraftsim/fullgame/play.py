@@ -575,8 +575,11 @@ class BCAgent:
                 # its own frames 2-10 times a game, the cancel learned from the demonstrations' training queues; audit 9)
                 self.frame_cancels = getattr(self, "frame_cancels", 0) + 1
             elif kind == fx.IMMEDIATE and fx.FUTILE_MASK and fx.USESLOT <= oid < fx.USESLOT + 6:
-                out.append(UseItem(unit, oid - fx.USESLOT))  # (--econ-masks bit 64: the item's use, the form the game
-                # takes; its slot's immediate order refused for every item tried, scripts/undead_probe.py)
+                slot = oid - fx.USESLOT  # (--econ-masks bit 64: the item's use, the form the game takes; its slot's
+                # immediate order refused for every item tried, scripts/undead_probe.py. A salve on the hero itself: used
+                # without a target it did nothing, features.SELF_TARGET_ITEMS)
+                held = int(sel[i, fx.C_ITEM0 + slot]) if sel.shape[1] > fx.C_ITEM0 + 5 else 0
+                out.append(UseItem(unit, slot, target=unit) if held in fx.SELF_TARGET_ITEMS else UseItem(unit, slot))
             elif kind == fx.IMMEDIATE:
                 if oid >= TYPE_CODE:
                     if produce(unit, oid, c):  # (a hero too: the first one's cost 0, the mask's costs)

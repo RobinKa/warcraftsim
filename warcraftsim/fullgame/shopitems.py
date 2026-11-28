@@ -232,8 +232,8 @@ def use_target(sel: np.ndarray, item: int, kind: int, i: int, k: int, xy: tuple[
     """How hero row `i` uses `item` by an order of `kind` (one use_ok allows) with pointer `k` and point `xy` -> ("now",),
     ("unit", id), ("point", x, y), or None when nothing takes it (no other unit of the player's for a staff that moves one
     home)."""
-    if kind == NOW:
-        return ("now",)
+    if kind == NOW:  # (a salve: on the hero itself; without a target the game answered ok and did nothing, bug finder 13)
+        return ("unit", int(sel[i, fx.C_ID])) if item in fx.SELF_TARGET_ITEMS else ("now",)
     own = sel[:n_own]
     pointed = sel[k] if 0 <= k < n_own else None  # (a unit target's: a unit of the player's)
     if item == _PORTAL:  # (a point near a structure of the player's; none near: its nearest one)
@@ -254,10 +254,13 @@ def use_target(sel: np.ndarray, item: int, kind: int, i: int, k: int, xy: tuple[
             return None
         return ("unit", int(b[int(np.hypot(b[:, fx.C_X] - sel[i, fx.C_X], b[:, fx.C_Y] - sel[i, fx.C_Y]).argmin()), fx.C_ID]))
     mine = (own[:, fx.C_FLAGS] & (fx.STRUCTURE | fx.DEAD) == 0)  # (a unit of the player's: on any other the game refuses)
-    if item == code("hslv"):  # (a salve: on the unit pointed at, else on itself)
-        if pointed is not None and mine[k]:
+    if item == code("hslv"):  # (a salve: on the unit pointed at, else on itself; only on one that is hurt, as its immediate
+        # form at full hit points (use_ok), and no machine: its targs are organic; nothing hurt: not sent)
+        def hurt(r) -> bool:
+            return r[fx.C_HP] < r[fx.C_MAXHP] and int(r[fx.C_TYPE]) not in _mechanical()
+        if pointed is not None and mine[k] and hurt(pointed):
             return ("unit", int(pointed[fx.C_ID]))
-        return ("unit", int(sel[i, fx.C_ID]))
+        return ("unit", int(sel[i, fx.C_ID])) if hurt(sel[i]) else None
     mine[i] = False  # (a staff of sanctuary or preservation: refused on the hero itself)
     if pointed is not None and mine[k]:
         return ("unit", int(pointed[fx.C_ID]))
@@ -265,6 +268,15 @@ def use_target(sel: np.ndarray, item: int, kind: int, i: int, k: int, xy: tuple[
         return None
     c = own[mine]
     return ("unit", int(c[int(np.hypot(c[:, fx.C_X] - sel[i, fx.C_X], c[:, fx.C_Y] - sel[i, fx.C_Y]).argmin()), fx.C_ID]))
+
+
+@lru_cache(1)
+def _mechanical() -> frozenset[int]:
+    """The machines' unit types (UnitBalance.slk's "mechanical": herodata.unit_kinds), which a salve does not take."""
+    try:
+        return frozenset(fx._mod("herodata").unit_kinds()["mechanical"])
+    except Exception:  # noqa: BLE001 (the game's tables: not on every machine)
+        return frozenset()
 
 
 @lru_cache(1)

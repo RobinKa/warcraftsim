@@ -635,7 +635,14 @@ USESLOT = 852008
 # sacrificial skull, the staffs and wands cast on something, the tiny buildings, ritual dagger
 TARGETED_ITEMS = frozenset(int.from_bytes(c.encode(), "big") for c in (
     "stwp", "stel", "wswd", "wshs", "wlsd", "wcyc", "wneg", "wneu", "will", "skul", "ssil", "spre", "sneg", "infs",
-    "ritd", "tgrh", "tcas", "tbak", "tbar", "tbsm", "tfar", "tlum", "tsct", "tsot"))
+    "ritd", "tgrh", "tcas", "tbak", "tbar", "tbsm", "tfar", "tlum", "tsct", "tsot", "woms"))
+# (bug finder 13: an item that needs a target, used without one, is answered ok by the game and does nothing, and the
+# policy used it again and again: the wand of mana stealing (Aste, a unit target: a creep drop) 20,613 uses in 1,146
+# games of fgself-252..271 against 416 wands gone (2 charges), one held 900 steps and used every step; the healing salve
+# (AIrl, a unit target, 500 range: SELF_TARGET_ITEMS) 204,733 uses in 1,772 games against 751 salves gone (3 charges),
+# ~115 a game; every other item's uses are 0.8-2.7 its losses, its charges. The salve takes its holder: its immediate use
+# goes out as its use on the hero itself)
+SELF_TARGET_ITEMS = frozenset(int.from_bytes(c.encode(), "big") for c in ("hslv",))
 
 
 # --econ-masks bit 256 (play.BCAgent.commands; 2026-11-23, the user saw undead's first ghoul flip between "move (point)"
