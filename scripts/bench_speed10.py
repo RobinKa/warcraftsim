@@ -24,7 +24,9 @@ histograms (calls by rows, by widest entity count) the GPU ms a second each --in
 concurrent: an update loop and a past-round loop at once (two threads; the past rounds on high-priority streams as the
 loop's): updates a second and rounds a second, unbatched against stacked.
 
-Needs the GPU to itself (never beside a run): it allocates several GB and takes every SM it can.
+Needs the GPU to itself (never beside a run): it allocates several GB and takes every SM it can. The first run compiles
+every shape (the per-slot path ~10 graphs a slot: `--slots 4` for a quicker look); the inductor's cache serves later runs.
+The update's synthetic actions are random (its losses are not a policy's), which changes nothing in the work timed.
 """
 
 from __future__ import annotations
@@ -254,6 +256,7 @@ def bench_update(a, c: dict, ck: dict, device) -> None:
             profile_step(up, a.profile)
         rows.append((name, np.mean(times), gpu))
         del up, opt, net, ref
+        torch._dynamo.reset()  # (its compiled code held the variant's network and graphs)
         torch.cuda.empty_cache()
     if len(rows) > 1:
         b = rows[0]
