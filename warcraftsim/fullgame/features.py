@@ -601,6 +601,14 @@ DETONATE, REPAIR = 852145, 852024
 MILITIA_CONVERT, MILITIA_CALL, MILITIA_OFF, TOWNBELL_ON, TOWNBELL_OFF, MILITIA_UNCONVERT = (
     852071, 852072, 852073, 852082, 852083, 852651)
 MILITIA_T, PEASANT_T = int.from_bytes(b"hmil", "big"), int.from_bytes(b"hpea", "big")
+# (--econ-masks bit 512, View.gold_workers: a worker's call to arms and a militia's back to work, the agent's orders that
+# clear its job in View.assign while the worker goes back to the harvest it had afterwards; a peon's board onto a burrow
+# likewise, back at the stand down. Bug finder 13: such a lumber worker read as no job's, and the gold count took every
+# unassigned harvester for a gold worker of the mine nearest it (the start's and the engine's are): choppers filled the
+# mine's 5. In fgself-271's human games without a target the gold a minute was 269's where no militia went back to work
+# (548 and 548), 9-13% under it with 21-80 or more a game (455 -> 412, 402 -> 351); orc's alike with burrows (373 -> 346
+# against 553 -> 538), the masked gold orders a minute 3-6 times as many in those games)
+BACK_TO_WORK_CALLS = frozenset((852072, 852073))  # (MILITIA_CALL, MILITIA_OFF)
 # --econ-masks bit 64 (View.futile, play.BCAgent.commands; audit 17 of fgself-158's undead games against insane: refused
 # orders 66 a game to its start's 35, games 17.9 min to 13.3): orders the game refuses, out of the masks, and not sent
 # when the unit or its target can't take them (tested 2026-10-27, scripts/undead_probe.py: scripted games, and the
@@ -635,7 +643,14 @@ USESLOT = 852008
 # sacrificial skull, the staffs and wands cast on something, the tiny buildings, ritual dagger
 TARGETED_ITEMS = frozenset(int.from_bytes(c.encode(), "big") for c in (
     "stwp", "stel", "wswd", "wshs", "wlsd", "wcyc", "wneg", "wneu", "will", "skul", "ssil", "spre", "sneg", "infs",
-    "ritd", "tgrh", "tcas", "tbak", "tbar", "tbsm", "tfar", "tlum", "tsct", "tsot"))
+    "ritd", "tgrh", "tcas", "tbak", "tbar", "tbsm", "tfar", "tlum", "tsct", "tsot", "woms"))
+# (bug finder 13: an item that needs a target, used without one, is answered ok by the game and does nothing, and the
+# policy used it again and again: the wand of mana stealing (Aste, a unit target: a creep drop) 20,613 uses in 1,146
+# games of fgself-252..271 against 416 wands gone (2 charges), one held 900 steps and used every step; the healing salve
+# (AIrl, a unit target, 500 range: SELF_TARGET_ITEMS) 204,733 uses in 1,772 games against 751 salves gone (3 charges),
+# ~115 a game; every other item's uses are 0.8-2.7 its losses, its charges. The salve takes its holder: its immediate use
+# goes out as its use on the hero itself)
+SELF_TARGET_ITEMS = frozenset(int.from_bytes(c.encode(), "big") for c in ("hslv",))
 
 
 # --econ-masks bit 256 (play.BCAgent.commands; 2026-11-23, the user saw undead's first ghoul flip between "move (point)"
@@ -1542,6 +1557,11 @@ Encoder._paid = lambda self, rows, st, me, trees: _paid_orders(self, rows, st, m
 # berserker upgrade turns the headhunters, ~59 refused a game as orc), and abilities a research teaches (footmen's
 # defend ~23 a game, crypt fiends' burrow ~31 and web ~9)
 UNIT_RESEARCH = {"otbk": "Robk"}
+# and the unit that upgrade replaces: once the berserker upgrade is done the barracks trains berserkers instead of
+# headhunters, and the game refuses every headhunter order (bug finder 13: fgself-271's orc games with the upgrade sent
+# ~148 refused "train ohun" a game, 29,732 in 205 games against ~2 a game in the others; fgself-267 and 269 alike, 82 and
+# 95), so the barracks stood idle on them. Masked from the research's first level on
+UNIT_REPLACED = {"ohun": "Robk"}
 ABILITY_RESEARCH = {852055: "Rhde", 852056: "Rhde", 852533: "Rubu", 852534: "Rubu", 852211: "Ruwb", 852212: "Ruwb",
                     852213: "Ruwb"}  # (defend, undefend, burrow, unburrow, web, webon, weboff)
 
@@ -1631,7 +1651,8 @@ class TechMask:
                 ok[c] = len(heroes) < 3 and code not in heroes and not lacking(code, len(heroes))
             else:
                 ok[c] = (not lacking(code, 0) and code not in researching
-                         and (code not in UNIT_RESEARCH or levels.get(UNIT_RESEARCH[code], 0) > 0))
+                         and (code not in UNIT_RESEARCH or levels.get(UNIT_RESEARCH[code], 0) > 0)
+                         and (code not in UNIT_REPLACED or levels.get(UNIT_REPLACED[code], 0) == 0))
         for c, (r, a) in self.abilities:  # (at its level: inner fire, polymorph, bloodlust need level 2; audit 11)
             ok[c] = levels.get(r, 0) >= a
         if self.full_needs:  # (--full-vocab: a research at its level, a building finished; "-": another race's shop; "!":
@@ -2044,6 +2065,7 @@ class View:
                     best = (d, (hx, hy))
             hall[k] = best[1] if best is not None else None
         assign, mine_of, last = self.assign, self.mine_of, self.last_order
+        held = self.__dict__.get("held_jobs") or {}
         prev = self.__dict__.get("_gold_prev") or ()
         auto = self.__dict__.setdefault("auto_gold", {})
         on: dict[int, list] = {k: [] for k in mines}
@@ -2055,6 +2077,12 @@ class View:
                 continue
             uid, order, inside = u[O_ID], u[O_ORDER], u[O_FL] & HIDDEN_FLAG > 0
             cycle, a = order in _GOLD_CYCLE, assign.get(uid)
+            if a is None and uid in held:  # (its job before a call to arms, a militia's back to work or a burrow
+                if cycle or inside:        # (play.BCAgent.accepted: those orders clear it): back at the harvest it had
+                    a = assign[uid] = held.pop(uid)  # by itself, it does that job again (BACK_TO_WORK_CALLS)
+                    self.added(uid)
+                elif order == 0:  # (idle: a militia's own end after 45 s; the engine's harvest then is its own)
+                    del held[uid]
             busy = cycle or order == SMART or inside
             if busy:
                 harvesting.add(uid)
@@ -2250,11 +2278,11 @@ class View:
         if prev is not None and self.__dict__.get("_keys_safe"):
             gone = prev - units
             if gone:
-                for d in (self.assign, self.mine_of, self.last_order, self.last_packed):
+                for d in (self.assign, self.mine_of, self.last_order, self.last_packed, self.__dict__.get("held_jobs") or {}):
                     for k in gone:
                         d.pop(k, None)
         else:
-            for d in (self.assign, self.mine_of, self.last_order, self.last_packed):
+            for d in (self.assign, self.mine_of, self.last_order, self.last_packed, self.__dict__.get("held_jobs") or {}):
                 for k in d.keys() - units:
                     del d[k]
         self._units_prev, self._keys_safe = units, True

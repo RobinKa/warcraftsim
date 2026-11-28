@@ -206,6 +206,57 @@ def test_a_chopper_kept_off_gets_nothing():
     assert bot.gold_full_masked == 1 and not getattr(bot, "gold_full_lumber", 0)
 
 
+@pytest.mark.parametrize("race", ["human", "orc"])
+def test_a_chopper_back_from_militia_or_a_burrow(race):
+    """A call to arms and a militia's back to work (human), a peon's board onto a burrow (orc) clear the worker's job in
+    View.assign, and it goes back to the harvest it had by itself: a chopper read as an unassigned harvester, a gold
+    worker of the mine nearest it, filled the mine's 5 (bug finder 13). Its job is kept for its return: back on the
+    trees it is off the mine's count, back in the mine on it; idle (a militia's own end) it is the engine's again."""
+    from warcraftsim.protocol import ImmediateOrder
+    fx.set_econ_masks(512)
+    w = WORKER_OF[race]
+    chopper = _unit(31, w, fx.WORKER, order=fx.HARVEST, x=-2500, y=900)  # (at the trees by the mine, 500 from it)
+    calls = ([ImmediateOrder(31, 852072), ImmediateOrder(31, 852073)] if race == "human"
+             else [TargetOrder(31, fx.BOARD, 70)])
+    bot, st = _bot(race, _base(race, 4, [chopper]), assign={31: "lumber"}, t=0)
+    assert sorted(bot.view.gold.on[MINE]) == [10, 11, 12, 13] and st["avail"][HARVEST]
+    for k, c in enumerate(calls):  # (each a step: the call, then the militia's back to work)
+        bot.sent_resources = [None]
+        bot.accepted([c], [True])
+        assert 31 not in bot.view.assign
+        away = _unit(31, "hmil" if race == "human" else w, fx.WORKER | (fx.LOADED_FLAG if race == "orc" else 0),
+                     order=852072 if race == "human" else 0, x=-2000, y=100)
+        bot, st = _bot(race, _base(race, 4, [away]), t=1 + k, bot=bot)
+        assert 31 not in bot.view.gold.of
+    bot, st = _bot(race, _base(race, 4, [chopper]), t=5, bot=bot)  # (back at its trees, no order of the agent's)
+    assert 31 not in bot.view.gold.of and st["avail"][HARVEST]  # (4 on the mine: room for the 5th)
+    assert bot.view.assign[31] == "lumber" and 31 not in bot.view.auto_gold
+    assert _send(bot, st, {IDLE: (HARVEST, MINE)}) == [TargetOrder(IDLE, fx.HARVEST, MINE)]
+    # a gold worker's: back on the mine's count
+    bot, st = _bot(race, _base(race, 4, [chopper]), assign={31: "gold"}, mine_of={31: MINE}, t=0)
+    bot.sent_resources = [None]
+    bot.accepted(calls[:1], [True])
+    bot, st = _bot(race, _base(race, 4, [chopper]), t=1, bot=bot)
+    assert bot.view.assign[31] == "gold" and sorted(bot.view.gold.on[MINE]) == [10, 11, 12, 13, 31]
+    # idle after it (a militia turns peasant by itself after 45 s, idle): nothing kept; any other order of the agent's
+    # forgets it too
+    bot, st = _bot(race, _base(race, 4, [chopper]), assign={31: "lumber"}, t=0)
+    bot.sent_resources = [None]
+    bot.accepted(calls[:1], [True])
+    bot, st = _bot(race, _base(race, 4, [_unit(31, w, fx.WORKER, x=-2000, y=100)]), t=1, bot=bot)
+    assert 31 not in bot.view.held_jobs
+    bot.view.held_jobs[31] = "lumber"
+    bot.sent_resources = [None]
+    bot.accepted([TargetOrder(31, fx.REPAIR, 1)], [True])
+    assert 31 not in bot.view.held_jobs
+    # the bit off: nothing kept (as before)
+    fx.set_econ_masks(511)
+    bot, st = _bot(race, _base(race, 4, [chopper]), assign={31: "lumber"}, t=0)
+    bot.sent_resources = [None]
+    bot.accepted(calls[:1], [True])
+    assert "held_jobs" not in bot.view.__dict__ and 31 not in bot.view.assign
+
+
 @pytest.mark.parametrize("race", ["undead", "nightelf"])
 @pytest.mark.parametrize("miners", [3, 7])
 def test_other_races_as_before(race, miners):

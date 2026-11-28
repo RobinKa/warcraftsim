@@ -250,7 +250,10 @@ def test_slot_forms_mask_and_commands(game_tables):
     assert send(1, U, at[3]) == []  # (the game's portal takes no unit)
     assert send(3, U, at[2]) == [UseItem(1, 3, target=2)]  # (the staff on the footman)
     assert send(3, U, i) == [UseItem(1, 3, target=2)]  # (the game refuses it on the hero itself: the unit nearest)
-    assert send(4, N) == [UseItem(1, 4)] and send(4, U, at[2]) == [UseItem(1, 4, target=2)] and send(4, U, at[3]) == [UseItem(1, 4, target=1)]
+    # (a salve: its immediate form on the hero itself, its unit form on a hurt unit of the player's pointed at, else on
+    # the hero; the footman is at full health)
+    assert send(4, N) == [UseItem(1, 4, target=1)] and send(4, U, at[2]) == [UseItem(1, 4, target=1)]
+    assert send(4, U, at[3]) == [UseItem(1, 4, target=1)]
     assert send(2, N) == [] and send(0, U) == []  # (no such form: not sent, counted)
     assert bot.futile_orders == 3
     staffed = hero.copy()
@@ -266,6 +269,69 @@ def test_slot_forms_mask_and_commands(game_tables):
     assert not fx.item_use_now(code("phea"), well) and not fx.item_use_now(code("pman"), well)
     assert fx.item_use_now(code("phea"), hero) and fx.item_use_now(code("plcl"), hero)
     assert not fx.item_use_now(code("stwp"), hero) and not fx.item_use_now(code("ssan"), hero)
+
+
+def test_targeted_items_used_on_a_target(game_tables):
+    """An item that needs a target, used without one, is answered ok and does nothing (bug finder 13: the healing salve
+    204,733 uses in 1,772 games against 751 gone, 3 charges; the wand of mana stealing 20,613 against 416, 2 charges; the
+    policy used them every step). The salve goes out on a target (its immediate form on the hero itself, its unit form on
+    a hurt unit pointed at, else the hero; nothing hurt: not sent); the wand's immediate form is not sent, nor open."""
+    from warcraftsim.fullgame import neutral, shopitems
+    from warcraftsim.fullgame.play import BCAgent
+    fx.set_neutral(1)
+    fx.set_shop_items(1)
+    v = shopitems.extend(neutral.extend_vocab(VOCAB))
+    oix = {tuple(o): c for c, o in enumerate(v["orders"], start=1)}
+    N, U = fx.IMMEDIATE, fx.UNIT
+    for hurt in (True, False):
+        bot = BCAgent(None, v, 0, None)
+        bot.view = bot.enc.view(0, 1.0, [0, 1])
+        bot.trees, bot.building_since, bot.t = {}, {}, 0
+        hero = _row(1, "Hpal", fx.HERO, hp=(150 if hurt else 400, 400), mana=(10, 300), items=("hslv", "woms"))
+        foot = _row(2, "hfoo", 0, x=50, hp=(100, 420))
+        well = _row(3, "hfoo", 0, x=80)
+        rows = np.stack([hero, foot, well])
+        avail = np.ones(len(v["orders"]) + 1, bool)
+        bot.view.item_slots(rows, avail)
+        assert bool(avail[oix[(852008, N)]]) == hurt and avail[oix[(852008, U)]]  # (the salve's forms)
+        assert not avail[oix[(852009, N)]] and not avail[oix[(852009, U)]]  # (the wand: no form the agent sends)
+        st = bot.view.step(rows, None, np.zeros((0, 5), np.int64), 0)
+        at = {int(u): k for k, u in enumerate(st["sel"][:, fx.C_ID].tolist())}
+
+        def send(slot, kind, tgt=0):
+            order = [0] * st["n_own"]
+            order[at[1]] = oix[(852008 + slot, kind)]
+            return bot.commands(st, order, [tgt] * st["n_own"], [0] * st["n_own"], [0] * st["n_own"])
+        assert send(0, U, at[2]) == [UseItem(1, 0, target=2)]  # (the hurt footman pointed at)
+        assert send(0, U, at[3]) == ([UseItem(1, 0, target=1)] if hurt else [])  # (one at full health: the hero, if hurt)
+        assert send(0, N) == ([UseItem(1, 0, target=1)] if hurt else [])  # (on itself, never without a target)
+        assert send(1, N) == [] and send(1, U, at[2]) == []  # (the wand, without a target or with)
+    assert fx.item_use_now(code("hslv"), hero) is False  # (full health)
+    assert not fx.item_use_now(code("woms"), hero)
+
+
+def test_targeted_items_without_shop_items():
+    """--econ-masks bit 64 without --shop-items: a slot's immediate use goes out as the item's use, the salve's on the hero
+    itself and the wand's not at all (features.SELF_TARGET_ITEMS, TARGETED_ITEMS)."""
+    from warcraftsim.fullgame.play import BCAgent
+    try:
+        from warcraftsim.fullgame.herodata import item_table
+        item_table()
+    except Exception as e:  # noqa: BLE001
+        pytest.skip(f"no game data: {e}")
+    fx.set_econ_masks(64)
+    try:
+        v = {**VOCAB, "orders": [[852008, fx.IMMEDIATE], [852009, fx.IMMEDIATE], [852010, fx.IMMEDIATE]]}
+        bot = BCAgent(None, v, 0, None)
+        bot.view = bot.enc.view(0, 1.0, [0, 1])
+        bot.trees, bot.building_since, bot.t = {}, {}, 0
+        rows = np.stack([_row(1, "Hpal", fx.HERO, hp=(150, 400), items=("hslv", "woms", "phea"))])
+        st = bot.view.step(rows, None, np.zeros((0, 5), np.int64), 0)
+        assert bot.commands(st, [1], [0], [0], [0]) == [UseItem(1, 0, target=1)]
+        assert bot.commands(st, [2], [0], [0], [0]) == []
+        assert bot.commands(st, [3], [0], [0], [0]) == [UseItem(1, 2)]  # (a potion: as before)
+    finally:
+        fx.set_econ_masks(0)
 
 
 def test_buy_goes_to_the_sides_own_shop(game_tables):
