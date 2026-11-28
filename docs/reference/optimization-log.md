@@ -935,3 +935,50 @@ Expected in the run: the actors' obs-full Python -80% (~1.1 → ~0.2 M instructi
 To check (a fork of `fgself-197` with only this code): `system.jsonl` "actors" median 8.9 → ≤ ~7.6; `train.jsonl` SPS median 5,024 → ≥ 5,300, `perf/train` ≤ 1.38 s, `perf/rollout` ≤ 0.25 s; the losses in their ranges (`loss/kl`, `loss/clipfrac`, `loss/value`: the same numbers reach the network); no `MemoryError("w3f_obs_a")` in the actors' logs.
 
 **obs-full's features in C, in the run (`fgself-197` restarted 2026-11-09 11:40 on c336661; outputs bit-identical):** 11:46-12:02, **4,925 agent steps/s** (median update SPS 5,222) against 4,700 before (+5%); actors 8.9 → 7.7-7.9 cores, the update 1.37 → 1.26-1.33 s, losses as before. The rest of obs-full's cost is the transformer's ~4 more entities a step (mostly corpses: 5.2 a step against insane, at the cap of 8 in 57% of steps); `MAX_CORPSES` 4 would halve it, a trade not made.
+
+## The 10-layer network on the GPU: where the time goes, and a stacked call for past snapshots (2026-11-28, branch `speed-10l`; not merged, not yet measured on the GPU)
+
+Since `fgself-269`/`-271` the base network has 10 transformer layers (`--noise-scale 0 --noise-terms 0`), and the runs fell from ~4,400-5,000 agent steps a second (5 layers: `fgself-267` 4,632, `-268` 4,411, `-270` 4,972) to ~3,450-3,860 (`fgself-269` 3,859, `-271` 3,451; means of each run's last 600 updates). Written beside the live `fgself-271` from its logs and on the CPU only (nothing ran on the GPU).
+
+**From the logs** (`fgself-271`, last 600 updates of `train.jsonl`, last 150 records of `inference.jsonl`):
+
+| | 5 layers (`-267`/`-268`/`-270`) | 10 layers (`-269`/`-271`) |
+|---|---|---|
+| `perf/train`, an update of 8,192 steps | 1.31-1.37 s | 1.72-1.88 s |
+| `perf/rollout` | 0.44-0.61 s | 0.56-0.61 s |
+| inference rounds a second, `round_ms` | 155-174, 13.6-16.4 | 109-133, 20.1-26.2 |
+| a round's GPU time, the learner idle / in an update (`gpu_idle`, `gpu_update`) | 4.1-5.2 / 6.7-8.2 ms | 5.6-7.4 / 11.2-14.1 ms |
+| past snapshots' calls a second (of all) | ~990-1,090 (of ~1,170-1,250) | 533-688 (of 671-807) |
+
+* Five more layers cost the update ~0.5 s: ~0.1 s a layer for 8,192 steps in the run. `perf/rollout` is bimodal: ~0.07-0.12 s in most cycles (`--learner-intake 2` reads 5,650-8,200 of the next 8,192 steps during the update), 1.0-1.6 s when the exploiter's update (4,096 steps, every ~3.9 main updates) runs inside the collect loop. The learner and the inference loop share the saturated GPU: 61% of the rounds run during an update, and a round's GPU time doubles then.
+* **Past snapshots are 85% of the inference calls** (688 of 807 a second, 1.56 rows each; the current network's ~119 calls carry ~27 rows each), and 270 weight swaps a second (more 10-layer members than the 10 slots). A 10-layer call is a chain of ~150 small kernels whatever its rows.
+* **The current network's padding:** 25% of its calls have their widest row at 97-104 entities (`calls_by_entities`), and `--infer-entities 32,48,64,96` pads those to 160.
+
+**FLOPs of one minibatch** (`scripts/bench_speed10.py flops`, meta tensors on the CPU, the run's network and recipe: 256 steps, the 5-layer anchor's forward-all KL, the labels' distillation):
+
+| width | GFLOP | policy forward | anchor forward (5 layers) | labels' heads forward | backward | attention's 64x64 tiles over its L x L scores |
+|---|---|---|---|---|---|---|
+| 48 | 484 | 27% | 15% | 2% | 57% | 1.71x |
+| 63 | 639 | 27% | 15% | 2% | 57% | 1.00x |
+| 64 | 650 | 27% | 15% | 2% | 57% | **3.88x** |
+| 96 | 994 | 27% | 15% | 2% | 57% | 1.74x |
+| 127 | 1,295 | 27% | 15% | 1% | 57% | 1.00x |
+| 128 | 1,305 | 27% | 15% | 1% | 57% | **2.22x** |
+
+The transformer is ~89% of the policy's forward (the heads ~11%). At ~32 minibatches of ~600 GFLOP an update does ~19 TFLOP, ~10-11 TFLOP/s in the run against ~60 TFLOPS of bf16 matrix multiplies at these shapes (2026-11-02: 61 TFLOPS at 16384x256x256): the update is bound by its other kernels and by the inference loop's high-priority ones, not by its matrix multiplies (the update alone took about half its in-run time on 2026-10-30). Two of those other costs are visible on the CPU:
+
+* **Attention tiles.** The memory-efficient attention kernel (masks rule out flash) works in 64 x 64 tiles, and a minibatch's L is its width plus the global token: `--update-widths`' 64 gives L = 65, four tiles where 63 needs one; 128 gives L = 129, nine where 127 needs four. Likewise `--infer-entities`' 64. Fewer padded entities do not change a real row's answer (the padding is masked; only the kernels' summation order moves).
+* **The labels' heads on every row.** The distillation's target heads (conditioned on the labels' orders) run on all 256 rows of a minibatch, ~5% of its FLOPs with the backward, while only ~0.9% of steps carry labels (`opd/steps`). Not changed.
+
+**Built: `--infer-past-stack S`** (with `--infer-native 1`; `--infer-past-stack-rows`, default 1,2,4; off by default). `fullgame/paststack.py`: an architecture's S past-snapshot slots as one network call. The slots' weights are stacked, one flat [S, total] tensor laid out as `flat_layout` per slot (a swap is still one copy) and each buffer [S, ...]; one CUDA graph per (rows per slot, entities) runs every slot's rows through the same network code under `torch.func.vmap` over `functional_call`, compiled (no graph break) and captured as the slots' calls were. The C++ loop (`csrc/infer_loop.cpp`, `Stack`) seats a round's snapshots of that architecture (held first, then empty, then free slots; more than S: another pass on the same stream), copies new weights in, gathers each slot's rows into its block of the call's input (`s * B + i`) and replays once per chunk of rows; a round's ~6 past calls become one per architecture (fgself-271's league: two, the 10-layer and the 5-layer members). What had to change for vmap, each giving the same numbers as before (the CPU unit suite passes): `unit_valid`'s `ones_like`; the mask's columns and-ed by a scatter (`model._and_cols`) instead of an indexed in-place and; `act(noise=...)`, the sampling's uniform draws made by the caller (torch.compile cannot trace a generator's draw inside vmap: the stack draws them from the server's generator outside it); a network whose attention is not batch-first runs its encoder over [L, N, d] tokens (under vmap the attention's transposed view made the linear layers copy their weights once per token: S x L copies of each in-projection; the stack's network is the only such one). Tests (`tests/unit/test_past_stack.py`, CPU): a stacked call gives each slot's rows that slot's own actions bit for bit and its numbers to 1e-5 with the same draws, eager and compiled; a snapshot copied byte for byte into a slot's places (`PastStack.dst`, as the loop copies) is what the slot computes with; act's own draws and the caller's agree bit for bit. On fgself-271's real 10-layer network on the CPU, four slots: actions identical, numbers within 5e-6.
+
+What it costs: a stacked call computes S x B rows (every slot, the round's largest B) padded to the round's widest entity count, so its FLOPs may exceed the separate calls'; what it saves is the per-call chain of kernels (~150 a call, ~6 calls a round). Which wins on the 3090, alone and beside an update, is for the benchmark. Start-up: 2 architectures x 3 row buckets x 5 entity counts = 30 stacked graphs compiled and captured (minutes the first time, the inductor's cache after), the per-slot graphs (~160 at 10 slots) not captured.
+
+**To measure (between runs, the GPU free), `scripts/bench_speed10.py`:**
+
+1. The C++ loop's stacked path, correctness: `python3 scripts/check_native_infer.py --run runs/fgself-271 --data runs/fullgame/demos-echo-1 --setup --rows 8,16,24,32,48,64 --entities 32,48,64,96 --past-entities 32,48,64,96 --precision bf16-mixed --past-stack 4` (passes: exit 0, "0 wrong", the past slots' rows within bf16-mixed's tolerance, "different samples", no CUDA error; then the same without `--past-stack` for the requests a second to compare).
+2. Past rounds, unbatched against stacked: `python3 scripts/bench_speed10.py past --run runs/fgself-271` (ms a round wall and GPU, the past calls a second each could serve, the two paths' values and entropies on the same rows: expect ~1e-3, max ~1e-2). If its output warns "we have not yet implemented the batching rule" for the CUDA attention, vmap runs the attention slot by slot (correct, slower).
+3. Beside an update: `python3 scripts/bench_speed10.py concurrent --run runs/fgself-271 --seconds 60` (learner steps a second and past rounds a second, unbatched against stacked).
+4. The update and its kernels: `python3 scripts/bench_speed10.py update --run runs/fgself-271 --profile 25` (seconds an update, each width's graph alone, the shares of attention, matrix multiplies and the rest; variants: the run's widths against `32,40,48,56,63,80,96,127`; add `noref:ref_layers=0`, `nolabels:opd_coef=0` for those parts' cost).
+5. The current network's entity buckets: `python3 scripts/bench_speed10.py buckets --run runs/fgself-271` (each shape's ms, and the GPU ms a second each `--infer-entities` set costs at the run's histograms: 32,48,64,96 against 32,48,63,96, 32,48,63,96,112 and 31,47,63,95,127).
+6. Then a fork with only `--infer-past-stack 10` (and, separately, the widths or entities that won): `inference.jsonl` `past_stacked_per_s` > 0 and `past_calls_per_s` down ~6x, `gpu_idle`/`gpu_update` and `round_ms` against fgself-271's 7.4/14.1 and 26.2 ms; `train.jsonl` SPS against ~3,450, `perf/train` against ~1.88 s; the losses in their ranges.

@@ -4,6 +4,7 @@ every answer's value and entropy must equal a direct call's, the versions be rig
 from call to call. Then requests per second from many threads. Uses the GPU briefly.
 
     python3 scripts/check_native_infer.py --run runs/fgself-12 --data runs/fullgame/demos-fast-1
+    (--past-stack 4: the past snapshots through the loop's stacked calls, paststack.py)
 """
 
 from __future__ import annotations
@@ -55,6 +56,9 @@ def main() -> int:
                                                         "(and reported against direct calls of the same precision)")
     ap.add_argument("--tol", type=float, help="the largest difference in value or entropy that passes (default by "
                                               "precision, the value's and the entropy's: TOL)")
+    ap.add_argument("--past-stack", type=int, default=0, help="selfplay --infer-past-stack: the past snapshots in this many "
+                                                               "stacked slots, a round's calls of them one call")
+    ap.add_argument("--past-stack-rows", default="", help="selfplay --infer-past-stack-rows")
     ap.add_argument("--setup", action="store_true", help="the run's input settings first (scripts/bench_view.setup: a "
                                                           "recent run needs them)")
     a = ap.parse_args()
@@ -78,6 +82,7 @@ def main() -> int:
            "max_past": 32, "shared_rows": spec, "infer_fuse": 1, "infer_past_slots": 4, "infer_period": 0.004,
            "exploiter_share": 0, "infer_entities": [int(x) for x in a.entities.split(",")], "vocab": str(a.run / "vocab.json"),
            "infer_past_period": a.past_period_ms / 1000.0, "infer_precision": a.precision,
+           "infer_past_stack": a.past_stack, "infer_past_stack_rows": a.past_stack_rows,
            **({"infer_rows": [int(x) for x in a.rows.split(",") if x]} if a.rows else {}),
            "infer_past_entities": [int(x) for x in a.past_entities.split(",")]}
     split = None

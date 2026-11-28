@@ -15,7 +15,7 @@ import torch
 
 from warcraftsim.fullgame import features as fx
 from warcraftsim.fullgame import model as M
-from warcraftsim.fullgame.model import FullGameNet, act
+from warcraftsim.fullgame.model import FullGameNet
 from warcraftsim.fullgame.paststack import PastStack, blank_rows, pack_rows, row_width, stack_rows
 from warcraftsim.fullgame.selfplay import pack_flat, packed_call
 
