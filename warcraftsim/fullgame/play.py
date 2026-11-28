@@ -231,9 +231,18 @@ class BCAgent:
                                for c, ok in zip(cmds, results)
                                if ok and hasattr(c, "unit") and (hasattr(c, "order") or hasattr(c, "building"))],
                               self.t, self.trees)
+        held = self.view.__dict__.setdefault("held_jobs", {}) if fx.GOLD_CAP else None
         for c, ok, res in zip(cmds, results, getattr(self, "sent_resources", [])):
             unit = getattr(c, "unit", None)
             if ok and unit is not None:
+                if held is not None:  # (--econ-masks bit 512: a job kept over a militia's or a burrow's stretch, below)
+                    if res is None and ((isinstance(c, ImmediateOrder) and c.order in fx.BACK_TO_WORK_CALLS)
+                                        or (isinstance(c, TargetOrder) and c.order == fx.BOARD)):
+                        job = self.view.assign.get(unit)
+                        if job is not None:  # (none now: the one kept at its call stays, for its back to work)
+                            held[unit] = job
+                    else:
+                        held.pop(unit, None)
                 if res is None:
                     self.view.assign.pop(unit, None)
                 else:
