@@ -434,6 +434,9 @@ class BCAgent:
         n = min(st["n_own"], fx.MAX_OWN, len(order))
         has_militia = bool((own_sel[:, fx.C_TYPE] == fx.MILITIA_T).any())
         repair_ids = getattr(self.view, "repair_ids", None) if fx.REPAIR_MASK else None  # (--econ-masks bit 16)
+        gold = self.view.__dict__.get("gold") if fx.GOLD_CAP else None  # (--econ-masks bit 512: this step's gold workers,
+        gold_worker = fx.GOLD_CAP_WORKERS.get(fx.RACES[self.view.races[self.player]]) if gold is not None else None
+        gold_added: dict[int, int] = {}  # View.step's; human and orc only. The step's gold orders sent, by mine)
         for i in np.flatnonzero(np.asarray(order[:n])).tolist():  # (the units given an order: most are given none)
             c = int(order[i])
             oid, kind = self.orders[c]
@@ -459,6 +462,20 @@ class BCAgent:
             if int(sel[i, fx.C_FLAGS]) & LOADED:  # (a peon in a burrow, a unit in a transport: the game refuses its orders,
                 self.loaded_orders = getattr(self, "loaded_orders", 0) + 1  # moves orc's most refused kind; audit 10)
                 continue
+            if gold_mine is not None and gold_worker is not None and int(sel[i, fx.C_TYPE]) == gold_worker:
+                # (--econ-masks bit 512: a mine with its gold workers takes no more, the step's sent ones counted; the
+                # worker harvests the tree nearest the mine's hall instead, or nothing if it chops already. The mine:
+                # the harvest's (_mine's), a right-click's own target; one not a plain mine has no count)
+                at = gold_mine if oid == fx.HARVEST else int(sel[int(tgt[i]), fx.C_ID])
+                if gold.full(at, unit, gold_added.get(at, 0)):
+                    self.gold_full_masked = getattr(self, "gold_full_masked", 0) + 1
+                    tree = self._to_trees(unit, current, gold, at, (float(sel[i, fx.C_X]), float(sel[i, fx.C_Y])))
+                    if tree is not None:
+                        self.last_sent.append((fx.HARVEST, fx.TREE))
+                        out.append(tree)
+                        self.sent_resources += [None] * (len(out) - len(self.sent_resources) - 1) + ["lumber"]
+                    continue
+                gold_added[at] = gold_added.get(at, 0) + 1
             if self.full is not None and c >= self.full_from:  # (--full-vocab: its orders in the form the game takes them,
                 got = self._full(sel, i, c, oid, kind, int(tgt[i]), int(bx[i]), int(by[i]), st["n_own"], pay)  # or none)
                 if got is not None:
@@ -636,6 +653,12 @@ class BCAgent:
             if len(out) > len(self.sent_resources):  # (aligned with out: accepted() pairs them; a tier's queue cancels
                 self.sent_resources += [None] * (len(out) - len(self.sent_resources) - 1) + [res]  # before it: none;
                 # one entry for its seven commands had paired the step's later orders with others' resources; audit 4)
+        if gold is not None:  # (--econ-masks bit 512: the engine's workers past their mine's count, to the trees)
+            guard = self._gold_guard(gold, out, gold_added)
+            if guard:
+                self.sent_resources += [None] * (len(out) - len(self.sent_resources))
+                out += guard
+                self.sent_resources += ["lumber"] * len(guard)
         if fx.MACROS and fx.RACES[self.view.races[self.player]] == "nightelf" and getattr(self, "rows", None) is not None:
             out += self._entangle(self.rows)  # (--macros: the expansion's mine; the policy has no entangle order)
         if fx.MACROS >= 3 and getattr(self, "rows", None) is not None:
@@ -934,6 +957,45 @@ class BCAgent:
                 last[b] = self.t
                 out.append(ImmediateOrder(b, fx.STANDDOWN))
         self.stood_down_n = getattr(self, "stood_down_n", 0) + len(out)
+        return out
+
+    def _to_trees(self, unit: int, current: int, gold, mine: int, xy: tuple) -> Command | None:
+        """--econ-masks bit 512: a worker kept off a full gold mine harvests the tree nearest that mine's hall (nearest
+        `xy`, the worker, with no hall by it; the harvest order, as bit 256 sends a right-click on a tree) -> the
+        command, or None: on lumber already (the view has it chopping, in a harvest cycle), or no tree known."""
+        if self.view.assign.get(unit) == "lumber" and (current in fx.HARVESTING or current == fx.SMART):
+            return None
+        if not self.trees:
+            return None
+        hx, hy = gold.hall.get(mine) or xy
+        self.gold_full_lumber = getattr(self, "gold_full_lumber", 0) + 1
+        return TargetDestructable(unit, fx.HARVEST, self._nearest_tree(hx, hy))
+
+    def _gold_guard(self, gold, given: list, added: dict) -> list[Command]:
+        """--econ-masks bit 512: the engine's workers (View.auto_gold: no assignment, a harvest or right-click begun with
+        no order of the agent's, within fx.AUTO_GOLD_STEPS, not in the mine) past their mine's count (its gold workers
+        not given an order this step, and this step's gold orders sent there, `added`) to the trees, the newest first
+        (then the farthest from the mine): the computer slot sends a newly trained worker, and an idle one, to the mine
+        by itself, past the agent's mask."""
+        auto = self.view.__dict__.get("auto_gold")
+        if not auto:
+            return []
+        sent = {getattr(c, "unit", None) for c in given}
+        out: list[Command] = []
+        for m, ws in gold.on.items():
+            stay = [w for w in ws if w not in sent]
+            n_far = sum(1 for w in gold.far[m] if w not in sent)
+            surplus = len(stay) + added.get(m, 0) - (fx.GOLD_SATURATED if n_far else fx.GOLD_FULL)
+            if surplus <= 0:
+                continue
+            mx, my = gold.mines[m]
+            new = sorted((w for w in stay if w in auto and self.t - auto[w] <= fx.AUTO_GOLD_STEPS and w not in gold.hidden),
+                         key=lambda w: (-auto[w], -((gold.pos[w][0] - mx) ** 2 + (gold.pos[w][1] - my) ** 2), w))
+            for w in new[:surplus]:
+                cmd = self._to_trees(w, fx.HARVEST, gold, m, gold.pos[w])
+                if cmd is not None:
+                    out.append(cmd)
+                    self.gold_full_engine = getattr(self, "gold_full_engine", 0) + 1
         return out
 
     def _refusal(self, c, key: str, rows: np.ndarray) -> list:

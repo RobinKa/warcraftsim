@@ -677,15 +677,73 @@ REPAIR_MACHINES = frozenset(int.from_bytes(c.encode(), "big") for c in ("hgyr", 
 WISP_T = int.from_bytes(b"ewsp", "big")
 
 
+# --econ-masks bit 512 (View.gold_workers, View.gold_full, play.BCAgent.commands; docs/proposals/weakness-analysis-
+# 2026-11-28.md, section 1: human and orc stacked 7-12 workers on one gold mine, more than 5 on it in 77% / 87% of the
+# captured no-target states, while one mine gives ~500 gold a minute whatever the workers and lumber got ~1 of them; the
+# oversaturation lesson had cost 17.6 points, so a rule of the agent's, no labels): for human and orc, a gold harvest
+# (the harvest order on a unit, or a worker's right-click on a gold mine) on a mine with GOLD_FULL gold workers already,
+# GOLD_SATURATED while one of those walks to it from GOLD_WALK_FAR or farther (teacher.SATURATED: 5 mine, one walking),
+# is not sent: the worker harvests the tree nearest that mine's hall instead (one on lumber already: nothing sent). The
+# harvest order class is masked while every mine a hall of the player's works (GOLD_HALL_NEAR) is full. A mine's gold
+# workers as the view sees them: a worker hidden in it, and one in a harvest cycle (harvest, resumeharvesting,
+# returnresources; a right-click too once the agent sent it to gold) that the view has on gold (View.assign "gold", or
+# nothing: the melee start's and the engine's, as features.redundant counts those) whose mine it is (View.mine_of, else
+# the plain mine nearest it within GOLD_MINE_NEAR). The computer slot's engine puts idle and newly trained workers to
+# work by itself (docs/reference/engine-notes.md, "What a computer slot does by itself": 92 new workers sent to the mine
+# at once and 58 later in 18 games, none ordered by the policy): a worker with no assignment that starts a harvest or a
+# right-click with no order of the agent's the step before is the engine's (View.auto_gold), and one past its mine's
+# count goes to the trees too within AUTO_GOLD_STEPS (play.BCAgent._gold_guard; the newest first). Other races, and the
+# bit off: as before
+GOLD_CAP = int(os.environ.get("WARCRAFTSIM_ECON_MASK", "0") or 0) & 512 > 0
+GOLD_CAP_WORKERS = {"human": int.from_bytes(b"hpea", "big"), "orc": int.from_bytes(b"opeo", "big")}
+GOLD_CAP_HALLS = {r: tuple(int.from_bytes(c.encode(), "big") for c in ECON_WORKERS[r][1]) for r in GOLD_CAP_WORKERS}
+GOLD_FULL, GOLD_SATURATED = MINE_WORKERS, 6  # (the second: teacher.SATURATED's, tests/unit/test_gold_cap.py)
+GOLD_WALK_FAR = 1000.0  # (a mine's gold worker this far from it walks there from elsewhere: the hall is ~780 from its mine
+# on Echo Isles, and 95% of the captured human and orc gold workers were within 1,075 of theirs)
+GOLD_MINE_NEAR = 1500.0  # (an unassigned harvester counts on the plain gold mine nearest it within this)
+GOLD_HALL_NEAR = 1200.0  # (a hall of the player's, finished or a frame, this near a mine works it: its trees the lumber's)
+AUTO_GOLD_STEPS = 6  # (an engine-sent worker past its mine's count: sent to the trees within 3 s of its start)
+_GOLD_CYCLE = frozenset(HARVESTING)
+
+
+def gold_full_at(n: int, n_far: int) -> bool:
+    """--econ-masks bit 512: a mine with n gold workers (n_far of them GOLD_WALK_FAR or farther from it) takes no more."""
+    return n >= GOLD_SATURATED or (n >= GOLD_FULL and not n_far)
+
+
+class GoldCount:
+    """--econ-masks bit 512: a step's gold workers at the plain gold mines (View.gold_workers). `mines`: mine id -> (x, y);
+    `on`: mine -> its gold workers' ids; `far`: mine -> those GOLD_WALK_FAR or farther from it; `hall`: mine -> the
+    position of the player's hall nearest it within GOLD_HALL_NEAR, or None; `of`: worker -> its mine; `hidden`: the
+    workers inside a mine; `pos`: worker -> (x, y)."""
+    __slots__ = ("rows", "mines", "on", "far", "hall", "of", "hidden", "pos")
+
+    def __init__(self, rows, mines, on, far, hall, of, hidden, pos):
+        self.rows, self.mines, self.on, self.far, self.hall = rows, mines, on, far, hall
+        self.of, self.hidden, self.pos = of, hidden, pos
+
+    def full(self, mine: int, unit: int | None = None, extra: int = 0) -> bool:
+        """Whether `mine` takes no more gold workers: its own but `unit` (the one ordered there), and `extra` more sent
+        this step. Not a plain mine of the step's rows (no count): False."""
+        ws = self.on.get(mine)
+        if ws is None:
+            return False
+        n = len(ws) - ws.count(unit) + extra if unit is not None else len(ws) + extra
+        far = self.far[mine]
+        return gold_full_at(n, len(far) - (unit in far))
+
+
 def set_econ_masks(v) -> None:
     """--econ-masks: bit 1 the economy masks (ECON_MASK), bit 2 the revival's reserve (REVIVE_RESERVE: a dead hero the
     altar would take now keeps its revival's gold from the player's other paid orders, View.step), bit 4 night elf's
     lower worker allowance (NE_LEAN), bits 8, 16, 32 the Detonate, repair and call to arms masks (View.chores), bit 64
     the orders the game refuses (FUTILE_MASK: View.futile; model.prune_allowed's morphed forms), bit 256 a harvester's
-    right-click on a tree sent as the harvest order (TREE_HARVEST: play.BCAgent.commands)."""
+    right-click on a tree sent as the harvest order (TREE_HARVEST: play.BCAgent.commands), bit 512 human's and orc's
+    gold mines take 5 (GOLD_CAP: View.gold_full, play.BCAgent.commands)."""
     global ECON_MASK, REVIVE_RESERVE, NE_LEAN, DETONATE_MASK, REPAIR_MASK, MILITIA_MASK, FUTILE_MASK, BURROW_MASK
-    global TREE_HARVEST
+    global TREE_HARVEST, GOLD_CAP
     v = int(v or 0)
+    GOLD_CAP = bool(v & 512)
     TREE_HARVEST = bool(v & 256)
     BURROW_MASK = bool(v & 128)  # (bit 128: orc's burrows, View.chores and play.BCAgent)
     ECON_MASK, REVIVE_RESERVE, NE_LEAN = bool(v & 1), bool(v & 2), bool(v & 4)
@@ -1959,6 +2017,94 @@ class View:
                 if not any(item_use_now(h[C_ITEM0 + k], h) for h in heroes):
                     avail[c] = False
 
+    def gold_workers(self, rows: np.ndarray, t: int) -> GoldCount | None:
+        """--econ-masks bit 512 (GOLD_CAP): the step's gold workers of a human or orc player at the plain gold mines
+        (GoldCount; made once per rows, kept as self.gold), and the engine's workers (self.auto_gold: worker -> the step
+        it started); None for the other races. Called every step (View.step): a worker's start is a harvest or a
+        right-click it did not have at the step before."""
+        race = RACES[self.races[self.player]]
+        wt = GOLD_CAP_WORKERS.get(race)
+        if wt is None:
+            return None
+        g = self.__dict__.get("gold")
+        if g is not None and g.rows is rows:
+            return g
+        m = rows[(rows[:, C_TYPE] == GOLD_MINES[0]) & (rows[:, C_FLAGS] & DEAD == 0)]
+        ids, mxy = m[:, C_ID].tolist(), m[:, [C_X, C_Y]].astype(np.float64)
+        mines = {i: (x, y) for i, (x, y) in zip(ids, mxy.tolist())}
+        own = own_list(rows, self.player)
+        hall_types = GOLD_CAP_HALLS[race]
+        halls = [(float(u[O_X]), float(u[O_Y])) for u in own if u[O_TYPE] in hall_types]
+        hall: dict[int, tuple | None] = {}
+        for k, (mx, my) in mines.items():
+            best = None
+            for hx, hy in halls:
+                d = (hx - mx) ** 2 + (hy - my) ** 2
+                if d <= GOLD_HALL_NEAR ** 2 and (best is None or d < best[0]):
+                    best = (d, (hx, hy))
+            hall[k] = best[1] if best is not None else None
+        assign, mine_of, last = self.assign, self.mine_of, self.last_order
+        prev = self.__dict__.get("_gold_prev") or ()
+        auto = self.__dict__.setdefault("auto_gold", {})
+        on: dict[int, list] = {k: [] for k in mines}
+        far: dict[int, list] = {k: [] for k in mines}
+        of, hidden, pos, harvesting = {}, set(), {}, set()
+        counted, nearest = [], []  # (the gold workers: (id, x, y, inside, its mine or None: the nearest's to find))
+        for u in own:
+            if u[O_TYPE] != wt or u[O_FL] & LOADED_FLAG:  # (a peon in a burrow gathers nothing: out of auto_gold below)
+                continue
+            uid, order, inside = u[O_ID], u[O_ORDER], u[O_FL] & HIDDEN_FLAG > 0
+            cycle, a = order in _GOLD_CYCLE, assign.get(uid)
+            busy = cycle or order == SMART or inside
+            if busy:
+                harvesting.add(uid)
+            if a is not None or not busy:
+                auto.pop(uid, None)  # (the agent's now, or out of the harvest)
+            elif uid not in prev and not inside and (uid not in last or last[uid][4] < t - 1):
+                auto[uid] = t  # (a harvest started with no order of the agent's: the engine's)
+            if a == "lumber" or not (inside or (a == "gold" and (cycle or order == SMART))
+                                     or (a is None and (cycle or uid in auto))):
+                continue
+            k = mine_of.get(uid) if a == "gold" else None
+            w = (uid, float(u[O_X]), float(u[O_Y]), inside, k if k in mines else None)
+            counted.append(w)
+            if w[4] is None:
+                nearest.append(len(counted) - 1)
+        if nearest and ids:  # (the plain mine nearest each worker of no known mine, within GOLD_MINE_NEAR: the first
+            wxy = np.array([counted[j][1:3] for j in nearest], np.float64)  # of the nearest, as argmin)
+            d = ((mxy[None, :, :] - wxy[:, None, :]) ** 2).sum(2)
+            best = d.argmin(1)
+            for j, b, dd in zip(nearest, best.tolist(), d[np.arange(len(nearest)), best].tolist()):
+                if dd <= GOLD_MINE_NEAR ** 2:
+                    counted[j] = counted[j][:4] + (ids[b],)
+        for uid, x, y, inside, k in counted:
+            if k is None:
+                continue
+            on[k].append(uid)
+            of[uid] = k
+            pos[uid] = (x, y)
+            if inside:
+                hidden.add(uid)
+            elif (mines[k][0] - x) ** 2 + (mines[k][1] - y) ** 2 >= GOLD_WALK_FAR ** 2:
+                far[k].append(uid)
+        for uid in [w for w in auto if w not in harvesting]:  # (gone, loaded or out of the harvest)
+            del auto[uid]
+        self._gold_prev = harvesting
+        g = self.gold = GoldCount(rows, mines, on, far, hall, of, hidden, pos)
+        return g
+
+    def gold_full(self, avail: np.ndarray) -> None:
+        """--econ-masks bit 512: the harvest order on a unit out of `avail` (in place) while every mine a hall of the
+        player's works has its gold workers (this step's gold_workers; play.BCAgent checks each order's own mine)."""
+        g = self.__dict__.get("gold")
+        c = self.enc.order_index.get((HARVEST, UNIT))
+        if g is None or c is None or not avail[c]:
+            return
+        worked = [k for k, h in g.hall.items() if h is not None]
+        if worked and all(g.full(k) for k in worked):
+            avail[c] = False
+            self.gold_full_steps = getattr(self, "gold_full_steps", 0) + 1
+
     def item_slots(self, rows: np.ndarray, avail: np.ndarray) -> None:
         """--shop-items: each slot's use (immediate, on a unit, on a point) out of `avail` (in place) while no hero of the
         player's holds an item in that slot that takes it (shopitems.use_ok; the per-hero check: play.BCAgent)."""
@@ -2247,6 +2393,10 @@ class View:
             self.chores(rows, avail)
         if avail is not None and FUTILE_MASK:  # (--econ-masks bit 64: orders the game refuses)
             self.futile(rows, avail, t)
+        if GOLD_CAP and RACES[self.races[player]] in GOLD_CAP_WORKERS:  # (--econ-masks bit 512: the human and orc mines'
+            self.gold_workers(rows, t)                                   # gold workers every step; all full: no harvest)
+            if avail is not None:
+                self.gold_full(avail)
         if avail is not None and ORDER_MASKS & 2:  # (--order-masks 2: a toggle against its state, ordermasks.Toggles)
             tg = self.__dict__.get("toggles")
             if tg is None:
